@@ -945,92 +945,120 @@ final class ComposedFamilies {
                                 List<Out> outs, Set<String> reachedSlots,
                                 List<String> nestedStated, int depth,
                                 Map<String, BoundLeaf> leaves) {
-        List<GapRow> local = new ArrayList<GapRow>();
-        SmtLowering.SessionJoin rows = corpus.join(session);
-        lowering.begin(session, rows, corpus.expressions(session));
-        List<String> conjuncts = new ArrayList<String>();
-        boolean stated = true;
-        // The bindings: what this run delivered at each out.
-        Map<String, String> guards = new LinkedHashMap<String, String>();
-        Map<String, RootMintRow> guardMints =
-                new LinkedHashMap<String, RootMintRow>();
-        for (Out out : outs) {
-            Term delivered = lower(session, out.arm.expressionRef(),
-                    "arm:" + out.arm.slotId(), conjuncts);
-            if (delivered == null) {
-                stated = false;
-                break;
-            }
-            if (out.arm.attach() != null) bind(session, out.arm, delivered,
-                    leaves);
-            if (out.arm.hole()) {
-                String arm = hole(session, out.arm, delivered, local);
-                if (arm == null) {
-                    stated = false;
-                    break;
-                }
-                conjuncts.add(arm);
-                guards.putAll(out.arm.guard());
-                guardMints.putAll(out.arm.guardMints());
-                continue;
-            }
-            for (String symbol : out.symbols) {
-                if (symbol == null || symbol.isEmpty()) continue;
-                lowering.declareStated(symbol, delivered.sort);
-                conjuncts.add("(= " + symbol + " " + delivered.text + ")");
-                // The states of the stored object the reader could have
-                // seen through this very store.
-                if (out.arm.write() != null) {
-                    conjuncts.add(lowering.storeChoice(symbol,
-                            out.arm.write()));
-                }
-            }
-            guards.putAll(out.arm.guard());
-            guardMints.putAll(out.arm.guardMints());
-        }
-        // The delivering replay's valuation of every root it holds under
-        // (Arms#arm), declared at its root's sort where no row of the
-        // corpus has declared the symbol yet: an arm need not mention it,
-        // and an undeclared constant makes z3 answer with an error.
-        for (Map.Entry<String, String> guard : guards.entrySet()) {
-            VmTermLowering.Sort sort = lowering.statedSort(guard.getKey());
-            if (sort == null) {
-                sort = Composer.sortOf(guardMints.get(guard.getKey()));
-                lowering.declareStated(guard.getKey(), sort);
-            }
-            String literal = smtLiteral(guard.getValue(), sort);
-            if (literal.isEmpty()) continue;
-            lowering.declareStated(guard.getKey());
-            conjuncts.add("(= " + guard.getKey() + " " + literal + ")");
-        }
-        List<String> nested = new ArrayList<String>();
-        Map<String, String> joins = new LinkedHashMap<String, String>();
+        ArmBody body = new ArmBody(session);
+        boolean stated = body.deliveries(outs, leaves);
+        body.heldRoots();
         if (stated) {
-            // The closure of every producer occurrence of this group, each
-            // from its OWN delivery cutoff, merged at the widest cutoff.
-            Map<String, Long> reached = new LinkedHashMap<String, Long>();
-            for (Map.Entry<String, List<Out>> each
-                    : byProducer(outs).entrySet()) {
-                List<Out> its = each.getValue();
-                long cutoff = Long.MIN_VALUE;
-                for (Out out : its) {
-                    cutoff = Math.max(cutoff, out.arm.deliveredAt());
+            stated = body.closure(ordinal, selector, outs, reachedSlots,
+                    depth);
+        }
+        return body.end(stated, subject, nestedStated);
+    }
+
+    /**
+     * One arm's conjunction as {@link #producerBody} builds it, in its
+     * delivering session's lowering scope (opened here, closed by {@link
+     * #end}): what it delivered, the roots its replay held, its closure and
+     * the messages it was handed.
+     */
+    private final class ArmBody {
+        private final String session;
+        private final SmtLowering.SessionJoin rows;
+        /** What refuses this arm, filed only if it is refused. */
+        private final List<GapRow> local = new ArrayList<GapRow>();
+        private final List<String> conjuncts = new ArrayList<String>();
+        /** Root symbol -> the value the delivering replay held it at. */
+        private final Map<String, String> guards =
+                new LinkedHashMap<String, String>();
+        private final Map<String, RootMintRow> guardMints =
+                new LinkedHashMap<String, RootMintRow>();
+        /** The nested families of the messages this delivery was handed. */
+        private final List<String> nested = new ArrayList<String>();
+        private final Map<String, String> joins =
+                new LinkedHashMap<String, String>();
+
+        ArmBody(String session) {
+            this.session = session;
+            this.rows = corpus.join(session);
+            lowering.begin(session, rows, corpus.expressions(session));
+        }
+
+        /**
+         * The bindings: what this run delivered at each out -- a hole's
+         * operand ({@link #hole}), else each bound variable equal to the
+         * delivered value and, for a store, the states of the stored object
+         * the reader could have seen through this very store -- and the
+         * roots each delivery's replay held under.
+         *
+         * @return false at the first delivery that does not lower
+         */
+        boolean deliveries(List<Out> outs, Map<String, BoundLeaf> leaves) {
+            for (Out out : outs) {
+                Term delivered = lower(session, out.arm.expressionRef(),
+                        "arm:" + out.arm.slotId(), conjuncts);
+                if (delivered == null) return false;
+                if (out.arm.attach() != null) {
+                    bind(session, out.arm, delivered, leaves);
                 }
-                Map<String, Long> one = composer.closure(session,
-                        its.get(0).arm.producer(), cutoff,
-                        expressionWrites(session, its));
-                for (Map.Entry<String, Long> at : one.entrySet()) {
-                    Long was = reached.get(at.getKey());
-                    if (was == null
-                            || was.longValue() < at.getValue().longValue()) {
-                        reached.put(at.getKey(), at.getValue());
+                if (out.arm.hole()) {
+                    String arm = hole(session, out.arm, delivered, local);
+                    if (arm == null) return false;
+                    conjuncts.add(arm);
+                } else {
+                    for (String symbol : out.symbols) {
+                        if (symbol == null || symbol.isEmpty()) continue;
+                        lowering.declareStated(symbol, delivered.sort);
+                        conjuncts.add("(= " + symbol + " " + delivered.text
+                                + ")");
+                        if (out.arm.write() != null) {
+                            conjuncts.add(lowering.storeChoice(symbol,
+                                    out.arm.write()));
+                        }
                     }
                 }
+                guards.putAll(out.arm.guard());
+                guardMints.putAll(out.arm.guardMints());
             }
+            return true;
+        }
+
+        /**
+         * The delivering replay's valuation of every root it holds under
+         * (Arms#arm), declared at its root's sort where no row of the corpus
+         * has declared the symbol yet: an arm need not mention it, and an
+         * undeclared constant makes z3 answer with an error.
+         */
+        void heldRoots() {
+            for (Map.Entry<String, String> guard : guards.entrySet()) {
+                VmTermLowering.Sort sort = lowering.statedSort(
+                        guard.getKey());
+                if (sort == null) {
+                    sort = Composer.sortOf(guardMints.get(guard.getKey()));
+                    lowering.declareStated(guard.getKey(), sort);
+                }
+                String literal = smtLiteral(guard.getValue(), sort);
+                if (literal.isEmpty()) continue;
+                lowering.declareStated(guard.getKey());
+                conjuncts.add("(= " + guard.getKey() + " " + literal + ")");
+            }
+        }
+
+        /**
+         * (i)-(iv): the closure of every producer occurrence of the group
+         * ({@link #producerClosure}), what the delivered values, the
+         * decisions a delivered referent was built under and the handoffs a
+         * nested family binds rest on (Independence), its stated reads and
+         * joins and conditions, each state of a delivered object's own
+         * closure ({@link #stateClosure}), and the messages the delivery was
+         * handed as nested families resting on THIS ARM's selector: what the
+         * run delivering it was handed holds when the witness takes it.
+         *
+         * @return whether the nested families closed
+         */
+        boolean closure(int ordinal, String selector, List<Out> outs,
+                        Set<String> reachedSlots, int depth) {
+            Map<String, Long> reached = producerClosure(session, outs);
             composer.frames(session, reached.keySet());
-            // What the delivered values, the decisions a delivered referent
-            // was built under, and the handoffs a nested family binds rest
-            // on (Independence).
             List<String> delivered = new ArrayList<String>();
             for (Out out : outs) {
                 delivered.add(out.arm.expressionRef());
@@ -1069,37 +1097,74 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // Nested families rest on THIS ARM's selector: what the run
-            // delivering it was handed holds when the witness takes it.
             List<String> asks = new ArrayList<String>(conjuncts);
             asks.addAll(composer.statedJoins(joins,
                     Collections.<String>emptySet(), conjuncts,
                     Collections.<String>emptyList()));
-            stated = closeMessages(ordinal, selector, session,
+            return closeMessages(ordinal, selector, session,
                     handedOn(session, outs, asks, local), reachedSlots,
                     nested, local, depth + 1);
         }
-        List<String> reachTexts = new ArrayList<String>(conjuncts);
-        reachTexts.addAll(nested);
-        conjuncts.addAll(composer.statedJoins(joins,
-                Collections.<String>emptySet(), reachTexts,
-                Collections.<String>emptyList()));
-        List<String> refused = new ArrayList<String>(
-                lowering.openRefusals());
-        conjuncts.addAll(lowering.end());
-        if (!stated || !local.isEmpty() || !refused.isEmpty()) {
-            gaps.addAll(local);
-            for (String refusal : refused) {
-                composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        refusal, "the closure of " + subject
-                                + " in session " + session + " rests on a "
-                                + "value the recording does not state, so "
-                                + "that run is not one of its options");
+
+        /**
+         * The conjunction with the joins it reaches, and the session's
+         * lowering scope closed; null, its refusals filed, when it was not
+         * stated -- refusing this {@code (P, S)}, not the path.
+         */
+        String end(boolean stated, String subject,
+                   List<String> nestedStated) {
+            List<String> reachTexts = new ArrayList<String>(conjuncts);
+            reachTexts.addAll(nested);
+            conjuncts.addAll(composer.statedJoins(joins,
+                    Collections.<String>emptySet(), reachTexts,
+                    Collections.<String>emptyList()));
+            List<String> refused = new ArrayList<String>(
+                    lowering.openRefusals());
+            conjuncts.addAll(lowering.end());
+            if (!stated || !local.isEmpty() || !refused.isEmpty()) {
+                gaps.addAll(local);
+                for (String refusal : refused) {
+                    composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            refusal, "the closure of " + subject
+                                    + " in session " + session + " rests on "
+                                    + "a value the recording does not state, "
+                                    + "so that run is not one of its "
+                                    + "options");
+                }
+                return null;
             }
-            return null;
+            nestedStated.addAll(nested);
+            return VmTermLowering.and(conjuncts);
         }
-        nestedStated.addAll(nested);
-        return VmTermLowering.and(conjuncts);
+    }
+
+    /**
+     * The closure of every producer occurrence of one group, each from its
+     * OWN delivery cutoff (its last delivery) with the versions its
+     * delivered expressions read ({@link #expressionWrites}), merged at the
+     * widest cutoff.
+     */
+    private Map<String, Long> producerClosure(String session, List<Out> outs) {
+        Map<String, Long> reached = new LinkedHashMap<String, Long>();
+        for (Map.Entry<String, List<Out>> each
+                : byProducer(outs).entrySet()) {
+            List<Out> its = each.getValue();
+            long cutoff = Long.MIN_VALUE;
+            for (Out out : its) {
+                cutoff = Math.max(cutoff, out.arm.deliveredAt());
+            }
+            Map<String, Long> one = composer.closure(session,
+                    its.get(0).arm.producer(), cutoff,
+                    expressionWrites(session, its));
+            for (Map.Entry<String, Long> at : one.entrySet()) {
+                Long was = reached.get(at.getKey());
+                if (was == null
+                        || was.longValue() < at.getValue().longValue()) {
+                    reached.put(at.getKey(), at.getValue());
+                }
+            }
+        }
+        return reached;
     }
 
     /**
