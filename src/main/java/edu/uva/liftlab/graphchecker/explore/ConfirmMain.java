@@ -66,10 +66,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *   --manifest &lt;file&gt;   final/candidate_composition_manifest.json
  *   --output &lt;dir&gt;      the worker directory the replay is run from
  *
- *   or, with --iteration and --claim, a native reproduction's plant
- *   ({@link #writePlant}):
- *   --plant &lt;file&gt;      the markers the confirmation's world plants, and
- *                        the target's fatal arms at the claim's anchor
+ *   or, with --iteration, --claim and --manifest, a native
+ *   reproduction's plant ({@link #writePlant}):
+ *   --plant &lt;file&gt;      what the confirmation's world plants and holds,
+ *                        and the target's fatal arms at the claim's anchor
  *   --static-scope-map &lt;file&gt;   the campaign's, whose TARGET_SITE guards
  *                        state those arms
  *
@@ -155,17 +155,17 @@ public final class ConfirmMain {
                     decide(claim, out, sessions)));
             return;
         }
-        if (iteration == null || claim == null
-                || (plant == null && (manifest == null || out == null))
+        if (iteration == null || claim == null || manifest == null
+                || (plant == null && out == null)
                 || (plant != null && scopeMap == null)) {
-            throw new IllegalArgumentException("--iteration, --claim, and "
-                    + "--plant with --static-scope-map, or --manifest and "
-                    + "--output are required");
+            throw new IllegalArgumentException("--iteration, --claim, "
+                    + "--manifest, and --output or --plant with "
+                    + "--static-scope-map are required");
         }
         JsonObject summary;
         try {
             summary = plant != null
-                    ? writePlant(iteration, claim, scopeMap, plant)
+                    ? writePlant(iteration, claim, manifest, scopeMap, plant)
                     : write(iteration, claim, manifest, out);
         } catch (Refused refused) {
             // The driver reads which: "refutes" excludes the model, "refused"
@@ -214,171 +214,252 @@ public final class ConfirmMain {
     static JsonObject write(Path iteration, Path claimFile,
                             Path manifestFile, Path out) throws IOException {
         Files.createDirectories(out);
-        JsonObject claim = ExploreCodec.readObject(claimFile);
-        JsonObject manifest = ExploreCodec.readObject(manifestFile);
-        JsonObject decided = claim.getAsJsonObject("claim");
-        int ordinal = decided.get("valuationOrdinal").getAsInt();
-        JsonObject valuation = valuation(claim, ordinal);
-        String pathId = optionalString(valuation, "selectedPathId");
-        String sessionId = optionalString(valuation, "selectedSessionId");
-        if (pathId.isEmpty() || sessionId.isEmpty()) {
-            throw new Refused("valuation " + ordinal
-                    + " selected no path, so there is nothing to confirm");
-        }
-        OccurrenceAddress anchor =
-                OccurrenceAddress.parse(optionalString(claim, "anchor"));
-        if (anchor == null) {
-            throw new Refused("the claim states no parseable anchor");
-        }
-        String seedSessionId = optionalString(claim, "seedSessionId");
-        // Only the selected path's arms (others are free in the model),
-        // joined by the path ordinal in the composer's selector names.
-        String ordinalOfPath = "";
-        Set<String> restsOn = new LinkedHashSet<String>();
-        boolean stated = false;
-        long cutoff = -1L;
-        for (JsonElement element : array(manifest, "paths")) {
-            JsonObject path = element.getAsJsonObject();
-            if (pathId.equals(optionalString(path, "pathId"))) {
-                ordinalOfPath = ordinalOf(optionalString(path, "selector"));
-                stated = path.has("restsOn");
-                restsOn.addAll(strings(path, "restsOn"));
-                cutoff = path.has("cutoff") ? path.get("cutoff").getAsLong()
-                        : -1L;
-            }
-        }
-        if (ordinalOfPath.isEmpty() || !stated || cutoff < 0L) {
-            throw new Refused("the manifest states no selector, no restsOn "
-                    + "or no cutoff for the selected path " + pathId);
-        }
-        List<JsonObject> arms = new ArrayList<JsonObject>();
-        for (JsonElement element : array(valuation, "selectedArms")) {
-            JsonObject arm = element.getAsJsonObject();
-            if (ordinalOfPath.equals(
-                    ordinalOf(optionalString(arm, "selector")))) {
-                arms.add(arm);
-            }
-        }
-        SessionReader session = SessionReader.read(iteration, sessionId);
-        // The writes the model chose for the anchor's join closure, up to
-        // where the path decided: its target row, or the way guard it left
-        // the way to the throw at -- a witness that turns that guard never
-        // reached the anchor in its own run, and is planted and judged as
-        // any other.
-        StateClosure closure = new StateClosure(session, anchor, cutoff);
-        Map<String, WriteRow> chosen = closure.chosen(arms);
-        // A choice at a location the fatal does not rest on is the solver's
-        // free pick among the formula's alternatives, not the witness.
-        chosen.keySet().removeIf(reader -> !restsOn.contains(
-                SmtLowering.locationKey(closure.readers.get(reader)
-                        .location())));
-        // A session that already took every chosen edge at the model's root
-        // values and observed the fatal IS the confirmation; re-running it only
-        // tests a race twice. A model mixing sessions' deliveries, or choosing
-        // a write its reads did not see, needs the replay below.
-        JsonObject world = obligationWorld(iteration, sessionId);
-        Moved moved = Moved.of(decided, session,
-                SessionReader.read(iteration, seedSessionId), manifest);
-        boolean sawChosen = closure.ran(chosen);
+        Witness witness = Witness.of(iteration,
+                ExploreCodec.readObject(claimFile),
+                ExploreCodec.readObject(manifestFile));
         // The run as recorded is no counterfactual (owner 2026-10-04: a
         // claim moving no root is never a finding), whatever a replay of it
         // observes: refused by name, so the campaign excludes it.
-        if (sessionId.equals(seedSessionId)
-                && object(decided, "movedRoots").size() == 0
-                && ownDeliveries(sessionId, arms) && sawChosen) {
+        if (witness.sessionId.equals(witness.seedSessionId)
+                && object(witness.decided, "movedRoots").size() == 0
+                && ownDeliveries(witness.sessionId, witness.arms)
+                && witness.sawChosen) {
             throw Refused.noCounterfactual("the claim moves nothing: its "
                     + "witness is the run as recorded -- the seed's own "
                     + "path, every root and clock as recorded, every arm its "
                     + "own delivery -- so no run of it is a counterfactual");
         }
-        String realized = realizedBy(moved, world, sessionId, arms, session,
-                anchor, sawChosen);
+        // A session that already took every chosen edge at the model's root
+        // values and observed the fatal IS the confirmation; re-running it
+        // only tests a race twice. A model mixing sessions' deliveries, or
+        // choosing a write its reads did not see, needs the replay below.
+        String realized = realizedBy(witness.moved, witness.world,
+                witness.sessionId, witness.arms, witness.session,
+                witness.anchor, witness.sawChosen);
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
                     Collections.singletonList(
                             confirmation(true, false, realized,
-                                    sessionId)));
-            JsonObject summary = summary(anchor, pathId, sessionId, ordinal);
-            summary.addProperty("realizedBy", sessionId);
+                                    witness.sessionId)));
+            JsonObject summary = witness.summary();
+            summary.addProperty("realizedBy", witness.sessionId);
             return summary;
         }
 
         // The selected path's world, values only, nothing forced, under the
         // model's.
-        Map<String, String> assignments =
-                ExploreCodec.map(object(world, "rootAssignments"));
-        Map<String, String> clockDeltas =
-                ExploreCodec.map(object(world, "clockDeltas"));
-        Map<String, String> mints =
-                ExploreCodec.map(object(world, "rootMints"));
-        Map<String, String> answers =
-                ExploreCodec.map(object(world, "answers"));
-        moved.plant(assignments, clockDeltas, mints);
-        List<JsonObject> markers = markerEdges(manifest, assignments);
-        Map<String, SessionReader> armSessions =
-                new LinkedHashMap<String, SessionReader>();
-        armSessions.put(sessionId, session);
-        for (JsonObject arm : arms) {
-            String armSession = optionalString(arm, "sessionId");
-            if (armSession.isEmpty() || armSessions.containsKey(armSession)) {
-                continue;
-            }
-            armSessions.put(armSession, SessionReader.read(iteration,
-                    armSession));
-        }
+        World world = witness.planted();
 
         // The schedule half: the recorded order is not held (only a WAKE
         // still waits for what it followed); the model's order is held by
-        // the ORDER rows below.
-        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, sessionId,
-                Collections.singletonList(anchor.id()), false, out);
+        // the ORDER rows of the edges.
+        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
+                witness.sessionId,
+                Collections.singletonList(witness.anchor.id()), false, out);
         if (cut == null) {
-            throw new Refused("the selected session " + sessionId
+            throw new Refused("the selected session " + witness.sessionId
                     + " states no schedule to hold the confirmation to");
         }
-
-        // The edges the model chose.
-        List<JsonObject> edges = new ArrayList<JsonObject>();
-        edges.addAll(wireEdges(arms, armSessions, anchor));
-        List<ReadRow> resting = new ArrayList<ReadRow>();
-        for (ReadRow read : closure.readers.values()) {
-            if (restsOn.contains(SmtLowering.locationKey(read.location()))) {
-                resting.add(read);
-            }
-        }
-        edges.addAll(stateEdges(closure, resting, chosen, false).edges);
-        // The pairings the selected session's world planted are its world
-        // as much as its roots: held by the rows its replay was held to.
-        edges.addAll(holding(session, ExploreCodec.map(object(world,
-                "pairings"))).edges);
-        heldOnce(edges);
-        edges.addAll(markers);
-        JsonObject anchorRow = new JsonObject();
-        anchorRow.addProperty("kind", "ANCHOR");
-        anchorRow.addProperty("occurrence", anchor.id());
-        anchorRow.addProperty("seq", cutoff);
-        edges.add(anchorRow);
+        List<JsonObject> edges = witness.edges(iteration, world);
         RowCodec.writeJsonl(out.resolve(Confirmation.FILE), edges);
 
         // An obligation that flips nothing: the values drive every decision.
-        JsonObject focus = ExploreCodec.writeFocusRow(anchor, anchor,
-                seedSessionId,
+        JsonObject focus = ExploreCodec.writeFocusRow(witness.anchor,
+                witness.anchor, witness.seedSessionId,
                 Collections.<OccurrenceAddress>emptyList(),
-                Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID, pathId,
-                        assignments, answers, Collections.<String>emptyList()),
-                Collections.<Corpus.Flip>emptyList(), clockDeltas, mints,
-                Collections.<String, String>emptyMap(), cut);
+                Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID,
+                        witness.pathId, world.assignments, world.answers,
+                        Collections.<String>emptyList()),
+                Collections.<Corpus.Flip>emptyList(), world.clockDeltas,
+                world.mints, Collections.<String, String>emptyMap(), cut);
         // {@code flip: null} is the statement: serialize nulls.
         Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
                 (new GsonBuilder().serializeNulls().create().toJson(focus)
                         + "\n").getBytes(StandardCharsets.UTF_8));
 
-        JsonObject summary = summary(anchor, pathId, sessionId, ordinal);
-        summary.addProperty("rootAssignments", assignments.size());
-        summary.addProperty("clockDeltas", clockDeltas.size());
+        JsonObject summary = witness.summary();
+        summary.addProperty("rootAssignments", world.assignments.size());
+        summary.addProperty("clockDeltas", world.clockDeltas.size());
         summary.addProperty("expectedEdges", edges.size());
         summary.add("schedulePrefix", cut.toJson());
         return summary;
+    }
+
+    /**
+     * The witness a claim's model chose, read off the claim, its manifest
+     * and the sessions: the selected path and its arms, the session whose
+     * world it runs in, the anchor's join closure up to where the path
+     * decided and the writes the model chose there that the fatal rests on,
+     * and the model's moved roots.  CONFIRM's replay ({@link #write}) and a
+     * native reproduction's plant ({@link #writePlant}) are both made of
+     * it, so a native run plants what CONFIRM's world plants.
+     */
+    static final class Witness {
+        final JsonObject decided;
+        final JsonObject manifest;
+        final int ordinal;
+        final String pathId;
+        final String sessionId;
+        final String seedSessionId;
+        final OccurrenceAddress anchor;
+        /** Where the selected path decided ({@link StateClosure}). */
+        final long cutoff;
+        final List<JsonObject> arms;
+        final SessionReader session;
+        final SessionReader recording;
+        final StateClosure closure;
+        final Map<String, WriteRow> chosen;
+        final Set<String> restsOn;
+        /** The selected session's obligation world (its focus row). */
+        final JsonObject world;
+        final Moved moved;
+        /** Whether the session's reads saw every write the model chose. */
+        final boolean sawChosen;
+
+        private Witness(JsonObject claim, JsonObject manifest, Path iteration)
+                throws IOException {
+            this.manifest = manifest;
+            decided = claim.getAsJsonObject("claim");
+            ordinal = decided.get("valuationOrdinal").getAsInt();
+            JsonObject valuation = valuation(claim, ordinal);
+            pathId = optionalString(valuation, "selectedPathId");
+            sessionId = optionalString(valuation, "selectedSessionId");
+            if (pathId.isEmpty() || sessionId.isEmpty()) {
+                throw new Refused("valuation " + ordinal
+                        + " selected no path, so there is nothing to "
+                        + "confirm");
+            }
+            anchor = OccurrenceAddress.parse(optionalString(claim, "anchor"));
+            if (anchor == null) {
+                throw new Refused("the claim states no parseable anchor");
+            }
+            seedSessionId = optionalString(claim, "seedSessionId");
+            // Only the selected path's arms (others are free in the model),
+            // joined by the path ordinal in the composer's selector names.
+            String ordinalOfPath = "";
+            restsOn = new LinkedHashSet<String>();
+            boolean stated = false;
+            long decidedAt = -1L;
+            for (JsonElement element : array(manifest, "paths")) {
+                JsonObject path = element.getAsJsonObject();
+                if (pathId.equals(optionalString(path, "pathId"))) {
+                    ordinalOfPath = ordinalOf(optionalString(path,
+                            "selector"));
+                    stated = path.has("restsOn");
+                    restsOn.addAll(strings(path, "restsOn"));
+                    decidedAt = path.has("cutoff")
+                            ? path.get("cutoff").getAsLong() : -1L;
+                }
+            }
+            cutoff = decidedAt;
+            if (ordinalOfPath.isEmpty() || !stated || cutoff < 0L) {
+                throw new Refused("the manifest states no selector, no "
+                        + "restsOn or no cutoff for the selected path "
+                        + pathId);
+            }
+            arms = new ArrayList<JsonObject>();
+            for (JsonElement element : array(valuation, "selectedArms")) {
+                JsonObject arm = element.getAsJsonObject();
+                if (ordinalOfPath.equals(
+                        ordinalOf(optionalString(arm, "selector")))) {
+                    arms.add(arm);
+                }
+            }
+            session = SessionReader.read(iteration, sessionId);
+            recording = SessionReader.read(iteration, seedSessionId);
+            // The writes the model chose for the anchor's join closure, up
+            // to where the path decided: its target row, or the way guard
+            // it left the way to the throw at -- a witness that turns that
+            // guard never reached the anchor in its own run, and is planted
+            // and judged as any other.
+            closure = new StateClosure(session, anchor, cutoff);
+            chosen = closure.chosen(arms);
+            // A choice at a location the fatal does not rest on is the
+            // solver's free pick among the formula's alternatives, not the
+            // witness.
+            chosen.keySet().removeIf(reader -> !restsOn.contains(
+                    SmtLowering.locationKey(closure.readers.get(reader)
+                            .location())));
+            world = obligationWorld(iteration, sessionId);
+            moved = Moved.of(decided, session, recording, manifest);
+            sawChosen = closure.ran(chosen);
+        }
+
+        static Witness of(Path iteration, JsonObject claim,
+                          JsonObject manifest) throws IOException {
+            return new Witness(claim, manifest, iteration);
+        }
+
+        /** The world the claim is confirmed in: the selected session's own
+         *  obligation world under the model's moved roots ({@link Moved}). */
+        World planted() {
+            World planted = new World(world);
+            moved.plant(planted.assignments, planted.clockDeltas,
+                    planted.mints);
+            return planted;
+        }
+
+        /**
+         * The edges the model chose over {@code planted}: WIRE per consumer
+         * of each selected message arm, STATE and ORDER over the join
+         * closure at the locations the fatal rests on, the rows that hold
+         * the pairings the world plants ({@link #holding}), MARKER per
+         * planted marker, ANCHOR.
+         */
+        List<JsonObject> edges(Path iteration, World planted)
+                throws IOException {
+            Map<String, SessionReader> armSessions =
+                    new LinkedHashMap<String, SessionReader>();
+            armSessions.put(sessionId, session);
+            for (JsonObject arm : arms) {
+                String armSession = optionalString(arm, "sessionId");
+                if (armSession.isEmpty()
+                        || armSessions.containsKey(armSession)) {
+                    continue;
+                }
+                armSessions.put(armSession, SessionReader.read(iteration,
+                        armSession));
+            }
+            List<JsonObject> edges = new ArrayList<JsonObject>();
+            edges.addAll(wireEdges(arms, armSessions, anchor));
+            List<ReadRow> resting = new ArrayList<ReadRow>();
+            for (ReadRow read : closure.readers.values()) {
+                if (restsOn.contains(SmtLowering.locationKey(
+                        read.location()))) {
+                    resting.add(read);
+                }
+            }
+            edges.addAll(stateEdges(closure, resting, chosen, false).edges);
+            // The pairings the selected session's world planted are its
+            // world as much as its roots: held by the rows its replay was
+            // held to.
+            edges.addAll(holding(session, ExploreCodec.map(object(world,
+                    "pairings"))).edges);
+            heldOnce(edges);
+            edges.addAll(markerEdges(manifest, planted.assignments));
+            JsonObject anchorRow = new JsonObject();
+            anchorRow.addProperty("kind", "ANCHOR");
+            anchorRow.addProperty("occurrence", anchor.id());
+            anchorRow.addProperty("seq", cutoff);
+            edges.add(anchorRow);
+            return edges;
+        }
+
+        /** Where every root of the world is minted, and what it is. */
+        Map<String, RootCategory> categories() {
+            Map<String, RootCategory> categories =
+                    new LinkedHashMap<String, RootCategory>();
+            for (SessionReader rows : Arrays.asList(recording, session)) {
+                for (RootMintRow row : rows.roots()) {
+                    categories.putIfAbsent(row.rootId(), row.category());
+                }
+            }
+            return categories;
+        }
+
+        JsonObject summary() {
+            return ConfirmMain.summary(anchor, pathId, sessionId, ordinal);
+        }
     }
 
     /** What a confirmation plants: root values, clock skews, the occurrence
@@ -397,98 +478,76 @@ public final class ConfirmMain {
         }
     }
 
-    /** The world the claim is confirmed in: the selected session's own
-     *  obligation world under the model's moved roots ({@link Moved}). */
-    static World world(Path iteration, JsonObject decided,
-                       JsonObject manifest, SessionReader session,
-                       String seedSessionId) throws IOException {
-        World world = new World(obligationWorld(iteration,
-                session.sessionId()));
-        Moved.of(decided, session,
-                SessionReader.read(iteration, seedSessionId), manifest)
-                .plant(world.assignments, world.clockDeltas, world.mints);
-        return world;
-    }
-
     /**
-     * A native reproduction's plant (ADHOC-INFRA WP5.D; {@code
-     * runtime.RecordingPlant}): the confirmation's world ({@link #world}), one
-     * MARKER row per root at the site its plan input action calls and the id
-     * of the occurrence it is minted at, and one TARGET row per guard of the
-     * scope map's TARGET_SITE rows, its fatal arm at the claim's anchor -- the
-     * one question a native run answers.  The recording weave plants only
-     * fault markers: a world that also moves a clock, answers an attach or
-     * assigns any other root is refused by name, and so is a scope map that
-     * states no fatal arm.  Whatever CONFIRM decided, and whether or not it
-     * replayed.
+     * A native reproduction's plant ({@code runtime.RecordingPlant}): what
+     * CONFIRM's world plants and holds ({@link Witness}), as rows a run of
+     * the recording weave on a stock JDK applies, each numbered so the run
+     * can say it applied it -- a ROOT per root the world assigns (a FAULT
+     * marker answered at the call site its plan input action names, a tree
+     * HOOK's field written, each at the occurrence id it is minted at), the
+     * world's ORDER rows as CONFIRM holds them, and one TARGET per guard of
+     * the scope map's TARGET_SITE rows, its fatal arm at the claim's anchor:
+     * the one question a native run answers.  Whatever CONFIRM decided, and
+     * whether or not it replayed.  A world the recording weave cannot plant
+     * is refused by name: a clock skew, an attach's answer, a configuration
+     * or an unwoven accessor's read ({@code NATIVE_PLANT_UNSUPPORTED}); so is
+     * one that plants nothing, which would repeat the recording, and a scope
+     * map that states no fatal arm.
      */
     static JsonObject writePlant(Path iteration, Path claimFile,
-                                 Path scopeMap, Path out)
+                                 Path manifestFile, Path scopeMap, Path out)
             throws IOException {
         JsonObject claim = ExploreCodec.readObject(claimFile);
-        JsonObject decided = claim.getAsJsonObject("claim");
-        String sessionId = optionalString(valuation(claim,
-                decided.get("valuationOrdinal").getAsInt()),
-                "selectedSessionId");
-        if (sessionId.isEmpty()) {
-            throw new Refused("the claim's valuation selected no session");
-        }
-        SessionReader session = SessionReader.read(iteration, sessionId);
-        // COMPOSE publishes its manifest beside the claim (final/).
-        Path manifestFile = claimFile.resolveSibling(
-                "candidate_composition_manifest.json");
-        if (!Files.isRegularFile(manifestFile)) {
-            throw new Refused("the claim has no composition manifest beside it: "
-                    + manifestFile);
-        }
-        World world = world(iteration, decided,
-                ExploreCodec.readObject(manifestFile), session,
-                optionalString(claim, "seedSessionId"));
+        Witness witness = Witness.of(iteration, claim,
+                ExploreCodec.readObject(manifestFile));
+        World world = witness.planted();
         if (!world.clockDeltas.isEmpty() || !world.answers.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: a native run plants "
-                    + "fault markers only, and this world skews clocks "
-                    + world.clockDeltas.keySet() + " and answers attaches "
-                    + world.answers.keySet());
+                    + "no clock and answers no attach, and this world skews "
+                    + "clocks " + world.clockDeltas.keySet()
+                    + " and answers attaches " + world.answers.keySet());
         }
-        Map<String, RootCategory> categories =
-                new LinkedHashMap<String, RootCategory>();
-        for (RootMintRow row : session.roots()) {
-            categories.put(row.rootId(), row.category());
-        }
+        Map<String, RootCategory> categories = witness.categories();
         Map<String, Set<String>> sites = inputSites(
                 iteration.resolve("execution_task_plan.jsonl"));
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<String, String> assigned
                 : world.assignments.entrySet()) {
             String rootId = assigned.getKey();
+            RootCategory category = categories.get(rootId);
             Set<String> site = sites.getOrDefault(rootId,
                     Collections.<String>emptySet());
-            String mint = world.mints.getOrDefault(rootId, "");
-            if (categories.get(rootId) != RootCategory.FAULT
-                    || site.size() != 1 || mint.isEmpty()) {
+            OccurrenceAddress mint = OccurrenceAddress.parse(
+                    world.mints.getOrDefault(rootId, ""));
+            if (mint == null || !(category == RootCategory.HOOK
+                    || category == RootCategory.FAULT && site.size() == 1)) {
                 throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
-                        + " is " + categories.get(rootId) + ", called at "
-                        + site
-                        + ", minted at '" + mint + "'; a native run plants "
-                        + "a fault marker of one call site at the occurrence "
-                        + "it is minted at");
+                        + " is " + category + ", called at " + site
+                        + ", minted at '" + world.mints.get(rootId) + "'; a "
+                        + "native run plants a fault marker of one call site "
+                        + "or a tree hook's field, at the occurrence it is "
+                        + "minted at");
             }
             JsonObject row = new JsonObject();
-            row.addProperty(RecordingPlant.KIND, RecordingPlant.MARKER);
-            row.addProperty(RecordingPlant.OCCURRENCE,
-                    OccurrenceAddress.parse(mint).id());
-            row.addProperty(RecordingPlant.SITE, site.iterator().next());
-            row.addProperty(RecordingPlant.VALUE,
-                    Boolean.parseBoolean(assigned.getValue().trim()));
+            row.addProperty(RecordingPlant.KIND, RecordingPlant.ROOT);
+            row.addProperty(RecordingPlant.CATEGORY, category.name());
+            row.addProperty(RecordingPlant.ROOT_ID, rootId);
+            row.addProperty(RecordingPlant.OCCURRENCE, mint.id());
+            if (category == RootCategory.FAULT) {
+                row.addProperty(RecordingPlant.SITE, site.iterator().next());
+            }
+            row.addProperty(RecordingPlant.VALUE, assigned.getValue());
             rows.add(row);
+        }
+        for (JsonObject edge : witness.edges(iteration, world)) {
+            if ("ORDER".equals(optionalString(edge, "kind"))) rows.add(edge);
         }
         if (rows.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "
-                    + "root, so a native run would repeat the recording");
+                    + "root and holds no order, so a native run would "
+                    + "repeat the recording");
         }
-        int markers = rows.size();
-        String anchor = OccurrenceAddress.parse(
-                optionalString(claim, "anchor")).id();
+        int planted = rows.size();
         for (StaticScopeMap.Site target
                 : StaticScopeMap.read(scopeMap).targetSites()) {
             for (int index = 0; index < target.guards.size()
@@ -496,23 +555,26 @@ public final class ConfirmMain {
                 if (target.guardOutcomes.get(index) == null) continue;
                 JsonObject row = new JsonObject();
                 row.addProperty(RecordingPlant.KIND, RecordingPlant.TARGET);
-                row.addProperty(RecordingPlant.OCCURRENCE, anchor);
+                row.addProperty(RecordingPlant.OCCURRENCE, witness.anchor.id());
                 row.addProperty(RecordingPlant.SITE, target.guards.get(index));
                 row.addProperty(RecordingPlant.VALUE,
                         target.guardOutcomes.get(index));
                 rows.add(row);
             }
         }
-        if (rows.size() == markers) {
+        if (rows.size() == planted) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: " + scopeMap
                     + " states no fatal arm of a TARGET_SITE guard, so a "
                     + "native run could not tell whether it reproduced");
         }
+        for (int index = 0; index < rows.size(); index++) {
+            rows.get(index).addProperty(RecordingPlant.ROW, index);
+        }
         RowCodec.writeJsonl(out, rows);
-        JsonObject summary = new JsonObject();
-        summary.addProperty("sessionId", sessionId);
-        summary.addProperty("markers", markers);
-        summary.addProperty("fatalArms", rows.size() - markers);
+        JsonObject summary = witness.summary();
+        summary.addProperty("roots", world.assignments.size());
+        summary.addProperty("orders", planted - world.assignments.size());
+        summary.addProperty("fatalArms", rows.size() - planted);
         return summary;
     }
 

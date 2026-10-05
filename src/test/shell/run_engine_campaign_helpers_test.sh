@@ -1171,8 +1171,9 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 # and charged the recording's peak memory until it returns, naming the host
 # it ran on, bounded by
 # reproduce_time_factor times the recording's workload and answering for
-# itself off its trace's plant rows; reproduce.json counts the answers and
-# names the runs that stated none.  A plant CONFIRM refuses, or a
+# itself, per row of the plant, off its trace's plant rows; reproduce.json
+# counts the answers (whole plant applied, fatal, at the anchor, an order
+# unheld) and names the runs that stated none.  A plant CONFIRM refuses, or a
 # recording that measured no peak memory, is no run and the reason.  Per row:
 # ConfirmMain's exit, the recording's peak MB, and the reproduction.
 repro_dir="${test_tmp}/reproduce"
@@ -1198,12 +1199,27 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     reproduce_time_factor=3
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
+    # ConfirmMain --plant: a root, an order and the target's arm, else
+    # refused.
     run_java_main() {
-      echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
-      return "${repro_plant}"
+      (( repro_plant == 0 )) || {
+        echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
+        return "${repro_plant}"
+      }
+      local plant="" prev="" arg
+      for arg; do
+        [[ "${prev}" != --plant ]] || plant=${arg}
+        prev=${arg}
+      done
+      {
+        echo '{"kind":"ROOT","category":"HOOK","rootId":"R","row":0}'
+        echo '{"kind":"ORDER","before":"b|","after":"a|","row":1}'
+        echo '{"kind":"TARGET","row":2}'
+      } >"${plant}"
     }
-    # Run n: 1 at the anchor, 2 fatal elsewhere, 3 planted only, 4 no trace.
-    # Each states its bound and its charge, and the ledger's row for it.
+    # Run n: 1 every row applied and at the anchor, 2 its order unheld and
+    # fatal elsewhere, 3 every row applied and no fatal, 4 no trace.  Each
+    # states its bound and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
       echo "$2 $4 $(ls "${campaign_host_gate_root}/gate-head/charges" \
@@ -1211,7 +1227,10 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
       (( n < 4 )) || return 1
       {
         echo '{"event":"BRANCH"}'
-        echo '{"event":"PLANT_APPLIED"}'
+        echo '{"event":"PLANT_APPLIED","row":0}'
+        (( n == 2 )) \
+          && echo '{"event":"PLANT_UNHELD","row":1}' \
+          || echo '{"event":"PLANT_APPLIED","row":1}'
         (( n > 2 )) \
           || jq -n -c --argjson at "$(( n == 1 ))" \
             '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
@@ -1240,9 +1259,9 @@ held to its ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
     || fail "a native run's charge outlived it: \
 $(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
-0|2048|{"runs":4,"planted":3,"fatal":2,"atAnchor":1,"reason":""}
-1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
-0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
+0|2048|{"runs":4,"planted":2,"fatal":2,"atAnchor":1,"unheld":1,"reason":""}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"unheld":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"unheld":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
 EOF
 
 # REACHED-1: a replay reached its target when a session published a target

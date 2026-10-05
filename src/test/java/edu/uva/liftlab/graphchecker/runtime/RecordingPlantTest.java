@@ -23,8 +23,8 @@ import static org.junit.Assert.fail;
 
 /**
  * A native reproduction's plant: which rows a plant file may hold, which
- * enclosing occurrence of a marker call a row plants, and which enclosing
- * occurrence of a fatal decision is the anchor's.
+ * enclosing occurrence of a marker call or hook a row plants at, and which
+ * enclosing occurrence of a fatal decision is the anchor's.
  */
 public class RecordingPlantTest {
     @Rule
@@ -36,22 +36,43 @@ public class RecordingPlantTest {
     private static final String INNER = address("REGION.inner");
     private static final String ID = OccurrenceAddress.parse(OUTER).id();
 
-    /** A plant file: its markers, fatal arms and anchor, or refused. */
+    /** A plant file: its markers, hooks, fatal arms and anchor, or
+     *  refused. */
     @Test
-    public void aPlantHoldsMarkersAndOneTarget() throws Exception {
-        String marker = row("MARKER", ID, SITE, "true");
-        String target = row("TARGET", ID, GUARD, "false");
+    public void aPlantHoldsRootsOrdersAndOneTarget() throws Exception {
+        String marker = "{\"kind\":\"ROOT\",\"category\":\"FAULT\","
+                + "\"rootId\":\"FAULT:IPC\",\"occurrence\":\"" + ID
+                + "\",\"siteId\":\"" + SITE + "\",\"value\":\"true\","
+                + "\"row\":0}\n";
+        String hook = "{\"kind\":\"ROOT\",\"category\":\"HOOK\","
+                + "\"rootId\":\"HDFS.X\",\"occurrence\":\"" + ID
+                + "\",\"value\":\"false\",\"row\":1}\n";
+        String order = "{\"kind\":\"ORDER\",\"before\":\"b|\","
+                + "\"after\":\"a|\",\"row\":2}\n";
+        String target = target(ID, "false", 3);
+        Map<String, Map<String, RecordingPlant.Root>> markers =
+                Collections.singletonMap(SITE, Collections.singletonMap(ID,
+                        new RecordingPlant.Root(0, "true")));
+        Map<String, Map<String, RecordingPlant.Root>> hooks =
+                Collections.singletonMap("HDFS.X", Collections.singletonMap(
+                        ID, new RecordingPlant.Root(1, "false")));
+        Map<String, Map<String, RecordingPlant.Root>> none =
+                Collections.emptyMap();
         Object[][] files = {
-                {marker + target, Collections.singletonMap(SITE,
-                        Collections.singletonMap(ID, true)),
-                        Collections.singletonMap(GUARD, false)},
-                {row("CLOCK", ID, SITE, "true") + target, null, null},
-                {row("MARKER", ID, SITE, "\"true\"") + target, null, null},
-                {row("MARKER", ID, "", "true") + target, null, null},
+                {marker + hook + order + target, markers, hooks},
+                {order + target, none, none},
+                // A root of a category no native run plants, a marker
+                // without its call site or with no boolean, a row without
+                // its number, an order naming no activation.
+                {marker.replace("FAULT", "CONFIG") + target, null, null},
+                {marker.replace(SITE, "") + target, null, null},
+                {marker.replace("\"true\"", "\"1\"") + target, null, null},
+                {hook.replace(",\"row\":1", "") + target, null, null},
+                {order.replace("\"b|\"", "\"\"") + target, null, null},
+                {"{\"kind\":\"CLOCK\",\"row\":0}\n" + target, null, null},
                 // No target: the run could not tell what it reproduced.
                 {marker, null, null},
-                {marker + target + row("TARGET", "other", GUARD, "true"),
-                        null, null},
+                {marker + target + target("other", "true", 4), null, null},
         };
         for (Object[] file : files) {
             File plant = folder.newFile();
@@ -61,7 +82,10 @@ public class RecordingPlantTest {
                 RecordingPlant.Plant read = RecordingPlant.read(plant.toPath());
                 if (file[1] == null) fail("accepted " + file[0]);
                 assertEquals((String) file[0], file[1], read.markers);
-                assertEquals((String) file[0], file[2], read.fatalArms);
+                assertEquals((String) file[0], file[2], read.hooks);
+                assertEquals((String) file[0],
+                        Collections.singletonMap(GUARD, false),
+                        read.fatalArms);
                 assertEquals((String) file[0], ID, read.anchor);
             } catch (IOException refused) {
                 if (file[1] != null) throw refused;
@@ -70,26 +94,26 @@ public class RecordingPlantTest {
     }
 
     /** The occurrences enclosing a call, innermost first, and the one a
-     *  plant of {@code planted} at {@code site} answers for. */
+     *  plant of {@code planted} answers for. */
     @Test
     public void theInnermostPlantedEnclosingOccurrenceAnswers() {
         Object[][] calls = {
-                {SITE, Arrays.asList(INNER, OUTER), OUTER, OUTER},
-                {SITE, Arrays.asList(INNER, OUTER), INNER, INNER},
-                {SITE, Collections.singletonList(INNER), OUTER, null},
-                {SITE + "7", Arrays.asList(INNER, OUTER), OUTER, null},
+                {Arrays.asList(INNER, OUTER), OUTER, OUTER},
+                {Arrays.asList(INNER, OUTER), INNER, INNER},
+                {Collections.singletonList(INNER), OUTER, null},
+                {Collections.<String>emptyList(), OUTER, null},
         };
         for (Object[] call : calls) {
-            Map<String, Map<String, Boolean>> rows = Collections.singletonMap(
-                    SITE, Collections.singletonMap(
-                            OccurrenceAddress.parse((String) call[2]).id(),
-                            true));
+            Map<String, RecordingPlant.Root> rows = Collections.singletonMap(
+                    OccurrenceAddress.parse((String) call[1]).id(),
+                    new RecordingPlant.Root(0, "true"));
             @SuppressWarnings("unchecked")
-            List<String> enclosing = (List<String>) call[1];
-            assertEquals(Arrays.toString(call), call[3],
-                    RecordingPlant.plantedOccurrence(rows, (String) call[0],
-                            enclosing));
+            List<String> enclosing = (List<String>) call[0];
+            assertEquals(Arrays.toString(call), call[2],
+                    RecordingPlant.plantedOccurrence(rows, enclosing));
         }
+        assertEquals(null, RecordingPlant.plantedOccurrence(null,
+                Collections.singletonList(OUTER)));
     }
 
     /** A fatal decision is at the anchor when an occurrence enclosing it,
@@ -110,10 +134,10 @@ public class RecordingPlantTest {
         }
     }
 
-    private static String row(String kind, String occurrence, String site,
-                              String value) {
-        return "{\"kind\":\"" + kind + "\",\"occurrence\":\"" + occurrence
-                + "\",\"siteId\":\"" + site + "\",\"value\":" + value + "}\n";
+    private static String target(String occurrence, String arm, int row) {
+        return "{\"kind\":\"TARGET\",\"occurrence\":\"" + occurrence
+                + "\",\"siteId\":\"" + GUARD + "\",\"value\":" + arm
+                + ",\"row\":" + row + "}\n";
     }
 
     private static String address(String region) {

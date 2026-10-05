@@ -6045,24 +6045,27 @@ has no room for another claim"
 }
 
 # REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again
-# natively -- the recording weave on the stock JDK, planting the fault
-# markers the confirmation's world plants and watching the target's guards
-# for their fatal arm at the claim's anchor (explore.ConfirmMain --plant, the
-# code that wrote CONFIRM's world; runtime.RecordingPlant).  reproduce_runs
-# runs, all at once, each a head step charged the recording's measured peak
-# resident memory wherever there is room (campaign_reproduce_one) and
-# bounded by reproduce_time_factor times the recording's own workload; a run
-# ends as soon as the planted world takes the fatal arm at the anchor, its
-# one question answered.  Each run states its answer itself
+# natively -- the recording weave on the stock JDK, planting what the
+# confirmation's world plants and holds (its fault markers, its trees' hook
+# roots, its ORDER rows) and watching the target's guards for their fatal
+# arm at the claim's anchor (explore.ConfirmMain --plant, the code that wrote
+# CONFIRM's world; runtime.RecordingPlant).  reproduce_runs runs, all at
+# once, each a head step charged the recording's measured peak resident
+# memory wherever there is room (campaign_reproduce_one) and bounded by
+# reproduce_time_factor times the recording's own workload; a run ends as
+# soon as the planted world takes the fatal arm at the anchor, its one
+# question answered.  Each run states its answer itself
 # (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
-# many planted a marker, took the target's fatal arm, took it at the claim's
-# own anchor -- and names the runs that stated none.  A native run holds no
-# schedule, so the planted occurrence may not recur: the rate ranks a finding
-# (tools/adhoc/findings.py) and never refutes it, and nothing here moves the
-# claim, CONFIRM's decision or what EMIT published.  A world a native run
-# cannot plant (a clock, an attach's answer, any root but a marker), or a
-# recording that measured no peak memory, is a reproduce.json with no run and
-# the reason.  Only a confirmed SAT_CANDIDATE is reproduced.
+# many applied every row of the plant, took the target's fatal arm, took it
+# at the claim's own anchor, and could not hold an ORDER in time -- and
+# names the runs that stated none.  A native run holds no recorded order,
+# only the model's, so the planted occurrence may not recur: the rate ranks
+# a finding (tools/adhoc/findings.py) and never refutes it, and nothing here
+# moves the claim, CONFIRM's decision or what EMIT published.  A world a
+# native run cannot plant (a clock, an attach's answer, a configuration, a
+# world that plants nothing), or a recording that measured no peak memory,
+# is a reproduce.json with no run and the reason.  Only a confirmed
+# SAT_CANDIDATE is reproduced.
 campaign_reproduce() {
   local iteration_dir=$1
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
@@ -6079,6 +6082,7 @@ campaign_reproduce() {
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.explore.ConfirmMain \
     --iteration "${iteration_dir}" --claim "${campaign_final}/claim.json" \
+    --manifest "${composition_manifest}" \
     --static-scope-map "${causynth_static_scope_map}" \
     --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
@@ -6090,7 +6094,8 @@ campaign_reproduce() {
   fi
   if [[ -n "${reason}" ]]; then
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
-      runs: 0, planted: 0, fatal: 0, atAnchor: 0, reason: $reason}' \
+      runs: 0, planted: 0, fatal: 0, atAnchor: 0, unheld: 0,
+      reason: $reason}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
     return 0
@@ -6115,10 +6120,11 @@ ${campaign_recorded_workload_s}s)"
        planted: map(select(.planted)) | length,
        fatal: map(select(.fatal)) | length,
        atAnchor: map(select(.atAnchor)) | length,
+       unheld: map(select(any(.unapplied[]; .why == "UNHELD"))) | length,
        reason: (if length < $runs
          then "\($runs - length) of \($runs) run(s) stated no answer"
          else "" end)}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced at the anchor in \(.atAnchor) of \(.runs) native run(s) (\(.planted) planted, \(.fatal) fatal)"' \
+  jq -r '"  reproduced at the anchor in \(.atAnchor) of \(.runs) native run(s) (\(.planted) applied the whole plant, \(.fatal) fatal, \(.unheld) could not hold an order in time)"' \
     "${campaign_final}/reproduce.json"
 }
 
@@ -6146,7 +6152,11 @@ logs are in ${run}"
 # the workload's exit -- a planted fault may well fail the test, and a run
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
-# planted, fatal, atAnchor}.
+# rows, applied, unapplied, planted, fatal, atAnchor} -- the plant's rows to
+# apply (ROOT and ORDER), how many the run applied, each one it did not with
+# why (UNHELD: an ORDER's wait timed out; HOLDING: still waiting when the run
+# ended; NOT_REACHED), whether it applied every one, and the target's fatal
+# arm, at the anchor or not.
 campaign_reproduce_run() {
   local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 charged=$5 status=0
   local trace="${run}/runtime_trace.jsonl"
@@ -6154,14 +6164,25 @@ campaign_reproduce_run() {
   run_capturing_status run_configured_workload "${run}" "${bound}" "${plant}" \
     "${charged}" >"${run}/stdout.log" 2>"${run}/stderr.log"
   [[ -s "${trace}" ]] || trace=/dev/null
-  jq -n -c -R --argjson exit "${status}" '
-    reduce (inputs | select(contains("\"event\":\"PLANT_")) | fromjson?)
-        as $row ({exit: $exit, planted: false, fatal: false,
-                  atAnchor: false};
-      if $row.event == "PLANT_APPLIED" then .planted = true
-      elif $row.event == "PLANT_FATAL"
-      then .fatal = true | .atAnchor = (.atAnchor or $row.atAnchor)
-      else . end)' "${trace}" >"${run}/answer.json.part"
+  jq -n -c -R --argjson exit "${status}" --slurpfile plant "${plant}" '
+    [inputs | select(contains("\"event\":\"PLANT_")) | fromjson?] as $rows
+    | [$plant[] | select(.kind != "TARGET")] as $planted
+    | def stated($event): [$rows[] | select(.event == $event) | .row];
+      stated("PLANT_APPLIED") as $applied
+    | stated("PLANT_UNHELD") as $unheld
+    | stated("PLANT_HOLDING") as $holding
+    | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
+        | {row, kind, planted: (.rootId // "\(.before) -> \(.after)"),
+           why: (if any($unheld[]; . == $p.row) then "UNHELD"
+                 elif any($holding[]; . == $p.row) then "HOLDING"
+                 else "NOT_REACHED" end)}] as $unapplied
+    | {exit: $exit, rows: ($planted | length),
+       applied: (($planted | length) - ($unapplied | length)),
+       unapplied: $unapplied,
+       planted: (($planted | length) > 0 and ($unapplied | length) == 0),
+       fatal: any($rows[]; .event == "PLANT_FATAL"),
+       atAnchor: any($rows[]; .event == "PLANT_FATAL" and .atAnchor)}' \
+    "${trace}" >"${run}/answer.json.part"
   mv -f -- "${run}/answer.json.part" "${run}/answer.json"
 }
 

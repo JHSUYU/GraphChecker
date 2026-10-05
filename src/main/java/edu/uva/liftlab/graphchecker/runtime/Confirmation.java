@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -47,7 +48,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * <p>An obligation replay whose world plants pairings
  * ({@code explore.ObligationFactory}) is handed the same rows over them:
  * held to the same order, and an edge it did not take un-admits it
- * ({@code FocusedReplay}, {@code PAIRING_UNTAKEN}).</p>
+ * ({@code FocusedReplay}, {@code PAIRING_UNTAKEN}).  A native reproduction
+ * is held to its plant's ORDER rows the same way, each row stating what it
+ * came to ({@link RecordingPlant}).</p>
  *
  * <p>WIRE is compared at the attach, where the producer is known -- a
  * delivery into the anchor by the value that arrived too, and, where the model's arm answered the anchor by
@@ -119,6 +122,10 @@ public final class Confirmation {
     /** Activation -> the activations the model orders before it. */
     private static final Map<String, Set<String>> BEFORE =
             new HashMap<String, Set<String>>();
+    /** A native reproduction's ORDER rows ({@link RecordingPlant}): the row
+     *  number of each (after, before), as "after\nbefore". */
+    private static final Map<String, Integer> PLANTED =
+            new HashMap<String, Integer>();
     /** The activations that have exited. */
     private static final Set<String> EXITED = new HashSet<String>();
     /** The order stalls: what the model ordered and this run could not. */
@@ -345,23 +352,36 @@ public final class Confirmation {
         return ordering == 2;
     }
 
-    /** Holds an activation's entry until those ordered before it exited. */
+    /**
+     * Holds an activation's entry until those ordered before it exited.  In
+     * a native reproduction each ORDER row of the plant states what it came
+     * to ({@link RecordingPlant#ordered}): held, waited for, or not held in
+     * time.
+     */
     static void entering(String activation) {
+        Set<String> missing;
         synchronized (LOCK) {
             Set<String> before = BEFORE.get(activation);
             if (before == null) return;
+            if (!EXITED.containsAll(before)) {
+                planted(RecordingPlant.HOLDING, activation, before);
+            }
             long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
                     ORDER_TIMEOUT_MS);
             long deadline = System.currentTimeMillis() + timeout;
             while (!EXITED.containsAll(before)) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0L) {
-                    Set<String> missing = new LinkedHashSet<String>(before);
+                    missing = new LinkedHashSet<String>(before);
                     missing.removeAll(EXITED);
                     UNREALIZED.add("ORDER " + activation + ": the model"
                             + " orders it after " + missing + ", which did not"
                             + " exit within " + timeout + " ms, so this"
                             + " program cannot realize the model's order");
+                    Set<String> held = new LinkedHashSet<String>(before);
+                    held.removeAll(missing);
+                    planted(RecordingPlant.APPLIED, activation, held);
+                    planted(RecordingPlant.UNHELD, activation, missing);
                     return;
                 }
                 try {
@@ -370,6 +390,19 @@ public final class Confirmation {
                     Thread.currentThread().interrupt();
                     return;
                 }
+            }
+            planted(RecordingPlant.APPLIED, activation, before);
+        }
+    }
+
+    /** Each plant ORDER row of {@code after} and one of {@code befores},
+     *  stated as {@code event}; nothing outside a native reproduction. */
+    private static void planted(String event, String after,
+                                Set<String> befores) {
+        for (String before : befores) {
+            Integer row = PLANTED.get(after + "\n" + before);
+            if (row != null) {
+                RecordingPlant.ordered(event, row, after, before);
             }
         }
     }
@@ -479,7 +512,10 @@ public final class Confirmation {
             // Until the rows are read: a hook reached while reading them
             // holds nothing.
             ordering = 1;
-            Path file = FocusedReplay.workerFile(FILE);
+            // A native reproduction is held to its plant's ORDER rows.
+            Path file = RecordingPlant.planting()
+                    ? Paths.get(RecordingPlant.file())
+                    : FocusedReplay.workerFile(FILE);
             if (file == null) {
                 // A CONFIRM run is handed edges, and so is a replay whose
                 // world plants pairings; one that finds none beside its focus
@@ -526,12 +562,18 @@ public final class Confirmation {
                             TURNS.put(optionalString(row, "reader"), turns);
                             TURNED.add(turns);
                         }
-                    } else if ("ORDER".equals(kind)) {
+                    } else if (RecordingPlant.ORDER.equals(kind)) {
                         BEFORE.computeIfAbsent(optionalString(row, "after"),
                                 key -> new LinkedHashSet<String>())
                                 .add(optionalString(row, "before"));
+                        if (row.has(RecordingPlant.ROW)) {
+                            PLANTED.put(optionalString(row, "after") + "\n"
+                                    + optionalString(row, "before"),
+                                    row.get(RecordingPlant.ROW).getAsInt());
+                        }
                     }
-                    // MARKER and ANCHOR are checked elsewhere.
+                    // MARKER and ANCHOR are checked elsewhere, and a plant's
+                    // ROOT and TARGET rows by RecordingPlant.
                 }
             } catch (IOException | RuntimeException unreadable) {
                 // Half a file is no model: compare nothing, and say so at
@@ -546,6 +588,7 @@ public final class Confirmation {
                 TURNED.clear();
                 MINT.clear();
                 BEFORE.clear();
+                PLANTED.clear();
             }
             ordering = BEFORE.isEmpty() ? 1 : 2;
         }
@@ -556,6 +599,7 @@ public final class Confirmation {
             loaded = false;
             ordering = 0;
             BEFORE.clear();
+            PLANTED.clear();
             EXITED.clear();
             UNREALIZED.clear();
             unread = "";
