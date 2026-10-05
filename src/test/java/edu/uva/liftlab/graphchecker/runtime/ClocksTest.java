@@ -125,26 +125,31 @@ public class ClocksTest {
                 .get(0));
         Thread.sleep(100L);
         assertEquals(first + 50L * MS, Clocks.nanos());
-        Thread.sleep(1100L);
-        Clocks.nanos();
+        standUntilLifted("1 at a startup mark");
         Thread.sleep(100L);
-        assertTrue("a startup pass that never came: time runs past it",
-                Clocks.nanos() > first + 100L * MS);
-        assertTrue(Clocks.progress(), Clocks.progress().contains(
-                "1 at a startup mark"));
+        assertTrue("a startup pass that never came, nothing computing: time"
+                + " runs past it", Clocks.nanos() > first + 100L * MS);
 
         openWindow();
         ScheduleLog.enforceForTests(Collections.singletonList(
                 event("x", 10_050L)));
         Thread.sleep(100L);
         assertEquals(first + 10_050L * MS, Clocks.nanos());
-        Thread.sleep(1100L);
-        Clocks.nanos();
+        standUntilLifted("1 with no thread waiting on the order");
         Thread.sleep(100L);
         assertTrue("a frontier no thread waits on: time runs past it",
                 Clocks.nanos() > first + 10_100L * MS);
-        assertTrue(Clocks.progress(), Clocks.progress().contains(
-                "1 with no thread waiting on the order"));
+    }
+
+    /** Reads at the cap, idle between, until the lift is counted. */
+    private static void standUntilLifted(String counted) throws Exception {
+        long until = System.nanoTime() + 6000L * MS;
+        while (!Clocks.progress().contains(counted)
+                && System.nanoTime() < until) {
+            Clocks.nanos();
+            Thread.sleep(100L);
+        }
+        assertTrue(Clocks.progress(), Clocks.progress().contains(counted));
     }
 
     /** This replay follows an order stating these marks. */

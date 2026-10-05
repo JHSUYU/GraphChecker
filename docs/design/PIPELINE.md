@@ -255,9 +255,12 @@ startup pass its order marks, else the opening; inside, the frontier's slot whil
 (IDENTITY.md §8); nothing past the line, after the window closes, or with no order. So a slower replay
 waits at the cap where its recording's heartbeat was not yet due, a turn its slot released early reads
 at least its slot's instant, and no read goes back. No read is keyed or written. A read never blocks;
-a cap standing a schedule timeout is lifted by name (`SCHEDULE_DIVERGED`): before the window by the
-clock itself (`clock#<mark>`), until the next mark; inside it only when no thread waits on the order
-(`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier. The
+a cap that stood a stall by the watchdog's own test (a schedule timeout with nothing computing, or eight
+whatever runs: `ScheduleLog#stalledLocked`) is lifted by name (`SCHEDULE_DIVERGED`): before the window
+by the clock itself (`clock#<mark>`), until the next mark; inside it only when no thread waits on the
+order (`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier.
+A slow start-up computing past its cap is no stall: lifted after a bare timeout, hdfs-11741's opened its
+window 62 s of model time past the recorded opening, and its window's time stood there (round TM1). The
 replay log's exit line `Causynth clocks: ...` counts the reads that stood at a cap and the lifts.
 
 A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put

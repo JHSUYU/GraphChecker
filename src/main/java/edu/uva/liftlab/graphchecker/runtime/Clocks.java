@@ -42,11 +42,16 @@ import java.util.concurrent.atomic.LongAdder;
  * handed threads sharing a key each other's start-up times).</p>
  *
  * <p>A read never blocks: the cap holds time, never a thread.  A read that
- * finds a cap standing a schedule timeout asks for it to be lifted: before
- * the window it is, by name, until the next mark is reached ({@link
- * #liftLocked}); inside, only when no thread waits on the order, whose
- * watchdog otherwise moves the frontier ({@code ScheduleLog#clockAtCap}).
- * Lifts are counted at exit.</p>
+ * finds a cap standing a stall -- the watchdog's test: a schedule timeout
+ * with nothing computing, or eight whatever runs ({@code
+ * ScheduleLog#stalledLocked}) -- asks for it to be lifted: before the window
+ * it is, by name, until the next mark is reached ({@link #liftLocked});
+ * inside, only when no thread waits on the order, whose watchdog otherwise
+ * moves the frontier ({@code ScheduleLog#clockAtCap}).  A slow start-up
+ * computing past its cap is no stall: lifted, its time would run ahead of
+ * the window's opening and stand there while the order caught up
+ * (hdfs-11741, round TM1: lifted after a timeout, the window opened 62 s
+ * of model time past its recorded instant).  Lifts are counted at exit.</p>
  */
 public final class Clocks {
     private static final Object LOCK = new Object();
@@ -175,7 +180,8 @@ public final class Clocks {
     /**
      * A read stood at the cap; at most once a second, a lift is asked for:
      * inside the window of the order ({@code ScheduleLog#clockAtCap}),
-     * before it here, once the cap stood a schedule timeout.
+     * before it here, once the cap stood a stall ({@code
+     * ScheduleLog#capStalled}).
      */
     private static void atCap(Bounds at, long host) {
         at.reached.compareAndSet(0L, host);
@@ -189,8 +195,7 @@ public final class Clocks {
             return;
         }
         long stood = host - at.reached.get();
-        if (stood < TimeUnit.MILLISECONDS.toNanos(
-                ScheduleLog.timeoutMillis())) {
+        if (!ScheduleLog.capStalled(TimeUnit.NANOSECONDS.toMillis(stood))) {
             return;
         }
         String lifted;

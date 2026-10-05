@@ -1291,10 +1291,10 @@ public final class ScheduleLog {
 
     /**
      * A read of the application's clocks stood at the frontier's instant
-     * ({@link Clocks}): when the frontier stood a timeout and no thread
-     * waits on the order -- so no watchdog will move it -- the clocks run
-     * on past it until it moves, named.  With a thread waiting, the
-     * watchdog's own bound holds.
+     * ({@link Clocks}): when the frontier stood a stall ({@link
+     * #stalledLocked}) and no thread waits on the order -- so no watchdog
+     * will move it -- the clocks run on past it until it moves, named.
+     * With a thread waiting, the watchdog's own bound holds.
      */
     static void clockAtCap() {
         mute();
@@ -1304,8 +1304,9 @@ public final class ScheduleLog {
                         || firstBlocking >= order.size()) {
                     return;
                 }
-                long stood = System.currentTimeMillis() - lastProgress;
-                if (stood < timeoutMillis()) return;
+                long now = System.currentTimeMillis();
+                long stood = now - lastProgress;
+                if (!stalledLocked(stood, now)) return;
                 capLifted = true;
                 Clocks.liftedUnwaited();
                 stateLocked("schedule-clock#" + firstBlocking, "the"
@@ -1315,6 +1316,32 @@ public final class ScheduleLog {
                         + " not happen, with no thread waiting on the order:"
                         + " they run on past it until the order moves");
                 publishTimeLocked();
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * Whether a cap of the application's clocks that stood {@code stood} ms
+     * is a stall, by the watchdog's own test: a timeout with nothing
+     * computing ({@link #computingLocked}: a slow start-up on the concolic
+     * VM is progress, not a wait for time), or {@link #CEILING} timeouts
+     * whatever runs.
+     */
+    private static boolean stalledLocked(long stood, long now) {
+        long timeout = timeoutMillis();
+        return stood >= CEILING * timeout
+                || stood >= timeout && !computingLocked(now);
+    }
+
+    /** {@link #stalledLocked} for a cap before the window ({@link Clocks}),
+     *  where no order is held yet. */
+    static boolean capStalled(long stood) {
+        mute();
+        try {
+            synchronized (LOCK) {
+                return stalledLocked(stood, System.currentTimeMillis());
             }
         } finally {
             unmute();
@@ -1547,7 +1574,12 @@ public final class ScheduleLog {
      * deferred, never missed, and {@link #CEILING} bounds the deferral.
      */
     private static boolean computingLocked(long now) {
-        if (now - cpuSampledAt >= CPU_SAMPLE_MS) lookLocked(now, true);
+        if (cpuSampledAt == 0L) {
+            // Nothing looked at yet: this look is the baseline.
+            lookLocked(now, false);
+        } else if (now - cpuSampledAt >= CPU_SAMPLE_MS) {
+            lookLocked(now, true);
+        }
         return computing;
     }
 
