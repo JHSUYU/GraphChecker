@@ -112,7 +112,7 @@ Per check: [../checks/README.md](../checks/README.md). Summary (46 HDFS cases, 2
   until the time model merges; 11741's key-id binding still timing-dependent (A3);
 - study: 18 right-shaped verdicts (10 12 SAT; 07 08 09 14 15 16 19 20 27 30 33 39 40 48 49 50 UNSAT at the fixed
   point with symbols); 11 28 29 31 UNSAT with no symbol (container reads pinned: D1); 24 26 37 rerunning (HG8B); 52 and
-  32 open; 01 17 21 22 23 25 34 35 43 the time-model class (A2);
+  32 swapped for 05 (owner 2026-10-05); 01 17 35 43 clock-driven (the time model, A2);
 - new bugs: none.
 
 ## 5. Where the analyses and evidence live
