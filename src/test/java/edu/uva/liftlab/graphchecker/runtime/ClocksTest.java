@@ -169,6 +169,38 @@ public class ClocksTest {
         assertTrue(Clocks.progress(), Clocks.progress().contains(counted));
     }
 
+    @Test
+    public void aWaitThatRanItsTimeOutReadsItsDeadlineNeverPastTheCap()
+            throws Exception {
+        follow(time(ScheduleEvent.ORIGIN, 0L),
+                startup("register", "dn0", 100L), time(ScheduleEvent.OPEN,
+                        200L));
+        Clocks.nanos();
+        long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
+                .get(0));
+        StartupOrder.done(StartupOrder.begin("register", "dn0"));
+        // Standing at the pass, a DataNode waits for its next heartbeat;
+        // the window opens and the order stands far ahead of it.
+        long[] heartbeat = Clocks.waitBegins(2000L * MS);
+        long[] lease = Clocks.waitBegins(10_000L * MS);
+        openWindow();
+        ScheduleLog.enforceForTests(Collections.singletonList(
+                event("x", 5000L)));
+        Clocks.timedOut(heartbeat);
+        Clocks.waited(heartbeat);
+        assertTrue("a wait that ran out reads its deadline",
+                Clocks.nanos() >= first + 2100L * MS);
+        final long[] other = new long[1];
+        Thread reader = new Thread(() -> other[0] = Clocks.nanos());
+        reader.start();
+        reader.join();
+        assertTrue("for its own thread only", other[0] < first + 2100L * MS);
+        Clocks.timedOut(lease);
+        Clocks.waited(lease);
+        atCap("and never past the cap", first + 5000L * MS + TICK,
+                Clocks.nanos());
+    }
+
     /** This replay follows an order stating these marks. */
     private void follow(JsonObject... marks) throws Exception {
         order = Files.createTempFile("clocks", ".jsonl");

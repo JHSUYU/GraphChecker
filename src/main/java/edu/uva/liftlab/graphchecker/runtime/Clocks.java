@@ -71,7 +71,8 @@ public final class Clocks {
     private static final Object LOCK = new Object();
     /**
      * Per thread, the floor its reads stand on (nanos, millis): one tick
-     * past where time stood when its last timed wait began ({@link
+     * past where time stood when its last timed wait began, its deadline
+     * when the wait ran its time out, never past the cap ({@link
      * #waited}).  A real clock moves across a sleep and code divides by what
      * it moved: Hadoop's GcTimeMonitor divides by its run's span after its
      * first five-second sleep, and with time standing at a cap it died in
@@ -213,22 +214,43 @@ public final class Clocks {
     }
 
     /**
-     * A timed wait begins ({@code TimedWaits}): where time stands now, the
-     * base of the floor {@link #waited} sets; null with no model.
+     * A timed wait of {@code timeoutNanos} begins ({@code TimedWaits}):
+     * where time stands now, the base of the floor {@link #waited} sets;
+     * null with no model.
      */
-    static long[] waitBegins() {
+    static long[] waitBegins(long timeoutNanos) {
         if (!started) start();
         if (bounds == null) return null;
-        return new long[] {read(true, false), read(false, false)};
+        return new long[] {read(true, false), read(false, false),
+                timeoutNanos, 0L};
     }
 
-    /** The timed wait {@code began} returned: this thread reads at least
-     *  one tick past where time stood then. */
+    /** The wait {@code began} ended by its timeout. */
+    static void timedOut(long[] began) {
+        if (began != null) began[3] = 1L;
+    }
+
+    /**
+     * The timed wait {@code began} returned: this thread reads at least one
+     * tick past where time stood then, and past a timeout its deadline, but
+     * never past the cap -- a wait that ran its time out saw that time pass
+     * (hdfs-adhoc-17, round TM7: a DataNode's wait for its next heartbeat
+     * ran out on the host while the order still stood 0.6 s before it, and
+     * its turn found the heartbeat not due), and the order still holds what
+     * no recorded event has reached (a wait the recording ended by a signal
+     * before its timeout finds its deadline past the cap).
+     */
     static void waited(long[] began) {
         if (began == null) return;
         long[] floor = FLOOR.get();
         floor[0] = Math.max(floor[0], began[0] + TICK_NANOS);
         floor[1] = Math.max(floor[1], began[1] + 1L);
+        Bounds at = bounds;
+        if (began[3] == 0L || at == null) return;
+        floor[0] = Math.max(floor[0], Math.min(at.hiNanos,
+                began[0] + began[2]));
+        floor[1] = Math.max(floor[1], Math.min(at.hiMillis,
+                began[1] + TimeUnit.NANOSECONDS.toMillis(began[2])));
     }
 
     /**
