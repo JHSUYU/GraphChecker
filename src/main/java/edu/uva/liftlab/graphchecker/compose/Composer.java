@@ -941,6 +941,14 @@ public final class Composer {
     private String firstRefusal = "";
     /** The admitted paths refused by name ({@link #refused}). */
     private final List<JsonObject> refusedPaths = new ArrayList<JsonObject>();
+    /** Every CLOCK root's reading on the recording's timeline, by root id
+     *  ({@link #placeClocks}). */
+    private final Map<String, Long> clockTimeline =
+            new LinkedHashMap<String, Long>();
+    /** Each symbol of a CLOCK root no session can place on that timeline,
+     *  with its root id ({@link #placeClocks}, {@link #unplacedClocks}). */
+    private final Map<String, String> unplacedClocks =
+            new LinkedHashMap<String, String>();
     /** Each refuted claim this formula excludes, by its assertion's name
      *  ({@link #refutations}). */
     private final Map<String, Refutations.Refuted> refutationNames =
@@ -1069,6 +1077,7 @@ public final class Composer {
             }
         }
 
+        placeClocks();
         List<Disjunct> disjuncts = new ArrayList<Disjunct>();
         List<PathEntry> entries = new ArrayList<PathEntry>();
         List<Corpus.RecordedPath> admitted = admit();
@@ -1460,8 +1469,14 @@ public final class Composer {
         terms.addAll(lowering.end());
 
         // (1b) Refuse the path only if its own terms name a declared root
-        //      this session never minted ({@link #unstatedRoots}).
-        unstatedRoots(session, unminted, terms, joins, refusals);
+        //      this session never minted ({@link #unstatedRoots}), or a
+        //      clock cell with no instant on the recording's timeline
+        //      ({@link #unplacedClocks}).
+        if (!unminted.isEmpty() || !unplacedClocks.isEmpty()) {
+            Set<String> named = named(terms, joins);
+            unstatedRoots(session, unminted, named, refusals);
+            unplacedClocks(session, named, refusals);
+        }
         for (String refusal : refused) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, refusal,
@@ -1747,24 +1762,28 @@ public final class Composer {
     }
 
     /**
-     * Refuses the path for each declared root it did not mint whose symbol
-     * its OWN terms (and joins) name; otherwise that quantity would be free.
-     * Roots it never names are not refused.
-     *
-     * <p>"Names" uses both {@link SmtLowering#reachedSymbols} (leaves, through
-     * container bodies) and {@link SmtNames#names} (symbols written into
-     * published text), whole tokens only.</p>
+     * The symbols a path's OWN terms (and joins) name: both {@link
+     * SmtLowering#reachedSymbols} (leaves, through container bodies) and
+     * {@link SmtNames#names} (symbols written into published text), whole
+     * tokens only.
      */
-    private void unstatedRoots(String session,
-                               Map<String, Set<String>> unminted,
-                               List<String> terms,
-                               Map<String, String> joins,
-                               List<GapRow> refusals) {
-        if (unminted.isEmpty()) return;
+    private Set<String> named(List<String> terms, Map<String, String> joins) {
         List<String> texts = new ArrayList<String>(terms);
         texts.addAll(joins.values());
         Set<String> named = lowering.reachedSymbols(texts);
         for (String text : texts) named.addAll(SmtNames.names(text));
+        return named;
+    }
+
+    /**
+     * Refuses the path for each declared root it did not mint whose symbol
+     * its own terms name ({@link #named}); otherwise that quantity would be
+     * free.  Roots it never names are not refused.
+     */
+    private void unstatedRoots(String session,
+                               Map<String, Set<String>> unminted,
+                               Set<String> named,
+                               List<GapRow> refusals) {
         for (Map.Entry<String, Set<String>> root : unminted.entrySet()) {
             for (String symbol : root.getValue()) {
                 if (!named.contains(symbol)) continue;
@@ -1777,6 +1796,28 @@ public final class Composer {
                                 + "is about"));
                 break;
             }
+        }
+    }
+
+    /**
+     * Refuses the path for each clock cell its own terms name ({@link
+     * #named}) that no session can place on the recording's timeline
+     * ({@link #placeClocks}): no claim could say whether a witness moved it,
+     * so the path is not in the disjunction, named; every other path is.
+     */
+    private void unplacedClocks(String session, Set<String> named,
+                                List<GapRow> refusals) {
+        for (Map.Entry<String, String> cell : unplacedClocks.entrySet()) {
+            if (!named.contains(cell.getKey())) continue;
+            refusals.add(GapRow.of(session, GapKind.DECLARATION_MISSING,
+                    GapClass.DIAGNOSTIC, cell.getValue(), "this path rests "
+                            + "on clock cell " + cell.getKey() + ", which the "
+                            + "recording never read, and no session that "
+                            + "read it read a cell of the same clock the "
+                            + "recording read, so it has no instant on the "
+                            + "recording's timeline: no claim could say "
+                            + "whether a witness moved it, and the path is "
+                            + "not in the disjunction"));
         }
     }
 
@@ -2966,13 +3007,11 @@ public final class Composer {
      * Every declared CLOCK cell the formula names: its domain, its reading
      * on the recording's timeline, and its place in its node's order.
      *
-     * <p>A cell is one per (root, occurrence), and its reading is the
-     * SEED's.  A cell the seed never read (a region woven after it) is
-     * placed by a session that read it: at the seed's reading of the
-     * nearest cell (by seq) of the same clock that session also read, plus
-     * the time that session's host read between the two
-     * ({@link #placed}).  A cell no session can place has no instant any
-     * claim could judge it moved from: BLOCKING.  Domain ({@link
+     * <p>A cell is one per (root, occurrence), and its reading is where
+     * {@link #placeClocks} put it on the recording's timeline before any
+     * path composed.  A cell no session can place refused the paths that
+     * name it ({@link #unplacedClocks}); one that still reaches the formula
+     * is named and has no domain.  Domain ({@link
      * JavaPrimitiveSmtSemantics#clockDomain}): floor = the reading, ceiling
      * = reading + window, unless {@code root-domains.jsonl} declares bounds
      * (the only way to ask for a backward move).</p>
@@ -2994,9 +3033,7 @@ public final class Composer {
     private void clocks(List<String> cells, Map<String, Long> readings,
                         Map<String, Long> ticks,
                         Map<String, String> earlierOf) {
-        String seed = seed();
         List<RootMintRow> clocks = new ArrayList<RootMintRow>();
-        List<RootMintRow> read = new ArrayList<RootMintRow>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow row = seedRow(entry.getValue());
@@ -3004,33 +3041,25 @@ public final class Composer {
                     || !lowering.declared(row.symbol())) {
                 continue;
             }
-            Long reading = instant(row);
-            if (reading == null) continue;
+            if (instant(row) == null) continue;
             clocks.add(row);
-            if (row.sessionId().equals(seed)) {
-                readings.put(row.symbol(), reading);
-                read.add(row);
-            }
         }
         List<RootMintRow> placedCells = new ArrayList<RootMintRow>();
         for (RootMintRow row : clocks) {
-            if (!readings.containsKey(row.symbol())) {
-                Long reading = placed(corpus.roots().get(row.rootId()),
-                        read, readings);
-                if (reading == null) {
-                    gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
-                            row.rootId(), "this clock cell reaches the "
-                                    + "composition, the recording never "
-                                    + "read it, and no session that read it "
-                                    + "read a cell of the same clock the "
-                                    + "recording read, so it has no instant "
-                                    + "on the recording's timeline: no claim "
-                                    + "can say whether a witness moved it");
-                    continue;
-                }
-                readings.put(row.symbol(), reading);
+            Long placed = clockTimeline.get(row.rootId());
+            if (placed == null) {
+                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        row.rootId(), "this clock cell has no instant on the "
+                                + "recording's timeline (the recording never "
+                                + "read it, and no session that read it read "
+                                + "a cell of the same clock the recording "
+                                + "read) and reaches the formula though the "
+                                + "paths naming it were refused, so it has "
+                                + "no domain and no order");
+                continue;
             }
-            long reading = readings.get(row.symbol());
+            readings.put(row.symbol(), placed);
+            long reading = placed;
             String instant = Long.toString(reading);
             placedCells.add(row);
             ticks.put(row.symbol(), row.clockNanos());
@@ -3174,6 +3203,50 @@ public final class Composer {
             if (!late.isEmpty()) bases.put(session.getKey(), late);
         }
         return bases;
+    }
+
+    /**
+     * Every CLOCK root of the corpus on the recording's timeline, before any
+     * path composes ({@link #clockTimeline}): a cell the seed read at the
+     * seed's host reading; one it never read (a region woven after it, an
+     * occurrence a replay moved -- hdfs-17897 NP3: dn0's addKeys under the
+     * command queue's anchor, not the heartbeat's) where {@link #placed} puts
+     * it; one no session can place, every symbol of it into {@link
+     * #unplacedClocks}, which refuses the paths that name it.  The corpus
+     * alone decides it: every seed reading anchors, whatever the formula
+     * names.
+     */
+    private void placeClocks() {
+        String seed = seed();
+        List<RootMintRow> read = new ArrayList<RootMintRow>();
+        Map<String, Long> readings = new LinkedHashMap<String, Long>();
+        for (List<RootMintRow> rows : corpus.roots().values()) {
+            RootMintRow row = seedRow(rows);
+            Long reading = number(row.hostReading());
+            if (row.kind() != RootKind.CLOCK || reading == null
+                    || !row.sessionId().equals(seed)) {
+                continue;
+            }
+            readings.put(row.symbol(), reading);
+            read.add(row);
+            clockTimeline.put(row.rootId(), reading);
+        }
+        for (List<RootMintRow> rows : corpus.roots().values()) {
+            RootMintRow row = seedRow(rows);
+            if (row.kind() != RootKind.CLOCK
+                    || clockTimeline.containsKey(row.rootId())
+                    || number(row.hostReading()) == null) {
+                continue;
+            }
+            Long reading = placed(rows, read, readings);
+            if (reading != null) {
+                clockTimeline.put(row.rootId(), reading);
+                continue;
+            }
+            for (RootMintRow mint : rows) {
+                unplacedClocks.put(mint.symbol(), mint.rootId());
+            }
+        }
     }
 
     /**

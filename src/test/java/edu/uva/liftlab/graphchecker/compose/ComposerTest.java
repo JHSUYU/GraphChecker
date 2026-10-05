@@ -2117,7 +2117,8 @@ public class ComposerTest {
      * link the recording's own readings run against gives way by that much;
      * a cell the seed never read is placed at the seed's reading of a cell
      * its session also read, plus the time its host read between the two;
-     * one no session can place is BLOCKING.
+     * one no session can place refuses the paths that name it, by name, and
+     * every other path composes.
      */
     @Test
     public void aNodesClockIsOneOrderOnTheRecordingsTimeline()
@@ -2164,9 +2165,17 @@ public class ComposerTest {
         lone.target("true", false, true);
         lone.write();
         Composer.Composition unplaced = compose(iteration, 4);
-        assertTrue("a cell no session can place on the recording's timeline "
-                        + "is refused by name: " + unplaced.gaps(),
-                blocking(unplaced.gaps(), "ROOT.LONE"));
+        assertEquals("a cell no session can place on the recording's "
+                        + "timeline refuses the path that names it, by "
+                        + "name, and no other: " + unplaced.refusedPaths(),
+                "1 s2 DECLARATION_MISSING ROOT.LONE",
+                unplaced.refusedPaths().size() + " "
+                        + unplaced.refusedPaths().get(0).get("sessionId")
+                        .getAsString() + " " + unplaced.refusedPaths()
+                        .get(0).get("reason").getAsString().split(":")[0]);
+        assertEquals(2, unplaced.disjuncts().size());
+        assertFalse("nothing withholds the claim: " + unplaced.gaps(),
+                blocking(unplaced.gaps()));
         assertFalse(unplaced.clockCells().contains("clk_lone"));
     }
 
