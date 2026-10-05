@@ -90,7 +90,8 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
   `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). A bug check is such a case ("Run the bug
   checks");
-- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
+- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows, one per system where they are the
+  system's protocol: HDFS's is `experiments/hadoop/communication-mappings.jsonl`, used by every HDFS case; the fault doors are the engine's
   library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.
 
