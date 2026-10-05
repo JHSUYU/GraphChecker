@@ -88,6 +88,7 @@ import java.util.Deque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -166,17 +167,24 @@ public final class CausynthPipeline {
                 new SeedBackwardStaticAnalyzer(target).analyze();
         long seedAnalysisMillis = elapsedMillis(seedAnalysisStart);
         long skeletonPlanningStart = System.nanoTime();
+        List<DemandedDoors.Site> woven = DemandedDoors.woven();
         SymbolicRegionPlanner.planSelectedSkeleton(result,
-                result.traceMethods);
+                result.traceMethods, woven);
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
         Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
         ConfigRoots recognized = ConfigRoots.of(result.edges,
                 result.fieldWriters);
+        Predicate<String> systemClass = systemClass();
         RootDemand demand = RootDemand.of(result.edges, result.regions,
-                clocks, recognized, targetPathSites(result.edges),
-                CausynthStaticFacts::trackedKind, systemClass());
+                clocks, recognized,
+                targetPathSites(result.edges,
+                        result.executionContextAuthorities::containsKey),
+                CausynthStaticFacts::trackedKind, systemClass,
+                new LatentFaults(systemClass,
+                        method -> !result.regionsHolding(method).isEmpty()),
+                woven);
         ConfigRoots config = recognized.limitedTo(demand.configSources());
         Set<String> plantedConfigReads =
                 StaticSymbolicSourceDiscovery.discover(result, config);
@@ -197,7 +205,8 @@ public final class CausynthPipeline {
                 CausynthStaticFacts::constructionOnly);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
-                        StaticScopeMap.siteIds(scopeSites)));
+                        StaticScopeMap.siteIds(scopeSites)),
+                result.executionContextAuthorities::containsKey);
         scopeMap.addAll(recognized.keyRows(demand.configSources(),
                 plantedConfigReads));
         Set<String> rootCallees = new LinkedHashSet<>(clocks.keySet());
@@ -208,6 +217,8 @@ public final class CausynthPipeline {
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier, demand.rows());
+        DemandedDoors.write(target.outputDir.resolve(DemandedDoors.FILE),
+                demand.doors());
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, artifactWrite={} ms",
@@ -225,10 +236,11 @@ public final class CausynthPipeline {
     /**
      * The decisions an occurrence the declared throw is about takes on its
      * way there ({@code StaticScopeMap.Site#pathSites}): the throw's guards,
-     * their chain and the chain's deciders.
+     * their chain -- the calls into its method up to its execution context's
+     * entry included -- and the chain's deciders.
      */
     private static Set<String> targetPathSites(
-            List<Map<String, Object>> edges) {
+            List<Map<String, Object>> edges, Predicate<String> entry) {
         Set<String> sites = new LinkedHashSet<>();
         for (Map<String, Object> edge : edges) {
             if (!"exception_throw".equals(MapFields.text(edge.get("kind")))) {
@@ -241,12 +253,12 @@ public final class CausynthPipeline {
             for (StaticScopeMap.Guard guard : control.of(target)) {
                 sites.add(guard.siteId());
             }
-            for (StaticScopeMap.Guard guard : control.chainOf(target)) {
+            for (StaticScopeMap.Guard guard
+                    : StaticScopeMap.targetChain(control, target, entry)) {
                 sites.add(guard.siteId());
-                if (guard.decider() != null) {
-                    sites.add(guard.decider().siteId());
-                }
             }
+            sites.addAll(StaticScopeMap.Guard.decidingSites(
+                    control.chainOf(target)));
         }
         return sites;
     }
@@ -1737,6 +1749,12 @@ public final class CausynthPipeline {
                 + " of the application scope for the execution index, {} "
                 + "class(es) of it for their lineage alone", framed, filed,
                 claimed, waited, walked, lineage);
+        if (!UNSEEDED.isEmpty()) {
+            LOG.info("Left {} ThreadLocalRandom draw site(s) unseeded, a use"
+                    + " of the value each returns being no draw and no"
+                    + " Random's place: {}", UNSEEDED.size(), UNSEEDED);
+            UNSEEDED.clear();
+        }
     }
 
     /**
@@ -1794,20 +1812,32 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.Randoms";
 
     /**
-     * Seeds one unseeded draw by where it is drawn ({@code runtime.Randoms}):
-     * {@code Math.random()}, {@code Collections.shuffle(List)} and {@code
-     * UUID.randomUUID()} become their stand-ins, and {@code new Random()}
-     * takes its seed from one, in both passes, so a replay draws what the
-     * recording drew.
+     * Seeds one unseeded draw by where it is drawn ({@code runtime.Randoms}),
+     * in both passes, so a replay draws what the recording drew: a call
+     * {@link WorkStartSites#UNSEEDED_DRAWS} lists.  {@code new Random()}
+     * takes its seed from {@code Randoms#constructed}, {@code
+     * ThreadLocalRandom.current()} becomes a seeded Random whose draws are
+     * rewritten ({@link #seedThreadLocalRandom}), and a static draw ({@code
+     * Math.random()}, {@code Collections.shuffle(List)}, {@code
+     * UUID.randomUUID()}) becomes the {@code Randoms} stand-in of its name,
+     * the site its last argument.
      */
     private static void replaceRandom(Body body, Stmt stmt, String site) {
         InvokeExpr invoke = stmt.getInvokeExpr();
         SootMethodRef callee = invoke.getMethodRef();
-        String signature = callee.getSignature();
+        String owner = callee.declaringClass().getName();
+        if (!WorkStartSites.UNSEEDED_DRAWS.contains(owner.replace('.', '/')
+                + "." + callee.getName()
+                + soot.AbstractJasminClass.jasminDescriptorOf(callee))) {
+            return;
+        }
         SootClass randoms = phantomClass(RANDOMS_CLASS);
         RefType string = RefType.v("java.lang.String");
-        if (invoke instanceof SpecialInvokeExpr
-                && "<java.util.Random: void <init>()>".equals(signature)) {
+        if (THREAD_LOCAL_RANDOM.equals(owner)) {
+            seedThreadLocalRandom(body, stmt, site, randoms);
+            return;
+        }
+        if (invoke instanceof SpecialInvokeExpr) {
             Local seed = newTraceLocal(body, LongType.v(), "$causynthSeed");
             body.getUnits().insertBefore(Jimple.v().newAssignStmt(seed,
                     Jimple.v().newStaticInvokeExpr(Scene.v().makeMethodRef(
@@ -1824,32 +1854,161 @@ public final class CausynthPipeline {
                     seed));
             return;
         }
-        String name;
-        Type returns;
-        List<Type> parameters = new ArrayList<>();
-        switch (signature) {
-            case "<java.lang.Math: double random()>":
-                name = "random";
-                returns = soot.DoubleType.v();
-                break;
-            case "<java.util.Collections: void shuffle(java.util.List)>":
-                name = "shuffle";
-                returns = VoidType.v();
-                parameters.add(RefType.v("java.util.List"));
-                break;
-            case "<java.util.UUID: java.util.UUID randomUUID()>":
-                name = "randomUUID";
-                returns = RefType.v("java.util.UUID");
-                break;
-            default:
-                return;
-        }
+        List<Type> parameters = new ArrayList<>(callee.getParameterTypes());
         parameters.add(string);
         List<Value> arguments = new ArrayList<>(invoke.getArgs());
         arguments.add(StringConstant.v(site));
         stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
-                Scene.v().makeMethodRef(randoms, name, parameters, returns,
-                        true), arguments));
+                Scene.v().makeMethodRef(randoms, callee.getName(), parameters,
+                        callee.getReturnType(), true), arguments));
+    }
+
+    /** The ThreadLocalRandom sites one weave left unseeded, named in its
+     *  log ({@link #seedThreadLocalRandom}). */
+    private static final List<String> UNSEEDED = new ArrayList<>();
+
+    private static final String THREAD_LOCAL_RANDOM =
+            "java.util.concurrent.ThreadLocalRandom";
+    private static final String RANDOM = "java.util.Random";
+    /** The types a seeded Random stands as where a ThreadLocalRandom was. */
+    private static final Set<String> RANDOM_HOLDERS = new HashSet<>(
+            Arrays.asList(RANDOM, "java.lang.Object"));
+    /** The draws {@code java.util.Random} declares as ThreadLocalRandom
+     *  does: a ThreadLocalRandom call of one becomes a Random call. */
+    private static final Set<String> RANDOM_DRAWS = new HashSet<>(
+            Arrays.asList("int nextInt()", "int nextInt(int)",
+                    "long nextLong()", "double nextDouble()",
+                    "boolean nextBoolean()", "float nextFloat()",
+                    "double nextGaussian()", "void nextBytes(byte[])",
+                    "java.util.stream.IntStream ints()",
+                    "java.util.stream.IntStream ints(long)",
+                    "java.util.stream.IntStream ints(int,int)",
+                    "java.util.stream.IntStream ints(long,int,int)",
+                    "java.util.stream.LongStream longs()",
+                    "java.util.stream.LongStream longs(long)",
+                    "java.util.stream.LongStream longs(long,long)",
+                    "java.util.stream.LongStream longs(long,long,long)",
+                    "java.util.stream.DoubleStream doubles()",
+                    "java.util.stream.DoubleStream doubles(long)",
+                    "java.util.stream.DoubleStream doubles(double,double)",
+                    "java.util.stream.DoubleStream doubles(long,double,double)"));
+    /** The bounded draws only ThreadLocalRandom declares: each becomes the
+     *  {@code runtime.Randoms} stand-in of that name taking the Random
+     *  first. */
+    private static final Set<String> BOUNDED_DRAWS = new HashSet<>(
+            Arrays.asList("int nextInt(int,int)", "long nextLong(long)",
+                    "long nextLong(long,long)", "double nextDouble(double)",
+                    "double nextDouble(double,double)"));
+
+    /**
+     * Seeds a ThreadLocalRandom draw by where it is drawn, as {@code new
+     * Random()} is: {@code ThreadLocalRandom.current()} becomes {@code
+     * Randoms.current(site)}, a Random seeded by the same key, and every
+     * draw on what it returned becomes that Random's (HDFS's block placement
+     * picks a pipeline's DataNodes from NetworkTopology's ThreadLocalRandom:
+     * hdfs-adhoc-42's replay wrote dn0 first where the recording wrote dn2
+     * first, and every DataXceiver turn after it took another node's slot).
+     * Only where every use of the returned value is a draw this rewrites or
+     * stands where a Random may (a return, an assignment, an argument, as
+     * in {@code Collections.shuffle(list, ThreadLocalRandom.current())});
+     * any other use leaves the site as written, named ({@link #UNSEEDED}).
+     */
+    private static void seedThreadLocalRandom(Body body, Stmt stmt,
+                                              String site,
+                                              SootClass randoms) {
+        if (!(stmt instanceof AssignStmt)
+                || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
+            UNSEEDED.add(site);
+            return;
+        }
+        Local drawn = (Local) ((AssignStmt) stmt).getLeftOp();
+        Set<Stmt> draws = new LinkedHashSet<>();
+        for (Unit unit : body.getUnits()) {
+            for (ValueBox box : unit.getUseBoxes()) {
+                if (box.getValue() != drawn) continue;
+                Stmt use = (Stmt) unit;
+                if (use.containsInvokeExpr()
+                        && use.getInvokeExpr() instanceof InstanceInvokeExpr
+                        && ((InstanceInvokeExpr) use.getInvokeExpr())
+                                .getBase() == drawn) {
+                    SootMethodRef called = use.getInvokeExpr()
+                            .getMethodRef();
+                    String declared = called.declaringClass().getName();
+                    String sub = called.getSubSignature().getString();
+                    if (THREAD_LOCAL_RANDOM.equals(declared)
+                            && (RANDOM_DRAWS.contains(sub)
+                            || BOUNDED_DRAWS.contains(sub))) {
+                        draws.add(use);
+                    } else if (!RANDOM_HOLDERS.contains(declared)) {
+                        UNSEEDED.add(site);
+                        return;
+                    }
+                } else if (!holdsRandom(body, use, drawn)) {
+                    UNSEEDED.add(site);
+                    return;
+                }
+            }
+        }
+        RefType random = RefType.v(RANDOM);
+        ((AssignStmt) stmt).setRightOp(Jimple.v().newStaticInvokeExpr(
+                Scene.v().makeMethodRef(randoms, "current",
+                        Collections.<Type>singletonList(
+                                RefType.v("java.lang.String")),
+                        random, true), StringConstant.v(site)));
+        drawn.setType(random);
+        SootClass randomClass = phantomClass(RANDOM);
+        for (Stmt use : draws) {
+            InstanceInvokeExpr call = (InstanceInvokeExpr) use.getInvokeExpr();
+            SootMethodRef called = call.getMethodRef();
+            String sub = called.getSubSignature().getString();
+            if (RANDOM_DRAWS.contains(sub)) {
+                use.getInvokeExprBox().setValue(Jimple.v().newVirtualInvokeExpr(
+                        drawn, Scene.v().makeMethodRef(randomClass,
+                                called.getName(), called.getParameterTypes(),
+                                called.getReturnType(), false),
+                        call.getArgs()));
+                continue;
+            }
+            List<Type> parameters = new ArrayList<>();
+            parameters.add(random);
+            parameters.addAll(called.getParameterTypes());
+            List<Value> arguments = new ArrayList<>();
+            arguments.add(drawn);
+            arguments.addAll(call.getArgs());
+            use.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
+                    Scene.v().makeMethodRef(randoms, called.getName(),
+                            parameters, called.getReturnType(), true),
+                    arguments));
+        }
+    }
+
+    /** Whether a use of {@code drawn} other than a call on it stands where
+     *  a Random may: returned, assigned or passed as one (ThreadLocalRandom
+     *  is a Random, so another definition of the local stays well typed). */
+    private static boolean holdsRandom(Body body, Stmt use, Local drawn) {
+        List<Type> held = new ArrayList<>();
+        if (use instanceof ReturnStmt) {
+            held.add(body.getMethod().getReturnType());
+        } else if (use instanceof AssignStmt
+                && ((AssignStmt) use).getRightOp() == drawn) {
+            held.add(((AssignStmt) use).getLeftOp().getType());
+        }
+        if (use.containsInvokeExpr()) {
+            InvokeExpr call = use.getInvokeExpr();
+            for (int index = 0; index < call.getArgCount(); index++) {
+                if (call.getArg(index) == drawn) {
+                    held.add(call.getMethodRef().getParameterType(index));
+                }
+            }
+        }
+        for (Type type : held) {
+            if (!(type instanceof RefType)
+                    || !RANDOM_HOLDERS.contains(
+                            ((RefType) type).getClassName())) {
+                return false;
+            }
+        }
+        return !held.isEmpty();
     }
 
     /** The Soot type a {@link WorkStartSites.TimedWait} names. */
@@ -2117,15 +2276,21 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Observes a tracked cell before each access of it, starting its version
-     * log where none stands: before the {@code putfield}/{@code putstatic},
-     * before the call when the store is an atomic's RMW (no application
-     * {@code putfield}), before the {@code getfield}/{@code getstatic} of
-     * a read, and before the call of a read through an accessor (the site
-     * names it), on the call's receiver.  A static cell's owner is its declaring class's mirror, the key
-     * the VM versions it by.  An instance access before the constructor call
-     * that makes its object has no object to observe yet, and a read site
-     * that is no field read of its cell observes nothing.
+     * Observes a tracked cell at each access of it, starting its version log
+     * where none stands.  The cell ({@code field}): before the {@code
+     * putfield}/{@code putstatic}, before the call when the store is an
+     * atomic's RMW (no application {@code putfield}), before the {@code
+     * getfield}/{@code getstatic} of a read, and before the call of a read
+     * through an accessor (the site names it), on the call's receiver; a
+     * static cell's owner is its declaring class's mirror, the key the VM
+     * versions it by.  The state of the container the cell holds ({@code
+     * container}): after a read, on the referent it returned; before and
+     * after a container mutation through the cell, on the call's receiver
+     * (before: a region thread starts the log the mutation then versions;
+     * after: a thread outside every region marks it).  An
+     * instance access before the constructor call that makes its object has
+     * no object to observe yet, and a read site that is no field read of its
+     * cell, or whose value nothing holds, observes nothing.
      */
     private void instrumentConcolicObservedSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
@@ -2164,17 +2329,46 @@ public final class CausynthPipeline {
                 }
                 owner = ((InstanceInvokeExpr) invocation).getBase();
             }
-            List<Unit> before = new ArrayList<>();
-            Value receiver = objectArg(body, owner, before);
-            refs.bracket(before, Hook.OBSERVE_TRACKED_SITE,
-                    StringConstant.v(target.siteId),
-                    StringConstant.v(target.cell), receiver);
-            insertBeforeSequence(body, selected, before);
+            if (target.field) {
+                List<Unit> before = new ArrayList<>();
+                Value receiver = objectArg(body, owner, before);
+                refs.bracket(before, Hook.OBSERVE_TRACKED_SITE,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver);
+                insertBeforeSequence(body, selected, before);
+            }
+            if (!target.container) continue;
+            List<Unit> observation = new ArrayList<>();
+            if (!target.read) {
+                Value receiver = objectArg(body, owner, observation);
+                refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver,
+                        IntConstant.v(0));
+                insertBeforeSequence(body, selected, observation);
+                List<Unit> after = new ArrayList<>();
+                refs.bracket(after, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver,
+                        IntConstant.v(1));
+                insertAfterSequence(body, selected, after);
+            } else if (selected instanceof AssignStmt) {
+                refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell),
+                        objectArg(body, ((AssignStmt) selected).getLeftOp(),
+                                observation),
+                        IntConstant.v(0));
+                insertAfterSequence(body, selected, observation);
+            } else {
+                unobserved++;
+            }
         }
         if (unobserved > 0) {
             LOG.info("Left {} tracked access(es) unobserved: before their "
-                    + "object's constructor call, or a read site that is no "
-                    + "getfield of its cell", unobserved);
+                    + "object's constructor call, a read site that is no "
+                    + "getfield of its cell, or a container read whose value "
+                    + "nothing holds", unobserved);
         }
     }
 
@@ -3555,6 +3749,7 @@ public final class CausynthPipeline {
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
         OBSERVE_TRACKED_SITE,
+        OBSERVE_TRACKED_CONTAINER,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3735,6 +3930,9 @@ public final class CausynthPipeline {
                     .add(Hook.OBSERVE_TRACKED_SITE, runtime,
                             "observeTrackedSite", VoidType.v(), string,
                             string, object)
+                    .add(Hook.OBSERVE_TRACKED_CONTAINER, runtime,
+                            "observeTrackedContainer", VoidType.v(), string,
+                            string, object, BooleanType.v())
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),
                             IntType.v(), object, string)

@@ -117,7 +117,9 @@ none.
    `causynth_loop_bounds`, wire flows from `causynth_communication_mappings`) writes under
    `causynth_output_dir`: `candidate_dataflow_edges.jsonl.gz`, `region_skeletons.jsonl.gz`,
    `communication_gaps.jsonl.gz`, `static_scope_map.jsonl`, `scope_frontier.jsonl`,
-   `root_demand.jsonl` (`causynth.CausynthArtifactWriter`). While `causynth_scope_growth_budget > 0` and
+   `root_demand.jsonl` (`causynth.CausynthArtifactWriter`) and `io_doors.jsonl` (the demanded local file
+   doors, `causynth.DemandedDoors`; every pass weaves them, `-Dcausynth.io.doors`). A pass that chose
+   more of those doors runs again over them, outside the growth budget. While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
    The target spec holds one line, `exception_target: <name> <binary class name> <source line>
@@ -128,9 +130,10 @@ none.
    the `NEW`'s ordinal among the method's `NEW`s of that type, which the analyzer matches on Jimple.
    A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
-   target's `guards` with their fatal arms, the helper branch deciding a guard on a helper's
-   returned 0/1 (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards before them;
-   `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders. Loop-bound
+   target's `guards` with their fatal arms, the helper branch arms deciding a guard on a helper's
+   constant return, nested (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards
+   before them; `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders at every
+   depth. Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
@@ -315,9 +318,11 @@ which COMPOSE pins (§8, *A query's stated answer*).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
-the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on the 0/1 a
-helper returned, the helper branch's last decision before it (its `guardDeciders` entry), the target
-standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
+the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on a constant
+a helper returned, the predicate of the decision that chose it (`RowPublication#decidedBy`: the latest
+decision in the helper's method before the target, when it is one of its `guardDeciders` arms; a
+concrete one there is decided by its nested helper's in turn; none: the target's constant) in the
+polarity of the arm the target took, the target standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
 evaluation decided, from the test it reached the target at, with `observedFatal` = one
 test took its fatal arm. A decision that states no predicate (the VM decided it concretely) is the
 constant of the arm it took: `true` on the fatal arm, `false` on the healthy one, so a concrete
@@ -429,7 +434,10 @@ decided it on a recorded symbol: every path COMPOSE takes is refused (§8, "deci
 its healthy arm" or never reached) and nothing above names a value. An unreached path with a
 symbolic decision on the way is not concrete, since flipping it is how a replay reaches the throw
 (SOLR-18413's leader leaves at a concrete test of the boolean its clock-decided `isExpired`
-returned). Its predicate reads are then the read rows the anchor made, in each admitted path,
+returned). Its predicate reads are then the read rows its deciding predicate names, by read event
+(`Corpus#readEvents` of phi or of the flip-site decisions' terms: a compound guard's phi stands at its
+first test, and the reads of its later tests come after it -- hdfs-adhoc-26's cTime reads), and the
+read rows the anchor made, in each admitted path,
 before that path's deciding event, of the reads the root demand found on the throw's path guards
 (SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
 `demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).
@@ -473,7 +481,12 @@ are counted, never dropped silently: `concreteAnchors` states how many
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the two doors of the message a demanded occurrence served (sender and receiver of its causal
-  anchor's producer endpoint): `CONTROL_PRODUCER`, contributing no value.
+  anchor's producer endpoint), each where a session recorded a fault decision of it (its fault
+  point decides whether the message exists; the doors PLAN's `CONTROL_PRODUCER_V1` admits):
+  `CONTROL_PRODUCER`, contributing no value. Any other door -- run under no planned task, a role,
+  or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client
+  door, HG3: it waited as "only the seed replay ran this occurrence" and blocked the fixed point) --
+  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for.
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;
@@ -899,8 +912,12 @@ re-run has returned and no obligation runs that started before them, no obligati
 round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
 worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
 worker's, its session lands, and its verdict replaces the obligation's row in
-`obligation_results.jsonl`; the queue is left to the next round, since what it held may be cut from
-an exposing session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
+`obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
+`--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
+HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
+obligation cut from an exposing session is answered by its solver by name (`NOT_ADMITTED`, "no
+session of this corpus still states path ...") and a later round asks it again of the re-run's
+session. The withdrawn session's slots go with it (§7.1 step 4): under the grown plan
 the region's events stand in new occurrences, so its endpoints have new ids, and a slot of the old
 run would read the re-run and every later session of its world as a replacement (hdfs-11741 V4:
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
@@ -938,20 +955,35 @@ cancelled or reaped, by id):
   witness gated and not yet attempted, one COMPOSE over the corpus as it stands -- `do_compose`, the
   stage's own entry, into `witness-attempts/NNNN/` -- since an observed fatal is not yet a
   composable witness: COMPOSE's families may need sessions later obligations would add
-  (`campaign_stream_attempt`). Obligations keep starting while it runs; nothing lands, so it reads
-  the corpus as it stood, and what returns meanwhile, a witness too, lands after it: one attempt at
-  a time, the witnesses that come during one coalesced into the next. Each attempt is
-  a row of `witness_attempts.jsonl` (step, witnesses, claim, finding kind, polarity, confirmed,
-  its reason, accepted, and how long its COMPOSE and its CONFIRM took). An attempt that publishes `SAT_CANDIDATE` with `polarityDecides` is
-  confirmed in the step (`campaign_confirm_claim`, §10: its verdict `witness-attempts/NNNN/confirm.json`,
-  its replay in `<campaign>/witness-confirm/NNNN/`, out of the iteration); confirmed, it ends the
-  exploration at once: the queue is cancelled, every running obligation is reaped (its process tree
-  here, its workers on every peer) and its worker directory moves to `<campaign>/explore-reaped/`,
-  as does every one that returned after the step began, so the corpus COMPOSE reads next is exactly
-  the one the attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, its
-  model is excluded from every later composition (§10) and the exploration goes on, as after any
-  other claim; unconfirmed without a refutation (a replay that published no verdict), the model
-  stays open and a later attempt may claim it again. With no room left in the campaign's budget
+  (`campaign_stream_attempt`; the sessions it composed are its `corpus.txt`). Obligations keep
+  starting while it runs; nothing lands, so it reads the corpus as it stood, and what returns
+  meanwhile, a witness too, lands after it: one attempt at a time, the witnesses that come during
+  one coalesced into the next. Each attempt is a row of `witness_attempts.jsonl` once its outcome is
+  known (attempt, step, witnesses, claim, finding kind, polarity, confirmed, its reason, accepted,
+  how long its COMPOSE and its CONFIRM took, and `supersededBy`, below); `exploration.json` lists
+  them by attempt. An attempt that publishes `SAT_CANDIDATE` with `polarityDecides` is confirmed
+  (§10): its task is planned in the step (`campaign_confirm_plan`, its verdict
+  `witness-attempts/NNNN/confirm.json`, its replay in `<campaign>/witness-confirm/NNNN/`, out of the
+  iteration), a verdict known at once (a refusal, the selected session itself the run) decided there;
+  otherwise its replay is a job of the pool (`CONFIRM`, queued first, charged as the seed replay is,
+  on the class tree and plan of the generation current when it starts), so landing, planning and
+  later attempts go on while it runs (hdfs-17967-pathB HG3: a refuted attempt held the head's only
+  step for 31 min while the witness obligation waited, unlanded). Its return lands like any job's,
+  and the next step decides it (`campaign_stream_decide`, a returned confirmation's verdict going
+  before a new attempt); of the confirmations decided together, the earliest attempt confirmed is
+  the witness, by attempt order and not by finish time, and a later one confirmed states it
+  (`supersededBy`). An attempt whose model is under confirmation is not confirmed twice: its
+  witnesses wait and are attempted again once a verdict lands that does not end the exploration.
+  Confirmed, the attempt ends the exploration at once: the queue is cancelled, every running job is
+  reaped (its process tree here, its workers on every peer) -- an obligation's worker directory moves
+  to `<campaign>/explore-reaped/`, as does every one that returned after the step began, and a
+  confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
+  attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
+  (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
+  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, its model is
+  excluded from every later composition (§10) and the exploration goes on, as after any other
+  claim; unconfirmed without a refutation (a replay that published no verdict), the model stays
+  open and a later attempt may claim it again. With no room left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
@@ -959,9 +991,10 @@ cancelled or reaped, by id):
 - **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
   the campaign's start; `accept.sh` passes what is left of the case's `CASE_TIMEOUT_SECONDS`) has
   less left than the stages after the exploration are owed (`campaign_claim_room`): its reserve,
-  `campaign_reserve`, one COMPOSE and one CONFIRM each as long as the longest the campaign measured
-  (its stage metrics and its witness attempts; the seed's REPLAY standing for a CONFIRM not yet
-  run), never less than `campaign_reserve_s` (600; a budget not above it is refused by
+  `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured,
+  CONFIRM and REPRODUCE each as long as the longest CONFIRM (its stage metrics and its witness
+  attempts; the seed's REPLAY standing for a CONFIRM not yet run), never less than
+  `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
@@ -1622,7 +1655,12 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   the recording took two still takes the model's edges). A `referentStates` row with no reader (a query asked outside every container
   read), at a read that is no read of the closure, or naming a write the session does not state
   refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
-- The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
+- The replay runs through `campaign_obligation_replay` into `final/confirm/`, the three halves of
+  `campaign_confirm_claim` in a row: `campaign_confirm_plan` (ConfirmMain's task; a refusal or a
+  realized session is the verdict at once), `campaign_confirm_replay` (charged as the seed replay is,
+  wherever there is room) and `campaign_confirm_decide` (ConfirmMain `--sessions`), then
+  `campaign_confirm_settle` (a refuting verdict refutes the claim). An exploration's attempt runs the
+  same halves apart, its replay a job of the pool (§7.9). At runtime
   `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, for a codec
   hole the message key, and the text that arrived where the arm states one; a consumer of the
   anchor's, where the arm's session answered the anchor by its question (IDENTITY §9, its
@@ -1803,12 +1841,19 @@ runs a process naming its directory, `DEAD` when none does.
 
 `tools/regress/offline-ab.sh --round <round>... <baseline-jar> <candidate-jar> [case...]` is the
 offline regression gate: per case of the first `--round` holding it, it runs every stage that is
-a pure function of the recording once per jar — the static pass (after the door step,
-`ScopeGrowth --doors`, when the jar ships the library catalog), the trace aggregation, PLAN,
+a pure function of the recording once per jar — the static pass in `campaign_analyze_grown_scope`'s
+loop (the door step, `ScopeGrowth --doors`, when the jar ships the library catalog; then the pass
+and `ScopeGrowth` over its frontier until nothing is added or the case's budget is spent, the door
+step again after each growth; the stage's wall is the loop's), the trace aggregation, PLAN,
 EXPLORE round 0 and its solves, IMPORT, the closing EXPLORE round, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
-2 when one could not be checked. It runs beside live rounds, so each of its engine JVMs is placed
+2 when one could not be checked; the static pass's summary is the slice's size (edges, the methods
+they lie in, scope rows, READ_SITEs, CONFIG_KEYs, chosen/all root-demand boundaries, skeletons,
+grown classes), and `AB_STAGES=SEED.static` runs that pass alone. The trace chain (aggregation,
+PLAN, EXPLORE round 0) of both sides reads one set of static artifacts, the recording's own;
+`AB_FRESH_SLICE=1` gives each side its own fresh static pass, to see what a slice change does to
+the region plan and the closure. It runs beside live rounds, so each of its engine JVMs is placed
 through the host ledger (`ab_place`: the host of `AB_HOSTS`, default `LIFTS`, with the most room,
 charged its heap for its whole run, waited for when none has it). Every stage gates on bytes, the static pass included: it is the
 same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the

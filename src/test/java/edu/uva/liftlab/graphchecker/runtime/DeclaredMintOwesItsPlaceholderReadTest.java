@@ -399,6 +399,101 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
     }
 
     /**
+     * EVERY OBSERVED READ_SITE ACCESS IS A ROW (SYMBOL-SCOPE §5.2), whether
+     * or not a published expression holds its value: hdfs-adhoc-45 tests
+     * {@code state == State.IN_SEGMENT}, a reference compared with a
+     * constant, which records no condition, so the read of {@code state}
+     * reached no expression and the closure never saw it.  The read log
+     * states what each read's plan chose; a read in a READ_SITE's method is
+     * a row of that version, one stated by an expression too is one row, a
+     * read in any other method is left to the expressions as before.
+     */
+    @Test
+    public void anObservedReadSiteAccessIsARowThoughNoExpressionHoldsIt()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        OccurrenceAddress at = address();
+        ActiveRegion active = region(at);
+        RowRuntime.journalRegion(900L, at);
+        JsonObject state = symbolExpression("M_L'a/B$State'_5", "a/B$State");
+        JsonObject log = record("INSTANCE_FIELD/10#80",
+                loggedAt(version(456L, state)));
+        JsonObject envelope = log.getAsJsonObject("envelope");
+        envelope.add("reads", new JsonArray());
+        envelope.addProperty("readLogTruncated", false);
+        // 457 in the READ_SITE's method, 458 in another, 459 in the
+        // READ_SITE's method and in a write's expression too.
+        for (Object[] each : new Object[][]{
+                {457L, "isSegmentOpen"}, {458L, "other"},
+                {459L, "isSegmentOpen"}}) {
+            JsonObject site = new JsonObject();
+            site.addProperty("className", "a/B");
+            site.addProperty("methodName", (String) each[1]);
+            site.addProperty("methodDescriptor", "()Z");
+            site.addProperty("bci", 1);
+            JsonObject read = new JsonObject();
+            read.addProperty("readEventId", (Long) each[0]);
+            read.addProperty("regionEnterEventId", 900L);
+            read.add("site", site);
+            JsonObject chosen = new JsonObject();
+            chosen.addProperty("fieldVersionId", 456L);
+            chosen.addProperty("versionKind", "WRITE");
+            read.add("observedVersion", chosen);
+            read.addProperty("observedExact", true);
+            read.addProperty("writerSetComplete", true);
+            read.addProperty("_java_type", "L");
+            array(log, "reads").add(read);
+        }
+        JsonObject location = new JsonObject();
+        location.addProperty("ownerSymRid", 10);
+        location.addProperty("slot", 80);
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 456L);
+        observed.add("expression", state);
+        JsonObject readFrom = new JsonObject();
+        readFrom.addProperty("_type", "ReadFromExpression");
+        readFrom.addProperty("_java_type", "L");
+        readFrom.addProperty("readEventId", 459L);
+        readFrom.addProperty("observedExact", true);
+        readFrom.add("location", location);
+        readFrom.add("observedVersion", observed);
+        readFrom.add("concreteValue", state);
+        JsonObject copy = record("INSTANCE_FIELD/77#24",
+                loggedAt(version(901L, readFrom)));
+        active.sharedStateRecords.put("INSTANCE_FIELD/10#80", log);
+        active.sharedStateRecords.put("INSTANCE_FIELD/77#24", copy);
+        JsonObject readSite = new JsonObject();
+        readSite.addProperty("kind", "STATIC_SCOPE_SITE");
+        readSite.addProperty("role", "READ_SITE");
+        readSite.addProperty("vmSite", "a.B#isSegmentOpen()Z");
+        RowPublication.installReadSites(Collections.singletonList(readSite));
+        try {
+            writes(active);
+        } finally {
+            RowPublication.installReadSites(
+                    Collections.<JsonObject>emptyList());
+        }
+        RowRuntime.closeSession();
+
+        Map<Long, ReadRow> rows = new LinkedHashMap<Long, ReadRow>();
+        for (ReadRow row : reads()) {
+            assertNull("one row per read event", rows.put(row.seq(), row));
+        }
+        assertEquals(Arrays.asList(457L, 459L),
+                new ArrayList<Long>(new java.util.TreeSet<Long>(
+                        rows.keySet())));
+        ReadRow tested = rows.get(457L);
+        assertEquals("the version its plan chose", 456L,
+                tested.observedVersion());
+        assertEquals("L", tested.javaType());
+        assertEquals("an exact read returned its version's identity",
+                "M_L'a/B$State'_5", tested.concreteValue());
+        assertTrue(tested.endpoint().site(), tested.endpoint().site()
+                .startsWith("a.B#isSegmentOpen()Z#"));
+    }
+
+    /**
      * A location's INITIAL is a write row, flagged: Writers_W(l)'s writer at
      * version 0, placed at the access that started the log and spelled as
      * its own kind there -- a log a store starts states the INITIAL and the

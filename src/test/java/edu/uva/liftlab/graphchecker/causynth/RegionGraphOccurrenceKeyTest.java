@@ -514,7 +514,8 @@ public class RegionGraphOccurrenceKeyTest {
                         ? Arrays.asList(
                         new StaticScopeMap.Guard(decrement + "#u7", true),
                         new StaticScopeMap.Guard(decrement + "#u15", false))
-                        : Collections.<StaticScopeMap.Guard>emptyList())) {
+                        : Collections.<StaticScopeMap.Guard>emptyList(),
+                method -> false)) {
             text.append(written.toString()).append('\n');
         }
         Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
@@ -659,8 +660,9 @@ public class RegionGraphOccurrenceKeyTest {
      * SYMBOL-SCOPE F2: a field is tracked by what it holds.  An integral
      * instance field, boxed or not, is a VALUE; a field a store re-points
      * holding any other object, an array or a static one included, is a
-     * REFERENCE; a final one, a String, a float and a static value are
-     * none.  A wrapper-typed field is a value cell as its primitive is
+     * REFERENCE; a final map, set, list, queue or deque is a CONTAINER (its
+     * contents change in place); any other final one, a String, a float and
+     * a static value are none.  A wrapper-typed field is a value cell as its primitive is
      * (solr-18413's {@code RoutingRule.expireAt}, a Long): its {@code
      * getfield} is the READ_SITE a branch decides on through the unboxing,
      * observed like its {@code putfield}; the box's own {@code value} is no
@@ -691,9 +693,12 @@ public class RegionGraphOccurrenceKeyTest {
                 {DoubleType.v(), 0, none},
                 {RefType.v("java.lang.String"), 0, none},
                 {RefType.v("java.util.Map"), Modifier.VOLATILE, reference},
-                {RefType.v("java.util.Map"), Modifier.FINAL, none},
+                {RefType.v("java.util.Map"), Modifier.FINAL,
+                        SharedFieldFlow.TrackedKind.CONTAINER},
                 {RefType.v("java.util.Map"), Modifier.STATIC, reference},
-                {ArrayType.v(LongType.v(), 1), 0, reference}};
+                {ArrayType.v(LongType.v(), 1), 0, reference},
+                {ArrayType.v(LongType.v(), 1), Modifier.FINAL, none},
+                {RefType.v("example.Rule"), Modifier.FINAL, none}};
         for (int index = 0; index < fields.length; index++) {
             SootField field = new SootField("f" + index,
                     (soot.Type) fields[index][0], (Integer) fields[index][1]);
@@ -759,7 +764,8 @@ public class RegionGraphOccurrenceKeyTest {
                 method -> !method.startsWith("<example."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField,
-                CausynthStaticFacts::constructionOnly), null)) {
+                CausynthStaticFacts::constructionOnly), null,
+                method -> false)) {
             text.append(written.toString()).append('\n');
         }
         Path file = tree.newFolder("wrapper").toPath()

@@ -80,6 +80,9 @@ cd "$JDK_ROOT"
   test/causynth/RegionStreamSmoke.java \
   test/causynth/RegionModelGuardSmoke.java \
   test/causynth/RegionAtomicCarrierSmoke.java \
+  test/causynth/RegionContainerObservationSmoke.java \
+  test/causynth/RegionContainerAdmissionSmoke.java \
+  test/causynth/RegionReadRecordSmoke.java \
   test/causynth/RegionRedefineOnStackSmoke.java
 
 for smoke in \
@@ -149,6 +152,9 @@ for smoke in \
   RegionStreamSmoke \
   RegionModelGuardSmoke \
   RegionAtomicCarrierSmoke \
+  RegionContainerObservationSmoke \
+  RegionContainerAdmissionSmoke \
+  RegionReadRecordSmoke \
   RegionRedefineOnStackSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done

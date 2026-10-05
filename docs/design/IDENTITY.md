@@ -116,7 +116,19 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 
 `k` counts root hops only, per (window, node, role, api), in one JVM-wide counter
 (`Lineage#push`). A turn begun before the window has `k = 0` (`Lineage#rootWindowIndex`), so its
-context is `Lost`; a request begun before the window keeps its `k`.
+context is `Lost`; a request begun before the window keeps its `k`. A turn (a tick, a wake turn) is
+named once an identity reads its `k` (`Identity#here`: a schedule event, an occurrence, an endpoint,
+a draw), or once work started or captured in it carries its frames (`Lineage#carried`: a thread
+started there, a task captured there, which read the `k` whenever they run); the flow key, the WAKE
+its begin computes and a held timed wait's WAKE are read `Lineage#quietly`, as the recording, which
+holds nothing, computes no held wait's WAKE. One that ends unnamed gives its `k` back
+(`Lineage#pop`, a compare-and-set, so only while no later turn of its counter took one). A loop
+spinning through turns that do nothing (hdfs-adhoc-16: a DataNode actor whose heartbeats a test
+disabled never waits; 0.89M turns recorded, 47k replayed) then moves no `k` of the turns that act.
+The turn that takes a given-back `k` again collides with nothing: the turn that gave it back wrote
+nothing under it and handed its frames to no work. The ks are equal in both passes where one thread
+takes a counter's turns (a daemon's loop); turns of one counter on several threads may interleave
+their gives-back differently.
 
 ## 3. The execution index `i`
 
@@ -129,6 +141,11 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   root-hop token and site). It is not a loop-iteration count.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
   index from its scope base followed by a frame (site, k-th start at that site) with the carrier.
+  That `k` counts starts at the site in the top level under the hop that gives the context -- the
+  innermost hop carrying an anchor, else the root (`State#nextStartEvent`, `Lineage#contextToken`)
+  -- not under the whole root hop: under a test's one request every poll and node start before it
+  moved a shell command's thread's `k` (hdfs-adhoc-35: `@317` recorded, `@404` replayed). Two works
+  cannot share an address by it: each carries the context of the hop its start was counted under.
   A start made with a request in hand hands that request off: its site is `<site>:<verb>` and its
   `k` counts per verb (`Identity#requestInHand`). The verb is per thread, set by every outbound to
   the message's verb (`""` where its door names none, and for a response), cleared by every inbound,
@@ -448,10 +465,12 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 The library catalog's doors and the woven markers are SYMBOL-SCOPE.md §4.2. A marker's branch is a decision of
 the occurrence that runs the door; `explore/ClosurePlanner#controlProducer` adds the sender and the
 receiver of the message a demanded occurrence served (its `Anchor`, else the message its turn took
-in, `explore/Corpus#startedBy`; `#senderOf`, `#receiverOf`) as control producers, so their door faults are proposed
-as flips. PLAN plans the door occurrences that read a fault marker on the same relation, over the
-recording's schedule (`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE
-proposes are minted.
+in, `explore/Corpus#startedBy`; `#senderOf`, `#receiverOf`) as control producers where a session
+recorded a fault decision of them, so their door faults are proposed as flips. PLAN plans the door
+occurrences that read a fault marker on the same relation, over the recording's schedule
+(`causynth/RecordedMessages#doorsOf`, SYMBOL-SCOPE.md §4.4), so the faults EXPLORE proposes are
+minted: one predicate. A door that decided no fault -- unplanned, since it read no marker (a
+transport with no woven door in the case's scope), or a role -- is a DIAGNOSTIC row, not a member.
 
 ### 7.4 Captures bound to exchanges
 
@@ -510,9 +529,20 @@ of the same codec is transparent; and brackets each declared `EXCHANGE` method.
 
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
-begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
+begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
+the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
+`#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
+the turn is vacant is that first step), its `END` only if its `WAKE` was: a turn that makes no event
+holds no slot, and its begin shows its thread away from the frontier (`ELSEWHERE`), so a spinning
+loop defers no stall. In a replay the turn's first event first takes the `WAKE`'s slot; what the turn
+computes before it makes no event and is not held. `context` = `<node>|<ctx render>[|<start frames>]`
 (the claimed starts' levels from the scope base, each start's own frame after the starter's frames
-it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). A task claimed on a pool's
+it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). Where a consumer claimed work
+(a queue item, or a task taken on another thread than its starter's) the levels start at its
+outermost such claim (`State#consumedStart`): a queue item's claim carries its putter's scope
+(§3), so the consumer's own start and the frames it inherited -- which IPC handler or reader took
+it -- are the queue's scheduling, no part of the context (hdfs-adhoc-46: which handler claimed a
+call moved its `CLAIM`'s context). A task claimed on a pool's
 thread stands on its starter's frames as levels of its claim; a started thread stands on the frames
 it inherited from its creator (§6) and adds its start frame alone, so its inherited frames above its
 scope base are its starter's frames here, by their call sites alone (their `k` counts how often the
@@ -524,11 +554,32 @@ one site made in two calls of one method, each started from a level of its own, 
 question shapes (`ContextShape.Stance` reads node and causal context only), do not; a recording
 made before this rule states shorter contexts for such threads, so it cannot hold a replay made
 after it (every campaign records and replays with one frozen jar). `k` counts events per (kind, context, site). A
-`Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
+`Lost` context, a context anchored by an unawaited receipt, and one anchored by a message this run
+stated no `SEND` for (`ScheduleLog#unordered`, `#SENDERS`: sent before the window, from a Lost turn,
+or from a context that makes none) make no event: the order cannot hold what a cause outside it
+causes (hdfs-adhoc-19/35: a DataNode's block report went out before the window, and its reply, with
+the NameNode's commands, came inside it). A response stands where its request was received, so a
+receipt in such a context answers with no `SEND` (`CausynthTraceRecorder#outboundExchange`), and
+what the reply causes makes none either. The stances are a bounded store (`Interactions#LIMIT`): once
+it dropped one, a miss may be a dropped sender, so that sender is unknown, its context ordered, and
+it is named once (`schedule-sender-unknown#<endpoint>`). `mark` rows state
 where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
+`{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names
+(`MessageDoors#startupStep(step, who)`/`#startupDone`): a step taken before the window that builds
+state a replay reads, which no slot holds; `who` names the taker the same in both passes. Marks are
+written in completion order, before the window as inside it, and handed on with every order
+(`SchedulePrefix#write`). Before its window a replay holds the taker at the step until every pass
+marked before its own (a taker's n-th pass is its n-th mark) completed it, at most one schedule
+timeout, then gives the missing ones up by name (`runtime/StartupOrder`, a `SCHEDULE_DIVERGED`
+DIAGNOSTIC `startup#<step>`; an interrupt ends the hold by that name too). Inside the window nothing
+holds there: the schedule's slots order the step's events, and no hold is hidden from the watchdog.
+HDFS's step is the NameNode adding a DataNode (`FSNamesystem#registerDatanode`, around its write
+lock), named by the DataNode's UUID, which its seeded draw makes equal in both passes: the topology
+orders DataNodes as they are added, and block placement picks pipelines by position there
+(hdfs-adhoc-01/43).
 
 `runtime/ScheduleLog` records in both passes into `schedule.jsonl`. In a replay it also holds the
 order:
@@ -562,7 +613,15 @@ order:
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot. The watchdog
+  not do; a waiter gives up what its own occurrence did not make before its slot. A waiter no
+  occurrence names gives up the earlier slots of its own exact context, no occurrence naming them,
+  at any kind and site it made since it last entered that context (`ScheduleLog.Made`), so the rest
+  of a loop it left early is given up (hdfs-adhoc-44: a test's wall-clock poll made 8 of 171 recorded
+  RPCs); never an event or a slot an occurrence names. Threads an unwoven starter started share their
+  creator's context, so each such give-up is a named `SCHEDULE_DIVERGED` DIAGNOSTIC
+  (`schedule-passed#<slot>`, with how often it fired in that context), counted in the progress line;
+  a given-up slot is still taken if it comes, and that late take is named
+  (`schedule-passed-late#<slot>`). The watchdog
   watches the order's frontier (`ScheduleLog#firstBlocking`: the first open slot that is no
   `WAKE` or `INTERRUPT`), which every wait for a slot or for the line waits on. It acts once the frontier has
   stood `causynth.schedule.timeout.ms` (default 15 s) with no thread computing toward it, or eight

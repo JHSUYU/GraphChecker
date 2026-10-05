@@ -177,7 +177,7 @@ public final class RegionConcurrentHashMapSmoke {
                 "the absent get is no READ of a stated state: " + absent);
         require(fallback.contains("\"operation\":\"READ_OR_DEFAULT\""),
                 "getOrDefault is no READ_OR_DEFAULT: " + fallback);
-        require(count(presence, "\"versionKind\":\"STATE_PUT_IF\"") == 1
+        require(count(presence, "\"versionKind\":\"STATE_PUT_IF\",") == 1
                         && count(presence, "\"operation\":\"MATCHES\"") >= 2
                         && presence.contains("\"answer\":"),
                 "putIfAbsent is no PUT_IF guarded by what it found: "

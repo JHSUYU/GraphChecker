@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -30,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.apache.hadoop.ipc.CausynthMessagePropagation;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -1145,6 +1147,10 @@ public class RowRuntimeTest {
         assertEquals(41L, read.get("regionEnterEventId").getAsLong());
         assertEquals("()I", read.getAsJsonObject("site")
                 .get("methodDescriptor").getAsString());
+        // And what its plan chose, in its read-from node's shape.
+        assertEquals(50L, VmRows.recordedVersion(read));
+        assertEquals("RMW", read.getAsJsonObject("observedVersion")
+                .get("versionKind").getAsString());
         // The expressions the refs name are in the session's own table.
         assertTrue(Files.exists(dir.expressions()));
         assertTrue(RowCodec.readExpressions(dir.expressions())
@@ -1293,13 +1299,20 @@ public class RowRuntimeTest {
         read.addProperty("regionEnterEventId", 41L);
         read.addProperty("readerContextId", 7L);
         read.add("site", site);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 50L);
+        observed.addProperty("versionKind", "RMW");
+        read.add("observedVersion", observed);
+        read.addProperty("observedExact", true);
+        read.addProperty("writerSetComplete", true);
+        read.addProperty("_java_type", "I");
         JsonArray versions = new JsonArray();
         versions.add(version);
         JsonArray reads = new JsonArray();
         reads.add(read);
         JsonObject envelope = new JsonObject();
         envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
-        envelope.addProperty("schemaVersion", 1);
+        envelope.addProperty("schemaVersion", 2);
         envelope.add("versions", versions);
         envelope.add("reads", reads);
         envelope.addProperty("readLogTruncated", false);
@@ -1468,7 +1481,9 @@ public class RowRuntimeTest {
         read.addProperty("_exp", "M_I_placeholder");
         read.addProperty("_java_type", "I");
         read.add("location", location);
-        read.addProperty("observedVersion", version);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", version);
+        read.add("observedVersion", observed);
         return read;
     }
 
@@ -2488,6 +2503,59 @@ public class RowRuntimeTest {
         assertTrue(RowPublication.disjunction(Collections.singletonList(
                 decided("G#u3", false, c)), guards, "G#u3", 1, arms));
         assertEquals(Collections.singletonList(refC), arms);
+    }
+
+    /**
+     * A concrete target testing a helper's constant return is decided by the
+     * latest decision in the helper's method before it, when that is a
+     * decider arm (causynth.BooleanReturns); a concrete one testing a
+     * nested helper's return by that helper's in turn (hdfs-adhoc-40:
+     * {@code isSufficientlyReplicated}'s concrete test of {@code
+     * hasMinStorage}'s return, chosen by {@code liveNum >= min}).  Never an
+     * earlier call's: a latest decision at an arm that runs on, or concrete
+     * with nothing below it, decides nothing.
+     */
+    @Test
+    public void aHelpersReturnIsDecidedByTheLatestArmInItsMethod() {
+        String helper = "<a.H: boolean sufficient(int)>";
+        String nested = "<a.H: boolean hasMin(int)>";
+        List<StaticScopeMap.Guard> deciders = Arrays.asList(
+                new StaticScopeMap.Guard(helper + "#u2", false, Arrays.asList(
+                        new StaticScopeMap.Guard(nested + "#u1", true),
+                        new StaticScopeMap.Guard(nested + "#u1", false))),
+                new StaticScopeMap.Guard(helper + "#u4", true),
+                new StaticScopeMap.Guard(helper + "#u4", false));
+        JsonObject m = predicate("m"), h = predicate("h");
+        Object[][] rows = {
+            // the decisions before the target at 12, which one decided it
+            {"the nested helper's comparison", new Object[][]{
+                    {nested + "#u1", 10L, false, m},
+                    {helper + "#u2", 11L, false, null}}, 10L},
+            {"the helper's own comparison", new Object[][]{
+                    {nested + "#u1", 9L, true, m},
+                    {helper + "#u2", 10L, true, null},
+                    {helper + "#u4", 11L, true, h}}, 11L},
+            {"an arm that runs on decides nothing", new Object[][]{
+                    {nested + "#u1", 10L, true, m},
+                    {helper + "#u2", 11L, true, null}}, null},
+            {"never an earlier call's", new Object[][]{
+                    {helper + "#u4", 5L, true, h},
+                    {helper + "#u4", 11L, false, null}}, null},
+            {"nor one after the target", new Object[][]{
+                    {helper + "#u4", 13L, true, h}}, null}};
+        for (Object[] row : rows) {
+            List<JsonObject> mappings = new ArrayList<>();
+            for (Object[] each : (Object[][]) row[1]) {
+                JsonObject mapping = decided((String) each[0],
+                        (Boolean) each[2], (JsonObject) each[3]);
+                mapping.addProperty("vmEventId", (Long) each[1]);
+                mappings.add(mapping);
+            }
+            JsonObject found = RowPublication.decidedBy(mappings, deciders,
+                    12L);
+            assertEquals((String) row[0], row[2], found == null ? null
+                    : found.get("vmEventId").getAsLong());
+        }
     }
 
     private static JsonObject predicate(String name) {

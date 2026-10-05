@@ -735,10 +735,15 @@ public final class CausynthTraceRecorder {
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half, site,
                 receipt == null ? null : receipt.response);
-        // The schedule's SEND, naming the minted producer.
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, site,
-                producer == null ? "" : producer.id(),
-                receipt == null ? null : receipt.stance);
+        // The schedule's SEND, naming the minted producer.  A response
+        // stands where its request was received: a receipt in a context that
+        // makes no event (ScheduleLog#unordered) answers with none, so what
+        // the reply causes makes none either.
+        if (receipt == null || receipt.stance != null) {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, site,
+                    producer == null ? "" : producer.id(),
+                    receipt == null ? null : receipt.stance);
+        }
         if (DEBUG_PRODUCERS && producer != null) {
             EngineConsole.println("CAUSYNTH-PRODUCER " + transport + "#"
                     + half
@@ -1037,6 +1042,18 @@ public final class CausynthTraceRecorder {
     /** Whether the tick {@link #beginDaemonTick} opened is a vacant turn. */
     public static boolean vacantDaemonTick(long token) {
         return RuntimeTraceContext.vacantTick(token);
+    }
+
+    /** {@code who} begins startup {@code step} ({@link
+     *  StartupOrder#begin}). */
+    public static Object startupStep(String step, String who) {
+        initialize();
+        return StartupOrder.begin(step, who);
+    }
+
+    /** The step {@link #startupStep} began completed. */
+    public static void startupDone(Object pass) {
+        StartupOrder.done((String[]) pass);
     }
 
     /** Closes the tick {@link #beginDaemonTick} opened. */

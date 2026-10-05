@@ -764,6 +764,7 @@ do_analyze() {
     system_properties+=("-Dcausynth.lineage.roots=${causynth_lineage_roots}")
   fi
   system_properties+=("-Dcausynth.system.doors=${causynth_system_doors}")
+  system_properties+=("-Dcausynth.io.doors=$(campaign_io_doors)")
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
     system_properties+=(
@@ -866,20 +867,37 @@ campaign_grown_scope() {
   printf '%s\n' "${causynth_output_dir}/scope-classes"
 }
 
+# The demanded doors the static pass chose (causynth.DemandedDoors, a local
+# file operation on the traced flow, SYMBOL-SCOPE §4.6): every pass weaves
+# them before any analysis (do_analyze).
+campaign_io_doors() {
+  printf '%s\n' "${causynth_output_dir}/io_doors.jsonl"
+}
+
 # The static pass, with the scope grown where the slice stops at it until
 # nothing is added or the budget is spent (SYMBOL-SCOPE §2.4).  First, and
 # after every growth, outside the budget, the classes of the library doors
-# the analysis scope calls (campaign_scope_doors).
+# the analysis scope calls (campaign_scope_doors).  A pass that chose more
+# demanded doors runs again over them, outside the budget too: a door moves
+# the unit indices of its method, so the scope map is the woven body's.
 campaign_analyze_grown_scope() {
-  local grown changes summary
+  local grown changes summary doors=0 chosen
   grown=$(campaign_grown_scope)
   local -a roots=()
   rm -rf -- "${grown}"
+  rm -f -- "$(campaign_io_doors)"
   mkdir -p "${grown}"
   IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
   (( ${#roots[@]} == 0 )) || campaign_scope_doors "${grown}" "${roots[@]}"
   while :; do
     campaign_analyze SEED "${causynth_output_dir}/static-pass.log"
+    chosen=$(grep -c . "$(campaign_io_doors)" 2>/dev/null || true)
+    if (( ${chosen:-0} > doors )); then
+      doors=${chosen}
+      campaign_log "demanded doors: ${doors} chosen; the static pass runs \
+again over them"
+      continue
+    fi
     (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
     read -r changes summary < <(run_java_main \
       edu.uva.liftlab.graphchecker.plan.ScopeGrowth "${grown}" \
@@ -1764,15 +1782,15 @@ campaign_dispatch_remote() {
   return "${status}"
 }
 
-# The peer's evidence, visible HERE.
+# The peer's evidence, visible HERE: <worker>'s result and the session it
+# names under <staged>, the directory the job staged its sessions to.
 #
 # Bounded, never assumed: see campaign_remote_visibility_wait_s.  The
 # directory is re-listed on each turn because it is the directory's cached
 # listing, not the file's contents, that a fresh lookup has to get past.
 campaign_await_remote_result() {
-  local worker=$1 host=$2 obligation_id=$3
+  local worker=$1 host=$2 obligation_id=$3 staged=$4
   local result="${worker}/obligation_result.jsonl"
-  local staged="${worker}/sessions"
   local waited=0 session_id=""
   while [[ ! -s "${result}" ]]; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
@@ -3945,11 +3963,12 @@ ${campaign_host_wait_reason}"
 
 # campaign_stream_job <kind> <host> <charge> <id> <worker> <args...>: one
 # start of the pool, on the host that admitted it and charged it <charge>:
-# an OBLIGATION's worker (campaign_obligation_worker <args...>) or a GROW
-# RERUN's replay (campaign_obligation_replay <args...>).  A local one is a
+# an OBLIGATION's worker (campaign_obligation_worker <args...>), a GROW
+# RERUN's replay (campaign_obligation_replay <args...>) or an attempt's
+# CONFIRM replay (campaign_confirm_replay <args...>).  A local one is a
 # subshell under `set -euo pipefail`; a remote one runs through the remote
 # worker script, an obligation as --run-obligation (the script and ssh's own
-# output beside its logs), a re-run as a placed step (campaign_run_placed);
+# output beside its logs), a replay as a placed step (campaign_run_placed);
 # its stdout and stderr are <worker>'s either way.  Its charge, which the
 # head holds, is released as soon as its work returned, before the head
 # waits to see what a peer wrote (campaign_await_remote_result), and again
@@ -3959,7 +3978,13 @@ campaign_stream_job() {
   local kind=$1 host=$2 charge=$3 id=$4 worker=$5 status=0
   shift 5
   local -a work=(campaign_obligation_worker "$@")
-  [[ "${kind}" == OBLIGATION ]] || work=(campaign_obligation_replay "$@")
+  # Where the job stages its sessions: an obligation's and a re-run's under
+  # their worker, a CONFIRM replay's beside it (campaign_confirm_plan).
+  local staged="${worker}/sessions"
+  case "${kind}" in
+    RERUN) work=(campaign_obligation_replay "$@") ;;
+    CONFIRM) work=(campaign_confirm_replay "$@"); staged="$1/sessions" ;;
+  esac
   if campaign_host_is_local "${host}"; then
     ( set -euo pipefail; "${work[@]}" ) >"${worker}/stdout.log" \
       2>"${worker}/stderr.log" || status=$?
@@ -3978,7 +4003,7 @@ campaign_stream_job() {
 ${status}; its logs, and ssh's own output, are in ${worker}"
     return "${status}"
   fi
-  campaign_await_remote_result "${worker}" "${host}" "${id}"
+  campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}"
 }
 
 # An obligation whose worker did not finish (it exited <status>, or the head
@@ -4026,10 +4051,12 @@ campaign log says}); its logs are in ${worker}"
 #
 # No wave barrier.  The head starts queued obligations wherever the memory
 # ledger admits one and collects each as it returns.  Its own JVM work -- the
-# import gate over the sessions that landed with the round now owed, or a
-# COMPOSE attempt at the witnesses among them -- is one STEP at a time, in
-# the background (campaign_stream_step), so the pool goes on starting and
-# collecting while a step waits for memory or runs.  The corpus and the ledger change only
+# import gate over the sessions that landed with the round now owed and the
+# verdicts of the confirmation replays that returned, or a COMPOSE attempt at
+# the witnesses among them -- is one STEP at a time, in the background
+# (campaign_stream_step), so the pool goes on starting and collecting while a
+# step waits for memory or runs; an attempt's confirmation replay is a job of
+# the pool, never a step.  The corpus and the ledger change only
 # between two steps, in the head's hands (campaign_stream_step_start): a
 # step reads them as a landed whole, and whatever returns meanwhile waits
 # for the next one -- the busier the head, the more one step takes in.
@@ -4038,8 +4065,10 @@ campaign log says}); its logs are in ${worker}"
 # and write through bash's dynamic scope:
 #
 #   stream_queue      "<kind> <round> <id> [<session>]" not started yet:
-#                     OBLIGATION, or RERUN (GROW re-running the replay that
-#                     exposed a region, its exposing session named)
+#                     OBLIGATION; RERUN (GROW re-running the replay that
+#                     exposed a region, its exposing session named); or
+#                     CONFIRM (an attempt's confirmation replay, round "-",
+#                     the attempt's number its id)
 #   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
 #   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": what
 #                     returned since the last step began, not landed yet
@@ -4049,6 +4078,10 @@ campaign log says}); its logs are in ${worker}"
 #   stream_step_pid   the step running, or ""; stream_step_dir its directory
 #                     (steps/NNNN/: what it gates and plans, or attempts)
 #   stream_witnesses  sessions landed as witnesses, gated, not attempted yet
+#   stream_confirming attempt -> its claim's model, while its confirmation
+#                     is queued, runs or is not decided yet
+#   stream_deferred   witnesses whose attempt claimed a model under
+#                     confirmation: attempted again once a verdict lands
 #   stream_swaps      re-runs that returned, whose sessions replace the
 #                     exposing ones once no obligation runs
 #   stream_landed     sessions landed since the last round
@@ -4061,9 +4094,11 @@ campaign log says}); its logs are in ${worker}"
 #
 #   WITNESSED   an admitted replay that observed the fatal at the declared
 #               occurrence lands, COMPOSE over the corpus as it stands
-#               publishes the claim the final stages accept, and CONFIRM
-#               confirms it (campaign_stream_attempt): the queue is
-#               cancelled and what runs is reaped (campaign_stream_end).
+#               publishes the claim the final stages accept, and its
+#               CONFIRM, a job of the pool, confirms it (campaign_stream_attempt,
+#               campaign_stream_decide): the queue is cancelled, what runs
+#               is reaped, and the corpus is the one that attempt composed
+#               (campaign_stream_end).
 #   FIXED_POINT nothing proposed, exposed, queued, running or unlanded.
 #   REGION_PATH_WAVE_BUDGET_REACHED  a round of wave region_path_max_waves
 #               still owes work: it is not dispatched, the queue is
@@ -4090,11 +4125,11 @@ campaign_explore() {
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
-  local -a stream_witnesses=()
+  local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
   local -A stream_jobs=() stream_job_charge=() stream_flying=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
-  local -A stream_solver_seen=()
+  local -A stream_solver_seen=() stream_confirming=()
   : >"${results}"
   : >"${attempts}"
   mkdir -p "$(dirname "${stream_plan}")"
@@ -4124,7 +4159,7 @@ the stages after the exploration are owed $(campaign_reserve)s of it \
       break
     fi
     [[ -n "${stream_step_pid}" ]] || campaign_stream_step_start
-    [[ -z "${stream_stop}" ]] || campaign_stream_drop cancelled
+    [[ -z "${stream_stop}" ]] || campaign_stream_drop
     campaign_stream_dispatch
     # With no step running, everything that returned has landed, and a
     # round owed is planning (campaign_stream_step_start): nothing left to
@@ -4184,32 +4219,42 @@ campaign_stream_round_args() {
 }
 
 # Whether a round is owed now: something answered since the last one, and
-# either a session landed (the corpus grew) or nothing is left to wait for
-# (the last answers may close the frontier).  Never while GROW's re-runs or
-# swaps are owed: the corpus is about to change under the round.
+# either a session landed (the corpus grew) or no question is left to wait
+# for (the last answers may close the frontier; a confirmation's verdict
+# changes no frontier).  Never while GROW's re-runs or swaps are owed: the
+# corpus is about to change under the round.
 campaign_stream_plan_due() {
+  local entry
   (( stream_dirty == 1 && stream_hold == 0 )) || return 1
   (( stream_landed > 0 )) && return 0
-  (( ${#stream_jobs[@]} == 0 && ${#stream_queue[@]} == 0 ))
+  for entry in "${stream_jobs[@]}" "${stream_queue[@]}"; do
+    [[ "${entry}" == CONFIRM\ * ]] || return 1
+  done
 }
 
 # Between two steps, in the head's hands, the next one, in steps/NNNN/.
 # Witnesses gated and not yet attempted make it an ATTEMPT (`witnesses`,
-# all of them): nothing lands while it runs, so it composes the corpus as
-# it stood, and whatever returns meanwhile, a witness too, waits for the
-# step after it -- at most one attempt at a time, the witnesses that come
-# during one coalesced into the next.  Else what returned lands
+# all of them, and `confirming`, the models whose confirmation is still
+# owed) unless a confirmation replay returned, whose verdict goes first:
+# nothing lands while an attempt runs, so it composes the corpus as it
+# stood, and whatever returns meanwhile, a witness too, waits for the step
+# after it -- at most one attempt at a time, the witnesses that come during
+# one coalesced into the next.  Else what returned lands
 # (campaign_stream_land), GROW's re-runs swap in once due, the staged
 # sessions move into the corpus (campaign_stream_move), and the step takes
-# them in when there is work: `gate`, the sessions that landed; `round`, the
-# round now owed, with its in_flight.jsonl, taken here, where nothing is
-# unlanded.
+# them in when there is work: `gate`, the sessions that landed; `confirms`,
+# the confirmation replays that returned, to decide; `round`, the round now
+# owed, with its in_flight.jsonl, taken here, where nothing is unlanded.
 campaign_stream_step_start() {
-  local dir name="" row
-  local -a stream_staged=() gate=()
-  if (( ${#stream_witnesses[@]} > 0 )) && [[ -z "${stream_stop}" ]]; then
+  local dir name="" row entry
+  local -a stream_staged=() gate=() confirms=()
+  if (( ${#stream_witnesses[@]} > 0 )) && [[ -z "${stream_stop}" ]] \
+      && [[ " ${stream_pending[*]} " != *" CONFIRM "* ]]; then
     campaign_stream_step_dir
     printf '%s\n' "${stream_witnesses[@]}" >"${dir}/witnesses"
+    for entry in "${stream_confirming[@]}"; do
+      printf '%s\n' "${entry}"
+    done >"${dir}/confirming"
     stream_witnesses=()
   else
     (( ${#stream_pending[@]} == 0 )) || campaign_stream_land
@@ -4220,9 +4265,12 @@ campaign_stream_step_start() {
     if [[ -z "${stream_stop}" ]] && campaign_stream_plan_due; then
       name=$(printf 'obligations-%04d' "${stream_round}")
     fi
-    (( ${#gate[@]} > 0 )) || [[ -n "${name}" ]] || return 0
+    (( ${#gate[@]} + ${#confirms[@]} > 0 )) || [[ -n "${name}" ]] \
+      || return 0
     campaign_stream_step_dir
     (( ${#gate[@]} == 0 )) || printf '%s\n' "${gate[@]}" >"${dir}/gate"
+    (( ${#confirms[@]} == 0 )) \
+      || printf '%s\n' "${confirms[@]}" >"${dir}/confirms"
     if [[ -n "${name}" ]]; then
       for row in "${stream_flying[@]}"; do
         printf '%s\n' "${row}"
@@ -4246,10 +4294,12 @@ campaign_stream_step_dir() {
 }
 
 # One step of the head's JVM work, in the background: an attempt at the
-# witnesses <dir>/witnesses names, whose acceptance (<dir>/witnessed) ends
-# the exploration; or the import gate over the sessions <dir>/gate names
-# (one call: the head's) and the round <dir>/round names, planned into
-# obligations-NNNN/.  A BLOCKING row fails the campaign at IMPORT here, and
+# witnesses <dir>/witnesses names; or the import gate over the sessions
+# <dir>/gate names (one call: the head's), the verdicts on the confirmation
+# replays <dir>/confirms names (campaign_stream_decide), and -- unless one of
+# them confirmed its claim -- the round <dir>/round names, planned into
+# obligations-NNNN/.  An accepted witness (<dir>/witnessed) ends the
+# exploration.  A BLOCKING row fails the campaign at IMPORT here, and
 # a planner that fails fails it at EXPLORE -- but one that ran out of the
 # most heap a head JVM is given plans no round: the corpus outgrew what the
 # head can hold, its round directory goes (its logs into the step) and
@@ -4267,7 +4317,11 @@ campaign_stream_step() {
     [[ ! -s "${dir}/gate" ]] || mapfile -t gate <"${dir}/gate"
     (( ${#gate[@]} == 0 )) || campaign_import_gate "${iteration_dir}" \
       "${iteration_id}" "${dir}/import_gate.json" "${gate[@]/#/${sessions}/}"
-    if [[ -s "${dir}/round" ]]; then
+    [[ ! -s "${dir}/confirms" ]] || campaign_stream_decide "${dir}"
+    if [[ -s "${dir}/round" && -s "${dir}/witnessed" ]]; then
+      # The exploration ends here: the round owed is never planned.
+      : >"${dir}/round-skipped"
+    elif [[ -s "${dir}/round" ]]; then
       round_dir="${iteration_dir}/$(cat "${dir}/round")"
       [[ ! -e "${round_dir}" ]] || die \
         "obligation round directory already exists: ${round_dir}"
@@ -4298,18 +4352,38 @@ ${status}: $(campaign_thrown "${round_dir}/stderr.log")"
 }
 
 # The step returned: one that failed has said why on the campaign's stderr
-# and ends the head; an accepted attempt ends the exploration; else its
-# round, if it planned one, is taken (campaign_stream_take_round).
+# and ends the head.  An attempt that owes a confirmation queues its replay
+# first in the pool (CONFIRM, its model under confirmation); witnesses whose
+# model was under confirmation wait for a verdict (stream_deferred), and go
+# back to be attempted once one lands without ending the exploration.  An
+# accepted witness ends the exploration; else the step's round, if it
+# planned one, is taken (campaign_stream_take_round).
 campaign_stream_step_done() {
-  local status=$1 dir=${stream_step_dir}
+  local status=$1 dir=${stream_step_dir} id
   stream_step_pid=""
   stream_step_dir=""
   (( status == 0 )) || exit "${status}"
   campaign_engine_outgrown=$(cat "${dir}/outgrown")
+  if [[ -s "${dir}/confirm" ]]; then
+    id=$(cat "${dir}/confirm")
+    stream_confirming[${id}]=$(cat \
+      "${iteration_dir}/witness-attempts/${id}/model")
+    stream_queue=("CONFIRM - ${id}" "${stream_queue[@]}")
+  fi
+  [[ ! -s "${dir}/deferred" ]] || mapfile -t -O "${#stream_deferred[@]}" \
+    stream_deferred <"${dir}/deferred"
+  if [[ -s "${dir}/decided" ]]; then
+    while read -r id; do
+      unset 'stream_confirming[$id]'
+    done <"${dir}/decided"
+    stream_witnesses+=("${stream_deferred[@]}")
+    stream_deferred=()
+  fi
   if [[ -s "${dir}/witnessed" ]]; then
     stream_stop=WITNESSED
     stream_stop_detail=$(cat "${dir}/witnessed")
     campaign_witness_attempt=$(cat "${dir}/attempt")
+    [[ ! -e "${dir}/round-skipped" ]] || stream_round=$((stream_round - 1))
   elif [[ -s "${dir}/heap-exceeded" ]]; then
     # The round was never planned: the last one is the round before it.
     stream_round=$((stream_round - 1))
@@ -4424,23 +4498,30 @@ truncated at its task bound: ${truncated} occurrence(s) were not planned \
 }
 
 # One COMPOSE over the corpus as it stands -- the stage's own entry,
-# do_compose, into a scratch directory -- at the witnesses of step <dir>.  An observed fatal is not yet a composable witness: the families
-# COMPOSE joins may need sessions later obligations would add.  Only an
-# attempt that publishes the claim the final stages accept, SAT_CANDIDATE
-# with its polarity deciding, and that CONFIRM confirms (campaign_confirm_claim,
-# its replay in <campaign root>/witness-confirm/, out of the iteration) writes
-# <dir>/witnessed, which ends the exploration; a refuted one is excluded from
-# every composition after it (campaign_refute) and the exploration goes on.
-# With no room left in the budget for a confirmation (campaign_claim_room),
-# the claim is accepted as it stands and the final CONFIRM decides.
+# do_compose, into a scratch directory -- at the witnesses of step <step>.
+# An observed fatal is not yet a composable witness: the families COMPOSE
+# joins may need sessions later obligations would add.  Its corpus is kept
+# (corpus.txt), and what it composed (attempt.json).  Only a claim the final
+# stages accept, SAT_CANDIDATE with its polarity deciding, is confirmed, its
+# task planned here (campaign_confirm_plan, its replay in <campaign
+# root>/witness-confirm/, out of the iteration): a verdict known now is
+# decided now; else its replay is owed (<step>/confirm), a job of the pool
+# (campaign_stream_step_done), decided once it returns
+# (campaign_stream_decide), while landing, planning and later attempts go on.
+# A model already under confirmation is not confirmed twice: its witnesses
+# wait (<step>/deferred).  With no room left in the budget for a
+# confirmation (campaign_claim_room), the claim is accepted as it stands and
+# the final CONFIRM decides.
 campaign_stream_attempt() {
-  local step=$1 dir status=0 claim="" kind="" polarity=false
-  local accepted=false confirmed=null reason="" started compose_ms=0
-  local confirm_ms=0
+  local step=$1 dir status=0 claim="" kind="" polarity=false started
+  local compose_ms model
   shift
   dir=$(printf '%s/witness-attempts/%04d' "${iteration_dir}" \
-    "$(grep -c '' "${attempts}" || true)")
+    "$(find "${iteration_dir}/witness-attempts" -mindepth 1 -maxdepth 1 \
+      -type d 2>/dev/null | grep -c '' || true)")
   mkdir -p "${dir}"
+  find "${sessions}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+    | LC_ALL=C sort >"${dir}/corpus.txt"
   started=$(date +%s%N)
   ( compose_sessions_dir="${sessions}"
     composed_smt="${dir}/candidate.smt2"
@@ -4456,49 +4537,122 @@ campaign_stream_attempt() {
       "${dir}/candidate_composition_manifest.json" 2>/dev/null) \
       || polarity=false
   fi
-  [[ "${claim}" == SAT_CANDIDATE && "${polarity}" == true ]] \
-    && accepted=true
-  if [[ "${accepted}" == true ]] && campaign_claim_room; then
-    started=$(date +%s%N)
-    campaign_confirm_claim "${iteration_dir}" "${dir}" \
-      "${campaign_root}/witness-confirm/$(basename "${dir}")" \
-      >>"${dir}/compose.log" 2>&1
-    confirm_ms=$(( ($(date +%s%N) - started) / 1000000 ))
-    confirmed=$(jq -r '.confirmed' "${dir}/confirm.json")
-    reason=$(jq -r '.reason' "${dir}/confirm.json")
-    [[ "${confirmed}" == true ]] || accepted=false
-  fi
   jq -n -c --arg step "$(basename "${step}")" --arg dir "${dir}" \
+    --arg attempt "$(basename "${dir}")" \
     --argjson witnesses "$(printf '%s\n' "$@" | jq -R . | jq -s -c .)" \
     --arg claim "${claim}" --arg kind "${kind}" \
-    --argjson polarity "${polarity}" --argjson accepted "${accepted}" \
-    --argjson exit "${status}" --argjson confirmed "${confirmed}" \
-    --arg reason "${reason}" --argjson composeMillis "${compose_ms}" \
-    --argjson confirmMillis "${confirm_ms}" \
-    '{step: $step, witnesses: $witnesses, dir: $dir, composeExit: $exit,
-      claim: $claim, findingKind: $kind, polarityDecides: $polarity,
-      confirmed: $confirmed, confirmReason: $reason,
-      composeMillis: $composeMillis, confirmMillis: $confirmMillis,
-      accepted: $accepted}' >>"${attempts}"
+    --argjson polarity "${polarity}" --argjson exit "${status}" \
+    --argjson composeMillis "${compose_ms}" \
+    '{attempt: $attempt, step: $step, witnesses: $witnesses, dir: $dir,
+      composeExit: $exit, claim: $claim, findingKind: $kind,
+      polarityDecides: $polarity, composeMillis: $composeMillis}' \
+    >"${dir}/attempt.json"
   campaign_log "witness $*: COMPOSE over the corpus as it stands \
-(exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity} \
-confirmed=${confirmed}: $([[ "${accepted}" == true ]] \
-  && echo "the exploration ends" || echo "the exploration goes on")"
-  [[ "${accepted}" == true ]] || return 0
-  printf '%s\n' "${dir}" >"${step}/attempt"
-  printf '%s\n' "an admitted replay ($*) observed the fatal at the declared \
-occurrence and COMPOSE over the corpus as it stood published ${claim} \
-${kind} with its polarity deciding (${dir}), confirmed=${confirmed}" \
-    >"${step}/witnessed"
+(exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity}"
+  if [[ "${claim}" != SAT_CANDIDATE || "${polarity}" != true ]]; then
+    campaign_stream_attempt_row "${dir}" null "" 0 false
+  elif ! campaign_claim_room; then
+    campaign_stream_attempt_row "${dir}" null "" 0 true
+    campaign_stream_witnessed "${step}" "${dir}" null
+  else
+    model=$(campaign_claim_model "${dir}/claim.json")
+    if grep -q -x -F -- "${model}" "${step}/confirming"; then
+      printf '%s\n' "$@" >"${step}/deferred"
+      campaign_stream_attempt_row "${dir}" null "its model is under \
+confirmation by an earlier attempt: its witnesses are attempted again once \
+that verdict lands" 0 false
+      return 0
+    fi
+    campaign_confirm_plan "${iteration_dir}" "${dir}" \
+      "${campaign_root}/witness-confirm/$(basename "${dir}")"
+    if [[ ! -s "${dir}/confirm.json" ]]; then
+      printf '%s\n' "${model}" >"${dir}/model"
+      basename "${dir}" >"${step}/confirm"
+      campaign_log "witness $*: its confirmation replay is queued"
+      return 0
+    fi
+    campaign_confirm_settle "${iteration_dir}" "${dir}"
+    campaign_stream_confirmed "${step}" "${dir}" 0
+  fi
 }
 
-# The queued obligations, out of the queue: their worker directories (made
-# at enqueue, holding nothing yet) gone, none of them in flight any more;
-# GROW's queued re-runs stay.  `cancelled` names each in exploration.json
-# (the exploration ends); `again` leaves them to the next round, which asks
-# again what is still owed (a swap changed the corpus they were cut from).
+# The verdicts on the confirmation replays that returned (<step>/confirms:
+# "<attempt> <exit>"), each decided (campaign_confirm_decide, refuted by
+# campaign_confirm_settle) in attempt order; the earliest attempt confirmed,
+# by attempt order and not by finish time, is the witness, and a later one
+# confirmed in the same landing states it (supersededBy).  The decided
+# attempts are <step>/decided.
+campaign_stream_decide() {
+  local step=$1 attempt replayed dir confirm chosen="" started
+  while read -r attempt replayed; do
+    dir="${iteration_dir}/witness-attempts/${attempt}"
+    confirm="${campaign_root}/witness-confirm/${attempt}"
+    campaign_confirm_decide "${dir}" "${confirm}" "${replayed}"
+    campaign_confirm_settle "${iteration_dir}" "${dir}"
+    printf '%s\n' "${attempt}" >>"${step}/decided"
+    started=$(cat "${confirm}/started-at")
+    if [[ -n "${chosen}" \
+        && "$(jq -r '.confirmed' "${dir}/confirm.json")" == true ]]; then
+      campaign_stream_attempt_row "${dir}" true "$(jq -r '.reason' \
+        "${dir}/confirm.json")" "$(( $(date +%s%3N) - started ))" false \
+        "${chosen}"
+      continue
+    fi
+    campaign_stream_confirmed "${step}" "${dir}" \
+      "$(( $(date +%s%3N) - started ))"
+    [[ -n "${chosen}" || ! -s "${step}/witnessed" ]] || chosen=${attempt}
+  done < <(LC_ALL=C sort "${step}/confirms")
+}
+
+# The verdict on attempt <dir>'s claim (<dir>/confirm.json), its replay
+# <confirm_ms> long: its row, and, confirmed, the witness of <step>.
+campaign_stream_confirmed() {
+  local step=$1 dir=$2 confirm_ms=$3 confirmed
+  confirmed=$(jq -r '.confirmed' "${dir}/confirm.json")
+  campaign_stream_attempt_row "${dir}" "${confirmed}" \
+    "$(jq -r '.reason' "${dir}/confirm.json")" "${confirm_ms}" \
+    "$([[ "${confirmed}" == true ]] && echo true || echo false)"
+  [[ "${confirmed}" != true ]] \
+    || campaign_stream_witnessed "${step}" "${dir}" "${confirmed}"
+}
+
+# Attempt <dir> accepted, confirmed=<confirmed>: the witness that ends the
+# exploration (<step>/witnessed, <step>/attempt).
+campaign_stream_witnessed() {
+  local step=$1 dir=$2 confirmed=$3
+  printf '%s\n' "${dir}" >"${step}/attempt"
+  jq -r --arg confirmed "${confirmed}" '"an admitted replay (\(.witnesses
+    | join(" "))) observed the fatal at the declared occurrence and COMPOSE
+    over the corpus as it stood published \(.claim) \(.findingKind) with its
+    polarity deciding (\(.dir)), confirmed=\($confirmed)"' \
+    "${dir}/attempt.json" | tr '\n' ' ' | sed 's/  */ /g' >"${step}/witnessed"
+  campaign_log "witness attempt $(basename "${dir}") accepted: the \
+exploration ends"
+}
+
+# One attempt's row of witness_attempts.jsonl, once its outcome is known:
+# what it composed (attempt.json) and confirmed (true, false, or null:
+# none), the confirmation's reason, how long its replay took, whether it is
+# the accepted witness, and the earlier attempt that is, when one confirmed
+# in the same landing (supersededBy).
+campaign_stream_attempt_row() {
+  local dir=$1 confirmed=$2 reason=$3 confirm_ms=$4 accepted=$5
+  local superseded=${6:-}
+  jq -c --argjson confirmed "${confirmed}" --arg reason "${reason}" \
+    --argjson confirmMillis "${confirm_ms}" --argjson accepted "${accepted}" \
+    --arg superseded "${superseded}" \
+    '. + {confirmed: $confirmed, confirmReason: $reason,
+      confirmMillis: $confirmMillis, accepted: $accepted}
+     + (if $superseded == "" then {} else {supersededBy: $superseded} end)' \
+    "${dir}/attempt.json" >>"${attempts}"
+}
+
+# The queued obligations, cancelled: out of the queue, their worker
+# directories (made at enqueue, holding nothing yet) gone, none of them in
+# flight any more, each named in exploration.json; GROW's queued re-runs and
+# the queued confirmations stay.
 campaign_stream_drop() {
-  local why=$1 entry kind round id
+  local entry kind round id
   local -a kept=()
   for entry in "${stream_queue[@]}"; do
     read -r kind round id _ <<<"${entry}"
@@ -4506,7 +4660,7 @@ campaign_stream_drop() {
       kept+=("${entry}")
       continue
     fi
-    [[ "${why}" != cancelled ]] || stream_cancelled+=("${id}")
+    stream_cancelled+=("${id}")
     unset 'stream_flying[$id]'
     rmdir -- "${iteration_dir}/${round}/${id}"
   done
@@ -4516,11 +4670,14 @@ campaign_stream_drop() {
 # WITNESSED, or CAMPAIGN_BUDGET_REACHED: the queue cancelled, and everything
 # this campaign still runs ended -- its process trees here, its workers on
 # every peer -- and moved out of the iteration with what it staged, as is
-# what returned after the last step began, never landed: the corpus COMPOSE
-# reads next is exactly the one the last step read.
+# what returned after the last step began, never landed; a confirmation
+# queued, running or undecided is its attempt's row, reaped.  At a witness
+# the sessions that landed after its attempt composed (not in its
+# corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
+# COMPOSE reads next is exactly the one the accepted attempt read.
 campaign_stream_end() {
-  local pid entry kind round id host status session dir
-  local -a dropped=()
+  local pid entry kind round id host status session dir queued=0
+  local -a dropped=() confirms=() withdrawn=()
   for pid in "${!stream_jobs[@]}"; do
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
     dropped+=("${kind} ${round} ${id}")
@@ -4529,14 +4686,22 @@ campaign_stream_end() {
     read -r kind round id host status session <<<"${entry}"
     dropped+=("${kind} ${round} ${id}")
   done
-  campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}; \
-${#stream_queue[@]} queued obligation(s) cancelled and ${#dropped[@]} \
-unlanded one(s) reaped (exploration.json)"
-  campaign_stream_drop cancelled
+  for entry in "${stream_queue[@]}"; do
+    [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
+  done
+  campaign_stream_drop
+  for entry in "${stream_queue[@]}"; do
+    read -r kind round id _ <<<"${entry}"
+    [[ "${kind}" != CONFIRM ]] || confirms+=("${id}")
+  done
   stream_queue=()
   campaign_stream_reap
   for entry in "${dropped[@]}"; do
     read -r kind round id <<<"${entry}"
+    if [[ "${kind}" == CONFIRM ]]; then
+      confirms+=("${id}")
+      continue
+    fi
     stream_reaped+=("${id}")
     dir="${iteration_dir}/${round}/${id}"
     [[ "${kind}" == OBLIGATION ]] \
@@ -4544,6 +4709,27 @@ unlanded one(s) reaped (exploration.json)"
     mkdir -p "${campaign_root}/explore-reaped/${round}"
     mv -- "${dir}" "${campaign_root}/explore-reaped/${round}/${id}"
   done
+  for id in "${confirms[@]}"; do
+    campaign_stream_attempt_row "${iteration_dir}/witness-attempts/${id}" \
+      null "its confirmation was reaped when the exploration ended \
+${stream_stop}" 0 false
+  done
+  if [[ "${stream_stop}" == WITNESSED ]]; then
+    while read -r session; do
+      mkdir -p "${campaign_root}/explore-reaped/after-witness"
+      mv -- "${sessions}/${session}" \
+        "${campaign_root}/explore-reaped/after-witness/${session}"
+      withdrawn+=("${session}")
+    done < <(find "${sessions}" -mindepth 1 -maxdepth 1 -type d \
+        -printf '%f\n' | LC_ALL=C sort \
+      | LC_ALL=C comm -23 - "${campaign_witness_attempt}/corpus.txt")
+  fi
+  campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}; \
+${queued} queued obligation(s) cancelled, ${#dropped[@]} unlanded job(s) and \
+${#confirms[@]} confirmation(s) reaped, and ${#withdrawn[@]} session(s) that \
+landed after the accepted attempt composed out of the corpus \
+(exploration.json)"
+  stream_after_witness=("${withdrawn[@]}")
   stream_jobs=()
   stream_pending=()
 }
@@ -4594,16 +4780,16 @@ campaign_process_tree() {
 
 # Starts what the queue holds, first first, while this exploration runs
 # fewer than its share of stream_max_in_flight (campaign_stream_has_slot)
-# and a host admits it: an obligation or a GROW re-run on the next host of
-# the pool, round-robin, whose memory ledger admits one more start and that
-# runs fewer of this campaign's than it has cores
-# (campaign_stream_admit_host).  While GROW owes re-runs or swaps, only
-# re-runs start.
+# and a host admits it: an obligation, a GROW re-run or a confirmation on
+# the next host of the pool, round-robin, whose memory ledger admits one
+# more start and that runs fewer of this campaign's than it has cores
+# (campaign_stream_admit_host).  While GROW owes re-runs or swaps, no
+# obligation starts: a confirmation reads no corpus.
 campaign_stream_dispatch() {
   local entry
   while (( ${#stream_queue[@]} > 0 )); do
     entry=${stream_queue[0]}
-    [[ "${entry}" == RERUN\ * ]] || (( stream_hold == 0 )) || return 0
+    [[ "${entry}" != OBLIGATION\ * ]] || (( stream_hold == 0 )) || return 0
     campaign_stream_has_slot || return 0
     campaign_stream_admit_host "${entry%% *}" || return 0
     stream_queue=("${stream_queue[@]:1}")
@@ -4654,10 +4840,10 @@ campaign_stream_unenroll() {
   campaign_stream_entry=""
 }
 
-# Picks the host for one start of <kind> (OBLIGATION or RERUN) and charges it
-# there (stream_admitted_host): the pool from the host after the last one
-# chosen, each start charged its replay's need, obligation_memory_mb, for as
-# long as it runs; an OBLIGATION goes first to a host where this
+# Picks the host for one start of <kind> (OBLIGATION, RERUN or CONFIRM) and
+# charges it there (stream_admitted_host): the pool from the host after the
+# last one chosen, each start charged its replay's need for as long as it
+# runs (campaign_stream_charge_mb); an OBLIGATION goes first to a host where this
 # campaign's solver still serves (campaign_stream_warm: one started there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
@@ -4667,8 +4853,9 @@ campaign_stream_unenroll() {
 # head's room).
 # 1 when no host has room now, said once per wait.
 campaign_stream_admit_host() {
-  local kind=$1 host turn count pass is status=0
+  local kind=$1 host turn count pass is status=0 mb
   count=${#stream_hosts[@]}
+  mb=$(campaign_stream_charge_mb "${kind}")
   for pass in warm cold; do
     [[ "${pass}" == cold || "${kind}" == OBLIGATION ]] || continue
     for ((turn = 0; turn < count; turn++)); do
@@ -4678,7 +4865,7 @@ campaign_stream_admit_host() {
       [[ "${kind}" != OBLIGATION ]] || ! campaign_stream_warm "${host}" \
         || is=warm
       [[ "${is}" == "${pass}" ]] || continue
-      campaign_stream_try_host "${host}" "${turn}" && return 0
+      campaign_stream_try_host "${host}" "${turn}" "${mb}" && return 0
     done
   done
   if [[ -z "${stream_waiting}" ]]; then
@@ -4697,12 +4884,24 @@ campaign_stream_warm() {
   [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
 }
 
+# What one start of <kind> is charged: an obligation's or a re-run's replay
+# obligation_memory_mb, a confirmation's what the seed replay is
+# (campaign_replay_charge_mb).
+campaign_stream_charge_mb() {
+  if [[ "$1" == CONFIRM ]]; then
+    campaign_replay_charge_mb "$(campaign_replay_need_mb)"
+  else
+    printf '%s\n' "${obligation_memory_mb}"
+  fi
+}
+
 # One host's admission for campaign_stream_admit_host, <turn> places after
-# the host after the last one chosen: 0 with it charged and chosen.
+# the host after the last one chosen, charged <mb>: 0 with it charged and
+# chosen.
 campaign_stream_try_host() {
-  local host=$1 turn=$2 count=${#stream_hosts[@]} status=0
+  local host=$1 turn=$2 mb=$3 count=${#stream_hosts[@]} status=0
   campaign_stream_has_cores "${host}" || return 1
-  campaign_host_try_charge "${host}" "${obligation_memory_mb}"
+  campaign_host_try_charge "${host}" "${mb}"
   case "${status}" in
     0)
       stream_admitted_host=${host}
@@ -4755,6 +4954,13 @@ campaign_stream_start() {
     worker="${iteration_dir}/${round}/${id}"
     work=("${id}" "${iteration_dir}/${round}/obligations.jsonl" \
       "${stream_classes}" "${worker}" "${sessions}" "${stream_plan}")
+  elif [[ "${kind}" == CONFIRM ]]; then
+    # On the generation current now, as an obligation's replay; the
+    # replay's own worker is the job's, its logs beside it.
+    worker="${campaign_root}/witness-confirm/${id}/worker"
+    date +%s%3N >"$(dirname "${worker}")/started-at"
+    work=("$(dirname "${worker}")" "${stream_classes}" "${stream_plan}" \
+      "$(campaign_stream_charge_mb CONFIRM)" "$(campaign_replay_need_mb)")
   else
     worker=$(campaign_stream_rerun_dir "${round}" "${id}")
     work=("${id}" "${stream_classes}" "${worker}" "${worker}/sessions" \
@@ -4819,13 +5025,17 @@ campaign_stream_ended() {
 # What returned since the last step began, landed: each obligation's
 # verdict into the ledger and the session it staged into stream_staged
 # (campaign_stream_move); each re-run's into stream_swaps, for once no
-# obligation runs.
+# obligation runs; each confirmation into `confirms`, for the step to decide.
 campaign_stream_land() {
   local entry kind round id host status session worker verdict
   for entry in "${stream_pending[@]}"; do
     read -r kind round id host status session <<<"${entry}"
     if [[ "${kind}" == RERUN ]]; then
       stream_swaps+=("${round} ${id} ${session} ${status}")
+      continue
+    fi
+    if [[ "${kind}" == CONFIRM ]]; then
+      confirms+=("${id} ${status}")
       continue
     fi
     unset 'stream_flying[$id]'
@@ -4975,10 +5185,12 @@ campaign_stream_rerun_dir() {
   printf '%s/grow-%s/%s\n' "${worker}" "${round}" "${obligation_id}"
 }
 
-# Every re-run that returned, swapped in -- once no obligation runs, since
-# one started before the swap may be cut from the exposing session -- and the
-# queue cancelled, since what it holds may be cut from one too; the next
-# round asks again what is still owed.
+# Every re-run that returned, swapped in -- once no obligation runs, since a
+# solver reads the corpus as it starts.  The queue stays first, in flight
+# for the next round, which proposes only what none of it asks: an
+# obligation it holds cut from an exposing session is answered by its solver
+# by name (the corpus no longer states its path), and a later round asks it
+# again of the re-run's session.
 #
 # One swap: the exposing session leaves the corpus for
 # <worker>/before-<round>/ with what its replay wrote, the re-run's files
@@ -4987,7 +5199,6 @@ campaign_stream_rerun_dir() {
 # the ledger.
 campaign_stream_swap() {
   local swap round id session status worker rerun aside file
-  local queued=${#stream_queue[@]}
   for swap in "${stream_swaps[@]}"; do
     read -r round id session status <<<"${swap}"
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" "${id}") \
@@ -5020,9 +5231,6 @@ name obligation ${id}, so it was not withdrawn from the corpus"
   stream_hold=$((stream_hold - ${#stream_swaps[@]}))
   stream_swaps=()
   stream_dirty=1
-  campaign_stream_drop again
-  (( queued == 0 )) || campaign_log "the grown corpus asks again: ${queued} \
-queued obligation(s) left to the next round"
 }
 
 # The obligation worker directory of one obligation, with its focus row.
@@ -5065,8 +5273,10 @@ campaign_stream_promote_generation() {
 }
 
 # exploration.json: how EXPLORE ended, how many rounds and head steps it
-# took, every COMPOSE attempt at a witness, and every obligation it dropped
-# -- cancelled from the queue, or reaped before it landed -- by id.
+# took, every COMPOSE attempt at a witness (by attempt order), every
+# obligation it dropped -- cancelled from the queue, or reaped before it
+# landed -- by id, and the sessions that left the corpus after the
+# witness's attempt composed.
 campaign_stream_manifest() {
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
@@ -5077,11 +5287,14 @@ campaign_stream_manifest() {
       | jq -R 'select(length > 0)' | jq -s -c .)" \
     --argjson reaped "$(printf '%s\n' "${stream_reaped[@]}" \
       | jq -R 'select(length > 0)' | jq -s -c .)" \
+    --argjson afterWitness "$(printf '%s\n' "${stream_after_witness[@]}" \
+      | jq -R 'select(length > 0)' | jq -s -c .)" \
     --slurpfile attempts "${attempts}" \
     '{schemaVersion: 1, kind: "EXPLORATION", stop: $stop, detail: $detail,
       rounds: $rounds, steps: $steps, generations: $generations,
       answered: $answered,
-      witnessAttempts: $attempts, cancelled: $cancelled, reaped: $reaped}' \
+      witnessAttempts: ($attempts | sort_by(.attempt)), cancelled: $cancelled,
+      reaped: $reaped, afterWitness: $afterWitness}' \
     >"${iteration_dir}/exploration.json"
 }
 
@@ -5318,21 +5531,42 @@ ${campaign_witness_attempt}"
     "${campaign_final}/confirm.json"
 }
 
-# One claim confirmed (campaign_confirm): the one <claims>/claim.json states,
-# beside its candidate_composition_manifest.json; ConfirmMain's worker, the
-# replay's sessions and the log in <dir>, the verdict <claims>/confirm.json.
-# It is refuted (campaign_refute) only when the verdict refutes it: the
-# replay ran the model and disagreed, or ConfirmMain refused it by name.  A
-# replay that timed out or published no verdict, or a decision that failed,
-# leaves the model unconfirmed and open: a later attempt may claim it again.
+# One claim confirmed, in a row: planned (campaign_confirm_plan), its replay
+# run wherever there is room (campaign_confirm_replay, charged as the seed
+# replay is), and decided (campaign_confirm_decide).  The final CONFIRM's;
+# an exploration's attempt runs the same three apart, its replay a job of the
+# pool (campaign_stream_attempt).
 campaign_confirm_claim() {
-  local iteration_dir=$1 claims=$2 dir=$3
-  local worker sessions status=0 reason need charge
+  local iteration_dir=$1 claims=$2 dir=$3 need charge status=0
+  campaign_confirm_plan "${iteration_dir}" "${claims}" "${dir}"
+  if [[ ! -s "${claims}/confirm.json" ]]; then
+    need=$(campaign_replay_need_mb)
+    charge=$(campaign_replay_charge_mb "${need}")
+    ( campaign_head_charged "${charge}" campaign_confirm_replay "${dir}" \
+        "${iteration_dir}/instrumented-classes" \
+        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
+        "${charge}" "${need}" ) || status=$?
+    campaign_confirm_decide "${claims}" "${dir}" "${status}"
+  fi
+  campaign_confirm_settle "${iteration_dir}" "${claims}"
+}
+
+# The claim <claims>/claim.json states, beside its
+# candidate_composition_manifest.json, planned: ConfirmMain's task into
+# <dir>/worker, its log <dir>/confirm.log.  A verdict known now is written
+# to <claims>/confirm.json: a refusal ConfirmMain names (the claim's own: no
+# run can realize it), any other exit of it (which says nothing about the
+# model), or the selected session itself the run (realized.json: every edge
+# the model chose is its own, with the moved roots at the model's values, and
+# it observed the fatal -- a replay of its world would test only whether a
+# race the order does not hold goes the same way twice).  Otherwise the
+# replay is owed.
+campaign_confirm_plan() {
+  local iteration_dir=$1 claims=$2 dir=$3 worker status=0 reason
   [[ ! -e "${dir}" ]] \
     || die "the confirmation directory already exists: ${dir}"
   worker="${dir}/worker"
-  sessions="${dir}/sessions"
-  mkdir -p "${worker}" "${sessions}"
+  mkdir -p "${worker}" "${dir}/sessions"
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.explore.ConfirmMain \
     --iteration "${iteration_dir}" \
@@ -5343,47 +5577,54 @@ campaign_confirm_claim() {
     reason=$(grep -m 1 'CONFIRM refused:' "${dir}/confirm.log" \
       || grep -v -E '^[[:space:]]+at ' "${dir}/confirm.log" \
         | tail -n 1)
-    # A refusal ConfirmMain names is the claim's own: no run can realize
-    # it.  Any other exit says nothing about the model.
     campaign_confirm_verdict false \
       "${reason:-ConfirmMain exited ${status}}" "" \
       "$([[ "${reason}" == *'CONFIRM refused:'* ]] && echo true \
         || echo false)" >"${claims}/confirm.json"
   elif [[ -s "${worker}/realized.json" ]]; then
-    # The selected session already took every edge the model chose, with
-    # the moved roots at the model's values, and observed the fatal: that
-    # run is the confirmation, and a replay of its world would test only
-    # whether a race the order does not hold goes the same way twice.
     jq -c '.' "${worker}/realized.json" >"${claims}/confirm.json"
-  else
-    # The replay, exactly as an obligation's, charged as the seed replay is
-    # (campaign_replay_need_mb) wherever there is room.  A campaign_fail
-    # inside it ends a campaign; here, in a subshell, it ends the
-    # confirmation as "no verdict", which is one more way of not agreeing
-    # with the model.
-    need=$(campaign_replay_need_mb)
-    charge=$(campaign_replay_charge_mb "${need}")
-    ( campaign_head_charged "${charge}" \
-        campaign_obligation_replay CONFIRM \
-        "${iteration_dir}/instrumented-classes" "${worker}" "${sessions}" \
-        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" "${charge}" \
-        "${need}" ) \
-      >>"${dir}/confirm.log" 2>&1 || status=$?
-    if [[ "${status}" -ne 0 ]]; then
-      campaign_confirm_verdict false "the confirmation replay published no \
-verdict (exit ${status}); its log is ${dir}/confirm.log" "" false \
-        >"${claims}/confirm.json"
-    else
-      run_capturing_status run_java_main \
-        edu.uva.liftlab.graphchecker.explore.ConfirmMain \
-        --claim "${claims}/claim.json" --output "${worker}" \
-        --sessions "${sessions}" >"${claims}/confirm.json" \
-        2>>"${dir}/confirm.log"
-      [[ "${status}" -eq 0 ]] || campaign_confirm_verdict false "the \
-confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
-        false >"${claims}/confirm.json"
-    fi
   fi
+}
+
+# The replay of the claim planned in <dir>, exactly as an obligation's, on
+# the class tree and plan named, its JVM charged <charged_mb> of a need of
+# <need_mb>, wherever its start was placed (run_engine.sh --run-placed).  A
+# campaign_fail inside it ends it as "no verdict" (its caller's subshell),
+# one more way of not agreeing with the model.
+campaign_confirm_replay() {
+  local dir=$1 classes=$2 plan=$3 charged=$4 need=$5
+  campaign_obligation_replay CONFIRM "${classes}" "${dir}/worker" \
+    "${dir}/sessions" "${plan}" "${charged}" "${need}" \
+    >>"${dir}/confirm.log" 2>&1
+}
+
+# The verdict on the claim <claims>/claim.json from the replay of <dir>, which
+# exited <status>: read off the session it published (ConfirmMain
+# --sessions) into <claims>/confirm.json.  A replay that published no
+# verdict, or a decision that failed, leaves the model unconfirmed and open.
+campaign_confirm_decide() {
+  local claims=$1 dir=$2 replayed=$3 status=0
+  if [[ "${replayed}" -ne 0 ]]; then
+    campaign_confirm_verdict false "the confirmation replay published no \
+verdict (exit ${replayed}); its log is ${dir}/confirm.log" "" false \
+      >"${claims}/confirm.json"
+    return 0
+  fi
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.explore.ConfirmMain \
+    --claim "${claims}/claim.json" --output "${dir}/worker" \
+    --sessions "${dir}/sessions" >"${claims}/confirm.json" \
+    2>>"${dir}/confirm.log"
+  [[ "${status}" -eq 0 ]] || campaign_confirm_verdict false "the \
+confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
+    false >"${claims}/confirm.json"
+}
+
+# A verdict written: the claim refuted (campaign_refute) only when the
+# verdict refutes it -- the replay ran the model and disagreed, or ConfirmMain
+# refused it by name.
+campaign_confirm_settle() {
+  local iteration_dir=$1 claims=$2
   require_nonempty "confirmation" "${claims}/confirm.json"
   [[ "$(jq -r '.refutes' "${claims}/confirm.json")" != true ]] \
     || campaign_refute "${iteration_dir}" "${claims}"
@@ -5422,10 +5663,14 @@ campaign_claim_room() {
     >= $(campaign_reserve) ))
 }
 
-# What the stages after the exploration are owed, in seconds: one COMPOSE and
-# one CONFIRM, each as long as the longest this campaign measured -- its
-# stage metrics and its witness attempts; the seed's REPLAY stands for a
-# CONFIRM replay none has run yet -- and never less than campaign_reserve_s.
+# What the stages after the exploration are owed, in seconds: COMPOSE and
+# EMIT, which reads the corpus COMPOSE read, each as long as the longest
+# COMPOSE this campaign measured; CONFIRM and REPRODUCE, whose native runs
+# of the witness take less than one replay of it, each as long as the
+# longest CONFIRM -- its stage metrics and its witness attempts; the seed's
+# REPLAY stands for a CONFIRM replay none has run yet -- and never less than
+# campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
+# the case timeout when the reserve owed COMPOSE and CONFIRM alone.)
 campaign_reserve() {
   local measured
   measured=$( {
@@ -5435,7 +5680,7 @@ campaign_reserve() {
         "${campaign_root}/iteration-0000/witness_attempts.jsonl" 2>/dev/null
     } | awk '$1 == "COMPOSE" { if ($2 > c) c = $2; next }
         { if ($2 > r) r = $2 }
-        END { printf "%d\n", (c + r) / 1000 }')
+        END { printf "%d\n", 2 * (c + r) / 1000 }')
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
 }
 

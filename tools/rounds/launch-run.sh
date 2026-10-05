@@ -2,7 +2,7 @@
 # launch-run.sh <repo> <case-id> <out-suffix> -- one acceptance run from a
 # GraphChecker snapshot worktree (its own jar, accept.sh, case dirs), on the
 # concolic VM image CAUSYNTH_CUSTOM_JDK_HOME names: a launch must name it
-# (README §3.1 lists the images), there is no default.
+# (docs/handover/OPERATIONS.md §1 lists the images), there is no default.
 set -uo pipefail
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"

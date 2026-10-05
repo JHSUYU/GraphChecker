@@ -328,12 +328,46 @@ public final class ScheduleLog {
         UNAWAITED.add(Text.safe(transport).toUpperCase(java.util.Locale.ROOT));
     }
 
+    /**
+     * Whether a context makes no event: one an unawaited receipt anchored,
+     * or one anchored by a message this run stated no SEND for ({@link
+     * #SENDERS}): sent before the window, from a Lost turn, or from a
+     * context of its own that makes none.  Its cause is outside the order,
+     * so the order cannot hold what it causes -- hdfs-adhoc-19/35: a
+     * DataNode's first block report went out before the window and its
+     * reply, with the NameNode's commands, came inside it, a slot a replay
+     * whose report was answered before its window never made.  A response
+     * sent in such a context states no SEND either, so the work its reply
+     * causes is free too.  Once the bounded store dropped a sender, a miss
+     * may be one it dropped: that sender is unknown, its context ordered,
+     * and each such sender named ({@code schedule-sender-unknown}).
+     */
     private static boolean unordered(CausalContext context) {
         if (!(context instanceof CausalContext.Anchor)) return false;
-        String site = ((CausalContext.Anchor) context).rpcSite();
+        CausalContext.Anchor anchor = (CausalContext.Anchor) context;
+        String site = anchor.rpcSite();
         int slash = site.indexOf('/');
-        return UNAWAITED.contains(slash < 0 ? site : site.substring(0, slash));
+        if (UNAWAITED.contains(slash < 0 ? site : site.substring(0, slash))) {
+            return true;
+        }
+        String sender = anchor.producerEndpointId();
+        long dropped;
+        synchronized (SENDERS) {
+            if (SENDERS.containsKey(sender)) return false;
+            dropped = SENDERS.evicted();
+            if (dropped == 0L) return true;
+            if (!UNKNOWN_SENDERS.add(sender)) return false;
+        }
+        stateLocked("schedule-sender-unknown#" + sender, "the sender " + sender
+                + " of " + context.render() + " is not among this run's "
+                + Interactions.LIMIT + " latest SEND stances (" + dropped
+                + " dropped): whether its SEND was stated is unknown, so the"
+                + " context is ordered");
+        return false;
     }
+
+    /** The senders a miss after a drop left unknown, each named once. */
+    private static final Set<String> UNKNOWN_SENDERS = new HashSet<String>();
 
     /** The same, standing where {@code at} says rather than on this thread
      *  (a response stands where its request was received). */
@@ -345,6 +379,7 @@ public final class ScheduleLog {
         try {
             Pending event = pending(kind, site, endpoint, at);
             if (event == null) return false;
+            takeTurnWake(TURN.get());
             admit(event);
             return true;
         } finally {
@@ -399,11 +434,14 @@ public final class ScheduleLog {
         }
     }
 
+    /** The WAKE a held timed wait would make, computed quietly: asking
+     *  names no turn, as the free wait of a recording asks nothing. */
     static Wake wake(String site) {
         if (!RecordingWindow.opened()) return null;
         mute();
         try {
-            Pending event = pending(ScheduleEvent.Kind.WAKE, site, "", null);
+            Pending event = Lineage.quietly(() -> pending(
+                    ScheduleEvent.Kind.WAKE, site, "", null));
             return event == null ? null : new Wake(event);
         } finally {
             unmute();
@@ -443,24 +481,31 @@ public final class ScheduleLog {
         if (wake == null) return Turn.NO_EVENT;
         mute();
         try {
-            synchronized (LOCK) {
-                loadOrderLocked();
-                Thread self = Thread.currentThread();
-                while (true) {
+            while (true) {
+                synchronized (LOCK) {
+                    loadOrderLocked();
+                    Thread self = Thread.currentThread();
                     int slot = holds ? slotOf(wake.event) : -1;
                     int at = waitsAtLocked(wake.event, slot);
-                    if (at == GO) {
+                    if (at == GO && (slot < 0 || turnWritten())) {
                         doneWaitingLocked(self);
                         if (slot < 0) return Turn.FREE;
                         admittedLocked(wake.event, slot);
                         return Turn.ADMITTED;
                     }
-                    // Not due: a signal still ends the wait meanwhile.
-                    waitLocked(self, at);
-                    if (!passedLocked(wake.event, at) && !watchdogLocked()) {
-                        return Turn.NOT_YET;
+                    if (at != GO) {
+                        // Not due: a signal still ends the wait meanwhile.
+                        waitLocked(self, at);
+                        if (!passedLocked(wake.event, at)
+                                && !watchdogLocked()) {
+                            return Turn.NOT_YET;
+                        }
+                        continue;
                     }
                 }
+                // Due, and the turn's first event: its WAKE first, outside
+                // the lock (due itself, as every slot before this one is).
+                takeTurnWake(TURN.get());
             }
         } finally {
             unmute();
@@ -472,6 +517,7 @@ public final class ScheduleLog {
         if (wake == null) return;
         mute();
         try {
+            takeTurnWake(TURN.get());
             admit(wake.event);
         } finally {
             unmute();
@@ -520,6 +566,113 @@ public final class ScheduleLog {
                 Text.safe(endpoint));
     }
 
+    // ---- a turn's WAKE ---------------------------------------------------
+
+    /**
+     * The WAKE of one turn begun ({@code RuntimeTraceContext#beginTick}),
+     * computed at its begin and written before its first event, in both
+     * passes: a turn that makes no event holds no slot.  A loop whose turns
+     * do nothing (hdfs-adhoc-16: a DataNode actor whose heartbeats a test
+     * disabled never waits) recorded 0.89M turns, 1.78M slots, its replay
+     * 47k.  In a replay that first event first takes the WAKE's slot, held as
+     * a tick's WAKE is.
+     */
+    static final class TurnWake {
+        private final Pending event;
+        private final long hop;
+        private final TurnWake outer;
+        private boolean written;
+        private boolean vacant;
+
+        private TurnWake(Pending event, long hop, TurnWake outer) {
+            this.event = event;
+            this.hop = hop;
+            this.outer = outer;
+        }
+
+        String site() {
+            return event.site;
+        }
+    }
+
+    /** Per thread, the innermost turn begun ({@link TurnWake}). */
+    private static final ThreadLocal<TurnWake> TURN =
+            new ThreadLocal<TurnWake>();
+
+    /**
+     * A turn of lineage hop {@code hop} begins: its WAKE waits for the
+     * turn's first event.  Its thread is seen away from the frontier, so a
+     * loop spinning through empty turns never defers a stall.  Null outside
+     * the window or any attributable context.
+     */
+    static TurnWake turnBegun(String site, long hop) {
+        if (!RecordingWindow.opened()) return null;
+        mute();
+        try {
+            String stable = JvmNames.stable(Text.safe(site));
+            Stance stance = standing();
+            if (stable.isEmpty() || stance == null) return null;
+            TurnWake turn = new TurnWake(new Pending(ScheduleEvent.Kind.WAKE,
+                    stance.context, stable, stance.region, ""), hop,
+                    TURN.get());
+            TURN.set(turn);
+            synchronized (LOCK) {
+                long self = Thread.currentThread().getId();
+                if (firstBlocking < order.size()
+                        && !RELEASED.contains(self)) {
+                    ELSEWHERE.add(self);
+                }
+            }
+            return turn;
+        } finally {
+            unmute();
+        }
+    }
+
+    /** Whether this thread's innermost turn has written its WAKE (or no
+     *  turn stands). */
+    private static boolean turnWritten() {
+        TurnWake turn = TURN.get();
+        return turn == null || turn.written;
+    }
+
+    /** Writes {@code turn}'s WAKE, the turns it began inside first, unless
+     *  written: as the turn's first event is admitted, in both passes.  The
+     *  turn's k is named by it ({@code Lineage#name}). */
+    private static void takeTurnWake(TurnWake turn) {
+        if (turn == null || turn.written) return;
+        turn.written = true;
+        takeTurnWake(turn.outer);
+        VACANT.remove();
+        admit(turn.event);
+        turn.vacant = vacated();
+        VACANT.remove();
+        Lineage.name(turn.hop);
+    }
+
+    /** Whether {@code turn} is vacant ({@link #vacated}); asking writes its
+     *  WAKE. */
+    static boolean vacant(TurnWake turn) {
+        if (turn == null) return false;
+        mute();
+        try {
+            takeTurnWake(turn);
+        } finally {
+            unmute();
+        }
+        return turn.vacant;
+    }
+
+    /** {@code turn} ends: whether its WAKE was written, so its END is. */
+    static boolean turnEnded(TurnWake turn) {
+        if (turn == null) return false;
+        if (TURN.get() == turn) {
+            if (turn.outer == null) TURN.remove();
+            else TURN.set(turn.outer);
+        }
+        return turn.written;
+    }
+
     private static void appendLocked(Pending pending) {
         Integer made = COUNTS.get(pending.key);
         int k = made == null ? 0 : made;
@@ -560,7 +713,7 @@ public final class ScheduleLog {
      * unknown.  Its own monitor, a leaf: {@code ConcolicTaskPlan} asks under
      * its own.
      */
-    private static final Map<String, ContextShape.Stance> SENDERS =
+    private static final Interactions.Bounded<ContextShape.Stance> SENDERS =
             Interactions.bounded();
 
     /** The shape of {@code context} over this run's senders so far. */
@@ -762,7 +915,29 @@ public final class ScheduleLog {
         if (event.kind == ScheduleEvent.Kind.WAKE) {
             POLLED.put(event.key, before);
         }
+        Thread self = Thread.currentThread();
+        Made made = MADE.get(self);
+        if (made == null || !made.context.equals(event.context)) {
+            made = new Made(event.context);
+            MADE.put(self, made);
+        }
+        made.sites.add(event.kind + " " + event.site);
     }
+
+    /** What a thread made in the context of its last admitted event, since
+     *  it entered it: the sites a waiter no occurrence names passes
+     *  ({@link #passedLocked}). */
+    private static final class Made {
+        private final String context;
+        private final Set<String> sites = new HashSet<String>();
+
+        private Made(String context) {
+            this.context = context;
+        }
+    }
+
+    private static final Map<Thread, Made> MADE =
+            new java.util.WeakHashMap<Thread, Made>();
 
     /**
      * What an admitted event shows of its thread.  In the frontier's own
@@ -920,6 +1095,12 @@ public final class ScheduleLog {
 
     private static void takeLocked(int slot) {
         ScheduleEvent event = order.get(slot);
+        if (PASSED_SLOTS.remove(slot)) {
+            stateLocked("schedule-passed-late#" + slot, event.render()
+                    + " came after a later event of its context passed it"
+                    + " (schedule-passed): it takes its given-up slot "
+                    + slot);
+        }
         markLocked(slot, TAKEN);
         taken++;
         if (event.kind() == ScheduleEvent.Kind.WAKE) {
@@ -971,28 +1152,70 @@ public final class ScheduleLog {
      * waits past them, so only a watchdog timeout would settle them (a8
      * reader-chunk.flush: a NameNode handler whose block report enqueued
      * nothing held addBlock past the client's 60 s).  Given up, WAKEs aside.
+     *
+     * <p>A waiter no occurrence names passes the earlier slots of its own
+     * exact context, no occurrence naming them either, at any site it made
+     * since it last entered that context ({@link Made}: every kind and site
+     * of its events there, not only a loop's) -- so the rest of a loop it
+     * left is passed (a test polling with a wall-clock sleep made fewer RPCs
+     * than the recording did: hdfs-adhoc-44, TestFileTruncate's
+     * checkBlockRecovery, 171 recorded, 8 replayed).  Threads an unwoven
+     * starter started share their creator's context, so such a give-up is
+     * named, counted per context; given up, not dead, a slot is still taken
+     * if its event comes, and that late take is named too.</p>
      */
     private static boolean passedLocked(Pending event, int at) {
-        List<Integer> own = event.occurrence.isEmpty() ? null
+        boolean byContext = event.occurrence.isEmpty();
+        List<Integer> own = byContext ? BY_CONTEXT.get(event.context)
                 : BY_OCCURRENCE.get(event.occurrence);
-        if (own == null) return false;
+        Made made = byContext ? MADE.get(Thread.currentThread()) : null;
+        if (own == null || byContext && (made == null
+                || !made.context.equals(event.context))) {
+            return false;
+        }
         int count = 0;
+        int first = -1;
         for (int slot : own) {
             if (slot >= at) break;
             ScheduleEvent passedOver = order.get(slot);
             if (state[slot] != OPEN
                     || passedOver.kind() == ScheduleEvent.Kind.WAKE
-                    || !event.context.equals(passedOver.context())) {
+                    || !event.context.equals(passedOver.context())
+                    || byContext && (!passedOver.occurrence().isEmpty()
+                    || !made.sites.contains(passedOver.kind() + " "
+                            + passedOver.site()))) {
                 continue;
             }
             markLocked(slot, GIVEN_UP);
+            if (byContext) PASSED_SLOTS.add(slot);
+            if (first < 0) first = slot;
             count++;
         }
         if (count == 0) return false;
         passed += count;
+        if (byContext) {
+            int times = PASSED_BY_CONTEXT.merge(event.context, 1,
+                    Integer::sum);
+            stateLocked("schedule-passed#" + first, count + " slot(s) of"
+                    + " the order from " + first + " on (the first "
+                    + order.get(first).render() + ") were passed by "
+                    + event.render() + ", the next event of their context,"
+                    + " which no occurrence names (" + times + " time(s) in"
+                    + " this context): they are given up, and each still"
+                    + " takes its slot if it comes");
+        }
         settleLocked();
         return true;
     }
+
+    /** The slots a waiter no occurrence names passed, while untaken: a
+     *  late take of one is named ({@link #takeLocked}). */
+    private static final Set<Integer> PASSED_SLOTS = new HashSet<Integer>();
+
+    /** Per context, how often a waiter no occurrence names passed its
+     *  earlier slots ({@link #passedLocked}). */
+    private static final Map<String, Integer> PASSED_BY_CONTEXT =
+            new HashMap<String, Integer>();
 
     /**
      * Something was settled -- the order moved: the first open slot, the
@@ -1326,7 +1549,7 @@ public final class ScheduleLog {
         return holds;
     }
 
-    private static long timeoutMillis() {
+    static long timeoutMillis() {
         String configured = Text.safe(System.getProperty(TIMEOUT_PROPERTY));
         if (configured.isEmpty()) return DEFAULT_TIMEOUT_MS;
         try {
@@ -1389,6 +1612,9 @@ public final class ScheduleLog {
         HELD.clear();
         LET_GO.clear();
         POLLED.clear();
+        PASSED_BY_CONTEXT.clear();
+        PASSED_SLOTS.clear();
+        MADE.clear();
         moves = 0L;
         letGoAt = 0L;
         stallSince = -1L;
@@ -1424,6 +1650,34 @@ public final class ScheduleLog {
         settleLocked();
     }
 
+    /** Writes one mark row into this run's schedule, before the window as
+     *  inside it. */
+    static void writeMark(JsonObject row) {
+        synchronized (LOCK) {
+            writeLocked(row);
+        }
+    }
+
+    /** The startup marks of the order this replay is handed, prefix then
+     *  rest; none in a recording ({@link StartupOrder}). */
+    static List<JsonObject> startupMarks() {
+        List<JsonObject> marks = new ArrayList<JsonObject>();
+        for (Path file : Arrays.asList(prefixFile(), suffixFile())) {
+            if (file == null || !file.toFile().isFile()) continue;
+            try {
+                marks.addAll(SessionReader.readScheduleStartup(file));
+            } catch (IOException unreadable) {
+                // Its schedule names an unreadable order once it loads it.
+            }
+        }
+        return marks;
+    }
+
+    /** A divergence the order states by name ({@code SCHEDULE_DIVERGED}). */
+    static void diverged(String where, String detail) {
+        stateLocked(where, detail);
+    }
+
     private static Path prefixFile() {
         String named = Text.safe(System.getProperty(PREFIX_PROPERTY));
         if (named.isEmpty()) named = Text.safe(System.getenv(PREFIX_ENV));
@@ -1453,7 +1707,9 @@ public final class ScheduleLog {
                     + " given up in " + stalls + " stall(s), " + dead
                     + " settled by their occurrence's close, " + settledByEnd
                     + " settled by their turn's END, " + passed
-                    + " passed by their own occurrence; " + ranFree
+                    + " passed by their own occurrence or context ("
+                    + PASSED_BY_CONTEXT.size() + " context(s) without an"
+                    + " occurrence); " + ranFree
                     + " event(s) ran free, " + letGo + " of them let go"
                     + " where no slot held them; " + closedOpen
                     + " open at the window's"
@@ -1480,6 +1736,7 @@ public final class ScheduleLog {
     }
 
     public static void resetForTests() {
+        TURN.remove();
         synchronized (LOCK) {
             sink = null;
             PENDING.clear();
@@ -1487,6 +1744,7 @@ public final class ScheduleLog {
             MARKED.clear();
             synchronized (SENDERS) {
                 SENDERS.clear();
+                UNKNOWN_SENDERS.clear();
             }
             seq = 0L;
             loaded = false;
@@ -1504,6 +1762,9 @@ public final class ScheduleLog {
             HELD.clear();
             LET_GO.clear();
             POLLED.clear();
+            PASSED_BY_CONTEXT.clear();
+            PASSED_SLOTS.clear();
+            MADE.clear();
             ClockLoops.resetForTests();
             moves = 0L;
             letGoSinceProgress = false;

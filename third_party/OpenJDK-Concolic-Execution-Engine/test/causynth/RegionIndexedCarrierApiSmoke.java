@@ -53,7 +53,7 @@ public final class RegionIndexedCarrierApiSmoke {
                 evidence);
         require(evidence.contains("\"versionKind\":\"STATE_REMOVE\""),
                 evidence);
-        require(count(evidence, "\"fieldVersionId\"") == 5,
+        require(count(evidence, "\"writerContextId\"") == 5,
                 "one version per mutation plus the initial: " + evidence);
         // Each version carries the relation that produced it, so the size of
         // the state it names is closed-form in the chain below it.
@@ -65,7 +65,7 @@ public final class RegionIndexedCarrierApiSmoke {
         state.rows.clear();
         String cleared = System.getSharedMapVersions(state.rows);
         require(cleared.contains("\"versionKind\":\"STATE_CLEAR\""), cleared);
-        require(count(cleared, "\"fieldVersionId\"") == 6, cleared);
+        require(count(cleared, "\"writerContextId\"") == 6, cleared);
 
         // A read of the list is logged against the location, so a later
         // question can say which states were live when it ran.

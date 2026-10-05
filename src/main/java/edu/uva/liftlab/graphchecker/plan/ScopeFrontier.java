@@ -44,14 +44,19 @@ import java.util.regex.Pattern;
  * the fatal condition).  A row the root demand found to be the nearest
  * boundary of a path to the target's guards (causynth.RootDemand: a SCOPE
  * callee or formal, a PRE_WINDOW field) states its class as {@code demand};
- * demanded rows come first, then the rest, each nearest first, and scope
- * growth takes them in that order.</p>
+ * a call into the system where a local file fault could stand (an IO
+ * frontier: it escapes before a demanded store, or a handler deciding a
+ * demanded site catches it) is a {@code CALLEE} row of class IO though the
+ * slice demands no return of it.  Demanded rows come first, then the rest,
+ * each nearest first, and scope growth takes them in that order.</p>
  */
 public final class ScopeFrontier {
     public static final String FILE = "scope_frontier.jsonl";
     public static final String CALLEE = "CALLEE";
     public static final String FIELD = "FIELD";
     public static final String FORMAL = "FORMAL";
+    /** The root demand's class of an IO frontier row. */
+    static final String IO = "IO";
     private static final Pattern FORMAL_CELL = Pattern.compile(
             "(<[^>]+>)\\.param\\d+:(boolean|byte|char|short|int|long|float"
                     + "|double|java\\.lang\\.String)");
@@ -64,12 +69,12 @@ public final class ScopeFrontier {
      *                    a concrete method of a class in scope
      * @param rootCallees the clocks and configuration getters: roots
      * @param demanded    the root demand's frontier signatures, each with
-     *                    its boundary class
+     *                    its boundary class and distance
      */
-    public static List<JsonObject> rows(List<Map<String, Object>> edges,
-                                        Predicate<String> analysed,
-                                        Collection<String> rootCallees,
-                                        Map<String, String> demanded) {
+    public static List<JsonObject> rows(
+            List<Map<String, Object>> edges, Predicate<String> analysed,
+            Collection<String> rootCallees,
+            Map<String, StaticScopeMap.Demanded> demanded) {
         Map<String, List<String>> into = new LinkedHashMap<>();
         Set<String> fields = new LinkedHashSet<>();
         Set<String> sinks = new LinkedHashSet<>();
@@ -104,10 +109,17 @@ public final class ScopeFrontier {
                 add(found, FORMAL, formal.group(1), cell.getValue());
             }
         }
+        for (Map.Entry<String, StaticScopeMap.Demanded> io
+                : demanded.entrySet()) {
+            if (IO.equals(io.getValue().kind)) {
+                add(found, CALLEE, io.getKey(), io.getValue().distance);
+            }
+        }
         List<JsonObject> rows = new ArrayList<>(found.values());
         for (JsonObject row : rows) {
-            String demand = demanded.get(row.get("signature").getAsString());
-            if (demand != null) row.addProperty("demand", demand);
+            StaticScopeMap.Demanded demand = demanded.get(
+                    row.get("signature").getAsString());
+            if (demand != null) row.addProperty("demand", demand.kind);
         }
         rows.sort(Comparator.comparing((JsonObject row) -> !row.has("demand"))
                 .thenComparingInt(row -> row.get("distance").getAsInt())

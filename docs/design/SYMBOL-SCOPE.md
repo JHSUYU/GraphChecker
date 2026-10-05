@@ -50,8 +50,12 @@ bind is pinned to its recorded value or refused as `UNSTATED_VALUE` (`compose/Co
 
 The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 
-- **Locals, arguments, returns** into callees whose body is analysed: a concrete method of a
-  non-abstract application class that is not a structural field accessor (`isExpandableMethod`).
+- **Locals, arguments, returns** into callees whose body is analysed: a concrete method of an
+  application class, an abstract class's or an interface's default one included, that is not a
+  structural field accessor (`isExpandableMethod`). A call whose CHA targets include the callee
+  itself (a concrete method an abstract class declares and its subclasses inherit: HDFS's
+  `BlockInfo.isComplete()`, `getBlockUCState()`) is the plain call for that target -- its
+  `call_argument` and `call_return` rows and its body -- and dispatched to the others.
   Callers of a demanded formal or of a demanded `this`, constructor callers, and CHA dispatch to the
   application implementations of an interface or abstract call (`processDispatchInvoke`; owners in
   `java.`, `javax.`, `com.google.`, `org.slf4j.` are not dispatched). A call is indexed under the
@@ -102,9 +106,24 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   `<m>.throws` (`expandThrows`) takes an `exception_flow` edge from the origin of each raise a fault
   escapes `m` from -- the woven throw's marker local, a callee's `<callee>.throws` -- under the
   raise's guards, so a handler's effects lead back to the door's marker.
-- **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
-  storing method are demanded too, up to three calls up, dispatch included
-  (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
+- **Activation**: a branch that decides whether code carrying the slice's data runs is demanded
+  like data (owner 2026-10-04). Within a method that is the rule above, and a mutation of a
+  demanded container -- a local's (`list.add` under `if (...)`), a helper's mutation of one it is
+  passed, an array store -- demands its own guards, guarding the container's cell. Across calls
+  (`expandActivationGuards`, `ACTIVATION_DEPTH` = 3, `SiteControlDependence`'s `CALL_DEPTH`): for
+  the declared target's method and for every method holding a demanded store or container
+  mutation, constant or not, each call into it, three calls up, dispatch included, demands its
+  deciding operands -- its branches and door-fault branches -- in its method, guarding the
+  method's `<m>.activation` or the stored cells; a dispatched call links the caller to the method
+  it runs (`dispatch_activation`). hdfs-adhoc-29's anchor leaves `BlockRecoveryWorker
+  $RecoveryTaskContiguous.recover()` at `candidateReplicaCnt > 0 && syncList.isEmpty()`, the
+  guard of its call into `syncBlock` and on to the target's `getActiveNamenodeForBP`: the count
+  rests on `initReplicaRecovery`'s answer, which `FsDatasetImpl.initReplicaRecoveryImpl` gives
+  only past `rur.getRecoveryID() >= recoveryId`, so `ReplicaUnderRecovery.recoveryId` is read on
+  the anchor's way. SOLR-18406: Lucene's `CommitPoint.delete()` sets `deleted = true`, and Solr's
+  deletion policy calls it through `IndexCommit.delete()` only when the commit's reservation, a
+  clock, has run out. A call's demanded result needs no rule of its own: the call's definition
+  is demanded, and with it the call's guards.
 - **Field reads**: a demanded `x = b.f` demands `f` (`field_read`, then the field jump) and `b`,
   the object it reads from (`local_def_use`: the base is a use of the read), as an accessor's
   receiver (`accessor_receiver`) and a dispatched call's (`dispatch_receiver`) are. A reference
@@ -113,7 +132,10 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Library calls**: the result of a non-application call depends on its arguments, and on its
   receiver by one of these rules: `String`, `StringBuilder`, `StringBuffer` and every wrapper's
   unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`, `Boolean.booleanValue` included) keep
-  the receiver as a value (`isValueLikeLibraryInvoke`); a JDK atomic's `get()` is an accessor of
+  the receiver as a value (`isValueLikeLibraryInvoke`), as do the final methods every enum
+  inherits from `java.lang.Enum` (`equals`, `hashCode`, `compareTo`, `ordinal`, `name`), called
+  on an application enum with no body of its own (`getBlockUCState().equals(COMPLETE)`), their
+  arguments values too; a JDK atomic's `get()` is an accessor of
   its `value` (`AtomicBoolean.get()` is `value != 0`), read off a table rather than its body
   (`plan/SharedFieldFlow#atomicRead`, `StructuralFieldAccessorProof#atomicField`); a container
   query depends on receiver and arguments (`processSemanticContainerOperation`,
@@ -212,13 +234,18 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    - `FIELD`: a field `S` reads or stores;
    - `FORMAL`: a method whose primitive or `String` formal `S` demands only through a field. A
      formal reached without a field in between is on the target's own call chain and is never a
-     row: growing its callers would move the region root and with it the target's identity.
+     row: growing its callers would move the region root and with it the target's identity;
+   - an IO frontier `CALLEE` (`demand` IO, §4.6): a call into the system where a local file
+     fault could stand, though `S` demands no return of it.
 2. `plan/ScopeGrowth` resolves each row over the classes of `causynth_lineage_roots`:
    - `CALLEE`: the class whose body runs it (for an abstract method, the class each implementation
      inherits it from), unless that body only loads constants;
    - `FIELD`: its owner and, unless the field is private or final, every class storing it; a
      static final field is a constant and grows nothing;
    - `FORMAL`: every class calling the method;
+   - an IO row: the class whose body runs the called method, only when that body itself calls a
+     demanded door's anchor (listed as `IO` in `GROWN`), else it is skipped and named in the
+     step's summary (one level per growth round);
    - never a generated protobuf class (a supertype in `*.protobuf.*`).
    Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
    (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes
@@ -239,10 +266,10 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 | role | one row per | extra members |
 |---|---|---|
-| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
+| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`), then the guards of the calls into its method, three calls up, never into an execution context's entry (a thread's or task's `run`, a `call`, a `main`: its starter runs it) (`StaticScopeMap#targetChain`, `Guards#callsInto`): the decisions its occurrence takes on the way to the throw. The static planner roots a region at the target's method itself (`FAILURE_TARGET_ENTRY`), but its callers' region is the occurrence it folds into at run time |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `demandDistance` (the root demand's distance to this read, §4.6) |
-| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field), `demandDistance` (§4.6) |
+| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
@@ -256,8 +283,16 @@ branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
-those callers (`Guards#callersOf`). A guard that tests a helper's constant return names the helper
-branch that decides it (`causynth/BooleanReturns`, `guardDeciders`).
+those callers (`Guards#callersOf`). A guard `v ==/!= c` (`c` an int or null) on the result of one
+call of an application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
+`guardDeciders`): every arm of a helper branch that runs straight (constant stores, jumps, at most
+16 units) to a return of a constant of `c`'s kind -- a branch whose two arms return constants the
+guard takes alike decides nothing, a helper with a switch has none -- each with the deciders of
+the nested helper return its branch tests, three helpers deep (hdfs-adhoc-40's
+`!isSufficientlyReplicated(b)`: the helper's first branch tests `hasMinStorage`'s return and
+returns true on one arm, its second compares the live count). At run time the decision that chose
+the return is the latest one in the helper's method before the guard, when it is a decider arm, and
+a concrete one is decided by its nested helper's in turn (`runtime.RowPublication#decidedBy`).
 
 The slice (§2.2) and the map use two relations: the slice widens by may-reach, the map's guards
 are post-dominance.
@@ -305,6 +340,33 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
+| `LOCAL_IO` | `OPEN`, `READ`, `WRITE`, `SYNC`, `NAMESPACE` | a demanded call only (below) | before the call: the failed operation never happens |
+
+**Demanded doors.** A local file operation is a door only where the root demand chose its call
+(§4.6): its result or its failure flows into what the slice traces, never every IO call of a class
+or method (owner, 2026-10-04). Its rows state `"sites": "DEMANDED"`, no `method`, `before` the JDK
+call, and either the kind the call declares -- `FileNotFoundException` for the `FileInputStream`,
+`FileOutputStream` and `RandomAccessFile` opens, `SyncFailedException` for `FileDescriptor#sync`,
+`IOException` for the other stream and `RandomAccessFile` reads, writes, `seek`, `setLength` and
+`close`, the `FileChannel` opens, reads, writes, `force`, `truncate`, `transfer*` and
+`position(long)`, the `Files` opens, reads, writes, copies, moves, deletes and creates, and
+`File#createNewFile`/`createTempFile` -- or the `result` the call returns instead of failing:
+`false` for `File#renameTo`, `delete`, `mkdir(s)`, `setLastModified`, `setReadable`/`Writable`/
+`Executable`/`ReadOnly`, `null` for `File#list`/`listFiles`. A call is a door's only as the
+catalog spells it: a write through a variable typed `OutputStream` may be a socket's, and a
+socket's failure is a transport door's. An observation (`exists`, `is*`, `can*`, `length`,
+`lastModified`, `*Space`, `FileChannel#size`) is never a door: its value is the disk's state, not
+an operation's outcome. The chosen calls are `io_doors.jsonl` beside the scope map (`causynth/
+DemandedDoors`: caller, callee and the call's ordinal among the caller's calls of that callee in
+body order, never a unit index, which a door shifts); every pass weaves them before any analysis
+(`-Dcausynth.io.doors`, `run_engine.sh` `do_analyze`), a throwing door as the catalog's doors are,
+a failing result as `r = marker ? failing : call(..)`, so the call does not run on the fault arm.
+A failing result's checked throw -- the first test of the result the call falls through to, and
+each throw its failing arm reaches that its other arm does not (`if (!f.renameTo(g)) throw new
+IOException(..)`) -- is a raise of the door's marker (`causynth/FaultPropagation`), so the fault
+flows on as a thrown door kind does. A site the file names that no catalog row or no analysed call
+answers, or a call that already holds a door, is refused (`DEMANDED_DOOR_UNAVAILABLE`). A demanded
+door's marker roots no region (§4.6).
 
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a
@@ -590,8 +652,18 @@ depths that fit whole (PIPELINE.md §3).
 
 ### 4.5 Randomness is not a root
 
-The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)` and
-`UUID.randomUUID()` in both passes with `runtime/Randoms`, so a replay draws what the recording drew.
+The weave replaces `new Random()`, `Math.random()`, `Collections.shuffle(List)`,
+`UUID.randomUUID()` and `ThreadLocalRandom.current()` in both passes with `runtime/Randoms`, so a
+replay draws what the recording drew. `ThreadLocalRandom.current()` becomes `Randoms#current`, a
+`Random` seeded by the same key, and each draw on what it returned becomes that `Random`'s (a bounded
+draw only `ThreadLocalRandom` declares, `nextInt(int,int)`, `nextLong(long[,long])`,
+`nextDouble(double[,double])`, a `Randoms` stand-in of that name), only where every use of the value
+is such a draw or stands where a `Random` may (a return, an assignment, an argument); any other use
+leaves the site as written, counted and named in the weave's log (`CausynthPipeline#seedThreadLocalRandom`).
+The draws are one list (`plan/WorkStartSites#UNSEEDED_DRAWS`), which the lineage scan keeps a class for. HDFS's block placement picks
+a pipeline's DataNodes through NetworkTopology's `ThreadLocalRandom`: hdfs-adhoc-42's replay wrote to
+dn0 first where its recording wrote to dn2 first, and every DataXceiver turn after took another
+node's slot.
 A draw is keyed (`Randoms#key`) by its endpoint where it runs in an occurrence with a context (a Root
 or an Anchor) inside the window: the same function of the same inputs in both passes. Anywhere else
 -- before the window, or in a Lost context, whose address siblings share (unnamed work, a turn begun
@@ -611,8 +683,9 @@ generators nearly alike (alike UUID prefixes, one pick of four for every count).
 ### 4.6 Root demand
 
 `causynth/RootDemand` asks where the values the declared throw's path guards decide on enter what
-the slice follows. Backward from the operands of the `exception_guard` edges at the TARGET_SITE's
-guards, its chain and the chain's deciders (`Site#pathSites`), over the candidate edges, nearest
+the slice follows. Backward from the operands of the guard edges (`exception_guard`,
+`guard_dependency`) at the TARGET_SITE's guards, its chain -- the calls into its method up to
+its execution context's entry included (§3) -- and the chain's deciders (`Site#pathSites`), over the candidate edges, nearest
 first, every path stops at its first *boundary*, at most sixteen edges out; a receiver edge
 (`accessor_receiver`, `method_receiver`, ...) names which object is read, not the value, and is
 followed only to a value-like receiver (a box, a `String`). The classes:
@@ -621,14 +694,14 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | --- | --- | --- |
 | `CLOCK` | a clock's return (§4.1) | nothing more: it is declared |
 | `FAULT` | a fault marker's return (§4.2) | nothing more: it is declared |
-| `CONFIG_CALL`, `CONFIG_FIELD` | a configuration (§4.3) | the twelve nearest keys within sixteen edges are minted |
+| `CONFIG_CALL`, `CONFIG_FIELD` | a configuration (§4.3) | the twelve nearest keys within sixteen edges are minted, and twelve more at the writers' guards (below) |
 | `READ` | a JDK atomic's value | a chosen read is a READ placeholder (§5.4) though only its own region stores it |
 | `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
 | `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
 | `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
 | `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
 | `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
-| `IO` | a stream, file, socket, channel or native result | named |
+| `IO` | a stream, file, socket, channel or native result | a demanded door where its outcome reaches the slice (below), else named (`NO_DOOR`) |
 | `SCOPE` | a call into the system's own code outside the scope, a formal no caller in scope passes | chosen, first in scope growth (§2.4) |
 | `LIBRARY` | any other library result | named |
 | `CUT` | a path still open sixteen edges out, no boundary yet | named |
@@ -640,12 +713,51 @@ configuration no source declares, a `String` getter). A configuration
 belongs to the world: it is read in whichever occurrence wrote what the anchor reads, beyond the
 boundary between them (hdfs-17960's key stands behind the `READ` of `numSnapshots`, in the edit-log
 replay that decremented it), so its keys are measured on the whole cone (every edge, no boundary
-stops it), a field's at the field, a getter call's one past the local it lands in. A named class
+stops it), a field's at the field, a getter call's one past the local it lands in. Whether a
+writer of a tracked read ran decides what the read saw, so the keys are measured again on the
+cone from the guards of the writers of each chosen `TRACK`, `TRACK_IDENTITY`, `TRACK_CONTAINER` or
+`READ` read (the guard rows into its cell: the store's own branches and those of the calls into
+its method, §2.2), each one edge past the read; of the keys the path's cone did not choose, the
+twelve nearest within sixteen there are minted too, so a key near a writer never displaces one
+near the anchor. Each configuration row states the cone
+it was measured on (`measured`: `PATH`, `WRITERS`); a row is chosen when its key is. A named class
 is a row, never a freed value: freeing it would invent a value no execution produces.
+**Local file faults.** A local file operation is a door (§4.2) only where its result or its
+failure flows into what the walk demanded (`RootDemand.Faults`, `causynth/LatentFaults`):
+
+- (a) `VALUE`: an IO boundary of the walk whose call returns a failing result (`File#renameTo`'s
+  false) into the path;
+- (b) over the latent model (`FaultPropagation#latent`: the woven program plus, where no door
+  stands yet, each call of a throwing row's anchor, each checked throw on a failing-result
+  anchor's failing arm, and each call into the system outside the analysed program declaring a
+  checked exception), a fault that escapes its method from a point before a demanded store
+  (`ESCAPE`: a writer of a chosen TRACK, TRACK_IDENTITY, TRACK_CONTAINER or READ field), or that a
+  handler catches whose arm decides a site the walk followed an edge at (`HANDLER`: a site on the
+  target's path only where the handler leads to it; a fault that only leaves before the throw
+  removes it), followed down the calls it escapes to the call it comes from.
+
+Its distance is the site's plus one plus the calls it escapes. The doors this pass wove stay; the
+nearest calls are added until twelve stand (rows `fault_escape`, `fault_handler`, `door`, the
+others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every later pass, each with
+its `via`: the methods the descent walked, from the demanded site's method down to the door's
+caller. A demanded door roots no region, unlike a catalog door at calls: its marker is read in the
+occurrence that runs the demanded site, the chain's methods joining every region that holds the
+site's method (`causynth/SymbolicRegionPlanner#fold`; no root is added, so no address moves). Rooted
+as fault entries, utility callers (`StorageInfo#readPropertiesFile`, `FileUtil#listFiles`) opened
+occurrences wherever they ran, and the test thread's DataNode starts lost their hop
+(hdfs-adhoc-26, `DECLARED_TARGET_BEFORE_WINDOW`). A call whose demanded site no region holds is cut
+`NO_REGION`. A call
+into the system outside the scope where such a fault could stand is an IO frontier row
+(`fault_frontier`): the twelve nearest join scope growth's demanded rows (§2.4). `run_engine.sh`
+`campaign_analyze_grown_scope` runs the static pass again while it chooses more doors, outside
+the growth budget (a door moves the unit indices of its method, so the scope map is the woven
+body's).
+
 `root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
-`chosen`, `cut`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
+`chosen`, `cut`, `measured`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
 That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
-on no symbol demands the reads it made before it decided that carry it
+on no symbol demands the reads its deciding predicate names (by read event: a compound guard's later
+tests read after the target row) and the reads it made before it decided that carry it
 (`explore.ClosurePlanner#concrete`, `StaticScopeMap#demandedAt`; PIPELINE §7.2), their writers
 asked as a symbolic predicate's are.
 
@@ -666,15 +778,27 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
     `String` or a float wrapper: a reader queries or projects the referent the field held when it
     read (SOLR-18406's `knownCommits`, a map each commit replaces, and `latestCommit`). A static
     one too (`static: true`: its location is its class's). A field only its class's construction
-    stores is none (`#constructionOnly`: final, or private and stored only by its own class's
+    stores (`#constructionOnly`: final, or private and stored only by its own class's
     constructors, `#storedOnlyAtConstruction`: Lucene's `IndexFileDeleter.refCounts`, a lambda's
-    captured value): its only writer is its constructor, so there is nothing to re-pair. The same
-    rule marks a store into such a field `constructionOnly` (§5.3);
+    captured value) is no `REFERENCE`: its only writer is its constructor, so the field itself has
+    nothing to re-pair. The same rule marks a store into such a field `constructionOnly` (§5.3);
+  - `CONTAINER`: such a construction-only field holding a map, set, list, queue or deque
+    (`smt/JavaContainerTypes#shape`; an array is none, its elements being locations of their own):
+    its reference never changes, but the container's contents change in place, through `put`,
+    `remove` and the like from other threads, and they are what a query reads
+    (`BlockTokenSecretManager.allKeys`, `BlockPoolManager.bpByBlockPoolId`,
+    `DirectorySnapshottableFeature.snapshotsByNames`). The location its reads and mutations name
+    is the container's state (VM.md §6), observed as §5.2 says. Any other construction-only field
+    is none (hdfs-adhoc-03's `FSOutputSummer.sum`, a `DataChecksum`);
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
   `wire_handoff` edge, or the root demand chose it, a `TRACK`, `TRACK_IDENTITY` or
   `TRACK_CONTAINER` boundary of the throw's own guards however many flows away (§4.6); a read that
-  only feeds data stays untracked;
+  only feeds data stays untracked. A `CONTAINER` read is tracked only where the root demand chose
+  it: every query of a container reaches a branch, so the deciding rule would track every final
+  cache a configuration parse reads and make its region record from entry (hdfs-adhoc-28's seed:
+  `Configuration.CACHE_CLASSES` and `REGISTRY`, `WeakHashMap`s no model knows, took the DataNode
+  startup region from 13 to 262 recorded decisions);
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
@@ -704,11 +828,45 @@ window came first; the INITIAL is a write row of its own (`contract/WriteRow#ini
 its cell nor an accessor's call, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
 for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
-Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
-value's; a static cell's (`static: true`) on its declaring class's mirror, the key its location
-has (`CausynthPipeline#instrumentConcolicObservedSites`), before the `putstatic` or `getstatic`. Not
-observed: a `publishedFrom` write site, whose receiver is the local's container, not the carrier's
-holder (its log starts at its first model event).
+Each observed row states its cell's `trackedKind` and what it observes: `field`, the cell as above;
+`container`, the state of the container the cell holds. A `REFERENCE` cell's access is observed
+like a value's; a static cell's (`static: true`) on its declaring class's mirror, the key its
+location has (`CausynthPipeline#instrumentConcolicObservedSites`), before the `putstatic` or
+`getstatic`. Not observed: a `publishedFrom` write site, whose receiver is the local's container,
+not the carrier's holder (its log starts at its first model event).
+
+**A container a cell holds** (a `REFERENCE` or `CONTAINER` cell of a container type, no array) is
+observed by its state: after each read of the cell, on the referent the read returned, and before
+each container mutation through it, on the call's receiver (a view or an iterator stands for its
+container), `ConcolicRegionRuntime.observeTrackedContainer(siteId, cell, container, afterMutation)`
+calls the VM's `observeContainer` (`runtime/ConcolicVmBroker#observeContainer`, VM.md §5.4), which
+starts the container's state log with an INITIAL stating what it holds, unless a log stands. Every later
+modeled mutation is then a `STATE` version with its writer, site and guard -- whatever object
+reaches the container (VM.md §6) -- and every query reads one, so COMPOSE re-pairs the anchor's
+query of it like any state read (PIPELINE §8, `SmtLowering#movedQuery`): to the INITIAL, or to an
+earlier or later concurrent writer's state. Before, a container whose contents stayed concrete had
+no log (the VM starts one only at a symbolic value or a guarded mutation): hdfs-adhoc-11's
+`allKeys.get(keyId)`, -28/31's `bpByBlockPoolId.get(bpid)` read no version, so nothing was there to
+re-pair; the block-key cases had theirs only because a wire-carried key or a clock-guarded removal
+reached the DataNode's map first. A `CONTAINER` cell's field is never observed (its constructor's
+store neither), and a mutator call never observes a field -- but an atomic's write of its value: its
+receiver is no holder of the cell (a `GSet`'s `put`, a `BestEffortLongFile`'s `set` had each
+access refused `HANDOFF_FIELD_NOT_FOUND`); a mutator call on a cell holding no container observes
+nothing. Outside every region a mutation runs as bytecode no model sees, so a second observation
+just after it marks a standing log incomplete (`UNHOOKED_CONTAINER_MUTATION`) instead of leaving its
+chain stale -- after, so a log another thread started meanwhile is marked too. A value
+no container model knows (a `TreeMap`, a `CopyOnWriteArrayList`) is an `UNSTATED_VALUE` DIAGNOSTIC
+row naming its class, once per site.
+
+Every observed `READ_SITE` access is a read row, whether or not a published expression holds its
+value: the VM's read log states each read's chosen version (VM.md §5.2), and `runtime/RowPublication
+#loggedReads` publishes every logged read in the method of a `READ_SITE` (its `vmSite`, the map the
+replay reads with its guarded-store table) through the read path an expression's read node takes,
+so a read both state is one row. Before it a read whose value reached no expression -- a reference
+compared with a constant (hdfs-adhoc-45's `state == State.IN_SEGMENT` in `FSEditLog.isSegmentOpen`),
+a value handed to a call the VM does not model -- was no row, and neither the closure nor a STATE
+family saw it. A read log the VM cut at its 1024-read bound is an `UNSTATED_VALUE` DIAGNOSTIC, and so
+is a logged read of a version the location's log does not list: it would pair with nothing.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
@@ -852,7 +1010,8 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
 ## 7. Current limits
 
 - Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
-  on a read, §4.2), configuration (§4.3) and tree hooks. A clock read through a field, a parameter,
+  on a read, §4.2; a local file door only at a demanded call, §4.6), configuration (§4.3) and tree
+  hooks. A clock read through a field, a parameter,
   `java.time`, or an interface whose implementation is outside the scope is not recognized;
   pre-window state is a root only where a tree hook says so.
 - Configuration reads left at the recording (§4.3) are counted over the analysed scope only: a read
@@ -883,12 +1042,15 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
   boundary, and a concrete anchor's demand joins a read row to a demanded read by its method, kind
   and type, not its bci (`StaticScopeMap#demandedAt`).
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
-  and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
-  `value` from an observed access (§5.2). A container reached through a
+  and `AtomicReference.value`, a static one on its class's mirror), the atomics' integral
+  `value` and the state of a container a cell holds (`CONTAINER` cells included) from an observed
+  access (§5.2). A container reached through a
   replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
-  fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
-  queues are classified by interface here, modeled by R3-REFCONT WP3b/c). A `String` field's log
+  fields, array elements (a construction-only array field's elements included), and containers
+  the VM does not model (`TreeMap`, `TreeSet`, `CopyOnWriteArrayList`; classified by interface
+  here). A mutation of an observed container by a thread outside every region is detected only at
+  the slice's mutation sites of its cell; one through an alias the slice does not name is not. A `String` field's log
   starts at its first symbolic store, with no INITIAL (VM.md §5.1), so a store before it -- a null
   -- is no writer a read of it can be re-paired with (open defect 34).
 - Root admission (§4.4) is by field, not by object: a root whose influence stores a demanded
@@ -902,11 +1064,16 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
 - A library call's receiver enters `S` only when it is shared state in the calling method (§2.2):
   a receiver passed in as a parameter is the caller's to demand, and is not followed up.
 - Control dependence follows only door faults a handler catches; any other exception edge is
-  ignored. A fault reaches a caller only through the analysed program: a protocol call of a class
+  ignored (a demanded file fault that escapes before a store is chosen by the latent model, §4.6,
+  but no edge states it: the writer is planned as the store's writer). A fault reaches a caller only through the analysed program: a protocol call of a class
   outside the scope (HDFS's `*TranslatorPB`, whose RPC engine invoker is out of scope too) raises
-  nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. It
-  follows a call up only for constant stores, field-effect calls and write-site guards (three
-  calls up); it never crosses a thread start, an executor submission or the wire.
+  nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. A program
+  exception (`throw new` of a non-door kind, e.g. `RecoveryInProgressException` from
+  `FsDatasetImpl.initReplicaRecoveryImpl` caught in `recover()`) is no fault branch, and a
+  precondition helper that throws decides nothing at its caller. Across calls it follows the
+  activation of the target's method and of a method holding a demanded store or mutation, three
+  calls up (§2.2), and write-site guards; it never crosses a thread start, an executor submission
+  or the wire.
 - Derived ports cover only scalar getters of protobuf messages a protobuf service carries, with a
   setter call in scope: no repeated, enum, `bytes`, nested or map-keyed fields, no string codecs,
   no frames, no message of a transport without services (DataTransfer ops, HTTP bodies, ZooKeeper

@@ -175,7 +175,8 @@ public class ReferenceCellTest {
      * {@code known} and {@code latest} are REFERENCE cells, read through a
      * query and a projection (D1: a read's object is a use of it); the
      * atomic's {@code get()} is its value (P6); a CHM query depends on its
-     * receiver (P1); the final map is no cell.
+     * receiver (P1); the final map is a CONTAINER cell, read for its
+     * contents.
      */
     @Test
     public void aReferenceCellIsReadStoredAndConstructed() throws Exception {
@@ -205,16 +206,23 @@ public class ReferenceCellTest {
             assertEquals((String) row[0], row[1], row[2]);
         }
 
+        String reserves = "<" + POLICY + ": " + CHM + " reserves>";
+        // The root demand chose the final map's read (a CONTAINER read is a
+        // read site only where it did, SYMBOL-SCOPE §5.1).
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(program.edges,
                 Collections.<Map<String, Object>>singletonList(region()),
-                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null, (demandSite, demandCell) -> null,
+                Collections.<String, edu.uva.liftlab.graphchecker.contract.Clock>emptyMap(), (m, u, c) -> null,
+                (demandSite, demandCell) -> reserves.equals(demandCell)
+                        ? new StaticScopeMap.Demanded("TRACK_CONTAINER", 1,
+                        true) : null,
                 method -> !method.startsWith("<s."),
                 CausynthStaticFacts::trackedKind,
                 CausynthStaticFacts::staticField,
                 CausynthStaticFacts::constructionOnly);
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(sites,
-                SiteControlDependence.over(StaticScopeMap.siteIds(sites)))) {
+                SiteControlDependence.over(StaticScopeMap.siteIds(sites)),
+                method -> false)) {
             text.append(row).append('\n');
         }
         Path file = tree.newFolder("map").toPath()
@@ -237,7 +245,6 @@ public class ReferenceCellTest {
                         + site.publishedFrom + " " + site.guards);
             }
         }
-        String reserves = "<" + POLICY + ": " + CHM + " reserves>";
         Set<String> constructionOnly = new LinkedHashSet<>();
         for (String carrier : Arrays.asList(KNOWN, LATEST, reserves)) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
@@ -248,11 +255,14 @@ public class ReferenceCellTest {
         }
         String store = "s.Policy#update(Ls/Commit;)V#12:WRITE";
         Object[][] rows = {
-                {"the reads: two references and the atomic's value",
+                {"the reads: two references, the atomic's value and the"
+                        + " final map's contents",
                         new LinkedHashSet<>(Arrays.asList(
                                 CHECK + "#u2 " + KNOWN + " REFERENCE",
                                 CHECK + "#u4 " + LATEST + " REFERENCE",
-                                CHECK + "#u7 " + VALUE + " VALUE")), reads},
+                                CHECK + "#u7 " + VALUE + " VALUE",
+                                CHECK + "#u8 " + reserves + " CONTAINER")),
+                        reads},
                 {"known's store, its guarded put, latest's, the atomic's",
                         new LinkedHashSet<>(Arrays.asList(
                                 UPDATE + "#u7 " + KNOWN + "  []",
@@ -276,16 +286,19 @@ public class ReferenceCellTest {
                                 "MAP L [" + KNOWN + "]", "ARRAY L []"),
                         carriers(map, store, "INSTANCE java/util/concurrent/"
                                 + "ConcurrentHashMap", "MAP L", "ARRAY L")},
-                {"every access is observed with its kind, the put before"
-                        + " its publication is not",
+                {"every access is observed with its kind, a map's read by"
+                        + " its field and its container, the final map's by"
+                        + " its container alone, its constructor's store and"
+                        + " the put before its publication not at all",
                         new LinkedHashSet<>(Arrays.asList(
-                                UPDATE + "#u7 REFERENCE",
-                                CHECK + "#u2 REFERENCE",
+                                UPDATE + "#u7 REFERENCE field",
+                                CHECK + "#u2 REFERENCE field container",
                                 "<s.Policy: void setLatest(s.Commit)>#u2"
-                                        + " REFERENCE",
-                                CHECK + "#u4 REFERENCE",
-                                "<s.Policy: void enable()>#u2 VALUE",
-                                CHECK + "#u7 VALUE")),
+                                        + " REFERENCE field",
+                                CHECK + "#u4 REFERENCE field",
+                                "<s.Policy: void enable()>#u2 VALUE field",
+                                CHECK + "#u7 VALUE field",
+                                CHECK + "#u8 CONTAINER container")),
                         observed(map.observedSites())},
                 {"only the final map's store, by its constructor, is"
                         + " construction-only (no guarded store)",
@@ -438,7 +451,10 @@ public class ReferenceCellTest {
         for (JsonElement site : sites) {
             JsonObject row = site.getAsJsonObject();
             found.add(row.get("siteId").getAsString() + " "
-                    + row.get("trackedKind").getAsString());
+                    + row.get("trackedKind").getAsString()
+                    + (row.get("field").getAsBoolean() ? " field" : "")
+                    + (row.get("container").getAsBoolean()
+                            ? " container" : ""));
         }
         return found;
     }

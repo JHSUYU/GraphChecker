@@ -57,21 +57,14 @@ public final class VmRows {
                 : optionalLongInteger(read, "eventId", -1L);
     }
 
-    /** The version a read node states it observed, joinable or not, or
-     *  -1. */
+    /** The version a read node -- or a record of the VM's read log, the
+     *  same shape -- states it observed, joinable or not, or -1. */
     public static long recordedVersion(JsonObject read) {
         JsonElement observed = read == null ? null
                 : read.get(OBSERVED_VERSION);
-        if (observed == null || observed.isJsonNull()) return -1L;
-        if (observed.isJsonObject()) {
-            JsonElement id = observed.getAsJsonObject().get("fieldVersionId");
-            return id == null || !id.isJsonPrimitive() ? -1L : id.getAsLong();
-        }
-        try {
-            return observed.getAsLong();
-        } catch (RuntimeException notANumber) {
-            return -1L;
-        }
+        if (observed == null || !observed.isJsonObject()) return -1L;
+        JsonElement id = observed.getAsJsonObject().get("fieldVersionId");
+        return id == null || !id.isJsonPrimitive() ? -1L : id.getAsLong();
     }
 
     /** Whether a read's location had its whole writer set when it read. */

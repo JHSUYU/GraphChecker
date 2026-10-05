@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -931,10 +932,10 @@ final class ConcolicTaskPlan {
         final int targetBranchOccurrence;
         /** Solver-selected outcome that reaches the declared failure. */
         final boolean targetBranchRequiredOutcome;
-        /** The helper branch deciding the target branch when it tests the
-         *  constant a helper returned ("" if none), and its fatal arm. */
-        final String targetDeciderSite;
-        final boolean targetDeciderOutcome;
+        /** The helper branch arms deciding the target branch when it tests
+         *  the constant a helper returned, each with its own
+         *  (causynth.BooleanReturns); empty for none. */
+        final List<StaticScopeMap.Guard> targetDeciders;
         /** Every test of a disjunctive target guard and its fatal arm, the
          *  target branch first; empty for one guard. */
         final Map<String, Boolean> targetGuards = new LinkedHashMap<>();
@@ -1021,10 +1022,8 @@ final class ConcolicTaskPlan {
                     "occurrence", -1);
             this.targetBranchRequiredOutcome = targetRequiredOutcome(
                     targetBranch, targetBranchSite);
-            JsonObject decider = object(targetBranch, "decidedBy");
-            this.targetDeciderSite = optionalString(decider, "siteId");
-            this.targetDeciderOutcome = optionalBool(decider,
-                    "requiredOutcome", false);
+            this.targetDeciders = StaticScopeMap.guardsOf(
+                    targetBranch.get("decidedBy"));
             for (JsonElement guard : array(targetBranch, "guards")) {
                 JsonObject row = guard.getAsJsonObject();
                 targetGuards.put(optionalString(row, "siteId"),

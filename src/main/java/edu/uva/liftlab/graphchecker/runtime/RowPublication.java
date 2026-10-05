@@ -9,6 +9,8 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
@@ -136,8 +138,10 @@ final class RowPublication {
     }
 
     /**
-     * One row per write version, and one per read node
-     * ({@code ReadFromExpression}) the published expressions contain.
+     * One row per write version, one per read node
+     * ({@code ReadFromExpression}) the published expressions contain, and
+     * one per logged read of a READ_SITE's method none of them states
+     * ({@link #loggedReads}).
      *
      * <p>Site from the VM log, index from the frame journal (IDENTITY §4).
      * A row belongs to the activation that PERFORMED the event
@@ -200,6 +204,95 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
+        // After every expression: a read one states keeps its node's row.
+        for (JsonObject record : active.sharedStateRecords.values()) {
+            loggedReads(record, published);
+        }
+    }
+
+    /**
+     * Every observed READ_SITE access is a row (SYMBOL-SCOPE §5.2): a
+     * logged read in the method of a scope map READ_SITE, as its log record
+     * states it ({@code SharedStateCapture#writeLogRecord}: the version its
+     * plan chose, how far that is the value it read), through the one read
+     * path ({@link #readFrom}), so a read an expression states too is one
+     * row.  Without it a read whose value reached no published expression
+     * -- a reference compared with a constant, an enum state test
+     * (hdfs-adhoc-45's {@code FSEditLog.state} in {@code isSegmentOpen}) --
+     * was no row, and neither the closure nor a STATE family saw it.  An
+     * exact read returned its version's word, so the version's value rides
+     * along as the node's would.  A log the VM cut at its bound names the
+     * reads it dropped as missing, once per location.
+     */
+    private static void loggedReads(JsonObject record,
+                                    Set<String> published) {
+        Set<String> methods = readSiteMethods;
+        if (methods.isEmpty()) return;
+        String locationKey = optionalString(record, "locationKey");
+        JsonObject envelope = object(record, "envelope");
+        Map<Long, JsonElement> values = null;
+        for (JsonElement element : array(envelope, "reads")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject read = element.getAsJsonObject();
+            if (!methods.contains(LoggedEventSites.method(read))) continue;
+            if (values == null) {
+                values = new java.util.HashMap<Long, JsonElement>();
+                for (JsonElement version : array(envelope, "versions")) {
+                    if (!version.isJsonObject()) continue;
+                    values.put(optionalLongInteger(version.getAsJsonObject(),
+                            "fieldVersionId", -1L),
+                            version.getAsJsonObject().get("expression"));
+                }
+            }
+            // The version as its read-from node states it, with that
+            // version's value: a read of a version the log does not list
+            // (dropped at its bound) would pair with nothing, so it is
+            // named, never published.
+            long version = VmRows.recordedVersion(read);
+            if (!values.containsKey(version)) {
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        locationKey, "the read at event " + optionalLongInteger(
+                                read, "readEventId", -1L) + " states version "
+                                + version + ", which this location's log does"
+                                + " not list, so it is no row");
+                continue;
+            }
+            JsonObject observed = object(read, VmRows.OBSERVED_VERSION)
+                    .deepCopy();
+            JsonElement value = values.get(version);
+            if (value != null) observed.add("expression", value);
+            JsonObject node = read.deepCopy();
+            node.add(VmRows.OBSERVED_VERSION, observed);
+            readAt(node, locationKey, published);
+        }
+        if (values != null && optionalBool(envelope, "readLogTruncated",
+                false)) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    locationKey, "the VM's read log of this location was cut"
+                            + " at its bound, so its reads before the cut"
+                            + " that no expression states are no rows");
+        }
+    }
+
+    /** The {@code vmSite} of every READ_SITE of the session's scope map
+     *  ({@link #installReadSites}): where a logged read is an observed
+     *  READ_SITE access. */
+    private static volatile Set<String> readSiteMethods =
+            java.util.Collections.emptySet();
+
+    /** Installs the READ_SITE methods of the session's scope map rows, read
+     *  once with the guarded-store table ({@code GuardedStoreSites}). */
+    static void installReadSites(List<JsonObject> rows) {
+        Set<String> found = new java.util.HashSet<String>();
+        for (JsonObject row : rows) {
+            if (StaticScopeMap.SITE_KIND.equals(optionalString(row, "kind"))
+                    && StaticScopeMap.READ_SITE.equals(
+                            optionalString(row, "role"))
+                    && !optionalString(row, "vmSite").isEmpty()) {
+                found.add(optionalString(row, "vmSite"));
+            }
+        }
+        readSiteMethods = java.util.Collections.unmodifiableSet(found);
     }
 
     /**
@@ -297,8 +390,13 @@ final class RowPublication {
 
     /** A read the write log covers: the location, and the version it saw. */
     private static void readFrom(JsonObject node, Set<String> published) {
-        JsonObject where = object(node, "location");
-        String locationKey = SharedStateCapture.locationKeyOf(where);
+        readAt(node, SharedStateCapture.locationKeyOf(
+                object(node, "location")), published);
+    }
+
+    /** {@link #readFrom} at a location its record names. */
+    private static void readAt(JsonObject node, String locationKey,
+                               Set<String> published) {
         LocationId location = locationId(locationKey);
         if (location == null) return;
         long observed = versionOf(node);
@@ -518,32 +616,21 @@ final class RowPublication {
         long at = reach == null ? 0L
                 : optionalLongInteger(reach, "vmEventId", 0L);
         // A concrete target testing the constant a helper returned
-        // (causynth.BooleanReturns): the helper's last decision before it,
-        // at the helper's fatal arm, is the predicate, and stands where that
-        // decision stands, so the prefix is cut before it and not after.
-        boolean takenIsFatal = observed == fatalArm;
-        if (condition == null && reached
-                && !task.targetDeciderSite.isEmpty()) {
-            long latest = 0L;
-            for (JsonObject mapping : active.branchMappings) {
-                long seq = optionalLongInteger(mapping, "vmEventId", 0L);
-                JsonElement satisfied = object(mapping, "witness")
-                        .get("sourceSatisfiedPredicate");
-                if (!task.targetDeciderSite.equals(
-                        optionalString(mapping, "siteId"))
-                        || seq <= latest || seq >= at
-                        || satisfied == null || !satisfied.isJsonObject()) {
-                    continue;
-                }
-                latest = seq;
-                condition = satisfied.getAsJsonObject();
-                takenIsFatal = optionalBool(mapping, "outcome", false)
-                        == task.targetDeciderOutcome;
+        // (causynth.BooleanReturns): the helper decision that chose the
+        // return is the predicate, at the arm the target took, and stands
+        // where that decision stands, so the prefix is cut before it and not
+        // after.
+        if (condition == null && reached && !task.targetDeciders.isEmpty()) {
+            JsonObject decided = decidedBy(active.branchMappings,
+                    task.targetDeciders, at);
+            if (decided != null) {
+                condition = object(decided, "witness")
+                        .getAsJsonObject("sourceSatisfiedPredicate");
+                at = optionalLongInteger(decided, "vmEventId", at);
             }
-            if (latest > 0L) at = latest;
         }
-        String phi = reached ? RowRuntime.fatalTerm(condition, takenIsFatal)
-                : "";
+        String phi = reached
+                ? RowRuntime.fatalTerm(condition, observed == fatalArm) : "";
         boolean observedFatal = reached && observed == fatalArm;
         if (reached && task.targetGuards.size() > 1) {
             List<String> arms = new ArrayList<>();
@@ -564,6 +651,51 @@ final class RowPublication {
         }
         RowRuntime.target(occurrence, at, anchor, phi, observedFatal,
                 reached);
+    }
+
+    /**
+     * The decision that chose the constant a target's helper returned
+     * (causynth.BooleanReturns): the latest decision before {@code before}
+     * in the helper's method -- the deciders' -- when it is one of their
+     * arms.  Symbolic, it is the one; concrete, it tested a nested helper's
+     * return, and the decision that chose that is, in turn; else null, and
+     * the target stays the constant of its arm (hdfs-adhoc-40: the target
+     * tests {@code isSufficientlyReplicated}, whose concrete test of {@code
+     * hasMinStorage}'s return was chosen by {@code liveNum >=
+     * getMinStorageNum(block)}).  This call's decisions, not an earlier
+     * call's: the latest in the helper's method is the one its return ran
+     * from, when it is an arm that runs straight to a return.
+     */
+    static JsonObject decidedBy(List<JsonObject> mappings,
+                                List<StaticScopeMap.Guard> deciders,
+                                long before) {
+        String method = SiteId.methodOf(deciders.get(0).siteId());
+        JsonObject latest = null;
+        long at = 0L;
+        for (JsonObject mapping : mappings) {
+            long seq = optionalLongInteger(mapping, "vmEventId", 0L);
+            if (seq <= at || seq >= before || !method.equals(
+                    SiteId.methodOf(optionalString(mapping, "siteId")))) {
+                continue;
+            }
+            latest = mapping;
+            at = seq;
+        }
+        if (latest == null) return null;
+        for (StaticScopeMap.Guard decider : deciders) {
+            Boolean arm = decider.outcome();
+            if (!decider.siteId().equals(optionalString(latest, "siteId"))
+                    || arm == null || arm.booleanValue()
+                    != optionalBool(latest, "outcome", !arm.booleanValue())) {
+                continue;
+            }
+            JsonElement satisfied = object(latest, "witness")
+                    .get("sourceSatisfiedPredicate");
+            if (satisfied != null && satisfied.isJsonObject()) return latest;
+            return decider.deciders().isEmpty() ? null
+                    : decidedBy(mappings, decider.deciders(), at);
+        }
+        return null;
     }
 
     /**

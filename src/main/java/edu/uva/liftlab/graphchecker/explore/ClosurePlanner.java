@@ -252,7 +252,10 @@ public final class ClosurePlanner {
      * leaves at a concrete test of the boolean a clock-decided {@code
      * isExpired} returned).</p>
      *
-     * <p>Its PREDICATE READS are then the shared-state reads the anchor made
+     * <p>Its PREDICATE READS are then the reads its deciding predicate
+     * names (phi, or the decisions at the flip sites; by read event, so a
+     * compound guard's later tests count though they read after the target
+     * row's seq), and the shared-state reads the anchor made
      * before it decided, in each admitted path, that the root demand found
      * on the throw's path guards ({@link StaticScopeMap#demandedAt},
      * SYMBOL-SCOPE §4.6: the nearest read of each path back from the guards'
@@ -283,11 +286,17 @@ public final class ClosurePlanner {
             if (session == null || !session.admitted()) continue;
             if (row.observedFatal()) return null;
             long at = 0L;
+            // What the deciding predicate itself read, by read event: a
+            // compound guard's phi stands at its first test, and its later
+            // tests read after that (hdfs-adhoc-26: the cTime reads of
+            // `LV >= cur && cTime <= ns.cTime`, events past the target row).
+            Set<Long> named = new LinkedHashSet<Long>();
             if (row.reachedAnchor()) {
                 if (!corpus.termSymbols(sessionId, row.phiTerm()).isEmpty()) {
                     return null;
                 }
                 at = row.seq();
+                named.addAll(corpus.readEvents(sessionId, row.phiTerm()));
             } else {
                 for (DecisionRow decision
                         : corpus.decisionsOf(sessionId, anchor)) {
@@ -297,14 +306,19 @@ public final class ClosurePlanner {
                         return null;
                     }
                     at = Math.max(at, decision.seq());
+                    named.addAll(corpus.readEvents(sessionId,
+                            decision.term()));
                 }
             }
             paths++;
             if (at > 0L) decided++;
             for (ReadRow read : corpus.readsOn(sessionId, anchor)) {
-                if (read.seq() >= at) continue;
-                if (scope.demandedAt(read.endpoint().site(), read.javaType(),
-                        read.location().kind())) {
+                if (named.contains(Long.valueOf(read.seq()))) {
+                    reads.add(read);
+                } else if (read.seq() >= at) {
+                    continue;
+                } else if (scope.demandedAt(read.endpoint().site(),
+                        read.javaType(), read.location().kind())) {
                     reads.add(read);
                 } else {
                     offCone++;
@@ -525,10 +539,24 @@ public final class ClosurePlanner {
                 new HashMap<String, Set<String>>();
         private final Map<String, List<StaticScopeMap.Site>> writers =
                 new HashMap<String, List<StaticScopeMap.Site>>();
+        /** occurrence id -> whether a session recorded a fault decision of
+         *  it ({@link #faulted}). */
+        private final Map<String, Boolean> faults =
+                new HashMap<String, Boolean>();
+        /** Doors said to decide no fault, once each ({@link
+         *  #controlProducer}). */
+        private final Set<String> faultless = new LinkedHashSet<String>();
 
         private Walk(Corpus corpus, StaticScopeMap map) {
             this.corpus = corpus;
             this.map = map;
+        }
+
+        /** Whether a session recorded a fault decision of {@code
+         *  occurrence} ({@link Corpus#faultSites}), asked once. */
+        private boolean faulted(OccurrenceAddress occurrence) {
+            return faults.computeIfAbsent(occurrence.id(),
+                    id -> !corpus.faultSites(occurrence).isEmpty());
         }
 
         /** {@link StaticScopeMap#carriersAt}. */
@@ -650,23 +678,40 @@ public final class ClosurePlanner {
             }
         }
         statedReads(walk, demand, next);
-        controlProducer(corpus, demand, next);
+        controlProducer(walk, demand, next);
         return next;
     }
 
-    /** Both doors of the message a demanded occurrence served join as control
-     *  producers: they contribute no value, but their fault points decide
-     *  whether the message exists (IDENTITY §7.3). Paired via the message
-     *  that started the served occurrence ({@link Corpus#startedBy}: its
-     *  ANCHOR, or what its turn took in). */
-    private static void controlProducer(Corpus corpus, Demand demand,
+    /** A door of the message a demanded occurrence served -- its sender or
+     *  its receiver, paired via the message that started the served
+     *  occurrence ({@link Corpus#startedBy}: its ANCHOR, or what its turn
+     *  took in) -- joins as a control producer where a session recorded a
+     *  fault decision of it: it contributes no value, but that fault point
+     *  decides whether the message exists (IDENTITY §7.3), the door PLAN's
+     *  CONTROL_PRODUCER rule admits (it read a fault marker).  Any other
+     *  door -- run under no planned task (hdfs-adhoc-28's heartbeat tick, in
+     *  a scope with no IPC client door: it reads no marker), a role, or a
+     *  captured one that decided no fault -- has nothing that decides the
+     *  message: one DIAGNOSTIC row, never a member, never waited for. */
+    private static void controlProducer(Walk walk, Demand demand,
                                         List<Demand> next) {
+        Corpus corpus = walk.corpus;
         String endpoint = corpus.startedBy(demand.occurrence);
         if (endpoint.isEmpty()) return;
         for (OccurrenceAddress door : new OccurrenceAddress[] {
                 corpus.senderOf(endpoint), corpus.receiverOf(endpoint)}) {
             if (door == null || door.equals(demand.occurrence)) continue;
-            next.add(new Demand(door, CONTROL_PRODUCER, false));
+            if (walk.faulted(door)) {
+                next.add(new Demand(door, CONTROL_PRODUCER, false));
+            } else if (walk.faultless.add(door.id())) {
+                walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        door.render(), "a door of the message that started "
+                                + demand.occurrence.render() + " decided no "
+                                + "fault in any session, so nothing of it "
+                                + "decides whether the message exists: no "
+                                + "control producer"));
+            }
         }
     }
 

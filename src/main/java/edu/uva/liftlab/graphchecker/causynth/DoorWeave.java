@@ -17,10 +17,12 @@ import soot.VoidType;
 import soot.jimple.AssignStmt;
 import soot.jimple.EqExpr;
 import soot.jimple.IfStmt;
+import soot.jimple.GotoStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeStmt;
 import soot.jimple.Jimple;
 import soot.jimple.NewExpr;
+import soot.jimple.NullConstant;
 import soot.jimple.SpecialInvokeExpr;
 import soot.jimple.StaticInvokeExpr;
 import soot.jimple.Stmt;
@@ -52,7 +54,11 @@ import java.util.Set;
  * ({@code DOOR_METHOD_UNAVAILABLE}): the library moved under the catalog.
  * A door at every call of its anchor ({@link LibraryCatalog.Door#atCalls})
  * is woven in each analysed method that makes the call, at its first; a
- * program that makes none has none.</p>
+ * program that makes none has none.  A demanded door ({@code sites}
+ * DEMANDED, a local file operation) is woven only at the calls the root
+ * demand chose ({@link DemandedDoors}), before the call: its markers throw
+ * its kinds, or, for a failing result, {@code r = marker ? failing :
+ * call(..)}, so a failed operation never happens.</p>
  *
  * <p>A kind is an ENVIRONMENT failure the transport can raise and a caller
  * distinguishes (e.g. {@code RetryPolicies} fails over on
@@ -83,6 +89,7 @@ final class DoorWeave {
         }
         analysed.sort((a, b) -> a.getName().compareTo(b.getName()));
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+            if (door.demanded) continue;
             if (door.atCalls()) {
                 for (SootMethod caller : callers(analysed, door.anchor)) {
                     weave(door, caller);
@@ -108,11 +115,105 @@ final class DoorWeave {
             throw new IllegalStateException(
                     "DOOR_METHOD_UNAVAILABLE: " + missed);
         }
+        for (DemandedDoors.Site site : DemandedDoors.woven()) {
+            weave(site);
+            woven.add("FAULT:" + site.callee + " at " + site.key());
+        }
         LOG.info("Library doors woven: {}", woven);
     }
 
+    /** Weaves one demanded door at its chosen call; a site no catalog row
+     *  or no analysed call answers is refused by name. */
+    private static void weave(DemandedDoors.Site site) {
+        LibraryCatalog.Door door = LibraryCatalog.demandedDoor(site.callee);
+        SootMethod method = CausynthStaticFacts.method(site.caller);
+        Body body = method == null || !method.isConcrete()
+                || !analysed(method.getDeclaringClass()) ? null
+                : CausynthStaticFacts.activeBody(method);
+        Stmt call = body == null ? null : call(body, site.callee,
+                site.ordinal);
+        if (door == null || call == null || doorSite(call)
+                || door.result != LibraryCatalog.Result.NONE
+                && !(call instanceof AssignStmt)) {
+            throw new IllegalStateException("DEMANDED_DOOR_UNAVAILABLE: "
+                    + site.key() + (door == null ? " is no demanded door"
+                    : " names no call of an analysed method that can "
+                    + "carry it"));
+        }
+        if (door.result == LibraryCatalog.Result.NONE) {
+            weave(door, method, call);
+        } else {
+            weaveResult(door, body, (AssignStmt) call);
+        }
+        call.addTag(DOOR_SITE);
+    }
+
+    /** The call of {@code callee} that is the {@code ordinal}-th (from 0) in
+     *  body order, or null. */
+    static Stmt call(Body body, String callee, int ordinal) {
+        int seen = 0;
+        for (Unit unit : body.getUnits()) {
+            Stmt stmt = (Stmt) unit;
+            if (stmt.containsInvokeExpr() && callee.equals(
+                    stmt.getInvokeExpr().getMethodRef().getSignature())
+                    && seen++ == ordinal) {
+                return stmt;
+            }
+        }
+        return null;
+    }
+
+    /** A call's ordinal among its body's calls of the same callee. */
+    static int ordinal(Body body, Stmt call) {
+        String callee = call.getInvokeExpr().getMethodRef().getSignature();
+        int seen = 0;
+        for (Unit unit : body.getUnits()) {
+            if (unit == call) return seen;
+            Stmt stmt = (Stmt) unit;
+            if (stmt.containsInvokeExpr() && callee.equals(
+                    stmt.getInvokeExpr().getMethodRef().getSignature())) {
+                seen++;
+            }
+        }
+        throw new IllegalArgumentException(call + " is not in its body");
+    }
+
+    /** Whether a demanded door already stands at this call. */
+    static boolean doorSite(Unit call) {
+        return call.hasTag(DOOR_SITE.getName());
+    }
+
+    /**
+     * A failing result's door: {@code m = marker; if m == 0 goto call; r =
+     * failing; goto next; call: r = callee(..); next: ..}, every jump to
+     * the call taken to its marker first.
+     */
+    private static void weaveResult(LibraryCatalog.Door door, Body body,
+                                    AssignStmt call) {
+        Jimple jimple = Jimple.v();
+        Unit next = body.getUnits().getSuccOf(call);
+        Local chosen = CausynthPipeline.newTraceLocal(body, BooleanType.v(),
+                "$fault");
+        Unit entry = jimple.newNopStmt();
+        call.redirectJumpsToThisTo(entry);
+        List<Unit> units = new ArrayList<Unit>();
+        units.add(entry);
+        units.add(jimple.newAssignStmt(chosen, jimple.newStaticInvokeExpr(
+                makeSymbolic(), StringConstant.v(door.name()))));
+        units.add(jimple.newIfStmt(jimple.newEqExpr(chosen,
+                IntConstant.v(0)), call));
+        units.add(jimple.newAssignStmt(call.getLeftOp(),
+                door.result == LibraryCatalog.Result.FALSE
+                        ? IntConstant.v(0) : NullConstant.v()));
+        units.add(jimple.newGotoStmt(next));
+        for (Unit unit : units) {
+            unit.addTag(WOVEN);
+            body.getUnits().insertBeforeNoRedirect(unit, call);
+        }
+    }
+
     /** Whether a class is this run's analysed program. */
-    private static boolean analysed(SootClass type) {
+    static boolean analysed(SootClass type) {
         return type != null && !type.isPhantom() && type.isApplicationClass()
                 && !LineageScope.lineageOnly(type.getName());
     }
@@ -128,7 +229,7 @@ final class DoorWeave {
                     b.getSignature()));
             for (SootMethod method : methods) {
                 Body body = CausynthStaticFacts.activeBody(method);
-                if (body != null && firstCall(body, anchor) != null) {
+                if (body != null && call(body, anchor, 0) != null) {
                     found.add(method);
                 }
             }
@@ -143,7 +244,7 @@ final class DoorWeave {
                 || !method.getDeclaringClass().isApplicationClass()) {
             return "no method " + door.method;
         }
-        if (firstCall(method.retrieveActiveBody(), door.anchor) == null) {
+        if (call(method.retrieveActiveBody(), door.anchor, 0) == null) {
             return door.method + " calls no " + door.anchor;
         }
         weave(door, method);
@@ -153,8 +254,14 @@ final class DoorWeave {
     /** Weaves one door at the first call of its anchor in {@code method},
      *  which makes one. */
     private static void weave(LibraryCatalog.Door door, SootMethod method) {
+        weave(door, method, call(method.retrieveActiveBody(), door.anchor,
+                0));
+    }
+
+    /** Weaves one door's markers at {@code site}, a call of its anchor. */
+    private static void weave(LibraryCatalog.Door door, SootMethod method,
+                              Stmt site) {
         Body body = method.retrieveActiveBody();
-        Stmt site = firstCall(body, door.anchor);
         Unit next = door.after ? body.getUnits().getSuccOf(site) : site;
         List<Unit> units = new ArrayList<Unit>();
         if (!door.after) {
@@ -193,32 +300,66 @@ final class DoorWeave {
         return unit.hasTag(WOVEN.getName());
     }
 
-    private static final Tag WOVEN = new Tag() {
-        @Override
-        public String getName() {
-            return "CausynthDoorWoven";
-        }
+    private static final Tag WOVEN = tag("CausynthDoorWoven");
+    /** The program's call a demanded door stands at. */
+    private static final Tag DOOR_SITE = tag("CausynthDoorSite");
 
-        @Override
-        public byte[] getValue() {
-            return new byte[0];
-        }
-    };
+    private static Tag tag(final String name) {
+        return new Tag() {
+            @Override
+            public String getName() {
+                return name;
+            }
 
-    /** One woven fault's throw: the marker local its branch tests, that
-     *  branch, the marker's name and the kind thrown. */
+            @Override
+            public byte[] getValue() {
+                return new byte[0];
+            }
+        };
+    }
+
+    /** One woven fault: the marker local its branch tests, that branch,
+     *  the marker's name and the kind thrown -- or, for a failing result,
+     *  no kind, and the call whose result local it sets. */
     static final class Fault {
         final Local marker;
         final IfStmt branch;
         final String name;
         final String kind;
+        /** A failing result's call ({@code r = callee(..)}), else null. */
+        final AssignStmt call;
 
-        private Fault(Local marker, IfStmt branch, String name, String kind) {
+        private Fault(Local marker, IfStmt branch, String name, String kind,
+                      AssignStmt call) {
             this.marker = marker;
             this.branch = branch;
             this.name = name;
             this.kind = kind;
+            this.call = call;
         }
+    }
+
+    /**
+     * The failing-result door standing at {@code unit}, or null: the shape
+     * {@link #weaveResult} weaves -- {@code m = makeSymbolicBoolean(FAULT:..);
+     * if m == 0 goto call; r = failing; goto next; call: r = callee(..)} --
+     * read back off the unit chain from the call.
+     */
+    static Fault wovenResult(Body body, Unit unit) {
+        if (!(unit instanceof AssignStmt) || !doorSite(unit)) return null;
+        soot.util.Chain<Unit> units = body.getUnits();
+        Unit jump = units.getPredOf(unit);
+        Unit failing = jump == null ? null : units.getPredOf(jump);
+        Unit test = failing == null ? null : units.getPredOf(failing);
+        Unit call = test == null ? null : units.getPredOf(test);
+        if (!(jump instanceof GotoStmt) || !(failing instanceof AssignStmt)
+                || !(test instanceof IfStmt)
+                || ((IfStmt) test).getTarget() != unit) {
+            return null;
+        }
+        Fault marker = marker(call, (IfStmt) test, null, null);
+        return marker == null ? null : new Fault(marker.marker,
+                marker.branch, marker.name, null, (AssignStmt) unit);
     }
 
     /**
@@ -241,8 +382,18 @@ final class DoorWeave {
                 instanceof NewExpr)
                 || ((AssignStmt) allocation).getLeftOp()
                 != ((ThrowStmt) unit).getOp()
-                || !(test instanceof IfStmt)
-                || !(((IfStmt) test).getCondition() instanceof EqExpr)
+                || !(test instanceof IfStmt)) {
+            return null;
+        }
+        return marker(call, (IfStmt) test, ((NewExpr) ((AssignStmt)
+                allocation).getRightOp()).getBaseType().getClassName(), null);
+    }
+
+    /** {@code m = makeSymbolicBoolean("FAULT:..")} at {@code call}, tested
+     *  by {@code test} ({@code if m == 0}), as a fault; else null. */
+    private static Fault marker(Unit call, IfStmt test, String kind,
+                                AssignStmt result) {
+        if (!(test.getCondition() instanceof EqExpr)
                 || !(call instanceof AssignStmt)
                 || !(((AssignStmt) call).getRightOp()
                 instanceof StaticInvokeExpr)) {
@@ -250,7 +401,7 @@ final class DoorWeave {
         }
         StaticInvokeExpr marker = (StaticInvokeExpr)
                 ((AssignStmt) call).getRightOp();
-        Value tested = ((EqExpr) ((IfStmt) test).getCondition()).getOp1();
+        Value tested = ((EqExpr) test.getCondition()).getOp1();
         if (!MARKER_CLASS.equals(marker.getMethodRef().getDeclaringClass()
                 .getName())
                 || marker.getArgCount() != 1
@@ -260,10 +411,8 @@ final class DoorWeave {
             return null;
         }
         String name = ((StringConstant) marker.getArg(0)).value;
-        return name.startsWith("FAULT:") ? new Fault((Local) tested,
-                (IfStmt) test, name,
-                ((NewExpr) ((AssignStmt) allocation).getRightOp())
-                        .getBaseType().getClassName()) : null;
+        return name.startsWith("FAULT:") ? new Fault((Local) tested, test,
+                name, kind, result) : null;
     }
 
     /** {@code if (marker) throw new kind("..")}, falling to {@code next}. */
@@ -271,11 +420,7 @@ final class DoorWeave {
                                     Unit next) {
         String marker = GENERIC.equals(kind) ? name
                 : name + ":" + kind.substring(kind.lastIndexOf('.') + 1);
-        SootMethodRef makeSymbolic = Scene.v().makeMethodRef(
-                CausynthPipeline.phantomClass(MARKER_CLASS),
-                "makeSymbolicBoolean",
-                Collections.singletonList(RefType.v("java.lang.String")),
-                BooleanType.v(), true);
+        SootMethodRef makeSymbolic = makeSymbolic();
         // (String) where the kind declares it, else (): ZooKeeper's
         // KeeperException.ConnectionLossException has only the latter.
         List<Type> parameters = messageConstructor(kind)
@@ -305,6 +450,14 @@ final class DoorWeave {
         return units;
     }
 
+    private static SootMethodRef makeSymbolic() {
+        return Scene.v().makeMethodRef(
+                CausynthPipeline.phantomClass(MARKER_CLASS),
+                "makeSymbolicBoolean",
+                Collections.singletonList(RefType.v("java.lang.String")),
+                BooleanType.v(), true);
+    }
+
     /** Whether the kind declares a {@code (String)} constructor. */
     private static boolean messageConstructor(String kind) {
         SootClass type = Scene.v().forceResolve(kind, SootClass.SIGNATURES);
@@ -314,16 +467,5 @@ final class DoorWeave {
         }
         return type.declaresMethod("<init>", Collections.<Type>singletonList(
                 RefType.v("java.lang.String")));
-    }
-
-    private static Stmt firstCall(Body body, String callee) {
-        for (Unit unit : body.getUnits()) {
-            Stmt stmt = (Stmt) unit;
-            if (stmt.containsInvokeExpr() && callee.equals(
-                    stmt.getInvokeExpr().getMethodRef().getSignature())) {
-                return stmt;
-            }
-        }
-        return null;
     }
 }

@@ -505,23 +505,25 @@ final class RuntimeTraceContext {
             if (api.isEmpty()) api = "tick";
             state.source = source;
             state.flow = state.flow.withRequest(source.key() + "/tick/"
-                    + api + "#" + Lineage.rootWindowIndex(), api);
+                    + api + "#" + Lineage.quietly(Lineage::rootWindowIndex),
+                    api);
         }
-        // A tick is a WAKE.  Only a turn whose WAKE was written states its
-        // END, so no END is left without a WAKE across the window opening.
-        String site = "tick." + MapFields.safe(roleName);
-        if (ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site)) {
-            scope.tickSite = site;
-        }
-        scope.vacant = ScheduleLog.vacated();
+        // A tick is a WAKE, written before the turn's first event, so a turn
+        // that makes none holds no slot and keeps no k (ScheduleLog#turnBegun,
+        // Lineage#pop).  Only a turn whose WAKE was written states its END,
+        // so no END is left without a WAKE across the window opening.
+        final long hop = scope.lineageToken;
+        final String site = "tick." + MapFields.safe(roleName);
+        scope.tick = Lineage.quietly(() -> ScheduleLog.turnBegun(site, hop));
         Identity.hopOpened(scope.lineageToken);
         return token;
     }
 
-    /** Whether the tick {@link #beginTick} opened is a vacant turn. */
+    /** Whether the tick {@link #beginTick} opened is a vacant turn: asking
+     *  is the turn's first step, so its WAKE is written first. */
     static boolean vacantTick(long token) {
         ScopeFrame tick = standing(CURRENT.get(), token);
-        return tick != null && tick.vacant;
+        return tick != null && ScheduleLog.vacant(tick.tick);
     }
 
     /**
@@ -532,10 +534,10 @@ final class RuntimeTraceContext {
     static void endTick(long token) {
         State state = CURRENT.get();
         ScopeFrame tick = standing(state, token);
-        if (tick != null && tick.tickSite != null) {
+        if (tick != null && ScheduleLog.turnEnded(tick.tick)) {
             // Inner scopes close first, so END stands in the turn's context.
             closeInside(state, tick);
-            ScheduleLog.observe(ScheduleEvent.Kind.END, tick.tickSite);
+            ScheduleLog.observe(ScheduleEvent.Kind.END, tick.tick.site());
         }
         restoreScope(token);
     }
@@ -574,8 +576,8 @@ final class RuntimeTraceContext {
                 normalizedApi);
         scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         standIn(state, scope, source, source.key() + "/wake/"
-                + normalizedApi + "#" + Lineage.rootWindowIndex(),
-                normalizedApi);
+                + normalizedApi + "#" + Lineage.quietly(
+                        Lineage::rootWindowIndex), normalizedApi);
         Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
         return token;
@@ -1151,11 +1153,9 @@ final class RuntimeTraceContext {
         private SourceRef startup;
         /** Whether this scope is a service-loop turn ({@link #beginWake}). */
         private boolean turn;
-        /** The tick's site when its WAKE was written, else null. */
-        private String tickSite;
-        /** Whether this tick's turn is one the recording never made
-         *  ({@link ScheduleLog#vacated}). */
-        private boolean vacant;
+        /** The tick's WAKE, written at its first event, or null outside
+         *  the window ({@link ScheduleLog#turnBegun}). */
+        private ScheduleLog.TurnWake tick;
         private final SourceRef source;
         private final Frame activeFrame;
         private final SourceRef frameSource;

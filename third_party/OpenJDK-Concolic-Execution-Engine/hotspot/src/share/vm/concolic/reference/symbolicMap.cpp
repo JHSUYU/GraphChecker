@@ -51,6 +51,18 @@ const char *const ENTRY_ITERATORS[] = {
   "java/util/concurrent/ConcurrentHashMap$EntryIterator", NULL
 };
 // The views whose elements are keys, entries or values.
+const char *const HASHTABLE_ENUMERATORS[] = {
+  "java/util/Hashtable$Enumerator", NULL
+};
+
+// Nodes a map's walk hands out whose setValue stores into the node itself,
+// past every model: a ConcurrentHashMap$MapEntry's goes through its map's
+// put, which the model sees.
+const char *const STORING_ENTRIES[] = {
+  "java/util/HashMap$Node", "java/util/LinkedHashMap$Entry",
+  "java/util/HashMap$TreeNode", "java/util/Hashtable$Entry", NULL
+};
+
 const char *const KEY_VIEWS[] = {
   "java/util/HashMap$KeySet", "java/util/LinkedHashMap$LinkedKeySet",
   "java/util/concurrent/ConcurrentHashMap$KeySetView",
@@ -334,7 +346,7 @@ std::set<std::string> SymMap::init_target_class_names() {
     "java/util/concurrent/ConcurrentHashMap$MapEntry",
     "java/util/Hashtable", "java/util/Hashtable$KeySet",
     "java/util/Hashtable$EntrySet", "java/util/Hashtable$ValueCollection",
-    "java/util/Hashtable$Entry",
+    "java/util/Hashtable$Entry", "java/util/Hashtable$Enumerator",
     // An unmodifiable entry set's member: a stream or forEach over it
     // visits these, seeded as its map's entries.
     "java/util/Collections$UnmodifiableMap$UnmodifiableEntrySet$UnmodifiableEntry",
@@ -374,6 +386,28 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   Method *callee = handle.get_callee_method();
   oop target = callee == NULL || callee->is_static()
       ? (oop) NULL : handle.get_param<oop>(0);
+  // Two mutations no model states, named (detected, VM.md §9): a Hashtable
+  // enumerator's remove() unlinks its entry directly, and a node's setValue
+  // stores into the node -- a node names no map, so only one a modeled walk
+  // handed out (its slot carries an expression) is known to be a tracked
+  // map's, and that is named on the region.
+  if (klass_is_one_of(target, HASHTABLE_ENUMERATORS)) {
+    oop container = ContainerSupport::backing_container(target);
+    if (callee_name == "remove" && container != NULL
+        && SharedFieldVersions::is_tracked(
+               ContainerSupport::state_location(container))) {
+      ContainerSupport::abandon_state(container,
+          "HASHTABLE_ENUMERATOR_REMOVE_UNMODELED");
+    }
+    return false;
+  }
+  if (callee_name == "setValue" && klass_is_one_of(target, STORING_ENTRIES)) {
+    if (ConcolicMngr::ctx->find_stack_slot(
+            handle.get_caller_stack_begin_offset()) != NULL) {
+      ConcolicMngr::ctx->note_model_gap("ASSOCIATIVE_ENTRY_SET_VALUE_UNMODELED");
+    }
+    return false;
+  }
   // Collection's default removeIf is this model's only on a map's key or
   // entry view.  A values view cannot name what it removes.  Its default
   // stream() is the stream model's source (SymStream::invoke_source).
@@ -395,18 +429,13 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   oop container = ContainerSupport::backing_container(target);
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    // A symbolic value admits the model, and so does a mutation this thread
-    // is performing because of a symbolic decision (see
-    // ContainerSupport::guarded_mutation), and a call with a callback on a
-    // map whose state is tracked: its body runs muted and the callback with
+    // ContainerSupport::admits: a symbolic value, a guarded mutation, a
+    // mutation of a tracked map whatever object reaches it, and a call with a
+    // callback on a tracked map -- its body runs muted and the callback with
     // propagation, so what the callback computes is kept.  Anything else
     // runs as bytecode.
     const bool callback = takes_callback(callee_name) && container != NULL;
-    const bool recording = handle.general_check_param_symbolized()
-        || ContainerSupport::guarded_mutation(callee_name)
-        || (callback && SharedFieldVersions::is_tracked(
-                            ContainerSupport::state_location(container)));
-    if (!recording) return false;
+    if (!ContainerSupport::admits(handle, callback)) return false;
     if (container == NULL && map_level(callee_name)) {
       // A subclass of a modeled class, or an access-ordered LinkedHashMap,
       // is refused by name; anything else is no map this model knows, and

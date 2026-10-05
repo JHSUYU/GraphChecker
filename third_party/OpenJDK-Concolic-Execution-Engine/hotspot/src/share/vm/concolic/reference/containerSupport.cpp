@@ -109,6 +109,17 @@ const BackingField BACKING_FIELDS[] = {
   {"java/util/Hashtable$ValueCollection", "this$0", "Ljava/util/Hashtable;"},
   {"java/util/Hashtable$EntrySet", "this$0", "Ljava/util/Hashtable;"},
   {"java/util/Hashtable$Enumerator", "this$0", "Ljava/util/Hashtable;"},
+  // The list iterators (OopUtils::list_of_iterator's fields) and the deque's:
+  // one built before the container's log began is no alias any model made,
+  // and only its backing names the container its remove()/set()/add()
+  // changes (ContainerSupport::admits).
+  {"java/util/ArrayList$Itr", "this$0", "Ljava/util/ArrayList;"},
+  {"java/util/ArrayList$ListItr", "this$0", "Ljava/util/ArrayList;"},
+  {"java/util/AbstractList$Itr", "this$0", "Ljava/util/AbstractList;"},
+  {"java/util/AbstractList$ListItr", "this$0", "Ljava/util/AbstractList;"},
+  {"java/util/ArrayDeque$DeqIterator", "this$0", "Ljava/util/ArrayDeque;"},
+  {"java/util/ArrayDeque$DescendingIterator", "this$0",
+   "Ljava/util/ArrayDeque;"},
   {"java/util/Collections$UnmodifiableMap", "m", "Ljava/util/Map;"},
   {"java/util/Collections$UnmodifiableCollection", "c",
    "Ljava/util/Collection;"},
@@ -362,6 +373,32 @@ int ContainerSupport::member_count(oop container) {
       return -1;
   }
 }
+
+namespace {
+
+// What changes whenever a container's contents do, read before and after a
+// snapshot walk: the modCount of a class that keeps one (HashMap and
+// LinkedHashMap, Hashtable, every AbstractList, a HashSet through its map),
+// a ConcurrentHashMap's baseCount, an ArrayDeque's head and tail.  A walk
+// is lock-free, so a mutation another thread made during it would state
+// contents the container never held at one instant.
+jlong mutation_stamp(oop container) {
+  if (container == NULL || container->is_array()) return 0;
+  if (ContainerSupport::capability(container)
+      == ContainerSupport::CAPABILITY_HASH_SET) {
+    container = object_field(container, "map", "Ljava/util/HashMap;");
+    if (container == NULL) return 0;
+  }
+  int offset = field_offsets()->offset(container, "modCount", "I");
+  if (offset >= 0) return container->int_field(offset);
+  offset = field_offsets()->offset(container, "baseCount", "J");
+  if (offset >= 0) return container->long_field(offset);
+  const jlong head = int_member(container, "head");
+  const jlong tail = int_member(container, "tail");
+  return (head << 32) ^ (tail & 0xffffffffL);
+}
+
+}  // namespace
 
 BasicType ContainerSupport::result_type(oop result, BasicType declared) {
   if (result == NULL || declared != T_OBJECT) return declared;
@@ -804,11 +841,12 @@ bool ContainerSupport::read_concrete_members(oop container,
                       unsupported_class, over_bound);
 }
 
-int ContainerSupport::install_receiver_snapshot(
+int ContainerSupport::receiver_snapshot(
     oop container, const char *shape, bool *truncated,
-    const char **unsupported_class) {
+    const char **unsupported_class, Expression **chain) {
   if (truncated != NULL) *truncated = false;
   if (unsupported_class != NULL) *unsupported_class = NULL;
+  if (chain != NULL) *chain = NULL;
   if (container == NULL || shape == NULL || ConcolicMngr::ctx == NULL) {
     return -1;
   }
@@ -816,8 +854,13 @@ int ContainerSupport::install_receiver_snapshot(
   std::vector<oop> keys;
   std::vector<oop> values;
   bool over_bound = false;
+  const jlong stamp = mutation_stamp(container);
   if (!read_concrete_members(container, &keys, &values, unsupported_class,
                              &over_bound)) {
+    return -1;
+  }
+  if (mutation_stamp(container) != stamp) {
+    if (unsupported_class != NULL) *unsupported_class = "SNAPSHOT_RACED";
     return -1;
   }
 
@@ -856,7 +899,7 @@ int ContainerSupport::install_receiver_snapshot(
     state = new ContainerExpression(
         shape, associative ? "PUT" : "APPEND", state, arguments);
   }
-  ConcolicMngr::ctx->set_container_state(container, state);
+  if (chain != NULL) *chain = state;
   return entries;
 }
 
@@ -991,21 +1034,43 @@ SharedFieldVersions::Location ContainerSupport::state_base_before_operation(
   }
 
   SharedFieldVersions::InitialSnapshot snapshot;
-  snapshot_for_receiver(container, &snapshot, true);
+  Expression *chain = NULL;
+  snapshot_for_receiver(container, &snapshot, true, &chain);
 
   // The state the walk stated, or -- a refused walk mints none -- the bare
   // root, so the log still begins here and its INITIAL states the refusal
   // (a map caught mid-resize is RESIZING, not an unreadable class).
-  Expression *base =
+  Expression *root =
       ConcolicMngr::ctx->container_state(container, shape(container));
-  if (base == NULL) return none;
+  if (root == NULL) return none;
   SharedFieldVersions::Location location = state_location(container);
   if (!location.is_valid()) return none;
-  if (SharedFieldVersions::is_tracked(location)) return location;
-  SharedFieldVersions::publish_initial(
-      location, base, SharedFieldVersions::ConcreteBits(), snapshot);
-  if (started != NULL) *started = snapshot;
+  if (start_log(container, location, chain != NULL ? chain : root,
+                snapshot, chain) != 0
+      && started != NULL) {
+    *started = snapshot;
+  }
   return location;
+}
+
+jlong ContainerSupport::start_log(
+    oop container, const SharedFieldVersions::Location &location,
+    Expression *base, const SharedFieldVersions::InitialSnapshot &snapshot,
+    Expression *chain) {
+  // A HashSet is a HashMap's keys: an iterator of the set walks that map,
+  // so the map is the set from here on (state_location, admits).
+  if (capability(container) == CAPABILITY_HASH_SET) {
+    ConcolicMngr::ctx->alias_container(
+        object_field(container, "map", "Ljava/util/HashMap;"), container);
+  }
+  const jlong started = SharedFieldVersions::publish_initial(
+      location, base, SharedFieldVersions::ConcreteBits(), snapshot);
+  // Only the thread whose INITIAL started the log installs the chain it
+  // walked: a loser's would be a second SNAPSHOT_BASE no version names.
+  if (started != 0 && chain != NULL) {
+    ConcolicMngr::ctx->set_container_state(container, chain);
+  }
+  return started;
 }
 
 void ContainerSupport::referent_state(
@@ -1047,7 +1112,9 @@ void ContainerSupport::referent_state(
 }
 
 void ContainerSupport::snapshot_for_receiver(
-    oop container, SharedFieldVersions::InitialSnapshot *out, bool receiver_is_base) {
+    oop container, SharedFieldVersions::InitialSnapshot *out,
+    bool receiver_is_base, Expression **chain) {
+  if (chain != NULL) *chain = NULL;
   if (out == NULL) return;
   *out = SharedFieldVersions::InitialSnapshot();
   if (container == NULL) return;
@@ -1071,8 +1138,8 @@ void ContainerSupport::snapshot_for_receiver(
   bool truncated = false;
   const char *unsupported = NULL;
   const int entries =
-      install_receiver_snapshot(container, container_shape, &truncated,
-                                &unsupported);
+      receiver_snapshot(container, container_shape, &truncated,
+                        &unsupported, chain);
   if (entries >= 0) {
     out->stated = true;
     out->entries = entries;
@@ -1099,6 +1166,25 @@ bool ContainerSupport::guarded_mutation(const std::string &callee) {
     return false;
   }
   return SharedFieldVersions::guarded_store_admitted(NULL, "CALL " + callee);
+}
+
+bool ContainerSupport::admits(MethodSymbolizerHandle &handle,
+                              bool callback) {
+  const std::string &callee = handle.get_callee_name();
+  if (handle.general_check_param_symbolized() || guarded_mutation(callee)) {
+    return true;
+  }
+  Method *method = handle.get_callee_method();
+  if (method == NULL || method->is_static()
+      || !(callback || mutator(callee))) {
+    return false;
+  }
+  // A container a model abandoned keeps its (incomplete) log but no state:
+  // it stays out of the model.
+  oop container = backing_container(handle.get_param<oop>(0));
+  return container != NULL
+      && ConcolicMngr::ctx->find_container_state(container) != NULL
+      && SharedFieldVersions::is_tracked(state_location(container));
 }
 
 bool ContainerSupport::mutator(const std::string &callee) {
@@ -1149,9 +1235,8 @@ jlong ContainerSupport::publish_state(oop container, Expression *new_state,
       // class the engine cannot walk is published as a stated refusal, never
       // as an empty container.
       SharedFieldVersions::InitialSnapshot snapshot;
-      snapshot_for_receiver(container, &snapshot, false);
-      SharedFieldVersions::publish_initial(
-          location, base, SharedFieldVersions::ConcreteBits(), snapshot);
+      snapshot_for_receiver(container, &snapshot, false, NULL);
+      start_log(container, location, base, snapshot, NULL);
     }
   }
   // The publishing task already names the merged local path case.  Copying
@@ -1177,8 +1262,7 @@ void ContainerSupport::publish_filled(oop container, Expression *base,
   if (!SharedFieldVersions::is_tracked(location)) {
     SharedFieldVersions::InitialSnapshot empty;
     empty.stated = true;
-    SharedFieldVersions::publish_initial(
-        location, base, SharedFieldVersions::ConcreteBits(), empty);
+    start_log(container, location, base, empty, NULL);
   }
   publish_state(container, state, operation);
 }
@@ -1187,7 +1271,11 @@ void ContainerSupport::abandon_state(oop container,
                                      const std::string &reason) {
   if (container == NULL || ConcolicMngr::ctx == NULL) return;
   mark_state_gap(container, reason.c_str());
-  ConcolicMngr::ctx->forget_container_state(container);
+  // An iterator or view no model aliased names its container only through
+  // its backing field; the state that goes is that container's.
+  oop backing = backing_container(container);
+  ConcolicMngr::ctx->forget_container_state(
+      backing != NULL ? backing : container);
 }
 
 bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
@@ -1213,11 +1301,12 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
     // log starts here with that content stated.  The receiver has not been
     // mutated by this operation, so walking it now reads exactly the base.
     SharedFieldVersions::InitialSnapshot snapshot;
-    snapshot_for_receiver(container, &snapshot, true);
-    Expression *base = ConcolicMngr::ctx->find_container_state(container);
+    Expression *chain = NULL;
+    snapshot_for_receiver(container, &snapshot, true, &chain);
+    Expression *base = chain != NULL ? chain
+        : ConcolicMngr::ctx->find_container_state(container);
     if (base == NULL) return answer;
-    SharedFieldVersions::publish_initial(
-        location, base, SharedFieldVersions::ConcreteBits(), snapshot);
+    start_log(container, location, base, snapshot, chain);
     if (!SharedFieldVersions::is_tracked(location)) return answer;
   }
   answer.selected = true;

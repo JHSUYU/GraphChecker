@@ -173,8 +173,21 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
 `PriorityQueue`, blocking queues, `IdentityHashMap`, `WeakHashMap`, `EnumMap`) is interpreted as
 plain objects: its elements' fields propagate, but it has no container state and no version log.
-A modeled call with a callback on one of the four maps is admitted when an argument is symbolic or
-the map's state is tracked; otherwise it runs as bytecode. A visiting callback (`forEach`,
+A container model takes a call (`ContainerSupport::admits`, one predicate for the map, list and
+set models) when a symbolic value reaches it, when it is a guarded mutation (§5.3), when it is a
+mutation of a container whose state is tracked -- whatever object reaches the container: an
+iterator or a view the program built before the log began is no alias the model knows, and its
+`remove()` run as bytecode would leave the chain stale with no trace (the models' unaliased-cursor
+paths state it: a map's from the entry the iterator last returned, a list's from its last index; a
+list iterator's `set`/`add`, a deque iterator's `remove` -- its index is the circular buffer's --
+and a key view's `remove(k)` abandon the container by name) -- and, for a call with a callback on
+one of the four maps, when the map's state is tracked; otherwise it runs as bytecode. A container a
+model abandoned (an incomplete log, no state) is not taken again. A query through such an unaliased
+iterator or view stays bytecode: its positions began before the log did. Two mutations no model
+states are named: a `Hashtable` enumerator's `remove()` abandons its table
+(`HASHTABLE_ENUMERATOR_REMOVE_UNMODELED`), and a node's `setValue` (`HashMap$Node`,
+`LinkedHashMap$Entry`, `Hashtable$Entry`), which stores into the node and names no map, is a model
+gap of the region (`ASSOCIATIVE_ENTRY_SET_VALUE_UNMODELED`) where a modeled walk handed the node out. A visiting callback (`forEach`,
 `replaceAll`, `removeIf`) is seeded with a READ of the state per element, so a decision on it is
 one path condition per element per call; past the snapshot bound (64,
 `-Dcausynth.concolic.initial.snapshot.max`) a call's visits are not seeded and it refuses its map
@@ -247,7 +260,7 @@ Container versions carry no word: a container mutation is a Java call no lock ca
 
 Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
 (field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
-store (§5.3), or `observeField` (§5.4). A log a symbolic store starts has no INITIAL: the value
+store (§5.3), `observeField` or `observeContainer` (§5.4). A log a symbolic store starts has no INITIAL: the value
 that store wrote is the first thing it knows, and a store before it is no version
 (`SFV::begin_store_locked`). Once tracked, every store to it is versioned,
 concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
@@ -277,7 +290,13 @@ the lock; either way the location is marked incomplete (`UNOBSERVED_WRITE`). Eve
 newest; never for a container read), `writerSetComplete` (the location's writer set as of the read)
 and, when true, `unnamedWriter` (a writer the log never named reached the location: every
 incompleteness reason but `VERSION_BOUND`); a read that returned its version's word shares that
-version's constant, or for a reference its identity node.
+version's constant, or for a reference its identity node. The location's read log keeps the same
+answer per read (`ReadRecord`: `readEventId`, the reader, its `site`, `observedVersion` --
+`{fieldVersionId, versionKind}`, the read-from node's shape without its expression --,
+`observedExact`, `writerSetComplete`, `unnamedWriter` when true, and `_java_type`, the loaded word's
+letter, absent for a container's state), so a read whose value reaches no published expression (a
+reference compared with a constant) is still a read of its version (SYMBOL-SCOPE §5.2). The log is a
+ring of 1024 reads: past it the newest replaces the oldest in place (`readLogTruncated`).
 
 ### 5.3 Guarded concrete stores
 
@@ -307,6 +326,20 @@ the next read names a version. No referent is snapshotted there. It answers a st
 `0`, or `-1` (no context), `-2` (an argument missing), `-3` (no such field of that kind on the
 declaring class), `-12` (`float`/`double`). SYMBOL-SCOPE.md §5.2 says where it is woven. A read of
 a wrapper field is its value's sort (`J` for a `Long`) and its unboxing reads the read.
+
+`observeContainer(value, afterMutation)` (`ConcolicMngr::observeContainer`) starts the log of the
+state of the container `value` is or stands for (a view, an iterator, a `Collections` wrapper:
+`ContainerSupport::backing_container`) with an INITIAL stating what it holds, the one start a
+model's own first operation makes (`ContainerSupport::state_base_before_operation`: the snapshot of
+§6, its refusals -- the unreadable class, `TRUNCATED`, `RESIZING`, `SNAPSHOT_RACED` -- stated on
+that INITIAL), unless a log stands. A container a final field holds is mutated in place and its
+contents may all be concrete, so nothing else would start it (SYMBOL-SCOPE §5.2). No value is read,
+so the path condition's gate stays as it was. Called `afterMutation` it starts nothing: on a thread
+without a region (no context, or an aborted one) it marks a standing log incomplete
+(`UNHOOKED_CONTAINER_MUTATION`, `unnamedWriter`), the mutation having run as bytecode no model saw --
+after it, so a log another thread started meanwhile is marked too, and one started later walks the
+mutated contents. It answers `0`, `-1` (no region), `-2` (null) or `-12` (no container a model
+knows: an object, a `TreeMap`).
 
 ### 5.5 A container behind a reference
 
@@ -345,7 +378,9 @@ subclasses, `ArrayDeque`), `HashMap`, `LinkedHashMap` (insertion order), `Concur
 entries and `Collections` wrappers (unmodifiable, synchronized, checked) are their backing
 container (`ContainerSupport::backing_container`, through `this$0`, `map`, `m`, `c`): a view a
 modeled call made is aliased to it, and one the program built resolves at `state_location` (a
-`KeySetView` is aliased at its first model event). A log opens with an INITIAL version stating
+`KeySetView` is aliased at its first model event; a list's and a deque's iterators by `this$0`); a
+HashSet's private map becomes the set when the set's log starts (`ContainerSupport::start_log`), so
+an iterator of the set reaches the set. A log opens with an INITIAL version stating
 what the container held when tracking began (`ContainerSupport#snapshot_for_receiver`): walkable
 for the modeled classes and `Object[]`, each in the order its class's iterator returns them -- a
 `LinkedHashMap` (and a `LinkedHashSet`'s map) from `head` by `after`, a `HashMap` and a
@@ -353,7 +388,10 @@ for the modeled classes and `Object[]`, each in the order its class's iterator r
 `Hashtable` by its bins from the last down; a `ConcurrentHashMap` resize in flight refused as
 `RESIZING` (the log still starts, at the bare root), past 4096 bins over the bound -- capped at 64
 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
-`MUTATED_BEFORE_FIRST_READ`). A map's or set's `SNAPSHOT_BASE` states the order those members
+`MUTATED_BEFORE_FIRST_READ`, or `SNAPSHOT_RACED` when its modCount -- a ConcurrentHashMap's baseCount,
+an ArrayDeque's head and tail -- moved during the lock-free walk). Only the thread whose INITIAL
+started the log installs the snapshot it walked, so a racing loser leaves no second `SNAPSHOT_BASE`.
+A map's or set's `SNAPSHOT_BASE` states the order those members
 follow it in and how many of the `PUT`s above it they are (`order`: `INSERTION` or `HASH`,
 `ContainerSupport::iteration_order`; `members`). `compose/ContainerStateModel` and
 `compose/ContainerSmtCodec` lower the chains (`AssocState` for maps, `IndexedState` for lists and
@@ -507,12 +545,12 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 
 ## 8. What the VM publishes
 
-`jdk/src/share/classes/java/lang/System.java` declares 34 concolic natives (registered in
+`jdk/src/share/classes/java/lang/System.java` declares 35 concolic natives (registered in
 `jdk/src/share/native/java/lang/System.c`, implemented in `VM/prims/jvm.cpp`).
-`runtime/ConcolicVmBroker` looks 25 of them up by reflection, so it loads on a stock JDK, and
+`runtime/ConcolicVmBroker` looks 26 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
-`observeField`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
+`observeField`, `observeContainer`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
 `getTrackedLocationVersions`, `installGuardedStoreSites`, `exportLeaf`/`mintLeaf` (§7; bound as
 `ConcolicVmBroker#exportLeaf`/`#mintLeaf` with a `SlotKind` whose ordinal is the VM's). `markConcolicBranch` and the pause
@@ -541,7 +579,8 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   its id, never scanned; a row whose ids do not read so is parsed whole; a table that does not close
   the envelope, a row holding more than one row, or a count the rows do not meet is refused. The
   store is locked only while a node expands. Each envelope is bounded by its own bytes
-  (32 MB, `serializationTruncated` when cut), never by the page's. An envelope states `writerSetComplete` and,
+  (32 MB, `serializationTruncated` when cut), never by the page's. An envelope (`schemaVersion` 2:
+  its read log states each read's version, §5.2) states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
   true only for a stated count.
 - A read node states `observedExact`, `writerSetComplete`, `unnamedWriter` (only when true) and
@@ -585,6 +624,10 @@ that does not hold.
 | decimal and boolean renderings (`toString`, `String.valueOf`, `append`) | modeled: one `toString` op |
 | radix, hexadecimal, char and floating renderings | detected (a named operation, not pinned) |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
+| a tracked container mutated through an iterator or view built before its log began | modeled (§4: `ContainerSupport::admits`) |
+| a tracked container mutated by a thread outside every region, at a mutation site the scope map names | detected (`UNHOOKED_CONTAINER_MUTATION`, §5.4) |
+| a list iterator's `set`/`add`, a deque iterator's `remove`, a key view's `remove(k)`, a `Hashtable` enumerator's `remove` on a tracked container | detected (the container abandoned by name, §4) |
+| a map node's `setValue` | detected where a modeled walk handed the node out (a region model gap), else silently lost: a node names no map |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`/`replaceAll`/`removeIf` | modeled (§4, §6): a choice a guard, a callback's result and its side effects hooked; what a callback that did not run would have stored detected and named (an unknown cell, `CONTAINER_PINNED:`) |
 | a `java.util.stream` pipeline over a modeled container | modeled (§4): its result a guarded chain, its stages' callbacks seeded; what no relation states detected and pinned (a `PIN`, or the run's result named `STREAM_PINNED:`); an unmodeled operation named and hooked as bytecode |
@@ -616,7 +659,9 @@ that does not hold.
   never reads). A version's guard holds only the innermost region's decisions.
 - Re-pairable state is integral, wrapper and reference fields, modeled containers and
   Unsafe-written locations. A container read states no word, so it is never exact, and an unhooked
-  mutation of a container is not detected.
+  mutation of a container is detected only where a thread outside every region makes it at a
+  mutation site the scope map names (§5.4); elsewhere (a muted or paused body, an alias the scope
+  map does not name) it is not.
 - A container answer is typed by the object the run returned (`ContainerSupport::java_type`): a
   null answer is a reference, so a witness in which the same query answers a String or a box is
   outside its sort.
@@ -635,7 +680,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 68
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 71
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor

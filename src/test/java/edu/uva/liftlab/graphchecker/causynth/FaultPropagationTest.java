@@ -156,6 +156,156 @@ public class FaultPropagationTest {
         }
     }
 
+    /**
+     * SYMBOL-SCOPE §4.2, §4.6: a demanded door is latent until the root
+     * demand chooses its call -- a file open's kind, a throw on a failing
+     * rename's arm, a call into the system outside the scope declaring a
+     * checked exception -- and is then woven at that call alone, before
+     * it, and raises from its marker; a door asked again at a call that
+     * holds one is refused by name.
+     */
+    @Test
+    public void aDemandedDoorStandsOnlyAtTheCallChosenForIt()
+            throws Exception {
+        String open = "<java.io.FileOutputStream: void <init>(java.io.File)>";
+        String rename = "<java.io.File: boolean renameTo(java.io.File)>";
+        SootMethod save = store();
+        String method = save.getSignature();
+        FaultPropagation latent = FaultPropagation.latent(
+                owner -> owner.startsWith("g."));
+        List<String> latentAt = new ArrayList<>();
+        for (FaultPropagation.Raise raise : latent.escapes(method)) {
+            if (raise.latent != null) {
+                latentAt.add(raise.latent.getInvokeExpr().getMethodRef()
+                        .getSignature());
+            }
+            if (raise.frontier != null) latentAt.add(raise.frontier);
+        }
+        java.nio.file.Path doors = java.nio.file.Files.createTempFile(
+                "io_doors", ".jsonl");
+        DemandedDoors.write(doors, Arrays.asList(
+                new DemandedDoors.Site(method, open, 0, 2, "ESCAPE",
+                        Collections.singletonList(method)),
+                new DemandedDoors.Site(method, rename, 0, 2, "ESCAPE",
+                        Collections.singletonList(method))));
+        System.setProperty(DemandedDoors.PROPERTY, doors.toString());
+        String refused = "";
+        try {
+            DoorWeave.apply();
+            try {
+                DoorWeave.apply();
+            } catch (IllegalStateException again) {
+                refused = again.getMessage().split(":")[0];
+            }
+        } finally {
+            System.clearProperty(DemandedDoors.PROPERTY);
+            java.nio.file.Files.delete(doors);
+        }
+        List<String> woven = new ArrayList<>();
+        int calls = 0;
+        for (Unit unit : save.getActiveBody().getUnits()) {
+            DoorWeave.Fault thrown = DoorWeave.woven(save.getActiveBody(),
+                    unit);
+            DoorWeave.Fault failing = DoorWeave.wovenResult(
+                    save.getActiveBody(), unit);
+            if (thrown != null) woven.add(thrown.name);
+            if (failing != null) woven.add(failing.name + " -> false");
+            if (unit instanceof soot.jimple.Stmt
+                    && ((soot.jimple.Stmt) unit).containsInvokeExpr()) {
+                String callee = ((soot.jimple.Stmt) unit).getInvokeExpr()
+                        .getMethodRef().getSignature();
+                if (callee.equals(open) || callee.equals(rename)) calls++;
+            }
+        }
+        Object[][] rows = {
+            {"latent: the open, the throw on the rename's failing arm, the "
+                    + "system call outside the scope",
+                Arrays.asList(open, rename, "<g.Lib: void flush()>"),
+                latentAt},
+            {"woven at the chosen calls, the program's calls kept",
+                "[FAULT:LOCAL_IO:OPEN:FileNotFoundException, "
+                        + "FAULT:LOCAL_IO:NAMESPACE -> false] 2",
+                woven + " " + calls},
+            {"both escape from their markers",
+                2, markers(FaultPropagation.current().escapes(method))
+                        .split(",").length},
+            {"a call holding a door is refused", "DEMANDED_DOOR_UNAVAILABLE",
+                refused}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
+    /**
+     * {@code g.Store.save(File f, File g)}: opens {@code f} for writing,
+     * renames it to {@code g} and throws when that fails, flushes through
+     * the system's {@code g.Lib} (outside the scope), then stores {@code
+     * ok}.
+     */
+    private static SootMethod store() {
+        G.reset();
+        soot.options.Options.v().set_allow_phantom_refs(true);
+        SootClass object = library("java.lang.Object", null, 0);
+        SootClass throwable = library("java.lang.Throwable", object, 0);
+        SootClass exception = library("java.lang.Exception", throwable, 0);
+        library("java.lang.RuntimeException", exception, 0);
+        SootClass ioe = library(IOE, exception, 0);
+        SootClass missing = library("java.io.FileNotFoundException", ioe, 0);
+        for (SootClass kind : new SootClass[]{ioe, missing}) {
+            method(kind, "<init>", Collections.<Type>singletonList(
+                    RefType.v("java.lang.String")), VoidType.v(), 0);
+        }
+        SootClass debug = library(
+                "edu.uva.liftlab.graphchecker.annotation.Debug", object, 0);
+        method(debug, "makeSymbolicBoolean", Collections.<Type>singletonList(
+                RefType.v("java.lang.String")), BooleanType.v(),
+                Modifier.STATIC | Modifier.NATIVE);
+        SootClass file = library("java.io.File", object, 0);
+        SootMethod renameTo = method(file, "renameTo",
+                Collections.<Type>singletonList(file.getType()),
+                BooleanType.v(), Modifier.NATIVE);
+        SootClass stream = library("java.io.FileOutputStream", object, 0);
+        SootMethod init = method(stream, "<init>",
+                Collections.<Type>singletonList(file.getType()),
+                VoidType.v(), Modifier.NATIVE);
+        SootClass lib = library("g.Lib", object, 0);
+        SootMethod flush = method(lib, "flush",
+                Collections.<Type>emptyList(), VoidType.v(),
+                Modifier.STATIC | Modifier.NATIVE);
+        flush.addException(ioe);
+
+        SootClass owner = application("g.Store", object);
+        SootField ok = new SootField("ok", IntType.v(), 0);
+        owner.addField(ok);
+        SootMethod save = method(owner, "save", Arrays.<Type>asList(
+                file.getType(), file.getType()), VoidType.v(), 0);
+        Local r0 = local(save, "r0", owner.getType());
+        Local r1 = local(save, "r1", file.getType());
+        Local r2 = local(save, "r2", file.getType());
+        Local out = local(save, "$r3", stream.getType());
+        Local renamed = local(save, "$z0", BooleanType.v());
+        Local thrown = local(save, "$r4", ioe.getType());
+        Unit flushed = J.newInvokeStmt(J.newStaticInvokeExpr(
+                flush.makeRef()));
+        body(save, J.newIdentityStmt(r0, J.newThisRef(owner.getType())),
+                J.newIdentityStmt(r1, J.newParameterRef(file.getType(), 0)),
+                J.newIdentityStmt(r2, J.newParameterRef(file.getType(), 1)),
+                J.newAssignStmt(out, J.newNewExpr(stream.getType())),
+                J.newInvokeStmt(J.newSpecialInvokeExpr(out, init.makeRef(),
+                        r1)),
+                J.newAssignStmt(renamed, J.newVirtualInvokeExpr(r1,
+                        renameTo.makeRef(), r2)),
+                J.newIfStmt(J.newNeExpr(renamed, IntConstant.v(0)), flushed),
+                J.newAssignStmt(thrown, J.newNewExpr(ioe.getType())),
+                J.newInvokeStmt(J.newSpecialInvokeExpr(thrown, ioe
+                        .getMethodByName("<init>").makeRef(),
+                        StringConstant.v("rename"))),
+                J.newThrowStmt(thrown), flushed,
+                J.newAssignStmt(J.newInstanceFieldRef(r0, ok.makeRef()),
+                        IntConstant.v(1)), J.newReturnVoidStmt());
+        return save;
+    }
+
     private static String handlersOf(FaultPropagation faults, String method,
                                      List<Unit> raises) {
         List<Object> found = new ArrayList<>();

@@ -39,11 +39,17 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
         require(versions.contains("\"selected\":true"), versions);
         require(versions.contains("\"locationKind\":\"MAP_STATE\""),
                 versions);
-        require(count(versions, "\"fieldVersionId\"") == 3, versions);
-        require(count(versions, "\"versionKind\":\"STATE_PUT\"") == 2,
+        require(count(versions, "\"writerContextId\"") == 3, versions);
+        require(count(versions, "\"versionKind\":\"STATE_PUT\",") == 2,
                 versions);
         require(count(versions, "\"readEventId\"") == 1, versions);
         require(count(versions, "\"readerContextId\"") == 1, versions);
+        // The logged read states the version its plan chose (schema 2), the
+        // one its read-from node names, so the read is a row even where its
+        // value reaches no published expression.
+        require(versions.contains("\"schemaVersion\":2"), versions);
+        require(count(versions, "\"observedVersion\":") == 1, versions);
+        require(versions.contains("\"observedExact\":"), versions);
         // The INITIAL version states the content the recorder walked before
         // the first symbolic mutation: this map was empty, and zero is an
         // answer rather than an absent one.
