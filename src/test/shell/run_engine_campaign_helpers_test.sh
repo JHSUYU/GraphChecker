@@ -2630,8 +2630,10 @@ region_path_max_waves=1
 jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
   | .detail | test("region_path_max_waves=1") and test("1 obligation")' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
-  || fail "the wave budget is not stated as a gap row: \
-$(cat "${stream_dir}/campaign_gaps.jsonl")"
+  && jq -e -s 'map(select(.cls == "BLOCKING")) | length == 0' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the wave budget is not stated as a gap row, or the declared \
+nesting bound cut the exploration: $(cat "${stream_dir}/campaign_gaps.jsonl")"
 jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "what ran when the budget stopped the exploration did not land"
@@ -2646,7 +2648,10 @@ it left unasked"
 # STREAM-3c: THE CAMPAIGN BUDGET.  Between two steps, once the campaign's
 # budget has no room for the stages after the exploration (its reserve,
 # campaign_reserve), the exploration ends as at a witness: the queue
-# cancelled, what runs reaped, and the stop a DIAGNOSTIC row.
+# cancelled, what runs reaped.  It still owed an arm (SLOW, reaped), so the
+# end is one BLOCKING EXPLORATION_CUT row naming the stop and the counts:
+# no UNSAT closes over that corpus.  The declared wave bound (STREAM-3)
+# cuts nothing.
 stream_fixture stream-3c
 (
   stream_stubs
@@ -2667,11 +2672,13 @@ jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .reaped == ["SLOW"]' \
   "${stream_dir}/exploration.json" >/dev/null \
   || fail "the campaign budget did not end the exploration: \
 $(cat "${stream_dir}/exploration.json")"
-jq -e 'select(.subject == "CAMPAIGN_BUDGET_REACHED" and .cls == "DIAGNOSTIC")
-  | .detail | test("campaign_budget_s")' \
+jq -e -s 'map(select(.cls == "BLOCKING")) | length == 1
+  and (.[0].subject == "EXPLORATION_CUT")
+  and (.[0].detail | test("^CAMPAIGN_BUDGET_REACHED: ")
+       and test("campaign_budget_s") and test("1 unlanded job"))' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
-  || fail "the budget stop is not a DIAGNOSTIC row: \
-$(cat "${stream_dir}/campaign_gaps.jsonl")"
+  || fail "a budget stop that owed arms is not one BLOCKING EXPLORATION_CUT \
+row: $(cat "${stream_dir}/campaign_gaps.jsonl")"
 
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
 # heap a head JVM is given (exit 3) is not planned: its directory goes, what
@@ -2699,8 +2706,9 @@ stream_fixture stream-3b
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "a planner out of heap failed the exploration: \
 $(cat "${stream_dir}/explore.log")"
-jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED" and .cls == "BLOCKING")
-  | .detail | test("obligations-0001 ran out") and test("OutOfMemoryError")' \
+jq -e 'select(.subject == "EXPLORATION_CUT" and .cls == "BLOCKING")
+  | .detail | test("^PLANNER_HEAP_EXCEEDED: ")
+    and test("obligations-0001 ran out") and test("OutOfMemoryError")' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
   && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1' \
     "${stream_dir}/exploration.json" >/dev/null \

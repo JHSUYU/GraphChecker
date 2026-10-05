@@ -4108,9 +4108,15 @@ campaign log says}); its logs are in ${worker}"
 #               at a witness, the queue is cancelled and what runs reaped.
 #   PLANNER_HEAP_EXCEEDED  a round's planner outgrew the head's heap.
 #
-# Each end is stated in exploration.json, and a forced one as a DIAGNOSTIC
-# row of campaign_gaps.jsonl; none fails the campaign, which goes on to
-# COMPOSE over the corpus EXPLORE left.
+# Each end is stated in exploration.json and judged once, by
+# campaign_stream_truncation: an end that cut the exploration short while
+# it still owed arms -- CAMPAIGN_BUDGET_REACHED with queued obligations
+# cancelled or unlanded jobs reaped, PLANNER_HEAP_EXCEEDED with rounds owed
+# -- is one BLOCKING EXPLORATION_CUT row naming the stop and the counts, so
+# no UNSAT closes over that corpus (EMIT: RUN_DEFECT; a SAT it holds stands,
+# CONFIRM validates it); WITNESSED, FIXED_POINT and the declared nesting
+# bound REGION_PATH_WAVE_BUDGET_REACHED cut nothing, a DIAGNOSTIC row.  None
+# fails the campaign, which goes on to COMPOSE over the corpus EXPLORE left.
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local sessions="${iteration_dir}/sessions"
@@ -4121,7 +4127,7 @@ campaign_explore() {
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
   local stream_generation=0 stream_next_host=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_stop=""
-  local stream_share_said=""
+  local stream_share_said="" stream_end_counts=""""
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
@@ -4459,18 +4465,43 @@ campaign_stream_gap() {
   campaign_log "exploration: ${kind}: ${detail}"
 }
 
-# The closure the exploration ended on, judged.  An accepted witness ended
-# it: nothing past that point is asked, so a truncation asks nothing more
-# (each round's own row is DIAGNOSTIC, ExploreMain).  A planner that could
-# not hold the corpus ended it with rounds still owed: BLOCKING.  Any other
-# end: when its last round's closure was truncated at the task bound
-# (--max-tasks, the manifest's `truncated`), a claim over it misses arms,
-# BLOCKING.  The same
-# holds for the occurrences PLAN left out to fit schedule_max_jobs (the
-# index's `closureCut`, RuntimeWorkflowDiscovery.Workflow#nearest), stated
-# whatever the end: DIAGNOSTIC under a witness, BLOCKING otherwise.
+# The end of the exploration and the closure it ended on, judged: THE ONE
+# PLACE a claim reads how EXPLORE ended.  An end that cut it short while it
+# still owed arms -- the campaign's budget with queued obligations cancelled
+# or unlanded jobs reaped, a planner that could not hold the corpus with
+# rounds still owed -- leaves no UNSAT (owner 2026-10-04, only SAT or
+# UNSAT: an UNSAT over a corpus missing those arms says nothing about
+# them): one BLOCKING EXPLORATION_CUT row naming the stop and the counts.
+# EMIT publishes an UNSAT beside it as a RUN_DEFECT; a SAT the corpus holds
+# stands, as CONFIRM validates it.  WITNESSED and FIXED_POINT cut nothing,
+# and REGION_PATH_WAVE_BUDGET_REACHED is the declared nesting bound that
+# defines the explored space (its own DIAGNOSTIC row, at the round); any
+# other stop row is DIAGNOSTIC.  An accepted witness ended it: nothing past
+# that point is asked, so a truncation asks nothing more (each round's own
+# row is DIAGNOSTIC, ExploreMain).  Any other end: when its last round's
+# closure was truncated at the task bound (--max-tasks, the manifest's
+# `truncated`), a claim over it misses arms, BLOCKING.  The same holds for
+# the occurrences PLAN left out to fit schedule_max_jobs (the index's
+# `closureCut`, RuntimeWorkflowDiscovery.Workflow#nearest), stated whatever
+# the end: DIAGNOSTIC under a witness, BLOCKING otherwise.
 campaign_stream_truncation() {
-  local last truncated cut cls=BLOCKING
+  local last truncated cut cls=BLOCKING owed
+  owed=$(( ${#stream_cancelled[@]} + ${#stream_reaped[@]} ))
+  if [[ "${stream_stop}" == PLANNER_HEAP_EXCEEDED \
+      || ( "${stream_stop}" == CAMPAIGN_BUDGET_REACHED && owed -gt 0 ) ]]
+  then
+    campaign_stream_gap BLOCKING EXPLORATION_CUT "${stream_stop}: \
+${stream_stop_detail}; ${#stream_cancelled[@]} queued obligation(s) \
+cancelled and ${#stream_reaped[@]} unlanded job(s) reaped${stream_end_counts}: \
+the exploration was cut while it still owed arms, so no UNSAT closes over \
+its corpus (a SAT it holds stands, CONFIRM validates it)"
+  elif [[ "${stream_stop}" == WITNESSED \
+      || "${stream_stop}" == CAMPAIGN_BUDGET_REACHED ]]; then
+    campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}; \
+${#stream_cancelled[@]} queued obligation(s) cancelled and \
+${#stream_reaped[@]} unlanded job(s) reaped${stream_end_counts} \
+(exploration.json)"
+  fi
   cut=$(jq -r '.closureCut // empty | "\(.occurrences) \(.keptDepth)"' \
     "${iteration_dir}/runtime_workflow_schedule_index.json")
   if [[ -n "${cut}" ]]; then
@@ -4480,10 +4511,6 @@ closure only to demand depth ${cut#* } to fit schedule_max_jobs: ${cut%% *} \
 deeper occurrence(s) were not planned, so a claim over it misses their arms \
 (the exploration ended ${stream_stop})"
   fi
-  [[ "${stream_stop}" != PLANNER_HEAP_EXCEEDED ]] \
-    || campaign_stream_gap BLOCKING "${stream_stop}" "${stream_stop_detail}: \
-the exploration ended on the rounds before it, so a claim over its corpus \
-misses the arms the rounds still owed would ask"
   [[ "${stream_stop}" != WITNESSED ]] && (( stream_round > 0 )) || return 0
   last=$(printf '%s/obligations-%04d' "${iteration_dir}" \
     "$((stream_round - 1))")
@@ -4676,7 +4703,7 @@ campaign_stream_drop() {
 # corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
 # COMPOSE reads next is exactly the one the accepted attempt read.
 campaign_stream_end() {
-  local pid entry kind round id host status session dir queued=0
+  local pid entry kind round id host status session dir
   local -a dropped=() confirms=() withdrawn=()
   for pid in "${!stream_jobs[@]}"; do
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
@@ -4685,9 +4712,6 @@ campaign_stream_end() {
   for entry in "${stream_pending[@]}"; do
     read -r kind round id host status session <<<"${entry}"
     dropped+=("${kind} ${round} ${id}")
-  done
-  for entry in "${stream_queue[@]}"; do
-    [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
   done
   campaign_stream_drop
   for entry in "${stream_queue[@]}"; do
@@ -4724,11 +4748,11 @@ ${stream_stop}" 0 false
         -printf '%f\n' | LC_ALL=C sort \
       | LC_ALL=C comm -23 - "${campaign_witness_attempt}/corpus.txt")
   fi
-  campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}; \
-${queued} queued obligation(s) cancelled, ${#dropped[@]} unlanded job(s) and \
-${#confirms[@]} confirmation(s) reaped, and ${#withdrawn[@]} session(s) that \
-landed after the accepted attempt composed out of the corpus \
-(exploration.json)"
+  # What the end dropped beside the obligations, for its row
+  # (campaign_stream_truncation, the one place an end is judged).
+  stream_end_counts=", ${#confirms[@]} confirmation(s) reaped, and \
+${#withdrawn[@]} session(s) that landed after the accepted attempt composed \
+out of the corpus"
   stream_after_witness=("${withdrawn[@]}")
   stream_jobs=()
   stream_pending=()

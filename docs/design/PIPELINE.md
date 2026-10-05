@@ -996,17 +996,30 @@ cancelled or reaped, by id):
   attempts; the seed's REPLAY standing for a CONFIRM not yet run), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
-  unlanded reaped), and the stop is a DIAGNOSTIC row.
+  unlanded reaped). Where it still owed arms (a queued obligation cancelled, an unlanded job
+  reaped), the end is a cut: one BLOCKING `EXPLORATION_CUT` row naming the stop and the counts;
+  else a DIAGNOSTIC row.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
-  lands, and the stop is a DIAGNOSTIC row.
+  lands, and the stop is a DIAGNOSTIC row. The wave bound is declared: it defines the explored
+  space (how deep closures nest), so it cuts nothing.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
 - **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
-  BLOCKING row naming the round, the corpus's size on disk and the planner's error -- rounds were
-  still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
+  cut -- rounds were still owed --, a BLOCKING `EXPLORATION_CUT` row naming the round, the corpus's
+  size on disk and the planner's error. Any other planner failure fails EXPLORE, its deepest
+  throwable the reason.
+
+**THE END IS JUDGED ONCE** (`campaign_stream_truncation`, the one place a claim reads how EXPLORE
+ended; owner 2026-10-04, only SAT or UNSAT): an exploration a forced stop ended while it still owed
+arms leaves no UNSAT -- an UNSAT over a corpus missing those arms says nothing about them -- so the
+cut is BLOCKING and EMIT publishes an UNSAT beside it as a `RUN_DEFECT` (`EXPLORATION_CUT` in
+`defects[]`); a SAT the corpus holds stands, as CONFIRM validates it. WITNESSED and FIXED_POINT cut
+nothing, nor does the declared wave bound (HG5A: hdfs-adhoc-17 cancelled 151 queued obligations
+with none answered, 24 reaped 3 jobs, QJM 07/08/09 cancelled 1215/157/108 and reaped 2/16/25, and
+each but 07 had published UNSAT_CLOSED).
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
 proposed twice; the wave budget is what bounds the derivation. A case whose corpus outgrows the
