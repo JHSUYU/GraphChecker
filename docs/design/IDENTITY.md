@@ -166,6 +166,16 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   of its thread: in hdfs-17899-bug2 the test thread started the SPS daemon, after the key manager's
   `getBlockKeys` faulted at its IPC request door, as `Daemon.start()#u5:NamenodeProtocol.getBlockKeys`,
   an address no plan instrumented, so the key id's producer went unattested.
+- **A request's call.** A request starts at its RPC engine's invoke point, before the client's call
+  (`MessageDoors#requestStarting`, from the Hadoop trees' `ProtobufRpcEngine2`/`ProtobufRpcEngine`
+  `Invoker#invoke`, through the shim): it ends the exchange its thread served (§7, the rule a startup
+  and a turn follow), so it stands in the thread's own context and not on the previous response's
+  anchor, and it is in hand from there. The first frame the thread enters for it is its call
+  (`State#requestFrame`): `<site>:<verb>`, its `k` counted per verb as a start's is, so a request of
+  another verb renames no later one; a retry (the retry count its call carries, attempt `a`) is its
+  original's `k` at `<site>:<verb>#retry<a>`. Round SL1-3 hdfs-adhoc-52: every request the test made
+  stood on the previous response's anchor and its `Client.call@k` counted all its RPCs, so one extra
+  RPC renamed every later NameNode context (a 17 s give-up per recorded slot).
   The frames go with the carrier;
   the started work claims them at its first identity event or at its functional method's entry
   (`#claimStart`). A task claimed on a pool's thread stands on all of them; a started thread
@@ -415,7 +425,7 @@ it.
 - `setAside` / `restore`: a serving thread that runs an exchange of its own as a client.
 - `beginTick` / `vacant` / `endTick`: a daemon turn as a root; a vacant turn is one the recording
   never made, which a replay held and let go only because the run could go no further. A turn, like
-  a node startup (§5) and a request, first ends the exchange its thread served: the turn serves no
+  a node startup (§5) and a request (`requestStarting`, §3), first ends the exchange its thread served: the turn serves no
   message it did not take in itself. Left standing below the turn, the next message's end of it
   closed the turn too (round HG5A, hdfs-adhoc-21/22/23/25: a DataNode actor built inside the window
   stood in its registration's response when its first turn began; the IPC client ends that exchange
@@ -432,7 +442,9 @@ handler opens a call's exchange, its carried scope and its inbound, before any o
 occurrence a handler runs for a call stands on the call's own anchor, indexed from its inbound; opened inside the call,
 the `doAs` region opened first, under the context the Reader carried with the queued call, and only the Reader's and
 the handler's start counts told two calls apart (round HG5A hdfs-adhoc-14: one address planned, another run each
-replay). The Solr trees call
+replay). The IPC client's requests start at the RPC engine's invoke point (`requestStarting`, §3,
+on `gc/hdfs-study-r5` and `gc/hdfs-11741-r5`), which ends the served exchange before the client's
+call; the client's own hand `endInbound()` before its send is gone. The Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid

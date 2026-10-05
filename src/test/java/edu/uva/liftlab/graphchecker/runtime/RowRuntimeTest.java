@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -407,6 +408,73 @@ public class RowRuntimeTest {
                 reports.get(1).siteIndex(), reports.get(0).siteIndex());
         assertEquals("HADOOP_IPC#REQUEST",
                 Endpoint.messageSite("HADOOP_IPC", "REQUEST", ""));
+    }
+
+    /**
+     * A request's call is its verb's k-th (IDENTITY §3): the first frame a
+     * request enters once it starts at its RPC engine's invoke point
+     * ({@code MessageDoors#requestStarting}) is counted per verb, so a
+     * request of another verb inserted before it renames none (hdfs-adhoc-52
+     * SL1-3: one extra RPC renamed every later one), and a retry is its
+     * original's k at a site naming its attempt.  Starting, it ends the
+     * response its thread received, so it stands in the thread's own
+     * context, not on that response's anchor.
+     */
+    @Test
+    public void aRequestsCallIsItsVerbsKthInItsThreadsOwnContext() {
+        String call = "<org.apache.hadoop.ipc.Client: org.apache.hadoop.io."
+                + "Writable call(org.apache.hadoop.ipc.Client$Call)>";
+        String list = "ClientProtocol.getListing";
+        String stat = "ClientProtocol.getFileInfo";
+        // Each run's requests (verb, attempt); the expected frame of each,
+        // "" for one inserted that the others need not match.
+        Object[][][] runs = {
+            {{list, 0, "call:" + list + "@0"}, {stat, 0, "call:" + stat + "@0"},
+                {list, 0, "call:" + list + "@1"}},
+            {{list, 0, "call:" + list + "@0"},
+                {"ClientProtocol.renewLease", 0, ""},
+                {stat, 0, "call:" + stat + "@0"}, {list, 0, "call:" + list + "@1"}},
+            {{list, 0, "call:" + list + "@0"},
+                {list, 1, "call:" + list + "#retry1@0"},
+                {stat, 0, "call:" + stat + "@0"}, {list, 0, "call:" + list + "@1"}},
+        };
+        SourceRef client = new SourceRef("EXTERNAL_APP", "DFS_CLIENT",
+                "t/client0", 0L);
+        for (Object[][] run : runs) {
+            reset();
+            Identity.resetForTests();
+            Object owner = new Object();
+            RuntimeTraceContext.registerSource(owner, client);
+            RecordingWindow.open();
+            long test = RuntimeTraceContext.beginRequest(client, "test");
+            String own = Identity.contextHere().render();
+            int ordinal = 0;
+            for (Object[] request : run) {
+                String verb = (String) request[0];
+                // The response to the request before it, received here.
+                String header = CausynthTraceRecorder.outboundExchange(
+                        "HADOOP_IPC", "corr-" + ordinal, "0", "RESPONSE",
+                        owner, null, "");
+                MessageDoors.inbound(header, "", "HADOOP_IPC",
+                        "corr-" + ordinal++, "0", "RESPONSE", owner, false);
+                CausynthMessagePropagation.requestStarting(
+                        new RpcProtobufRequest("org.apache.hadoop.hdfs."
+                                + "protocol." + verb), (Integer) request[1]);
+                assertEquals(verb + ": the request is the thread's own",
+                        own, Identity.contextHere().render());
+                long entered = Identity.enterFrame(call, null);
+                List<Frame> frames = Identity.atScope().frames();
+                Frame frame = frames.get(frames.size() - 1);
+                Identity.exitFrame(entered);
+                if (!((String) request[2]).isEmpty()) {
+                    assertEquals(Arrays.toString(request), call
+                            + ((String) request[2]).substring("call".length()),
+                            frame.callSite() + "@" + frame.iteration());
+                }
+            }
+            RuntimeTraceContext.endRequest(test);
+            RecordingWindow.reset();
+        }
     }
 
     /** Named as Hadoop's protobuf RPC request is, which names itself by

@@ -115,6 +115,11 @@ public final class Identity {
          * own: a child thread starts with none.
          */
         private String requestVerb = "";
+        /**
+         * The attempt of the request starting on this thread, until the
+         * first frame it enters for it ({@link #requestFrame}), else -1.
+         */
+        private int requestAttempt = -1;
 
         private State() {
             levels.add(new Level(null, 0L, null));
@@ -365,6 +370,26 @@ public final class Identity {
          */
         private int nextSiteEvent(String site) {
             return next(top().events(countingRoot()), site);
+        }
+
+        /**
+         * THE request's frame (IDENTITY §3): the first frame this thread
+         * enters once a request starts ({@link Identity#requestStarting}) is
+         * that request's call, named by its verb and counted per verb, as a
+         * start made with a request in hand is ({@link Identity#startWork}):
+         * a request of another verb -- a heartbeat a replay inserted, a
+         * call a fault added -- renames no later one (hdfs-adhoc-52 SL1-3:
+         * the test's every {@code Client.call@k} counted all its RPCs).  A
+         * retry is its original's k, at a site naming its attempt.
+         */
+        private Frame requestFrame(String site) {
+            String named = site + ":" + requestVerb;
+            int attempt = requestAttempt;
+            requestAttempt = -1;
+            if (attempt == 0) return Frame.of(named, nextSiteEvent(named));
+            Integer made = top().events(countingRoot()).get(named);
+            return Frame.of(named + "#retry" + attempt,
+                    made == null ? 0 : made - 1);
         }
 
         /**
@@ -736,7 +761,24 @@ public final class Identity {
      */
     static void requestInHand(String verb) {
         // Not state(): a door is no identity event, and claims no start.
-        CURRENT.get().requestVerb = Endpoint.verb(verb);
+        State state = CURRENT.get();
+        state.requestVerb = Endpoint.verb(verb);
+        state.requestAttempt = -1;
+    }
+
+    /**
+     * A request of {@code verb} starts on this thread, attempt {@code
+     * attempt} of it ({@code MessageDoors#requestStarting}): it is in hand
+     * from here ({@link #requestInHand}), and the first frame the thread
+     * enters is its call ({@link State#requestFrame}).  A request naming no
+     * verb is only in hand.
+     */
+    static void requestStarting(String verb, int attempt) {
+        requestInHand(verb);
+        State state = CURRENT.get();
+        if (!state.requestVerb.isEmpty()) {
+            state.requestAttempt = Math.max(0, attempt);
+        }
     }
 
     /**
@@ -895,17 +937,18 @@ public final class Identity {
      * context is the application methods it is inside (IDENTITY §3).
      * The iteration is the k-th entry of this site in the enclosing level
      * ({@link State#nextSiteEvent}); callers outside the weave count in the
-     * thread base level.</p>
+     * thread base level.  The first frame a starting request enters is its
+     * call, counted per verb ({@link State#requestFrame}).</p>
      *
      * @return the token that closes exactly the level this opened
      */
     public static long enterFrame(String callSiteId, Object receiver) {
         State state = state();
         String site = JvmNames.stable(Text.safe(callSiteId));
-        int iteration = state.nextSiteEvent(site);
+        Frame frame = state.requestAttempt >= 0 ? state.requestFrame(site)
+                : Frame.of(site, state.nextSiteEvent(site));
         long token = TOKENS.getAndIncrement();
-        state.levels.add(new Level(Frame.of(site, iteration), token,
-                receiver));
+        state.levels.add(new Level(frame, token, receiver));
         state.journal();
         if (Confirmation.ordering()) {
             String activation = activation(state, state.depth());

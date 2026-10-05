@@ -152,6 +152,22 @@ public final class MessageDoors {
     }
 
     /**
+     * A request starts on this thread, at its client's invoke point, before
+     * the client's call: it first ends the exchange the thread served, as a
+     * node startup and a daemon's turn do ({@link #beginTick}) -- the
+     * request is the thread's own work, not the last response's (round
+     * SL1-3, hdfs-adhoc-52: every request the test made stood on the
+     * previous response's anchor, chaining each NameNode context onto every
+     * earlier exchange) -- and is in hand, named by {@code verb}, attempt
+     * {@code attempt} of it (a retry of one call), its call's frame counted
+     * per verb ({@code Identity#requestStarting}).
+     */
+    public static void requestStarting(String verb, int attempt) {
+        endInbound();
+        Identity.requestStarting(verb, attempt);
+    }
+
+    /**
      * One message arrives: ends the exchange the thread was serving and
      * installs this one.
      *
