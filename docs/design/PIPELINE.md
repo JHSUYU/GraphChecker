@@ -121,6 +121,10 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    more of those doors runs again over them, outside the growth budget. While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
+   The pass's JVM runs on GraphChecker's jar alone; Soot reads `project_classpath` (`-x`) through
+   `IndexedSourceLocator`, which lists the folder of each name it looks up in a class directory once per JVM
+   and asks Soot's own lookup only for a name the listing holds (one pass of hdfs-adhoc-19: ~197K failed NFS
+   `stat`s before, ~7K after).
    The target spec holds one line, `exception_target: <name> <binary class name> <source line>
    [<thrown type>]`; `causynth.ExceptionTargetLineResolver` finds the one `throw new` javac compiled at
    that line of the class or a class nested in it (a lambda body, an anonymous class), by the
