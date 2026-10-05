@@ -1782,15 +1782,15 @@ campaign_dispatch_remote() {
   return "${status}"
 }
 
-# The peer's evidence, visible HERE.
+# The peer's evidence, visible HERE: <worker>'s result and the session it
+# names under <staged>, the directory the job staged its sessions to.
 #
 # Bounded, never assumed: see campaign_remote_visibility_wait_s.  The
 # directory is re-listed on each turn because it is the directory's cached
 # listing, not the file's contents, that a fresh lookup has to get past.
 campaign_await_remote_result() {
-  local worker=$1 host=$2 obligation_id=$3
+  local worker=$1 host=$2 obligation_id=$3 staged=$4
   local result="${worker}/obligation_result.jsonl"
-  local staged="${worker}/sessions"
   local waited=0 session_id=""
   while [[ ! -s "${result}" ]]; do
     if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
@@ -3978,9 +3978,12 @@ campaign_stream_job() {
   local kind=$1 host=$2 charge=$3 id=$4 worker=$5 status=0
   shift 5
   local -a work=(campaign_obligation_worker "$@")
+  # Where the job stages its sessions: an obligation's and a re-run's under
+  # their worker, a CONFIRM replay's beside it (campaign_confirm_plan).
+  local staged="${worker}/sessions"
   case "${kind}" in
     RERUN) work=(campaign_obligation_replay "$@") ;;
-    CONFIRM) work=(campaign_confirm_replay "$@") ;;
+    CONFIRM) work=(campaign_confirm_replay "$@"); staged="$1/sessions" ;;
   esac
   if campaign_host_is_local "${host}"; then
     ( set -euo pipefail; "${work[@]}" ) >"${worker}/stdout.log" \
@@ -4000,7 +4003,7 @@ campaign_stream_job() {
 ${status}; its logs, and ssh's own output, are in ${worker}"
     return "${status}"
   fi
-  campaign_await_remote_result "${worker}" "${host}" "${id}"
+  campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}"
 }
 
 # An obligation whose worker did not finish (it exited <status>, or the head
@@ -5660,10 +5663,14 @@ campaign_claim_room() {
     >= $(campaign_reserve) ))
 }
 
-# What the stages after the exploration are owed, in seconds: one COMPOSE and
-# one CONFIRM, each as long as the longest this campaign measured -- its
-# stage metrics and its witness attempts; the seed's REPLAY stands for a
-# CONFIRM replay none has run yet -- and never less than campaign_reserve_s.
+# What the stages after the exploration are owed, in seconds: COMPOSE and
+# EMIT, which reads the corpus COMPOSE read, each as long as the longest
+# COMPOSE this campaign measured; CONFIRM and REPRODUCE, whose native runs
+# of the witness take less than one replay of it, each as long as the
+# longest CONFIRM -- its stage metrics and its witness attempts; the seed's
+# REPLAY stands for a CONFIRM replay none has run yet -- and never less than
+# campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
+# the case timeout when the reserve owed COMPOSE and CONFIRM alone.)
 campaign_reserve() {
   local measured
   measured=$( {
@@ -5673,7 +5680,7 @@ campaign_reserve() {
         "${campaign_root}/iteration-0000/witness_attempts.jsonl" 2>/dev/null
     } | awk '$1 == "COMPOSE" { if ($2 > c) c = $2; next }
         { if ($2 > r) r = $2 }
-        END { printf "%d\n", (c + r) / 1000 }')
+        END { printf "%d\n", 2 * (c + r) / 1000 }')
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
 }
 

@@ -991,9 +991,10 @@ cancelled or reaped, by id):
 - **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
   the campaign's start; `accept.sh` passes what is left of the case's `CASE_TIMEOUT_SECONDS`) has
   less left than the stages after the exploration are owed (`campaign_claim_room`): its reserve,
-  `campaign_reserve`, one COMPOSE and one CONFIRM each as long as the longest the campaign measured
-  (its stage metrics and its witness attempts; the seed's REPLAY standing for a CONFIRM not yet
-  run), never less than `campaign_reserve_s` (600; a budget not above it is refused by
+  `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured,
+  CONFIRM and REPRODUCE each as long as the longest CONFIRM (its stage metrics and its witness
+  attempts; the seed's REPLAY standing for a CONFIRM not yet run), never less than
+  `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes

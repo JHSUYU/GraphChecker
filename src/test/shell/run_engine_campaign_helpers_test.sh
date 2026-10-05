@@ -2055,7 +2055,7 @@ cp "${refused_worker}/refused-sessions/SESSION.cut/manifest.json" \
   "${refused_worker}/sessions/SESSION.stale/"
 ( sleep 2; rm -rf "${refused_worker}/sessions/SESSION.stale" ) &
 campaign_remote_visibility_wait_s=30 campaign_await_remote_result \
-  "${refused_worker}" peer OB.R \
+  "${refused_worker}" peer OB.R "${refused_worker}/sessions" \
   >"${refused_worker}/await.log" 2>&1 \
   || fail "EARLY-END-1: the head did not wait out a listing that still held \
 the withdrawn session: $(cat "${refused_worker}/await.log")"
@@ -3095,11 +3095,13 @@ OBLIGATION|b|b b b
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
-# obligation's worker, or a GROW re-run's replay, which a peer runs as a
-# placed step -- and gives its ledger row back as soon as its work
-# returned, before the head waits to see what a peer wrote.  Per row: the
-# kind, the host, and what ran, each with the rows the ledger still held for
-# it then.
+# obligation's worker, or a GROW re-run's or a CONFIRM's replay, which a
+# peer runs as a placed step -- and gives its ledger row back as soon as its
+# work returned, before the head waits to see what a peer wrote, in the
+# directory the job staged its sessions to (a CONFIRM's beside its worker:
+# HG4 lost hdfs-11741's confirmed witness waiting under the worker).  Per
+# row: the kind, the host, and what ran, each with the rows the ledger still
+# held for it then.
 job_dir="${test_tmp}/pool-job"
 while IFS='|' read -r job_kind job_host job_ran; do
   rm -rf -- "${job_dir}"
@@ -3123,7 +3125,7 @@ while IFS='|' read -r job_kind job_host job_ran; do
     campaign_obligation_replay() { job_record "replay:$1:$6"; }
     campaign_dispatch_remote() { job_record "$1:$4:$5"; }
     campaign_run_placed() { job_record "$1:$2:$3:$8"; }
-    campaign_await_remote_result() { job_record "await:$3"; }
+    campaign_await_remote_result() { job_record "await:$3:${4#"${job_dir}"/}"; }
     campaign_stream_job "${job_kind}" "${job_host}" "${job_charge}" OB.1 \
       "${job_dir}/worker" OB.1 b c d e f
   ) || fail "a ${job_kind} on ${job_host} failed"
@@ -3131,9 +3133,10 @@ while IFS='|' read -r job_kind job_host job_ran; do
     || fail "a ${job_kind} on ${job_host} ran $(cat "${job_dir}/ran")"
 done <<'EOF'
 OBLIGATION|localhost|worker:OB.1(1)
-OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1(0)
+OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1:worker/sessions(0)
 RERUN|localhost|replay:OB.1:f(1)
-RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1(0)
+RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)
+CONFIRM|lift12|lift12:campaign_confirm_replay:OB.1:f(1) await:OB.1:OB.1/sessions(0)
 EOF
 
 # HOSTS-5: a remote worker whose head is gone kills its own process group.
@@ -3784,6 +3787,20 @@ next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
   || fail "the re-decision bound was not named: ${next_out}"
 unset -f next_claim
 reset_config
+
+# RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE,
+# CONFIRM and REPRODUCE as long as the longest CONFIRM (the seed's REPLAY
+# standing for one).  HG4's hdfs-11741 lost its EMIT to the case timeout
+# when it owed COMPOSE and CONFIRM alone.
+mkdir -p "${test_tmp}/reserve-root"
+printf 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
+  >"${test_tmp}/reserve-metrics.tsv"
+reserve_got=$(campaign_reserve_s=20 \
+  campaign_stage_metrics="${test_tmp}/reserve-metrics.tsv" \
+  campaign_root="${test_tmp}/reserve-root" campaign_reserve)
+[[ "${reserve_got}" == 300 ]] \
+  || fail "RESERVE-1: the reserve over COMPOSE 100 s and CONFIRM 50 s is \
+${reserve_got} s, not 300 s"
 
 # BUDGET-1: a budget its reserve takes whole is refused by name.
 budget_validate() (
