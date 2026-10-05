@@ -276,8 +276,11 @@ ab_stage_seed_static() {
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
   # campaign_analyze_grown_scope: the door step, then the static pass and
   # scope growth over its frontier until nothing is added or the budget is
-  # spent, the door step again after every growth.  The stage's wall is the
-  # whole loop's; each step's directory names what it grew.
+  # spent, the door step again after every growth; a pass that chose more
+  # demanded doors runs again over them.  The stage's wall is the whole
+  # loop's; each step's directory names what it grew.
+  local doors=0 chosen
+  pass+=("-Dcausynth.io.doors=${out}/io_doors.jsonl")
   ab_seed_doors "${dir}/doors" || { ab_props=(); return; }
   while :; do
     ab_props+=("${pass[@]}")
@@ -289,6 +292,11 @@ ab_stage_seed_static() {
       || break
     ab_seed_wall "${dir}"
     ab_props=("-Dcausynth.system.doors=$(ab_cfg causynth_system_doors)")
+    chosen=$(grep -c . "${out}/io_doors.jsonl" 2>/dev/null || true)
+    if (( ${chosen:-0} > doors )); then
+      doors=${chosen}
+      continue
+    fi
     [[ "${growth:-0}" != 0 ]] && (( ${#roots[@]} > 0 )) || break
     step=$(( step + 1 ))
     mkdir -p "${dir}/growth-${step}"

@@ -167,19 +167,24 @@ public final class CausynthPipeline {
                 new SeedBackwardStaticAnalyzer(target).analyze();
         long seedAnalysisMillis = elapsedMillis(seedAnalysisStart);
         long skeletonPlanningStart = System.nanoTime();
+        List<DemandedDoors.Site> woven = DemandedDoors.woven();
         SymbolicRegionPlanner.planSelectedSkeleton(result,
-                result.traceMethods);
+                result.traceMethods, woven);
         // SYMBOL-SCOPE §2.3: over the door-woven bodies, before any hook is
         // woven, so site and guard ids are the unit indices a replay decides
         // at.
         Map<String, Clock> clocks = RootCatalog.clocks(result.edges);
         ConfigRoots recognized = ConfigRoots.of(result.edges,
                 result.fieldWriters);
+        Predicate<String> systemClass = systemClass();
         RootDemand demand = RootDemand.of(result.edges, result.regions,
                 clocks, recognized,
                 targetPathSites(result.edges,
                         result.executionContextAuthorities::containsKey),
-                CausynthStaticFacts::trackedKind, systemClass());
+                CausynthStaticFacts::trackedKind, systemClass,
+                new LatentFaults(systemClass,
+                        method -> !result.regionsHolding(method).isEmpty()),
+                woven);
         ConfigRoots config = recognized.limitedTo(demand.configSources());
         Set<String> plantedConfigReads =
                 StaticSymbolicSourceDiscovery.discover(result, config);
@@ -212,6 +217,8 @@ public final class CausynthPipeline {
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier, demand.rows());
+        DemandedDoors.write(target.outputDir.resolve(DemandedDoors.FILE),
+                demand.doors());
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, artifactWrite={} ms",

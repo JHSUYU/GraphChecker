@@ -38,8 +38,22 @@ public class LibraryCatalogTest {
     public void theShippedCatalogNamesEachLibraryDoorOnce() {
         List<String> transports = new ArrayList<>(LibraryCatalog.transports());
         assertEquals(Arrays.asList("HADOOP_IPC", "HDFS_SASL",
-                "HDFS_DATA_TRANSFER", "SOLR_HTTP", "SOLR_HTTP2", "ZOOKEEPER"),
-                transports);
+                "HDFS_DATA_TRANSFER", "SOLR_HTTP", "SOLR_HTTP2", "ZOOKEEPER",
+                "LOCAL_IO"), transports);
+        // A local file operation is a door only at the calls the root
+        // demand chose, before the call; it throws the kind the JDK call
+        // declares, or returns its failing result.
+        LibraryCatalog.Door open = LibraryCatalog.demandedDoor(
+                "<java.io.FileOutputStream: void <init>(java.io.File)>");
+        LibraryCatalog.Door rename = LibraryCatalog.demandedDoor(
+                "<java.io.File: boolean renameTo(java.io.File)>");
+        assertEquals("FAULT:LOCAL_IO:OPEN [java.io.FileNotFoundException] "
+                        + "NONE false; FAULT:LOCAL_IO:NAMESPACE [] FALSE",
+                open.name() + " " + open.faults + " " + open.result + " "
+                        + open.after + "; " + rename.name() + " "
+                        + rename.faults + " " + rename.result);
+        assertEquals(null, LibraryCatalog.demandedDoor(
+                "<java.io.File: boolean exists()>"));
         LinkedHashSet<String> response = new LinkedHashSet<>();
         List<String> dataTransfer = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
@@ -150,6 +164,13 @@ public class LibraryCatalogTest {
             {AT_CALLS + "}\n" + AT_CALLS + "}",
                     "FAULT:T:SEND every call of <a.C: void flush()> is "
                             + "stated again"},
+            {DOOR + ", \"sites\": \"DEMANDED\"}", "no method, before"},
+            {AT_CALLS.replace("before", "after")
+                    + ", \"sites\": \"DEMANDED\"}", "no method, before"},
+            {AT_CALLS + ", \"result\": false}", "a failing result"},
+            {AT_CALLS.replace(", \"faults\": [\"java.io.IOException\"]",
+                    "") + ", \"sites\": \"DEMANDED\", \"result\": true}",
+                    "result is false or null"},
         };
         for (String[] row : refused) {
             try {

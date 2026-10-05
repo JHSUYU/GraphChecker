@@ -764,6 +764,7 @@ do_analyze() {
     system_properties+=("-Dcausynth.lineage.roots=${causynth_lineage_roots}")
   fi
   system_properties+=("-Dcausynth.system.doors=${causynth_system_doors}")
+  system_properties+=("-Dcausynth.io.doors=$(campaign_io_doors)")
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
     system_properties+=(
@@ -866,20 +867,37 @@ campaign_grown_scope() {
   printf '%s\n' "${causynth_output_dir}/scope-classes"
 }
 
+# The demanded doors the static pass chose (causynth.DemandedDoors, a local
+# file operation on the traced flow, SYMBOL-SCOPE §4.6): every pass weaves
+# them before any analysis (do_analyze).
+campaign_io_doors() {
+  printf '%s\n' "${causynth_output_dir}/io_doors.jsonl"
+}
+
 # The static pass, with the scope grown where the slice stops at it until
 # nothing is added or the budget is spent (SYMBOL-SCOPE §2.4).  First, and
 # after every growth, outside the budget, the classes of the library doors
-# the analysis scope calls (campaign_scope_doors).
+# the analysis scope calls (campaign_scope_doors).  A pass that chose more
+# demanded doors runs again over them, outside the budget too: a door moves
+# the unit indices of its method, so the scope map is the woven body's.
 campaign_analyze_grown_scope() {
-  local grown changes summary
+  local grown changes summary doors=0 chosen
   grown=$(campaign_grown_scope)
   local -a roots=()
   rm -rf -- "${grown}"
+  rm -f -- "$(campaign_io_doors)"
   mkdir -p "${grown}"
   IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
   (( ${#roots[@]} == 0 )) || campaign_scope_doors "${grown}" "${roots[@]}"
   while :; do
     campaign_analyze SEED "${causynth_output_dir}/static-pass.log"
+    chosen=$(grep -c . "$(campaign_io_doors)" 2>/dev/null || true)
+    if (( ${chosen:-0} > doors )); then
+      doors=${chosen}
+      campaign_log "demanded doors: ${doors} chosen; the static pass runs \
+again over them"
+      continue
+    fi
     (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
     read -r changes summary < <(run_java_main \
       edu.uva.liftlab.graphchecker.plan.ScopeGrowth "${grown}" \

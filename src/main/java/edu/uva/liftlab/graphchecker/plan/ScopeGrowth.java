@@ -45,6 +45,12 @@ import java.util.zip.ZipFile;
  *       constant, no state;</li>
  *   <li>a {@link ScopeFrontier#FORMAL}: every class calling the method.</li>
  * </ul>
+ * A row the root demand found where a local file fault could stand ({@code
+ * demand} IO: a call into the system that escapes before a demanded store,
+ * or that a handler deciding a demanded site catches) takes the class whose
+ * body runs the called method only when that body itself calls a demanded
+ * door's anchor ({@link LibraryCatalog#demandedDoor}), listed as {@value
+ * #IO} in the manifest; any other is skipped, named in the summary.
  * A protobuf message is a wire payload (F3), never scope.  Rows are taken
  * in the frontier's order -- the root demand's first, then nearest first
  * ({@link ScopeFrontier}) -- until the budget of grown classes is spent;
@@ -75,6 +81,8 @@ public final class ScopeGrowth {
     /** The door step's flag, and the kind of its manifest lines. */
     static final String DOORS = "--doors";
     private static final String DOOR = "DOOR";
+    /** The root demand's class of a row where a file fault could stand. */
+    private static final String IO = "IO";
     private static final Pattern METHOD = Pattern.compile(
             "<([^:]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
     private static final Pattern FIELD = Pattern.compile(
@@ -116,25 +124,61 @@ public final class ScopeGrowth {
             if (!line.contains("\t" + DOOR + "\t")) taken++;
         }
         int added = 0;
+        int byIo = 0;
+        Set<String> noFileOperation = new TreeSet<>();
         for (JsonObject row : rows) {
             String kind = row.get("kind").getAsString();
             String signature = row.get("signature").getAsString();
+            boolean io = row.has("demand")
+                    && IO.equals(row.get("demand").getAsString());
             for (String name : index.resolve(kind, signature)) {
                 if (taken + added >= budget) break;
                 ClassFacts facts = index.classes.get(name);
                 if (present.contains(name) || index.protobuf(name)) continue;
+                if (io && !index.callsFileOperation(name, signature)) {
+                    noFileOperation.add(name);
+                    continue;
+                }
                 Path target = grown.resolve(facts.relative);
                 Files.createDirectories(target.getParent());
                 Files.copy(facts.file, target,
                         StandardCopyOption.REPLACE_EXISTING);
-                append(grown.resolve(MANIFEST), name + "\t" + kind + "\t"
-                        + signature + "\t" + row.get("distance").getAsInt());
+                append(grown.resolve(MANIFEST), name + "\t"
+                        + (io ? IO : kind) + "\t" + signature + "\t"
+                        + row.get("distance").getAsInt());
                 present.add(name);
                 added++;
+                if (io) byIo++;
             }
         }
         System.out.println(added + " added " + added + " class(es), "
-                + (taken + added) + " of " + budget + " grown");
+                + (taken + added) + " of " + budget + " grown, " + byIo
+                + " by IO rows"
+                + (noFileOperation.isEmpty() ? "" : "; IO rows skipped, no "
+                + "file operation of their own: " + noFileOperation));
+    }
+
+    /** Whether the body {@code name} has for the method {@code signature}
+     *  names calls a demanded door's anchor itself: a local file operation
+     *  a door could stand at once it is analysed. */
+    boolean callsFileOperation(String name, String signature) {
+        ClassFacts facts = classes.get(name);
+        Matcher member = METHOD.matcher(signature);
+        if (facts == null || !member.matches()) return false;
+        for (String call : facts.callsBy.getOrDefault(member.group(2) + "("
+                + member.group(3) + ")", Collections.<String>emptySet())) {
+            String[] at = call.split("\\|", 2);
+            for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+                Matcher anchor = METHOD.matcher(door.anchor);
+                if (door.demanded && anchor.matches()
+                        && anchor.group(1).equals(at[0])
+                        && at[1].equals(anchor.group(2) + "("
+                        + anchor.group(3) + ")")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The door step ({@value #DOORS}): one decision per family, in catalog
@@ -445,6 +489,8 @@ public final class ScopeGrowth {
         final Set<String> stores = new LinkedHashSet<>();
         /** {@code owner|name(paramType,...)} of every method it calls. */
         final Set<String> calls = new LinkedHashSet<>();
+        /** The same, by the calling method's {@code name(paramType,...)}. */
+        final Map<String, Set<String>> callsBy = new LinkedHashMap<>();
 
         ClassFacts(Path file, Path relative) {
             super(Opcodes.ASM9);
@@ -504,8 +550,11 @@ public final class ScopeGrowth {
                 public void visitMethodInsn(int opcode, String owner,
                                             String callee, String type,
                                             boolean isInterface) {
-                    calls.add(owner.replace('/', '.') + "|"
-                            + key(callee, type));
+                    String call = owner.replace('/', '.') + "|"
+                            + key(callee, type);
+                    calls.add(call);
+                    callsBy.computeIfAbsent(body,
+                            ignored -> new LinkedHashSet<>()).add(call);
                     if (bodies.containsKey(body)) bodies.put(body, null);
                 }
 

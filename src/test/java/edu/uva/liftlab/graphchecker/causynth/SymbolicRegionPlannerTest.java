@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import static org.junit.Assert.assertEquals;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.Test;
@@ -21,6 +22,7 @@ public class SymbolicRegionPlannerTest {
     private static final String RUN = "<p.Responder: void run()>";
     private static final String SEND = "<p.Door: void send()>";
     private static final String RECEIVE = "<p.Dispatcher: void receive()>";
+    private static final String WRITE = "<p.Store: void write()>";
 
     @Test
     public void aDoorKeepsItsMethodsRegionAndItsFailure() {
@@ -34,8 +36,16 @@ public class SymbolicRegionPlannerTest {
         program.edges.add(edge(RECEIVE,
                 RECEIVE + "#exception:java.io.IOException", false));
         program.edges.add(edge(RECEIVE, "$z0", true));
+        // A demanded door's marker (a local file operation in WRITE,
+        // chosen at RUN's store) roots nothing: WRITE joins RUN's region.
+        program.edges.add(edge(WRITE, "$z0", true));
+        program.edges.get(program.edges.size() - 1).put("symbolicName",
+                "FAULT:LOCAL_IO:WRITE");
         SymbolicRegionPlanner.planSelectedSkeleton(program,
-                Arrays.asList(RUN, SEND, RECEIVE));
+                Arrays.asList(RUN, SEND, RECEIVE, WRITE),
+                Collections.singletonList(new DemandedDoors.Site(WRITE,
+                        "<java.io.FileOutputStream: void write(int)>", 0, 2,
+                        "ESCAPE", Arrays.asList(RUN, WRITE))));
         Map<String, Map<String, Object>> byRoot = new LinkedHashMap<>();
         for (Map<String, Object> region : program.regions) {
             byRoot.put((String) region.get("rootMethod"), region);
@@ -47,6 +57,10 @@ public class SymbolicRegionPlannerTest {
             {RECEIVE, SymbolicRegionPlanner.FAILURE_TARGET_ENTRY,
                     "EXCEPTION_CONTEXT"},
         };
+        assertEquals("the door's method roots no region, its chain joins "
+                + "the site's", Arrays.asList(Arrays.asList(RUN, WRITE),
+                false), Arrays.asList(byRoot.get(RUN).get("methods"),
+                byRoot.containsKey(WRITE)));
         for (Object[] row : rows) {
             Map<String, Object> region = byRoot.get(row[0]);
             assertEquals(row[0] + " authority", row[1],

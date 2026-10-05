@@ -234,13 +234,18 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    - `FIELD`: a field `S` reads or stores;
    - `FORMAL`: a method whose primitive or `String` formal `S` demands only through a field. A
      formal reached without a field in between is on the target's own call chain and is never a
-     row: growing its callers would move the region root and with it the target's identity.
+     row: growing its callers would move the region root and with it the target's identity;
+   - an IO frontier `CALLEE` (`demand` IO, §4.6): a call into the system where a local file
+     fault could stand, though `S` demands no return of it.
 2. `plan/ScopeGrowth` resolves each row over the classes of `causynth_lineage_roots`:
    - `CALLEE`: the class whose body runs it (for an abstract method, the class each implementation
      inherits it from), unless that body only loads constants;
    - `FIELD`: its owner and, unless the field is private or final, every class storing it; a
      static final field is a constant and grows nothing;
    - `FORMAL`: every class calling the method;
+   - an IO row: the class whose body runs the called method, only when that body itself calls a
+     demanded door's anchor (listed as `IO` in `GROWN`), else it is skipped and named in the
+     step's summary (one level per growth round);
    - never a generated protobuf class (a supertype in `*.protobuf.*`).
    Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
    (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes
@@ -335,6 +340,33 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
+| `LOCAL_IO` | `OPEN`, `READ`, `WRITE`, `SYNC`, `NAMESPACE` | a demanded call only (below) | before the call: the failed operation never happens |
+
+**Demanded doors.** A local file operation is a door only where the root demand chose its call
+(§4.6): its result or its failure flows into what the slice traces, never every IO call of a class
+or method (owner, 2026-10-04). Its rows state `"sites": "DEMANDED"`, no `method`, `before` the JDK
+call, and either the kind the call declares -- `FileNotFoundException` for the `FileInputStream`,
+`FileOutputStream` and `RandomAccessFile` opens, `SyncFailedException` for `FileDescriptor#sync`,
+`IOException` for the other stream and `RandomAccessFile` reads, writes, `seek`, `setLength` and
+`close`, the `FileChannel` opens, reads, writes, `force`, `truncate`, `transfer*` and
+`position(long)`, the `Files` opens, reads, writes, copies, moves, deletes and creates, and
+`File#createNewFile`/`createTempFile` -- or the `result` the call returns instead of failing:
+`false` for `File#renameTo`, `delete`, `mkdir(s)`, `setLastModified`, `setReadable`/`Writable`/
+`Executable`/`ReadOnly`, `null` for `File#list`/`listFiles`. A call is a door's only as the
+catalog spells it: a write through a variable typed `OutputStream` may be a socket's, and a
+socket's failure is a transport door's. An observation (`exists`, `is*`, `can*`, `length`,
+`lastModified`, `*Space`, `FileChannel#size`) is never a door: its value is the disk's state, not
+an operation's outcome. The chosen calls are `io_doors.jsonl` beside the scope map (`causynth/
+DemandedDoors`: caller, callee and the call's ordinal among the caller's calls of that callee in
+body order, never a unit index, which a door shifts); every pass weaves them before any analysis
+(`-Dcausynth.io.doors`, `run_engine.sh` `do_analyze`), a throwing door as the catalog's doors are,
+a failing result as `r = marker ? failing : call(..)`, so the call does not run on the fault arm.
+A failing result's checked throw -- the first test of the result the call falls through to, and
+each throw its failing arm reaches that its other arm does not (`if (!f.renameTo(g)) throw new
+IOException(..)`) -- is a raise of the door's marker (`causynth/FaultPropagation`), so the fault
+flows on as a thrown door kind does. A site the file names that no catalog row or no analysed call
+answers, or a call that already holds a door, is refused (`DEMANDED_DOOR_UNAVAILABLE`). A demanded
+door's marker roots no region (§4.6).
 
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a
@@ -669,7 +701,7 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
 | `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
 | `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
-| `IO` | a stream, file, socket, channel or native result | named |
+| `IO` | a stream, file, socket, channel or native result | a demanded door where its outcome reaches the slice (below), else named (`NO_DOOR`) |
 | `SCOPE` | a call into the system's own code outside the scope, a formal no caller in scope passes | chosen, first in scope growth (§2.4) |
 | `LIBRARY` | any other library result | named |
 | `CUT` | a path still open sixteen edges out, no boundary yet | named |
@@ -690,6 +722,37 @@ twelve nearest within sixteen there are minted too, so a key near a writer never
 near the anchor. Each configuration row states the cone
 it was measured on (`measured`: `PATH`, `WRITERS`); a row is chosen when its key is. A named class
 is a row, never a freed value: freeing it would invent a value no execution produces.
+**Local file faults.** A local file operation is a door (§4.2) only where its result or its
+failure flows into what the walk demanded (`RootDemand.Faults`, `causynth/LatentFaults`):
+
+- (a) `VALUE`: an IO boundary of the walk whose call returns a failing result (`File#renameTo`'s
+  false) into the path;
+- (b) over the latent model (`FaultPropagation#latent`: the woven program plus, where no door
+  stands yet, each call of a throwing row's anchor, each checked throw on a failing-result
+  anchor's failing arm, and each call into the system outside the analysed program declaring a
+  checked exception), a fault that escapes its method from a point before a demanded store
+  (`ESCAPE`: a writer of a chosen TRACK, TRACK_IDENTITY, TRACK_CONTAINER or READ field), or that a
+  handler catches whose arm decides a site the walk followed an edge at (`HANDLER`: a site on the
+  target's path only where the handler leads to it; a fault that only leaves before the throw
+  removes it), followed down the calls it escapes to the call it comes from.
+
+Its distance is the site's plus one plus the calls it escapes. The doors this pass wove stay; the
+nearest calls are added until twelve stand (rows `fault_escape`, `fault_handler`, `door`, the
+others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every later pass, each with
+its `via`: the methods the descent walked, from the demanded site's method down to the door's
+caller. A demanded door roots no region, unlike a catalog door at calls: its marker is read in the
+occurrence that runs the demanded site, the chain's methods joining every region that holds the
+site's method (`causynth/SymbolicRegionPlanner#fold`; no root is added, so no address moves). Rooted
+as fault entries, utility callers (`StorageInfo#readPropertiesFile`, `FileUtil#listFiles`) opened
+occurrences wherever they ran, and the test thread's DataNode starts lost their hop
+(hdfs-adhoc-26, `DECLARED_TARGET_BEFORE_WINDOW`). A call whose demanded site no region holds is cut
+`NO_REGION`. A call
+into the system outside the scope where such a fault could stand is an IO frontier row
+(`fault_frontier`): the twelve nearest join scope growth's demanded rows (§2.4). `run_engine.sh`
+`campaign_analyze_grown_scope` runs the static pass again while it chooses more doors, outside
+the growth budget (a door moves the unit indices of its method, so the scope map is the woven
+body's).
+
 `root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
 `chosen`, `cut`, `measured`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
 That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
@@ -947,7 +1010,8 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
 ## 7. Current limits
 
 - Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door
-  on a read, §4.2), configuration (§4.3) and tree hooks. A clock read through a field, a parameter,
+  on a read, §4.2; a local file door only at a demanded call, §4.6), configuration (§4.3) and tree
+  hooks. A clock read through a field, a parameter,
   `java.time`, or an interface whose implementation is outside the scope is not recognized;
   pre-window state is a root only where a tree hook says so.
 - Configuration reads left at the recording (§4.3) are counted over the analysed scope only: a read
@@ -1000,7 +1064,8 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
 - A library call's receiver enters `S` only when it is shared state in the calling method (§2.2):
   a receiver passed in as a parameter is the caller's to demand, and is not followed up.
 - Control dependence follows only door faults a handler catches; any other exception edge is
-  ignored. A fault reaches a caller only through the analysed program: a protocol call of a class
+  ignored (a demanded file fault that escapes before a store is chosen by the latent model, §4.6,
+  but no edge states it: the writer is planned as the store's writer). A fault reaches a caller only through the analysed program: a protocol call of a class
   outside the scope (HDFS's `*TranslatorPB`, whose RPC engine invoker is out of scope too) raises
   nothing, so the IPC doors of the named HDFS cases stay outside their callers' slices. A program
   exception (`throw new` of a non-door kind, e.g. `RecoveryInProgressException` from
