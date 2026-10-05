@@ -304,14 +304,14 @@ field=<f> <subject>`.
   `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
   or the value; where what it rests on can move -- a root or clock cell, a handoff, a read a STATE
   family may re-pair, through every read's own write -- the read is free instead, named with what it
-  rests on (`SmtLowering#frees`, `concrete[]`). A flip
+  rests on (`SmtLowering#unbound`, `concrete[]`). A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
   `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
   `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
   and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
   return is pinned to the node's `concreteValue` by a named assertion; where its arguments rest on
-  what can move, the return is free instead, named (`SmtLowering#frees`). A method-return node stating no
+  what can move, the return is free instead, named (`SmtLowering#unbound`). A method-return node stating no
   call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
   (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and

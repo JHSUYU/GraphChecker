@@ -518,6 +518,20 @@ jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
 
+# A campaign whose CONFIRM gave no verdict on some model (refused_models)
+# and confirmed none publishes no claim, the same UNSAT included: RUN_DEFECT,
+# CONFIRM_REFUSED, the models named.
+emit_unsat_fixture
+printf '%s\n' '{"schemaVersion":1,"kind":"REFUSED_MODEL","model":{"pathId":"P1"},"claimed":"x","reason":"the replay was NOT_ADMITTED"}' \
+  >"${emit_iteration}/refused_models.jsonl"
+run_emit
+jq -e '.claim == "RUN_DEFECT" and .formulaClaim == "UNSAT_CLOSED"
+  and (.refusedModels | length) == 1
+  and ([.defects[].code] | index("CONFIRM_REFUSED")) != null' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an UNSAT beside a refused model was published: \
+$(jq -c '{claim, defects, refusedModels}' "${campaign_final}/result.json")"
+
 # A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
 # other: published as CONFIRM left it.
 emit_fixture
@@ -2648,10 +2662,12 @@ it left unasked"
 # STREAM-3c: THE CAMPAIGN BUDGET.  Between two steps, once the campaign's
 # budget has no room for the stages after the exploration (its reserve,
 # campaign_reserve), the exploration ends as at a witness: the queue
-# cancelled, what runs reaped.  It still owed an arm (SLOW, reaped), so the
-# end is one BLOCKING EXPLORATION_CUT row naming the stop and the counts:
-# no UNSAT closes over that corpus.  The declared wave bound (STREAM-3)
-# cuts nothing.
+# cancelled, what runs reaped, the stop a DIAGNOSTIC row, and
+# exploration.json states what it left owed.  It still owed an arm (SLOW,
+# reaped), so EMIT's one judge (campaign_exploration_cut) makes it one
+# BLOCKING EXPLORATION_CUT row under an UNSAT claim, a DIAGNOSTIC one under
+# a SAT_CANDIDATE, which CONFIRM validates.  The declared wave bound
+# (STREAM-3) cuts nothing.
 stream_fixture stream-3c
 (
   stream_stubs
@@ -2672,18 +2688,51 @@ jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .reaped == ["SLOW"]' \
   "${stream_dir}/exploration.json" >/dev/null \
   || fail "the campaign budget did not end the exploration: \
 $(cat "${stream_dir}/exploration.json")"
-jq -e -s 'map(select(.cls == "BLOCKING")) | length == 1
-  and (.[0].subject == "EXPLORATION_CUT")
-  and (.[0].detail | test("^CAMPAIGN_BUDGET_REACHED: ")
-       and test("campaign_budget_s") and test("1 unlanded job"))' \
+jq -e -s 'map(select(.cls == "BLOCKING")) | length == 0' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
-  || fail "a budget stop that owed arms is not one BLOCKING EXPLORATION_CUT \
-row: $(cat "${stream_dir}/campaign_gaps.jsonl")"
+  && jq -e 'select(.subject == "CAMPAIGN_BUDGET_REACHED"
+    and .cls == "DIAGNOSTIC") | .detail | test("campaign_budget_s")' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the budget stop is not one DIAGNOSTIC row: \
+$(cat "${stream_dir}/campaign_gaps.jsonl")"
+cp "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/explore-gaps.jsonl"
+for claim in UNSAT_CLOSED SAT_CANDIDATE; do
+  cp "${stream_dir}/explore-gaps.jsonl" "${stream_dir}/campaign_gaps.jsonl"
+  jq -n --arg claim "${claim}" '{solver: {campaignClaim: {claim: $claim}}}' \
+    >"${stream_dir}/cut-manifest.json"
+  ( composition_manifest="${stream_dir}/cut-manifest.json"
+    campaign_exploration_cut "${stream_dir}" )
+  cls=$([[ "${claim}" == UNSAT_CLOSED ]] && echo BLOCKING || echo DIAGNOSTIC)
+  jq -e -s --arg cls "${cls}" 'map(select(.subject == "EXPLORATION_CUT"))
+    | length == 1 and .[0].cls == $cls
+    and (.[0].detail | test("ended CAMPAIGN_BUDGET_REACHED")
+         and test("1 unlanded job"))' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+    || fail "under ${claim}, a budget stop that owed arms is not one ${cls} \
+EXPLORATION_CUT row: $(cat "${stream_dir}/campaign_gaps.jsonl")"
+done
+# A WITNESSED end owes what it dropped (a refuted witness's next claim is
+# composed over the trimmed corpus); FIXED_POINT owes nothing.
+for end in '{"stop": "WITNESSED", "cancelled": ["A"]}' \
+    '{"stop": "FIXED_POINT", "cancelled": ["A"]}'; do
+  printf '%s\n' "${end}" >"${stream_dir}/exploration.json"
+  : >"${stream_dir}/campaign_gaps.jsonl"
+  jq -n '{solver: {campaignClaim: {claim: "UNSAT_CLOSED"}}}' \
+    >"${stream_dir}/cut-manifest.json"
+  ( composition_manifest="${stream_dir}/cut-manifest.json"
+    campaign_exploration_cut "${stream_dir}" )
+  want=$([[ "${end}" == *WITNESSED* ]] && echo 1 || echo 0)
+  [[ "$(grep -c EXPLORATION_CUT "${stream_dir}/campaign_gaps.jsonl")" \
+      == "${want}" ]] \
+    || fail "${end} under an UNSAT is not ${want} cut row(s): \
+$(cat "${stream_dir}/campaign_gaps.jsonl")"
+done
 
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
 # heap a head JVM is given (exit 3) is not planned: its directory goes, what
 # runs lands, the exploration ends on the rounds before it, and the stop is
-# a BLOCKING row naming the planner's error (sweep a40h2, DataStreamer-638).
+# a row naming the planner's error (sweep a40h2, DataStreamer-638) -- rounds
+# were owed, so EMIT's judge cuts any UNSAT over it.
 stream_fixture stream-3b
 (
   stream_stubs
@@ -2706,10 +2755,16 @@ stream_fixture stream-3b
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "a planner out of heap failed the exploration: \
 $(cat "${stream_dir}/explore.log")"
-jq -e 'select(.subject == "EXPLORATION_CUT" and .cls == "BLOCKING")
-  | .detail | test("^PLANNER_HEAP_EXCEEDED: ")
-    and test("obligations-0001 ran out") and test("OutOfMemoryError")' \
+jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
+  | .detail | test("obligations-0001 ran out") and test("OutOfMemoryError")' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  && jq -n '{solver: {campaignClaim: {claim: "UNSAT_CLOSED"}}}' \
+    >"${stream_dir}/cut-manifest.json" \
+  && ( composition_manifest="${stream_dir}/cut-manifest.json"
+    campaign_exploration_cut "${stream_dir}" ) \
+  && jq -e 'select(.subject == "EXPLORATION_CUT" and .cls == "BLOCKING")
+    | .detail | test("ended PLANNER_HEAP_EXCEEDED")' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
   && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1' \
     "${stream_dir}/exploration.json" >/dev/null \
   && jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
@@ -3561,6 +3616,8 @@ confirm_stub_target_iteration=0
 confirm_stub_task_status=0
 confirm_stub_task_line="CONFIRM refused: the claim moves a cell nobody minted"
 confirm_stub_realized=false
+# The value the replay minted the moved root ROOT.M at ("": no root row).
+confirm_stub_planted=true
 # The recording's measured peak resident memory, in MB (none: unmeasured).
 confirm_recorded_rss=""
 confirm_anchor='hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:<a.Handler: void handle()>@0'
@@ -3610,10 +3667,21 @@ confirm_stub_replay() {
           iteration: $iteration}]},
       anchorSiteId: "T#u1#1", phiTerm: "EXPR.phi", observedFatal: $fatal,
       reachedAnchor: true}' >"${sessions}/CONFIRM-1/targets.jsonl"
+  # The moved root as the run minted it: the model's plant, or not.
+  [[ -z "${confirm_stub_planted}" ]] \
+    || jq -n -c --arg v "${confirm_stub_planted}" '{sessionId: "CONFIRM-1",
+      seq: 3, occurrence: {node: "hdfs/dn0#epoch0", regionId: "REGION.m",
+        context: {form: "ROOT", role: "XCEIVER", windowIndex: 1}, index: []},
+      rootId: "ROOT.M", symbol: "M_Z_m", kind: "MARKER", category: "FAULT",
+      recordedValue: $v, declared: true}' \
+      >"${sessions}/CONFIRM-1/roots.jsonl"
 }
 run_confirm() {
   local claim=$1
   rm -rf -- "${campaign_final}/confirm" "${campaign_final}/confirm.json"
+  # Each run asks afresh, unless the test keeps what an earlier one refused.
+  [[ -n "${confirm_keep_refused:-}" ]] \
+    || rm -f -- "${confirm_iteration}/refused_models.jsonl"
   jq -n --arg claim "${claim}" \
     '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
   jq -n --arg anchor "${confirm_anchor}" '{anchor: $anchor,
@@ -3680,25 +3748,53 @@ confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DI
 {"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule-rest#2","detail":"the rest gave up"}'
 run_confirm SAT_CANDIDATE
 confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
-# (a) An edge the model chose that the run did not take.
+# (a) An edge the model chose that the run did not take: that run did not
+# run the model, so it refutes nothing -- a refused model, named, which no
+# witness attempt confirms again.
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
 rm -f -- "${confirm_iteration}/refuted_claims.jsonl"
 run_confirm SAT_CANDIDATE
 confirm_says false "the model chose producer p1, the run paired p2" \
   "a mismatched edge was confirmed"
-# A claim the replay ran and disagreed with is refuted: its model -- the
-# finding kind, the path, the arms, the valuation, the moved roots -- and
-# the reason, one row every later composition of the iteration excludes
-# (compose.Refutations).
+[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
+    && ! -e "${confirm_iteration}/refuted_claims.jsonl" ]] \
+  && jq -e -s 'length == 1 and (.[0] | .kind == "REFUSED_MODEL"
+    and .model.pathId == "P.sel"
+    and (.reason | contains("did not run the model")))' \
+    "${confirm_iteration}/refused_models.jsonl" >/dev/null \
+  || fail "a mismatched run refuted the model, or its model is not refused: \
+$(cat "${campaign_final}/confirm.json" \
+  "${confirm_iteration}/refused_models.jsonl" 2>&1)"
+confirm_stub_gaps=""
+# (b) The fatal not observed at the anchor, by a run that minted the moved
+# root at the model's value: it ran the model and disagreed, so the claim is
+# refuted -- its model (the finding kind, the path, the arms, the
+# valuation, the moved roots) and the reason, one row every later
+# composition of the iteration excludes (compose.Refutations).
+confirm_stub_fatal=false
+run_confirm SAT_CANDIDATE
+confirm_says false "observed the fatal" "a healthy anchor was confirmed"
 jq -e -s 'length == 1 and (.[0] | .kind == "REFUTED_CLAIM"
   and .model.pathId == "P.sel" and .model.arms == ["message_arm__1__a1",
     "message_arm__1__b2"] and .model.assignment == {"ROOT.M": "true"}
   and .model.moved == {"ROOT.M": "true"}
-  and (.reason | contains("the run paired p2")))' \
+  and (.reason | contains("observed the fatal")))' \
   "${confirm_iteration}/refuted_claims.jsonl" >/dev/null \
   || fail "the refuted claim's model is not its row: \
 $(cat "${confirm_iteration}/refuted_claims.jsonl" 2>&1)"
-confirm_stub_gaps=""
+# ... and by a run that minted it at another value, or minted none, it did
+# not run the model: no refutation.
+for planted in false ""; do
+  confirm_stub_planted=${planted}
+  run_confirm SAT_CANDIDATE
+  confirm_says false "so it did not run the model" \
+    "an unplanted healthy run (planted '${planted}') was a verdict"
+  [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
+      && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" -eq 1 ]] \
+    || fail "an unplanted run (planted '${planted}') refuted the model"
+done
+confirm_stub_planted=true
+confirm_stub_fatal=true
 # A session that published no gap file answers nothing about the edges --
 # nor about the model, which is not refuted.
 unset confirm_stub_gaps
@@ -3708,11 +3804,6 @@ confirm_says false "published no readable" \
 [[ "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" -eq 1 ]] \
   || fail "a confirmation that ran nothing refuted the model"
 confirm_stub_gaps=""
-# (b) The fatal not observed at the anchor.
-confirm_stub_fatal=false
-run_confirm SAT_CANDIDATE
-confirm_says false "observed the fatal" "a healthy anchor was confirmed"
-confirm_stub_fatal=true
 # ... and observed at another occurrence of the target site is not the
 # claim's anchor observing it.
 confirm_stub_target_iteration=1
@@ -3720,6 +3811,19 @@ run_confirm SAT_CANDIDATE
 confirm_says false "1 row(s) at other occurrences did" \
   "a fatal at another occurrence of the site confirmed the claim's anchor"
 confirm_stub_target_iteration=0
+# A model an earlier confirmation gave no verdict on is not confirmed
+# again: the final CONFIRM takes that row, and nothing is replayed.
+confirm_stub_verdict=NOT_ADMITTED
+run_confirm SAT_CANDIDATE
+confirm_stub_verdict=ADMITTED
+rm -f -- "${confirm_root}/replay-ran"
+confirm_keep_refused=1
+run_confirm SAT_CANDIDATE
+confirm_keep_refused=
+confirm_says false "an earlier confirmation of this model gave no verdict" \
+  "a refused model was confirmed again"
+[[ ! -e "${confirm_root}/replay-ran" ]] \
+  || fail "a refused model was replayed again"
 # A replay whose roots were not planted, or whose prefix was abandoned,
 # states NOT_ADMITTED, and that is the reason.
 confirm_stub_verdict=NOT_ADMITTED

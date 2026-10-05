@@ -665,8 +665,10 @@ operator the lowering writes (the string operators `str.substr`, `str.indexof`, 
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
-none it names, none a definition it rests on names (`FlipQuery#flipMoves`) -- is not asked
-(`ADMISSION_GAP`), whatever variables a prefix decision binds. A construct the
+none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked
+(`ADMISSION_GAP`), whatever variables a prefix decision binds; one that reaches only leaves a frame's
+write was freed to (`SmtLowering#framedLeaves`: the writer computed on an arrival it refused, so no
+plant reaches them) is refused before it is solved (`UNPRODUCIBLE_ANSWER`, DIAGNOSTIC, named). A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
 each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
@@ -996,9 +998,7 @@ cancelled or reaped, by id):
   attempts; the seed's REPLAY standing for a CONFIRM not yet run), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
-  unlanded reaped). Where it still owed arms (a queued obligation cancelled, an unlanded job
-  reaped), the end is a cut: one BLOCKING `EXPLORATION_CUT` row naming the stop and the counts;
-  else a DIAGNOSTIC row.
+  unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
   lands, and the stop is a DIAGNOSTIC row. The wave bound is declared: it defines the explored
@@ -1008,18 +1008,23 @@ cancelled or reaped, by id):
 - **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
-  cut -- rounds were still owed --, a BLOCKING `EXPLORATION_CUT` row naming the round, the corpus's
-  size on disk and the planner's error. Any other planner failure fails EXPLORE, its deepest
-  throwable the reason.
+  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error -- rounds
+  were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
-**THE END IS JUDGED ONCE** (`campaign_stream_truncation`, the one place a claim reads how EXPLORE
-ended; owner 2026-10-04, only SAT or UNSAT): an exploration a forced stop ended while it still owed
-arms leaves no UNSAT -- an UNSAT over a corpus missing those arms says nothing about them -- so the
-cut is BLOCKING and EMIT publishes an UNSAT beside it as a `RUN_DEFECT` (`EXPLORATION_CUT` in
-`defects[]`); a SAT the corpus holds stands, as CONFIRM validates it. WITNESSED and FIXED_POINT cut
-nothing, nor does the declared wave bound (HG5A: hdfs-adhoc-17 cancelled 151 queued obligations
-with none answered, 24 reaped 3 jobs, QJM 07/08/09 cancelled 1215/157/108 and reaped 2/16/25, and
-each but 07 had published UNSAT_CLOSED).
+**THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
+only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations
+cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped from the queue (the
+exposing round's growth and obligations with them), a round due when the budget stopped it
+(answers landed since the last round, or re-runs and swaps owed) -- and an end that owed work
+(CAMPAIGN_BUDGET_REACHED or WITNESSED with any of it, PLANNER_HEAP_EXCEEDED always) under a claim
+that is no `SAT_CANDIDATE` is one BLOCKING `EXPLORATION_CUT` row: an UNSAT over a corpus missing
+those arms says nothing about them, so EMIT publishes it as a `RUN_DEFECT`. A SAT the corpus holds
+stands, as CONFIRM validates it (the row DIAGNOSTIC); a WITNESSED end whose witness CONFIRM then
+refuted owes it all, since the next claim is composed over the trimmed corpus with no new EXPLORE
+(`campaign_next_claim`). FIXED_POINT and the declared wave bound, which defines the explored space,
+owe nothing (HG5A: hdfs-adhoc-17 cancelled 151 queued obligations with none answered, 24 reaped 3
+jobs, QJM 07/08/09 cancelled 1215/157/108 and reaped 2/16/25, and each but 07 had published
+UNSAT_CLOSED).
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
 proposed twice; the wave budget is what bounds the derivation. A case whose corpus outgrows the
@@ -1067,13 +1072,14 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
   including earlier versions of every reached write's location; a refusal is its frame's
-  (`frames`, `SmtLowering.RefusalFrame`, `SessionJoin#frame`): an `UNSTATED_VALUE` row the session
-  filed on a reached occurrence (a VM-refused attach, an attach that minted no `v_H`) is an arrival
-  its run computed on as a constant; its producer is the export the refused attach's VM handle
-  names in the session (`ExportRow#handle`), and by the one rule below every write of the frame a
-  read joins is FREE over what that export rests on that moves (named FREE in `concrete[]` with
-  those roots), else the frame's constants hold, named HELD (its producer unstated where no export
-  states the handle);
+  (`frames`, `SmtLowering.RefusalFrame`, `SessionJoin#frame`, `#frameOfWrite`, indexed once per
+  session): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused attach,
+  an attach that minted no `v_H`) is an arrival its run computed on as a constant; its producer is
+  the export the refused attach's VM handle names in the session (`ExportRow#handle`), and by the
+  one rule below every write of the frame a read joins is FREE over what that export rests on that
+  moves (`SmtLowering#frameMovers`: `#movers`, the one predicate every pin asks, through a read to
+  its write and a family's re-paired reads; named FREE in `concrete[]` with them), else the frame's
+  constants hold, named HELD (its producer unstated where no export states the handle);
 - constraint independence (`compose.Independence.of`), by what MOVES: a root of the session, what a
   family binds (an anchor handoff's symbol, a location a STATE family may re-pair), a read whose value
   (its observed write's, walked, and the construction guards of its referent) rests on one. A
@@ -1107,8 +1113,9 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
   an attach no session attests the producer of (or with no producer named) has a producer no row
   states: HELD at the value its row states it received, conjoined with the path and named
-  (`Composer.Concrete` HELD, "producer unstated"); a row stating no value the lowering places
-  refuses the path by name;
+  (`Composer.Concrete` HELD, "producer unstated"); one whose producer is attested and no export of
+  it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
+  it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
   rests on, where its stated producer rests on what can move; HELD at its recorded value, named
   "producer unstated", where no row states its producer; never free by default, never a silent
@@ -1149,7 +1156,9 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
 
 Any refusal drops the path and is filed with its own class (an open lowering refusal is a
-DIAGNOSTIC `UNSTATED_VALUE`).
+DIAGNOSTIC `UNSTATED_VALUE`); a dropped path is never silent: the claim names every admitted path
+COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
+and an UNSAT says nothing about them.
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id --
 a codec hole's is its message key, so the N readers of one stored version, and one decode read
@@ -1730,16 +1739,23 @@ with it is a `RUN_DEFECT`.
   `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
   `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
   the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
-  occurrence of the target site does not confirm. A ConfirmMain that exits nonzero is
-  "unconfirmed" with its log named.
+  occurrence of the target site does not confirm. Only the last refutes, and only where the run
+  ran the model (`ConfirmMain#unplanted`: every root the claim moved minted at the model's value,
+  a clock's cell minted, no `ASSIGNMENT_UNPLANTED`); a `CONFIRM_MISMATCH` (the run took an edge the
+  model did not choose) or a run without the model's plant did not run it. A ConfirmMain that
+  exits nonzero is "unconfirmed" with its log named.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
 sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says the
-model is refuted: the replay ran it and disagreed (a `CONFIRM_MISMATCH`, no fatal at the anchor),
-or ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A refusal
-(`CONFIRM refused:`), a replay that was not ADMITTED, published no readable session or no verdict,
-or a decision that failed, refutes nothing: the claim is unconfirmed and its model stays open; if
-it is the claim EMIT publishes, the run has no verdict (`RUN_DEFECT`, never `SAT_UNCONFIRMED`).
+model is refuted: the replay ran it and disagreed (no fatal at the anchor, the model planted), or
+ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A refusal (`CONFIRM
+refused:`), a mismatch, a run without the model's plant, a replay that was not ADMITTED,
+published no readable session or no verdict, or a decision that failed, refutes nothing: the model
+is REFUSED (`campaign_refuse`, one row of `<iteration>/refused_models.jsonl`, `result.json`
+`refusedModels`). No witness attempt of the campaign confirms a refused model again, and the final
+CONFIRM takes its row instead of a replay; a campaign that ends with a refused model and no
+confirmed SAT publishes no claim, an UNSAT included (`RUN_DEFECT`, `CONFIRM_REFUSED`, or
+`CONFIRM_NO_VERDICT` for the final claim's own).
 
 **A refuted claim is followed by the next.** A refuted claim (`campaign_refute`) is one row of
 `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the

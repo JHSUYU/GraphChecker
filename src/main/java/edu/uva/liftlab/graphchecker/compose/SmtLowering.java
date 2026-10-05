@@ -165,6 +165,12 @@ public final class SmtLowering {
         default RefusalFrame frame(String occurrenceId) {
             return null;
         }
+
+        /** The frame whose occurrence wrote this version of this location
+         *  (no INITIAL), or null: indexed once per session. */
+        default RefusalFrame frameOfWrite(String locationKey, long version) {
+            return null;
+        }
     }
 
     /**
@@ -172,25 +178,42 @@ public final class SmtLowering {
      * the attach, {@code runtime.WireExport}) and computed on it as a
      * constant, so every value it wrote may rest on what made the arrival.
      * Its producer is the export the refused attach's VM handle names in
-     * this session ({@link ExportRow#handle}), and {@code movesWith} what
-     * that export's expression rests on that can move ({@link
-     * SessionJoin#moves}); "" and none where no export row of the session
-     * states the handle -- its producer unstated, so its values are held.
+     * this session ({@link ExportRow#handle}); what that export rests on
+     * that can move is {@link #frameMovers}'s, the one predicate every pin
+     * asks ({@link #movers}).  No export row of the session stating the
+     * handle: its producer unstated, so its values are held.
      */
     public static final class RefusalFrame {
         /** The producers' endpoint ids, or "" where no row states one. */
         public final String producer;
-        /** What the producers' exports rest on that can move. */
-        public final List<String> movesWith;
+        /** The producers' export expressions. */
+        final List<JsonElement> exports;
         /** The refusal its row states. */
         public final String refusal;
 
-        RefusalFrame(String producer, List<String> movesWith,
+        RefusalFrame(String producer, List<JsonElement> exports,
                      String refusal) {
             this.producer = producer;
-            this.movesWith = Collections.unmodifiableList(movesWith);
+            this.exports = Collections.unmodifiableList(exports);
             this.refusal = refusal;
         }
+    }
+
+    /** What a frame's producer exports rest on that can move ({@link
+     *  #movers}, under the open join): empty, its values hold. */
+    public Set<String> frameMovers(RefusalFrame frame) {
+        Set<String> moving = new LinkedHashSet<String>();
+        for (JsonElement export : frame.exports) {
+            moving.addAll(movers(export, true));
+        }
+        return moving;
+    }
+
+    /** The leaves a frame's write was freed to ({@link Binder#framed}):
+     *  no plant reaches them, so a flip resting only on them is refused
+     *  before it is solved ({@code explore.FlipQuery}). */
+    public Set<String> framedLeaves() {
+        return Collections.unmodifiableSet(framedLeaves);
     }
 
     /** How a refused attach's row names the VM handle it refused
@@ -303,6 +326,12 @@ public final class SmtLowering {
             public RefusalFrame frame(String occurrenceId) {
                 return join.frame(occurrenceId);
             }
+
+            @Override
+            public RefusalFrame frameOfWrite(String locationKey,
+                                             long version) {
+                return join.frameOfWrite(locationKey, version);
+            }
         };
     }
 
@@ -364,6 +393,8 @@ public final class SmtLowering {
      * join lowers to its symbol (PIN, {@link #guardedReadTerm}).
      */
     private final Set<String> pins = new LinkedHashSet<String>();
+    /** {@link #framedLeaves}. */
+    private final Set<String> framedLeaves = new LinkedHashSet<String>();
     /**
      * The reads a STATE family of the path being composed may bind to
      * another writer's value, as {@code session|}{@link #readKey}
@@ -563,7 +594,18 @@ public final class SmtLowering {
                         + read.observedVersion(), read.symbol());
             }
         }
-        final Map<String, RefusalFrame> frames = frames(session, moving);
+        final Map<String, RefusalFrame> frames = frames(session);
+        // Location#version -> the frame whose occurrence wrote it.
+        final Map<String, RefusalFrame> framedWrites =
+                new HashMap<String, RefusalFrame>();
+        for (WriteRow write : session.writes()) {
+            RefusalFrame frame = write.initial() ? null
+                    : frames.get(write.endpoint().occurrence().id());
+            if (frame != null) {
+                framedWrites.put(locationKey(write.location()) + "#"
+                        + write.version(), frame);
+            }
+        }
         return new SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -623,6 +665,12 @@ public final class SmtLowering {
             public RefusalFrame frame(String occurrenceId) {
                 return frames.get(occurrenceId);
             }
+
+            @Override
+            public RefusalFrame frameOfWrite(String locationKey,
+                                             long version) {
+                return framedWrites.get(locationKey + "#" + version);
+            }
         };
     }
 
@@ -630,12 +678,10 @@ public final class SmtLowering {
      * The frames of one session ({@link RefusalFrame}): each occurrence an
      * UNSTATED_VALUE row of it is filed on (a refused attach, an attach
      * that minted no boundary variable), with the producers its refused
-     * attaches' handles name through the session's exports and what those
-     * rest on that can move.  A row naming no occurrence is no frame.
+     * attaches' handles name through the session's exports, and their
+     * export expressions.  A row naming no occurrence is no frame.
      */
-    private static Map<String, RefusalFrame> frames(
-            SessionReader session,
-                                             Set<String> moving) {
+    private static Map<String, RefusalFrame> frames(SessionReader session) {
         Map<Long, ExportRow> byHandle = new HashMap<Long, ExportRow>();
         for (ExportRow export : session.exports()) {
             byHandle.putIfAbsent(export.handle(), export);
@@ -643,8 +689,8 @@ public final class SmtLowering {
         Map<String, String> refusal = new LinkedHashMap<String, String>();
         Map<String, Set<String>> producers =
                 new LinkedHashMap<String, Set<String>>();
-        Map<String, Set<String>> movers =
-                new LinkedHashMap<String, Set<String>>();
+        Map<String, List<JsonElement>> exports =
+                new LinkedHashMap<String, List<JsonElement>>();
         for (GapRow gap : session.gaps()) {
             if (gap.kind() != GapKind.UNSTATED_VALUE) continue;
             String occurrence;
@@ -656,44 +702,26 @@ public final class SmtLowering {
             refusal.putIfAbsent(occurrence, gap.detail());
             Set<String> named = producers.computeIfAbsent(occurrence,
                     key -> new LinkedHashSet<String>());
-            Set<String> moved = movers.computeIfAbsent(occurrence,
-                    key -> new LinkedHashSet<String>());
+            List<JsonElement> held = exports.computeIfAbsent(occurrence,
+                    key -> new ArrayList<JsonElement>());
             Matcher handle = REFUSED_HANDLE.matcher(gap.detail());
             ExportRow export = handle.find()
                     ? byHandle.get(Long.valueOf(handle.group(1))) : null;
             if (export == null) continue;
             named.add(export.endpoint().id());
-            for (Iterator<JsonObject> walk = ExpressionWalk.of(
-                    session.expressions().expression(
-                            export.expressionRef())); walk.hasNext(); ) {
-                JsonObject node = walk.next();
-                String symbol = primitiveString(node, "_exp");
-                if (VmExpressionIr.SYMBOL_TYPE.equals(
-                        primitiveString(node, "_type"))
-                        && moving.contains(symbol)) {
-                    moved.add(symbol);
-                }
-            }
+            JsonElement expression = session.expressions().expression(
+                    export.expressionRef());
+            if (expression != null) held.add(expression);
         }
         Map<String, RefusalFrame> frames =
                 new LinkedHashMap<String, RefusalFrame>();
         for (Map.Entry<String, String> each : refusal.entrySet()) {
             String occurrence = each.getKey();
             frames.put(occurrence, new RefusalFrame(String.join(", ",
-                    producers.get(occurrence)), new ArrayList<String>(
-                    movers.get(occurrence)), each.getValue()));
+                    producers.get(occurrence)), exports.get(occurrence),
+                    each.getValue()));
         }
         return frames;
-    }
-
-    /** The frame whose write is this version of this location, or null. */
-    private RefusalFrame frameOf(String key, long version) {
-        for (WriteRow write : join.writes(key)) {
-            if (write.version() == version && !write.initial()) {
-                return join.frame(write.endpoint().occurrence().id());
-            }
-        }
-        return null;
     }
 
     /**
@@ -1609,6 +1637,12 @@ public final class SmtLowering {
          *  and a pin would hold it while a witness moves that. */
         T free();
 
+        /** FREE, its writer a frame whose producer moves ({@link
+         *  RefusalFrame}): as {@link #free}, a leaf no plant reaches. */
+        default T framed() {
+            return free();
+        }
+
         /**
          * REFUSE, by name.  {@code joined} is the refused join's value (its
          * refused constructs fresh names), already committed, or null.
@@ -1653,12 +1687,14 @@ public final class SmtLowering {
         boolean unwritten = true;
         if (!key.isEmpty() && version >= 0L) {
             JsonElement written = join.writeExpression(key, version);
-            RefusalFrame frame = frameOf(key, version);
-            if (frame != null && !frame.movesWith.isEmpty()) {
+            RefusalFrame frame = join.frameOfWrite(key, version);
+            Set<String> frameMoving = frame == null
+                    ? Collections.<String>emptySet() : frameMovers(frame);
+            if (!frameMoving.isEmpty()) {
                 freed(key + "@" + version, "written on an arrival its "
                         + "occurrence refused, from " + frame.producer,
-                        new LinkedHashSet<String>(frame.movesWith));
-                return binder.free();
+                        frameMoving);
+                return binder.framed();
             }
             if (written != null && !written.isJsonNull()) {
                 unwritten = false;
@@ -1880,6 +1916,13 @@ public final class SmtLowering {
             @Override
             public Term free() {
                 return leaf(expected, javaType);
+            }
+
+            @Override
+            public Term framed() {
+                Term leaf = leaf(expected, javaType);
+                framedLeaves.add(leaf.text);
+                return leaf;
             }
 
             @Override
@@ -3463,6 +3506,13 @@ public final class SmtLowering {
             this.reason = reason;
             this.movesWith = Collections.unmodifiableList(movesWith);
         }
+    }
+
+    /** An arrival nothing binds or pins, left FREE ({@link #unbound}):
+     *  its producer attested and no export of it lowered, or its row's
+     *  value no term ({@code Composer#handoffRead}). */
+    public void freedArrival(String symbol, String why) {
+        freed(symbol, why, Collections.<String>emptySet());
     }
 
     /**

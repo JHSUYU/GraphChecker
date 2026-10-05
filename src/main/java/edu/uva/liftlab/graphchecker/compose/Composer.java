@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
-import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
@@ -216,6 +215,7 @@ public final class Composer {
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         /** refuted_claim__k -> the refuted model it excludes. */
         private final Map<String, Refutations.Refuted> refutations;
+        private final List<JsonObject> refusedPaths;
         private final Map<String, List<String>> ownArms;
         private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
@@ -279,6 +279,8 @@ public final class Composer {
             this.refutations = Collections.unmodifiableMap(
                     new LinkedHashMap<String, Refutations.Refuted>(
                             composed.refutationNames));
+            this.refusedPaths = Collections.unmodifiableList(
+                    new ArrayList<JsonObject>(composed.refusedPaths));
             this.concrete = Collections.unmodifiableList(
                     new ArrayList<Concrete>(composed.concrete.values()));
             this.declaredRoots = Collections.unmodifiableMap(
@@ -393,7 +395,7 @@ public final class Composer {
         /** Whether the command between these offsets asserts a refuted
          *  claim ({@link Composer#refutations}): its name closes it. */
         private boolean refutation(int start, int end) {
-            int at = body.indexOf(":named refuted_claim__",
+            int at = body.indexOf(":named " + REFUTED_CLAIM,
                     Math.max(start, end - 64));
             return at >= 0 && at < end;
         }
@@ -742,19 +744,18 @@ public final class Composer {
             return seedSessionId;
         }
 
+        /** The admitted paths the composition refused by name, each with
+         *  its first refusal: no disjunct of the formula, so an UNSAT says
+         *  nothing about them ({@code refusedPaths}). */
+        public List<JsonObject> refusedPaths() {
+            return refusedPaths;
+        }
+
         /** Whether this formula asserts a refuted claim ({@link
          *  Composer#refutations}): an UNSAT may then rest on one, which
          *  only an unsat core shows. */
         public boolean assertsRefutations() {
             return !refutations.isEmpty();
-        }
-
-        /** Whether a refuted claim this formula excludes is on this path. */
-        public boolean refuted(String pathId) {
-            for (Refutations.Refuted model : refutations.values()) {
-                if (model.pathId.equals(pathId)) return true;
-            }
-            return false;
         }
 
         /**
@@ -925,6 +926,8 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
+    /** The admitted paths refused by name ({@link #refused}). */
+    private final List<JsonObject> refusedPaths = new ArrayList<JsonObject>();
     /** Each refuted claim this formula excludes, by its assertion's name
      *  ({@link #refutations}). */
     private final Map<String, Refutations.Refuted> refutationNames =
@@ -1442,7 +1445,7 @@ public final class Composer {
                             + "state, so it is not in the disjunction"));
         }
         if (!refusals.isEmpty()) {
-            refused(refusals);
+            refused(path, refusals);
             return null;
         }
 
@@ -1456,7 +1459,7 @@ public final class Composer {
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
             composedFamilies.discard();
-            refused(unproducible);
+            refused(path, unproducible);
             return null;
         }
         // (7) And the STATE families: which writer the read may have seen.
@@ -1575,14 +1578,22 @@ public final class Composer {
         return selectors;
     }
 
-    /** Files one path's refusals; the first names an empty disjunction. */
-    private void refused(List<GapRow> rows) {
+    /** Files one admitted path's refusals, the path named with its first
+     *  ({@link Composition#refusedPaths}: a dropped path is never silent);
+     *  the first of all names an empty disjunction. */
+    private void refused(Corpus.RecordedPath path, List<GapRow> rows) {
         gaps.addAll(rows);
-        if (firstRefusal.isEmpty() && !rows.isEmpty()) {
-            GapRow first = rows.get(0);
-            firstRefusal = first.kind() + " " + first.subject() + ": "
-                    + first.detail();
-        }
+        if (rows.isEmpty()) return;
+        GapRow first = rows.get(0);
+        String reason = first.kind() + " " + first.subject() + ": "
+                + first.detail();
+        if (firstRefusal.isEmpty()) firstRefusal = reason;
+        JsonObject row = new JsonObject();
+        row.addProperty("pathId", path.pathId);
+        row.addProperty("sessionId", path.sessionId);
+        row.addProperty("refusals", rows.size());
+        row.addProperty("reason", reason);
+        refusedPaths.add(row);
     }
 
     /**
@@ -1832,24 +1843,36 @@ public final class Composer {
             // No known source, so no family: named, and held below.
             composedFamilies.unpaired(session, attach);
         }
-        if (attestedArrival(attach)) {
+        List<ExportRow> attested = attach.producer() == null
+                ? Collections.<ExportRow>emptyList()
+                : arms.attestedExports(attach.producer());
+        if (attestedArrival(attach, attested)) {
             // An attested arrival has a producer, so its interaction.
             interactionIds.add(interaction.id());
             bound.add(attach);
             return;
         }
+        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
+        if (!attested.isEmpty()) {
+            // Its producer is attested and no export of it lowers: what it
+            // delivered is unknown, nothing pins it -- FREE, named.
+            lowering.declareStated(attach.symbol(), sort);
+            lowering.freedArrival(attach.symbol(), "attested producer "
+                    + attach.producer().id() + ", whose "
+                    + attested.size() + " export(s) did not lower");
+            return;
+        }
         // No producer this corpus attests (or none named): held at what its
-        // row states it received, named.
+        // row states it received, named; a value the lowering places
+        // nowhere pins nothing, FREE, named -- never a dropped path.
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
         Term value = lowering.statedValue(received, attach.javaType());
         if (value == null) {
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, attach.symbol(), "no producer this "
-                            + "corpus attests delivered this arrival, and its "
-                            + "row states the value \"" + received + "\", "
-                            + "which this lowering places nowhere, so the path "
-                            + "rests on what no row states"));
+            lowering.declareStated(attach.symbol(), sort);
+            lowering.freedArrival(attach.symbol(), "no producer is attested "
+                    + "and its row states the value \"" + received
+                    + "\", which this lowering places nowhere");
             return;
         }
         lowering.declareStated(attach.symbol(), value.sort);
@@ -1878,10 +1901,9 @@ public final class Composer {
      * ({@link Arms#attestedExports}), from any session that ran it, lowered
      * in that session's scope; never ask the consumer's session.</p>
      */
-    private boolean attestedArrival(AttachRow attach) {
-        Endpoint producer = attach.producer();
-        if (producer == null) return false;
-        for (ExportRow export : arms.attestedExports(producer)) {
+    private boolean attestedArrival(AttachRow attach,
+                                    List<ExportRow> attested) {
+        for (ExportRow export : attested) {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "paired-arm", null);
             if (delivered == null) continue;
@@ -2002,7 +2024,9 @@ public final class Composer {
         for (String occurrenceId : reached) {
             SmtLowering.RefusalFrame frame = join.frame(occurrenceId);
             if (frame == null) continue;
-            boolean moves = !frame.movesWith.isEmpty();
+            List<String> moving = new ArrayList<String>(
+                    lowering.frameMovers(frame));
+            boolean moves = !moving.isEmpty();
             pathConcrete.put("frame:" + occurrenceId, new Concrete(moves
                     ? SmtLowering.Unbound.FREE : SmtLowering.Unbound.HELD,
                     occurrenceId, frame.producer, moves ? "its run computed "
@@ -2014,7 +2038,7 @@ public final class Composer {
                     + "of this session states the refused handle ("
                     + frame.refusal + ")"
                     : "its run computed on an arrival it refused, whose "
-                    + "producer rests on nothing that moves", frame.movesWith));
+                    + "producer rests on nothing that moves", moving));
         }
     }
 
@@ -3289,7 +3313,7 @@ public final class Composer {
                 conjuncts.add(clockStep(cell, clockReadings, clockBefore,
                         Long.signum(skew - previous)));
             }
-            String name = "refuted_claim__" + ordinal++;
+            String name = REFUTED_CLAIM + ordinal++;
             lowering.assertNamed(name,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
             refutationNames.put(name, model);
@@ -3605,6 +3629,10 @@ public final class Composer {
 
     /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";
+
+    /** The name prefix of a refuted claim's assertion ({@link
+     *  #refutations}), which an unsat core names. */
+    static final String REFUTED_CLAIM = "refuted_claim__";
 
     void gap(GapKind kind, GapClass cls, String subject,
                      String detail) {

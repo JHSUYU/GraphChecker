@@ -678,9 +678,12 @@ public final class ConfirmMain {
      * and observed the fatal.  A fatal at another occurrence of the target
      * site is another question (11741 v93's confirming session had two fatal
      * target rows), and an occurrence is named by its id, which only this
-     * address computes.  Only (a) and (b) REFUTE the model -- the replay ran
-     * it and disagreed; a replay that did not run it (not ADMITTED, no
-     * readable session) answers nothing about it.
+     * address computes.  Only (b) REFUTES the model, and only where the
+     * replay ran it: every root the claim moved minted at the model's value
+     * (a clock's cell minted) and no plant refused ({@link #unplanted}).  A
+     * run that took an edge the model did not choose (a), or ran without
+     * the model's plant, or did not run (not ADMITTED, no readable session)
+     * answers nothing about it: a defect of the run (RUN_DEFECT).
      */
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
@@ -717,15 +720,17 @@ public final class ConfirmMain {
         }
         for (JsonObject gap : gaps) {
             if ("CONFIRM_MISMATCH".equals(optionalString(gap, "kind"))) {
-                return confirmation(false, true, "the run took an edge the"
-                        + " model did not choose: "
-                        + optionalString(gap, "detail"), sessionId);
+                return confirmation(false, false, "the run took an edge the"
+                        + " model did not choose, so it did not run the"
+                        + " model: " + optionalString(gap, "detail"),
+                        sessionId);
             }
         }
+        JsonObject claim;
         OccurrenceAddress anchor;
         try {
-            anchor = OccurrenceAddress.parse(optionalString(
-                    ExploreCodec.readObject(claimFile), "anchor"));
+            claim = ExploreCodec.readObject(claimFile);
+            anchor = OccurrenceAddress.parse(optionalString(claim, "anchor"));
         } catch (RuntimeException unparsed) {
             return confirmation(false, false, "the claim states no parseable"
                     + " anchor: " + unparsed.getMessage(), sessionId);
@@ -740,12 +745,60 @@ public final class ConfirmMain {
             }
             elsewhere++;
         }
-        return confirmation(false, true, "the run published no target row"
-                + " at the claim's anchor " + anchor.id() + " that reached it"
-                + " and"
-                + " observed the fatal" + (elsewhere == 0 ? ""
-                : " (" + elsewhere + " row(s) at other occurrences did)"),
-                sessionId);
+        String why = "the run published no target row at the claim's"
+                + " anchor " + anchor.id() + " that reached it and observed"
+                + " the fatal" + (elsewhere == 0 ? ""
+                : " (" + elsewhere + " row(s) at other occurrences did)");
+        String unplanted;
+        try {
+            unplanted = unplanted(claim, gaps, published(session.resolve(
+                    SessionDir.ROOTS)));
+        } catch (IOException | RuntimeException unread) {
+            unplanted = "its root rows could not be read: "
+                    + unread.getMessage();
+        }
+        return unplanted.isEmpty() ? confirmation(false, true, why, sessionId)
+                : confirmation(false, false, why + ", and " + unplanted
+                + ", so it did not run the model", sessionId);
+    }
+
+    /**
+     * Why a confirmation run did not run the claim's model, or "": a plant
+     * it refused ({@code ASSIGNMENT_UNPLANTED}), or a root the claim moved
+     * that it minted at no row, or (not a clock) at another value than the
+     * model's.  A moved root is named as the claim names it, by root id or
+     * by its cell's symbol.
+     */
+    static String unplanted(JsonObject claim, List<JsonObject> gaps,
+                            List<JsonObject> roots) {
+        for (JsonObject gap : gaps) {
+            if ("ASSIGNMENT_UNPLANTED".equals(optionalString(gap, "kind"))) {
+                return "it refused a plant (" + optionalString(gap,
+                        "subject") + ")";
+            }
+        }
+        Map<String, RootMintRow> minted =
+                new LinkedHashMap<String, RootMintRow>();
+        for (JsonObject row : roots) {
+            RootMintRow root = RowCodec.readRootMint(row);
+            minted.putIfAbsent(root.rootId(), root);
+            minted.putIfAbsent(root.symbol(), root);
+        }
+        for (Map.Entry<String, JsonElement> moved : object(claim.getAsJsonObject(
+                "claim"), "movedRoots").entrySet()) {
+            RootMintRow root = minted.get(moved.getKey());
+            if (root == null) {
+                return "it minted no row of the moved root "
+                        + moved.getKey();
+            }
+            String model = moved.getValue().getAsString().trim();
+            if (root.kind() != RootKind.CLOCK && !root.recordedValue().trim()
+                    .equalsIgnoreCase(model)) {
+                return "it ran the moved root " + moved.getKey() + " at "
+                        + root.recordedValue() + ", not the model's " + model;
+            }
+        }
+        return "";
     }
 
     /** A session file's rows; one the replay did not publish is refused (its

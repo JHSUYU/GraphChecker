@@ -1460,6 +1460,45 @@ public class ComposerTest {
                         Set<com.google.gson.JsonElement>>()));
     }
 
+    /**
+     * An arrival nothing binds and nothing pins is FREE, named -- never a
+     * dropped path: its producer attested by an export of it that does not
+     * lower (attested), or no producer and a received value the lowering
+     * places nowhere (unplaceable).
+     */
+    @Test
+    public void anArrivalNothingBindsIsFreeAndNamedNeverADroppedPath()
+            throws Exception {
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
+        for (String variant : new String[]{"attested", "unplaceable"}) {
+            Path iteration = folder.newFolder("free-" + variant).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.marker("false");
+            if ("attested".equals(variant)) {
+                session.activation(PRODUCER);
+                session.export(producer, "EXPR.v1.gone", 1L, "10");
+                session.attach(consumer, "vh", "I", "10", producer);
+            } else {
+                session.attach(consumer, "vh", "I", "ten", null);
+            }
+            session.target("(> vh 5)", false, true);
+            session.write();
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals(variant + ": the path stands: " + composition.gaps(),
+                    1, composition.disjuncts().size());
+            assertTrue(variant, composition.refusedPaths().isEmpty());
+            List<String> free = new ArrayList<String>();
+            for (Composer.Concrete row : composition.concrete()) {
+                if ("vh".equals(row.subject)) free.add(row.kind);
+            }
+            assertEquals(variant + ": " + concrete(composition),
+                    Collections.singletonList("FREE"), free);
+        }
+    }
+
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
@@ -1570,13 +1609,16 @@ public class ComposerTest {
         // computed on the arrival as a constant, and s0's run refused one in
         // an occurrence no closure here reaches: both paths compose, and
         // s1's frame is named by THE ONE RULE.  Its producer is the export
-        // of handle 7: FREE where that export rests on a root (moving), held
-        // where it rests on nothing that moves (constant), held as its
-        // producer unstated where no export states the handle (unstated).
+        // of handle 7: FREE where that export rests on a root (moving), or
+        // reads a version a write of the root made (guarded: the NameNode's
+        // currentKey.keyId, stored from the serial), held where it rests on
+        // nothing that moves (constant), held as its producer unstated where
+        // no export states the handle (unstated).
         // The refused arrival's producer: another port of the producer.
         Endpoint refusedFrom = Endpoint.of(PRODUCER, "PORT.refused",
                 at("export#2", 0), 0);
-        for (String variant : new String[]{"moving", "constant",
+        LocationId keyId = LocationId.of(LocationKind.INSTANCE, "77", "24");
+        for (String variant : new String[]{"moving", "guarded", "constant",
                 "unstated"}) {
             Path framed = folder.newFolder("framed-" + variant).toPath();
             for (String[] each : new String[][]{{"s0", "10", "false"},
@@ -1595,6 +1637,18 @@ public class ComposerTest {
                     session.expression("EXPR.0000000000000a07",
                             symbol("M_I_id", "I"));
                     session.export(refusedFrom, "EXPR.0000000000000a07",
+                            7L, each[1]);
+                } else if ("guarded".equals(variant)) {
+                    session.root(PRODUCER, "ROOT.ID", "M_I_id",
+                            RootKind.INTEGRAL, each[1]);
+                    session.expression("EXPR.0000000000000a08",
+                            symbol("M_I_id", "I"));
+                    session.write(Endpoint.of(PRODUCER, "Key#set#2:WRITE",
+                            at("w#1", 0), 0), keyId, 3L,
+                            "EXPR.0000000000000a08");
+                    session.expression("EXPR.0000000000000a09",
+                            read("INSTANCE_FIELD", 77L, 24L, 3L, "I"));
+                    session.export(refusedFrom, "EXPR.0000000000000a09",
                             7L, each[1]);
                 } else if ("constant".equals(variant)) {
                     session.export(refusedFrom, "EXPR.v1.id", 7L, each[1]);
@@ -1616,7 +1670,8 @@ public class ComposerTest {
             }
             assertEquals(variant + ": s1's anchor rested on a frame: "
                     + concrete(frame), Collections.singletonList(
-                    "moving".equals(variant) ? "FREE [M_I_id] false false"
+                    "moving".equals(variant) || "guarded".equals(variant)
+                            ? "FREE [M_I_id] false false"
                             : "constant".equals(variant)
                             ? "HELD [] false false"
                             : "HELD [] false true"), frames);
@@ -6044,7 +6099,7 @@ public class ComposerTest {
      * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
      * node alike: JOIN, MINT, FREE or PIN, REFUSE; a refused join gives way
      * to the mint, else, where what it rests on can move, the read is FREE
-     * and named with what it rests on ({@code SmtLowering#frees}, a {@code
+     * and named with what it rests on ({@code SmtLowering#unbound}, a {@code
      * Composer.Concrete} FREE), else the pin.  One case per row:
      * <ul>
      *   <li>pin: the write refuses over nothing that moves, and the row

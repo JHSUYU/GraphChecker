@@ -847,6 +847,45 @@ public class ConfirmMainTest {
     }
 
     /**
+     * A healthy confirmation run refutes the model only where it ran it:
+     * every moved root minted at the model's value (a clock's cell minted)
+     * and no plant refused; else it names why it did not run the model.
+     */
+    @Test
+    public void aHealthyRunRefutesOnlyWhereItPlantedTheModel()
+            throws Exception {
+        JsonObject claim = ExploreCodec.readObject(claim("FAULT:IPC",
+                "true"));
+        JsonObject planted = RowCodec.writeRootMint(root("c", "FAULT:IPC",
+                "M_Z_fault", RootKind.MARKER, "true"));
+        JsonObject other = RowCodec.writeRootMint(root("c", "FAULT:IPC",
+                "M_Z_fault", RootKind.MARKER, "false"));
+        JsonObject refusedPlant = new JsonObject();
+        refusedPlant.addProperty("kind", "ASSIGNMENT_UNPLANTED");
+        refusedPlant.addProperty("subject", "PORT.x");
+        // roots minted, gaps, the reason's start ("" = it ran the model)
+        Object[][] table = {
+                {Collections.singletonList(planted),
+                        Collections.<JsonObject>emptyList(), ""},
+                {Collections.singletonList(other),
+                        Collections.<JsonObject>emptyList(),
+                        "it ran the moved root FAULT:IPC at false"},
+                {Collections.<JsonObject>emptyList(),
+                        Collections.<JsonObject>emptyList(),
+                        "it minted no row of the moved root FAULT:IPC"},
+                {Collections.singletonList(planted),
+                        Collections.singletonList(refusedPlant),
+                        "it refused a plant (PORT.x)"}};
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            String why = ConfirmMain.unplanted(claim,
+                    (List<JsonObject>) row[1], (List<JsonObject>) row[0]);
+            assertTrue(why, row[2].equals("") ? why.isEmpty()
+                    : why.startsWith((String) row[2]));
+        }
+    }
+
+    /**
      * WIRE-CODEC §6.5: a codec hole's WIRE edge states the store version its
      * message was, so a reader of another version is a mismatch, and the
      * text the model's valuation of it decodes to, where COMPOSE stated one
