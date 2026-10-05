@@ -29,8 +29,9 @@ Weight, per witness (a signature takes its best):
                    clock-sync assumption)
   reproduction     reproduce.json beside result.json (run_engine.sh
                    REPRODUCE, after EMIT): the share of its native runs that
-                   took the fatal arm at the claim's anchor; 0 when it ran
-                   none or has not finished
+                   reproduced -- took the fatal arm at the claim's anchor
+                   with every root of the plant planted; 0 when it ran none
+                   or has not finished
   extra roots      1 per moved root beyond the first
 
 Writes <sweep-dir>/findings.tsv, best weight first, with the best case's native
@@ -195,8 +196,8 @@ def witness(final):
     return {"target": target_site(case_dir), "kind": kind, "parts": parts,
             "weight": weight, "extra": len(parts) - 1,
             "configOnly": result.get("configurationOnly") is True,
-            "native": "%d/%d" % (reproduction.get("atAnchor", 0), runs),
-            "rate": reproduction.get("atAnchor", 0) / runs if runs else 0.0}
+            "native": "%d/%d" % (reproduction.get("reproduced", 0), runs),
+            "rate": reproduction.get("reproduced", 0) / runs if runs else 0.0}
 
 
 def signature(found):
