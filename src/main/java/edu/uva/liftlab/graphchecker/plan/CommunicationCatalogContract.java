@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
@@ -119,14 +121,10 @@ public final class CommunicationCatalogContract {
      * alone -- is what declares a capture once.
      */
     public static String captureKey(String side, Map<String, ?> capture) {
-        return side + "\n" + text(capture.get(PORT_ID)) + "\n"
-                + text(capture.get(CALL_SITE_ID)) + "\n"
-                + text(capture.get(PORT_OUTPUT_CAPTURE_KIND)) + "\n"
-                + text(capture.get(PORT_ARGUMENT_INDEX));
-    }
-
-    private static String text(Object value) {
-        return value == null ? "" : String.valueOf(value);
+        return side + "\n" + MapFields.text(capture.get(PORT_ID)) + "\n"
+                + MapFields.text(capture.get(CALL_SITE_ID)) + "\n"
+                + MapFields.text(capture.get(PORT_OUTPUT_CAPTURE_KIND)) + "\n"
+                + MapFields.text(capture.get(PORT_ARGUMENT_INDEX));
     }
 
     /** Length of the leading {@code "XCH." + canonical UUID}, or -1. */

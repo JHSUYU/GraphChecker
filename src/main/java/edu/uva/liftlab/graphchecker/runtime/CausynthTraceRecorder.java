@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.objectWithoutNulls;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -1342,8 +1343,8 @@ public final class CausynthTraceRecorder {
             }
 
             String configuredTestName = firstNonBlank(
-                    System.getProperty("causynth.trace.test"),
-                    System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
+                    setting("causynth.trace.test", "CAUSYNTH_TRACE_TEST"),
+                    "unknown-test");
             // Which pass this JVM is is DECLARED by the campaign, never
             // inferred from which output keys happen to be set.
             boolean configuredContextOnly = RuntimeTraceMode.configured()
