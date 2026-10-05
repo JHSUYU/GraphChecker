@@ -21,12 +21,10 @@ Two facts are published for report.py, which gates on both:
                 the path the claim selected.  A mechanism whose root the fatal
                 does not depend on is a mechanism the formula cannot carry.
   unbound    -- boundary variables some fatal condition names that no family
-                binds and that COMPOSE did not state FREE.  A free v_H no
-                family binds and COMPOSE did not name is a value the engine
-                invented, not one a producer made.  One COMPOSE named FREE
-                (result.json concrete[], an arrival whose producer this
-                corpus does not attest) is the over-approximation the owner's
-                design states and CONFIRM judges strictly, not an invention.
+                binds.  A v_H no family binds is a broken causal chain,
+                whatever COMPOSE stated of it (concrete[]: FREE, or held at
+                its recorded value because no row states its producer): a
+                value the engine invented or held, not one a producer made.
 
 A root is named by its rootId in result.json and by its symbol in the
 formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
@@ -159,16 +157,12 @@ def main():
         elif name.startswith('message_family'):
             families.setdefault(selector, []).append(formula.names(body[2]))
 
-    # An arrival COMPOSE named FREE is accounted for, whether read off the
-    # published result or the composition manifest the offline gate stops at.
-    free = {c['subject'] for src in (result, manifest)
-            for c in src.get('concrete') or [] if c.get('kind') == 'FREE'}
     for selector, own in sorted(fatal.items()):
         bound = set()
         for family in families.get(selector, []):
             bound |= family
-        out['unbound'] += sorted(c for c in own if is_boundary(c)
-                                 and c not in bound and c not in free)
+        out['unbound'] += sorted(c for c in own
+                                 if is_boundary(c) and c not in bound)
 
     ordinal = result.get('valuationOrdinal')
     chosen = next((v for v in result.get('valuations') or []

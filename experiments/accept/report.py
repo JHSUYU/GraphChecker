@@ -11,8 +11,7 @@ rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it, the formula carries the
 causality the witness names (cone.py: every moved root in the causal cone of
-the selected path, no boundary variable a fatal names left neither bound by a
-family nor stated FREE), AND the mechanism it
+the selected path, no unbound boundary variable), AND the mechanism it
 concluded is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
 the CONFIRM replay (confirmation.confirmed=true), no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
