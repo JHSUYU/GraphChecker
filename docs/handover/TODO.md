@@ -26,9 +26,11 @@ brief and bind.
 - b. One rule for values COMPOSE cannot bind (`SmtLowering#unbound`): FREE where the stated
   producer moves, HELD "producer unstated" where no row states it (unattested arrivals, reads of
   versions no write states, frames found through the refused attach's VM handle); `concrete[]`
-  rows state `pathId` and `reason`; UNSAT_CLOSED's meaning stated (7f19e2eba). The hold of an
-  unversioned container state (hdfs-adhoc-32) was reverted on the lead's hold (0105a1b4a): it waits
-  for the diagnosis of 11741's unversioned `allKeys` reads.
+  rows state `pathId` and `reason`; UNSAT_CLOSED's meaning stated (7f19e2eba). A read of a
+  container state the VM marked incomplete keeps being refused (honest: an unhooked mutation ran
+  between its version and the read; the hold tried in 9119bde4a was reverted, 0105a1b4a); the fix is
+  admission of that unplanned occurrence, owned by the identity agent (11741 `allKeys`,
+  hdfs-adhoc-32).
 - c, d. `restsOnRefutations`; report.py FREE/HELD wording, witness rows first (ce7df0152); a refuted
   model is no part of the run's own world (e44a4a632).
 - g. The run as recorded is a world: a writer whose block the run broke gets the observed arm
