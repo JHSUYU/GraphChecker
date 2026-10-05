@@ -497,8 +497,18 @@ public final class MessageDoors {
         CausynthTraceRecorder.exitCarriedScope(token);
     }
 
-    /** Opens one daemon tick as a root of its own: a service-loop turn. */
+    /**
+     * Opens one daemon tick as a root of its own: a service-loop turn.  The
+     * exchange the thread served ends first, as for a node startup: the turn
+     * serves no message it did not take in itself.  Left standing below the
+     * turn, the next message's end of it closed the turn as well (a
+     * DataNode actor built inside the window stands in its registration's
+     * response when its first turn begins; the IPC client ends that exchange
+     * before its heartbeat, so the heartbeat went out in the test's request
+     * and the turn stated no END: hdfs-adhoc-21/22/23/25, round HG5A).
+     */
     public static long beginTick(Object owner, String role) {
+        endInbound();
         return CausynthTraceRecorder.beginDaemonTick(owner, role);
     }
 
@@ -514,11 +524,12 @@ public final class MessageDoors {
     }
 
     /**
-     * {@code who} is about to take startup {@code step}, a step before the
-     * window that builds state a replay reads: a replay holds it until those
-     * its recording saw complete the step first have completed it ({@link
-     * StartupOrder}).  {@code who} names the taker the same in both passes
-     * (a DataNode's UUID, which its seeded draw makes).
+     * {@code who} is about to take startup {@code step}, a step that builds
+     * state a replay reads and that no slot of the schedule orders, before
+     * the window or inside it: a replay holds it until those its recording
+     * saw complete the step first have completed it ({@link StartupOrder}).
+     * {@code who} names the taker the same in both passes (a DataNode's
+     * UUID, which its keyed draw makes).
      *
      * @return what {@link #startupDone} takes
      */
@@ -561,18 +572,28 @@ public final class MessageDoors {
      * and a registered node's start, a restart's included, by {@link
      * #beginNodeStartup(Object)}.
      *
+     * <p>A construction is the test's own work, not the serving of the last
+     * message its thread received: the exchange the thread served ends
+     * first, so the node and the threads it starts stand in the test's
+     * request, not under that message's anchor (round HG4, hdfs-adhoc-22: one
+     * response that differed after a divergence re-anchored every later
+     * cluster's build, and 10560 slots were given up at once).</p>
+     *
      * @return the token {@link #endNodeStartup} takes
      */
     public static long beginNodeStartup(String kind, String role,
                                         String sourceId) {
+        endInbound();
         return CausynthTraceRecorder.beginNodeStartup(kind, role, sourceId);
     }
 
     /**
      * Opens one startup of a node already registered -- its threads' start
-     * -- or of none when it is not: what it starts belongs to the node.
+     * -- or of none when it is not: what it starts belongs to the node.  The
+     * exchange the thread served ends first, as for a construction.
      */
     public static long beginNodeStartup(Object node) {
+        endInbound();
         return CausynthTraceRecorder.beginNodeStartup(node);
     }
 

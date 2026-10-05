@@ -1,4 +1,4 @@
-# TODO at the handover of 2026-10-04 night
+# TODO at the handover of 2026-10-05 morning
 
 Order:
 1. HDFS to the end, as one group with no regression.
@@ -7,245 +7,203 @@ Order:
 4. Then ZooKeeper.
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
-checks has an exported `.smt` that is right (SAT confirmed, or UNSAT) and every known bug of it
-passes. The final acceptance runs each case alone on the whole cluster. Branch and path details are
-in [STATE.md](STATE.md); commands are in [OPERATIONS.md](OPERATIONS.md).
+checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
+passes. The final acceptance runs each case alone on the whole cluster. Branch, tree and path details are in
+[STATE.md](STATE.md); every check with its live state in [../checks/README.md](../checks/README.md); commands in
+[OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
-## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3`, image `vm-hg5`)
+## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3` -> r4, image `vm-hg5`)
 
-**Status 2026-10-05 04:00 (lead).** Done and merged into `system/hdfs`: §1e (bug2, `hdfs-request-in-hand`), measured replay charges (`hdfs-measured-charges`), the FREEZE digest and array-identity fixes. HG5A ran the HG5 body (STATE §4). In flight, one agent each: §1 decisive-verdicts (fixing its review's 4 blockers, then merge), §2 HG6 = `hdfs-draw-sites2` (probes), identity (`hdfs-address-shared`: rule B done; next the planned-shape rule for hdfs-11741's regression, then the putter's frames for 14; 07's shared getSegmentInfo endpoint), closure E1 for 16 (`hdfs-closure`, after §1), cleanup batch 1 (`hdfs-cleanup-1`). Merge order: decisive, HG6, address-shared, closure, cleanup phase 2. Then the next round of the 46 (§3) on the merged body. Parked: the QJM obligation snowball (dependence-key granularity), the 8 GB head reserve (heads peak at median 0.7 GB, p99 7.8), SEED's Soot passes being IO-bound on NFS during a sweep's first wave.
+Where it stands (STATE §4): 9 of 10 known bugs PASS; 7 study verdicts on the merged body + 10 to rerun; 8 open with a
+fix landed or a rerun owed; 2 with a named defect; 9 in the time-model class; no new bug. Do these in order; 1-4 can
+run in parallel (one coding agent each, at most 4), each validated alone, merged one at a time.
 
-### 1. Finish `hdfs-decisive-verdicts` (one coding agent)
+### 1. Land the finished WIP (small)
+- **`hdfs-compose-cost`** (07's COMPOSE: the quadratic self-check fixed, progress lines): run
+  `/bigtemp/vnr3ne/ab/hdfs-refactor-compose/cost-gate.sh` with the branch jar against system/hdfs (byte-identical
+  COMPOSE outputs on V25/HG4/HG5A/HG7), write PIPELINE §8's note, merge. Then add the reserve for a COMPOSE never
+  measured: twice the last planner round's wall time (the planner reads the same corpus), never below
+  `campaign_reserve_s`.
+- **`hdfs-refactor-compose`**: merge system/hdfs into it, re-gate steps 1-4 (identical outputs), merge; then step 5
+  (Composer.compose/run as step methods over one per-path context; the SmtLowering split: VM-term lowering into
+  VmTermLowering, declarations/rendering into a new SmtSymbolTable; SmtLowering.binary by operand sort), each step
+  gated identical. Brief `brief-refactor-compose.md`.
 
-The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` and the brief is
-`/bigtemp/vnr3ne/analysis/study-2026-10-04/brief-decisive-fix2.md`. The lead's decisions are in that
-brief and bind.
+### 2. hdfs-adhoc-14: the r4 trees (identity, one general tree point)
+- Build both r4 trees with the variables on the remote command line (ssh drops them):
+  `onlift.sh -g 12 env SKIP_GRAPHCHECKER_INSTALL=1 MAVEN_REPO_LOCAL=/bigtemp/vnr3ne/m2/hdfs-study-r4 bash experiments/hadoop/build.sh /bigtemp/vnr3ne/wt/hadoop-hdfs-study-r4 org.apache.hadoop.hdfs.TestEncryptedTransfer 'testEncryptedReadDefaultAlgorithmCipherSuite[1]'`,
+  and the same for `hadoop-hdfs-11741-r4` with `/bigtemp/vnr3ne/m2/hdfs-11741-r4`,
+  `TestCausynthExpiredBalancerKey testEncryptedBalancerAfterKeyRotations`.
+- Snapshot system/hdfs, point its `case.sh repo=` lines at the r4 trees IN THE SNAPSHOT ONLY (OPERATIONS §5), run:
+  14 to a verdict (REGION.084d06ab must stand on `Anchor:<call>` with index `[doAs@0, ...]`), 21 to PLAN, bug1,
+  17897, 17960, 11741 on its r4 tree.
+- Then commit the `repo=` switch to r4 on system/hdfs, merge `hdfs-anchored-index` (its STATUS/IDENTITY rows), and
+  never touch r3 again.
 
-**a-d, g, h: done on the branch** (lead review pending, then the merge into `system/hdfs`):
-- a. CONFIRM: `refutes` only for "CONFIRM refutes:" (the run as recorded); every "CONFIRM refused:"
-  is a RUN_DEFECT; a way-guard witness is planted and judged by the fatal, its closure cut at the
-  manifest's `cutoff` (37723587e).
-- b. One rule for values COMPOSE cannot bind (`SmtLowering#unbound`): FREE where the stated
-  producer moves, HELD "producer unstated" where no row states it (unattested arrivals, reads of
-  versions no write states, frames found through the refused attach's VM handle); `concrete[]`
-  rows state `pathId` and `reason`; UNSAT_CLOSED's meaning stated (7f19e2eba). A read of a
-  container state the VM marked incomplete keeps being refused (honest: an unhooked mutation ran
-  between its version and the read; the hold tried in 9119bde4a was reverted, 0105a1b4a); the fix is
-  admission of that unplanned occurrence, owned by the identity agent (11741 `allKeys`,
-  hdfs-adhoc-32).
-- c, d. `restsOnRefutations`; report.py FREE/HELD wording, witness rows first (ce7df0152); a refuted
-  model is no part of the run's own world (e44a4a632).
-- g. The run as recorded is a world: a writer whose block the run broke gets the observed arm
-  (a6681529b; hdfs-adhoc-16 decides). QJM 07's 57 contradictions have another cause: an identity
-  defect (every `Journal#getSegmentInfo` export of `SegmentStateProto.EndTxId` in a session states
-  one producer endpoint, so each arm binds both arrivals at `acceptRecovery` to one value).
-- h. EXPLORATION_CUT: a forced end that still owed arms is one BLOCKING row, so no UNSAT closes
-  over that corpus (0f0d331f7).
+### 3. The time model (the start-up/clock family: 01 17 21 22 23 25 34 35 43)
+- The cause (HG6 probes, DW1-DW5a): a DataNode actor's turn decides by `monotonicNow` (heartbeat, block report due,
+  `BPServiceActor.Scheduler`) and by state set on threads that make no schedule events (block-report leases, IBRs),
+  while the VM replay runs slower than the recording; start-up state (a DataNode's next heartbeat) is set from the
+  live clock before or as the window opens. The total order (`ScheduleLog`) orders events but not clock VALUES.
+- The design proposed on `hdfs-time-model` (`ccbf0f8a0`'s commit message), to review before any code: the recording
+  stamps every schedule event and STARTUP mark with its clock readings; every application clock read goes through
+  `Clocks` (as the parked C1 did); in a replay the application sees the recording's timeline, never past the stamp of
+  the frontier slot (before the window: the next STARTUP mark), never backwards; a declared CLOCK root keeps its skew
+  on top (CLOCK_SKEW still works); no read is keyed (C1b's shared keys and C1's run cap avoided). Expected: 17 and 43
+  gain most; 22-25, 34, 35 where turns read the clock (their IPC-handler and monitor waits are timed waits, not clock
+  reads); 21 and 01 partly.
+- C1's lessons (`hdfs-clock-replay` 22520bf02): replaying in-window reads alone mixes two timelines (state set before
+  the window from the live clock); keying pre-window reads by node|handoffs handed threads each other's times.
+- Validation: probe 01 17 21 22 23 25 34 35 43 twice each (give-ups, target reached) against HG5A and DW5a; then
+  11741, 17897, bug1, 16, 17960 to verdict (CLOCK_SKEW in 11741 must still move its clocks). A schedule/time change:
+  a review agent before the merge, then the next full round.
+- If after one reasonable round a check still cannot reach its target, swap it (below) rather than dragging on.
 
-**e. bug2's lost key-id binding.** The cause is found: `Identity#requestInHand` (ffa0cb4d3). After
-an IPC door fault the request gets no receipt and stays "in hand". Every later thread start on that
-thread then appends `:NamenodeProtocol.getBlockKeys` to its name, so the SPS daemon's occurrence,
-which sends the key id, gets an address no plan instrumented.
-- Fix, on branch `hdfs-request-in-hand` (worktree `/bigtemp/vnr3ne/wt/gc-hdfs-request-in-hand`): a
-  message door's marker that comes out true clears the request in hand (`Identity#doorFaulted`),
-  called by a replay's mint (`RootMint`, which learns the marker's name from the scope map's FAULT
-  input, `marker`) and by a native plant (`RecordingPlant#marker`); a LOCAL_IO door's does not.
-- Live, snapshot `~/gc-run/rih1` (`99e8512d9`), image `vm-hg5`, `/bigtemp/vnr3ne/gc-out/hdfs-request-in-hand/
-  accept-RIH1-17899-bug{1,2,3}`: all three PASS, MARKER_FLIPPED by the target DataNode heartbeat's IPC
-  response door, confirmed, reproduced natively 10/10; cone.py without the FREE exemption (`0219d06b8`)
-  finds the moved root in the cone and 0 unbound boundary variables. bug2's one fatal boundary variable,
-  `data-encryption-key-id` at the DataNode's SASL server, is bound by its message family to the SPS's
-  producer; no session names a start by a faulted request's verb. Next: merge.
-- Done when bug2's witness binds the key id across the wire and `cone.py` passes without the
-  exemption.
+### 4. hdfs-11741: the key id's binding across the wire
+The witness is confirmed CLOCK_SKEW and its allKeys reads are complete (PS3), but the SASL data-encryption key id
+arrival came out FREE (PS1), bound (PS2, PASS) and HELD (PS3) in three runs: COMPOSE refuses the SASL sender arms
+("rests on a value the recording does not state") beside ~100 ASSOC_VIEW_UNORDERED map-view gaps. Find which unstated
+value refuses the sender's export arm and why it differs between runs; a view ordering the chain does not state must
+not refuse an arm whose value does not depend on the order. Evidence `/bigtemp/vnr3ne/gc-out/hdfs-address-shared/
+accept-PS{1,2,3}-11741`. Done when the key id is bound by its message family in all three offline and in one live run
+(report.py PASS, cone.py clean), and the `.smt` chain is checked by hand (allKeys `assoc_put` under the expiry `ite`s,
+the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the key id across the wire).
 
-**f. Gate.** Offline gate on V25, HG4's 46 and HG5A's 07/08/09/16/17/24/32:
-`/bigtemp/vnr3ne/ab/hdfs-decisive-verdicts/finish/` (`gate-head.sh`, `table.py`). Then a review agent
-re-reads the soundness batch before the merge into `system/hdfs`.
+### 5. The other open checks
+- **32**: `BlockPoolManager.get` reads `bpByBlockPoolId` (a map state) from a writer no row names, stating neither
+  version nor value; the path is refused. Diagnose like 11741's (`/bigtemp/vnr3ne/gc-out/diag-11741` is the method):
+  which mutation of the map ran outside every region, or why the map has no log at the read.
+- **07/08/09** (QJM, deep closures): rerun each ALONE on the whole cluster with a longer budget (`CASE_TIMEOUT_SECONDS`
+  10800, `launch-run.sh`), after `hdfs-compose-cost`; they must reach FIXED_POINT and COMPOSE. Then measure EXPLORE's
+  re-asked arms (07: 203 arms asked ~7.8 times under different dependence digests; 47 of 189 changed verdict) and its
+  1 GB `slots.jsonl` rewritten every round before changing anything.
+- **24 26 37** (budget-cut in HG5A), **33** (FREEZE fixed), **50** (array identity fixed): rerun.
+- The owner's bound rule (RULES): a declared bound may stop exploration only as a named, rare last resort. Mark an
+  end at the declared bound (REGION_PATH_WAVE_BUDGET_REACHED) visibly in result.json (`bounded: {by, detail}`),
+  report.py and triage.py; count such cases every round.
+- Scope batch 2 (the owner's top priority "让更多的都可翻转"): 29/30 recoveryId (a SCOPE boundary for system callees
+  out of scope; growth spends on demanded rows; follow receivers built by calls); 17 the lease grant state; 15/39 a
+  turn for tracked-write ordering (complete vs IBR); 07 an export capture where the QJM client sets the segment it
+  attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), so jn0 pairs by
+  HANDLE instead of an unattested arrival.
+- A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
+- **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate,
+  in this order: 05 or 06 (QJM output stream, NN->JN; clean UNSAT in HG2), then 04 (client ack timeout, CLOCK), then 38
+  or 45. Never 42, 44, 46, 47. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
 
-### 2. Finish HG6 = `hdfs-draw-sites` (one coding agent)
+### 6. Speed (PERFORMANCE.md §5)
+- SEED: implement the approved indexed class provider on `hdfs-seed-speed` (one listing per classpath dir per JVM,
+  first match in Soot's order, the same FoundFile; delete the per-dir lookup) and drop `project_classpath` from the
+  static pass's own `-cp`; gate `offline-ab AB_STAGES=SEED.static` over ~12 HDFS cases (byte identity + pass walls)
+  and one case alone with an strace count. Also drop the study-next class dirs from r3's classpath
+  (`experiments/hadoop/classpath.py` reads a stale surefire report).
+- The ledger's remaining ~1.6x over real use is step charges at their start heap (kept: a refused growth would end a
+  planner).
 
-The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites`; probe snapshot `~/gc-run/hds8`.
+### 7. The next round, then the end of HDFS
+1. After 1-4 land: a full round of the 46 on the merged body (`tools/adhoc/sweep.sh`, 2 heads/host, `PRUNE=0`, the
+   next name `HG8`); watch with `round-watch.sh`, `round-slow.sh <round> HG7` (or HG5A), stop cases at 80+ seed
+   give-ups only if the time model has not landed; verify each finished case with `round-verify.sh`.
+2. Cases the sweep's time limit cut: rerun alone on the whole cluster (a large closure must converge).
+3. Run each of the 46 alone on the whole cluster.
+4. Check every `.smt` by hand: causal chain, symbols, propagation, against the HDFS code; write the chain of each SAT
+   and a one-line reading of each UNSAT into STATUS.
+5. Merge `system/hdfs` into `main`; push only when the owner asks.
 
-**a. Canaries.** Rerun the 11741 and 17897 canaries to a verdict. On 11741, check whether the 3
-BLOCKING `TOPOLOGY_DIVERGENCE` gaps (seen with C1) survive without C1.
-
-**b. Gate and probes.** Run the V25 gate with `AB_HEAP_MB=4096`. Finish 17, 21, 43, 23, 25 and 35 to
-a verdict, plus 01, which was not rerun. Their give-ups at the stop, on `3a27177b3`:
-
-| case | give-ups |
-| --- | --- |
-| 16 | 3, and finished |
-| 22 | 10 |
-| 23 | 19 |
-| 24 | 2 |
-| 25 | 17 |
-| 32 | 19 |
-| 34 | 2 |
-| 35 | 18 |
-| 17 | 52 |
-| 21 | 17 |
-| 43 | 1 |
-
-17's 52 give-ups need a look of their own: with C1 and no hold it had 18 and finished.
-
-**c. Review and merge.**
-- A review agent reads the batch (schedule/identity: high risk).
-- Then merge into `system/hdfs`. The branch is based on `d916851fa`, before campaign-schedule, and
-  runs CONFIRM inline: keep `system/hdfs`'s CONFIRM-as-pool-job and its remote-wait fix
-  (`71df98a00`).
-- Delete `hds8` and `/bigtemp/vnr3ne/wt/gc-hdfs-seed-stalls` afterwards.
-
-### 3. The next live round of the 46
-
-Run it on `system/hdfs` with both merged: tree r3, image `vm-hg5` (unless a VM change lands). The
-command and the case list `rounds/HG5.cases` are in [OPERATIONS.md](OPERATIONS.md) §4.
-
-**Watch.** Use the round watcher. Compare every case's time with HG4's. Stop and debug any case far
-slower than its history.
-
-**Read each result.**
-- **UNSAT**: `candidate.smt2` is the full free-root formula, and a standalone z3 re-solve gives
-  unsat.
-- **SAT**: confirmed, and the chain is checked against the code.
-- **RUN_DEFECT**: a bug to fix.
-
-### 4. The remaining HDFS defects (after HG6), by class
-
-**Start-up family 21–25, 34, 35.** What remains after HG6. Each one's seed replay must reach its
-target with few give-ups.
-
-**Clock/draw class 01, 17, 43.**
-
-**Performance.**
-- QJM 07/08/09 (~82 min) and 15 (~61 min): obligations refused at planning (ADMISSION_GAP) dominate
-  EXPLORE. Cut them with a general rule.
-- 16: a z3 timeout in the re-compose after a refutation.
-- 07: self-contradictory paths.
-
-**Scope batch 2** (the owner's top priority: "让更多的都可翻转").
-- 29/30: recoveryId. A SCOPE boundary for system callees out of scope; growth spends on demanded
-  rows; follow receivers built by calls.
-- 17: the lease grant state.
-- 15/39: a turn for tracked-write ordering (complete vs IBR).
-- 07 (later, SEED): an export capture where the QJM client sets the segment it attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), and jn1's own response export of it, so jn0's attach pairs by HANDLE instead of arriving unattested (hdfs-wire-half, `f4a325af7`).
-
-**A possible flake.** Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
-
-**Swap the too-challenging.** A check still a RUN_DEFECT after a reasonable fix round is replaced
-by an alternate, in this order:
-1. 05 or 06 (QJM output stream, NN→JN control plane; clean UNSAT in HG2).
-2. Then 04 (client ack timeout, CLOCK).
-3. Then 38 or 45.
-
-Never use 42, 44, 46 or 47. Update `checks.tsv`, `selection.txt` (branch `study`) and the
-per-system table with the reason.
-
-### 5. The end of HDFS
-
-1. Run each of the 46 cases alone on the whole cluster.
-2. Check every `.smt` by hand: causal chain, symbols, propagation. Write the chain of each SAT and a
-   one-line reading of each UNSAT into STATUS.
-3. Merge `system/hdfs` into `main`. Every system branch takes the body from there.
+### 8. Cleanup still owed (RULES: every change deletes what it replaces)
+- Cleanup batch 1, phase 2 (`brief-cleanup-1.md`): the items in files that were busy (MapFields.safe/Text.safe copies,
+  LineageScan's classFiles copy, ScheduleLog.prefixFile, run_engine.sh's `input_flag=-j` branch, the test-only
+  accessors where a test can use the real path), `src/test/resources/external-callers.txt`'s stale rows (they point at
+  old /opt checkouts; current trees call MessageDoors, not CausynthTraceRecorder), the forwarding layers (the door API
+  is four hops: tree -> shim -> MessageDoors -> CausynthTraceRecorder -> RuntimeTraceContext; MessageDoors should call
+  RuntimeTraceContext directly), CausynthTraceRecorder's ~1,100 lines of offline aggregation into its own class,
+  CausynthPipeline's weaves apart from analysis orchestration, DependencyRole (a digest change).
+- The VM's dead natives and `exportLeaf`/`mintLeaf` with the next VM build (STATE §3).
+- Merged branches and their worktrees, stale snapshots (STATE §2-§3), `/bigtemp/vnr3ne/readout-stream/` (4.2 GB) once
+  its numbers are in STATUS, finished agents' `gc-out` dirs, `/bigtemp/vnr3ne/gc-out/diag-11741` after 11741 passes.
 
 ## Solr (next; `system/solr` = main today)
 
-**1. Bring the body.** Merge `main` (with the HDFS body) into `system/solr`. Rebase
-`solr-bug-reindex` onto it and fix its solr-18413 regression first:
+**1. Bring the body.** Merge `main` (with the HDFS body) into `system/solr`. The WIRE-CODEC runtime is gone from the
+body; check that no Solr tree hook calls a removed door (`MessageDoors` payload/bytes overloads; the 3-arg
+`stored`/`fetched` stay). Close the `MessageDoors.consumed` gap (a consumed Overseer item states its message key).
+Rebase `solr-bug-reindex` onto it and fix its solr-18413 regression first:
 - The seed replay stalls 103,812 times. A store-write slot is held while the Overseer's
   `waitForCoreAdminAsyncCallToComplete` poll outruns its recorded WAKE count. Read the jstacks in
-  `gc-out/sbr/evidence/`.
+  `gc-out/sbr/evidence/` (the time model of HDFS §3 may cover it).
 - Then SBR26b: give SEED's trace aggregation the heap a 2.1 GB trace needs, or stream it.
 
-**2. Mark the checks.** Mark the 13 checked study points in one Solr tree branch, from
-`/bigtemp/vnr3ne/analysis/study-2026-10-04/solr.md` and `SELECTION.md`:
+**2. Mark the checks.** Mark the 13 checked study points in one Solr tree branch, from `docs/checks/SOLR.md` and
+`SELECTION.md`:
 
 ```
 05 07 09 10 13 14 19 21 22 31 38 39 40
 ```
 
-22 is solr-18406's throw (already marked). Each point gets its cluster test as the workload and an
-experiment directory like `experiments/hadoop/hdfs-adhoc` (a `checks.tsv`).
+22 is solr-18406's throw (already marked). Each point gets its cluster test as the workload and an experiment
+directory like `experiments/hadoop/hdfs-adhoc` (a `checks.tsv`).
 
-**3. The five admitted bugs:**
-- migrate-buffer-leak #17
-- overseer-lock-leak #50
-- snapshot-no-active #16
-- restore-construction #26
-- tra-start-overwrite #20
-
-For each: the marker, the workload (an existing test where one reaches it), the doors or roots its
-counterfactual needs (`VERIFIED.md` has each one's chain and counterfactual), then a dev run.
+**3. The five admitted bugs:** migrate-buffer-leak #17, overseer-lock-leak #50, snapshot-no-active #16,
+restore-construction #26, tra-start-overwrite #20. For each: the marker, the workload (an existing test where one
+reaches it), the doors or roots its counterfactual needs (`docs/checks/VERIFIED-BUGS.md`), then a dev run.
 
 **4. reindex-cleanup (#04).** The witness is #2's post-alias `setData` door faults.
 
-**5. Run the group.** All 20 cases with no regression of solr-18406 and solr-18413, `.smt` checks,
-then exclusive runs.
+**5. Run the group.** All 20 cases with no regression of solr-18406 and solr-18413, `.smt` checks, then exclusive
+runs.
 
 ## HBase (`system/hbase` = main today)
 
-**1. Settle `hbase-startup`'s two design questions** (the lead decides; see
-[STATE.md](STATE.md) §2):
-- An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops).
-  They must not inherit their racing creator's frames.
-- Message-bound exports for a value exported on one thread and sent by another after a queue. This
-  is WIRE-CODEC's message-bound exports, so align with `wire-codec-p1`.
+**0.** Before any HBase run on the new body: `hbase-unified` `CausynthRpc.java:61-62` drops `, call.param` (the payload
+door is gone with WIRE-CODEC); rebuild hbase-client.
+
+**1. Settle `hbase-startup`'s two design questions** (the lead decides; see [STATE.md](STATE.md) §2):
+- An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops). They must not
+  inherit their racing creator's frames.
+- Message-bound exports for a value exported on one thread and sent by another after a queue (what WIRE-CODEC's
+  message-bound exports did; the body no longer carries WIRE-CODEC, so design it on the current WIRE path).
 
 **2. HBase #14 (master-active-time) to a confirmed CLOCK witness.**
 
-**3. Mark the 17 checked study points:**
+**3. Mark the 17 checked study points** (`docs/checks/HBASE.md`):
 
 ```
 04r 07r 08 10 11 12 13 14 15 19 20 21 22 24 31 34 37
 ```
 
-04 and 07 are re-sited to the server: `AbstractStateMachineTableProcedure.java:163` and
-`SnapshotManager.java:1046`. Tables are in `hbase.md`.
+04 and 07 are re-sited to the server: `AbstractStateMachineTableProcedure.java:163` and `SnapshotManager.java:1046`.
 
-**4. The two admitted bugs.**
-- backup-lock-reply-lost: needs a RESPONSE door on HBase RPC (`checkAndMutate` with NO_NONCE).
-- ns-rsgroup-removal: STATE re-pairing of `removeRSGroup`'s namespace read.
+**4. The two admitted bugs.** backup-lock-reply-lost: needs a RESPONSE door on HBase RPC (`checkAndMutate` with
+NO_NONCE). ns-rsgroup-removal: STATE re-pairing of `removeRSGroup`'s namespace read.
 
 **5. Run the group of 20.**
 
 ## ZooKeeper (`system/zookeeper` = main today)
 
-**1. Merge `hb-schedule` + `hb-sync`.**
-- Run the offline gate on V25.
-- Live runs of quota-init, election-offer and 11741, comparing arm counts and refutations with V25.
-- The ZooKeeper tree with the RESPONSE door is `gc/zk-unified-hb` `47ddc8b36`.
+**1. Merge `hb-schedule` + `hb-sync`** onto the new body. Run the offline gate on V25; live runs of quota-init,
+election-offer and 11741, comparing arm counts and refutations with V25. The ZooKeeper tree with the RESPONSE door is
+`gc/zk-unified-hb` `47ddc8b36`.
 
-**2. A quorum adapter.** Every selected ZooKeeper study test is a quorum test. Register each quorum
-peer as a node; open the window once the quorum is up.
+**2. A quorum adapter.** Every selected ZooKeeper study test is a quorum test. Register each quorum peer as a node;
+open the window once the quorum is up.
 
-**3. Mark the 10 checked points:**
+**3. Mark the 10 checked points** (`docs/checks/ZOOKEEPER.md`):
 
 ```
 01 02 03 04 06 07 10 11 12 13
 ```
 
-05 is a dead throw; 08 and 09 have no path. Tables are in `zookeeper.md`.
+05 is a dead throw; 08 and 09 have no path.
 
-**4. zk-bugs-container-reuse (#33).** A self-written ClientBase test; STATE re-pairing of the
-client's node-map lookup to the cleanup's delete, the election-offer mechanism.
+**4. zk-bugs-container-reuse (#33).** A self-written ClientBase test; STATE re-pairing of the client's node-map lookup
+to the cleanup's delete, the election-offer mechanism.
 
 **5. Run the group of 13.**
 
 ## Cross-cutting (engine), when a system needs it
 
-**WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** It needs an 11741 canary
-verdict and a chain check, then its
-round. The Solr `wire.jsonl` (P3) comes after `solr-bug-reindex`. P4 retires the WIRE_FLOW
-machinery.
+**WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** Resume only when a system's chain needs a
+codec hole (a value carried inside an opaque payload); then rebase it onto the body, which deleted its runtime.
 
-**VM performance.** The VM sends each expression node once per channel (STATUS open item 41). A plan
-budget should be derived from the seed's measured cost.
-
-**C1 (clock replay).** Only if a later case needs it, with the start-up time model in
-`hdfs-clock-replay`'s commit message.
-
-**Cleanup.**
-- The merged branches and their worktrees ([STATE.md](STATE.md) §2).
-- The stale snapshots in `~/gc-run`.
-- `/bigtemp/vnr3ne/readout-stream/` (4.2 GB of measurement data) once its numbers are in STATUS.
-- `gc-out` dirs of finished agent runs.
+**VM performance.** The VM sends each expression node once per channel (STATUS open item 41). A plan budget should
+be derived from the seed's measured cost.

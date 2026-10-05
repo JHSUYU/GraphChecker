@@ -13,6 +13,9 @@ code disagree, the code is right and the document is fixed.
 | [IDENTITY.md](IDENTITY.md) | How an event is named the same way in every run. |
 | [CONTRACT-SPEC.md](CONTRACT-SPEC.md) | The rows a replay publishes and the rules they obey. |
 | [VM.md](VM.md) | The concolic JVM (OpenJDK 8 Zero) under `third_party/OpenJDK-Concolic-Execution-Engine`. |
+| [PERFORMANCE.md](PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once (the ledger, measured charges, the shared pool, head steps), why cases were slow, how to debug a slow case. |
+
+The checks themselves (every point of the four systems, with its live state) are in [../checks/README.md](../checks/README.md).
 
 ## The question GraphChecker answers
 
@@ -78,20 +81,31 @@ startup window.
 **2. Identity** ([IDENTITY.md](IDENTITY.md)). An occurrence is (node, region, context, index).
 - A context is a Root (a tick, a client step, a WAKE turn), an Anchor (the producer endpoint of
   the message it serves) or Lost.
-- The index is the frame path from the root, with per-site invocation counts.
+- The index is the frame path from the root, with per-site invocation counts; a count inside a
+  running occurrence is the occurrence's, never restarted by a root hop opened inside it (a tick).
+- A planned occurrence is answered by shape: an activation of a planned region on the same node,
+  under a chain of the same shape that differs only in counts, takes the earliest unanswered task
+  of that shape and its planned address (`Identity#answer`, a DIAGNOSTIC ADDRESS_UNSTABLE names
+  where it ran) -- a message the clock decides which heartbeat carries (11741's key update).
 - Nodes register through the adapters. Threads are attributed by explicit scope, by registered
   objects on their frames, by inherited source, or by their starter.
-- A request's door names its verb (the RPC operation).
+- A request's door names its verb (the RPC operation); a transport door's fault ends the request
+  in hand, as a receipt does.
+- A node startup and a daemon's turn first end the exchange their thread served
+  (`MessageDoors#beginTick`).
 - Node-startup brackets cover clusters that are built or restarted inside the window.
 - A startup step fixes the order in which DataNodes register (the NameNode side of
-  `registerDatanode`).
+  `registerDatanode`); every marked startup pass is held, whatever either window's state.
 - The declared occurrence must be rooted in the window.
 
 **3. PLAN** (`RuntimeSelectedRegionFinalizer`, `DemandWalk`) plans the closure around the
 declared target `(r,c)`: the occurrences that store, or decide against, what the engine moves.
 - Static writers are never dropped.
+- Equivalent deciders of one demanded store site (same region, context shape, call path and
+  recorded events with read versions, no demanded-cell access between them) are planned once per
+  class (a polling loop's 1406 turns -> 55 classes, hdfs-adhoc-16).
 - Over `schedule_max_jobs`, the recorded writers come first and the rest is cut, named
-  `PLAN_CLOSURE_CUT`.
+  `PLAN_CLOSURE_CUT` (BLOCKING).
 
 **4. INSTRUMENT** weaves region hooks, doors (FAULT markers on both directions), the demanded
 LOCAL_IO doors, loop bounds, random draws and timed waits into the case's classes. The result is
@@ -108,10 +122,11 @@ version it observed.
 *The schedule.* The recording's prefix is enforced: each event waits for its slot.
 - The stall rules release what the run will not make. A watchdog gives up after 15 s, and each
   give-up is logged as "did not happen".
-- WAKE turns are never sooner than recorded. An empty turn holds no slot (T1).
+- WAKE turns are never sooner than recorded.
 - The scope rules R1–R4 apply (anchors of unstated SENDs, the putter's scope, per-hop start
   frames, giving up own-context slots).
-- Recorded random draws are replayed.
+- Random draws are replayed, keyed by the schedule context, the site and a count (stable under
+  a GROW). Clock VALUES are not yet replayed: the start-up/clock family's time model (TODO).
 
 *Read-out.* Read-out pages stream to the publication thread as they are captured.
 
@@ -126,7 +141,8 @@ version it observed.
   `maxFlipsPerPath` per round, 3 deep.
 - `FlipQuery` asks z3 for the nearest world: roots, clock skews, handoff answers, writer choices
   including a location's INITIAL, and the run-as-it-happened arm when reads saw several writes.
-- A SAT model becomes an obligation replay that plants that world. The replay is judged
+- An obligation is a SOLVE (z3 on a host's warm solver) and, only when SAT, a REPLAY that plants
+  that world, queued first; it stays in flight until its replay lands. The replay is judged
   ADMITTED, NOT_ADMITTED (by name), UNSAT or ADMISSION_GAP.
 - GROW re-runs extend the closure.
 - The first replay that observes the fatal at the declared occurrence ends the exploration: the
@@ -136,21 +152,32 @@ version it observed.
 - One formula covers every admitted session. Each message and each shared-state read gets a
   family of writer arms (exactly one is chosen), each guarded by the path condition that produced
   it. Eligibility is one rule (`Arms#eligible`).
-- What is symbolic stays symbolic. A value that moves with a root is a FREE leaf. A value nothing
-  moves is a constant, listed in `concrete[]` with what it moves with.
+- What is symbolic stays symbolic. A value whose stated producer moves (by `movers()`, the one
+  predicate) is a FREE leaf; a value no row states the producer of is HELD at its recorded value,
+  named in `concrete[]` ("producer unstated"); a container state the VM marked incomplete is
+  refused (an unhooked mutation came between). Every refused path is listed (`refusedPaths`).
+- The run as recorded is always a world of the formula (a writer whose block the run broke gets
+  the observed arm); a path contradicting its own run is PATH_SELF_CONTRADICTORY.
+- WIRE pairing: by the VM handle, else by (correlation, half, port) of the very message the attach
+  received; an element a message did not carry pairs with nothing and is named.
 - `candidate.smt2` is the full formula: the disjunction of admitted paths, roots free over their
   domains, the fatal arm asserted. The verdict is z3 on exactly that file.
 - The claims:
   - **SAT_CANDIDATE**, with finding kind MARKER_FLIPPED, CLOCK_SKEW, STATE_/MESSAGE_PAIRING_FLIPPED
     or FORMULA_SAT, and `polarityDecides`.
   - **UNSAT_CLOSED**.
-  - **RUN_DEFECT** (a solver timeout, CONFIRM with no verdict, a target never reached).
-- A CONFIRM refutation excludes the claim's clock region from every later composition.
+  - **RUN_DEFECT** (a solver timeout, CONFIRM with no verdict, a target never reached, an
+    exploration cut while it owed arms: EXPLORATION_CUT, judged once at EMIT).
+- A CONFIRM refutation excludes the claim's clock region from every later composition; an UNSAT
+  whose unsat core names a refutation states `restsOnRefutations`.
 
 **9. CONFIRM** replays the witness world from the recording. It holds the chosen edges (writer
 ORDER, STATE pairings including INITIAL, WIRE deliveries) and checks that the anchor observes the
-fatal. It is strict: every substitution is named. In a campaign it is a pool job on any host. The
-witness is chosen by attempt order, not finish time.
+fatal. It is strict: every substitution is named. Only a replay that ran the model (every moved
+root planted) and did not reach the fatal refutes; a refused confirmation (CONFIRM_MISMATCH, a
+plant not applied, no verdict) is a RUN_DEFECT and its model is excluded from later attempts
+(`refused_models.jsonl`). In a campaign it is a pool job on any host. The witness is chosen by
+attempt order, not finish time.
 
 **10. EMIT / REPRODUCE** write `candidate.smt2`, `claim.json`, `confirm.json` and `result.json`
 (with `concrete[]`). Native runs then plant the fault markers. Acceptance is
@@ -159,6 +186,8 @@ fatal boundary variable is unbound).
 
 **11. The campaign driver** (`run_engine.sh`).
 - One head per case. Heavy steps go wherever the host ledger has room (at most 70% of a lift's
-  memory, with leased charges).
-- Obligations stream over every lift. A sweep caps each case's share.
+  memory, with leased charges); a head holds its measured step need.
+- Replays are charged the campaign's measured need. Obligations stream over every lift; a sweep's
+  cases share one pool. Details and pitfalls: [PERFORMANCE.md](PERFORMANCE.md).
 - The budget's reserve covers COMPOSE, EMIT, CONFIRM and REPRODUCE.
+- WIRE-CODEC (codec holes in opaque payloads) is not in the body: branch `wire-codec-p1`.

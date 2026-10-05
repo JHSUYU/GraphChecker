@@ -357,11 +357,11 @@ public final class SessionReader {
     }
 
     /**
-     * The occurrences this run answered by their question (IDENTITY §9):
-     * the declared address each of its {@code ADDRESS_UNSTABLE} rows names
+     * The occurrences this run answered by their shape (IDENTITY §9): the
+     * planned address each of its {@code ADDRESS_UNSTABLE} rows names
      * ({@code runtime.RowRuntime#answered}).  Each ran under a chain of the
-     * declared one's shape whose counts differ, so whom it was paired with
-     * is that chain's, not the recorded one's.
+     * planned one's shape whose counts differ, so whom it was paired with is
+     * that chain's, not the recorded one's.
      */
     public Set<String> answered() {
         Set<String> occurrences = new LinkedHashSet<String>();

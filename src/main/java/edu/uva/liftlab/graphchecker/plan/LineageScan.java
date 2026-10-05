@@ -18,11 +18,11 @@ import java.util.stream.Stream;
 
 /**
  * The lineage scope: every application class that hands work to another thread,
- * runs it, waits/signals, or makes an unseeded draw ({@link
- * WorkStartSites#UNSEEDED_DRAWS}: the weave seeds it, so a replay draws what
- * its recording drew wherever the class sits; HDFS's NetworkTopology, which
- * places a pipeline's DataNodes by ThreadLocalRandom, neither hands off work
- * nor is analysed).
+ * runs it, waits/signals, draws or hands a Random to a JDK method ({@link
+ * WorkStartSites#draws}: the weave keys each draw by its site, so a replay
+ * draws what its recording drew wherever the class sits; HDFS's
+ * NetworkTopology, which places a pipeline's DataNodes by ThreadLocalRandom,
+ * neither hands off work nor is analysed).
  * A lineage hole puts everything after it under
  * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
  * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
@@ -118,9 +118,8 @@ public final class LineageScan {
                                 Type.getArgumentTypes(calleeDescriptor)
                                         .length)
                                 || WorkStartSites.mayWait(callee)
-                                || WorkStartSites.UNSEEDED_DRAWS.contains(
-                                        owner + "." + callee
-                                                + calleeDescriptor)) {
+                                || WorkStartSites.draws(owner, callee,
+                                        calleeDescriptor)) {
                             found[0] = true;
                         }
                     }

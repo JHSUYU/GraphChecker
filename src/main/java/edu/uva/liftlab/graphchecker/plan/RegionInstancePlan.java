@@ -24,8 +24,9 @@ public final class RegionInstancePlan extends PlanRow {
             ConfiguredSourcePhaseContract.PLAN_FIELD,
             CommunicationHandoffSpec.FIELD,
             LoopBoundPolicy.PLAN_FIELD,
-            RuntimeSelectedRegionFinalizer.QUESTION_SHAPE,
-            RuntimeSelectedRegionFinalizer.QUESTION_RECORDED
+            RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE,
+            RuntimeSelectedRegionFinalizer.RECORDED_BESIDE,
+            DeclaredSiteCapture.ROOT_CALL_ID
     };
     private final Goal goal;
 

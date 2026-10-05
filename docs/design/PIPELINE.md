@@ -377,9 +377,9 @@ schedule) and:
    world's pairing is a new slot. A slot stands on the session that opened it: the slots of a
    session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
    where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
-   replay answered by its question (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the declared
+   replay answered by its shape (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the planned
    address under another chain, so its pairings are that chain's: they open slots beside the
-   declared occurrence's and replace none, whichever session lands first, since each slot is
+   planned occurrence's and replace none, whichever session lands first, since each slot is
    indexed by whether its opening session answered its consumer's occurrence; only another
    answered pairing fills such a slot.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
