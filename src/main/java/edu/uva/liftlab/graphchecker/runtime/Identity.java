@@ -368,6 +368,26 @@ public final class Identity {
         }
 
         /**
+         * THE request's level (IDENTITY §3): the k-th request at its message
+         * site (which names its verb) in the enclosing level under the root
+         * hop that owns the count ({@link #nextSiteEvent}), as a start made
+         * with a request in hand is counted per verb: a request of another
+         * verb -- a heartbeat a replay inserted, a call a fault added --
+         * renames no later one (hdfs-adhoc-52 SL1-3: the test's every
+         * {@code Client.call@k} counted all its RPCs).  A retry (attempt
+         * {@code a}) is its original's k at {@code <site>#retry<a>}; one
+         * whose original this level did not count (a retry on another
+         * thread) is counted at that site, never a silent 0.
+         */
+        private Frame requestFrame(String site, int attempt) {
+            if (attempt <= 0) return Frame.of(site, nextSiteEvent(site));
+            String retry = site + "#retry" + attempt;
+            Integer made = top().events(countingRoot()).get(site);
+            return made == null ? Frame.of(retry, nextSiteEvent(retry))
+                    : Frame.of(retry, made - 1);
+        }
+
+        /**
          * The root hop an event's count is kept under: the one the
          * occurrence running here was opened or named under ({@link
          * Region#root}), else the current root hop.  An occurrence's address
@@ -740,6 +760,36 @@ public final class Identity {
     }
 
     /**
+     * A request of {@code verb} starts on this thread, attempt {@code
+     * attempt} of it ({@code MessageDoors#requestStarting}): it is in hand
+     * from here ({@link #requestInHand}) and opens a level of its own at
+     * {@code site}, its message site ({@link State#requestFrame}), whatever
+     * of the client the case's scope frames.  A request naming no verb is
+     * only in hand.
+     *
+     * @return the token {@link #requestEnded} closes its level by, or 0
+     */
+    static long requestStarting(String site, String verb, int attempt) {
+        requestInHand(verb);
+        if (CURRENT.get().requestVerb.isEmpty()) return 0L;
+        State state = state();
+        return enter(state, state.requestFrame(JvmNames.stable(site),
+                attempt), null);
+    }
+
+    /**
+     * The request {@link #requestStarting} opened is over, answered or
+     * failed: its level closes and it is in hand no more, so a call that
+     * failed before its send (a connection refused) names no later start
+     * (the hdfs-17899-bug2 class, {@link #doorFaulted}).
+     */
+    static void requestEnded(long token) {
+        if (token <= 0L) return;
+        exitFrame(token);
+        requestInHand("");
+    }
+
+    /**
      * A fault marker answered true on this thread, where a run decides one
      * (a replay's mint, {@link RootMint}; a native reproduction's plant,
      * {@link RecordingPlant#marker}): a message door's fault ends the
@@ -902,10 +952,15 @@ public final class Identity {
     public static long enterFrame(String callSiteId, Object receiver) {
         State state = state();
         String site = JvmNames.stable(Text.safe(callSiteId));
-        int iteration = state.nextSiteEvent(site);
+        return enter(state, Frame.of(site, state.nextSiteEvent(site)),
+                receiver);
+    }
+
+    /** Opens one level at {@code frame}, journalled and, under CONFIRM's
+     *  order gate, entered. */
+    private static long enter(State state, Frame frame, Object receiver) {
         long token = TOKENS.getAndIncrement();
-        state.levels.add(new Level(Frame.of(site, iteration), token,
-                receiver));
+        state.levels.add(new Level(frame, token, receiver));
         state.journal();
         if (Confirmation.ordering()) {
             String activation = activation(state, state.depth());
