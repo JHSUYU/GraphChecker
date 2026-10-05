@@ -203,6 +203,13 @@ public class ClocksTest {
         Clocks.waited(lease);
         atCap("and never past the cap", first + 5000L * MS + TICK,
                 Clocks.nanos());
+        // A turn that ends a wait may leave no line standing: no cap.
+        Clocks.free();
+        long[] free = Clocks.waitBegins(60_000L * MS);
+        Clocks.timedOut(free);
+        Clocks.waited(free);
+        assertTrue("with no cap, its deadline still",
+                Clocks.nanos() >= free[0] + 60_000L * MS);
     }
 
     /** What another thread's clock reads now. */
