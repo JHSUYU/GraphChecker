@@ -947,8 +947,7 @@ public final class ObligationFactory {
 
     /**
      * A model's value of one control as a replay is answered with it: a
-     * String's (a codec's STR hole, WIRE-CODEC §6.4) as its JSON string
-     * literal, which the replay plants verbatim, the way a read row spells
+     * String's as its JSON string literal, which the replay plants verbatim, the way a read row spells
      * a String; any other sort's as the model prints it.  Null when a
      * String's value is no string literal.
      */

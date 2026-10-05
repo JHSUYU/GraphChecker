@@ -29,8 +29,7 @@ import java.util.regex.Pattern;
  * ({@value #RESOURCE}) rather than declared per case: a library is the same
  * wherever a system calls it (SYMBOL-SCOPE §4.2).  One row per line; each
  * states {@code schemaVersion} 1 and its {@code kind}, and is keyed by where
- * it was read ({@code library-catalog.jsonl:<line>}), the shape
- * {@code contract.WireDeclarations} reads declaration rows in.  A malformed
+ * it was read ({@code library-catalog.jsonl:<line>}).  A malformed
  * row, a member its kind does not have and a row stated twice are refused,
  * naming the row, never skipped.
  *

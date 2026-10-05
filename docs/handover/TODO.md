@@ -133,6 +133,7 @@ target with few give-ups.
   rows; follow receivers built by calls.
 - 17: the lease grant state.
 - 15/39: a turn for tracked-write ordering (complete vs IBR).
+- 07 (later, SEED): an export capture where the QJM client sets the segment it attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), and jn1's own response export of it, so jn0's attach pairs by HANDLE instead of arriving unattested (hdfs-wire-half, `f4a325af7`).
 
 **A possible flake.** Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 
@@ -237,7 +238,8 @@ client's node-map lookup to the cleanup's delete, the election-offer mechanism.
 
 ## Cross-cutting (engine), when a system needs it
 
-**WIRE-CODEC (`wire-codec-p1`).** It needs an 11741 canary verdict and a chain check, then its
+**WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** It needs an 11741 canary
+verdict and a chain check, then its
 round. The Solr `wire.jsonl` (P3) comes after `solr-bug-reindex`. P4 retires the WIRE_FLOW
 machinery.
 

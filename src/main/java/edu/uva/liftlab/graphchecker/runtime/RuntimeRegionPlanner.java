@@ -10,6 +10,7 @@ import com.google.gson.JsonPrimitive;
 import com.google.gson.ToNumberPolicy;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import edu.uva.liftlab.graphchecker.causynth.RecordedAccesses;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -31,8 +32,12 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -168,6 +173,7 @@ public final class RuntimeRegionPlanner {
         stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
                 trace);
         stampFieldOwners(activationByCall.values(), trace, fieldCalls);
+        stampSignatures(activationByCall.values(), trace);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
@@ -223,6 +229,128 @@ public final class RuntimeRegionPlanner {
                         referents);
             }
         }
+    }
+
+    /**
+     * States on each activation what a flip query of it reads, as one digest
+     * ({@link RuntimeSelectedRegionFinalizer#SIGNATURE}), and the seqs it ran
+     * between ({@link RuntimeSelectedRegionFinalizer#FIRST_SEQ}, {@link
+     * RuntimeSelectedRegionFinalizer#LAST_SEQ}).  The digest is of its events
+     * in recorded order: each method it entered and on which object, its
+     * calls with their arguments and returns, its decisions with their
+     * outcomes, its messages, and each field access with the object, the
+     * value, and for a read its version ({@link FieldAccessEvent#version}).
+     * No call or event id enters it, so two turns of a loop that did the
+     * same on the same state digest alike; a message's exchange leg does,
+     * so two occurrences that exchanged messages never do.
+     */
+    private static void stampSignatures(
+            Collection<Map<String, Object>> activations, TraceIndex trace) {
+        for (Map<String, Object> activation : activations) {
+            List<Map.Entry<Long, String>> events = new ArrayList<>();
+            for (Long call : MapFields.longValues(
+                    activation.get("callIds"))) {
+                MethodEvent entered = trace.methodByCall.get(call);
+                if (entered != null) {
+                    events.add(new AbstractMap.SimpleEntry<>(
+                            entered.seq, "M " + entered.method + " "
+                                    + entered.objectId));
+                }
+                for (RuntimeEvent event : trace.runtimeByCall.getOrDefault(
+                        call, Collections.<RuntimeEvent>emptyList())) {
+                    events.add(new AbstractMap.SimpleEntry<>(
+                            event.seq, "R " + event.kind + " "
+                                    + event.siteId + " "
+                                    + event.declaredCallee + " "
+                                    + event.argumentIndex + " "
+                                    + event.runtimeType + " "
+                                    + event.objectId + " "
+                                    + event.primitiveValue + " "
+                                    + event.outcome + " "
+                                    + event.successorIndex + " "
+                                    + event.branchKind + " "
+                                    + event.switchCaseKeys));
+                }
+                for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
+                        call, Collections.<FieldAccessEvent>emptyList())) {
+                    events.add(new AbstractMap.SimpleEntry<>(
+                            event.seq, "F " + event.kind + " "
+                                    + event.siteId + " " + event.field + " "
+                                    + event.receiverObjectId + " "
+                                    + event.valueObjectId + " "
+                                    + event.primitiveValue + " "
+                                    + event.version));
+                }
+                for (ProtocolEvent event : trace.protocolByCall.getOrDefault(
+                        call, Collections.<ProtocolEvent>emptyList())) {
+                    events.add(new AbstractMap.SimpleEntry<>(
+                            event.seq, "P " + event.direction + " "
+                                    + event.transport + " "
+                                    + event.exchangeLeg() + " "
+                                    + event.declaredCallee + " "
+                                    + event.producerEndpointId));
+                }
+            }
+            if (events.isEmpty()) continue;
+            events.sort(Map.Entry.comparingByKey());
+            MessageDigest digest = sha256();
+            for (Map.Entry<Long, String> event : events) {
+                digest.update((event.getValue() + "\n").getBytes(
+                        StandardCharsets.UTF_8));
+            }
+            StringBuilder hex = new StringBuilder();
+            for (byte value : Arrays.copyOf(digest.digest(), 16)) {
+                hex.append(String.format("%02x", value & 0xff));
+            }
+            activation.put(RuntimeSelectedRegionFinalizer.SIGNATURE,
+                    hex.toString());
+            activation.put(RuntimeSelectedRegionFinalizer.FIRST_SEQ,
+                    events.get(0).getKey());
+            activation.put(RuntimeSelectedRegionFinalizer.LAST_SEQ,
+                    events.get(events.size() - 1).getKey());
+        }
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    /**
+     * Every recorded access of a cell ({@link RecordedAccesses}), each with
+     * its seq, its call and whether it stored: a field read or store, and a
+     * call at a store site that mutates through the call ({@code
+     * storingCalls}) or at a site that returns a field ({@code fieldCalls}).
+     *
+     * @param storingCalls call site -> the cell a call there stores
+     *     ({@link RuntimeSelectedRegionFinalizer#storingCalls})
+     * @param fieldCalls call site -> the field a call there accesses
+     *     ({@link RuntimeSelectedRegionFinalizer#fieldAccessingCalls})
+     */
+    static RecordedAccesses recordedAccesses(
+            Collection<FieldAccessEvent> fields,
+            Collection<RuntimeEvent> runtime,
+            Map<String, String> storingCalls,
+            Map<String, String> fieldCalls) {
+        RecordedAccesses.Builder accesses = new RecordedAccesses.Builder();
+        for (FieldAccessEvent event : fields) {
+            accesses.add(event.field, event.seq, event.callId,
+                    "FIELD_WRITE".equals(event.kind));
+        }
+        for (RuntimeEvent event : runtime) {
+            if (!"CALL_SITE_ENTER".equals(event.kind)) continue;
+            String stored = storingCalls.get(event.siteId);
+            String field = fieldCalls.get(event.siteId);
+            if (stored != null) {
+                accesses.add(stored, event.seq, event.callId, true);
+            } else if (field != null) {
+                accesses.add(field, event.seq, event.callId, false);
+            }
+        }
+        return accesses.build();
     }
 
     /** One recorded entry that opens an occurrence of one region. */
@@ -1189,6 +1317,11 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
+            // The equivalent deciders this occurrence is planned for.
+            String deciders = RuntimeSelectedRegionFinalizer.DECIDER_CLASS;
+            if (seed.containsKey(deciders)) {
+                plan.put(deciders, seed.get(deciders));
+            }
             // The declaration, resolved once by the finalizer, the
             // occurrence's shape and those the recording opened beside it
             // under that shape; PLAN and the replay read them, the replay in
@@ -2082,6 +2215,15 @@ public final class RuntimeRegionPlanner {
         /** Not final: renamed to its content-addressed name at load. */
         int valueObjectId;
         final String primitiveValue;
+        /**
+         * Not final, stamped by {@code TraceIndex}: how many recorded
+         * stores of this (field, object) came before it, itself included
+         * for a store.  Two reads with equal counts had no recorded store
+         * between them: they read one version, the one the replay pairs
+         * them with.  A store the weave does not record (a JDK body's)
+         * moves no count, which is why a signature states the value too.
+         */
+        int version;
 
         FieldAccessEvent(long seq, String kind, String method, long callId,
                          int unitIndex, String siteId, String field,
@@ -2182,6 +2324,9 @@ public final class RuntimeRegionPlanner {
         /** Each frame's recorded field accesses, in seq order. */
         private final Map<Long, List<FieldAccessEvent>> fieldsByCall =
                 new HashMap<>();
+        /** Each frame's recorded message events, in seq order. */
+        private final Map<Long, List<ProtocolEvent>> protocolByCall =
+                new HashMap<>();
         /** seq -> unique owning callId, or the ambiguity sentinel. */
         private final LongLongMap eventCallIdBySeq = new LongLongMap();
 
@@ -2205,13 +2350,19 @@ public final class RuntimeRegionPlanner {
             }
             for (ProtocolEvent event : sorted(protocolEvents,
                     value -> value.seq)) {
+                protocolByCall.computeIfAbsent(event.callId,
+                        ignored -> new ArrayList<>()).add(event);
                 registerEventCall(event.seq, event.callId);
             }
+            Map<String, Integer> stores = new HashMap<>();
             for (FieldAccessEvent event : sorted(fieldEvents,
                     value -> value.seq)) {
                 fieldsByCall.computeIfAbsent(event.callId,
                         ignored -> new ArrayList<>()).add(event);
                 registerEventCall(event.seq, event.callId);
+                event.version = stores.merge(event.field + "\n"
+                        + event.receiverObjectId, "FIELD_WRITE".equals(
+                                event.kind) ? 1 : 0, Integer::sum);
             }
         }
 

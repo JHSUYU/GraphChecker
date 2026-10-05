@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import org.junit.Rule;
 import org.junit.Test;
@@ -675,36 +674,6 @@ public class ContractTest {
                 reline(RowCodec.writeExport(exported))));
         assertEquals(attached, RowCodec.readAttach(
                 reline(RowCodec.writeAttach(attached))));
-        // A codec's hole: its key path's keys and indexes stay apart, and
-        // its text form escapes what would split a component.
-        Hole hole = Hole.of("SOLR_JSON", Arrays.<Object>asList("c/1",
-                "shards", 3, "expireAt"), 0);
-        assertEquals("SOLR_JSON:/c%2F1/shards[3]/expireAt#0", hole.render());
-        ExportRow holeExported = ExportRow.of("s-17897-1", 5L, export,
-                "EXPR.v1.9f2c", "J", 0L, "1727", hole, "SOLR_ZK /c@3");
-        AttachRow holeAttached = AttachRow.of("s-17897-1", 9L, attach,
-                "M_J_field_HOFF.1", "J", "1727", false, null, export,
-                "SOLR_ZK /c@3", AttachRow.ENVELOPE, hole);
-        assertEquals(holeExported, RowCodec.readExport(
-                reline(RowCodec.writeExport(holeExported))));
-        assertEquals(holeAttached, RowCodec.readAttach(
-                reline(RowCodec.writeAttach(holeAttached))));
-        assertFalse(RowCodec.writeExport(exported).has("keyPath"));
-        // A hole comes whole, and an export's with its message.
-        JsonObject cut = RowCodec.writeAttach(holeAttached);
-        cut.remove("keyPath");
-        for (Runnable refused : Arrays.<Runnable>asList(
-                () -> RowCodec.readAttach(cut),
-                () -> ExportRow.of("s-17897-1", 5L, export, "EXPR.v1.9f2c",
-                        "J", 0L, "1727", hole, null),
-                () -> Hole.of("SOLR_JSON", Arrays.<Object>asList(-1), 0))) {
-            try {
-                refused.run();
-                fail("a partial or malformed hole is refused");
-            } catch (IllegalArgumentException expected) {
-                // named
-            }
-        }
         assertEquals(written, RowCodec.readWrite(
                 reline(RowCodec.writeWrite(written))));
         // A reference write states its container's state, or why not.
@@ -834,19 +803,19 @@ public class ContractTest {
                 -1L, "state_allKeys_7", BLOCK_KEY, null));
         assertInvariant(2, GapClass.BLOCKING, "field=observedVersion",
                 neither);
-        // A hole is paired by the envelope that carried its producer, and
-        // the envelope pairs holes only.
+        // An attach is paired by the handle or by correlation+port; no
+        // stated key is unstated, not unpaired; any other key is refused.
         for (Object[] pairing : new Object[][] {
-                {AttachRow.ENVELOPE, hole, true, ""},
-                {AttachRow.HANDLE, hole, true, "pairs it by HANDLE"},
-                {AttachRow.ENVELOPE, null, true, "names the envelope"},
-                {AttachRow.ENVELOPE, hole, false, "no producer"}}) {
+                {AttachRow.HANDLE, true, ""},
+                {AttachRow.CORRELATION_PORT, true, ""},
+                {null, false, ""},
+                {"ENVELOPE", true, "names a third key"}}) {
             Rows paired = clean();
             paired.attaches.add(AttachRow.of("s-gate", 18L, paired.readAt,
                     "M_J_field_HOFF.1", "J", "1727", false, null,
-                    (Boolean) pairing[2] ? paired.writeAt : null,
-                    "SOLR_ZK /c@3", (String) pairing[0], (Hole) pairing[1]));
-            String refusal = (String) pairing[3];
+                    (Boolean) pairing[1] ? paired.writeAt : null,
+                    "corr-1", (String) pairing[0]));
+            String refusal = (String) pairing[2];
             if (refusal.isEmpty()) {
                 assertTrue(names(gate(paired)).toString(),
                         noViolation(gate(paired), 2));
@@ -908,18 +877,6 @@ public class ContractTest {
         mixed.reads.add(ReadRow.of("s-gate", 21L, mixed.placeholderAt, keys,
                 7L, "M_Z_field_" + REGION + ".in.a1", "I", "2"));
         assertInvariant(5, GapClass.BLOCKING, "field=symbol/javaType", mixed);
-        // A hole is a primitive or a String, its symbol spelled as declared.
-        Rows boxed = clean();
-        boxed.exports.add(ExportRow.of("s-gate", 17L, boxed.writeAt,
-                "EXPR.0000000000000001", "Ljava/lang/Long;", 0L, "5", hole,
-                "SOLR_ZK /c@3"));
-        assertInvariant(5, GapClass.BLOCKING, "field=javaType", boxed);
-        Rows misspelled = clean();
-        misspelled.attaches.add(AttachRow.of("s-gate", 18L,
-                misspelled.readAt, "M_I_field_HOFF.1", "J", "5", false, null,
-                misspelled.writeAt, "SOLR_ZK /c@3", AttachRow.ENVELOPE, hole));
-        assertInvariant(5, GapClass.BLOCKING, "field=symbol/javaType",
-                misspelled);
         // 6: outcome says whether the published term HELD.
         Rows flipped = clean();
         flipped.decisions.set(0, DecisionRow.of("s-gate", 12L,
@@ -1089,149 +1046,6 @@ public class ContractTest {
                         : GapClass.BLOCKING, "field=referentState", referring);
             }
         }
-    }
-
-    /**
-     * The codec declarations of the library catalog and a system's file read
-     * as one set, and a row the schema does not take is refused, named by
-     * where it was read.  A codec port's id is a declared port id, one per
-     * space and key.
-     */
-    @Test
-    public void wireDeclarationsReadOneSchemaAndRefuseTheRest() {
-        String[] valid = {
-            "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb','decoders':[{'call':"
-                    + "'<*.protobuf.Parser: * parseFrom(*)>',"
-                    + "'encoded':'arg0','graph':'return'}]}",
-            "{'kind':'CODEC','codec':'SOLR_JSON','shape':'TREE',"
-                    + "'space':'kv','encoders':[{'method':"
-                    + "'<o.Utils: byte[] toJSON(java.lang.Object)>',"
-                    + "'graph':'arg0','encoded':'return'}],'decoders':[{"
-                    + "'method':'<o.Utils: java.lang.Object "
-                    + "fromJSON(byte[],int,int)>','encoded':'arg0',"
-                    + "'graph':'return'}]}",
-            "{'kind':'CODEC','codec':'HDFS_SASL_NAME','shape':'LEAF',"
-                    + "'space':'leaf','encoders':[{'method':"
-                    + "'<o.Client: java.lang.String user(o.Key)>',"
-                    + "'graph':'return','bind':'EXCHANGE'}],'decoders':[{"
-                    + "'method':'<o.Server: byte[] key(java.lang.String)>',"
-                    + "'graph':'arg0'}]}",
-            "{'kind':'CODEC_VIEW','codec':'SOLR_JSON','type':"
-                    + "'o.DocCollection','map':'getProperties()','put':"
-                    + "{'shards':'getSlicesMap()'}}",
-            "{'kind':'CODEC_VIEW','codec':'*','type':'o.NamedList',"
-                    + "'pairs':'nvPairs'}",
-            "{'kind':'TRANSPORT','transport':'SOLR_HTTP',"
-                    + "'response':'SOLR_JSON'}",
-            "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true}",
-            "{'kind':'EXCHANGE','transport':'SOLR_HTTP','method':"
-                    + "'<o.HttpSolrClient: o.NamedList request(o.Request)>'}"};
-        WireDeclarations declared = WireDeclarations.of(wire(valid, -1, ""));
-        assertEquals(3, declared.codecs().size());
-        WireDeclarations.Codec sasl = declared.codec("HDFS_SASL_NAME");
-        assertTrue(sasl.encoders().get(0).exchange());
-        assertEquals("arg0", sasl.decoders().get(0).graph());
-        assertTrue(declared.codec("PROTOBUF").decoders().get(0).call());
-        assertEquals(WireDeclarations.ViewForm.MAP,
-                declared.views().get(0).form());
-        assertEquals("getSlicesMap()",
-                declared.views().get(0).put().get("shards"));
-        assertTrue(declared.transports().get(1).store());
-        // A request/response transport's header is bounded unless it says
-        // otherwise; a store's versions travel in no header.
-        assertEquals(WireDeclarations.DEFAULT_ENVELOPE_BYTES,
-                declared.transports().get(0).envelopeBytes());
-        assertEquals(0, declared.transports().get(1).envelopeBytes());
-        assertEquals("SOLR_HTTP", declared.exchanges().get(0).transport());
-
-        // One row bent per case (at its index, or added past the last).
-        Object[][] bent = {
-            {0, "{'schemaVersion':2,'kind':'EXCHANGE'}", "schemaVersion"},
-            {0, "{'kind':'WIRE_FLOW'}", "is none of"},
-            {6, "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true,"
-                    + "'bnd':1}", "has no member bnd"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb'}", "states its decoders"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb:x','decoders':[{'call':'<a: b c()>',"
-                    + "'graph':'return'}]}", "space"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb','decoders':[{'call':'<a: b c()>',"
-                    + "'method':'<a: b c()>','graph':'return'}]}",
-                    "one of method and call"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb','decoders':[{'method':'<*: b c()>',"
-                    + "'graph':'return'}]}", "a pattern is a call"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb','decoders':[{'call':'<a: b c()>',"
-                    + "'graph':'arg0','encoded':'arg0'}]}", "one slot"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb','encoders':[{'method':'<a: b c()>',"
-                    + "'graph':'this'}],'decoders':[{'call':'<a: b c()>',"
-                    + "'graph':'return'}]}", "states which one"},
-            {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
-                    + "'space':'pb','encoders':[{'method':'<a: b c()>',"
-                    + "'graph':'this','bind':'THREAD'}],'decoders':[{"
-                    + "'call':'<a: b c()>','graph':'return'}]}", "bind"},
-            {4, "{'kind':'CODEC_VIEW','codec':'*','type':'o.NamedList',"
-                    + "'pairs':'nvPairs','leaf':'toString()'}",
-                    "one of map, leaf and pairs"},
-            {4, "{'kind':'CODEC_VIEW','codec':'*','type':'o.NamedList',"
-                    + "'pairs':'nvPairs','put':{'a':'b()'}}",
-                    "beside a map view"},
-            {4, "{'kind':'CODEC_VIEW','codec':'HDFS_SASL_NAME','type':"
-                    + "'o.NamedList','pairs':'nvPairs'}", "no TREE codec"},
-            {6, "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true,"
-                    + "'response':'SOLR_JSON'}", "one of the two"},
-            {5, "{'kind':'TRANSPORT','transport':'SOLR_HTTP',"
-                    + "'response':'SOLR_JAVABIN'}", "no CODEC row"},
-            {7, "{'kind':'EXCHANGE','transport':'HDFS_SASL','method':"
-                    + "'<o.C: void sasl()>'}", "no TRANSPORT row"},
-            {valid.length, valid[1], "declared again; first at wire.jsonl:2"}};
-        for (Object[] row : bent) {
-            int at = (Integer) row[0];
-            try {
-                WireDeclarations.of(wire(valid, at, (String) row[1]));
-                fail("accepted " + row[1]);
-            } catch (IllegalArgumentException refused) {
-                String said = refused.getMessage();
-                assertTrue(said, said.contains((String) row[2])
-                        && said.startsWith("wire declaration at wire.jsonl:"
-                        + (at + 1) + ": "));
-            }
-        }
-
-        String port = CommunicationCatalogContract.codecPortId("kv",
-                "expireAt");
-        assertTrue(CommunicationCatalogContract.declaredPortId(port));
-        assertTrue(port, port.endsWith(".wire.kv:expireAt"));
-        assertEquals(port, CommunicationCatalogContract.codecPortId("kv",
-                "expireAt"));
-        assertNotEquals(port, CommunicationCatalogContract.codecPortId("pb",
-                "expireAt"));
-        try {
-            CommunicationCatalogContract.codecPortId("k:v", "x");
-            fail("a space naming ':' has two readings");
-        } catch (IllegalArgumentException expected) {
-            // named
-        }
-    }
-
-    /** The rows, one replaced (or added at the end), keyed as a file's
-     *  lines; each states schemaVersion 1 unless it says otherwise. */
-    private static Map<String, JsonObject> wire(String[] rows, int at,
-                                                String replacement) {
-        List<String> lines = new java.util.ArrayList<>(Arrays.asList(rows));
-        if (at >= rows.length) lines.add(replacement);
-        else if (at >= 0) lines.set(at, replacement);
-        Map<String, JsonObject> read = new LinkedHashMap<>();
-        for (String line : lines) {
-            JsonObject row = RowCodec.fromLine(line.replace('\'', '"'));
-            if (!row.has("schemaVersion")) row.addProperty("schemaVersion", 1);
-            read.put("wire.jsonl:" + (read.size() + 1), row);
-        }
-        return read;
     }
 
     /** How many rows of one kind and class a gate stated. */

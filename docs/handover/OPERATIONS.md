@@ -90,10 +90,12 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   at that charge, at most its cores) over the sharing explorations running now (their entries in
   `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
   (`campaign_stream_has_slot`).
-  A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host, what
-  its planner or composer starts at (`tools/lib/heads.sh` `case_head_reserve_mb`, 8 GB), not
-  its engine heap: a40's Solr heads asked for 16 GB and waited while one case's 27-32 replays
-  filled the lifts.
+  A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host
+  before it measured anything, what its planner or composer starts at (`tools/lib/heads.sh`
+  `case_head_reserve_mb`, 8 GB), not its engine heap: a40's Solr heads asked for 16 GB and waited
+  while one case's 27-32 replays filled the lifts. Once its engine JVMs have run, the room it holds
+  is their measured peak times 1.25 (`run_engine.sh` `campaign_head_need_mb`). A lift holds the
+  largest idle reservation of its heads, not their sum.
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
   `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, `F1`, `F1b`, `F2`, `K*`, `L*`, `N1`,
   `V1`–`V25`, `V4h`, `V5h`, `V7b`, `V16b`, `V18b`, `V22b`, `V22c`, `V24b`, `PP1`, `PP1b`, `M1`, `CF1`, `STO1`, agents' `a37f*`,

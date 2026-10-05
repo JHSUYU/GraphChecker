@@ -176,7 +176,10 @@ whose chain the window holds back to its root (`RuntimeWorkflowDiscovery#declare
 `DECLARED_TARGET_BEFORE_WINDOW`, IDENTITY.md §9) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had
-(`campaign_plan`). When the closure holds more occurrences than
+(`campaign_plan`). The seed's closure already plans one occurrence per class of equivalent deciders
+(SYMBOL-SCOPE.md §4.4, `deciderClass` on its row: `members`, `first`, `last`), and PLAN's log line
+and cut summary name the classes (`ConcolicScheduler#deciderClasses`). When the closure still holds
+more occurrences than
 `schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
 seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
 near) and states the rest in the index (`closureCut`: `keptDepth`, `occurrences`, `byDepth`;
@@ -212,14 +215,6 @@ arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolv
 `#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the
 woven body grows with the labels, not their square (ZooKeeper's `FinalRequestProcessor` switches
 on 120, which a dispatch per label and successor took past the JVM's 64 KB method limit).
-
-The union weave also hooks the codecs and exchange brackets the wire declarations state
-(`causynth.CodecWeave`, [IDENTITY.md §7.5](IDENTITY.md)): the file the property
-`causynth.wire.declarations` or the environment variable `CAUSYNTH_WIRE_DECLARATIONS` names, which
-`plan.LineageScan` reads too, so a class declaring a hooked method joins the woven set. A declared
-method that is no concrete method of a woven class ends the stage (`CODEC_METHOD_UNAVAILABLE`). No
-`workflow.properties` key names the file yet; a replay reads the same variable, and the demanded
-ports from `CAUSYNTH_CODEC_PORTS` (a file of `CODEC_PORT` rows).
 
 ## 5. REPLAY
 
@@ -494,7 +489,9 @@ row (a port event outside every admitted activation, `RowRuntime#ambientActivati
 event ran, not a region that ran the site, so it makes no static candidate
 (`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
 it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
-not a task. One anchor's walk scans one site's holders on one node once and offers an occurrence
+not a task. A decider the seed's closure left out for its class's planned first member (§3) runs
+unplanned in every replay: no activation row names it, so it is no static candidate, and its class is
+asked through the planned member. One anchor's walk scans one site's holders on one node once and offers an occurrence
 once per (reason, site, guard set, node), whichever read or attach asks for it: asked again it is the
 same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the walk says each gap
 once. Each demanded occurrence becomes a `Task` (id =
@@ -626,11 +623,7 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   run only, nested slots closed the same way, so it moves only with the roots and clocks the replay
   plants (SOLR-18413: the leader parses a routing rule's expiry in its state watcher, and the expiry
   is the Overseer's clock plus the timeout); with no such arm it is pinned to its recorded arrival.
-  Another run's arrival never binds it. A codec's hole (WIRE-CODEC) is a handoff like any other: its
-  arms are the exports of its own message and hole at the producer endpoint (`Arms#sameMessage`: the
-  export's `messageKey` and hole are the attach's `correlationId` and hole), bound by COMPOSE's one
-  hole-arm rule (`VmTermLowering#holeArm`, §8) over the query's names, and a relay's operand, the
-  upstream hole's symbol, is a nested slot.
+  Another run's arrival never binds it.
 - READ: the eligible writers (`Arms.stateArms`, the location's INITIAL among them, the writer at
   version 0) become one Bool selector each (`wchoice_*`, exactly one), one choice per (reader
   occurrence, location) binding every read of it, so a writer's choice is the run only where every
@@ -694,8 +687,8 @@ sat in a second under 6. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
 read back by root id, the flipped path's clocks as skews (`model − host reading`; one outside a Java
 long refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
-control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
-whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
+control as its JSON string literal, which the replay plants verbatim; one whose model value is no
+string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
 by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A writer choice the
 model sets away from the writer the recording's reads observed, the location's INITIAL among them,
@@ -905,8 +898,12 @@ shared directories -- the case's scope copy among them (§1) -- so each runs ali
 a head runs uncharged stays on its host: the setup adapter's copy and the recording, whose need is
 what it measures. HEAD ROOM: a head
 runs its engine JVMs on its own host first, between the obligations every campaign keeps starting
-there, so it reserves room for the next one -- what its planner or composer starts at
-(`campaign_head_need_mb`), not the case's engine heap -- (`campaign_head_reserve`,
+there, so it reserves room for the next one -- its measured step need (`campaign_head_need_mb`:
+the largest peak any of its engine JVMs reached, each watched where its step runs and folded into
+`<campaign>/engine_peak_mb` by `campaign_engine_jvm`, times 1.25, at least 1 GB, at most the engine
+heap, read again at every heartbeat; before any was measured, what its planner or composer starts
+at), never the case's engine heap; a step its room does not cover is placed by its own charge, as
+every head step is -- (`campaign_head_reserve`,
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
 reservation of the host as used, a head's own start counts none (heads take turns and never
@@ -1192,9 +1189,8 @@ DIAGNOSTIC `UNSTATED_VALUE`); a dropped path is never silent: the claim names ev
 COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
 and an UNSAT says nothing about them.
 
-Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id --
-a codec hole's is its message key, so the N readers of one stored version, and one decode read
-twice, are one message under one selector; the eligible senders are the
+Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
+one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm guarded by its replay's value of every root it holds under (`Arms#arm`:
@@ -1216,20 +1212,9 @@ arm selectors are the chain its path took. A level's messages are closed before 
 closes its own; an arm resting on a message the path closed already is one more thing resting on
 it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
 out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
-takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path. **A codec's
-hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
-symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in
-`Composer#attestedArrival`), and the arm is the operand the producer's export cut out of its leaf
-(`ExportRow#javaType` its sort) -- equal when the sorts agree, an integral widened by Java's rule
-(its range inside the hole's), the canonical rendering read back for a String operand of an
-integral (`(= (java_int_to_string v) s)` within the hole's range) or a boolean hole; a narrowing
-(`HoleNarrowed`) or any other change of sort, a float read back as a double included
-(`HoleSortChanged`), is refused `UNSTATED_VALUE` by name; an arm delivering Java null is
-`CODEC_MISMATCH` `NULL_LEAF`; a String operand that may be null holds only where it is not, and one
-whose nullness nothing states is refused (`JavaStringNullnessUnknown`). A relay's operand is the
-upstream hole's symbol, closed as a nested family (SOLR-18413: the leader's `n2` is the Overseer's
-`n1`, which is the overseer's clock plus the timeout). Each leaf an arm binds (a hole, a declared
-port's delivery) is noted with the occurrence it was delivered into and whether its value rests on
+takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path.
+Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
+into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
 delivery that does), for CONFIRM. A path's
 families (message and state) are all or nothing: their named assertions, arm choices and families
@@ -1507,7 +1492,7 @@ with the blocker named when the claim is blocked or there is no path, and `(chec
 (`FINAL_READY` | `FINAL_REFUSED`), `finalStatusRefusals`, `gaps` and `solver` (§9). `claim.json`:
 `{kind CLAIM, anchor, claim, solverRuns, seedSessionId, valuations, gaps}`, what CONFIRM reads; each
 selected arm states `texts`, consumer endpoint id -> the model's value of each leaf CONFIRM holds
-(`ComposedFamilies.BoundLeaf#held`: a codec hole, a delivery into the anchor) as the text that
+(`ComposedFamilies.BoundLeaf#held`: a delivery into the anchor) as the text that
 arrives (an integral's decimal, a boolean's `true`/`false`, a String's characters; none for a char
 or a floating value), for every such leaf whose value rests on no clock through the valuation's
 selected arms (`ComposedFamilies#texts`; a replay reads its clocks afresh).
@@ -1530,7 +1515,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    once; each question is written to its z3s from the one body the composition holds, never copied
    per ask or per arithmetic engine, `Composition#query`/`#pathQuery`, `Z3#ask`) for the path
    selectors, arm selectors, the nested state selectors a state arm's stores are chosen among (§8),
-   clock cells and the codec holes the arms bind (`Composition#holeSymbols`); a selected state arm
+   clock cells and the held leaves the arms bind (`Composition#heldSymbols`); a selected state arm
    keeps the states whose selector the model set. An undecided valuation is named DIAGNOSTIC: it
    names no witness, and the verdict is the formula's own answer (4).
    Every such ask (and each re-ask below) is `compose.Disjunction#ask`: the disjunction whole, its
@@ -1699,9 +1684,8 @@ with it is a `RUN_DEFECT`.
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
-  as that arm's session paired it; a codec hole's also with `messageKey`, the store version the arm's
-  message was when its key is a store's, `<transport> <path>@<version>`, and `value`, the arm's
-  `texts` entry, which a delivery into the anchor also states), `STATE` per read of the anchor's join closure (each reached
+  as that arm's session paired it, and `value`, the arm's `texts` entry for a delivery into the
+  anchor), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq) at a location the
   selected path's fatal rests on (its manifest `restsOn`: `Composer`'s constraint independence of
   what the fatal rests on -- phi, or for a concrete fatal condition the path condition before the
@@ -1740,8 +1724,8 @@ with it is a `RUN_DEFECT`.
   wherever there is room) and `campaign_confirm_decide` (ConfirmMain `--sessions`), then
   `campaign_confirm_settle` (a refuting verdict refutes the claim). An exploration's attempt runs the
   same halves apart, its replay a job of the pool (§7.9). At runtime
-  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, for a codec
-  hole the message key, and the text that arrived where the arm states one; a consumer of the
+  `Confirmation` compares WIRE at the attach (`Confirmation#attached`: the producer, and the text
+  that arrived where the arm states one; a consumer of the
   anchor's, where the arm's session answered the anchor by its question (IDENTITY §9, its
   `ADDRESS_UNSTABLE` row), is also taken from a producer that answers the model's producer's question, `producerQuestion` on its row,
   `ConfirmMain#question`: the same site at the same site index and attempt of an occurrence of the

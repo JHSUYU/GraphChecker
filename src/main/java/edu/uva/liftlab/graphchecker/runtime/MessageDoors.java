@@ -15,9 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * request or a response leaves (outbound) carrying the sender's GraphChecker
  * context and the symbolic values it exports, and arrives (inbound) where the
  * receiver installs them for as long as it serves that message.  Its values
- * are the {@code WIRE_FLOW} ports the thread staged and the codec holes bound
- * to the message itself ({@link CodecRuntime}: the payload the door holds,
- * the bytes a store door writes, a bracket's encodes).  Plus the workload's
+ * are the {@code WIRE_FLOW} ports the thread staged.  Plus the workload's
  * side of attribution: nodes and their aliases, request scopes, the
  * recorded window, daemon ticks and scopes carried across a queue.
  *
@@ -110,8 +108,9 @@ public final class MessageDoors {
     }
 
     /**
-     * One message leaves with no payload in hand: its trace context and the
-     * symbolic values the sender exported, to travel with it.
+     * One message leaves: its trace context and the symbolic values the
+     * sender exported (the ports a {@code WIRE_FLOW} row declares), to
+     * travel with it.
      *
      * @param scope the scope the work carries ({@link #captureScope}), or
      *              {@code null} for the calling thread's own
@@ -120,22 +119,7 @@ public final class MessageDoors {
                                     String attemptId, String half,
                                     Object localOwner, Object scope) {
         return outbound(transport, correlationId, attemptId, half,
-                localOwner, scope, null);
-    }
-
-    /**
-     * One message leaves: its trace context, and the symbolic values it
-     * carries -- its transport's codec's walk of {@code payload} (the message
-     * object the door holds before it is serialized; null when it holds
-     * none), what the thread's open bracket of this transport staged, and
-     * the ports a {@code WIRE_FLOW} row declares.
-     */
-    public static Outbound outbound(String transport, String correlationId,
-                                    String attemptId, String half,
-                                    Object localOwner, Object scope,
-                                    Object payload) {
-        return outbound(transport, correlationId, attemptId, half,
-                localOwner, scope, payload, "");
+                localOwner, scope, "");
     }
 
     /**
@@ -152,84 +136,19 @@ public final class MessageDoors {
                                            Object localOwner, Object scope,
                                            String verb) {
         return outbound(transport, correlationId, attemptId, REQUEST,
-                localOwner, scope, null, verb);
+                localOwner, scope, verb);
     }
 
     private static Outbound outbound(String transport, String correlationId,
                                      String attemptId, String half,
                                      Object localOwner, Object scope,
-                                     Object payload, String verb) {
+                                     String verb) {
         String trace = CausynthTraceRecorder.outboundExchange(transport,
                 correlationId, attemptId, half, localOwner, scope,
                 Text.safe(verb));
-        // One bound for the whole symbolic header: the declared ports' segment
-        // first, the codec envelope in what is left.
-        String declared = SymbolicMessageEnvelope.takeOutbound();
-        int bytes = CodecRuntime.headerBytes(transport);
-        if (declared.length() > bytes) {
-            RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
-                    transport, "a message's declared-port values take "
-                            + declared.length() + " bytes, past its"
-                            + " transport's header bound of " + bytes
-                            + ", so it carries none of them");
-            declared = "";
-        }
-        String symbolic = envelope(declared, CodecRuntime.outbound(transport,
-                correlationId, REQUEST.equals(half), payload,
-                declared.isEmpty() ? bytes : bytes - declared.length() - 1));
+        String symbolic = SymbolicMessageEnvelope.takeOutbound();
         return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
                 : new Outbound(correlationId, attemptId, trace, symbolic);
-    }
-
-    /**
-     * A door's payload its adapter could not read: named, and the message
-     * carries none of its values.
-     */
-    public static void payloadUnread(String transport, String detail) {
-        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, transport,
-                "a door's payload could not be read, so the message carries"
-                        + " none of its values: " + detail);
-    }
-
-    /**
-     * Opens an exchange bracket of {@code transport} on this thread: what
-     * an EXCHANGE-bound codec encodes inside it travels with the next
-     * message of that transport the thread sends ({@link #outbound}).
-     */
-    public static long beginExchange(String transport) {
-        return CodecMessages.beginExchange(transport);
-    }
-
-    /** Closes the bracket {@link #beginExchange} opened. */
-    public static void endExchange(long token) {
-        CodecMessages.endExchange(token);
-    }
-
-    /** A message's symbolic header: one segment per scheme, space apart. */
-    private static String envelope(String declared, String codec) {
-        if (declared.isEmpty()) return codec;
-        return codec.isEmpty() ? declared : declared + " " + codec;
-    }
-
-    /**
-     * A symbolic header's codec envelope (its first {@code CSE6} segment),
-     * or, with {@code codec} false, everything else: the declared ports'
-     * segment, which the declared envelope installs or refuses by name.
-     */
-    private static String segment(String symbolic, boolean codec) {
-        if (symbolic == null) return "";
-        StringBuilder declared = new StringBuilder();
-        boolean found = false;
-        for (String segment : symbolic.split(" ", -1)) {
-            if (!found && segment.startsWith(CodecEnvelope.SCHEMA + ";")) {
-                if (codec) return segment;
-                found = true;
-                continue;
-            }
-            if (declared.length() > 0) declared.append(' ');
-            declared.append(segment);
-        }
-        return codec ? "" : declared.toString();
     }
 
     /**
@@ -246,20 +165,13 @@ public final class MessageDoors {
         // Every receipt ends the request this thread had in hand, whether or
         // not it carries a context (Identity#requestInHand).
         Identity.requestInHand("");
-        Inbound before = CURRENT.get();
-        CodecMessages.Message kept = keepSymbolic && before != null
-                ? before.codecMessage : null;
         endInbound(!keepSymbolic);
         if (!keepSymbolic) {
             SymbolicMessageEnvelope.clearInbound();
         }
-        String declared = segment(symbolic, false);
-        CodecMessages.Message carried = CodecRuntime.inbound(
-                segment(symbolic, true), correlationId);
-        CodecMessages.Message codec = kept == null ? carried
-                : carried == null ? kept : kept.with(carried.entries);
+        String declared = Text.safe(symbolic);
         boolean hasTrace = trace != null && !trace.isEmpty();
-        if (!hasTrace && declared.isEmpty() && codec == null) {
+        if (!hasTrace && declared.isEmpty()) {
             return Inbound.EMPTY;
         }
         long token = hasTrace
@@ -269,8 +181,7 @@ public final class MessageDoors {
         if (!declared.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(declared);
         }
-        Inbound scope = new Inbound(token, correlationId, attemptId, half,
-                codec);
+        Inbound scope = new Inbound(token, correlationId, attemptId, half);
         CURRENT.set(scope);
         return scope;
     }
@@ -292,11 +203,9 @@ public final class MessageDoors {
                                    Object localOwner) {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
-        String declared = segment(symbolic, false);
-        CodecMessages.Message codec = CodecRuntime.inbound(
-                segment(symbolic, true), correlationId);
+        String declared = Text.safe(symbolic);
         boolean correlated = !Text.safe(correlationId).isEmpty();
-        if (!correlated && declared.isEmpty() && codec == null) {
+        if (!correlated && declared.isEmpty()) {
             return Inbound.EMPTY;
         }
         if (correlated) {
@@ -306,8 +215,7 @@ public final class MessageDoors {
         if (!declared.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(declared);
         }
-        Inbound scope = new Inbound(0L, correlationId, attemptId, REQUEST,
-                codec);
+        Inbound scope = new Inbound(0L, correlationId, attemptId, REQUEST);
         CURRENT.set(scope);
         return scope;
     }
@@ -463,24 +371,12 @@ public final class MessageDoors {
      * @param key the location and the version this write made
      */
     public static void stored(String transport, String key, Object owner) {
-        stored(transport, key, owner, null);
-    }
-
-    /**
-     * The same write, with the bytes it wrote: what an encode of them
-     * exported travels with this version.
-     */
-    public static void stored(String transport, String key, Object owner,
-                              byte[] data) {
         // In flight until filed, whatever bracket the adapter opened: the
         // SEND and the producer it mints take the concolic VM milliseconds.
         long store = storing(transport, location(key));
         try {
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
-            CodecRuntime.stored(transport, key, data);
-            // Filed last: a read that finds the version filed finds its
-            // codec holes filed too.
             if (message.active()) STORED.put(transport + "\n" + key, message);
         } finally {
             storeEnded(transport, store);
@@ -517,26 +413,14 @@ public final class MessageDoors {
      * notifications a run takes is the store's timing.  Any other read is
      * data, not a cause: a loop that polls the store reads as often as its
      * timing lets it.  A read that takes what its write carried -- the
-     * writer's context in a notification, the codec holes of the bytes it
-     * read -- first waits for the version to be filed, if a write in flight
-     * may file it ({@link #filed}).
+     * writer's context in a notification -- first waits for the version to
+     * be filed, if a write in flight may file it ({@link #filed}).
      */
     public static void fetched(String transport, String key, Object owner) {
-        fetched(transport, key, owner, null);
-    }
-
-    /**
-     * The same read, with the bytes it read: whatever decodes them decodes
-     * this version's message, inside a notification or not -- a value is
-     * data, a notification a cause.
-     */
-    public static void fetched(String transport, String key, Object owner,
-                               byte[] data) {
         String kind = NOTIFIED.get();
-        if (kind == null && data == null) return;
+        if (kind == null) return;
         Outbound message = filed(transport, key);
-        CodecRuntime.fetched(transport, key, data);
-        if (kind == null || message == null) return;
+        if (message == null) return;
         NOTIFIED.remove();
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
@@ -555,7 +439,7 @@ public final class MessageDoors {
         if (!message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }
-        CURRENT.set(new Inbound(token, key, "1", REQUEST, null));
+        CURRENT.set(new Inbound(token, key, "1", REQUEST));
     }
 
     /**
@@ -817,22 +701,18 @@ public final class MessageDoors {
 
     /** One installed inbound exchange. */
     public static final class Inbound {
-        static final Inbound EMPTY = new Inbound(0L, "", "", "", null);
+        static final Inbound EMPTY = new Inbound(0L, "", "", "");
         private final long token;
         public final String correlationId;
         public final String attemptId;
         public final String half;
-        /** What its messages' codecs carried, for the decodes it serves;
-         *  null for none. */
-        final CodecMessages.Message codecMessage;
 
         private Inbound(long token, String correlationId, String attemptId,
-                        String half, CodecMessages.Message codecMessage) {
+                        String half) {
             this.token = token;
             this.correlationId = correlationId;
             this.attemptId = attemptId;
             this.half = half;
-            this.codecMessage = codecMessage;
         }
     }
 }

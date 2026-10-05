@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -239,7 +240,8 @@ public class RegionGraphOccurrenceKeyTest {
                                         "siteId", LOOP + "#u5",
                                         "outcome", Boolean.FALSE)),
                         walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
-                        Collections.<ScheduleEvent>emptyList());
+                        Collections.<ScheduleEvent>emptyList(),
+                        RecordedAccesses.NONE);
         List<String> planned = new ArrayList<>();
         for (Map<String, Object> region : closure.regions) {
             for (Object occurrence
@@ -265,6 +267,143 @@ public class RegionGraphOccurrenceKeyTest {
         assertEquals(Collections.singletonList("REGION.loop 1"), fixed);
     }
 
+    /**
+     * EQUIVALENT DECIDERS ARE PLANNED ONCE A CLASS (hdfs-adhoc-16: 1218 to
+     * 1520 polling turns of the block scrubber, each leaving removeBlock's
+     * store at its guard, one job each): turns of one region, node and
+     * context shape that did the same on the same state (one signature) are
+     * one class while nobody else touches a demanded cell between them; the
+     * first is planned and states the class.  So are occurrences that ran
+     * the storing method and stored nothing.  An access of EPOCH by another
+     * call between two turns starts a new class; another signature, a root
+     * read and a recorded store are never merged.
+     */
+    @Test
+    public void equivalentDecidersArePlannedOnceAClass() throws Exception {
+        Object[][] activations = {
+                // name, region, signature, first and last seq, root read
+                {"target", "REGION.check", "", 1L, 2L, false},
+                {"turn1", "REGION.loop", "S", 10L, 11L, false},
+                {"turn2", "REGION.loop", "S", 20L, 21L, false},
+                {"turn3", "REGION.loop", "S", 40L, 41L, false},
+                {"turn4", "REGION.loop", "S", 50L, 51L, false},
+                {"other", "REGION.loop", "T", 60L, 61L, false},
+                {"rooted", "REGION.loop", "S", 55L, 56L, true},
+                {"store1", "REGION.bump", "B", 80L, 81L, false},
+                {"store2", "REGION.bump", "B", 90L, 91L, false},
+                {"ran1", "REGION.bump", "B", 100L, 101L, false},
+                {"ran2", "REGION.bump", "B", 110L, 111L, false},
+        };
+        List<Map<String, Object>> instances = new ArrayList<>();
+        List<Map<String, Object>> branches = new ArrayList<>();
+        branches.add(row("kind", "BRANCH", "eventSeq", 1L, "method", CHECK,
+                "callId", 1L, "siteId", CHECK + "#u5",
+                "outcome", Boolean.TRUE));
+        Map<String, String> addresses = new LinkedHashMap<>();
+        for (int index = 0; index < activations.length; index++) {
+            Object[] row = activations[index];
+            long call = index + 1;
+            String address = OccurrenceAddress.of(
+                    NodeId.parse("wl/nn0#epoch0"), (String) row[1],
+                    CausalContext.of(Role.of("CLIENT"), "", index + 1),
+                    ExecutionIndex.empty()).render();
+            addresses.put((String) row[0], address);
+            String region = (String) row[1];
+            Map<String, Object> activation = row(
+                    "kind", "RUNTIME_REGION_ACTIVATION",
+                    "regionId", region,
+                    "rootCallId", call,
+                    "occurrenceAddress", address,
+                    "selection", "REGION.check".equals(region)
+                            ? "EXCEPTION_CONTEXT" : "STATE_CONTEXT",
+                    "callIds", Collections.singletonList(call),
+                    "observedMethods", Collections.singletonList(
+                            "REGION.check".equals(region) ? CHECK
+                                    : "REGION.loop".equals(region) ? LOOP
+                                    : BUMP),
+                    RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
+                    Collections.singletonMap(EPOCH,
+                            Collections.singleton(7)),
+                    RuntimeSelectedRegionFinalizer.FIRST_SEQ, row[3],
+                    RuntimeSelectedRegionFinalizer.LAST_SEQ, row[4]);
+            if (!((String) row[2]).isEmpty()) {
+                activation.put(RuntimeSelectedRegionFinalizer.SIGNATURE,
+                        row[2]);
+            }
+            if ((Boolean) row[5]) {
+                activation.put(DeclaredSiteCapture.PLAN_FIELD,
+                        Collections.singletonList(row(SiteId.MEMBER,
+                                LOOP + "#u1", DeclaredSiteCapture
+                                        .DECLARED_CALLEE, CLOCK)));
+            }
+            if ("REGION.loop".equals(region)) {
+                branches.add(row("kind", "BRANCH", "eventSeq", row[3],
+                        "method", LOOP, "callId", call,
+                        "siteId", LOOP + "#u3", "outcome", Boolean.FALSE));
+            }
+            instances.add(activation);
+        }
+        // rooted reads a clock there.
+        JsonObject clock = new JsonObject();
+        clock.addProperty("kind", "STATIC_SCOPE_SITE");
+        clock.addProperty("role", "DECLARED_SITE");
+        clock.addProperty("regionId", "REGION.loop");
+        clock.addProperty("siteId", LOOP + "#u1");
+        clock.addProperty("cell", CLOCK + ".return");
+        clock.addProperty("declaredCallee", CLOCK);
+        clock.addProperty("declaredKind", "CALL_RETURN");
+        clock.addProperty("dependencyCell", LOOP + "::$l1");
+        clock.addProperty("javaType", "long");
+        clock.addProperty("inputKind", "CLOCK");
+        clock.addProperty("clockNanos", 1000000L);
+        clock.addProperty("clockSource", "nanoTime");
+        // Each turn reads EPOCH itself, store1 and store2 store it, ran1 and
+        // ran2 read it; a call of no occurrence stores it between turn2 and
+        // turn3.
+        RecordedAccesses.Builder accesses = new RecordedAccesses.Builder();
+        for (long call = 2; call <= 11; call++) {
+            accesses.add(EPOCH, (long) activations[(int) call - 1][3], call,
+                    call == 8 || call == 9);
+        }
+        accesses.add(EPOCH, 30L, 99L, true);
+        RuntimeSelectedRegionFinalizer.Result closure =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(walkGraph(),
+                        walkSkeletons(), "test", Arrays.asList(CHECK, BUMP,
+                                LOOP), instances, branches, walkScopeMap(clock),
+                        RuntimeWorkflowDiscovery.FIRST,
+                        Collections.<ScheduleEvent>emptyList(),
+                        accesses.build());
+        List<String> planned = new ArrayList<>();
+        for (Map<String, Object> region : closure.regions) {
+            for (Object occurrence
+                    : (List<?>) region.get("runtimeOccurrenceIds")) {
+                for (Map.Entry<String, String> named : addresses.entrySet()) {
+                    if (named.getValue().equals(occurrence)) {
+                        planned.add(named.getKey());
+                    }
+                }
+            }
+        }
+        Collections.sort(planned);
+        assertEquals(Arrays.asList("other", "ran1", "rooted", "store1",
+                "store2", "target", "turn1", "turn3"), planned);
+        Map<String, Object> first = row("members", 2,
+                "first", addresses.get("turn1"),
+                "last", addresses.get("turn2"));
+        assertEquals(first, instances.get(1).get(
+                RuntimeSelectedRegionFinalizer.DECIDER_CLASS));
+        assertEquals(row("members", 2, "first", addresses.get("turn3"),
+                "last", addresses.get("turn4")), instances.get(3).get(
+                RuntimeSelectedRegionFinalizer.DECIDER_CLASS));
+        assertEquals(row("members", 2, "first", addresses.get("ran1"),
+                "last", addresses.get("ran2")), instances.get(9).get(
+                RuntimeSelectedRegionFinalizer.DECIDER_CLASS));
+        assertFalse(instances.get(5).containsKey(
+                RuntimeSelectedRegionFinalizer.DECIDER_CLASS));
+        assertFalse(instances.get(7).containsKey(
+                RuntimeSelectedRegionFinalizer.DECIDER_CLASS));
+    }
+
     private static final String CHECK = "<ex.Server: void check()>";
     private static final String BUMP = "<ex.State: void bump(ex.Proto)>";
     private static final String SEND = "<ex.Client: ex.Proto send()>";
@@ -274,6 +413,7 @@ public class RegionGraphOccurrenceKeyTest {
     private static final String OTHER = "<ex.Side: int other>";
     private static final String GROW = "<ex.Grower: void grow()>";
     private static final String LOOP = "<ex.Loop: void turn()>";
+    private static final String CLOCK = "<ex.Time: long now()>";
     private static final String GET = "<ex.Proto: int getEpoch()>";
     private static final String SET =
             "<ex.Proto$Builder: ex.Proto$Builder setEpoch(int)>";
@@ -370,8 +510,10 @@ public class RegionGraphOccurrenceKeyTest {
                 RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS, ports);
     }
 
-    /** The guard that decides the throw, and bump's store of EPOCH. */
-    private StaticScopeMap walkScopeMap() throws IOException {
+    /** The guard that decides the throw, and bump's store of EPOCH; and
+     *  {@code more} rows. */
+    private StaticScopeMap walkScopeMap(JsonObject... more)
+            throws IOException {
         JsonObject target = new JsonObject();
         target.addProperty("kind", "STATIC_SCOPE_SITE");
         target.addProperty("role", "TARGET_SITE");
@@ -418,8 +560,10 @@ public class RegionGraphOccurrenceKeyTest {
         tracked.addProperty("cell", EPOCH);
         tracked.addProperty("carrier", EPOCH);
         Path file = tree.newFolder().toPath().resolve(StaticScopeMap.FILE);
-        Files.write(file, (target + "\n" + write + "\n" + side + "\n" + grow
-                + "\n" + tracked + "\n").getBytes(StandardCharsets.UTF_8));
+        StringBuilder rows = new StringBuilder(target + "\n" + write + "\n"
+                + side + "\n" + grow + "\n" + tracked + "\n");
+        for (JsonObject row : more) rows.append(row).append('\n');
+        Files.write(file, rows.toString().getBytes(StandardCharsets.UTF_8));
         return StaticScopeMap.read(file);
     }
 

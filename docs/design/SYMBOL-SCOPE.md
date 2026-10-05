@@ -427,8 +427,7 @@ the class file's (`ExceptionTargetLineResolver`), so the seed counts only the pr
 at calls in the method that holds the throw, `Dispatcher$PendingMove#receiveResponse`).
 
 The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed by
-`library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
-malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
+`library-catalog.jsonl:<line>`. A malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
 rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) list configuration
 getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`);
 `CONFIG_FIELD_OWNER` rows (`class`) name a configuration object built from a file no getter of the
@@ -648,6 +647,35 @@ reaches, to a fixed point:
   (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
   producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
   `MARKER_FLIPPED` witnesses move such an IPC door.
+
+- **Equivalent deciders are one class** (`DemandWalk#classDeciders`). Occurrences the walk reached
+  only as writers of a demanded store that stored no demanded cell in the recording (each left the
+  store at a guard, or ran its method on another arm), on one node, in one region, under one context
+  shape and call path (the index's sites), that did the same on the same state are one class while
+  no one else accesses a cell demanded on that node between the first and the last
+  (`causynth/RecordedAccesses`: every recorded field read and store, and every call at a store site
+  that mutates through the call, `RuntimeSelectedRegionFinalizer#storingCalls`, or at a site that
+  returns a field, each with its seq, its call and whether it stored). "The same" is one
+  `signature`, stamped by the aggregation (`runtime/RuntimeRegionPlanner#stampSignatures`): a digest
+  of the occurrence's events in recorded order -- the methods entered and on which object, calls
+  with their arguments and returns, decisions with their outcomes, messages by exchange leg, and
+  each field access with its object and value and, for a read, its version: the count of recorded
+  stores of that (field, object) before it (`FieldAccessEvent#version`). Equal counts mean no
+  recorded store between two reads, so one version, the one the replay pairs them with; the value
+  rides along because a store the weave does not record (a JDK body's) moves no count. A flip query
+  is a function of what its occurrence read and decided, so the members ask one query; the store a
+  flip enables lands where its member ran, and with nothing else touching a demanded cell between
+  them every reader and writer meets it in the same order, so COMPOSE pairs any member's store as it
+  pairs another's. The first member is planned, at the class's shortest chain, and states the class
+  (`deciderClass`: `members`, `first`, `last`); the others are not. Never merged: a recorded store
+  of a demanded cell (a version a reader may have read), an occurrence the walk reached in any other
+  role (a target, a wire producer, a root's or a door's admission), one that captured a
+  DECLARED_SITE minting a root (an `inputKind`: a clock, a fault marker, a configuration getter, a
+  READ placeholder), or one that attached or exported a message value. hdfs-adhoc-16: 1218 to 1520
+  polling turns of the block scrubber, each leaving `removeBlock`'s store at its guard and running
+  `run()` (the iterator's store) past its own, were one job each and cut at PLAN; offline on its
+  DS5/SS5 recordings 1168/1191 turns fall into 33/32 classes and PLAN plans 110/91 occurrences with
+  no cut.
 
 A root read none of this reaches is not planned: its occurrence runs concrete, unless another rule
 admits it. PLAN schedules what this admits up to `schedule_max_jobs`, keeping the nearest demand

@@ -158,20 +158,5 @@ public enum GapKind {
      * claim is another model or none ({@code compose.Refutations}).
      * DIAGNOSTIC: the exclusion is the composition's own knowledge.
      */
-    CLAIM_REFUTED,
-    /**
-     * A value a codec carried that crossed with less than its template: an
-     * encode no message carried, or a decoded leaf that does not match its
-     * entry or cannot be minted.  DIAGNOSTIC: the leaf stays as it was
-     * decoded, paired with nothing (WIRE-CODEC designer decision 14).  The
-     * detail starts with its reason: {@code PATH_UNMATCHED} (the entry's key
-     * path is absent from the decoded graph), {@code VALUE_MISMATCH},
-     * {@code TEMPLATE_MISMATCH}, {@code LEAF_SHARED}, {@code LEAF_SHADOWED}
-     * (a leaf object that already carries an expression its holder cannot
-     * replace), {@code LEAF_UNSUPPORTED}, {@code LEAF_UNADDRESSABLE},
-     * {@code VIEW_MISSING}, {@code NULL_LEAF}, or
-     * {@code UNSENT} (encodes no message carried, one row per codec and
-     * session with their count).
-     */
-    CODEC_MISMATCH
+    CLAIM_REFUTED
 }

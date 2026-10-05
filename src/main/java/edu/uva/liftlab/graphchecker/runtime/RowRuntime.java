@@ -14,7 +14,6 @@ import edu.uva.liftlab.graphchecker.contract.ExpressionRefs;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
-import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -277,14 +276,13 @@ public final class RowRuntime {
 
     /** One export, and the producer endpoint a delivery can be paired to. */
     public static Endpoint exported(OccurrenceAddress producer, long seq,
-                                    String portId, long handle,
-                                    String correlationId, int attempt,
+                                    String portId, long handle, int attempt,
                                     JsonObject expression, String javaType,
                                     String recordedValue) {
         if (producer == null) return null;
         Endpoint endpoint = endpoint(producer, portId, attempt);
         String ref = expressionRef(expression);
-        Interactions.exported(portId, handle, correlationId, endpoint);
+        Interactions.exported(handle, endpoint);
         SessionPublisher session = publisher;
         if (session != null) {
             String type = statedJavaType("export", endpoint.id(), javaType,
@@ -306,7 +304,12 @@ public final class RowRuntime {
     }
 
 
-    /** One v_H minted at an endpoint already allocated. */
+    /**
+     * One v_H minted at an endpoint already allocated, paired with the
+     * export of the message this thread received ({@link
+     * MessageDoors#current}): by the element's handle, else by that
+     * message and the port when the message carried an element for it.
+     */
     public static Endpoint attachedAt(Endpoint endpoint, long seq,
                                       String portId, long handle,
                                       String correlationId, String symbol,
@@ -314,8 +317,10 @@ public final class RowRuntime {
                                       boolean answered,
                                       String answeredValue) {
         if (endpoint == null) return null;
+        MessageDoors.Inbound received = MessageDoors.current();
         Interactions.Pairing pairing = Interactions.pairing(portId, handle,
-                correlationId);
+                received == null ? "" : received.correlationId,
+                received == null ? "" : received.half);
         Endpoint producer = pairing.producer();
         if (producer != null && handle > 0L
                 && !"HANDLE".equals(pairing.key())) {
@@ -327,7 +332,7 @@ public final class RowRuntime {
                             + ", so the producer is the message's and not"
                             + " the staged expression's");
         }
-        confirm(endpoint, producer, null, arrival);
+        confirm(endpoint, producer, arrival);
         SessionPublisher session = publisher;
         if (session != null) {
             String type = statedJavaType("attach", endpoint.id(), javaType,
@@ -343,7 +348,12 @@ public final class RowRuntime {
             if (producer == null) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, endpoint.id(),
-                        "the delivery at " + Text.safe(portId)
+                        handle == SymbolicMessageEnvelope.ABSENT
+                                ? "the message carried no element for "
+                                + Text.safe(portId) + ": its sender forwarded"
+                                + " the value without exporting it, so the"
+                                + " delivery pairs with no export"
+                                : "the delivery at " + Text.safe(portId)
                                 + " was paired with no export of this run"));
             }
         }
@@ -353,14 +363,14 @@ public final class RowRuntime {
 
     /**
      * CONFIRM (b): one delivery compared with the edge the model chose --
-     * its producer, message and value -- never enforced.  A difference is a
+     * its producer and value -- never enforced.  A difference is a
      * {@code CONFIRM_MISMATCH}; a producer taken because it answers the
      * model's producer's question is never silent either.
      */
     private static void confirm(Endpoint consumer, Endpoint producer,
-                                String messageKey, String arrival) {
+                                String arrival) {
         Confirmation.Compared compared = Confirmation.attached(consumer,
-                producer, messageKey, arrival);
+                producer, arrival);
         if (!compared.mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, consumer.id(),
                     compared.mismatch);
@@ -369,45 +379,6 @@ public final class RowRuntime {
             gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, consumer.id(),
                     compared.substitution);
         }
-    }
-
-    /**
-     * One hole a codec's encode exported, published when a message carries
-     * it (WIRE-CODEC §4.6): its operand is {@code e_p}, keyed by the message
-     * its consumers name as their correlation id.
-     */
-    static void exportedHole(CodecMessages.Entry entry, String messageKey) {
-        SessionPublisher session = publisher;
-        if (session == null) return;
-        String ref = expressionRef(entry.operand);
-        if (ref.isEmpty() || Text.safe(entry.javaType).isEmpty()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    entry.producer.id(), "the hole " + entry.contractHole()
-                            + " a message carried states no operand or sort,"
-                            + " so no arm is keyed by its producer");
-            return;
-        }
-        session.export(ExportRow.of(sessionId(), sequence(entry.exportSeq),
-                entry.producer, ref, entry.javaType, 0L, entry.text,
-                entry.contractHole(), messageKey));
-    }
-
-    /**
-     * One hole a decode minted: paired by the envelope that carried its
-     * producer ({@link AttachRow#ENVELOPE}), its correlation id the
-     * message's key.
-     */
-    static void attachedHole(Endpoint endpoint, long seq, Endpoint producer,
-                             String messageKey, Hole hole, String symbol,
-                             String javaType, String arrival,
-                             boolean answered, String answeredValue) {
-        confirm(endpoint, producer, messageKey, arrival);
-        SessionPublisher session = publisher;
-        if (session == null) return;
-        session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,
-                symbol, javaType, arrival, answered,
-                answered ? answeredValue : null, producer, messageKey,
-                AttachRow.ENVELOPE, hole));
     }
 
     /**
