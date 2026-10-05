@@ -663,11 +663,14 @@ public class RowRuntimeTest {
     }
 
     /**
-     * Counts start at the window.  hdfs-11741's balancer opens its request
-     * before the window and sends a varying number of set-up RPCs under it;
-     * the first send inside the window must be the same endpoint whatever
-     * the set-up sent, or its anchor -- and every context downstream of it
-     * -- differs between the recording and the replay.
+     * Counts start again at the window.  hdfs-11741's balancer opens its
+     * request before the window and sends a varying number of set-up RPCs
+     * under it; the first send inside the window must be the same endpoint
+     * whatever the set-up sent, or its anchor -- and every context
+     * downstream of it -- differs between the recording and the replay.  A
+     * site reached before the window starts again at 1 (its entries there
+     * all stand at 0), so a call the window opened in names its entries as
+     * one it opened before does (hdfs-adhoc-39).
      *
      * <p>Frames too: an iteration counted before the window stands at 0 in
      * an address made inside it.  hdfs-17899-bug1's DataXceiver threads
@@ -705,7 +708,7 @@ public class RowRuntimeTest {
         assertEquals(firstInWindow.get(0).id(), firstInWindow.get(1).id());
         assertTrue(firstInWindow.get(0).siteIndex().render(),
                 firstInWindow.get(0).siteIndex().render()
-                        .endsWith("HADOOP_IPC#REQUEST@0"));
+                        .endsWith("HADOOP_IPC#REQUEST@1"));
 
         Identity.resetForTests();
         long first = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
@@ -720,11 +723,14 @@ public class RowRuntimeTest {
                 Identity.siteIndex().render());
         Identity.exitFrame(second);
         long third = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
+        assertEquals("the window's first entry is the one after those that "
+                        + "stand at 0", "Cluster.startDataNodes()#u1@1",
+                Identity.siteIndex().render());
         Identity.exitFrame(third);
         long fourth = Identity.enterFrame("Cluster.startDataNodes()#u1",
                 null);
-        assertEquals("inside the window the count stands",
-                "Cluster.startDataNodes()#u1@1",
+        assertEquals("inside the window the count goes on",
+                "Cluster.startDataNodes()#u1@2",
                 Identity.siteIndex().render());
         Identity.exitFrame(fourth);
     }

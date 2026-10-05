@@ -47,6 +47,13 @@ public final class WireFlowCatalog {
             Map<String, SootMethod> methods) throws IOException {
         List<WireFlow> flows = new ArrayList<>();
         for (Row row : rows()) {
+            if (!applies(row.json, methods)) {
+                System.err.println("causynth: communication mapping "
+                        + string(row.json, "id") + " (" + row.at + ") names a"
+                        + " method this program does not hold: not this"
+                        + " program's flow");
+                continue;
+            }
             try {
                 flows.add(parse(row.json, methods));
             } catch (RuntimeException invalid) {
@@ -55,6 +62,32 @@ public final class WireFlowCatalog {
             }
         }
         return new WireFlowCatalog(flows);
+    }
+
+    /**
+     * Whether a declared flow is this program's: a system's mapping file
+     * declares its protocol's flows once for every case, and a flow joins a
+     * producer and a consumer, so a program that does not hold every method
+     * a row names (producer, consumer, frame methods; concrete) carries
+     * none of its values end to end.  Such a row is skipped by name in the
+     * static pass's log; a row the program holds whole is parsed, and
+     * refused by name if it is malformed.
+     */
+    static boolean applies(JsonObject row, Map<String, SootMethod> methods) {
+        List<String> named = new ArrayList<>();
+        for (String side : new String[] {"producer", "consumer"}) {
+            JsonElement capture = row.get(side);
+            if (capture != null && capture.isJsonObject()) {
+                named.add(string(capture.getAsJsonObject(), "method"));
+            }
+            named.add(string(row, side + "FrameMethod"));
+        }
+        for (String method : named) {
+            if (method.isEmpty()) continue;
+            SootMethod held = methods.get(method);
+            if (held == null || !held.isConcrete()) return false;
+        }
+        return true;
     }
 
     private static final class Row {
