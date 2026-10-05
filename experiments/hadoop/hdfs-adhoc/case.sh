@@ -24,7 +24,7 @@
 # The window opens once the first cluster is up (`up`), or before it starts
 # (`startup`, the owner's opt-in for a guard that runs only while a cluster
 # starts: 21 the DataNode handshake, 27 a layout upgrade, 46 the format).
-repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-next
+repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r3
 row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.tsv")
 [[ -n "${row}" ]] || { echo "unknown HDFS ad hoc check: $1" >&2; return 2; }
 IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"${row}"
