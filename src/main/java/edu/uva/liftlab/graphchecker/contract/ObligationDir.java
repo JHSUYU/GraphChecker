@@ -7,13 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 /**
  * CONTRACT-SPEC §3: one obligation worker's directory
@@ -49,23 +46,21 @@ public final class ObligationDir {
     private final List<JsonObject> results;
     private final List<JsonObject> focus;
 
-    private ObligationDir(Path dir, List<JsonObject> results,
-                          List<JsonObject> focus) {
+    /** One worker's answer, and its focus row once it published a session:
+     *  a worker with none may be writing its focus row while a planner
+     *  reads the iteration. */
+    private ObligationDir(Path dir) throws IOException {
         this.dir = dir;
-        this.results = results;
-        this.focus = focus;
+        this.results = RowCodec.readJsonl(dir.resolve(RESULT));
         this.sessionId = sessionOf(results);
+        this.focus = sessionId.isEmpty() ? Collections.<JsonObject>emptyList()
+                : RowCodec.readJsonl(dir.resolve(FOCUSED_TASK));
     }
 
-    /** How many workers' rows are read at once: each is two small files,
-     *  and on NFS a read is its latency (HR1 hdfs-adhoc-07: 1897 workers
-     *  read one after another took two of COMPOSE's minutes). */
-    private static final int PARALLEL_READS = 8;
-
     /**
-     * Every obligation worker of one iteration, in wave and name order, its
-     * answer and focus rows read; a directory with no result row published
-     * no session and is skipped.
+     * Every obligation worker of one iteration that published a session, in
+     * wave and name order, its answer and focus rows read; a directory with
+     * no result row naming a session is skipped.
      */
     public static List<ObligationDir> workersIn(Path iteration)
             throws IOException {
@@ -74,36 +69,11 @@ public final class ObligationDir {
             dirs.addAll(SessionDir.directories(wave, "*"));
         }
         List<ObligationDir> workers = new ArrayList<ObligationDir>();
-        if (dirs.isEmpty()) return workers;
-        ExecutorService readers = Executors.newFixedThreadPool(
-                Math.min(PARALLEL_READS, dirs.size()));
-        try {
-            List<Future<ObligationDir>> reading =
-                    new ArrayList<Future<ObligationDir>>();
-            for (Path dir : dirs) {
-                reading.add(readers.submit(() -> new ObligationDir(dir,
-                        RowCodec.readJsonl(dir.resolve(RESULT)),
-                        RowCodec.readJsonl(dir.resolve(FOCUSED_TASK)))));
-            }
-            for (Future<ObligationDir> worker : reading) {
-                ObligationDir read = worker.get();
-                if (!read.sessionId.isEmpty()) workers.add(read);
-            }
-            return workers;
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new IOException("interrupted while reading the workers of "
-                    + iteration, interrupted);
-        } catch (ExecutionException failed) {
-            Throwable cause = failed.getCause();
-            if (cause instanceof IOException) throw (IOException) cause;
-            if (cause instanceof RuntimeException) {
-                throw (RuntimeException) cause;
-            }
-            throw new IOException(cause);
-        } finally {
-            readers.shutdownNow();
+        for (ObligationDir worker
+                : ParallelReads.each(dirs, ObligationDir::new, iteration)) {
+            if (!worker.sessionId.isEmpty()) workers.add(worker);
         }
+        return workers;
     }
 
     /** One settled question's answer: the obligation that asked it, and
