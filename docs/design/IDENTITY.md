@@ -732,45 +732,57 @@ a replay admits a planned task by its whole address, id against id
 recording minted it; nothing else stands in for where it ran (sweep `b20h`: a test thread calling a
 NameNode's `FSNamesystem#startActiveServices` or a DataNode's `BlockPoolTokenSecretManager#get`
 runs in the test's own scope, at the client in both passes, and a second rule that took the
-receiver's registration for where it ran refused it). One exception: the declared occurrence is also
-answered by its question. PLAN states its context's shape over the recording's senders on its row
-(`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an
-activation of its region on its node, in a context no task of that root plans an occurrence of the
-region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same
-anchor, which is the planned occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer
-handshake, under the anchor of that handshake's planned first call, answered the declared second
-handshake, which then ran unplanned), at an address the recording did not open itself (PLAN states
-the ids of every other occurrence the recording opened in the region on the node, `questionRecorded`,
-`RuntimeTask#recorded`: an activation at one of them is that occurrence, whatever it serves this run;
-accept-SB2: the Solr Overseer's first task, the collection's CREATE, took the address of the declared
-second, the REINDEX, whose own entry then ran unplanned), in an entry that
-opened its own occurrence, answers it when its own context, shaped over this run's senders
-(`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
-reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
-takes the declared address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule
-mark and close state it, so every later stage reads the declared address as before, and a
-DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). A
-declared loop body is asked where its occurrence opens, at its loop root's enclosing entry
-(`ConcolicTaskPlan#addressLoopRootInvocation`, the same four tests, `#answeredHere`), since no root
-entry admits a body: the entry binds the declared task (`RuntimeTask#claimsEnclosingInvocation`), its
-bodies run under it, and the entry's occurrence takes the declared address there, once
-(`LoopAccounting#enterLoopRoot`; hdfs-adhoc-29: a block recovery's worker under the response of
-another DataNode heartbeat than the recorded one). Which
+receiver's registration for where it ran refused it). Every planned occurrence is also answered by
+its shape. PLAN states on each plan row its context's shape over the recording's senders
+(`contextShape`, `causynth/RuntimeSelectedRegionFinalizer#stateShapes`, `RecordedMessages#shape`), its
+recorded root call (`rootCallId`) and the ids of the other occurrences the recording opened in its
+region on its node under that shape (`recordedBeside`). **The order rule:** an activation takes the
+task whose address it ran at; else the earliest task by recorded root call, of its root hook group,
+region and node, not yet live or done, whose shape its own context has hop for hop
+(`ConcolicTaskPlan#earlier`, `RuntimeTask#answers`), so a run's activations of one shape answer
+the planned tasks of that shape one to one, in order, and never two tasks one activation nor one
+task two activations. An activation so answering must also pass three tests (`#answeredHere`): its
+context is one no task of that root plans an occurrence of the region in (`ConcolicTaskPlan#occupies`:
+not its address, and not another invocation under the same anchor, which is the planned
+occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer handshake, under the anchor
+of that handshake's planned first call, answered the declared second handshake, which then ran
+unplanned), its address is none the recording opened itself (`RuntimeTask#recorded`: an activation at
+one of them is that occurrence, whatever it serves this run; accept-SB2: the Solr Overseer's first
+task, the collection's CREATE, took the address of the declared second, the REINDEX, whose own entry
+then ran unplanned), and its entry opened its own occurrence; its context, shaped over this run's
+senders (`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), reaches a root
+(`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then takes the planned
+address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule mark and close state
+it, so every later stage reads the planned address as before, and a DIAGNOSTIC `ADDRESS_UNSTABLE`
+row names the address the run computed (`RowRuntime#answered`). A task answered so is done: a later
+activation at that task's own recorded address runs unplanned, since the task took an earlier
+activation of its shape (the replay ran one more activation of that shape before it than the
+recording did). An occurrence a replay exposed (GROW) states no shape and is answered by its address
+alone. A planned loop body is asked where its occurrence opens, at its loop root's enclosing entry
+(`ConcolicTaskPlan#addressLoopRootInvocation`, the same rule, `#answeredHere`), since no root entry
+admits a body: the entry binds the task (`RuntimeTask#claimsEnclosingInvocation`; a task bound to
+another entry answers no other), its bodies run under it, and the entry's occurrence takes the
+planned address there, once (`LoopAccounting#enterLoopRoot`; hdfs-adhoc-29: a block recovery's
+worker under the response of another DataNode heartbeat than the recorded one). Which
 turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
 holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
-so every anchor below it differed in the root's k alone and the target was never admitted; two
-recordings of one workload differ the same way. A GROW does it to every replay after it: a region
-woven since the seed opens occurrences of its own, so every send under it, and every anchor below,
-has new ids, and no planned address there recurs. The answered occurrence's consumers then pair
-with that chain's producers, not the recorded chain's: the slot table takes them as growth beside
-the declared occurrence's slots, never as replacing them, whichever session lands first (PIPELINE.md
-§7.1 step 4; hdfs-11741 V4, whose declared balancer handshake was answered by the other move's).
-Where the model's arm came from such a session, CONFIRM takes a delivery into the anchor from any
-producer that answers the model's producer's question -- the same site, site index and attempt
-under a chain of the same shape -- and still holds it to the model's value; each substitution is a
-named `ADDRESS_UNSTABLE` row (PIPELINE.md §10; hdfs-11741 V6: which balancer dispatcher iteration
-carried the second move to dn1 is the balancer's timing).
+so every anchor below it differed in the root's k alone and the target was never admitted; in round
+HG5A hdfs-11741's DataNode ran the NameNode's key update (`BlockTokenSecretManager#addKeys`, the
+`allKeys` writes the witness reads) under another heartbeat than the seed's, outside every region,
+so its reads were marked incomplete in 169 of 170 focused sessions; two recordings of one workload
+differ the same way. A GROW does it to every replay after it: a region woven since the seed opens
+occurrences of its own, so every send under it, and every anchor below, has new ids, and no planned
+address there recurs. The answered occurrence's consumers then pair with that chain's producers, not
+the recorded chain's: the slot table takes them as growth beside the planned occurrence's slots,
+never as replacing them, whichever session lands first (PIPELINE.md §7.1 step 4; hdfs-11741 V4, whose
+declared balancer handshake was answered by the other move's). Where the model's arm came from such
+a session, CONFIRM takes a delivery into the anchor from any producer that answers the model's
+producer's question -- the same site, site index and attempt under a chain of the same shape -- and
+still holds it to the model's value; each substitution is a named `ADDRESS_UNSTABLE` row (PIPELINE.md
+§10; hdfs-11741 V6: which balancer dispatcher iteration carried the second move to dn1 is the
+balancer's timing). A delivery into another answered occurrence is compared by its producer as
+recorded: no model value holds it.
 
 ## 10. Pass equality
 
@@ -794,11 +806,10 @@ and count, equal in both passes where one thread alone draws under that key (SYM
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
-- Only the declared occurrence is answered by its question (§9). Every other task still needs its
-  whole address, so the chain a replay took to the
-  declared occurrence instead of the recorded one has no planned rows, and that session sends no
-  message under the declared anchor: EXPLORE finds no door of it there
-  (`explore/ClosurePlanner#controlProducer`).
+- An occurrence answered by its shape (§9) states the planned anchor, which that session never sent:
+  it names no sender or receiver of it, so EXPLORE finds no door of the message the run's
+  occurrence actually ran under (`explore/ClosurePlanner#controlProducer`). An activation the
+  recording never made, of a planned shape, takes that shape's earliest open task.
 - A codec decode on a thread no node is attributed to mints its holes under the unregistered
   address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
   minted there, not in the tick).

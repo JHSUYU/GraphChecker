@@ -1189,17 +1189,19 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
-            // The declaration, resolved once by the finalizer, its
-            // question's shape and the occurrences the recording opened
-            // beside it; PLAN and the replay read them.
+            // The declaration, resolved once by the finalizer, the
+            // occurrence's shape and those the recording opened beside it
+            // under that shape; PLAN and the replay read them, the replay in
+            // the recorded order of their root calls (IDENTITY §9).
             for (String declared : new String[] {
                     RuntimeSelectedRegionFinalizer.DECLARED_OCCURRENCE,
-                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE,
-                    RuntimeSelectedRegionFinalizer.QUESTION_RECORDED}) {
+                    RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE,
+                    RuntimeSelectedRegionFinalizer.RECORDED_BESIDE}) {
                 if (seed.containsKey(declared)) {
                     plan.put(declared, seed.get(declared));
                 }
             }
+            plan.put(DeclaredSiteCapture.ROOT_CALL_ID, rootCallId);
             plan.put("closureGoals", Collections.singletonList(goal));
             stateAnchorOffAddress(plan, result.planGaps);
             result.regionPlans.add(plan);

@@ -1292,10 +1292,11 @@ public final class Identity {
 
     /**
      * Gives the occurrence the innermost region entry opened the address
-     * {@code declared}, which it answers by its question's rule (IDENTITY
-     * §9, {@code ConcolicTaskPlan#select}): from here its rows, endpoints,
-     * decision ordinals, schedule mark and close state the declared address,
-     * as the recording's did, and so does every endpoint minted under it.
+     * {@code declared}, a planned occurrence it answers by its shape
+     * (IDENTITY §9, {@code ConcolicTaskPlan#select}): from here its rows,
+     * endpoints, decision ordinals, schedule mark and close state the
+     * planned address, as the recording's did, and so does every endpoint
+     * minted under it.
      *
      * @return the address this run computed for it, or null when the entry
      *         opened no occurrence of its own (a fold, unnamed work)

@@ -152,20 +152,20 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String DECLARED_OCCURRENCE = "declaredOccurrence";
     /**
-     * Plan-row member of the declared occurrence: its context's shape over
+     * Plan-row member of every planned occurrence: its context's shape over
      * the recording's senders ({@link RecordedMessages#shape}), which a
-     * replay's occurrence of the question answers it by when the declared
-     * address does not recur ({@code runtime.ConcolicTaskPlan}, IDENTITY
-     * §9).
+     * replay's activation answers it by when the planned address does not
+     * recur ({@code runtime.ConcolicTaskPlan#select}, IDENTITY §9).
      */
-    public static final String QUESTION_SHAPE = "questionShape";
+    public static final String CONTEXT_SHAPE = "contextShape";
     /**
-     * Plan-row member of the declared occurrence: the ids of every other
-     * occurrence the recording opened in its region on its node.  A
-     * replay's activation at one of them is that occurrence, and answers no
-     * question ({@code runtime.ConcolicTaskPlan#select}, IDENTITY §9).
+     * Plan-row member of every planned occurrence: the ids of the other
+     * occurrences the recording opened in its region on its node under a
+     * context of its shape.  A replay's activation at one of them is that
+     * occurrence, and answers no task by shape ({@code
+     * runtime.ConcolicTaskPlan#select}, IDENTITY §9).
      */
-    public static final String QUESTION_RECORDED = "questionRecorded";
+    public static final String RECORDED_BESIDE = "recordedBeside";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -843,10 +843,6 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         targets.removeAll(otherTargets);
         instances.get(declared).put(DECLARED_OCCURRENCE, true);
-        instances.get(declared).put(QUESTION_SHAPE,
-                messages.shape(question.context()));
-        instances.get(declared).put(QUESTION_RECORDED,
-                recordedBeside(instances.keySet(), question));
         // An occurrence the recording threw at asks nothing: the run as
         // recorded is the failure, and a claim that moves no root is never a
         // finding (owner 2026-10-04).
@@ -882,25 +878,43 @@ public final class RuntimeSelectedRegionFinalizer {
                 activation.put(DEMAND_DEPTH, walk.depth(occurrence));
             }
         }
+        stateShapes(instances, walk.reached, context -> shapes.computeIfAbsent(
+                context, messages::shape));
         return walk.reached;
     }
 
     /**
-     * The ids of the occurrences the recording opened in {@code question}'s
-     * region on its node, {@code question} itself aside: its activations.
+     * States on every planned occurrence what a replay answers it by where
+     * its address does not recur (IDENTITY §9): its context's shape over the
+     * recording's senders ({@link #CONTEXT_SHAPE}), and the ids of the
+     * other occurrences the recording opened in its region on its node
+     * under that shape ({@link #RECORDED_BESIDE}), each of which a replay's
+     * activation at its address is.
      */
-    static List<String> recordedBeside(Collection<String> activations,
-                                       OccurrenceAddress question) {
-        List<String> ids = new ArrayList<>();
-        for (String activation : activations) {
-            OccurrenceAddress recorded = OccurrenceAddress.parse(activation);
-            if (recorded.regionId().equals(question.regionId())
-                    && recorded.node().equals(question.node())
-                    && !recorded.id().equals(question.id())) {
-                ids.add(recorded.id());
-            }
+    static void stateShapes(Map<String, Map<String, Object>> instances,
+                            Collection<String> planned,
+                            Function<CausalContext, List<String>> shapes) {
+        Map<String, List<OccurrenceAddress>> recorded = new HashMap<>();
+        for (String activation : instances.keySet()) {
+            OccurrenceAddress address = OccurrenceAddress.parse(activation);
+            recorded.computeIfAbsent(address.regionId() + "|"
+                    + address.node().render(), key -> new ArrayList<>())
+                    .add(address);
         }
-        return ids;
+        for (String occurrence : planned) {
+            OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
+            List<String> shape = shapes.apply(address.context());
+            List<String> beside = new ArrayList<>();
+            for (OccurrenceAddress other : recorded.get(address.regionId()
+                    + "|" + address.node().render())) {
+                if (!other.id().equals(address.id())
+                        && shapes.apply(other.context()).equals(shape)) {
+                    beside.add(other.id());
+                }
+            }
+            instances.get(occurrence).put(CONTEXT_SHAPE, shape);
+            instances.get(occurrence).put(RECORDED_BESIDE, beside);
+        }
     }
 
     /** One root an occurrence read: a captured DECLARED_SITE of a root's
