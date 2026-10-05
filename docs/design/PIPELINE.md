@@ -250,14 +250,20 @@ opening (`OPEN`). A replay reads its order's timeline, moved to start at its own
 `v = max(last, min(hi, lo + host time since lo moved))`. `lo` is the stamp of the furthest point the
 replay has reached -- its origin, each startup pass it completed (`StartupOrder#done`), its window's
 opening (`ScheduleLog#windowOpened`), each slot settled at or before the order's frontier
-(`ScheduleLog#publishTimeLocked`) -- and `hi` that of the next it has not: before the window the next
-startup pass its order marks, else the opening; inside, the frontier's slot while the line stands
-(IDENTITY.md §8); nothing past the line, after the window closes, or with no order. So a slower replay
-waits at the cap where its recording's heartbeat was not yet due, a turn its slot released early reads
-at least its slot's instant, and no read goes back. No read is keyed or written. A read never blocks;
+(`ScheduleLog#publishTimeLocked`) -- and `hi` that of the next it has not, plus one millisecond tick
+(`Clocks#TICK_NANOS`: hdfs-adhoc-17's DataNodes set their next heartbeat 96 us before the recorded turn
+that sent it): inside the window the frontier's slot while the line stands (IDENTITY.md §8); before it,
+from the origin the first startup pass the order marks, and from a pass on the pass itself -- time
+stands at the latest pass reached until the next pass or the opening, since what a node does once it
+joined the recording did at once (17's first heartbeats fell in the millisecond of the last
+registration; run at host speed toward the opening instead, round TM1's replay set them half a second
+late and no turn #1 found its heartbeat due); nothing past the line, after the window closes, or with
+no order. So a slower replay waits at the cap where its recording's heartbeat was not yet due, a turn
+its slot released early reads at least its slot's instant, and no read goes back. No read is keyed or written. A read never blocks;
 a cap that stood a stall by the watchdog's own test (a schedule timeout with nothing computing, or eight
 whatever runs: `ScheduleLog#stalledLocked`) is lifted by name (`SCHEDULE_DIVERGED`): before the window
-by the clock itself (`clock#<mark>`), until the next mark; inside it only when no thread waits on the
+by the clock itself (`clock#<mark>`: time standing at a pass runs on toward the next mark, time at
+the next mark past it); inside it only when no thread waits on the
 order (`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier.
 A slow start-up computing past its cap is no stall: lifted after a bare timeout, hdfs-11741's opened its
 window 62 s of model time past the recorded opening, and its window's time stood there (round TM1). The

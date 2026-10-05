@@ -24,6 +24,8 @@ import org.junit.Test;
  */
 public class ClocksTest {
     private static final long MS = 1_000_000L;
+    /** A cap stands one millisecond tick past its instant. */
+    private static final long TICK = Clocks.TICK_NANOS;
     private static final SourceRef NODE =
             new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
     private final List<JsonObject> rows =
@@ -78,8 +80,8 @@ public class ClocksTest {
                 ScheduleEvent.ORIGIN).get(0));
         Thread.sleep(150L);
         assertEquals("never past a startup pass it has not made",
-                first + 100L * MS, Clocks.nanos());
-        assertEquals("on both clocks", firstMillis + 100L, Clocks.millis());
+                first + 100L * MS + TICK, Clocks.nanos());
+        assertEquals("on both clocks", firstMillis + 101L, Clocks.millis());
         StartupOrder.done(StartupOrder.begin("register", "dn0"));
         long passed = Clocks.nanos();
         assertTrue(passed >= first + 100L * MS
@@ -88,15 +90,15 @@ public class ClocksTest {
                 RowCodec.scheduleNanos(marks(ScheduleEvent.STARTUP).get(0))
                         >= first + 100L * MS);
         Thread.sleep(250L);
-        assertEquals("nor past the window's opening", first + 300L * MS,
-                Clocks.nanos());
+        assertEquals("from a pass on, time stands at the pass reached",
+                first + 100L * MS + TICK, Clocks.nanos());
 
         openWindow();
         ScheduleLog.enforceForTests(Arrays.asList(
                 event("x", 400L), event("y", 2000L)));
         Thread.sleep(150L);
         assertEquals("inside, never past the frontier's instant",
-                first + 400L * MS, Clocks.nanos());
+                first + 400L * MS + TICK, Clocks.nanos());
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         long atX = Clocks.nanos();
         assertTrue("an event made: its instant is reached",
@@ -124,7 +126,7 @@ public class ClocksTest {
         long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
                 .get(0));
         Thread.sleep(100L);
-        assertEquals(first + 50L * MS, Clocks.nanos());
+        assertEquals(first + 50L * MS + TICK, Clocks.nanos());
         standUntilLifted("1 at a startup mark");
         Thread.sleep(100L);
         assertTrue("a startup pass that never came, nothing computing: time"
@@ -134,7 +136,7 @@ public class ClocksTest {
         ScheduleLog.enforceForTests(Collections.singletonList(
                 event("x", 10_050L)));
         Thread.sleep(100L);
-        assertEquals(first + 10_050L * MS, Clocks.nanos());
+        assertEquals(first + 10_050L * MS + TICK, Clocks.nanos());
         standUntilLifted("1 with no thread waiting on the order");
         Thread.sleep(100L);
         assertTrue("a frontier no thread waits on: time runs past it",
