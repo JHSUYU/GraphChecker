@@ -1150,19 +1150,34 @@ public final class CausynthTraceRecorder {
         return occurrences;
     }
 
-    /** One marker answer a plant gave ({@link RecordingPlant}), as a trace
-     *  row. */
-    static void plantApplied(String marker, String siteId, String occurrence,
-                             boolean value) {
+    /** One root a plant planted, or failed to ({@link RecordingPlant}):
+     *  its row, the marker or root, where, and the value, as a trace row. */
+    static void plantRoot(String event, int row, String planted,
+                          String occurrence, String value) {
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
-                    "event", RecordingPlant.APPLIED,
+                    "event", event,
                     "seq", EVENT_COUNTER.incrementAndGet(),
-                    "marker", MapFields.safe(marker),
-                    "siteId", siteId,
+                    "row", row,
+                    "planted", MapFields.safe(planted),
                     "occurrenceAddress", occurrence,
                     "value", value);
+        }
+    }
+
+    /** What one ORDER row of a plant came to ({@link
+     *  RecordingPlant#ordered}), as a trace row. */
+    static void plantOrdered(String event, int row, String after,
+                             String waitingFor) {
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", event,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "row", row,
+                    "activation", after,
+                    "waitingFor", waitingFor);
         }
     }
 

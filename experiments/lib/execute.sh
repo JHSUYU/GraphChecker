@@ -30,11 +30,13 @@ else
   scratch_owned=${work}
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
-  # A native reproduction plants its markers (runtime.RecordingPlant).
+  # A native reproduction plants CONFIRM's world (runtime.RecordingPlant),
+  # each ORDER held at most CAUSYNTH_ORDER_TIMEOUT_MS (runtime.Confirmation).
   properties=(
     "-Dcausynth.trace.test=${test_name}"
     "-Dcausynth.trace.start.paused=true"
-    ${CAUSYNTH_PLANT:+"-Dcausynth.plant=${CAUSYNTH_PLANT}"})
+    ${CAUSYNTH_PLANT:+"-Dcausynth.plant=${CAUSYNTH_PLANT}"}
+    ${CAUSYNTH_ORDER_TIMEOUT_MS:+"-Dcausynth.confirm.order.timeout.ms=${CAUSYNTH_ORDER_TIMEOUT_MS}"})
 fi
 
 # The case's window, the same in the recording and every replay
