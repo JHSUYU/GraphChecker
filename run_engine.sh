@@ -850,9 +850,11 @@ do_analyze() {
     )
   fi
   require_file "GraphChecker jar" "${graphchecker_jar}"
+  # The pass's JVM runs on GraphChecker's jar alone: Soot reads the analysed
+  # classpath (-x) itself, and no class of the case is loaded into the JVM.
   run_in_directory "${graphchecker_work_dir}" engine_java \
     "${system_properties[@]}" \
-    -cp "${graphchecker_jar}:${project_classpath}" \
+    -cp "${graphchecker_jar}" \
     edu.uva.liftlab.graphchecker.GraphCheckerMain \
     "${input_flag}" "${project_classes_dir}" \
     -x "${project_classpath}" \

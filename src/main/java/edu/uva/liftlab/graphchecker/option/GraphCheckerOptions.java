@@ -61,15 +61,14 @@ public final class GraphCheckerOptions {
             throw new IllegalArgumentException("GraphCheckerMain states no "
                     + "-i <classes directory>");
         }
+        // Soot's classpath: GraphChecker's own classes (the runtime a weave
+        // calls), the analysed classpath, the inputs.  The pass's own JVM
+        // runs on GraphChecker's jar alone (run_engine.sh do_analyze).
         List<String> entries = new ArrayList<>();
         entries.add(GraphCheckerMain.class.getProtectionDomain()
                 .getCodeSource().getLocation().getPath());
         entries.addAll(extra);
         entries.addAll(inputs);
-        String javaClassPath = System.getProperty("java.class.path");
-        if (javaClassPath != null && !javaClassPath.isEmpty()) {
-            entries.add(javaClassPath);
-        }
         return new GraphCheckerOptions(inputs,
                 String.join(File.pathSeparator, entries), output);
     }
