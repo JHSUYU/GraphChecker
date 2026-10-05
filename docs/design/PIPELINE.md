@@ -1105,7 +1105,7 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
-  object the VM named (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a
+  object the VM named (`M_L'<class>'_<rid>`, an array `A<type>_<rid>-<version>`) is the reference it is, whatever its class, where a
   whole value is asked
   (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is (a
   comparison asks a named operand at the other's sort, on either side, `#binary`); an operator
@@ -1316,7 +1316,7 @@ unknown nullness), and an answer per candidate object is null where its case's i
 nullness only where a case states none (`#perCandidateTerm`), which an operation dereferencing it
 still refuses by name. A cell holds what Java stores: an object, a container included, is boxed as
 its reference (`Host#box`; hdfs ad-hoc `bpStorageDirMap.put(bpid, dirs)` was cut `CannotBox`). An
-object reference is an opaque identity: one the VM named (`M_L'c'_rid`) is non-null and distinct
+object reference is an opaque identity: one the VM named (`M_L'c'_rid`, or an array's `A<type>_<rid>-<v>`, one identity at every version) is non-null and distinct
 from its session's other named objects, one it placed unnamed (`P_L'c'_`, made only for a non-null
 object) is non-null (`SmtLowering#opaque`), and either is that identity wherever it is asked as a
 reference. The objects a session placed unnamed of one class share one identity, an
