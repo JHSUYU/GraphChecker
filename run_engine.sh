@@ -146,9 +146,11 @@ workflow_config_keys=(
   # nearest the throw first; 0 keeps the declared scope as it is.
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
   # How many times REPRODUCE runs a confirmed witness natively, and each
-  # run's wall clock: this factor times the recording's own workload.
+  # run's wall clock: this factor times the recording's own workload, at
+  # least reproduce_min_s (campaign_reproduce_bound).
   "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
   "reproduce_time_factor CAUSYNTH_REPRODUCE_TIME_FACTOR krp 3"
+  "reproduce_min_s CAUSYNTH_REPRODUCE_MIN_S krp 300"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -696,7 +698,8 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       recording_max_trace_mb schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound reproduce_runs \
-      reproduce_time_factor campaign_budget_s campaign_reserve_s \
+      reproduce_time_factor reproduce_min_s campaign_budget_s \
+      campaign_reserve_s \
       campaign_max_claims; do
     require_positive_integer "${key}"
   done
@@ -5964,8 +5967,8 @@ campaign_claim_room() {
 # attempts; the last planner round, which reads the same corpus, stands for
 # a COMPOSE none has run yet -- CONFIRM as long as the longest CONFIRM --
 # the seed's REPLAY stands for a CONFIRM replay none has run yet -- and
-# REPRODUCE its own bound, reproduce_time_factor times the recording's
-# workload (its native runs go out at once); never less than
+# REPRODUCE its own bound (campaign_reproduce_bound; its native runs go out
+# at once); never less than
 # campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
 # the case timeout when the reserve owed COMPOSE and CONFIRM alone; HR1:
 # hdfs-adhoc-07's first COMPOSE, over 556 sessions after planner rounds of 4
@@ -5983,9 +5986,19 @@ campaign_reserve() {
         $1 == "PLANNER" { p = $2; next }
         { if ($2 > r) r = $2 }
         END { printf "%d\n", (2 * (c > 0 ? c : p) + r) / 1000 }')
-  measured=$(( measured + reproduce_time_factor \
-    * ${campaign_recorded_workload_s:-0} ))
+  measured=$(( measured + $(campaign_reproduce_bound) ))
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
+}
+
+# How long one native run of REPRODUCE may take, in seconds:
+# reproduce_time_factor times the recording's workload, at least
+# reproduce_min_s.  A planted world may take a longer way to its anchor than
+# the recording took to its end (hdfs-17960 NP1: ordered deletion off, its
+# NameNode restart ran 94 s natively against an 8 s recording, and every run
+# was cut at 24 s).
+campaign_reproduce_bound() {
+  local bound=$(( reproduce_time_factor * ${campaign_recorded_workload_s:-0} ))
+  echo $(( bound > reproduce_min_s ? bound : reproduce_min_s ))
 }
 
 # "PLANNER <ms>": the wall of the last round the planner finished, from
@@ -6052,7 +6065,7 @@ has no room for another claim"
 # CONFIRM's world; runtime.RecordingPlant).  reproduce_runs runs, all at
 # once, each a head step charged the recording's measured peak resident
 # memory wherever there is room (campaign_reproduce_one) and bounded by
-# reproduce_time_factor times the recording's own workload; a run ends as
+# campaign_reproduce_bound; a run ends as
 # soon as the planted world takes the fatal arm at the anchor, its one
 # question answered.  Each run states its answer itself
 # (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
@@ -6100,11 +6113,11 @@ campaign_reproduce() {
     campaign_log "reproduce: ${reason}"
     return 0
   fi
-  bound=$(( reproduce_time_factor * campaign_recorded_workload_s ))
+  bound=$(campaign_reproduce_bound)
   campaign_log "reproduce: ${reproduce_runs} native run(s) at once, each \
 charged ${campaign_recorded_workload_rss_mb} MB and bounded by ${bound}s \
 (reproduce_time_factor=${reproduce_time_factor} x the recording's \
-${campaign_recorded_workload_s}s)"
+${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
   for ((run = 0; run < reproduce_runs; run++)); do
     campaign_reproduce_one "${dir}/run-$((run + 1))" "${bound}" \
       "${dir}/plant.jsonl" &

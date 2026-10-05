@@ -900,7 +900,9 @@ done
 # the campaign's measured need (campaign_replay_need_mb); and
 # `stream_max_in_flight` became `stream_shared_pool`: a sweep asks for a
 # shared pool, and each exploration sizes its share from its measured need.
-[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
+# 54: `reproduce_min_s` joined it: the least wall clock a native run is
+# given, since a planted world may take a longer way than the recording.
+[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1170,7 +1172,8 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 # step placed where there is room (here: the head's own host, which has it)
 # and charged the recording's peak memory until it returns, naming the host
 # it ran on, bounded by
-# reproduce_time_factor times the recording's workload and answering for
+# reproduce_time_factor times the recording's workload, at least
+# reproduce_min_s, and answering for
 # itself, per row of the plant, off its trace's plant rows; reproduce.json
 # counts the answers (whole plant applied, fatal, at the anchor, an order
 # unheld) and names the runs that stated none.  A plant CONFIRM refuses, or a
@@ -1197,6 +1200,7 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     campaign_head_charging=1
     reproduce_runs=4
     reproduce_time_factor=3
+    reproduce_min_s=75
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
     # ConfirmMain --plant: a root, an order and the target's arm, else
@@ -1245,9 +1249,10 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
 $(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
   [[ "${repro_expected}" != *'"runs":4'* \
       || "$(cut -d' ' -f1,2 "${repro_dir}/bounds" | sort -u)" \
-        == "60 ${repro_rss}" ]] \
-    || fail "a native run was not bounded by 3 x the recording's 20 s and \
-held to its ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
+        == "75 ${repro_rss}" ]] \
+    || fail "a native run was not bounded by reproduce_min_s=75 over 3 x the \
+recording's 20 s and held to its ${repro_rss} MB charge: \
+$(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
       || "$(awk '$3 < 1' "${repro_dir}/bounds")" == "" ]] \
     || fail "a native run ran uncharged: $(cat "${repro_dir}/bounds")"
@@ -2767,6 +2772,7 @@ stream_fixture stream-3c
   stream_stubs
   campaign_budget_s=3
   campaign_reserve_s=1
+  reproduce_min_s=1
   campaign_started_s=${SECONDS}
   stream_round_plan() {
     [[ "$1" != 0 ]] || stream_propose "$2" SLOW
@@ -4249,6 +4255,7 @@ next_claim() {
 reset_config
 campaign_budget_s=100
 campaign_reserve_s=20
+reproduce_min_s=1
 campaign_started_s=${SECONDS}
 next_claim true
 ! campaign_next_claim "${next_iteration}" >/dev/null \
@@ -4288,8 +4295,9 @@ reset_config
 # RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE
 # (the last planner round, which reads the same corpus, standing for one not
 # yet run), CONFIRM as long as the longest CONFIRM (the seed's REPLAY
-# standing for one), REPRODUCE reproduce_time_factor times the recorded
-# workload, never less than campaign_reserve_s.  HG4's hdfs-11741 lost its
+# standing for one), REPRODUCE its bound (reproduce_time_factor times the
+# recorded workload, at least reproduce_min_s), never less than
+# campaign_reserve_s.  HG4's hdfs-11741 lost its
 # EMIT to the case timeout when it owed COMPOSE and CONFIRM alone; HR1's
 # hdfs-adhoc-07 had the floor's 600 s for its first COMPOSE; SL1's
 # hdfs-adhoc-37 owed its 23-min seed replay twice and explored one round.
@@ -4309,7 +4317,7 @@ reserve_case() {
       "${dir}/explore_manifest.json"
   done
   got=$(campaign_reserve_s=$4 campaign_recorded_workload_s=$5 \
-    reproduce_time_factor=3 \
+    reproduce_time_factor=3 reproduce_min_s=30 \
     campaign_stage_metrics="${root}/stage_metrics.tsv" \
     campaign_root="${root}" campaign_reserve)
   [[ "${got}" == "$6" ]] \
@@ -4320,6 +4328,7 @@ reserve_case composed 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
 reserve_case planned 'REPLAY\t30000\n' '0:5 10:130 140:-' 20 10 300
 reserve_case floor 'REPLAY\t30000\n' '' 100 0 100
 reserve_case slow-seed 'REPLAY\t1409000\n' '0:60' 20 30 1619
+reserve_case native-floor 'REPLAY\t30000\n' '' 20 5 60
 unset -f reserve_case
 
 # BUDGET-1: a budget its reserve takes whole is refused by name.

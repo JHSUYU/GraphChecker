@@ -85,7 +85,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `campaign_worker_hosts`, `engine_memory_mb`, `stream_shared_pool` (false) | the pool's hosts, the most heap a head JVM is given and a solver asked again, whether the exploration shares its hosts' replay slots with the other sharing explorations (§7.7; a sweep's cases) |
 | `campaign_stop_after` | empty, `SEED` or `IMPORT` |
-| `reproduce_runs`* (10), `reproduce_time_factor`* (3) | how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
+| `reproduce_runs`* (10), `reproduce_time_factor`* (3), `reproduce_min_s`* (300) | how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload, at least `reproduce_min_s` (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
 
@@ -1031,7 +1031,8 @@ cancelled or reaped, by id):
   standing for a COMPOSE not yet run: its `in_flight.jsonl`, copied as the planner starts, to its
   `explore_manifest.json`, `campaign_last_round_millis`), CONFIRM as long as the longest CONFIRM
   (the seed's REPLAY standing for a CONFIRM not yet run), REPRODUCE its own bound
-  (`reproduce_time_factor` times the recorded workload; its native runs go out at once), never less than
+  (`campaign_reproduce_bound`: `reproduce_time_factor` times the recorded workload, at least
+  `reproduce_min_s`; its native runs go out at once), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
@@ -1853,7 +1854,9 @@ order (it would repeat the recording) or a scope map that states no fatal arm.
 charged the recording's peak resident memory (`execute.sh` states it as `workload_rss_mb` in the
 trace directory, and holds each run to it as to any charge) wherever there is room until it
 returns, naming the host it ran on (`<run>/host.txt`), and bounded by `reproduce_time_factor` (3)
-times the recording's own workload. A run (`campaign_reproduce_run`) runs the recording command
+times the recording's own workload, at least `reproduce_min_s` (300: a planted world may take a
+longer way to its anchor than the recording took to its end -- hdfs-17960's NameNode restart with
+ordered deletion off ran 94 s natively against an 8 s recording; `campaign_reproduce_bound`). A run (`campaign_reproduce_run`) runs the recording command
 with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`), inside the window and at an enclosing
 region occurrence of the row's id (`CausynthTraceRecorder#enclosingOccurrences`):
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value (`RecordingPlant#marker`);
