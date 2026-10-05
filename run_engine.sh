@@ -190,8 +190,7 @@ workflow_config_keys=(
   # past that the exploration ends and the claim it has is published.
   "campaign_budget_s CAUSYNTH_CAMPAIGN_BUDGET_S krp 21600"
   # The least the stages after the exploration are kept of that budget, in
-  # seconds: one COMPOSE and one CONFIRM, before the campaign has measured
-  # either (campaign_reserve).
+  # seconds, however short the stages it is measured from (campaign_reserve).
   "campaign_reserve_s CAUSYNTH_CAMPAIGN_RESERVE_S krp 600"
   # How many times the final stages decide a claim again after CONFIRM
   # refuted one (campaign_next_claim): each refutation excludes that claim's
@@ -5961,12 +5960,17 @@ campaign_claim_room() {
 
 # What the stages after the exploration are owed, in seconds: COMPOSE and
 # EMIT, which reads the corpus COMPOSE read, each as long as the longest
-# COMPOSE this campaign measured; CONFIRM and REPRODUCE, whose native runs
-# of the witness take less than one replay of it, each as long as the
-# longest CONFIRM -- its stage metrics and its witness attempts; the seed's
-# REPLAY stands for a CONFIRM replay none has run yet -- and never less than
+# COMPOSE this campaign measured -- its stage metrics and its witness
+# attempts; the last planner round, which reads the same corpus, stands for
+# a COMPOSE none has run yet -- CONFIRM as long as the longest CONFIRM --
+# the seed's REPLAY stands for a CONFIRM replay none has run yet -- and
+# REPRODUCE its own bound, reproduce_time_factor times the recording's
+# workload (its native runs go out at once); never less than
 # campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
-# the case timeout when the reserve owed COMPOSE and CONFIRM alone.)
+# the case timeout when the reserve owed COMPOSE and CONFIRM alone; HR1:
+# hdfs-adhoc-07's first COMPOSE, over 556 sessions after planner rounds of 4
+# min, had the floor's 10 min; SL1: hdfs-adhoc-37's 23-min seed replay,
+# standing for REPRODUCE as well as CONFIRM, left its exploration one round.)
 campaign_reserve() {
   local measured
   measured=$( {
@@ -5974,10 +5978,27 @@ campaign_reserve() {
         print $1, $2 }' "${campaign_stage_metrics}" 2>/dev/null
       jq -r '"COMPOSE \(.composeMillis // 0)", "CONFIRM \(.confirmMillis // 0)"' \
         "${campaign_root}/iteration-0000/witness_attempts.jsonl" 2>/dev/null
+      campaign_last_round_millis
     } | awk '$1 == "COMPOSE" { if ($2 > c) c = $2; next }
+        $1 == "PLANNER" { p = $2; next }
         { if ($2 > r) r = $2 }
-        END { printf "%d\n", 2 * (c + r) / 1000 }')
+        END { printf "%d\n", (2 * (c > 0 ? c : p) + r) / 1000 }')
+  measured=$(( measured + reproduce_time_factor \
+    * ${campaign_recorded_workload_s:-0} ))
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
+}
+
+# "PLANNER <ms>": the wall of the last round the planner finished, from
+# its in_flight.jsonl, copied as the planner starts (campaign_stream_step),
+# to its explore_manifest.json, written as it ends; nothing before one has.
+campaign_last_round_millis() {
+  local manifest started ended last=""
+  for manifest in "${campaign_root}"/iteration-0000/obligations-[0-9]*/explore_manifest.json; do
+    started=$(stat -c %Y "${manifest%/*}/in_flight.jsonl" 2>/dev/null) \
+      && ended=$(stat -c %Y "${manifest}" 2>/dev/null) \
+      && last="PLANNER $(( (ended - started) * 1000 ))"
+  done
+  [[ -z "${last}" ]] || echo "${last}"
 }
 
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE

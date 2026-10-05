@@ -27,7 +27,7 @@ workload, so nothing but the declared clock and the block-key serial can open th
 
 ## Build and run
 
-Hadoop checkout `/u/vnr3ne/hadoop-hdfs-11741`, branch `gc/hdfs-11741`. From this
+Hadoop checkout `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r4`, branch `gc/hdfs-11741-r4` (Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r4`). From this
 directory:
 
 ```bash

@@ -4266,19 +4266,42 @@ next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
 unset -f next_claim
 reset_config
 
-# RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE,
-# CONFIRM and REPRODUCE as long as the longest CONFIRM (the seed's REPLAY
-# standing for one).  HG4's hdfs-11741 lost its EMIT to the case timeout
-# when it owed COMPOSE and CONFIRM alone.
-mkdir -p "${test_tmp}/reserve-root"
-printf 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
-  >"${test_tmp}/reserve-metrics.tsv"
-reserve_got=$(campaign_reserve_s=20 \
-  campaign_stage_metrics="${test_tmp}/reserve-metrics.tsv" \
-  campaign_root="${test_tmp}/reserve-root" campaign_reserve)
-[[ "${reserve_got}" == 300 ]] \
-  || fail "RESERVE-1: the reserve over COMPOSE 100 s and CONFIRM 50 s is \
-${reserve_got} s, not 300 s"
+# RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE
+# (the last planner round, which reads the same corpus, standing for one not
+# yet run), CONFIRM as long as the longest CONFIRM (the seed's REPLAY
+# standing for one), REPRODUCE reproduce_time_factor times the recorded
+# workload, never less than campaign_reserve_s.  HG4's hdfs-11741 lost its
+# EMIT to the case timeout when it owed COMPOSE and CONFIRM alone; HR1's
+# hdfs-adhoc-07 had the floor's 600 s for its first COMPOSE; SL1's
+# hdfs-adhoc-37 owed its 23-min seed replay twice and explored one round.
+# Rows: name | stage metrics | planner rounds, each its start and end second
+# (- : still planning) | campaign_reserve_s | recorded workload s | the
+# reserve.
+reserve_case() {
+  local root=${test_tmp}/reserve-$1 round=0 span dir got
+  mkdir -p "${root}/iteration-0000"
+  printf "$2" >"${root}/stage_metrics.tsv"
+  for span in $3; do
+    dir=$(printf '%s/iteration-0000/obligations-%04d' "${root}" "${round}")
+    round=$((round + 1))
+    mkdir -p "${dir}"
+    touch -d "@$((1000000 + ${span%:*}))" "${dir}/in_flight.jsonl"
+    [[ "${span#*:}" == - ]] || touch -d "@$((1000000 + ${span#*:}))" \
+      "${dir}/explore_manifest.json"
+  done
+  got=$(campaign_reserve_s=$4 campaign_recorded_workload_s=$5 \
+    reproduce_time_factor=3 \
+    campaign_stage_metrics="${root}/stage_metrics.tsv" \
+    campaign_root="${root}" campaign_reserve)
+  [[ "${got}" == "$6" ]] \
+    || fail "RESERVE-1 $1: the reserve is ${got} s, not $6 s"
+}
+reserve_case composed 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
+  '0:400' 20 10 280
+reserve_case planned 'REPLAY\t30000\n' '0:5 10:130 140:-' 20 10 300
+reserve_case floor 'REPLAY\t30000\n' '' 100 0 100
+reserve_case slow-seed 'REPLAY\t1409000\n' '0:60' 20 30 1619
+unset -f reserve_case
 
 # BUDGET-1: a budget its reserve takes whole is refused by name.
 budget_validate() (
