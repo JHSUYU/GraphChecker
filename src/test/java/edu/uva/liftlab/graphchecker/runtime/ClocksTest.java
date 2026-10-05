@@ -94,8 +94,10 @@ public class ClocksTest {
                 first + 100L * MS + TICK, Clocks.nanos());
         long standing = Clocks.nanos();
         Thread.sleep(50L);
-        assertTrue("and creeps on: a sleep always sees its clock move",
-                Clocks.nanos() > standing);
+        assertEquals("time stands", standing, Clocks.nanos());
+        TimedWaits.sleep(50L, "<ClocksTest: void sleep()>#u1");
+        assertTrue("but a thread that slept sees its own clock move a tick",
+                Clocks.nanos() >= standing + TICK);
 
         openWindow();
         Thread.sleep(100L);
@@ -151,12 +153,9 @@ public class ClocksTest {
                 Clocks.nanos() > first + 10_100L * MS);
     }
 
-    /**
-     * A read at a cap: past it only by the creep, a thousandth of the host
-     * time it stood there (under a second here), so never by a tick.
-     */
+    /** A read at a cap: never past it. */
     private static void atCap(String why, long cap, long read) {
-        assertTrue(why + ": " + (read - cap), read >= cap && read < cap + TICK);
+        assertEquals(why, cap, read);
     }
 
     /** Reads at the cap, idle between, until the lift is counted. */

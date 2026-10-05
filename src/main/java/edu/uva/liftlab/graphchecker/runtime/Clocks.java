@@ -41,11 +41,12 @@ import java.util.concurrent.atomic.LongAdder;
  * it joined, the recording did at once (17's first heartbeats, in the
  * millisecond of the last registration), and the replay's lag after it is
  * its own slowness.  Past the line, after the window closed, or with no
- * order, nothing caps it, and past a cap time creeps on at a thousandth of
- * the host's pace ({@link #CREEP}), never standing still.  So a replay's
- * application time runs ahead of its place in the order by no more than that
- * creep (a slower replay waits at the cap where the recording's heartbeat
- * was not yet due), never behind it (a turn its slot
+ * order, nothing caps it.  A thread that waited reads at least one tick
+ * past where time stood when its wait began ({@link #FLOOR}), so its clock
+ * moves across a sleep.  So a replay's application time never runs ahead of
+ * its place in the order but by those ticks (a slower replay waits at the
+ * cap where the recording's heartbeat was not yet due), never behind it (a
+ * turn its slot
  * released early reads at least its slot's instant), and two threads never
  * read time going back.  No read is keyed and none is written: a value set
  * at start-up and a read compared with it stand on one timeline (the parked
@@ -68,14 +69,20 @@ import java.util.concurrent.atomic.LongAdder;
 public final class Clocks {
     private static final Object LOCK = new Object();
     /**
-     * How much slower than the host time creeps on past its cap: a
-     * millisecond a host second.  A real clock moves across a sleep, and
-     * code divides by what it moved (Hadoop's GcTimeMonitor, by its run's
-     * span after its first five-second sleep: standing still, it died in
-     * every replay of rounds TM1 and TM2); a stall of the watchdog's eight
-     * timeouts moves it 120 ms.
+     * Per thread, the floor its reads stand on (nanos, millis): one tick
+     * past where time stood when its last timed wait began ({@link
+     * #waited}).  A real clock moves across a sleep and code divides by what
+     * it moved: Hadoop's GcTimeMonitor divides by its run's span after its
+     * first five-second sleep, and with time standing at a cap it died in
+     * every replay of rounds TM1 and TM2.  Per thread and from where time
+     * stood, so a polling loop never pushes it on: time creeping on for
+     * every reader instead ran hdfs-adhoc-17's start-up 29 ms past its
+     * first registration and no DataNode's turn #1 heartbeat came due
+     * (round TM5).
      */
-    static final long CREEP = 1000L;
+    private static final ThreadLocal<long[]> FLOOR =
+            ThreadLocal.withInitial(() -> new long[] {Long.MIN_VALUE,
+                    Long.MIN_VALUE});
     /** What a cap allows past its instant: one millisecond tick. */
     static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
     /** One cap's ask for a lift at most this often. */
@@ -111,17 +118,12 @@ public final class Clocks {
         }
 
         long nanos(long host) {
-            return capped(baseNanos + (host - hostAt), hiNanos);
+            return Math.min(hiNanos, baseNanos + (host - hostAt));
         }
 
         long millis(long host) {
-            return capped(baseMillis
-                    + TimeUnit.NANOSECONDS.toMillis(host - hostAt), hiMillis);
-        }
-
-        /** Past its cap, time creeps on at {@link #CREEP}'s pace. */
-        private static long capped(long ran, long hi) {
-            return ran <= hi ? ran : hi + (ran - hi) / CREEP;
+            return Math.min(hiMillis, baseMillis
+                    + TimeUnit.NANOSECONDS.toMillis(host - hostAt));
         }
     }
 
@@ -204,8 +206,28 @@ public final class Clocks {
             AT_CAP.increment();
             if (asks) atCap(at, host);
         }
-        return (nanos ? LAST_NANOS : LAST_MILLIS).accumulateAndGet(ran,
+        long read = (nanos ? LAST_NANOS : LAST_MILLIS).accumulateAndGet(ran,
                 Math::max);
+        return asks ? Math.max(read, FLOOR.get()[nanos ? 0 : 1]) : read;
+    }
+
+    /**
+     * A timed wait begins ({@code TimedWaits}): where time stands now, the
+     * base of the floor {@link #waited} sets; null with no model.
+     */
+    static long[] waitBegins() {
+        if (!started) start();
+        if (bounds == null) return null;
+        return new long[] {read(true, false), read(false, false)};
+    }
+
+    /** The timed wait {@code began} returned: this thread reads at least
+     *  one tick past where time stood then. */
+    static void waited(long[] began) {
+        if (began == null) return;
+        long[] floor = FLOOR.get();
+        floor[0] = Math.max(floor[0], began[0] + TICK_NANOS);
+        floor[1] = Math.max(floor[1], began[1] + 1L);
     }
 
     /**
@@ -497,6 +519,7 @@ public final class Clocks {
             windowSeen = false;
             AT_CAP.reset();
             ASKED.set(0L);
+            FLOOR.remove();
             liftsUnwaited = 0;
             liftsStartup = 0;
         }

@@ -262,9 +262,11 @@ stands at the latest pass reached until the next pass or the opening, since what
 joined the recording did at once (17's first heartbeats fell in the millisecond of the last
 registration; run at host speed toward the opening instead, round TM1's replay set them half a second
 late and no turn #1 found its heartbeat due); nothing past the line, after the window closes, or with
-no order. Past a cap time creeps on at a thousandth of the host's pace (`Clocks#CREEP`), never standing
-still: a real clock moves across a sleep and code divides by it (Hadoop's `GcTimeMonitor` died in every
-replay of rounds TM1/TM2 on a run span of zero). So a slower replay waits at the cap where its
+no order. A thread that waited (a timed wait, `TimedWaits`) reads at least one tick past where time stood
+when its wait began (`Clocks#waited`): a real clock moves across a sleep and code divides by it (Hadoop's
+`GcTimeMonitor` died in every replay of rounds TM1/TM2 on a run span of zero), and per thread, from
+where time stood, no polling loop pushes it on (time creeping on for every reader instead ran
+hdfs-adhoc-17's start-up 29 ms past its first registration, round TM5). So a slower replay waits at the cap where its
 recording's heartbeat was not yet due, a turn its slot released early reads at least its slot's instant,
 and no read goes back. The window's opening moves `lo` to the order's opening and holds time there until
 the order publishes its cap (reading the order takes the concolic VM seconds: round TM3 ran 2-12 s of
