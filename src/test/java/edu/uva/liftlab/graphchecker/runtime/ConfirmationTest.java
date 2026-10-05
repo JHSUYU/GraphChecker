@@ -122,7 +122,7 @@ public class ConfirmationTest {
         Files.write(plain, new byte[0]);
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
         assertEquals("", Confirmation.attached(
-                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null, null).mismatch);
+                endpoint(ANCHOR, "x"), endpoint(MINT, "y"), null).mismatch);
         assertTrue(Confirmation.close().isEmpty());
         reset();
 
@@ -132,12 +132,11 @@ public class ConfirmationTest {
         Endpoint reader = endpoint(ANCHOR, "a.Handler#handle()#12:READ");
         Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
         Endpoint absent = endpoint(ANCHOR, "a.Handler#handle()#99:READ");
-        Endpoint hole = endpoint(ANCHOR, "kv:expireAt");
+        Endpoint held = endpoint(ANCHOR, "XCH.2.resp.expire-at");
         // A read in a loop that polls for its write: the model's at turn 2,
         // this run's at turn 1 (SOLR-18413 stream7b: MigrateCmd's poll saw
         // the routing rule one turn sooner).
         Endpoint polled = turn(2);
-        String state = "SOLR_ZK /collections/c/state.json@5";
         handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
                 + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
                 + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
@@ -149,9 +148,8 @@ public class ConfirmationTest {
                 Arrays.asList(
                         "{\"kind\":\"WIRE\",\"consumer\":\"" + consumer.id()
                                 + "\",\"producer\":\"" + chosen.id() + "\"}",
-                        "{\"kind\":\"WIRE\",\"consumer\":\"" + hole.id()
+                        "{\"kind\":\"WIRE\",\"consumer\":\"" + held.id()
                                 + "\",\"producer\":\"" + chosen.id()
-                                + "\",\"messageKey\":\"" + state
                                 + "\",\"value\":\"2000\"}",
                         "{\"kind\":\"STATE\",\"reader\":\"" + reader.id()
                                 + "\",\"writer\":\"" + writer.id()
@@ -168,21 +166,16 @@ public class ConfirmationTest {
                                 + "\"value\":true}"));
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
         assertEquals("the chosen producer is no mismatch", "",
-                Confirmation.attached(consumer, chosen, null, null).mismatch);
-        String mismatch = Confirmation.attached(consumer, other, null, null).mismatch;
+                Confirmation.attached(consumer, chosen, null).mismatch);
+        String mismatch = Confirmation.attached(consumer, other, null).mismatch;
         assertTrue(mismatch, mismatch.contains("the model chose producer "
                 + chosen.id() + ", the run paired " + other.id()));
         assertEquals("a consumer the model chose nothing for", "",
-                Confirmation.attached(other, chosen, null, null).mismatch);
-        // A codec's hole: its message's store version and its text too.
-        assertEquals("the chosen version, decoded as the model's value", "",
-                Confirmation.attached(hole, chosen, state, "2000").mismatch);
-        mismatch = Confirmation.attached(hole, chosen,
-                "SOLR_ZK /collections/c/state.json@4", "2000").mismatch;
-        assertTrue(mismatch, mismatch.contains("the model's arm came from "
-                + "message " + state + ", the run decoded SOLR_ZK "
-                + "/collections/c/state.json@4"));
-        mismatch = Confirmation.attached(hole, chosen, state, "1999").mismatch;
+                Confirmation.attached(other, chosen, null).mismatch);
+        // A held leaf: its text too.
+        assertEquals("the model's value delivered", "",
+                Confirmation.attached(held, chosen, "2000").mismatch);
+        mismatch = Confirmation.attached(held, chosen, "1999").mismatch;
         assertTrue(mismatch, mismatch.endsWith("the model's value is "
                 + "\"2000\", the run delivered \"1999\""));
         // The writer of a version is published after the read that saw
@@ -359,7 +352,7 @@ public class ConfirmationTest {
         };
         for (Object[] row : table) {
             Confirmation.Compared compared = Confirmation.attached(consumer,
-                    (Endpoint) row[0], null, (String) row[1]);
+                    (Endpoint) row[0], (String) row[1]);
             String subject = row[0] + " delivering " + row[1];
             assertEquals(subject + ": " + compared.substitution, row[2],
                     !compared.substitution.isEmpty());

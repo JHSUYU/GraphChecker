@@ -51,9 +51,8 @@ import java.util.Set;
  *       ran it at (PIPELINE §7.5);</li>
  *   <li>a CONTROL handoff (attached at the flipped occurrence, where a
  *       replay can be answered) is bound by its family {@code OR_q (pi_q AND
- *       guard_q AND v_H = e_q)} (a codec's hole by COMPOSE's hole-arm rule,
- *       {@code VmTermLowering#holeArm}), closed to a fixed point over
- *       forwarded handoffs; no arm = free and {@code unproducible}. EVERY
+ *       guard_q AND v_H = e_q)}, closed to a fixed point over forwarded
+ *       handoffs; no arm = free and {@code unproducible}. EVERY
  *       OTHER handoff is bound by the arms of its OWN run only (what that
  *       run's producer computed it from, over roots and clocks the replay
  *       plants), and PINNED to its recorded arrival where none states
@@ -985,22 +984,7 @@ final class FlipQuery {
             String target = arm.symbol().isEmpty()
                     || arm.symbol().equals(own) ? variable
                     : variable(arm.sessionId(), arm.symbol());
-            if (!arm.hole()) {
-                conjuncts.add("(= " + target + " " + delivered + ")");
-            } else {
-                // A codec's hole: the composition's one rule, over this
-                // query's names (WIRE-CODEC §6.1, §6.3).
-                VmTermLowering.HoleArm bound = VmTermLowering.holeArm(target,
-                        renamed(lowered.value(), delivered, arm.sessionId()),
-                        arm.export().javaType(), arm.attach().javaType());
-                if (bound.refusal != null) {
-                    gaps.add(GapRow.of(arm.sessionId(), bound.refusal,
-                            GapClass.DIAGNOSTIC, arm.slotId(),
-                            "arm dropped: " + bound.detail));
-                    return "";
-                }
-                conjuncts.add(bound.formula);
-            }
+            conjuncts.add("(= " + target + " " + delivered + ")");
             if (!arm.attested()) {
                 gaps.add(GapRow.of(arm.sessionId(), GapKind.UNATTESTED_ARM,
                         GapClass.DIAGNOSTIC, arm.slotId(),
@@ -1008,23 +992,6 @@ final class FlipQuery {
                                 + "it delivered, not why"));
             }
             return VmTermLowering.and(conjuncts);
-        }
-
-        /** A delivered value in this query's names: its text renamed, and a
-         *  String's nullness companion with it (unknown stays unknown). */
-        private VmTermLowering.Term renamed(VmTermLowering.Term value,
-                                            String text, String sessionId) {
-            String nullness = value.stringNullness;
-            if (nullness.isEmpty()) {
-                return VmTermLowering.Term.vm(text, value.sort,
-                        value.integralWidth);
-            }
-            if (!"false".equals(nullness)) {
-                nullness = rename(nullness, sessionId,
-                        new LinkedHashSet<String>());
-            }
-            return VmTermLowering.Term.of(text, value.sort,
-                    value.integralWidth, nullness, "", "true");
         }
 
         /** A read the flipped path's text names, at the row's sort. */

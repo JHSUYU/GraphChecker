@@ -814,8 +814,8 @@ public final class Composer {
 
         /**
          * The symbol of every leaf an arm binds that CONFIRM holds a run to
-         * ({@link ComposedFamilies.BoundLeaf#held}: a codec hole, a
-         * delivery into the anchor), so a claim can state the model's
+         * ({@link ComposedFamilies.BoundLeaf#held}: a delivery into the
+         * anchor), so a claim can state the model's
          * valuation of each ({@link ComposedFamilies#texts}).
          */
         public List<String> heldSymbols() {
@@ -1890,9 +1890,7 @@ public final class Composer {
 
     /**
      * Whether an ATTESTED arm delivers this arrival; if so, declares the
-     * symbol at the arm's sort -- a codec hole's at its decoded leaf's
-     * (WIRE-CODEC §6.1), which the arm is widened or read back to
-     * ({@link VmTermLowering#holeArm}). States NOTHING about the value: the
+     * symbol at the arm's sort. States NOTHING about the value: the
      * family ({@link ComposedFamilies#closeFamilies}) binds it, and pinning
      * the recorded delivery here too made paths self-contradictory.
      *
@@ -1907,9 +1905,7 @@ public final class Composer {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "paired-arm", null);
             if (delivered == null) continue;
-            lowering.declareStated(attach.symbol(), attach.hole() == null
-                    ? delivered.sort
-                    : JavaSmtSorts.sortOfJava(attach.javaType()));
+            lowering.declareStated(attach.symbol(), delivered.sort);
             return true;
         }
         return false;

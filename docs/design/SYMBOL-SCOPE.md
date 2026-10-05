@@ -427,8 +427,7 @@ the class file's (`ExceptionTargetLineResolver`), so the seed counts only the pr
 at calls in the method that holds the throw, `Dispatcher$PendingMove#receiveResponse`).
 
 The catalog's rows each state `schemaVersion 1` and their `kind` and are keyed by
-`library-catalog.jsonl:<line>`, the shape `contract/WireDeclarations` reads (CONTRACT-SPEC §6.1). A
-malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
+`library-catalog.jsonl:<line>`. A malformed row, a member its kind lacks and a row stated twice are refused by name. `CONFIG_SOURCE`
 rows (`method`, `keyArg` naming the String key argument, optional `defaultArg`) list configuration
 getters (Hadoop `Configuration.get*`, Solr `getClusterProperty` and `XmlConfigFile.get*`);
 `CONFIG_FIELD_OWNER` rows (`class`) name a configuration object built from a file no getter of the

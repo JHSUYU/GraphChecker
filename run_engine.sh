@@ -499,7 +499,8 @@ engine_java() {
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "${start}" \
+    campaign_head_charged "${start}" campaign_engine_jvm \
+      "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
@@ -515,9 +516,37 @@ engine_java() {
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "${heap}" \
+  campaign_head_charged "${heap}" campaign_engine_jvm \
+    "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     -XX:+ExitOnOutOfMemoryError "$@"
+}
+
+# campaign_engine_jvm <peak_file> <command...>: one engine JVM of a head
+# (engine_java), run where its step was placed and watched until it ends
+# (campaign_watch_workload, charging nothing past its step's charge): its
+# peak resident memory joins <peak_file> (the campaign's
+# ${campaign_root}/engine_peak_mb, the largest any of its engine JVMs
+# reached; none named outside a campaign), what the head's held room is
+# sized by (campaign_head_need_mb).  Its status is the JVM's.
+campaign_engine_jvm() {
+  local file=$1 jvm dir peak held status=0
+  shift
+  dir=$(mktemp -d) || return
+  "$@" &
+  jvm=$!
+  campaign_watch_workload "${jvm}" 0 "${dir}"
+  wait "${jvm}" || status=$?
+  read -r peak 2>/dev/null <"${dir}/workload_rss_mb" || peak=0
+  rm -rf -- "${dir}"
+  if [[ -n "${file}" && "${peak}" =~ ^[0-9]+$ ]]; then
+    read -r held 2>/dev/null <"${file}" || held=0
+    if (( peak > ${held:-0} )); then
+      dir=$(mktemp "${file}.XXXXXX") \
+        && printf '%s\n' "${peak}" >"${dir}" && mv -f -- "${dir}" "${file}"
+    fi
+  fi
+  return "${status}"
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
@@ -569,12 +598,27 @@ campaign_engine_need_mb() {
   esac
 }
 
-# The room a head reserves on its host, in MB (campaign_head_reserve): what
-# the largest of its engine JVMs that come back every round starts at -- a
-# round's planner, a witness's composer (engine_java) -- not the case's
-# engine heap, unless one of them outgrew its need.
+# The room a head reserves on its host, in MB (campaign_head_reserve): its
+# measured step need -- the largest peak any of its engine JVMs reached
+# (${campaign_root}/engine_peak_mb, campaign_engine_jvm) times 1.25, rounded
+# up to 128 MB, at least 1024 and at most the engine heap, read again at
+# every heartbeat; before any was measured, what the largest of its engine
+# JVMs that come back every round starts at -- a round's planner, a
+# witness's composer (engine_java) -- not the case's engine heap, unless one
+# of them outgrew its need.  An idle 8 GB hold for steps that peaked at a
+# median 0.7 GB (p90 3.7, p99 7.8; 609 planners and composers of sweep HG5A
+# and round MCH2) kept 8 GB of every lift from the pool.  A step its held
+# room does not cover is placed by its own charge (campaign_head_charged).
 campaign_head_need_mb() {
-  local main start largest=0
+  local main start largest=0 peak heap=${engine_memory_mb:-8192}
+  if [[ -n "${campaign_root}" ]] \
+      && read -r peak 2>/dev/null <"${campaign_root}/engine_peak_mb" \
+      && [[ "${peak}" =~ ^[1-9][0-9]*$ ]]; then
+    largest=$(( (peak * 5 + 511) / 512 * 128 ))
+    (( largest >= 1024 )) || largest=1024
+    printf '%s\n' "$(( largest < heap ? largest : heap ))"
+    return 0
+  fi
   for main in edu.uva.liftlab.graphchecker.explore.ExploreMain \
       edu.uva.liftlab.graphchecker.compose.ComposeMain; do
     start=$(campaign_engine_start_mb "${main}")
