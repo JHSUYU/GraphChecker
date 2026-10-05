@@ -855,7 +855,11 @@ done
 # write before SEED ends it, RECORDING_BOUND.
 # 54: `campaign_max_claims` joined it: how many times the final stages decide
 # a claim again after CONFIRM refuted one.
-[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
+# 53: `obligation_memory_mb` left: every replay after the seed's is charged
+# the campaign's measured need (campaign_replay_need_mb); and
+# `stream_max_in_flight` became `stream_shared_pool`: a sweep asks for a
+# shared pool, and each exploration sizes its share from its measured need.
+[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1045,7 +1049,6 @@ stop_after_config() {
   schedule_max_jobs=1
   region_path_max_waves=1
   compose_max_valuations=1
-  obligation_memory_mb=2500
   region_path_max_paths_per_region=""
   region_path_max_flips_per_path=""
   region_path_max_tasks=""
@@ -1491,10 +1494,14 @@ known_config_key seed_replay_time_factor \
 seed_bound() (
   replay_timeout_s=$1 seed_replay_time_factor=$2
   campaign_recorded_workload_s=$3
+  campaign_recorded_workload_rss_mb=100
   campaign_task_ids() { echo TASK.SEED; }
+  campaign_log() { :; }
   campaign_replay() {
     printf '%s|%s\n' "${campaign_adapter_timeout_s}" \
       "${campaign_adapter_timeout_rule}"
+    mkdir -p "$6"
+    echo 300 >"$6/workload_rss_mb"
   }
   campaign_session_replay "${bound_dir}/seed-iteration"
 )
@@ -1515,40 +1522,98 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   "${bound_dir}/validate.err" \
   || fail "validate accepted seed_replay_time_factor=0"
 
-# REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
-# measured peak times campaign_replay_memory_factor (7) when that is above
-# one obligation's replay, else that (campaign_replay_need_mb); it is charged
-# that need, never more than half a host's ceiling (cap:
-# CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal, halved;
-# campaign_replay_charge_mb), its replay JVM is held to that charge
-# (CAUSYNTH_CHARGED_MB) and sized by the whole need (CAUSYNTH_HEAP_BASIS_MB,
-# campaign_replay_heap_basis_mb).  Per row: obligation_memory_mb, the
-# recording's peak (- none), the charge, the need.
+# REPLAY-NEED: the seed replay, before any replay of the campaign was
+# measured, needs the recording's measured peak times
+# campaign_replay_memory_factor (7); it is charged that need, never more
+# than half a host's ceiling (cap: CAUSYNTH_HOST_MAX_USED_PCT of this host's
+# MemTotal, halved; campaign_replay_charge_mb), its replay JVM is held to
+# that charge (CAUSYNTH_CHARGED_MB) and sized by the whole need
+# (CAUSYNTH_HEAP_BASIS_MB, campaign_replay_heap_basis_mb), and its own peak
+# is the campaign's first measured need (campaign_replay_need_mb).  A
+# recording that measured no peak, or a seed replay that states none, fails
+# REPLAY by name: there is no static charge to fall back to.  Per row: the
+# recording's peak and the seed replay's (- none), the charge, the need, and
+# the measured need after it (- refused).
 need_cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
   * campaign_host_max_used_pct / 200 ))
-while read -r need_obligation need_rss need_expected need_whole; do
+while read -r need_rss need_peak need_expected need_whole need_after; do
   [[ "${need_rss}" != - ]] || need_rss=""
   [[ "${need_expected}" != cap ]] || need_expected=${need_cap}
   need_said=$(
-    obligation_memory_mb=${need_obligation}
     campaign_recorded_workload_rss_mb=${need_rss}
+    campaign_replay_peak_mb=0
     replay_timeout_s=2400 seed_replay_time_factor=40
     campaign_recorded_workload_s=10
     campaign_task_ids() { echo TASK.SEED; }
+    campaign_log() { :; }
     campaign_head_charged() { printf 'charged=%s ' "$1"; shift; "$@"; }
     campaign_replay() {
-      printf 'jvm=%s heap=%s' "$7" "${campaign_replay_heap_basis_mb}"; }
-    campaign_session_replay "${bound_dir}/seed-iteration"
-  )
-  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected} heap=${need_whole}" ]] \
-    || fail "a seed replay with ${need_obligation} MB per obligation and a \
-'${need_rss}' MB recording is ${need_said}, not ${need_expected} MB sized by \
-${need_whole} MB"
+      printf 'jvm=%s heap=%s' "$7" "${campaign_replay_heap_basis_mb}"
+      mkdir -p "$6"
+      rm -f -- "$6/workload_rss_mb"
+      [[ "${need_peak}" == - ]] || echo "${need_peak}" >"$6/workload_rss_mb"
+    }
+    campaign_session_replay "${bound_dir}/seed-iteration" \
+      2>"${bound_dir}/need.err"
+    printf ' need=%s' "$(campaign_replay_need_mb)"
+  ) || true
+  if [[ "${need_after}" == - ]]; then
+    grep -q "stage=REPLAY" "${bound_dir}/need.err" \
+      && grep -q "reason=the \(recording\|seed replay\).* no peak" \
+        "${bound_dir}/need.err" && [[ "${need_said}" != *need=* ]] \
+      || fail "a seed replay with a '${need_rss}' MB recording and a \
+'${need_peak}' MB peak was not refused by name: ${need_said} \
+$(cat "${bound_dir}/need.err")"
+    continue
+  fi
+  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected} \
+heap=${need_whole} need=${need_after}" ]] \
+    || fail "a seed replay of a '${need_rss}' MB recording peaking at \
+${need_peak} MB is ${need_said}, not ${need_expected} MB sized by \
+${need_whole} MB, then ${need_after} MB"
 done <<'EOF'
-2500 300 2500 2500
-2500 442 3094 3094
-2500 - 2500 2500
-2500 99999 cap 699993
+300 400 2100 2100 640
+442 674 3094 3094 1024
+300 100 2100 2100 512
+99999 2003 cap 699993 3072
+- 400 - - -
+300 - 2100 2100 -
+EOF
+
+# MEASURED-NEED: every replay that returns -- an obligation's, a GROW
+# re-run's, a CONFIRM's -- states its peak in its worker directory
+# (workload_rss_mb, experiments/lib/execute.sh), and the campaign's need is
+# the largest so far times 1.5, rounded up to 128 MB, at least 512 MB: it
+# never falls, a worker that states none (its solver answered) leaves it,
+# and it is said when it is first measured and whenever it moves.  Per row:
+# the peaks in turn (- a worker that states none), the need after each, and
+# how many times it was said.
+measured_dir="${test_tmp}/measured"
+while IFS='|' read -r measured_peaks measured_needs measured_said; do
+  rm -rf -- "${measured_dir}"
+  mkdir -p "${measured_dir}"
+  measured_got=$(
+    campaign_replay_peak_mb=0
+    measured_n=0
+    for measured_peak in ${measured_peaks}; do
+      measured_n=$((measured_n + 1))
+      mkdir -p "${measured_dir}/${measured_n}"
+      [[ "${measured_peak}" == - ]] \
+        || echo "${measured_peak}" >"${measured_dir}/${measured_n}/workload_rss_mb"
+      campaign_replay_measured "${measured_dir}/${measured_n}" \
+        >>"${measured_dir}/said"
+      printf '%s ' "$(campaign_replay_need_mb)"
+    done
+  )
+  [[ "${measured_got% }" == "${measured_needs}" \
+     && "$(grep -c 'every replay from now on needs' "${measured_dir}/said")" \
+       == "${measured_said}" ]] \
+    || fail "peaks ${measured_peaks} gave the needs ${measured_got}, not \
+${measured_needs}, said: $(cat "${measured_dir}/said")"
+done <<'EOF'
+674 662 715 2003 500|1024 1024 1152 3072 3072|3
+171 - 300 400|512 512 512 640|2
+- 238|512 512|1
 EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
@@ -1766,7 +1831,7 @@ $(live_charges "${solver_test}/hosts")"
 # -- never a bare NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations
 # "answered" by an OutOfMemoryError).  Neither settles its question.
 # A question whose host had no room for its solver (3) is answered at once in
-# a solver JVM of its own, under the obligation's charge (`now`).
+# a solver JVM of its own, under the obligation's charge.
 retry_test=${test_tmp}/solver-retry
 for alone in answers fails noroom; do
   mkdir -p "${retry_test}/${alone}"
@@ -1779,7 +1844,7 @@ for alone in answers fails noroom; do
       return 1
     }
     campaign_solve_obligation_alone() {
-      [[ "${alone}" != noroom || "${5:-}" == now ]] \
+      [[ "${alone}" != noroom || "${5:-}" == 1024 ]] \
         || { echo "not asked at once" >&2; return 1; }
       [[ "${alone}" != fails ]] || { echo "the second one died" >&2; return 1; }
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
@@ -1787,7 +1852,7 @@ for alone in answers fails noroom; do
       printf '(assert false)\n' >"$4/obligation_query.smt2"
     }
     campaign_obligation_worker OB.1 obligations classes \
-      "${retry_test}/${alone}" sessions plan
+      "${retry_test}/${alone}" sessions plan 1024 1024
   ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
@@ -1835,7 +1900,7 @@ trace_test=T
   }
   campaign_obligation_worker OB.1 "${bound_dir}/obligations.jsonl" \
     "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
-    "${bound_dir}/seed_plan.jsonl"
+    "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
 $(cat "${worker_dir}/worker.log")"
@@ -1875,7 +1940,7 @@ concolic_replay_command='kill -KILL $$'
   }
   campaign_obligation_worker OB.2 "${bound_dir}/obligations.jsonl" \
     "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
-    "${bound_dir}/seed_plan.jsonl"
+    "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay was killed: \
 $(cat "${worker_dir}/worker.log")"
@@ -1934,7 +1999,7 @@ concolic_replay_command="${withdraw_dir}/replay.sh"
   }
   campaign_obligation_worker OB.1 "${withdraw_dir}/obligations.jsonl" \
     "${withdraw_dir}/classes" "${withdraw_worker}" "${withdraw_sessions}" \
-    "${withdraw_dir}/seed_plan.jsonl"
+    "${withdraw_dir}/seed_plan.jsonl" 1024 1024
 ) >"${withdraw_worker}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
 $(cat "${withdraw_worker}/worker.log")"
@@ -2132,7 +2197,6 @@ stream_fixture() {
   campaign_root="${test_tmp}/$1"
   campaign_host_gate_root="${test_tmp}/$1/hosts"
   campaign_worker_hosts=""
-  obligation_memory_mb=1
   engine_memory_mb=1
   causynth_static_scope_map=""
   causynth_root_domains=""
@@ -2808,18 +2872,29 @@ jq -e '.stop == "FIXED_POINT" and .answered == 3' \
 $(cat "${stream_dir}/exploration.json")"
 reset_config
 
-# STREAM-CAP: an exploration under stream_max_in_flight runs no more starts
-# at once than its share of it -- the cap over the capped explorations whose
-# ledger entry is fresh, its own among them, at least one -- says so once
-# for the share it waits at, and takes its entry with it when it ends; with
-# no cap it keeps no entry and waits for nothing but room (a40: one Solr
-# case's pool held 27-32 replays on all ten lifts while the sweep's other
-# cases waited).  Per row: the cap, the fresh and the stale entries of other
-# explorations, the most of three one-second obligations that ran at once,
-# and how many explorations the wait names (- for none).
-while read -r cap_max cap_fresh cap_stale cap_peak cap_sharers; do
-  stream_fixture "stream-cap-${cap_max}-${cap_fresh}-${cap_stale}"
-  stream_max_in_flight=${cap_max}
+# STREAM-CAP: an exploration in a shared pool runs no more starts at once
+# than its share -- the slots its hosts hold at its measured replay charge
+# (campaign_pool_slots: here one host of 30000 MB at 70 %, 8 cores) over the
+# sharing explorations whose ledger entry is fresh, its own among them, at
+# least one -- each start charged that measured charge; it says so once for
+# the share it waits at, follows the need as returning replays raise it,
+# and takes its entry with it when it ends; outside a shared pool it keeps
+# no entry and waits for nothing but room (a40: one Solr case's pool held
+# 27-32 replays on all ten lifts while the sweep's other cases waited).
+# Per row: the campaign's measured peak (- outside a shared pool), the peak
+# each obligation's replay states (- none), the fresh and the stale entries
+# of other explorations, the most of three one-second obligations that ran
+# at once, and how many explorations the wait names (- for none).
+while read -r cap_peak cap_obl_peak cap_fresh cap_stale cap_ran_most \
+    cap_sharers; do
+  stream_fixture "stream-cap-${cap_peak}-${cap_obl_peak}-${cap_fresh}-${cap_stale}"
+  campaign_replay_peak_mb=0
+  if [[ "${cap_peak}" != - ]]; then
+    stream_shared_pool=true
+    campaign_replay_peak_mb=${cap_peak}
+  fi
+  [[ "${cap_obl_peak}" != - ]] || cap_obl_peak=""
+  cap_first=$(campaign_stream_charge_mb)
   cap_entries="${campaign_host_gate_root}/explorations"
   mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
   printf '8\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
@@ -2835,6 +2910,9 @@ while read -r cap_max cap_fresh cap_stale cap_peak cap_sharers; do
     campaign_obligation_worker() {
       local id=$1 worker=$4
       date +%s.%N >"${worker}/started-at"
+      printf '%s\n' "$7" >"${worker}/charged"
+      [[ -z "${cap_obl_peak}" ]] \
+        || echo "${cap_obl_peak}" >"${worker}/workload_rss_mb"
       sleep 1
       date +%s.%N >"${worker}/ended-at"
       stream_answer "${worker}" "${id}" UNSAT
@@ -2850,53 +2928,71 @@ $(cat "${stream_dir}/explore.log")"
               for (j = 1; j <= NR; j++) if (s[j] <= s[i] && s[i] < e[j]) n++
               if (n > peak) peak = n }
             print peak }')
-  [[ "${cap_ran}" == "${cap_peak}" ]] \
-    || fail "cap ${cap_max} with ${cap_fresh} other exploration(s) ran \
-${cap_ran} obligation(s) at once, not ${cap_peak}"
+  [[ "${cap_ran}" == "${cap_ran_most}" ]] \
+    || fail "a pool at a ${cap_peak} MB peak with ${cap_fresh} other \
+exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
+  # The first two started at the seed's measured charge; the last one, after
+  # the first returned, at the charge their peaks measured.
+  cap_last=${cap_first}
+  if [[ -n "${cap_obl_peak}" ]]; then
+    cap_last=$(campaign_replay_peak_mb=${cap_obl_peak} \
+      campaign_stream_charge_mb)
+  fi
+  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged \
+      | paste -sd ' ' -)" == "${cap_first} ${cap_first} ${cap_last}" ]] \
+    || fail "the pool's starts were charged $(cat \
+      "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
+not ${cap_first} twice and then ${cap_last}"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
   if [[ "${cap_sharers}" == - ]]; then
     [[ "${cap_said}" -eq 0 && ! -e "${cap_entries}" ]] \
-      || fail "an exploration with no cap waited for a slot or kept an entry"
+      || fail "an exploration outside a shared pool waited for a slot or \
+kept an entry"
   else
-    [[ "${cap_said}" -eq 1 ]] && grep -q "shared by ${cap_sharers} capped" \
-      "${stream_dir}/explore.log" \
-      || fail "the wait for a slot was not said once, naming \
-${cap_sharers} exploration(s): $(grep 'slot' "${stream_dir}/explore.log")"
+    [[ "${cap_said}" -ge 1 && "${cap_said}" -eq "$(grep -o \
+        "waiting for a slot.*share [0-9]*" "${stream_dir}/explore.log" \
+        | sort -u | wc -l)" ]] && grep -q "shared by ${cap_sharers} \
+exploration" "${stream_dir}/explore.log" \
+      || fail "the wait for a slot was not said once for each share, \
+naming ${cap_sharers} exploration(s): $(grep 'slot' \
+        "${stream_dir}/explore.log")"
     [[ "$(ls "${cap_entries}" | wc -l)" -eq $((cap_fresh + cap_stale)) ]] \
       || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
   fi
 done <<'EOF'
-0 0 0 3 -
-2 0 1 2 1
-2 1 0 1 2
-1 2 0 1 3
+- - 0 0 3 -
+5000 - 0 1 2 1
+5000 - 1 0 1 2
+8000 - 2 0 1 3
+5000 8000 0 0 2 1
 EOF
+campaign_replay_peak_mb=0
 reset_config
-# The cap is a declared workflow key, overridden only through the table, 0
-# by default, and a non-negative integer or refused by name.
-[[ "$(grep -c 'CAUSYNTH_STREAM_MAX_IN_FLIGHT' "${repo}/run_engine.sh")" \
-    -eq 1 && "${stream_max_in_flight}" == 0 ]] && known_config_key \
-    stream_max_in_flight \
-  || fail "stream_max_in_flight is not a declared key defaulting to 0"
-CAUSYNTH_STREAM_MAX_IN_FLIGHT=30 apply_environment_overrides
-[[ "${stream_max_in_flight}" == 30 ]] \
-  || fail "CAUSYNTH_STREAM_MAX_IN_FLIGHT does not override the key"
+# Sharing is a declared workflow key, overridden only through the table,
+# false by default, and true or false or refused by name.
+[[ "$(grep -c 'CAUSYNTH_STREAM_SHARED_POOL' "${repo}/run_engine.sh")" \
+    -eq 1 && "${stream_shared_pool}" == false ]] && known_config_key \
+    stream_shared_pool \
+  || fail "stream_shared_pool is not a declared key defaulting to false"
+CAUSYNTH_STREAM_SHARED_POOL=true apply_environment_overrides
+[[ "${stream_shared_pool}" == true ]] \
+  || fail "CAUSYNTH_STREAM_SHARED_POOL does not override the key"
 reset_config
 cap_validate() (
   stop_after_config ""
-  stream_max_in_flight=$1
+  stream_shared_pool=$1
   validate_config
 )
-for cap_value in "" -1 x 08 0 30; do
+for cap_value in "" 0 1 30 TRUE true false; do
   run_capturing_status cap_validate "${cap_value}" >/dev/null \
     2>"${test_tmp}/cap-validate.err"
   case "${cap_value}" in
-    0|30) [[ "${status}" -eq 0 ]] \
-      || fail "validate refused stream_max_in_flight='${cap_value}'" ;;
-    *) [[ "${status}" -ne 0 ]] && grep -q 'stream_max_in_flight must be' \
+    true|false) [[ "${status}" -eq 0 ]] \
+      || fail "validate refused stream_shared_pool='${cap_value}'" ;;
+    *) [[ "${status}" -ne 0 ]] && grep -q 'stream_shared_pool must be' \
         "${test_tmp}/cap-validate.err" \
-      || fail "validate did not refuse stream_max_in_flight='${cap_value}' \
+      || fail "validate did not refuse stream_shared_pool='${cap_value}' \
 by name" ;;
   esac
 done
@@ -3525,8 +3621,8 @@ confirm_stub_fatal=true
 confirm_stub_target_iteration=0
 confirm_stub_task_status=0
 confirm_stub_realized=false
-# The recording's measured peak resident memory, in MB (none: unmeasured).
-confirm_recorded_rss=""
+# The campaign's largest measured replay peak, in MB (none: unmeasured).
+confirm_peak=""
 confirm_anchor='hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:<a.Handler: void handle()>@0'
 # The decision's JVM, on the built jar: reset_config clears java_bin and
 # graphchecker_jar, which are workflow keys.
@@ -3596,8 +3692,7 @@ run_confirm() {
       esac
     }
     campaign_obligation_replay() { confirm_stub_replay "$@"; }
-    obligation_memory_mb=2500
-    campaign_recorded_workload_rss_mb=${confirm_recorded_rss}
+    campaign_replay_peak_mb=${confirm_peak:-0}
     campaign_confirm "${confirm_iteration}"
   ) >"${confirm_root}/confirm-stage.log" 2>&1 \
     || fail "the CONFIRM stage failed the campaign on claim=${claim}: \
@@ -3617,17 +3712,16 @@ run_confirm RUN_DEFECT
   || fail "a claim that is not SAT_CANDIDATE was confirmed"
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
-# The rule, both conditions holding.  The replay is charged as the seed's:
-# the recording's measured peak times the replay factor, above one
-# obligation's replay and under half a host's ceiling here.
-confirm_recorded_rss=1000
+# The rule, both conditions holding.  The replay is charged the campaign's
+# measured replay need: its largest replay peak so far, 1000 MB, times 1.5.
+confirm_peak=1000
 run_confirm SAT_CANDIDATE
 confirm_says true "the claim's anchor observed the fatal" \
   "a clean replay was not confirmed"
-[[ "$(cat "${confirm_root}/replay-ran")" == 7000 ]] \
+[[ "$(cat "${confirm_root}/replay-ran")" == 1536 ]] \
   || fail "the CONFIRM replay was charged $(cat "${confirm_root}/replay-ran") \
-MB, not seven times the recording's 1000 MB peak"
-confirm_recorded_rss=""
+MB, not 1.5 times the campaign's 1000 MB peak"
+confirm_peak=""
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"
 [[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
@@ -3879,33 +3973,8 @@ jq -e '.claim == "RUN_DEFECT" and .confirmation == null' \
   || fail "a claim that was never confirmed does not carry null: \
 $(jq -c '{claim, confirmation}' "${campaign_final}/result.json")"
 
-# MEMORY-1: `obligation_memory_mb` is a declared workflow key, and a
-# campaign that states none -- or a nonsense one -- is refused by name.
-[[ "$(grep -c 'CAUSYNTH_OBLIGATION_MEMORY_MB' "${repo}/run_engine.sh")" \
-    -eq 1 ]] \
-  || fail "CAUSYNTH_OBLIGATION_MEMORY_MB is not declared once, in the table"
-known_config_key obligation_memory_mb \
-  || fail "obligation_memory_mb is not loadable from a workflow file"
 memory_dir="${test_tmp}/memory"
 mkdir -p "${memory_dir}"
-memory_validate() (
-  stop_after_config ""
-  obligation_memory_mb=$1
-  validate_config
-)
-for bad in "" "0" "2g" "-1"; do
-  run_capturing_status memory_validate "${bad}" \
-    >/dev/null 2>"${memory_dir}/validate.err"
-  [[ "${status}" -ne 0 ]] \
-    || fail "validate accepted obligation_memory_mb='${bad}'"
-  grep -q 'obligation_memory_mb must be' "${memory_dir}/validate.err" \
-    || fail "the refusal does not name obligation_memory_mb: \
-$(cat "${memory_dir}/validate.err")"
-done
-for case_config in "${repo}"/experiments/hadoop/hdfs-*/workflow.properties; do
-  grep -q '^obligation_memory_mb=[1-9][0-9]*$' "${case_config}" \
-    || fail "${case_config} states no obligation_memory_mb"
-done
 
 # MEMORY-2: the gate's decision.  A start goes only where both the host's
 # live charges and its real use, each with the start, stay within the
@@ -3922,7 +3991,6 @@ campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
 memory_available=30000
 campaign_host_available_mb() { echo "${memory_available}"; }
-obligation_memory_mb=6000
 campaign_host_total_mb() { echo 31744; }
 campaign_host_max_used_pct=70
 campaign_host_poll_s=0
@@ -4387,23 +4455,19 @@ $(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
 EOF
 )
 
-# SWEEP-1: sweep.sh launches every case with its head's room as its need
-# and the lifts' obligation slots for its obligation_memory_mb as its cap,
-# and a measurement sweep's stop stage and pruning on the job's command line
-# (ssh carries no environment); a case whose configuration states no
-# obligation_memory_mb launches no case.
+# SWEEP-1: sweep.sh launches every case with its head's room as its need,
+# in the shared pool, and a measurement sweep's stop stage and pruning on the
+# job's command line (ssh carries no environment); a case id that names no
+# case launches no case.
 sweep_dir="${test_tmp}/sweep"
 mkdir -p "${sweep_dir}/snap/experiments/x/c" "${sweep_dir}/snap/experiments/lib" \
-  "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" \
-  "${sweep_dir}/ledger/$(hostname -s)"
+  "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" "${sweep_dir}/ledger"
 : >"${sweep_dir}/snap/experiments/x/c/case.sh"
 printf '%s\n' '[[ "$3" == config ]] || exit 2' \
-  'printf "obligation_memory_mb=6000\nengine_memory_mb=1\n"' \
+  'printf "engine_memory_mb=1\n"' \
   >"${sweep_dir}/snap/experiments/lib/run.sh"
-printf 'echo "$2 ${CAUSYNTH_STREAM_MAX_IN_FLIGHT} ${CAUSYNTH_CAMPAIGN_STOP_AFTER-}" >%s/launched\n' \
+printf 'echo "$2 ${CAUSYNTH_STREAM_SHARED_POOL} ${CAUSYNTH_CAMPAIGN_STOP_AFTER-}" >%s/launched\n' \
   "${sweep_dir}" >"${sweep_dir}/snap/tools/rounds/launch-run.sh"
-echo 31583 >"${sweep_dir}/ledger/$(hostname -s)/total"
-echo 48 >"${sweep_dir}/ledger/$(hostname -s)/cores"
 echo c-one >"${sweep_dir}/cases"
 sweep_run() {
   LIFTS=localhost GC_OUT="${sweep_dir}/out" VM_IMAGE=vm \
@@ -4413,14 +4477,14 @@ sweep_run() {
     "${sweep_dir}/cases" >"${sweep_dir}/$1.out" 2>&1
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
-[[ "$(cat "${sweep_dir}/launched")" == "c-one 3 SEED" ]] \
-  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 .*\
+[[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
+  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
-  || fail "the sweep's case did not launch with its head's room and the \
-lifts' slots: $(cat "${sweep_dir}/launched" \
+  || fail "the sweep's case did not launch with its head's room in the \
+shared pool: $(cat "${sweep_dir}/launched" \
     "${sweep_dir}/out/sweep-s1-jobs.txt")"
 echo nothing-here >"${sweep_dir}/cases"
-! sweep_run s2 && grep -q 'nothing-here states no obligation_memory_mb' \
+! sweep_run s2 && grep -q 'nothing-here names no case' \
     "${sweep_dir}/s2.out" && [[ ! -s "${sweep_dir}/out/sweep-s2-jobs.txt" ]] \
   || fail "a case with no configuration was launched or not named: \
 $(cat "${sweep_dir}/s2.out")"

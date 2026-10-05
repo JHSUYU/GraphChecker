@@ -15,7 +15,7 @@ Usage:
   ./run_engine.sh --config FILE config|validate
   ./run_engine.sh --config FILE --run-obligation \
       --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
-      ID OBLIGATIONS CLASSES WORKER SESSIONS SEED_PLAN
+      ID OBLIGATIONS CLASSES WORKER SESSIONS SEED_PLAN CHARGED_MB NEED_MB
   ./run_engine.sh help
 
 Commands:
@@ -33,7 +33,7 @@ Commands:
               and nothing else.  This is what `campaign_worker_hosts` runs
               over ssh on a peer; the campaign generates the invocation into
               the obligation's own worker directory, so it is not a command
-              to be typed.  The six positional arguments are exactly what
+              to be typed.  The eight positional arguments are exactly what
               campaign_obligation_worker takes.
   --run-placed
               Execute ONE step of a campaign head on a peer with room
@@ -82,29 +82,17 @@ workflow_config_keys=(
   # host spelled `localhost` or as this machine's own hostname runs locally
   # too.
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
-  # The memory, in MB, one replay takes on the host that runs it (an
-  # obligation's, a GROW re-run's; the seed's and CONFIRM's at least, see
-  # campaign_replay_need_mb): half its heap, half the VM's native symbolic
-  # state, and the charge execute.sh holds it to, grown while its host has
-  # room (campaign_watch_workload).  The pool starts an
-  # obligation only on a host whose live charges and real use both leave room
-  # for that much under its ceiling (campaign_host_try_start), whichever
-  # campaign charged them -- the hosts are shared, and so is this
-  # accounting; the host's solver is charged at its own start
-  # (campaign_start_solver).  No default: the need is the case's, measured
-  # (each replay states its peak), and a campaign that states none is refused.
-  "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
-  # How many obligations the capped explorations running at once keep in
-  # flight together, on all their hosts: each starts one more only while it
-  # runs fewer than its share, this over the capped explorations running
-  # now, at least one (campaign_stream_has_slot), so one running alone takes
-  # them all and ten take a tenth each.  A sweep states its hosts'
-  # obligation slots here (tools/adhoc/sweep.sh, campaign_pool_slots): one
-  # case's pool kept 27-32 Solr replays in flight on all ten lifts while
-  # the sweep's other cases waited for room (a40).  0 -- the default, a
-  # named acceptance run's -- is no cap: the hosts' memory and cores alone
-  # decide.
-  "stream_max_in_flight CAUSYNTH_STREAM_MAX_IN_FLIGHT krp 0"
+  # Whether the exploration shares its hosts' replay slots with the other
+  # explorations that share them (a sweep's cases, tools/adhoc/sweep.sh):
+  # it starts one more only while it runs fewer than its share, the slots
+  # its hosts hold at its measured replay charge (campaign_pool_slots,
+  # campaign_replay_need_mb) over the sharing explorations running now, at
+  # least one (campaign_stream_has_slot), so one running alone takes them
+  # all and ten take a tenth each.  One case's pool kept 27-32 Solr replays
+  # in flight on all ten lifts while the sweep's other cases waited for room
+  # (a40).  false -- the default, a named acceptance run's -- shares
+  # nothing: the hosts' memory and cores alone decide.
+  "stream_shared_pool CAUSYNTH_STREAM_SHARED_POOL krp false"
   # The most heap, in MB, an engine JVM of the head is given -- one whose
   # main has no measured need starts there, and one that runs out of its
   # need runs again there (engine_java) -- and the heap of a solver asked
@@ -663,8 +651,7 @@ validate_config() {
   local key
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       recording_max_trace_mb schedule_max_jobs region_path_max_waves \
-      compose_max_valuations causynth_loop_default_bound \
-      obligation_memory_mb reproduce_runs \
+      compose_max_valuations causynth_loop_default_bound reproduce_runs \
       reproduce_time_factor campaign_budget_s campaign_reserve_s \
       campaign_max_claims; do
     require_positive_integer "${key}"
@@ -687,9 +674,8 @@ ${campaign_stop_after}" ;;
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
     || die "causynth_scope_growth_budget must be a non-negative integer: \
 ${causynth_scope_growth_budget}"
-  [[ "${stream_max_in_flight}" =~ ^(0|[1-9][0-9]*)$ ]] \
-    || die "stream_max_in_flight must be a non-negative integer: \
-${stream_max_in_flight}"
+  [[ "${stream_shared_pool}" == true || "${stream_shared_pool}" == false ]] \
+    || die "stream_shared_pool must be true or false: ${stream_shared_pool}"
   # Every host in the worker list ends up inside an `ssh <host> ...` command,
   # so the spelling is checked before any work starts rather than discovered
   # by a shell on the far side.  Letters, digits, dot, dash and underscore is
@@ -2496,58 +2482,97 @@ campaign_target_reached() {
     | first // ""' "${rows[@]}"
 }
 
-# REPLAY: the seed replay, charged its need (campaign_replay_need_mb) and
-# placed where there is room (campaign_head_charged: it reads and writes only
-# the iteration), under a wall clock derived from the recording
-# (seed_replay_time_factor): the seed is the iteration's only source of
-# observed cases, so a replay past it is a campaign failure at REPLAY, named,
-# not a recorded verdict.
+# REPLAY: the seed replay, placed where there is room (campaign_head_charged:
+# it reads and writes only the iteration), under a wall clock derived from
+# the recording (seed_replay_time_factor): the seed is the iteration's only
+# source of observed cases, so a replay past it is a campaign failure at
+# REPLAY, named, not a recorded verdict.  No replay of the campaign has been
+# measured yet, so its need is the recording's own measured peak
+# (workload_rss_mb, what a native run of it is charged, REPRODUCE) times
+# campaign_replay_memory_factor: a concolic replay outgrows its native
+# recording, and round x1's eleven seed replays peaked at 0.65 to 6.94 times
+# it (hdfs-17960 4.89, solr-18413 3.65, solr-18406 6.94; the block-key cases
+# under 1.2).  Its peak is the campaign's first measured replay need
+# (campaign_replay_measured): every replay after it is charged from what the
+# campaign's replays measured, never from the recording again.
+campaign_replay_memory_factor=7
 campaign_session_replay() {
   local iteration_dir=$1 bound need charge
+  [[ "${campaign_recorded_workload_rss_mb}" =~ ^[1-9][0-9]*$ ]] \
+    || campaign_fail REPLAY WORKLOAD "${iteration_dir}" "the recording \
+measured no peak resident memory (workload_rss_mb) to charge the seed replay \
+with"
   bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
   (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
-  need=$(campaign_replay_need_mb)
+  need=$(( campaign_recorded_workload_rss_mb * campaign_replay_memory_factor ))
   charge=$(campaign_replay_charge_mb "${need}")
   campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
     "${causynth_static_scope_map}" "${charge}" "${bound}" \
     "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
 ${campaign_recorded_workload_s}s workload and at least \
 replay_timeout_s=${replay_timeout_s}" "${need}"
+  campaign_replay_measured "${iteration_dir}/seed-result/focused"
+  (( campaign_replay_peak_mb > 0 )) || campaign_fail REPLAY WORKLOAD \
+    "${iteration_dir}/seed-result/focused" "the seed replay stated no peak \
+resident memory (workload_rss_mb): no replay after it has a measured need"
 }
 
-# The memory, in MB, the seed and the CONFIRM replay are charged: the
-# recording's own measured peak (workload_rss_mb, what a native run of it is
-# charged, REPRODUCE) times campaign_replay_memory_factor when that is above
-# one obligation's replay (obligation_memory_mb), else that.  A concolic
-# replay outgrows its native recording: round x1's eleven seed replays
-# peaked at 0.65 to 6.94 times it (hdfs-17960 4.89, solr-18413 3.65,
-# solr-18406 6.94; the block-key cases under 1.2).  One that outgrows its
-# charge still grows it while its host has real room
-# (campaign_watch_workload).  The need sizes the replay JVM's heap
-# (CAUSYNTH_HEAP_BASIS_MB, execute.sh); the charge it STARTS with
-# (campaign_replay_charge_mb) is never more than half a host's ceiling: a
-# charge only an idle host can hold waits for one forever on a shared cluster
-# (round HG1: four HDFS seed replays charged 20.6 GB, seven times a 2.9 GB
-# recording, waited 75 minutes for a host under 22 GB), and what the replay
-# grows past it the ledger grants while its host has real room.
-campaign_replay_memory_factor=7
+# The largest resident peak, in MB, a replay of this campaign has stated so
+# far (campaign_replay_measured): the seed replay's, then every obligation's,
+# GROW re-run's and CONFIRM replay's that returned.  0 before the seed's.
+campaign_replay_peak_mb=0
+# The least measured need, in MB.
+campaign_replay_min_need_mb=512
+
+# The memory, in MB, one replay of this campaign needs once one was measured
+# -- an obligation's, a GROW re-run's, a CONFIRM's: the largest peak its
+# replays stated so far times 1.5, rounded up to 128 MB, at least
+# campaign_replay_min_need_mb.  An obligation replay peaks near its own seed
+# replay (round HG4, seed / obligations, MB: hdfs-11741 674 / 662-715,
+# hdfs-17897 552 / 540-555, hdfs-17899-bug1 548 / 548-550, hdfs-adhoc-07
+# 238 / 134-257), while the static 2500 MB per obligation and seven times
+# the recording per CONFIRM replay held the lifts' ledger at 11-22 GB over
+# 3-7 GB of real use (sweep HG5A): adhoc-07's 151 replays of ~93 s waited a
+# median 35 min for a slot.  One that outgrows the need grows its charge
+# while its host has real room (campaign_watch_workload) and raises the
+# need of every start after it (hdfs-adhoc-15: seed 514, obligations
+# 939-2003).  The need sizes the replay JVM's heap (CAUSYNTH_HEAP_BASIS_MB,
+# execute.sh); the charge it starts with is campaign_replay_charge_mb's.
 campaign_replay_need_mb() {
-  local rss=${campaign_recorded_workload_rss_mb} need=${obligation_memory_mb}
-  if [[ "${rss}" =~ ^[0-9]+$ ]] \
-      && (( rss * campaign_replay_memory_factor > need )); then
-    need=$(( rss * campaign_replay_memory_factor ))
-  fi
+  local need=$(( (campaign_replay_peak_mb * 3 + 255) / 256 * 128 ))
+  (( need >= campaign_replay_min_need_mb )) \
+    || need=${campaign_replay_min_need_mb}
   printf '%s\n' "${need}"
 }
 
-# campaign_replay_charge_mb <need>: what a seed or CONFIRM replay of that
-# need is charged at its start: the need, at most half a host's ceiling.
+# campaign_replay_measured <worker_dir>: the resident peak the replay of
+# <worker_dir> stated (workload_rss_mb, experiments/lib/execute.sh), taken
+# into the measured need (campaign_replay_need_mb), said when the need moves.
+# A worker whose replay never ran states none and adds nothing.
+campaign_replay_measured() {
+  local peak first=$(( campaign_replay_peak_mb == 0 )) before
+  read -r peak 2>/dev/null <"$1/workload_rss_mb" || return 0
+  [[ "${peak}" =~ ^[0-9]+$ ]] && (( peak > campaign_replay_peak_mb )) \
+    || return 0
+  before=$(campaign_replay_need_mb)
+  campaign_replay_peak_mb=${peak}
+  (( first )) || [[ "$(campaign_replay_need_mb)" != "${before}" ]] || return 0
+  campaign_log "a replay peaked at ${peak} MB (${1}): every replay from now \
+on needs $(campaign_replay_need_mb) MB and is charged \
+$(campaign_replay_charge_mb "$(campaign_replay_need_mb)") MB"
+}
+
+# campaign_replay_charge_mb <need>: what a replay of that need is charged at
+# its start: the need, at most half a host's ceiling.  A charge only an idle
+# host can hold waits for one forever on a shared cluster (round HG1: four
+# HDFS seed replays charged 20.6 GB, seven times a 2.9 GB recording, waited
+# 75 minutes for a host under 22 GB); what the replay grows past it the
+# ledger grants while its host has real room (campaign_watch_workload).
 campaign_replay_charge_mb() {
   local need=$1 cap
   cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
     * campaign_host_max_used_pct / 200 ))
-  (( need <= cap || cap < obligation_memory_mb )) || need=${cap}
-  printf '%s\n' "${need}"
+  printf '%s\n' "$(( need < cap ? need : cap ))"
 }
 
 # campaign_seed_replay <iteration_dir> <scope_map> <charged_mb> <bound_s>
@@ -2807,7 +2832,8 @@ names it; nothing withdrawn"
 # so no question waits behind a start that waits for memory (round x1: 11
 # cases' solvers, each charged its 8 GB heap at its start, held their hosts'
 # questions 50-75 minutes behind "starting" solvers).  An obligation's own
-# charge (obligation_memory_mb) is then its replay's.
+# charge (the campaign's measured replay charge, campaign_replay_need_mb) is
+# then its replay's.
 # ---------------------------------------------------------------------------
 
 # How long a host's solver waits for another question before it ends: about
@@ -2999,20 +3025,19 @@ campaign_solver_jvm() {
 }
 
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
-# <worker> [now]: the question in a solver JVM of its own at the case's
-# engine heap, its files straight into <worker>, its status the JVM's.
-# `now`: at once, under the obligation's own charge (its replay's, which
-# comes after), for a question whose host had no room for its solver --
-# what the JVM grows past that charge is asked of the host as it grows.
+# <worker> [charged_mb]: the question in a solver JVM of its own at the
+# case's engine heap, its files straight into <worker>, its status the JVM's.
+# <charged_mb>: at once, under the obligation's own charge of that many MB
+# (its replay's, which comes after), for a question whose host had no room
+# for its solver -- what the JVM grows past that charge is asked of the host
+# as it grows.
 # Otherwise once the host has room for the engine heap, charged that while it
 # runs: for a question the host's solver, or a JVM of its own, could not
 # answer (it ran out of heap or died), never the obligation's answer.
 campaign_solve_obligation_alone() {
-  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 when=${5:-}
-  local heap=${engine_memory_mb:-8192} charge="" charged status=0
-  if [[ "${when}" == now ]]; then
-    charged=${obligation_memory_mb}
-  else
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=${5:-}
+  local heap=${engine_memory_mb:-8192} charge="" status=0
+  if [[ -z "${charged}" ]]; then
     campaign_await_host_memory localhost "${heap}" || return 1
     charge=${campaign_host_charge_id}
     charged=${heap}
@@ -3036,14 +3061,16 @@ campaign_solve_obligation_alone() {
 # row that says which verdict it reached (campaign_stream_land).
 #
 # A single obligation that could not be solved or replayed is that
-# obligation's own result row, never the campaign's death.
+# obligation's own result row, never the campaign's death.  <charged_mb> is
+# what its start charged its host, its replay's, and <need_mb> its replay's
+# measured need (campaign_replay_need_mb).
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
-  local seed_plan=$6
+  local seed_plan=$6 charged=$7 need=$8
   local outcome status=0
-  # Its start charged the host obligation_memory_mb, its replay's: a local
-  # one is a subshell of the head, and its JVMs are not the head's; the
-  # host's solver charges its own.
+  # Its start charged the host <charged_mb>, its replay's: a local one is a
+  # subshell of the head, and its JVMs are not the head's; the host's solver
+  # charges its own.
   local campaign_head_charging=0
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
@@ -3054,7 +3081,7 @@ campaign_obligation_worker() {
     campaign_log "obligation ${obligation_id}: no room on $(hostname -s) \
 to start its solver now; answered in a solver JVM of its own"
     run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}" now
+      "${obligations}" "${sessions}" "${worker}" "${charged}"
   fi
   if [[ "${status}" -ne 0 ]]; then
     # A solver that ran out of heap or died answered nothing about the
@@ -3089,7 +3116,7 @@ host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"
   campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \
-    "${worker}/sessions" "${seed_plan}" "${obligation_memory_mb}"
+    "${worker}/sessions" "${seed_plan}" "${charged}" "${need}"
 }
 
 # The replay half of an obligation: the solver's model, run focused, and the
@@ -3198,14 +3225,14 @@ replay carried and the replay ended there, so its rows are a prefix of a run"
 # on.  How many run on one host at once is that host's to say: one more
 # starts while the memory ledger admits its replay, up to the host's cores
 # (campaign_stream_admit_host).  How many one exploration runs at once is,
-# under a cap (stream_max_in_flight), its share of it: the cap over the
-# capped explorations running now, each an entry of the ledger --
+# in a shared pool (stream_shared_pool), its share of its hosts' slots at
+# its measured replay charge (campaign_pool_slots): those slots over the
+# sharing explorations running now, each an entry of the ledger --
 #
 #   ${campaign_host_gate_root}/explorations/<id>  fresh while its head lives
 #
 # (campaign_stream_has_slot) -- so the cases a sweep runs at once share
-# their hosts' obligation slots (campaign_pool_slots), and one alone takes
-# them all.
+# their hosts, and one alone takes them all.
 # ---------------------------------------------------------------------------
 
 # The pool's hosts, one per line: the stated list, or this machine.
@@ -3318,7 +3345,7 @@ campaign_host_poll_s=5
 campaign_ssh_patience_s=300
 # A lock older than this was left by a campaign that died holding it.
 campaign_host_lock_stale_s=30
-# A head reservation, or a capped exploration's entry, older than this was
+# A head reservation, or a sharing exploration's entry, older than this was
 # left by a head that is gone.
 campaign_head_reservation_stale_s=600
 # This head's reservation file (campaign_head_reserve), or empty, and the
@@ -3330,7 +3357,7 @@ campaign_head_pid=""
 # take, which every start that is not this head's counts while it is fresh
 # (campaign_host_head_room), as a head's reservation.
 campaign_head_hold=""
-# This exploration's entry among the capped ones (campaign_stream_enroll),
+# This exploration's entry among the sharing ones (campaign_stream_enroll),
 # or empty.
 campaign_stream_entry=""
 # Set while a head's own start asks the ledger (campaign_head_charged).
@@ -3592,7 +3619,7 @@ campaign_head_reserve() {
 # The head lives: its reservation stays fresh, and states what its next
 # planner or composer starts at now (one that outgrew its need starts
 # higher from then on); so do the hold of a step it waits to place and its
-# capped exploration's entry.
+# sharing exploration's entry.
 campaign_head_heartbeat() {
   [[ -z "${campaign_head_reservation}" ]] \
     || campaign_head_need_mb >"${campaign_head_reservation}" 2>/dev/null \
@@ -3637,8 +3664,9 @@ campaign_host_room() {
 # campaign_pool_slots <need_mb> <host>...: how many starts of <need_mb> the
 # hosts hold at once when each holds its charge -- on each host, as many as
 # fit under its ceiling (CAUSYNTH_HOST_MAX_USED_PCT of its MemTotal) and no
-# more than its cores, both from the ledger -- summed: the obligation slots
-# a sweep's cases share (stream_max_in_flight, tools/adhoc/sweep.sh).
+# more than its cores, both from the ledger -- summed: the slots a shared
+# pool's explorations share at their measured replay charge
+# (campaign_stream_has_slot, stream_shared_pool).
 # A host whose memory or cores cannot be read adds none.
 campaign_pool_slots() {
   local need=$1 host dir total cores fit slots=0
@@ -3691,12 +3719,14 @@ campaign_watch_interval_s=2
 # reason SEED fails by (do_workload).
 campaign_recording_bound_marker=RECORDING_BOUND
 
-# campaign_watch_workload <pid> <charged_mb> [trace_dir]: one workload JVM
-# watched until it ends (experiments/lib/execute.sh).  Its peak resident
-# memory, in MB, goes to <trace_dir>/workload_rss_mb, a recording's: what a
-# native run of it is charged (REPRODUCE); for a JVM its host was charged
-# <charged_mb> for (0: none, a recording) it is said at its end beside that
-# charge, the evidence a case's obligation_memory_mb is set from.  Such a
+# campaign_watch_workload <pid> <charged_mb> [dir] [max_trace_mb]: one
+# workload JVM watched until it ends (experiments/lib/execute.sh).  Its peak
+# resident memory, in MB, goes to <dir>/workload_rss_mb: a recording's trace
+# directory, what a native run of it is charged (REPRODUCE); a replay's
+# worker directory, the campaign's measured replay need
+# (campaign_replay_measured).  For a JVM its host was charged <charged_mb>
+# for (0: none, a recording) the peak is also said at its end beside that
+# charge.  Such a
 # JVM that grows past what its host holds for it asks the host for the
 # excess (campaign_host_try_grow: refused only when the host's real use
 # would pass CAUSYNTH_HOST_MAX_USED_PCT, never for what the ledger promised
@@ -3709,17 +3739,17 @@ campaign_recording_bound_marker=RECORDING_BOUND
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
 # released when it ends.  A recording given <max_trace_mb> whose trace
-# passes it is ended there, RECORDING_BOUND, said in
-# <trace_dir>/${campaign_recording_bound_marker}: never a trace cut short
-# and aggregated as if whole.
+# (<dir>/runtime_trace.jsonl) passes it is ended there, RECORDING_BOUND, said
+# in <dir>/${campaign_recording_bound_marker}: never a trace cut short and
+# aggregated as if whole.
 campaign_watch_workload() {
-  local pid=$1 charged=$2 trace=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
+  local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
   local status=0 refused="" written=0 bounded=""
   local -a grants=()
-  [[ -z "${trace}" ]] || rm -f -- "${trace}/${campaign_recording_bound_marker}"
+  (( max_mb == 0 )) || rm -f -- "${dir}/${campaign_recording_bound_marker}"
   while kill -0 "${pid}" 2>/dev/null; do
     if (( max_mb > 0 )); then
-      written=$(stat -c %s "${trace}/runtime_trace.jsonl" 2>/dev/null) \
+      written=$(stat -c %s "${dir}/runtime_trace.jsonl" 2>/dev/null) \
         || written=0
       if (( written > max_mb * 1048576 )); then
         bounded=$(( written / 1048576 ))
@@ -3730,8 +3760,8 @@ campaign_watch_workload() {
     mb=$(campaign_process_rss_mb "${pid}") || mb=""
     if (( ${mb:-0} > peak )); then
       peak=${mb}
-      [[ -z "${trace}" ]] \
-        || printf '%s\n' "${peak}" >"${trace}/workload_rss_mb"
+      [[ -z "${dir}" ]] \
+        || printf '%s\n' "${peak}" >"${dir}/workload_rss_mb"
     fi
     if (( charged > 0 && peak > held )); then
       campaign_host_unlocked campaign_host_try_grow localhost \
@@ -3754,8 +3784,8 @@ campaign_watch_workload() {
     echo "RECORDING_BOUND: the recording's trace passed \
 recording_max_trace_mb (${max_mb} MB) at ${bounded} MB, more rows than SEED's \
 aggregation holds; the workload was ended" \
-      >"${trace}/${campaign_recording_bound_marker}"
-    echo "causynth: $(cat "${trace}/${campaign_recording_bound_marker}")" >&2
+      >"${dir}/${campaign_recording_bound_marker}"
+    echo "causynth: $(cat "${dir}/${campaign_recording_bound_marker}")" >&2
   fi
   (( charged > 0 )) || return 0
   [[ -z "${refused}" ]] || echo "causynth: the workload JVM's resident \
@@ -4120,14 +4150,16 @@ campaign_explore() {
   local stream_plan="${iteration_dir}/generations/g0/execution_task_plan.jsonl"
   local stream_round=0 stream_dirty=1 stream_landed=0 stream_hold=0
   local stream_generation=0 stream_next_host=0 stream_ticker=""
-  local stream_waiting="" stream_admitted_host="" stream_stop=""
+  local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
+  local stream_stop=""
   local stream_share_said=""
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
-  local -A stream_jobs=() stream_job_charge=() stream_flying=()
+  local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
+  local -A stream_flying=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_solver_seen=() stream_confirming=()
   : >"${results}"
@@ -4779,7 +4811,7 @@ campaign_process_tree() {
 }
 
 # Starts what the queue holds, first first, while this exploration runs
-# fewer than its share of stream_max_in_flight (campaign_stream_has_slot)
+# fewer than its share of the pool (campaign_stream_has_slot)
 # and a host admits it: an obligation, a GROW re-run or a confirmation on
 # the next host of the pool, round-robin, whose memory ledger admits one
 # more start and that runs fewer of this campaign's than it has cores
@@ -4797,39 +4829,42 @@ campaign_stream_dispatch() {
   done
 }
 
-# Whether this exploration runs fewer starts than its share of
-# stream_max_in_flight: the cap over the capped explorations whose ledger
-# entry is fresh (this one's among them, campaign_stream_enroll), at least
-# one, read again at every start -- so the share grows as others end and
-# shrinks as others begin, and what already runs past it runs out.  Always,
-# with no cap.  1 when it runs its share, said once for every share it waits
-# at.
+# Whether this exploration runs fewer starts than its share of a shared pool
+# (stream_shared_pool): the slots its hosts hold at the replay charge it
+# measured (campaign_pool_slots, campaign_stream_charge_mb) over the sharing
+# explorations whose ledger entry is fresh (this one's among them,
+# campaign_stream_enroll), at least one, read again at every start -- so the
+# share follows the measured need, grows as others end and shrinks as others
+# begin, and what already runs past it runs out.  Always outside a shared
+# pool.  1 when it runs its share, said once for every share it waits at.
 campaign_stream_has_slot() {
-  local fresh sharers share
-  (( stream_max_in_flight > 0 )) || return 0
+  local fresh sharers share slots charge
+  [[ "${stream_shared_pool}" == true ]] || return 0
   fresh=$(( $(date +%s) - campaign_head_reservation_stale_s ))
   sharers=$(find "${campaign_host_gate_root}/explorations" -maxdepth 1 \
     -type f -newermt "@${fresh}" | grep -c '') || sharers=0
   (( sharers > 0 )) || sharers=1
-  share=$(( stream_max_in_flight / sharers ))
+  charge=$(campaign_stream_charge_mb)
+  slots=$(campaign_pool_slots "${charge}" "${stream_hosts[@]}")
+  share=$(( slots / sharers ))
   (( share > 0 )) || share=1
   (( ${#stream_jobs[@]} >= share )) || return 0
   if [[ "${stream_share_said}" != "${share}" ]]; then
     campaign_log "waiting for a slot: ${#stream_jobs[@]} start(s) run, this \
-exploration's share ${share} of stream_max_in_flight=${stream_max_in_flight}, \
-shared by ${sharers} capped exploration(s)"
+exploration's share ${share} of its hosts' ${slots} slot(s) at ${charge} MB, \
+shared by ${sharers} exploration(s)"
     stream_share_said=${share}
   fi
   return 1
 }
 
-# A capped exploration's ledger entry, fresh while its head lives
+# A sharing exploration's ledger entry, fresh while its head lives
 # (campaign_head_heartbeat) and gone when it ends (campaign_explore): what
-# the capped explorations running now count to share stream_max_in_flight
-# (campaign_stream_has_slot).  None with no cap.
+# the explorations sharing the pool now count to share its slots
+# (campaign_stream_has_slot).  None outside a shared pool.
 campaign_stream_enroll() {
   local dir="${campaign_host_gate_root}/explorations"
-  (( stream_max_in_flight > 0 )) || return 0
+  [[ "${stream_shared_pool}" == true ]] || return 0
   mkdir -p "${dir}"
   campaign_stream_entry="${dir}/$(hostname -s).${BASHPID}.$(date +%s)"
   : >"${campaign_stream_entry}"
@@ -4841,9 +4876,10 @@ campaign_stream_unenroll() {
 }
 
 # Picks the host for one start of <kind> (OBLIGATION, RERUN or CONFIRM) and
-# charges it there (stream_admitted_host): the pool from the host after the
-# last one chosen, each start charged its replay's need for as long as it
-# runs (campaign_stream_charge_mb); an OBLIGATION goes first to a host where this
+# charges it there (stream_admitted_host, stream_admitted_mb): the pool from
+# the host after the last one chosen, each start charged the campaign's
+# measured replay charge for as long as it runs (campaign_stream_charge_mb);
+# an OBLIGATION goes first to a host where this
 # campaign's solver still serves (campaign_stream_warm: one started there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
@@ -4855,7 +4891,7 @@ campaign_stream_unenroll() {
 campaign_stream_admit_host() {
   local kind=$1 host turn count pass is status=0 mb
   count=${#stream_hosts[@]}
-  mb=$(campaign_stream_charge_mb "${kind}")
+  mb=$(campaign_stream_charge_mb)
   for pass in warm cold; do
     [[ "${pass}" == cold || "${kind}" == OBLIGATION ]] || continue
     for ((turn = 0; turn < count; turn++)); do
@@ -4884,15 +4920,12 @@ campaign_stream_warm() {
   [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
 }
 
-# What one start of <kind> is charged: an obligation's or a re-run's replay
-# obligation_memory_mb, a confirmation's what the seed replay is
+# What one start of the pool is charged now -- an obligation's, a re-run's
+# or a confirmation's replay: the campaign's measured replay need
+# (campaign_replay_need_mb), at most half a host's ceiling
 # (campaign_replay_charge_mb).
 campaign_stream_charge_mb() {
-  if [[ "$1" == CONFIRM ]]; then
-    campaign_replay_charge_mb "$(campaign_replay_need_mb)"
-  else
-    printf '%s\n' "${obligation_memory_mb}"
-  fi
+  campaign_replay_charge_mb "$(campaign_replay_need_mb)"
 }
 
 # One host's admission for campaign_stream_admit_host, <turn> places after
@@ -4905,6 +4938,7 @@ campaign_stream_try_host() {
   case "${status}" in
     0)
       stream_admitted_host=${host}
+      stream_admitted_mb=${mb}
       unset 'stream_host_unread[$host]'
       stream_next_host=$(( (stream_next_host + turn + 1) % count ))
       stream_waiting=""
@@ -4947,24 +4981,26 @@ could not be read for ${campaign_ssh_patience_s}s"
 # weaves a new one; this start keeps its own); the ledger row
 # campaign_stream_admit_host charged is its own until it returns.
 campaign_stream_start() {
-  local entry=$1 host=$2 kind round id session worker
+  local entry=$1 host=$2 kind round id session worker need
   local -a work=()
   read -r kind round id session <<<"${entry}"
+  need=$(campaign_replay_need_mb)
   if [[ "${kind}" == OBLIGATION ]]; then
     worker="${iteration_dir}/${round}/${id}"
     work=("${id}" "${iteration_dir}/${round}/obligations.jsonl" \
-      "${stream_classes}" "${worker}" "${sessions}" "${stream_plan}")
+      "${stream_classes}" "${worker}" "${sessions}" "${stream_plan}" \
+      "${stream_admitted_mb}" "${need}")
   elif [[ "${kind}" == CONFIRM ]]; then
     # On the generation current now, as an obligation's replay; the
     # replay's own worker is the job's, its logs beside it.
     worker="${campaign_root}/witness-confirm/${id}/worker"
     date +%s%3N >"$(dirname "${worker}")/started-at"
     work=("$(dirname "${worker}")" "${stream_classes}" "${stream_plan}" \
-      "$(campaign_stream_charge_mb CONFIRM)" "$(campaign_replay_need_mb)")
+      "${stream_admitted_mb}" "${need}")
   else
     worker=$(campaign_stream_rerun_dir "${round}" "${id}")
     work=("${id}" "${stream_classes}" "${worker}" "${worker}/sessions" \
-      "${stream_plan}" "${obligation_memory_mb}")
+      "${stream_plan}" "${stream_admitted_mb}" "${need}")
   fi
   printf '%s\n' "${host}" >"${worker}/host.txt"
   [[ "${kind}" != OBLIGATION ]] || stream_solver_seen[${host}]=$(date +%s)
@@ -4972,6 +5008,7 @@ campaign_stream_start() {
     "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
   stream_job_charge[$!]=${campaign_host_charge_id}
+  stream_job_worker[$!]=${worker}
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
@@ -5005,7 +5042,8 @@ campaign_stream_wait() {
 
 # One child the head waited for, ended with <status>: the ticker; the step
 # (campaign_stream_step_done); or a job, whose host has its slot and its
-# charge back (campaign_stream_release) and whose return waits in
+# charge back (campaign_stream_release), whose replay's peak joins the
+# measured need (campaign_replay_measured), and whose return waits in
 # stream_pending for the next step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session
@@ -5016,7 +5054,8 @@ campaign_stream_ended() {
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
     campaign_stream_release "${pid}"
-    unset 'stream_jobs[$pid]'
+    campaign_replay_measured "${stream_job_worker[${pid}]}"
+    unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]'
     stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
     stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
   fi
@@ -5532,8 +5571,9 @@ ${campaign_witness_attempt}"
 }
 
 # One claim confirmed, in a row: planned (campaign_confirm_plan), its replay
-# run wherever there is room (campaign_confirm_replay, charged as the seed
-# replay is), and decided (campaign_confirm_decide).  The final CONFIRM's;
+# run wherever there is room (campaign_confirm_replay, charged the measured
+# replay need, campaign_replay_need_mb, whose peak it joins), and decided
+# (campaign_confirm_decide).  The final CONFIRM's;
 # an exploration's attempt runs the same three apart, its replay a job of the
 # pool (campaign_stream_attempt).
 campaign_confirm_claim() {
@@ -5546,6 +5586,7 @@ campaign_confirm_claim() {
         "${iteration_dir}/instrumented-classes" \
         "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
         "${charge}" "${need}" ) || status=$?
+    campaign_replay_measured "${dir}/worker"
     campaign_confirm_decide "${claims}" "${dir}" "${status}"
   fi
   campaign_confirm_settle "${iteration_dir}" "${claims}"
@@ -6447,8 +6488,8 @@ head's assignments, -- and a command"
 do_run_obligation() {
   campaign_peer_enter "$@"
   set -- "${campaign_peer_args[@]}"
-  [[ $# -eq 6 ]] || die "--run-obligation takes six positional arguments \
-(id obligations classes worker sessions seed-plan), got $#"
+  [[ $# -eq 8 ]] || die "--run-obligation takes eight positional arguments \
+(id obligations classes worker sessions seed-plan charged-mb need-mb), got $#"
   campaign_obligation_worker "$@"
 }
 

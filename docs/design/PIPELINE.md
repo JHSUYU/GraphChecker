@@ -83,12 +83,11 @@ marked * below.
 | `recording_max_trace_mb`* (4096) | the most trace the recording may write; past it the workload is ended and SEED fails `RECORDING_BOUND` (§2) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
-| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
+| `campaign_worker_hosts`, `engine_memory_mb`, `stream_shared_pool` (false) | the pool's hosts, the most heap a head JVM is given and a solver asked again, whether the exploration shares its hosts' replay slots with the other sharing explorations (§7.7; a sweep's cases) |
 | `campaign_stop_after` | empty, `SEED` or `IMPORT` |
 | `reproduce_runs`* (10), `reproduce_time_factor`* (3) | how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
-Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
-none.
+Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
 
 ## 1. PREFLIGHT, FREEZE_TOOL, SETUP, FREEZE
 
@@ -785,7 +784,7 @@ CONFIRM it is a confirmation that did not confirm.
 ### 7.7 The work pool
 
 One pool for the whole exploration. The head starts each queued obligation, and each GROW re-run
-(§7.8), first first, while the exploration runs fewer than its share of `stream_max_in_flight`
+(§7.8), first first, while the exploration runs fewer than its share of a shared pool
 (below), on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin
 from the host after the last one chosen (`campaign_stream_admit_host`), an obligation first on a
 host where it started one within the solver's idle time (`campaign_stream_warm`: that host's solver
@@ -809,33 +808,44 @@ lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute 
 every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
-leases old is deleted. Every start states its measured need, with no default. An obligation or a
-re-run needs `obligation_memory_mb`: its replay's, since its question goes to its host's solver
-(§7.5), charged at its own start; the head holds the charge, the job releases it as soon as its
-work returned, before the head waits to see what a peer wrote, and the head again once it
-collected or reaped the job (`campaign_stream_release`). A replay JVM is handed what its host was
-charged for it (`CAUSYNTH_CHARGED_MB`): its heap is half of it (2 GB at least), and
+leases old is deleted. Every start states its measured need, with no default. An obligation, a
+re-run or a confirmation needs its replay's (its question goes to its host's solver, §7.5): the
+campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
+stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
+CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
+times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
+(`campaign_replay_charge_mb`). An obligation replay peaks near its own seed replay (round HG4:
+hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation
+and seven times the recording per CONFIRM held the lifts' ledger at 11-22 GB over 3-7 GB of real
+use (HG5A); one that outgrows the need grows its charge as below and raises the need of every
+start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003). The charge is taken at the
+start (`campaign_stream_admit_host`, `stream_admitted_mb`, handed to the job); the head holds it,
+the job releases it as soon as its work returned, before the head waits to see what a peer wrote,
+and the head again once it collected or reaped the job (`campaign_stream_release`). A replay JVM
+is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its whole need
+(`CAUSYNTH_HEAP_BASIS_MB`): its heap is half the need (4 GB at least), and
 `experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
 resident memory grows past its charge asks its host's ledger for the excess, as one more charge,
 granted unless the host's real use would pass `L` with it, and holds what it was granted, released
-when it ends; one the host cannot take is ended, saying
-so; each states its peak at its end.
+when it ends; one the host cannot take is ended, saying so; each states its peak at its end and
+writes it to `workload_rss_mb` in its worker directory, where the head reads it.
 
-THE CAP. `stream_max_in_flight` = N > 0 is how many obligations the capped explorations running
-at once keep in flight together (`campaign_stream_has_slot`, the one dispatch point): each starts
-one more only while it runs fewer than its share, N over the capped explorations whose entry in
+THE SHARED POOL. With `stream_shared_pool=true` (a sweep's cases, `tools/adhoc/sweep.sh`) the
+explorations running at once share their hosts (`campaign_stream_has_slot`, the one dispatch
+point): each starts one more only while it runs fewer than its share, the slots its hosts hold at
+its measured replay charge (`campaign_pool_slots`: on each host as many starts as fit under the
+ceiling above at that charge, at most its cores) over the sharing explorations whose entry in
 `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh (written when the loop starts, kept fresh by the
 head's heartbeat like its room, `campaign_head_reservation_stale_s`, removed when it ends), at
 least one, read again at every start; it says once for each share it waits at. So the share
-grows as others end and shrinks as others begin (what already runs past it runs out), and one
-exploration alone keeps all N. N = 0, the default and a named acceptance run's, is no cap. A
-sweep (`tools/adhoc/sweep.sh`) gives every case N = the lifts' obligation slots for its
-`obligation_memory_mb` (`campaign_pool_slots`: on each
-host as many starts as fit under the ceiling above at their charge, at most its cores; ten 31.5 GB
-lifts at 70 % hold 30 of 6000 MB), and admits its head for the room it reserves on its host
-(HEAD ROOM below; `tools/lib/heads.sh` `case_head_reserve_mb`). Round a40 without it: one Solr
-case kept 27-32 replays in flight on all ten lifts, the other cases' heads waited for room, and
-20 Solr checks would have taken over 15 h.
+follows the measured need, grows as others end and shrinks as others begin (what already runs past
+it runs out), and one exploration alone keeps all of it. `false`, the default and a named
+acceptance run's, shares nothing: the hosts' memory and cores alone decide. A sweep admits each
+head for the room it reserves on its host (HEAD ROOM below; `tools/lib/heads.sh`
+`case_head_reserve_mb`). Round a40 without sharing: one Solr case kept 27-32 replays in flight on
+all ten lifts, the other cases' heads waited for room, and 20 Solr checks would have taken over
+15 h; with a static per-case charge, adhoc-07's 151 replays of ~93 s each waited a median 35 min
+for a slot (HG4).
 
 HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
 (`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
@@ -860,12 +870,14 @@ the 16 GB engine heap at once found no lift of a running sweep with it free and 
 (a40s); every run ends
 at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
 told apart from a crash) -- the seed
-and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged
-seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
-native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that,
-charged at most half a host's ceiling at its start (a charge only an idle host can hold waited 75
-minutes in round HG1; past its charge the replay grows while its host has room) and its heap sized
-by the whole need (`CAUSYNTH_HEAP_BASIS_MB`) (`campaign_replay_need_mb`, `campaign_replay_charge_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
+replay (`campaign_session_replay`), before any replay of the campaign was measured, needing seven
+times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its native
+recording, up to 6.94 times in round x1; a recording that measured none, or a seed replay that
+states no peak, fails REPLAY by name), and the final CONFIRM replay (`campaign_confirm_claim`),
+needing the measured replay need (above), each charged at most half a host's ceiling at its start
+(`campaign_replay_charge_mb`: a charge only an idle host can hold waited 75 minutes in round HG1;
+past its charge the replay grows while its host has room) and its heap sized by the whole need
+(`CAUSYNTH_HEAP_BASIS_MB`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
 charge is ended only when the host's real use would pass the ceiling with it
 (`campaign_host_try_grow`). They read and write only the run's
 shared directories -- the case's scope copy among them (§1) -- so each runs alike on any host. What
