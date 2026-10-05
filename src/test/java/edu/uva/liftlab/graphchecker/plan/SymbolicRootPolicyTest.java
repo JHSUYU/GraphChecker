@@ -58,6 +58,15 @@ public class SymbolicRootPolicyTest {
     private static final String GET_NUM = "<S: int getNumSnapshots()>";
     private static final String GET_NUM_LOCAL = GET_NUM + "::$i0";
     private static final String COUNTER = "<S: int snapshotCounter>";
+    private static final String INIT = "<S: void <init>()>";
+    private static final String KEYS = "<S: java.util.Map keys>";
+    private static final String CHILDREN = "<S: java.util.List children>";
+    private static final String FILE = "<S: org.x.LongFile committed>";
+    private static final String MAP_PUT = "<java.util.Map: java.lang.Object "
+            + "put(java.lang.Object,java.lang.Object)>";
+    private static final String LIST_ADD =
+            "<java.util.List: boolean add(java.lang.Object)>";
+    private static final String FILE_SET = "<org.x.LongFile: void set(long)>";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -217,12 +226,102 @@ public class SymbolicRootPolicyTest {
                         method -> false).observedSites().size());
     }
 
+    /**
+     * SYMBOL-SCOPE §5.2: a cell holding a container is observed by the state
+     * of the container -- after a read, on its referent; before a container
+     * mutation through it, on the call's receiver -- and a mutator call is
+     * never a field observation.  A CONTAINER cell's reference never
+     * changes: its read observes no field and its constructor's store
+     * nothing, and only a read the root demand chose is a read site
+     * (§5.1).  A REFERENCE cell's read observes both; a mutator call on a
+     * REFERENCE cell holding no container observes nothing (its receiver is
+     * not the cell's holder: HANDOFF_FIELD_NOT_FOUND).
+     */
+    @Test
+    public void aContainerACellHoldsIsObservedByItsState() throws Exception {
+        Map<String, List<String>> apart = new LinkedHashMap<>();
+        apart.put(NN, Collections.singletonList(GET_NUM));
+        apart.put(DN, Arrays.asList(DELETE, INIT));
+        Map<String, SharedFieldFlow.TrackedKind> kinds = new LinkedHashMap<>();
+        kinds.put(KEYS, SharedFieldFlow.TrackedKind.CONTAINER);
+        kinds.put(CHILDREN, SharedFieldFlow.TrackedKind.REFERENCE);
+        kinds.put(FILE, SharedFieldFlow.TrackedKind.REFERENCE);
+        JsonArray sites = map(Arrays.asList(
+                read(KEYS, 8, "$r1"), guard(GET_NUM + "::$r1"),
+                read(KEYS, 11, "$r4"), guard(GET_NUM + "::$r4"),
+                mutation(KEYS, DELETE, 50, MAP_PUT), store(KEYS, INIT, 3),
+                read(CHILDREN, 9, "$r2"), guard(GET_NUM + "::$r2"),
+                mutation(CHILDREN, DELETE, 51, LIST_ADD),
+                read(FILE, 10, "$r3"), guard(GET_NUM + "::$r3"),
+                mutation(FILE, DELETE, 52, FILE_SET)), apart,
+                Collections.<String, Clock>emptyMap(), method -> false,
+                cell -> kinds.getOrDefault(cell,
+                        SharedFieldFlow.TrackedKind.NONE),
+                (demandSite, demandCell) -> (GET_NUM + "#u8").equals(
+                        demandSite) ? new StaticScopeMap.Demanded(
+                        "TRACK_CONTAINER", 2, true) : null).observedSites();
+        Map<String, String> observed = new LinkedHashMap<>();
+        for (int index = 0; index < sites.size(); index++) {
+            observed.put(member(sites, index, "siteId"),
+                    member(sites, index, "field") + "/"
+                            + member(sites, index, "container"));
+        }
+        Map<String, String> expected = new LinkedHashMap<>();
+        expected.put(GET_NUM + "#u8", "false/true");
+        // GET_NUM#u11 decides a branch too, but the demand chose no CONTAINER
+        // read there: no read site, nothing observed.
+        expected.put(DELETE + "#u50", "false/true");
+        expected.put(GET_NUM + "#u9", "true/true");
+        expected.put(DELETE + "#u51", "false/true");
+        expected.put(GET_NUM + "#u10", "true/false");
+        assertEquals("field/container per observed site", expected,
+                observed);
+    }
+
+    private static Map<String, Object> read(String cell, int unitIndex,
+                                            String local) {
+        return edge("{\"kind\":\"field_read\",\"method\":\"" + GET_NUM
+                + "\",\"unitIndex\":" + unitIndex + ",\"fromCell\":\""
+                + cell + "\",\"toCell\":\"" + GET_NUM + "::" + local
+                + "\"}");
+    }
+
+    private static Map<String, Object> mutation(String cell, String method,
+                                                int unitIndex, String callee) {
+        return edge("{\"kind\":\"container_mutation_argument\","
+                + "\"transferKind\":\"HEAP_WRITE\",\"fromCell\":\""
+                + method + "::$r9\",\"toCell\":\"" + cell
+                + "\",\"method\":\"" + method + "\",\"unitIndex\":"
+                + unitIndex + ",\"invoke\":\"" + callee + "\"}");
+    }
+
+    private static Map<String, Object> store(String cell, String method,
+                                             int unitIndex) {
+        return edge("{\"kind\":\"field_write\",\"transferKind\":"
+                + "\"HEAP_WRITE\",\"fromCell\":\"" + method + "::$r0\","
+                + "\"toCell\":\"" + cell + "\",\"method\":\"" + method
+                + "\",\"unitIndex\":" + unitIndex + "}");
+    }
+
     /** The published scope map of these edges, through the artifact the way
      *  SEED publishes it and PLAN reads it. */
     private StaticScopeMap map(List<Map<String, Object>> edges,
                                Map<String, List<String>> regionMethods,
                                Map<String, Clock> clocks,
                                Predicate<String> unwoven)
+            throws IOException {
+        return map(edges, regionMethods, clocks, unwoven,
+                cell -> SharedFieldFlow.TrackedKind.VALUE,
+                (demandSite, demandCell) -> null);
+    }
+
+    private StaticScopeMap map(List<Map<String, Object>> edges,
+                               Map<String, List<String>> regionMethods,
+                               Map<String, Clock> clocks,
+                               Predicate<String> unwoven,
+                               java.util.function.Function<String,
+                                       SharedFieldFlow.TrackedKind> kinds,
+                               StaticScopeMap.Demand demand)
             throws IOException {
         List<Map<String, Object>> regions = new java.util.ArrayList<>();
         for (Map.Entry<String, List<String>> region
@@ -234,9 +333,8 @@ public class SymbolicRootPolicyTest {
         }
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(edges,
-                regions, clocks, (m, u, c) -> null, (demandSite, demandCell) -> null, unwoven,
-                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false,
-                cell -> false),
+                regions, clocks, (m, u, c) -> null, demand, unwoven,
+                kinds, cell -> false, cell -> false),
                 null, method -> false)) {
             text.append(row.toString()).append('\n');
         }

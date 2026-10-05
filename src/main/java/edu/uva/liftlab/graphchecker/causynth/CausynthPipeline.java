@@ -2270,15 +2270,21 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Observes a tracked cell before each access of it, starting its version
-     * log where none stands: before the {@code putfield}/{@code putstatic},
-     * before the call when the store is an atomic's RMW (no application
-     * {@code putfield}), before the {@code getfield}/{@code getstatic} of
-     * a read, and before the call of a read through an accessor (the site
-     * names it), on the call's receiver.  A static cell's owner is its declaring class's mirror, the key
-     * the VM versions it by.  An instance access before the constructor call
-     * that makes its object has no object to observe yet, and a read site
-     * that is no field read of its cell observes nothing.
+     * Observes a tracked cell at each access of it, starting its version log
+     * where none stands.  The cell ({@code field}): before the {@code
+     * putfield}/{@code putstatic}, before the call when the store is an
+     * atomic's RMW (no application {@code putfield}), before the {@code
+     * getfield}/{@code getstatic} of a read, and before the call of a read
+     * through an accessor (the site names it), on the call's receiver; a
+     * static cell's owner is its declaring class's mirror, the key the VM
+     * versions it by.  The state of the container the cell holds ({@code
+     * container}): after a read, on the referent it returned; before and
+     * after a container mutation through the cell, on the call's receiver
+     * (before: a region thread starts the log the mutation then versions;
+     * after: a thread outside every region marks it).  An
+     * instance access before the constructor call that makes its object has
+     * no object to observe yet, and a read site that is no field read of its
+     * cell, or whose value nothing holds, observes nothing.
      */
     private void instrumentConcolicObservedSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
@@ -2317,17 +2323,46 @@ public final class CausynthPipeline {
                 }
                 owner = ((InstanceInvokeExpr) invocation).getBase();
             }
-            List<Unit> before = new ArrayList<>();
-            Value receiver = objectArg(body, owner, before);
-            refs.bracket(before, Hook.OBSERVE_TRACKED_SITE,
-                    StringConstant.v(target.siteId),
-                    StringConstant.v(target.cell), receiver);
-            insertBeforeSequence(body, selected, before);
+            if (target.field) {
+                List<Unit> before = new ArrayList<>();
+                Value receiver = objectArg(body, owner, before);
+                refs.bracket(before, Hook.OBSERVE_TRACKED_SITE,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver);
+                insertBeforeSequence(body, selected, before);
+            }
+            if (!target.container) continue;
+            List<Unit> observation = new ArrayList<>();
+            if (!target.read) {
+                Value receiver = objectArg(body, owner, observation);
+                refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver,
+                        IntConstant.v(0));
+                insertBeforeSequence(body, selected, observation);
+                List<Unit> after = new ArrayList<>();
+                refs.bracket(after, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell), receiver,
+                        IntConstant.v(1));
+                insertAfterSequence(body, selected, after);
+            } else if (selected instanceof AssignStmt) {
+                refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
+                        StringConstant.v(target.siteId),
+                        StringConstant.v(target.cell),
+                        objectArg(body, ((AssignStmt) selected).getLeftOp(),
+                                observation),
+                        IntConstant.v(0));
+                insertAfterSequence(body, selected, observation);
+            } else {
+                unobserved++;
+            }
         }
         if (unobserved > 0) {
             LOG.info("Left {} tracked access(es) unobserved: before their "
-                    + "object's constructor call, or a read site that is no "
-                    + "getfield of its cell", unobserved);
+                    + "object's constructor call, a read site that is no "
+                    + "getfield of its cell, or a container read whose value "
+                    + "nothing holds", unobserved);
         }
     }
 
@@ -3708,6 +3743,7 @@ public final class CausynthPipeline {
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
         OBSERVE_TRACKED_SITE,
+        OBSERVE_TRACKED_CONTAINER,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3888,6 +3924,9 @@ public final class CausynthPipeline {
                     .add(Hook.OBSERVE_TRACKED_SITE, runtime,
                             "observeTrackedSite", VoidType.v(), string,
                             string, object)
+                    .add(Hook.OBSERVE_TRACKED_CONTAINER, runtime,
+                            "observeTrackedContainer", VoidType.v(), string,
+                            string, object, BooleanType.v())
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),
                             IntType.v(), object, string)

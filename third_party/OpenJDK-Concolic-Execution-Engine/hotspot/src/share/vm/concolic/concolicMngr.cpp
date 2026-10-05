@@ -940,6 +940,37 @@ jint ConcolicMngr::observeField(Handle owner, const char *declaring_class,
   return ExpressionBroker::HANDOFF_OK;
 }
 
+jint ConcolicMngr::observeContainer(Handle value, bool mutation) {
+  if (value.is_null()) return ExpressionBroker::HANDOFF_MISSING_METADATA;
+  // A view, an iterator or a Collections wrapper stands for the container it
+  // reaches (the hop the models take too).
+  oop container = ContainerSupport::backing_container(value());
+  if (container == NULL) return ExpressionBroker::HANDOFF_UNSUPPORTED_TARGET;
+  if (!can_explicitly_symbolize()) {
+    // A thread outside every region runs a mutation as bytecode, which no
+    // model sees: a log that stands no longer names every writer of the
+    // state it chains (detected, never silent: VM.md §9).
+    if (mutation) {
+      ContainerSupport::mark_state_gap(container,
+                                       "UNHOOKED_CONTAINER_MUTATION");
+    }
+    return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
+  }
+  // The state the container holds now is its log's INITIAL, unless a log
+  // stands: every later modeled mutation is a STATE version and every query
+  // reads one.  A walk the snapshot refuses (unreadable class, past its
+  // bound, a resize in flight) is stated on that INITIAL.  A container a
+  // final field holds is mutated in place, never re-pointed, so nothing else
+  // starts its log while its contents stay concrete (BlockTokenSecretManager
+  // .allKeys, BlockPoolManager.bpByBlockPoolId).
+  if (!ContainerSupport::state_base_before_operation(container, NULL)
+           .is_valid()) {
+    return ExpressionBroker::HANDOFF_UNSUPPORTED_TARGET;
+  }
+  ctx->set_pc_admitted(true);
+  return ExpressionBroker::HANDOFF_OK;
+}
+
 #else
 
 jlong ConcolicMngr::endConcolic() {

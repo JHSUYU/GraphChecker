@@ -453,8 +453,11 @@ public final class ConcolicInstrumentationSelections {
          * Registers the planned observed sites of tracked cells (a by-value
          * cell has no version log until observed): a call storing into an
          * atomic's value, a {@code putfield} ({@code declaredCallee} empty),
-         * or a {@code getfield} ({@code read}).  One site naming two cells is
-         * refused.
+         * or a {@code getfield} ({@code read}), each observing its cell
+         * ({@code field}); and a read of a cell holding a container or a
+         * container mutation through one, observing that container's state
+         * ({@code container}).  One site naming two cells is refused, and so
+         * is a row observing nothing.
          */
         private void addObservedSites(JsonArray sites)
                 throws IOException {
@@ -471,13 +474,18 @@ public final class ConcolicInstrumentationSelections {
                         && site.get("read").getAsBoolean();
                 boolean staticField = site.has("static")
                         && site.get("static").getAsBoolean();
+                boolean field = site.has("field")
+                        && site.get("field").getAsBoolean();
+                boolean container = site.has("container")
+                        && site.get("container").getAsBoolean();
                 if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
-                        || cell.isEmpty()
+                        || cell.isEmpty() || !field && !container
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }
                 if (conflicts(new ObservedSite(method, unitIndex,
-                        siteId, callee, cell, read, staticField))) {
+                        siteId, callee, cell, read, staticField, field,
+                        container))) {
                     throw new IOException(
                             "OBSERVED_SITE_CONFLICT: " + siteId);
                 }
@@ -650,7 +658,7 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    /** One access of a tracked cell that the replay observes before it. */
+    /** One access of a tracked cell that the replay observes. */
     static final class ObservedSite {
         final String method;
         final int unitIndex;
@@ -661,10 +669,15 @@ public final class ConcolicInstrumentationSelections {
         final boolean read;
         /** A static cell: observed on its declaring class's mirror. */
         final boolean staticField;
+        /** The cell, on its holder, before the access. */
+        final boolean field;
+        /** The state of the container the access reaches: after a read, on
+         *  its referent; before a mutator call, on its receiver. */
+        final boolean container;
 
         ObservedSite(String method, int unitIndex, String siteId,
                      String declaredCallee, String cell, boolean read,
-                     boolean staticField) {
+                     boolean staticField, boolean field, boolean container) {
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = siteId;
@@ -672,13 +685,16 @@ public final class ConcolicInstrumentationSelections {
             this.cell = cell;
             this.read = read;
             this.staticField = staticField;
+            this.field = field;
+            this.container = container;
         }
 
         boolean sameObservation(ObservedSite other) {
             return other != null && declaredCallee.equals(
                     other.declaredCallee) && cell.equals(other.cell)
                     && read == other.read
-                    && staticField == other.staticField;
+                    && staticField == other.staticField
+                    && field == other.field && container == other.container;
         }
     }
 

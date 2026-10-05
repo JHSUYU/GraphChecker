@@ -264,7 +264,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`), then the guards of the calls into its method, three calls up, never into an execution context's entry (a thread's or task's `run`, a `call`, a `main`: its starter runs it) (`StaticScopeMap#targetChain`, `Guards#callsInto`): the decisions its occurrence takes on the way to the throw. The static planner roots a region at the target's method itself (`FAILURE_TARGET_ENTRY`), but its callers' region is the occurrence it folds into at run time |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `demandDistance` (the root demand's distance to this read, §4.6) |
-| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field), `demandDistance` (§4.6) |
+| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
@@ -706,15 +706,27 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
     `String` or a float wrapper: a reader queries or projects the referent the field held when it
     read (SOLR-18406's `knownCommits`, a map each commit replaces, and `latestCommit`). A static
     one too (`static: true`: its location is its class's). A field only its class's construction
-    stores is none (`#constructionOnly`: final, or private and stored only by its own class's
+    stores (`#constructionOnly`: final, or private and stored only by its own class's
     constructors, `#storedOnlyAtConstruction`: Lucene's `IndexFileDeleter.refCounts`, a lambda's
-    captured value): its only writer is its constructor, so there is nothing to re-pair. The same
-    rule marks a store into such a field `constructionOnly` (§5.3);
+    captured value) is no `REFERENCE`: its only writer is its constructor, so the field itself has
+    nothing to re-pair. The same rule marks a store into such a field `constructionOnly` (§5.3);
+  - `CONTAINER`: such a construction-only field holding a map, set, list, queue or deque
+    (`smt/JavaContainerTypes#shape`; an array is none, its elements being locations of their own):
+    its reference never changes, but the container's contents change in place, through `put`,
+    `remove` and the like from other threads, and they are what a query reads
+    (`BlockTokenSecretManager.allKeys`, `BlockPoolManager.bpByBlockPoolId`,
+    `DirectorySnapshottableFeature.snapshotsByNames`). The location its reads and mutations name
+    is the container's state (VM.md §6), observed as §5.2 says. Any other construction-only field
+    is none (hdfs-adhoc-03's `FSOutputSummer.sum`, a `DataChecksum`);
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
   `wire_handoff` edge, or the root demand chose it, a `TRACK`, `TRACK_IDENTITY` or
   `TRACK_CONTAINER` boundary of the throw's own guards however many flows away (§4.6); a read that
-  only feeds data stays untracked;
+  only feeds data stays untracked. A `CONTAINER` read is tracked only where the root demand chose
+  it: every query of a container reaches a branch, so the deciding rule would track every final
+  cache a configuration parse reads and make its region record from entry (hdfs-adhoc-28's seed:
+  `Configuration.CACHE_CLASSES` and `REGISTRY`, `WeakHashMap`s no model knows, took the DataNode
+  startup region from 13 to 262 recorded decisions);
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
@@ -744,11 +756,35 @@ window came first; the INITIAL is a write row of its own (`contract/WriteRow#ini
 its cell nor an accessor's call, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
 for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
 
-Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
-value's; a static cell's (`static: true`) on its declaring class's mirror, the key its location
-has (`CausynthPipeline#instrumentConcolicObservedSites`), before the `putstatic` or `getstatic`. Not
-observed: a `publishedFrom` write site, whose receiver is the local's container, not the carrier's
-holder (its log starts at its first model event).
+Each observed row states its cell's `trackedKind` and what it observes: `field`, the cell as above;
+`container`, the state of the container the cell holds. A `REFERENCE` cell's access is observed
+like a value's; a static cell's (`static: true`) on its declaring class's mirror, the key its
+location has (`CausynthPipeline#instrumentConcolicObservedSites`), before the `putstatic` or
+`getstatic`. Not observed: a `publishedFrom` write site, whose receiver is the local's container,
+not the carrier's holder (its log starts at its first model event).
+
+**A container a cell holds** (a `REFERENCE` or `CONTAINER` cell of a container type, no array) is
+observed by its state: after each read of the cell, on the referent the read returned, and before
+each container mutation through it, on the call's receiver (a view or an iterator stands for its
+container), `ConcolicRegionRuntime.observeTrackedContainer(siteId, cell, container, afterMutation)`
+calls the VM's `observeContainer` (`runtime/ConcolicVmBroker#observeContainer`, VM.md §5.4), which
+starts the container's state log with an INITIAL stating what it holds, unless a log stands. Every later
+modeled mutation is then a `STATE` version with its writer, site and guard -- whatever object
+reaches the container (VM.md §6) -- and every query reads one, so COMPOSE re-pairs the anchor's
+query of it like any state read (PIPELINE §8, `SmtLowering#movedQuery`): to the INITIAL, or to an
+earlier or later concurrent writer's state. Before, a container whose contents stayed concrete had
+no log (the VM starts one only at a symbolic value or a guarded mutation): hdfs-adhoc-11's
+`allKeys.get(keyId)`, -28/31's `bpByBlockPoolId.get(bpid)` read no version, so nothing was there to
+re-pair; the block-key cases had theirs only because a wire-carried key or a clock-guarded removal
+reached the DataNode's map first. A `CONTAINER` cell's field is never observed (its constructor's
+store neither), and a mutator call never observes a field -- but an atomic's write of its value: its
+receiver is no holder of the cell (a `GSet`'s `put`, a `BestEffortLongFile`'s `set` had each
+access refused `HANDOFF_FIELD_NOT_FOUND`); a mutator call on a cell holding no container observes
+nothing. Outside every region a mutation runs as bytecode no model sees, so a second observation
+just after it marks a standing log incomplete (`UNHOOKED_CONTAINER_MUTATION`) instead of leaving its
+chain stale -- after, so a log another thread started meanwhile is marked too. A value
+no container model knows (a `TreeMap`, a `CopyOnWriteArrayList`) is an `UNSTATED_VALUE` DIAGNOSTIC
+row naming its class, once per site.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
@@ -923,12 +959,15 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
   boundary, and a concrete anchor's demand joins a read row to a demanded read by its method, kind
   and type, not its bci (`StaticScopeMap#demandedAt`).
 - The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
-  and `AtomicReference.value`, a static one on its class's mirror) and the atomics' integral
-  `value` from an observed access (§5.2). A container reached through a
+  and `AtomicReference.value`, a static one on its class's mirror), the atomics' integral
+  `value` and the state of a container a cell holds (`CONTAINER` cells included) from an observed
+  access (§5.2). A container reached through a
   replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
   asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
-  fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
-  queues are classified by interface here, modeled by R3-REFCONT WP3b/c). A `String` field's log
+  fields, array elements (a construction-only array field's elements included), and containers
+  the VM does not model (`TreeMap`, `TreeSet`, `CopyOnWriteArrayList`; classified by interface
+  here). A mutation of an observed container by a thread outside every region is detected only at
+  the slice's mutation sites of its cell; one through an alias the slice does not name is not. A `String` field's log
   starts at its first symbolic store, with no INITIAL (VM.md §5.1), so a store before it -- a null
   -- is no writer a read of it can be re-paired with (open defect 34).
 - Root admission (§4.4) is by field, not by object: a root whose influence stores a demanded

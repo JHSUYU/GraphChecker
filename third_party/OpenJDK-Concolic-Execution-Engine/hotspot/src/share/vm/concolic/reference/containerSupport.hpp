@@ -369,6 +369,18 @@ SharedFieldVersions::Location state_location(oop container);
  * add/offer/set/remove/clear (indexed), add/remove/clear (set).
  */
 bool guarded_mutation(const std::string &callee);
+/**
+ * Whether a container model takes one call: a symbolic value reaches it
+ * (MethodSymbolizerHandle::general_check_param_symbolized), it is a guarded
+ * mutation, or it changes -- or, with `callback`, runs a callback over -- a
+ * container whose state is tracked, whatever object reaches that container.
+ * An iterator or a view the program built before the log began is no alias
+ * the model knows: run as bytecode, its remove() would leave the chain of a
+ * tracked state stale, with no trace (BlockTokenSecretManager
+ * .removeExpiredKeys walks allKeys.entrySet().iterator()).  A query through
+ * such an object stays bytecode: its positions began before the log did.
+ */
+bool admits(MethodSymbolizerHandle &handle, bool callback);
 // Whether a modeled container call changes what its container holds (the
 // three models' mutators, a callback's included).
 bool mutator(const std::string &callee);
