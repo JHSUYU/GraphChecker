@@ -1,43 +1,35 @@
 package edu.uva.liftlab.graphchecker;
 
-import soot.FoundFile;
 import soot.G;
 import soot.IFoundFile;
 import soot.Singletons;
 import soot.SourceLocator;
 
 import java.io.File;
-import java.io.IOException;
 import java.lang.reflect.Field;
-import java.nio.file.FileVisitOption;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Soot's source locator, with each classpath directory listed once.
+ * Soot's source locator, with each directory of the classpath listed once.
  *
  * <p>Soot looks a class up along its classpath in order, and in a directory
  * by asking whether {@code <dir>/<name>} exists: every class costs one stat
  * in each directory ahead of the entry that holds it, and a JDK or library
  * class misses in every class directory of the case.  On NFS one static pass
- * of an HDFS case made ~197K such failed stats.  This locator walks a
- * directory the first time Soot looks into it and answers every later
- * lookup there from that listing.  The rest is Soot's own: the classpath
- * order, the archives, the class providers, and the {@code FoundFile} a hit
- * returns.</p>
+ * of an HDFS case made ~197K such failed stats.  Here a lookup first reads
+ * the listing of the name's folder ({@code <dir>/a/b} for {@code
+ * a/b/C.class}), read once per JVM; a name the listing does not hold is no
+ * file there, and one it holds is Soot's own lookup, so a hit is the same
+ * {@code FoundFile}.  The classpath order, the archives and the class
+ * providers are Soot's.</p>
  */
 final class IndexedSourceLocator extends SourceLocator {
-    /** Each directory's files, by their path under it ({@code /}-separated). */
+    /** The names in each folder looked into, by {@code dir \0 folder}. */
     private final Map<String, Set<String>> listings = new ConcurrentHashMap<>();
 
     IndexedSourceLocator(Singletons.Global global) {
@@ -63,37 +55,19 @@ final class IndexedSourceLocator extends SourceLocator {
 
     @Override
     protected IFoundFile lookupInDir(String dir, String fileName) {
-        return listings.computeIfAbsent(dir, IndexedSourceLocator::list)
-                .contains(fileName)
-                ? new FoundFile(new File(dir, fileName)) : null;
+        int slash = fileName.lastIndexOf('/');
+        String folder = slash < 0 ? "" : fileName.substring(0, slash);
+        return listings.computeIfAbsent(dir + '\0' + folder,
+                key -> list(new File(dir, folder)))
+                .contains(fileName.substring(slash + 1))
+                ? super.lookupInDir(dir, fileName) : null;
     }
 
-    /**
-     * Every file under {@code dir}, as Soot's {@code File#exists} sees it:
-     * links followed, a link whose target is gone left out.  A directory that
-     * cannot be walked stops the pass by name.
-     */
-    private static Set<String> list(String dir) {
-        Path root = Paths.get(dir);
-        Set<String> files = new HashSet<>();
-        try {
-            Files.walkFileTree(root, EnumSet.of(FileVisitOption.FOLLOW_LINKS),
-                    Integer.MAX_VALUE, new SimpleFileVisitor<Path>() {
-                        @Override
-                        public FileVisitResult visitFile(Path file,
-                                                         BasicFileAttributes attributes) {
-                            if (!attributes.isSymbolicLink()) {
-                                files.add(root.relativize(file).toString()
-                                        .replace(File.separatorChar, '/'));
-                            }
-                            return FileVisitResult.CONTINUE;
-                        }
-                    });
-        } catch (IOException failure) {
-            throw new IllegalStateException("cannot list the classpath "
-                    + "directory " + dir, failure);
-        }
-        return Collections.unmodifiableSet(files);
+    /** The names {@code folder} holds; none when it is no directory. */
+    private static Set<String> list(File folder) {
+        String[] names = folder.list();
+        return names == null ? Collections.<String>emptySet()
+                : new HashSet<>(Arrays.asList(names));
     }
 
     private static Field field(String name) {

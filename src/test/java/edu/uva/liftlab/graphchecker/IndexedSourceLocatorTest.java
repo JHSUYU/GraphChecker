@@ -16,7 +16,7 @@ import java.nio.file.Path;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
 
-/** A directory lookup answers as Soot's own does, from one listing. */
+/** A directory lookup answers as Soot's own does, from its folder's listing. */
 public class IndexedSourceLocatorTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -43,7 +43,7 @@ public class IndexedSourceLocatorTest {
         String root = dir.toString();
         for (String name : new String[]{"a/b/C.class", "a/b/L.class",
                 "a.b.D.jimple", "a/b/Missing.class", "a/b/Gone.class",
-                "java/lang/String.class", "C.class"}) {
+                "java/lang/String.class", "C.class", "a/b"}) {
             assertEquals(name, path(own.at(root, name)),
                     path(indexed.lookupInDir(root, name)));
         }
