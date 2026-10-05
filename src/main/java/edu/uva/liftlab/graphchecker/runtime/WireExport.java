@@ -11,6 +11,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -120,14 +121,17 @@ final class WireExport {
                             + " consumer's attach pairs with no export");
             return;
         }
-        if (!SymbolicMessageEnvelope.stage(site.portId(), exported.handle)) {
+        // The endpoint first: the message the leaf enters files it as its
+        // own producer at its door (SymbolicMessageEnvelope#carriedBy).
+        Endpoint producer = publishExportRow(site, carrier, field,
+                descriptor, exported.handle, exported.eventId);
+        if (!SymbolicMessageEnvelope.stage(site.portId(), exported.handle,
+                producer)) {
             // The row still states the endpoint; the loss is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     site.portId(),
                     "the communication leaf could not enter the message");
         }
-        publishExportRow(site, carrier, field, descriptor, exported.handle,
-                exported.eventId);
     }
 
     /**
@@ -165,15 +169,16 @@ final class WireExport {
     /**
      * States one export as an endpoint a delivery can be paired to -- every
      * export, with a degraded producer occurrence when no region is live
-     * (still keyable, IDENTITY §4).
+     * (still keyable, IDENTITY §4): the endpoint, or null when no session
+     * is open or the row could not be stated.
      */
-    private static void publishExportRow(CommunicationHandoffSpec site,
+    private static Endpoint publishExportRow(CommunicationHandoffSpec site,
                                          Object carrier, String field,
                                          String descriptor, long handle,
                                          long exportEventId) {
         pauseObservation();
         try {
-            if (!RowRuntime.open()) return;
+            if (!RowRuntime.open()) return null;
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
             OccurrenceAddress producer = occurrenceHere(site.portId());
             JsonObject exported = null;
@@ -199,9 +204,9 @@ final class WireExport {
                         "the exported leaf's expression could not be read: "
                                 + ConcolicRegionRuntime.rootCause(unreadable));
             }
-            RowRuntime.exported(producer, exportEventId, site.portId(),
-                    handle, view.exchangeCorrelationId, attemptOf(view),
-                    exported, descriptor, recordedValue);
+            return RowRuntime.exported(producer, exportEventId,
+                    site.portId(), handle, attemptOf(view), exported,
+                    descriptor, recordedValue);
         } catch (Throwable unstated) {
             // Publishing never ends a run, and never fails silently.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -209,6 +214,7 @@ final class WireExport {
                     "the export of this port published no endpoint row, so"
                             + " no delivery can be paired to it: "
                             + ConcolicRegionRuntime.rootCause(unstated));
+            return null;
         } finally {
             resumeObservation();
         }

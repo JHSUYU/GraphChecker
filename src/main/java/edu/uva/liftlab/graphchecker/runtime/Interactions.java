@@ -4,7 +4,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
-import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -59,28 +59,48 @@ public final class Interactions {
         }
     }
 
-    /** Files the producer of one staged value, by every key it states. */
-    public static synchronized void exported(String portId, long handle,
-                                             String correlationId,
-                                             Endpoint producer) {
-        if (producer == null) return;
-        for (String key : keys(portId, handle, correlationId)) {
-            PRODUCERS.put(key, producer);
-        }
+    /** Files the producer of one exported value by its VM handle. */
+    public static synchronized void exported(long handle, Endpoint producer) {
+        if (producer == null || handle <= 0L) return;
+        PRODUCERS.put(handleKey(handle), producer);
+    }
+
+    /**
+     * Files the producer of one value a message carries, by that message --
+     * its correlation and half -- and the port: called at the message's own
+     * outbound door ({@link SymbolicMessageEnvelope#carriedBy}), never where
+     * the value was exported, whose thread may be serving another message
+     * (a server's export answers the request it serves in its response half,
+     * never in that request's).
+     */
+    public static synchronized void carried(String portId,
+                                            String correlationId, String half,
+                                            Endpoint producer) {
+        String key = messageKey(portId, correlationId, half);
+        if (producer == null || key.isEmpty()) return;
+        PRODUCERS.put(key, producer);
     }
 
     /**
      * The producer this delivery was paired with (or null) and the key that
      * answered: the handle (the export itself) is stronger evidence than the
-     * correlation-with-port (the message it travelled in).
+     * message it travelled in ({@code correlationId}, {@code half}) with the
+     * port, which is asked only of an element the message carried -- one it
+     * did not ({@code handle} {@link SymbolicMessageEnvelope#ABSENT}) was
+     * staged by no export of its sender, and pairs with nothing.
      */
     public static synchronized Pairing pairing(String portId, long handle,
-                                               String correlationId) {
-        for (String key : keys(portId, handle, correlationId)) {
-            Endpoint producer = PRODUCERS.get(key);
+                                               String correlationId,
+                                               String half) {
+        if (handle > 0L) {
+            Endpoint producer = PRODUCERS.get(handleKey(handle));
+            if (producer != null) return new Pairing(producer, "HANDLE");
+        }
+        if (handle >= 0L) {
+            String key = messageKey(portId, correlationId, half);
+            Endpoint producer = key.isEmpty() ? null : PRODUCERS.get(key);
             if (producer != null) {
-                return new Pairing(producer, key.charAt(0) == 'H'
-                        ? "HANDLE" : "CORRELATION_PORT");
+                return new Pairing(producer, "CORRELATION_PORT");
             }
         }
         return new Pairing(null, "");
@@ -107,21 +127,24 @@ public final class Interactions {
         }
     }
 
-    /**
-     * The pairing keys: the VM handle and the correlation with the port, both
-     * recorded facts (IDENTITY §4).  Never "the port's last producer",
-     * which is a guess; unpaired deliveries go to {@link RowRuntime#attachedAt}.
+    /*
+     * The pairing keys: the VM handle, and the message (correlation and
+     * half) with the port, both recorded facts (IDENTITY §4).  Never "the
+     * port's last producer", which is a guess; unpaired deliveries go to
+     * {@link RowRuntime#attachedAt}.
      */
-    private static List<String> keys(String portId, long handle,
-                                     String correlationId) {
+    private static String handleKey(long handle) {
+        return "H\n" + handle;
+    }
+
+    /** The message key of one port, or "" when the message names none. */
+    private static String messageKey(String portId, String correlationId,
+                                     String half) {
         String port = Text.safe(portId);
         String correlation = Text.safe(correlationId);
-        List<String> keys = new ArrayList<String>(2);
-        if (handle > 0L) keys.add("H\n" + handle);
-        if (!correlation.isEmpty() && !port.isEmpty()) {
-            keys.add("C\n" + correlation + "\n" + port);
-        }
-        return keys;
+        if (correlation.isEmpty() || port.isEmpty()) return "";
+        return "C\n" + correlation + "\n"
+                + Text.safe(half).toUpperCase(Locale.ROOT) + "\n" + port;
     }
 
     /**

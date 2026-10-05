@@ -687,6 +687,9 @@ public final class CausynthTraceRecorder {
                                           Object localOwner,
                                           Object carriedScope, String verb) {
         initialize();
+        // The exports staged on this message are its: filed by it before
+        // the door drains them, whatever its header becomes.
+        SymbolicMessageEnvelope.carriedBy(correlationId, half);
         // A start before the next receipt hands this request off.
         Identity.requestInHand(verb);
         String header;

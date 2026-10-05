@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
+
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -55,16 +57,38 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Adds one declared port to the next message sent by this thread.
+     * A {@link #take} that found no element: the sender staged nothing for
+     * the port on this message (a value it forwarded without exporting it).
+     */
+    static final long ABSENT = -1L;
+
+    /**
+     * Adds one declared port to the next message sent by this thread, with
+     * the export that staged it ({@code producer}, which stays here).
      *
      * <p>Only the staged handle and its position travel; the plan's
      * occurrences for the port do not, since both sides hold the plan and
      * the attach names its own activation
      * ({@code HandoffMint.attachConsumerRegion}).</p>
      */
-    static boolean stage(String portId, long handle) {
+    static boolean stage(String portId, long handle, Endpoint producer) {
         if (empty(portId) || handle < 0L) return false;
-        return outbound().stage(portId, handle);
+        return outbound().stage(portId, handle, producer);
+    }
+
+    /**
+     * Files the exports staged on the message this thread is about to send,
+     * as that message's ({@link Interactions#carried}): the door calls it
+     * with the message's correlation and half just before it drains the
+     * envelope ({@link #takeOutbound}).
+     */
+    static void carriedBy(String correlationId, String half) {
+        Outbound message = OUTBOUND.get();
+        if (message == null) return;
+        for (Entry entry : message.entries) {
+            Interactions.carried(entry.portId, correlationId, half,
+                    entry.producer);
+        }
     }
 
     private static Outbound outbound() {
@@ -162,13 +186,13 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Takes the element this port is decoding next, by ordinal: its handle,
-     * or 0.  An element never staged answers 0, as a concrete one does,
-     * rather than borrowing the next value.
+     * Takes the element this port is decoding next, by ordinal: its handle
+     * (0 for a concrete one), or {@link #ABSENT} when the message carries
+     * none, rather than borrowing the next value.
      */
     static long take(String portId) {
         Inbound message = INBOUND.get();
-        if (message == null || empty(portId)) return 0L;
+        if (message == null || empty(portId)) return ABSENT;
         return message.take(portId);
     }
 
@@ -248,7 +272,7 @@ public final class SymbolicMessageEnvelope {
                 lookedUp[index] = true;
                 return entry.handle;
             }
-            return 0L;
+            return ABSENT;
         }
 
         /**
@@ -276,11 +300,11 @@ public final class SymbolicMessageEnvelope {
             super("outbound");
         }
 
-        boolean stage(String portId, long handle) {
+        boolean stage(String portId, long handle, Endpoint producer) {
             if (entries.size() >= MAX_ENTRIES) return false;
             int frame = frame();
             entries.add(new Entry(portId, handle, frame,
-                    count(portId)));
+                    count(portId), producer));
             return true;
         }
     }
@@ -311,7 +335,7 @@ public final class SymbolicMessageEnvelope {
                     || ordinal < 0 || ordinal >= MAX_ENTRIES
                     || !Integer.toString(ordinal).equals(fields[3])
                     || empty(portId)) throw malformed();
-            entries.add(new Entry(portId, handle, frame, ordinal));
+            entries.add(new Entry(portId, handle, frame, ordinal, null));
         }
         return entries;
     }
@@ -342,18 +366,22 @@ public final class SymbolicMessageEnvelope {
                 "malformed symbolic message envelope");
     }
 
-    /** One staged or decoded leaf: its port, handle and position. */
+    /** One staged or decoded leaf: its port, handle and position, and the
+     *  export that staged it (the sender's side only; it never travels). */
     private static final class Entry {
         private final String portId;
         private final long handle;
         private final int frame;
         private final int ordinal;
+        private final Endpoint producer;
 
-        private Entry(String portId, long handle, int frame, int ordinal) {
+        private Entry(String portId, long handle, int frame, int ordinal,
+                      Endpoint producer) {
             this.portId = portId;
             this.handle = handle;
             this.frame = frame;
             this.ordinal = ordinal;
+            this.producer = producer;
         }
     }
 }

@@ -45,6 +45,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
@@ -627,8 +628,7 @@ public class RowRuntimeTest {
                 CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 3),
                 ExecutionIndex.parse("PBHelper.convert()#u2@0"));
         Endpoint exported = RowRuntime.exported(producer, 61L,
-                "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0, null, "J",
-                "119981");
+                "XCH.resp.block-key-id", 4242L, 0, null, "J", "119981");
         assertNotNull(exported);
 
         OccurrenceAddress consumer = RowRuntime.occurrenceHere(
@@ -648,28 +648,67 @@ public class RowRuntimeTest {
         assertEquals(exported, row.producer());
         assertFalse(row.interaction().producer().occurrence().lineageLost());
         assertTrue(row.endpoint().occurrence().lineageLost());
-        // Pairing is the run's own RECORDED evidence and nothing else: the
-        // handle the VM handed out, or the correlation the workload named
-        // with the port.  A delivery on the same port that carries neither
-        // pairs to nothing -- it used to take the port's last producer,
-        // which states a chain nobody made -- and another port's delivery
-        // takes no producer from this one either.
-        assertNull("no handle and no correlation is no pairing",
-                Interactions.pairing(
-                        "XCH.resp.block-key-id", 0L, "").producer());
-        assertNull("another port is another interaction",
-                Interactions.pairing(
-                        "XCH.resp.other", 0L, "hadoop-ipc-7").producer());
         assertEquals("the handle is the strongest evidence there is",
-                exported,
-                Interactions.pairing("XCH.resp.other", 4242L, "").producer());
-        // And the pairing states WHICH of the two keys answered, so a row
-        // paired on the message rather than on the staged expression is not
-        // read as the stronger fact.
-        assertEquals("HANDLE",
-                Interactions.pairing("XCH.resp.other", 4242L, "").key());
-        assertEquals("", Interactions.pairing(
-                "XCH.resp.block-key-id", 0L, "").key());
+                "HANDLE", Interactions.pairing("XCH.resp.other", 4242L, "",
+                        "").key());
+    }
+
+    /**
+     * WIRE pairing is the run's own RECORDED evidence and nothing else: the
+     * handle the VM handed out, or the message the attach received -- its
+     * correlation and half -- with the port, for an element that message
+     * carried, filed at that message's outbound door by the exports staged
+     * on it.  hdfs-adhoc-07 (HG5A): a JournalNode's own export, made while
+     * it served acceptRecovery and filed under that request's correlation,
+     * answered the request's attaches of a segment the client forwarded
+     * without exporting it: 855 self-pairings, 57 of 68 paths
+     * self-contradictory.  Per row: the port, the element's handle (-1
+     * absent), the received message's correlation and half, and the
+     * producer that answers (- none) by which key.
+     */
+    @Test
+    public void aCorrelationPairingIsTheSendingSideOfTheMessageReceived()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        Endpoint client = RowRuntime.exported(address("q/client#epoch0",
+                "REGION.c", CausalContext.of(Role.of("CLIENT"), "", 1),
+                ExecutionIndex.parse("C.send()#u1@0")), 1L, "XCH.seg", 0L, 0,
+                null, "J", "3");
+        Endpoint server = RowRuntime.exported(address("q/jn0#epoch0",
+                "REGION.s", CausalContext.of(Role.of("SERVER"), "", 1),
+                ExecutionIndex.parse("S.getSegmentInfo()#u1@0")), 2L,
+                "XCH.seg", 77L, 0, null, "J", "4");
+        // The client's request c-1 carries its concrete export; the server,
+        // serving c-1, stages its own for the response.
+        assertTrue(SymbolicMessageEnvelope.stage("XCH.seg", 0L, client));
+        CausynthTraceRecorder.outboundExchange("HADOOP_IPC", "c-1", "0",
+                "REQUEST", null, null, "");
+        SymbolicMessageEnvelope.takeOutbound();
+        assertTrue(SymbolicMessageEnvelope.stage("XCH.seg", 77L, server));
+        CausynthTraceRecorder.outboundExchange("HADOOP_IPC", "c-1", "0",
+                "RESPONSE", null, null, "");
+        SymbolicMessageEnvelope.takeOutbound();
+        RowRuntime.closeSession();
+        Map<String, Endpoint> producers = new LinkedHashMap<>();
+        producers.put("client", client);
+        producers.put("server", server);
+        String[][] rows = {
+            {"XCH.seg", "0", "c-1", "REQUEST", "client", "CORRELATION_PORT"},
+            {"XCH.seg", "0", "c-1", "request", "client", "CORRELATION_PORT"},
+            {"XCH.seg", "0", "c-1", "RESPONSE", "server", "CORRELATION_PORT"},
+            {"XCH.seg", "-1", "c-1", "REQUEST", "-", ""},
+            {"XCH.seg", "77", "c-1", "REQUEST", "server", "HANDLE"},
+            {"XCH.seg", "77", "", "", "server", "HANDLE"},
+            {"XCH.other", "0", "c-1", "REQUEST", "-", ""},
+            {"XCH.seg", "0", "c-2", "REQUEST", "-", ""},
+            {"XCH.seg", "0", "", "REQUEST", "-", ""}};
+        for (String[] row : rows) {
+            Interactions.Pairing pairing = Interactions.pairing(row[0],
+                    Long.parseLong(row[1]), row[2], row[3]);
+            assertEquals(String.join(" ", row), producers.get(row[4]),
+                    pairing.producer());
+            assertEquals(String.join(" ", row), row[5], pairing.key());
+        }
     }
 
     /**
@@ -708,7 +747,7 @@ public class RowRuntimeTest {
             // No concolic VM runs these tests: the broker refuses both steps.
             WireExport.exportLeaf(out,
                     new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
-            assertTrue(SymbolicMessageEnvelope.stage(in, 41L));
+            assertTrue(SymbolicMessageEnvelope.stage(in, 41L, null));
             SymbolicMessageEnvelope.installInbound(
                     SymbolicMessageEnvelope.takeOutbound());
             WireExport.attachLeaf(in,
@@ -785,7 +824,7 @@ public class RowRuntimeTest {
         // with another row and exactly one of each group owns it.
         RowRuntime.decision(occurrence, 0L, "Klass.beforeRecording()#u2", 1,
                 true, null);
-        RowRuntime.exported(occurrence, 4L, "XCH.port", 7L, "c1", 0,
+        RowRuntime.exported(occurrence, 4L, "XCH.port", 7L, 0,
                 expression, "J", "1");
         RowRuntime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
                 "1", true, "2");
