@@ -22,7 +22,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 
 /**
  * The per-loop {@code K_L} (PIPELINE §2), declared (never measured: the
@@ -89,9 +89,7 @@ final class DeclaredLoopBodyBounds {
 
     /** The declarations this campaign's configuration names, if any. */
     static DeclaredLoopBodyBounds fromConfiguration() throws IOException {
-        String configured = firstNonBlank(
-                System.getProperty(SOURCE_PROPERTY),
-                System.getenv(SOURCE_ENVIRONMENT));
+        String configured = setting(SOURCE_PROPERTY, SOURCE_ENVIRONMENT);
         if (configured.isEmpty()) {
             return none();
         }

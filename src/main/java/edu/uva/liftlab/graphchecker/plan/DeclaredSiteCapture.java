@@ -285,10 +285,14 @@ public final class DeclaredSiteCapture {
 
     /** An external call's return: the local it lands in is the port. The fault
      *  marker ({@code Debug.makeSymbolicBoolean}) is stamped as the MARKER
-     *  root; a configuration getter's return as the root of its key, with
-     *  its domain. */
+     *  root, with its name; a configuration getter's return as the root of
+     *  its key, with its domain. */
     private static void callReturnPort(JsonObject port,
                                        StaticScopeMap.Site site) {
+        if (!site.declared.marker.isEmpty()) {
+            port.addProperty(InputActionCatalog.DECLARED_FAULT_MARKER,
+                    site.declared.marker);
+        }
         StaticScopeMap.ConfigCall config = site.declared.config;
         if (config != null) {
             port.addProperty(InputActionCatalog.DECLARED_CONFIG_SOURCE,

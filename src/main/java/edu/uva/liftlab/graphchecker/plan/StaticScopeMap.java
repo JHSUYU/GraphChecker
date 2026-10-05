@@ -430,10 +430,16 @@ public final class StaticScopeMap {
         /** A {@link #CONFIG_INPUT}'s root and static domain; null for any
          *  other input. */
         public final ConfigCall config;
+        /** A {@link #FAULT_INPUT}'s marker name ({@code
+         *  FAULT:<TRANSPORT>:<DIRECTION>[:<Kind>]}, SYMBOL-SCOPE §4.2), so
+         *  the replay that answers it knows which door failed; "" for any
+         *  other input. */
+        public final String marker;
 
         public Declared(String kind, String edgeId, String dependencyCell,
                         String implementationMethod, String javaType,
-                        String inputKind, Clock clock, ConfigCall config) {
+                        String inputKind, Clock clock, ConfigCall config,
+                        String marker) {
             this.kind = safe(kind);
             this.edgeId = safe(edgeId);
             this.dependencyCell = safe(dependencyCell);
@@ -442,6 +448,8 @@ public final class StaticScopeMap {
             this.inputKind = safe(inputKind);
             this.clock = CLOCK_INPUT.equals(this.inputKind) ? clock : null;
             this.config = CONFIG_INPUT.equals(this.inputKind) ? config : null;
+            this.marker = FAULT_INPUT.equals(this.inputKind) ? safe(marker)
+                    : "";
         }
 
         private static String safe(String value) {
@@ -707,7 +715,7 @@ public final class StaticScopeMap {
             found.set(index, site.withDeclared(new Declared(declared.kind,
                     declared.edgeId, declared.dependencyCell,
                     declared.implementationMethod, declared.javaType,
-                    READ_INPUT, null, null)));
+                    READ_INPUT, null, null, "")));
         }
     }
 
@@ -922,6 +930,9 @@ public final class StaticScopeMap {
                             site.declared.clock.source());
                 }
             }
+            if (!site.declared.marker.isEmpty()) {
+                row.addProperty("marker", site.declared.marker);
+            }
             ConfigCall config = site.declared.config;
             if (config != null) {
                 row.addProperty("sourceId", config.sourceId);
@@ -1095,7 +1106,8 @@ public final class StaticScopeMap {
                     vmSite(method), cell, "", "", callee, "",
                     new Declared(declaredKind, text(edge.get("id")),
                             dependencyCell, implementation, javaType,
-                            inputKind, clock, config), NO_GUARDS,
+                            inputKind, clock, config,
+                            text(edge.get("symbolicName"))), NO_GUARDS,
                     NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "", false,
                     false, "", distance(demand.at(siteId, cell))));
         }
@@ -1285,7 +1297,8 @@ public final class StaticScopeMap {
                                     : null,
                             new ConfigCall(optionalString(row, "sourceId"),
                                     optionalString(row, "domainMin"),
-                                    optionalString(row, "domainMax")));
+                                    optionalString(row, "domainMax")),
+                            optionalString(row, "marker"));
             sites.add(new Site(optionalString(row, "role"),
                     optionalString(row, "regionId"),
                     optionalString(row, "siteId"),

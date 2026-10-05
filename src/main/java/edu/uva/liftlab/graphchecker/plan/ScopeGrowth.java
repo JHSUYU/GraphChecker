@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.FieldVisitor;
@@ -250,7 +251,7 @@ public final class ScopeGrowth {
         for (Path entry : search) {
             if (Files.isDirectory(entry)) {
                 if (!Files.isRegularFile(entry.resolve(outer))) continue;
-                for (Path file : classFiles(entry.resolve(outer)
+                for (Path file : ArtifactIO.classFiles(entry.resolve(outer)
                         .getParent())) {
                     String relative = entry.relativize(file).toString();
                     if (!relative.equals(outer)
@@ -442,7 +443,7 @@ public final class ScopeGrowth {
             throw new IllegalStateException(
                     "scope growth class root not found: " + root);
         }
-        for (Path file : classFiles(root)) {
+        for (Path file : ArtifactIO.classFiles(root)) {
             ClassFacts facts = new ClassFacts(file, root.relativize(file));
             try (InputStream in = Files.newInputStream(file)) {
                 new ClassReader(in).accept(facts,
@@ -455,21 +456,12 @@ public final class ScopeGrowth {
     private static Set<String> classNames(Path root) throws IOException {
         Set<String> names = new LinkedHashSet<>();
         if (!Files.isDirectory(root)) return names;
-        for (Path file : classFiles(root)) {
+        for (Path file : ArtifactIO.classFiles(root)) {
             String relative = root.relativize(file).toString();
             names.add(relative.substring(0, relative.length() - 6)
                     .replace('/', '.'));
         }
         return names;
-    }
-
-    private static List<Path> classFiles(Path root) throws IOException {
-        List<Path> files = new ArrayList<>();
-        try (Stream<Path> walk = Files.walk(root)) {
-            walk.filter(path -> path.toString().endsWith(".class"))
-                    .sorted().forEach(files::add);
-        }
-        return files;
     }
 
     /** What one class file states: its supertypes, the methods it has a

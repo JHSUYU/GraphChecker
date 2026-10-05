@@ -354,9 +354,9 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(owner, client);
         long calling = RuntimeTraceContext.beginRequest(client, "append");
         String first = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
-                "corr-1", "0", "REQUEST", owner, null);
+                "corr-1", "0", "REQUEST", owner, null, "");
         String second = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
-                "corr-2", "0", "REQUEST", owner, null);
+                "corr-2", "0", "REQUEST", owner, null, "");
         RuntimeTraceContext.endRequest(calling);
         List<String> both = answered(new String[][]{{"corr-1", first},
                 {"corr-2", second}});
@@ -440,7 +440,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(owner, client);
         long calling = RuntimeTraceContext.beginRequest(client, "append");
         String header = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
-                "corr-1", "0", "REQUEST", owner, null);
+                "corr-1", "0", "REQUEST", owner, null, "");
         RuntimeTraceContext.endRequest(calling);
         AtomicReference<Endpoint> response = new AtomicReference<>();
         Thread handler = poolThreadCreatedOutsideAnyScope(() -> {

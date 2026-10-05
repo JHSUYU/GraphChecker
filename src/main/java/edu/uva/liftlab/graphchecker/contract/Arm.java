@@ -35,11 +35,6 @@ public final class Arm extends Value {
                 Fields.copy(guardRoots), attested);
     }
 
-    /** The exported value {@code e_q}. */
-    public String expressionRef() {
-        return expressionRef;
-    }
-
     /** The roots the delivery holds under. */
     public Set<String> guardRoots() {
         return guardRoots;

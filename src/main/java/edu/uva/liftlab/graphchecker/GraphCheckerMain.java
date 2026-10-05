@@ -3,8 +3,6 @@ package edu.uva.liftlab.graphchecker;
 import edu.uva.liftlab.graphchecker.causynth.LineageScope;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
-import edu.uva.liftlab.graphchecker.option.OptionError;
-import edu.uva.liftlab.graphchecker.option.OptionParser;
 import edu.uva.liftlab.graphchecker.transformer.GraphCheckerTransformer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,15 +10,12 @@ import soot.PackManager;
 import soot.PhaseOptions;
 import soot.Scene;
 import soot.SootClass;
-import soot.Timers;
 import soot.Transform;
 import soot.options.Options;
 import soot.util.Chain;
 
 import java.io.File;
 import java.io.PrintStream;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.Date;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,7 +24,6 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 import static soot.SootClass.SIGNATURES;
 
@@ -38,7 +32,6 @@ public class GraphCheckerMain {
 
     private final GraphCheckerOptions options;
     private final List<String> productionProcessDirs = new ArrayList<>();
-    private final Set<String> testClassOutputDirs = new LinkedHashSet<>();
 
     public GraphCheckerMain(GraphCheckerOptions options) {
         this.options = options;
@@ -59,39 +52,15 @@ public class GraphCheckerMain {
     }
 
     public boolean run() {
-        if (!Options.v().parse(options.getArgs())) {
-            System.err.println("Error in parsing Soot options");
-            return false;
-        }
-        enforceProductionApplicationScope();
-
         Options.v().warnNonexistentPhase();
-        if (Options.v().phase_list()) {
-            System.out.println(Options.v().getPhaseList());
-            return true;
-        }
-        if (!Options.v().phase_help().isEmpty()) {
-            for (String phase : Options.v().phase_help()) {
-                System.out.println(Options.v().getPhaseHelp(phase));
-            }
-            return true;
-        }
-
         try {
             Date start = new Date();
             LOG.info("GraphChecker started on {}", start);
-            Timers.v().totalTimer.start();
-
             Scene.v().loadNecessaryClasses();
             orderClassesByName();
             LambdaClassNames.install();
             PackManager.v().runPacks();
             PackManager.v().writeOutput();
-
-            Timers.v().totalTimer.end();
-            if (Options.v().time()) {
-                Timers.v().printProfilingInformation();
-            }
 
             Date finish = new Date();
             long runtime = finish.getTime() - start.getTime();
@@ -117,11 +86,8 @@ public class GraphCheckerMain {
         List<String> configuredTestDirs = new ArrayList<>();
         splitProcessDirs(processDirs, productionProcessDirs,
                 configuredTestDirs);
-        testClassOutputDirs.addAll(configuredTestDirs);
-        String classPath = expandClassPath(prependClasspathEntries(
-                processDirs, options.getClassPath()));
-        collectTestClassOutputs(classPath, testClassOutputDirs);
-        Options.v().set_soot_classpath(classPath);
+        Options.v().set_soot_classpath(expandClassPath(
+                prependClasspathEntries(processDirs, options.getClassPath())));
         Options.v().set_keep_line_number(true);
         Options.v().set_whole_program(true);
         // Identity must not depend on the host or the run.  Soot runs on one
@@ -157,16 +123,7 @@ public class GraphCheckerMain {
         if (options.getOutputDir() != null) {
             Options.v().set_output_dir(options.getOutputDir());
         }
-
-        if (options.isOutputJar()) {
-            Options.v().set_output_jar(true);
-        } else {
-            Options.v().set_output_format(Options.output_format_class);
-        }
-
-        if (options.getArgs().length == 0) {
-            Options.v().set_unfriendly_mode(true);
-        }
+        Options.v().set_output_format(Options.output_format_class);
     }
 
     /**
@@ -213,54 +170,6 @@ public class GraphCheckerMain {
                 productionDirs.add(path.getAbsolutePath());
             }
         }
-    }
-
-    private static void collectTestClassOutputs(
-            String classPath, Collection<String> testDirs) {
-        if (classPath == null || classPath.trim().isEmpty()) {
-            return;
-        }
-        for (String entry : classPath.split(Pattern.quote(
-                File.pathSeparator))) {
-            File path = new File(entry);
-            if ("test-classes".equals(path.getName())
-                    && path.isDirectory()) {
-                testDirs.add(path.getAbsolutePath());
-            }
-        }
-    }
-
-    /** Raw Soot arguments are parsed after GraphChecker's own options. */
-    private void enforceProductionApplicationScope() {
-        // Soot parses a trailing -cp after configureSoot().
-        collectTestClassOutputs(Options.v().soot_classpath(),
-                testClassOutputDirs);
-        Options.v().set_process_dir(productionProcessDirs);
-        for (String className : new ArrayList<>(Options.v().classes())) {
-            if (classComesFromTestOutput(className)) {
-                throw new IllegalStateException("Test class cannot enter "
-                        + "GraphChecker application scope: " + className);
-            }
-        }
-        String mainClass = Options.v().main_class();
-        if (classComesFromTestOutput(mainClass)) {
-            throw new IllegalStateException("Test main class cannot enter "
-                    + "GraphChecker application scope: " + mainClass);
-        }
-    }
-
-    private boolean classComesFromTestOutput(String className) {
-        if (className == null || className.trim().isEmpty()) {
-            return false;
-        }
-        String relative = className.replace('.', File.separatorChar)
-                + ".class";
-        for (String directory : testClassOutputDirs) {
-            if (Files.isRegularFile(Paths.get(directory, relative))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static String expandClassPath(String classPath) {
@@ -319,28 +228,8 @@ public class GraphCheckerMain {
     }
 
     public static void main(String[] args) {
-        OptionParser parser = new OptionParser();
-        GraphCheckerOptions options;
-        try {
-            options = parser.parse(args);
-        } catch (OptionError optionError) {
-            System.out.println("Error in parsing options: " + optionError.getMessage() + "\n");
-            parser.printHelp();
-            System.exit(1);
-            return;
-        }
-
-        if (options.isHelp()) {
-            parser.printHelp();
-            System.exit(0);
-        }
-        if (options.getInputList().isEmpty()) {
-            System.out.println("Must set an input jar or input directory.");
-            parser.printHelp();
-            System.exit(1);
-        }
-
-        GraphCheckerMain main = new GraphCheckerMain(options);
+        GraphCheckerMain main = new GraphCheckerMain(
+                GraphCheckerOptions.parse(args));
         main.initialize();
         if (!main.run()) {
             System.exit(1);

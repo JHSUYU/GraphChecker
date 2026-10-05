@@ -4,16 +4,18 @@ GraphChecker is an academic research tool in software engineering. It studies ho
 distributed Java systems (HDFS, Solr, HBase, ZooKeeper) fail under fault, clock and ordering counterfactuals.
 
 It starts from one recorded run of a system's own cluster test that does **not** fail, plus one
-declared failure site (a `throw`, named by its class and source line). It then asks whether a
-small change could have made that run fail at that site, and it answers with a witness. The
-changes it considers are a transport fault, a skewed clock, a flipped configuration value, or a
-different pairing of a message or of shared state.
+declared failure site (a `throw`, named by its class and source line). From that run it explores
+systematically: it flips the symbolic branches on the failure's slice and the roots that decide
+them (transport faults at the woven doors, local IO faults on the traced flow, clocks,
+configuration values, the pairing of a message or of a shared-state read with its writer), replays
+each flipped world on a concolic OpenJDK 8 (Zero) that keeps a symbolic expression under every
+value, and grows the closure (the woven regions and the rows they state) from what each replay
+newly reaches, round after round. Every admitted replay is fused into one free-root formula,
+`candidate.smt2`, and z3 on that file decides: SAT or UNSAT.
 
-A witness is a quantifier-free SMT formula (`candidate.smt2`), a claim naming what moved
-(`claim.json`), and one replay confirming that the program agrees (`confirm.json`). Replays run
-on a concolic OpenJDK 8 (Zero) that keeps a symbolic expression under every value. The formula
-is composed from many focused replays, and the solver picks the nearest world. What the rows do
-not state is named, never silently defaulted.
+A SAT comes with a claim naming the roots that moved (`claim.json`) and one replay confirming that
+the program agrees (`confirm.json`). What the rows do not state is named, never silently
+defaulted.
 
 ## Taking over: read these, in order
 
@@ -111,17 +113,22 @@ is written.
 `/bigtemp/vnr3ne/gc-out/hosts`, one for the cluster whatever `GC_OUT` a run writes) and the hosts
 `LIFTS` (lift06–15).
 
-Obligations of a campaign, and GROW's re-runs, fan out over the hosts in
+Obligations of a campaign (each a solve, then its replay when the solver answers SAT, two starts),
+and GROW's re-runs, fan out over the hosts in
 `CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, round-robin, as many on a host as its ledger admits, up to its
 cores. A head's own steps go to its host when it has room, else to the pool's host with the most
 room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
-host is charged to the ledger first, at its measured need, for as long as it runs: an obligation or
-a re-run, which is its replay (`obligation_memory_mb`), a host's solver of the exploration (its
-start's need; PIPELINE §7.5), a campaign head's engine JVM (its main's measured need, else
-`engine_memory_mb`, and once more at `engine_memory_mb` if it runs out; PIPELINE §7.7), its seed and
-CONFIRM replays (seven times the recording's measured peak when above `obligation_memory_mb`, else
-that, never more than half a host's ceiling), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its heap) and a `fanout.sh`
-job (its `NEED_MB`). A start goes only when both the host's live charges and its real use
+host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
+(seven times the recording's measured peak), an obligation's solve (what a solver starts at), then
+every obligation's, re-run's and CONFIRM's replay
+(the campaign's measured replay need: the largest peak its replays stated so far, the seed's first,
+times 1.5, at least 512 MB; `campaign_replay_need_mb`), each replay at most half a host's ceiling at
+its start, a host's solver of the exploration (its start's need; PIPELINE §7.5), a campaign head's
+engine JVM (its main's measured need, else `engine_memory_mb`, and once more at `engine_memory_mb`
+if it runs out; PIPELINE §7.7), REPRODUCE's runs (the recording's peak), an offline gate's JVM (its
+heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
+(`stream_shared_pool`): each keeps in flight its share of the slots its hosts hold at its measured
+replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
 (`MemTotal` less `MemAvailable`), each with the start and a head's held room, stay within
 `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released

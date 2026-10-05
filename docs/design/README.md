@@ -23,8 +23,10 @@ snapshot against the store. The failure site is a guarded `throw` in production 
 `throw new @CausynthExceptionTarget("<check id>") E(...)` in the system's tree.
 
 GraphChecker starts from ONE recorded run of the system's own cluster test, in which the throw
-does not fire. It asks whether a small counterfactual (nested at most 3 deep) makes that run
-reach the throw at the declared occurrence `(r, c, i)`. The counterfactuals are:
+does not fire, and explores systematically whether any world around it reaches the throw at the
+declared occurrence `(r, c, i)`: it flips the symbolic branches of the throw's slice and the roots
+that decide them (flips nest up to 3 deep), replays each flipped world, grows the closure from what
+the replays newly reach, and fuses every admitted replay into one formula. The roots are:
 - a transport fault at a woven door (either direction);
 - a local file-operation fault on the traced flow;
 - a clock skew;

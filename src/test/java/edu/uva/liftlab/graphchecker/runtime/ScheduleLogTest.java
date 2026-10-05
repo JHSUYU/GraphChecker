@@ -399,6 +399,48 @@ public class ScheduleLogTest {
                 offer + ":" + verbs[1]), claimed);
     }
 
+    /**
+     * A message door's fault ends the request in hand as a receipt does --
+     * the exchange ended, in failure -- so the thread's next start hands
+     * nothing off (hdfs-17899-bug2: the SPS daemon started after a faulted
+     * {@code getBlockKeys}).  A demanded door's fault (a local file
+     * operation) and a marker no door names end no exchange.
+     */
+    @Test
+    public void aMessageDoorFaultEndsTheRequestInHand() {
+        written.clear();
+        String offer = "<C$Connection: void sendRpcRequest(C$Call)>#u48";
+        String verb = "P.getBlockKeys";
+        Object[][] faults = {
+                {"FAULT:HADOOP_IPC:REQUEST", true},
+                {"FAULT:HADOOP_IPC:REQUEST:ConnectTimeoutException", true},
+                {"FAULT:HDFS_SASL:REQUEST", true},
+                {"FAULT:HDFS_DATA_TRANSFER:RESPONSE:EOFException", true},
+                {"FAULT:ZOOKEEPER:WRITE", true},
+                {"FAULT:LOCAL_IO:WRITE", false},
+                {"FAULT:NO_DOOR:REQUEST", false},
+                {"a-workload-marker", false},
+        };
+        List<String> expected = new ArrayList<String>();
+        for (Object[] fault : faults) {
+            CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                    "c-" + fault[0], "0", "REQUEST", null, null, verb);
+            Identity.doorFaulted((String) fault[0]);
+            Identity.startWork(offer, new Object());
+            expected.add(fault[0] + " " + ((Boolean) fault[1] ? offer
+                    : offer + ":" + verb));
+            CausynthTraceRecorder.inboundExchange("", "HADOOP_IPC",
+                    "r-" + fault[0], "0", "RESPONSE", null);
+        }
+        List<String> starts = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            if (event.kind() == ScheduleEvent.Kind.START) {
+                starts.add(faults[starts.size()][0] + " " + event.site());
+            }
+        }
+        assertEquals(expected, starts);
+    }
+
     /** And observe answers whether it wrote. */
     @Test
     public void nothingIsRecordedBeforeTheWindowOpens() {

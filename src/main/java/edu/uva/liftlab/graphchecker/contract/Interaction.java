@@ -26,10 +26,6 @@ public final class Interaction extends Value {
                 Fields.required(consumer, "consumer"));
     }
 
-    public InteractionKind kind() {
-        return kind;
-    }
-
     public Endpoint producer() {
         return producer;
     }

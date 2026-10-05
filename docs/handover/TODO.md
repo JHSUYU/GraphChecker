@@ -13,6 +13,8 @@ in [STATE.md](STATE.md); commands are in [OPERATIONS.md](OPERATIONS.md).
 
 ## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3`, image `vm-hg5`)
 
+**Status 2026-10-05 04:00 (lead).** Done and merged into `system/hdfs`: §1e (bug2, `hdfs-request-in-hand`), measured replay charges (`hdfs-measured-charges`), the FREEZE digest and array-identity fixes. HG5A ran the HG5 body (STATE §4). In flight, one agent each: §1 decisive-verdicts (fixing its review's 4 blockers, then merge), §2 HG6 = `hdfs-draw-sites2` (probes), identity (`hdfs-address-shared`: rule B done; next the planned-shape rule for hdfs-11741's regression, then the putter's frames for 14; 07's shared getSegmentInfo endpoint), closure E1 for 16 (`hdfs-closure`, after §1), cleanup batch 1 (`hdfs-cleanup-1`). Merge order: decisive, HG6, address-shared, closure, cleanup phase 2. Then the next round of the 46 (§3) on the merged body. Parked: the QJM obligation snowball (dependence-key granularity), the 8 GB head reserve (heads peak at median 0.7 GB, p99 7.8), SEED's Soot passes being IO-bound on NFS during a sweep's first wave.
+
 ### 1. Finish `hdfs-decisive-verdicts` (one coding agent)
 
 The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` and the brief is
@@ -44,9 +46,16 @@ brief and bind.
 an IPC door fault the request gets no receipt and stays "in hand". Every later thread start on that
 thread then appends `:NamenodeProtocol.getBlockKeys` to its name, so the SPS daemon's occurrence,
 which sends the key id, gets an address no plan instrumented.
-- Fix: a fault marker that comes out true clears the request in hand. In replays this is
-  `RootMint#materializePrimitive`; in a native run, `RecordingPlant#marker`.
-- This is an identity change: send a short design to a review agent, then a live bug2 run.
+- Fix, on branch `hdfs-request-in-hand` (worktree `/bigtemp/vnr3ne/wt/gc-hdfs-request-in-hand`): a
+  message door's marker that comes out true clears the request in hand (`Identity#doorFaulted`),
+  called by a replay's mint (`RootMint`, which learns the marker's name from the scope map's FAULT
+  input, `marker`) and by a native plant (`RecordingPlant#marker`); a LOCAL_IO door's does not.
+- Live, snapshot `~/gc-run/rih1` (`99e8512d9`), image `vm-hg5`, `/bigtemp/vnr3ne/gc-out/hdfs-request-in-hand/
+  accept-RIH1-17899-bug{1,2,3}`: all three PASS, MARKER_FLIPPED by the target DataNode heartbeat's IPC
+  response door, confirmed, reproduced natively 10/10; cone.py without the FREE exemption (`0219d06b8`)
+  finds the moved root in the cone and 0 unbound boundary variables. bug2's one fatal boundary variable,
+  `data-encryption-key-id` at the DataNode's SASL server, is bound by its message family to the SPS's
+  producer; no session names a start by a faulted request's verb. Next: merge.
 - Done when bug2's witness binds the key id across the wire and `cone.py` passes without the
   exemption.
 

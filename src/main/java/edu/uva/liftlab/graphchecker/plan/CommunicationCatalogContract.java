@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
@@ -59,15 +61,6 @@ public final class CommunicationCatalogContract {
      * demanded and not their values.
      */
     public static final String CODEC_PORT = "CODEC_PORT";
-    public static final String PORT_SPACE = "space";
-    public static final String PORT_KEY = "key";
-    public static final String PORT_PRESENCE = "presence";
-    public static final String PORT_CALLEE = "callee";
-    /** How a producer site states the key and the value: its KEY row's
-     *  role, or its setter's. */
-    public static final String PORT_ROLE = "role";
-    public static final String PORT_KEY_ARGUMENT = "keyArg";
-    public static final String PORT_VALUE_ARGUMENT = "valueArg";
 
     // Discovery never guesses: what it cannot resolve becomes a gap row.
 
@@ -128,14 +121,10 @@ public final class CommunicationCatalogContract {
      * alone -- is what declares a capture once.
      */
     public static String captureKey(String side, Map<String, ?> capture) {
-        return side + "\n" + text(capture.get(PORT_ID)) + "\n"
-                + text(capture.get(CALL_SITE_ID)) + "\n"
-                + text(capture.get(PORT_OUTPUT_CAPTURE_KIND)) + "\n"
-                + text(capture.get(PORT_ARGUMENT_INDEX));
-    }
-
-    private static String text(Object value) {
-        return value == null ? "" : String.valueOf(value);
+        return side + "\n" + MapFields.text(capture.get(PORT_ID)) + "\n"
+                + MapFields.text(capture.get(CALL_SITE_ID)) + "\n"
+                + MapFields.text(capture.get(PORT_OUTPUT_CAPTURE_KIND)) + "\n"
+                + MapFields.text(capture.get(PORT_ARGUMENT_INDEX));
     }
 
     /** Length of the leading {@code "XCH." + canonical UUID}, or -1. */

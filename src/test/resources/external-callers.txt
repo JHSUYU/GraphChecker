@@ -27,7 +27,6 @@ runtime.ConcolicRegionRuntime resumeObservation void
 
 # ipc.CausynthMessagePropagation, all eight trees unless noted
 runtime.CausynthTraceRecorder captureScope object
-runtime.CausynthTraceRecorder outboundExchange string string string string string object object
 runtime.CausynthTraceRecorder inboundExchange long string string string string string object
 runtime.CausynthTraceRecorder endInboundExchange void long
 runtime.CausynthTraceRecorder registerSource void object string string string long
@@ -53,10 +52,6 @@ runtime.CausynthTraceRecorder beginDaemonTick long object string
 runtime.CausynthTraceRecorder endDaemonTick void long
 # 17960 and 17960-jdk8 only
 runtime.CausynthTraceRecorder restartSource void object string string string long
-# 17899-bug1 only
-runtime.CausynthTraceRecorder captureAsync void object
-# Solr RuntimeApi:225 only -- the five-argument overload
-runtime.CausynthTraceRecorder outboundExchange string string string string string object
 
 runtime.SymbolicMessageEnvelope takeOutbound string
 runtime.SymbolicMessageEnvelope installInbound void string
