@@ -67,7 +67,7 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | hdfs-adhoc-48 | H/server/namenode/INodeDirectory.java:356 | `oldChild == children.get(i)` | TestRenameWithSnapshots#testRenameUndo_1 | up | UNSAT at FIXED_POINT (HG7R): children list modeled, the way left at a concrete guard |
 | hdfs-adhoc-49 | H/server/namenode/snapshot/DirectorySnapshottableFeature.java:189 | `n+1 > snapshotQuota` | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R; 209 obligations) |
 | hdfs-adhoc-50 | same file :198 | duplicate snapshot name | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R, SL1; 141 obligations, 3 paths) |
-| hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | open: seed give-ups 80-114 (SL1, HG7R): an extra RPC renames every later request (identity amplifier, A3) + a NameNode lock-order race (A2) |
+| hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | UNSAT at FIXED_POINT (HG8Z): declared at the test thread's first image save (FSImageFormatProtobuf.Saver.save, one snapshot; `first` named a rebuilt cluster's format-time save, 0 snapshots, which made the check vacuous); 68 seed give-ups (clock class) |
 
 Summary (2026-10-05 day, rounds HG7R/HG7N/HG7D/HG8A/SL1/R4A on the current body): 18 right-shaped verdicts (10 12 SAT
 confirmed; 07 08 09 14 15 16 19 20 27 30 33 39 40 48 49 50 UNSAT at the fixed point with symbols), 4 UNSAT without a
