@@ -34,10 +34,11 @@ import java.util.concurrent.atomic.LongAdder;
  * the event it decides stand in one millisecond of the recording, and the
  * replay's read that set what it compares may stand a fraction of one
  * later -- hdfs-adhoc-17's DataNodes set their next heartbeat 96 us before
- * the turn that sent it): inside the window the frontier's slot while the
- * line stands; before it, from the origin the first startup pass the order
- * marks, and from a pass on the pass itself -- time stands at the latest
- * pass reached until the next pass or the opening: what a node does once
+ * the turn that sent it) inside the window, the frontier's slot while the
+ * line stands; before it, with no tick, from the origin the first startup
+ * pass the order marks, and from a pass on the pass itself -- time stands
+ * at the latest pass reached until the next pass or the opening: what a
+ * node does once
  * it joined, the recording did at once (17's first heartbeats, in the
  * millisecond of the last registration), and the replay's lag after it is
  * its own slowness.  Past the line, after the window closed, or with no
@@ -380,7 +381,7 @@ public final class Clocks {
     /**
      * Before the window: from the origin up to the first mark, then
      * standing at the latest pass reached (until released, then up to the
-     * next mark), each cap one tick past its instant.
+     * next mark), each cap exactly at its instant.
      */
     private static void publishStartupLocked() {
         Mark at = null;
@@ -392,11 +393,15 @@ public final class Clocks {
             }
             at = mark;
         }
-        Mark cap = at == null || released ? next : at;
+        // Exactly at the mark, no tick: what a node read after it joined,
+        // it read after the pass (hdfs-adhoc-17, round TM6: one tick past
+        // its pass, a DataNode set its next heartbeat 0.4 ms past the
+        // recording's, and its turn #1 found it not due).
+        Mark cap = at != null && !released ? at : next;
         moveLocked(at == null ? Long.MIN_VALUE : at.nanos,
                 at == null ? Long.MIN_VALUE : at.millis,
-                cap == null ? Long.MAX_VALUE : cap.nanos + TICK_NANOS,
-                cap == null ? Long.MAX_VALUE : cap.millis + 1L,
+                cap == null ? Long.MAX_VALUE : cap.nanos,
+                cap == null ? Long.MAX_VALUE : cap.millis,
                 cap == null ? null : cap.name, false);
     }
 

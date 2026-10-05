@@ -256,9 +256,10 @@ replay has reached -- its origin, each startup pass it completed (`StartupOrder#
 opening (`ScheduleLog#windowOpened`), each slot settled at or before the order's frontier
 (`ScheduleLog#publishTimeLocked`) -- and `hi` that of the next it has not, plus one millisecond tick
 (`Clocks#TICK_NANOS`: hdfs-adhoc-17's DataNodes set their next heartbeat 96 us before the recorded turn
-that sent it): inside the window the frontier's slot while the line stands (IDENTITY.md §8); before it,
-from the origin the first startup pass the order marks, and from a pass on the pass itself -- time
-stands at the latest pass reached until the next pass or the opening, since what a node does once it
+that sent it) inside the window, the frontier's slot while the line stands (IDENTITY.md §8); before it,
+with no tick, from the origin the first startup pass the order marks, and from a pass on the pass itself
+-- time stands at the latest pass reached until the next pass or the opening (round TM6: one tick past
+its pass, a DataNode set its next heartbeat 0.4 ms late and its turn #1 found it not due), since what a node does once it
 joined the recording did at once (17's first heartbeats fell in the millisecond of the last
 registration; run at host speed toward the opening instead, round TM1's replay set them half a second
 late and no turn #1 found its heartbeat due); nothing past the line, after the window closes, or with

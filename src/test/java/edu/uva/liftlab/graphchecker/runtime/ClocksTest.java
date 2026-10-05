@@ -80,8 +80,8 @@ public class ClocksTest {
                 ScheduleEvent.ORIGIN).get(0));
         Thread.sleep(150L);
         atCap("never past a startup pass it has not made",
-                first + 100L * MS + TICK, Clocks.nanos());
-        assertEquals("on both clocks", firstMillis + 101L, Clocks.millis());
+                first + 100L * MS, Clocks.nanos());
+        assertEquals("on both clocks", firstMillis + 100L, Clocks.millis());
         StartupOrder.done(StartupOrder.begin("register", "dn0"));
         long passed = Clocks.nanos();
         assertTrue(passed >= first + 100L * MS
@@ -90,8 +90,8 @@ public class ClocksTest {
                 RowCodec.scheduleNanos(marks(ScheduleEvent.STARTUP).get(0))
                         >= first + 100L * MS);
         Thread.sleep(250L);
-        atCap("from a pass on, time stands at the pass reached",
-                first + 100L * MS + TICK, Clocks.nanos());
+        atCap("from a pass on, time stands exactly at the pass reached",
+                first + 100L * MS, Clocks.nanos());
         long standing = Clocks.nanos();
         Thread.sleep(50L);
         assertEquals("time stands", standing, Clocks.nanos());
@@ -135,7 +135,7 @@ public class ClocksTest {
         long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
                 .get(0));
         Thread.sleep(100L);
-        atCap("at the first pass", first + 50L * MS + TICK, Clocks.nanos());
+        atCap("at the first pass", first + 50L * MS, Clocks.nanos());
         standUntilLifted("1 at a startup mark");
         Thread.sleep(100L);
         assertTrue("a startup pass that never came, nothing computing: time"
