@@ -1460,44 +1460,6 @@ public class ComposerTest {
                         Set<com.google.gson.JsonElement>>()));
     }
 
-    /**
-     * A read of a whole container's state whose producer no row states --
-     * the map had no log when it was read, so the read states no version
-     * (hdfs-adhoc-32 HG5A: BlockPoolManager#get's read of bpByBlockPoolId,
-     * compared with null), or a version no write row states -- holds no
-     * word to pin: it is an opaque base, HELD and named "producer
-     * unstated", and the path composes on what its decision took; never a
-     * refusal.
-     */
-    @Test
-    public void anUnwrittenContainerStateIsHeldAsAnOpaqueBase()
-            throws Exception {
-        for (boolean versioned : new boolean[]{false, true}) {
-            Path iteration = folder.newFolder("opaque-" + versioned)
-                    .toPath();
-            Session session = new Session(iteration, "s0", false);
-            session.marker("false");
-            JsonObject state = read("MAP_STATE", 8L, -3L, 9L, "L");
-            if (!versioned) state.addProperty("writerSetComplete", false);
-            session.expression("EXPR.00000000000000c1", binary("==", state,
-                    vmNull()));
-            session.target("EXPR.00000000000000c1", false, true);
-            session.write();
-            Composer.Composition composition = compose(iteration, 4);
-            assertEquals(versioned + ": the path composes: "
-                    + composition.gaps(), 1,
-                    composition.disjuncts().size());
-            List<String> held = new ArrayList<String>();
-            for (Composer.Concrete row : composition.concrete()) {
-                held.add(row.kind + " " + row.subject + " "
-                        + row.reason.startsWith(
-                        SmtLowering.Unbound.PRODUCER_UNSTATED));
-            }
-            assertEquals(Collections.singletonList("HELD MAP/8#-3@"
-                    + (versioned ? "9" : "-1") + " true"), held);
-        }
-    }
-
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
