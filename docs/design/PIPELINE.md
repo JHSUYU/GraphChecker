@@ -1509,7 +1509,8 @@ characters are read) are found once, as the composition is built (`Composition#c
 included (`#pathQuery`, `#withoutFatalArm`), is written from the one body by them, never by
 searching it again: a search per command and path to the end of the body kept hdfs-adhoc-07's
 self-check (HR1: 556 sessions, 248 paths, a 26 MB body) past the 5400 s case limit; offline it now
-takes about 2 minutes, most of it the corpus read (`/bigtemp/vnr3ne/ab/hdfs-refactor-compose/c07`).
+takes 2-3 minutes: the corpus read 73-130 s (NFS), composing 27-45 s, deciding 13 s over 744 z3 runs
+(`/bigtemp/vnr3ne/ab/hdfs-refactor-compose/c07`).
 ComposeMain says how far it is on stderr (`final/compose.log`, a witness attempt's `compose.log`):
 the corpus read, every 25 paths, the composition (paths, body size, valuations), each z3 run (its
 command, its answer and its wall, the wait for room included) and the decision. Before a COMPOSE is
