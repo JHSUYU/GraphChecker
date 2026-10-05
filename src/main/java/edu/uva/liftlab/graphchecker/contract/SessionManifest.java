@@ -127,14 +127,6 @@ public final class SessionManifest {
         return statesReadings;
     }
 
-    public String sessionId() {
-        return sessionId;
-    }
-
-    public Role role() {
-        return role;
-    }
-
     /** Whether this session states it is the recording. */
     public boolean seed() {
         return role == Role.SEED;

@@ -1905,13 +1905,15 @@ comparison.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
 - Where the wall time went: `tools/analysis/timeline.py <accept-dir>...` reads a campaign's own
   files (stage metrics, file mtimes, the log) and prints each stage (SEED split into static pass,
-  weave, recording and aggregation), each planner round (planning, dispatch, the gates of the
-  sessions its obligations landed; obligations by
-  verdict, solver JVMs that failed; focused replays with min/median/max duration and how many
-  were refused, flipped or ended in error, and how many ended early (§5) with the time from the
-  end's replay-log line to the JVM's last write), the witness attempts, the CONFIRM replay and the
-  top time sinks (EXPLORE's planning, gates and attempts, and the rest of its wall: waiting on the
-  pool). A gate or
+  weave, recording and aggregation), each planner round (planning, dispatch to its last answer,
+  its obligations' wait for a start; obligations by verdict, solver JVMs that failed; focused
+  replays with min/median/max duration, their wait after their solve, and how many were refused,
+  flipped or ended in error, and how many ended early (§5) with the time from the end's
+  replay-log line to the JVM's last write), the head steps and their gates, the witness attempts,
+  the CONFIRM replay and the top time sinks (EXPLORE's planning, gates and attempts, and the rest
+  of its wall: waiting on the pool).  It reads the streaming layout (`obligations-NNNN/<id>/`:
+  `host.txt` and `replay-host.txt` the starts, `obligation_result.jsonl` the answer), and a run
+  pruned before those were kept (`accept.sh` `ACCEPT_KEEP_GLOBS`) by its logs' last writes. A gate or
   stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
 - Why a check stayed concrete: `tools/analysis/rootcov.py <round-or-campaign>...` prints, per
   campaign and over all, the anchor rows with a phi, wave-0 obligations, roots by category, PLAN
@@ -1933,6 +1935,3 @@ comparison.
   the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
   say where each occurrence opened; a SEND's `endpoint` joins the recording's `EXCHANGE_SEND` rows
   in `runtime/runtime_trace.jsonl`.
-- `CAUSYNTH_WORKLOAD_JAVA_OPTS=-Dcausynth.debug.producers=true` (read by `experiments/lib/execute.sh`
-  for every workload JVM) prints each send's producer endpoint (`CAUSYNTH-PRODUCER` lines on stderr),
-  to diff against the recording's when anchors drift.

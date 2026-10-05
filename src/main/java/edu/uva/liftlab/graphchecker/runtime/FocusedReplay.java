@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 
 /**
  * The focused-region replay: one occurrence (or one state-connected factor)
@@ -885,10 +886,7 @@ public final class FocusedReplay {
             Path inWorker = readable(Paths.get(worker).resolve(name));
             if (inWorker != null) return inWorker;
         }
-        String plan = Text.safe(System.getProperty(PLAN_PROPERTY));
-        if (plan.isEmpty()) {
-            plan = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN"));
-        }
+        String plan = setting(PLAN_PROPERTY, "CAUSYNTH_CONCOLIC_TASK_PLAN");
         if (plan.isEmpty()) return null;
         Path beside = Paths.get(plan).getParent();
         return beside == null ? null : readable(beside.resolve(name));

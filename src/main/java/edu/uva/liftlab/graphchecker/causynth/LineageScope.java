@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -61,7 +63,7 @@ public final class LineageScope {
         for (String dir : dirs()) {
             Path root = Paths.get(dir);
             try {
-                for (Path file : VerifyWovenClasses.classFiles(root)) {
+                for (Path file : ArtifactIO.classFiles(root)) {
                     names.add(VerifyWovenClasses.binaryName(root, file));
                 }
             } catch (IOException failure) {
