@@ -92,10 +92,10 @@ extra=()
 # replays of SplitShardTest and ReindexCollectionTest ran out of a 2 GB heap
 # at a 2500 MB charge, round a40s).
 charged_mb=${CAUSYNTH_CHARGED_MB:-0}
-# A seed or CONFIRM replay starts with a charge capped at half a host's
-# ceiling (run_engine.sh campaign_replay_charge_mb); its heap is half its
-# whole need (CAUSYNTH_HEAP_BASIS_MB), so the cap places it and the ledger
-# grants its growth, but the heap never stops it first.
+# A replay starts with a charge capped at half a host's ceiling (run_engine.sh
+# campaign_replay_charge_mb); its heap is half its whole need
+# (CAUSYNTH_HEAP_BASIS_MB), so the cap places it and the ledger grants its
+# growth, but the heap never stops it first.
 heap_mb=$(( ${CAUSYNTH_HEAP_BASIS_MB:-${charged_mb}} / 2 ))
 (( heap_mb >= 4096 )) || heap_mb=4096
 
@@ -106,8 +106,10 @@ heap_mb=$(( ${CAUSYNTH_HEAP_BASIS_MB:-${charged_mb}} / 2 ))
 # one that outgrows its charge asks its host's ledger for the excess, and is
 # ended only when the host cannot take it; its peak is said at its end (i2/m1,
 # sampled: replays peaked at 0.2-1.0 GB for hdfs-11741 and HDFS cases, 1.6 GB
-# for SOLR-18406), and a recording's goes to workload_rss_mb in its trace
-# directory: what a native run of it is charged (REPRODUCE).
+# for SOLR-18406) and goes to workload_rss_mb: a recording's in its trace
+# directory, what a native run of it is charged (REPRODUCE); a replay's in its
+# worker directory, the campaign's measured replay need (run_engine.sh
+# campaign_replay_measured).
 # shellcheck source=../../run_engine.sh
 source "${lib}/../../run_engine.sh"
 set +e
@@ -120,8 +122,8 @@ set +e
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}" &
 jvm=$!
-campaign_watch_workload "${jvm}" "${charged_mb}" "${trace:-}" \
-  "${CAUSYNTH_RECORDING_MAX_TRACE_MB:-0}" &
+campaign_watch_workload "${jvm}" "${charged_mb}" "${trace:-${work}}" \
+  "${trace:+${CAUSYNTH_RECORDING_MAX_TRACE_MB:-0}}" &
 watch=$!
 wait "${jvm}"
 status=$?

@@ -13,32 +13,34 @@ in [STATE.md](STATE.md); commands are in [OPERATIONS.md](OPERATIONS.md).
 
 ## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3`, image `vm-hg5`)
 
+**Status 2026-10-05 04:00 (lead).** Done and merged into `system/hdfs`: §1e (bug2, `hdfs-request-in-hand`), measured replay charges (`hdfs-measured-charges`), the FREEZE digest and array-identity fixes. HG5A ran the HG5 body (STATE §4). In flight, one agent each: §1 decisive-verdicts (fixing its review's 4 blockers, then merge), §2 HG6 = `hdfs-draw-sites2` (probes), identity (`hdfs-address-shared`: rule B done; next the planned-shape rule for hdfs-11741's regression, then the putter's frames for 14; 07's shared getSegmentInfo endpoint), closure E1 for 16 (`hdfs-closure`, after §1), cleanup batch 1 (`hdfs-cleanup-1`). Merge order: decisive, HG6, address-shared, closure, cleanup phase 2. Then the next round of the 46 (§3) on the merged body. Parked: the QJM obligation snowball (dependence-key granularity), the 8 GB head reserve (heads peak at median 0.7 GB, p99 7.8), SEED's Soot passes being IO-bound on NFS during a sweep's first wave.
+
 ### 1. Finish `hdfs-decisive-verdicts` (one coding agent)
 
 The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` and the brief is
 `/bigtemp/vnr3ne/analysis/study-2026-10-04/brief-decisive-fix2.md`. The lead's decisions are in that
 brief and bind.
 
-**a. Build the WIP and settle refusals.** Build `66c22f440`. In `run_engine.sh`
-`campaign_confirm_claim`, set `refutes=true` only when the reason says "CONFIRM refutes:". Every
-other refusal ("CONFIRM refused:") is a RUN_DEFECT. Update the shell test and `ConfirmMainTest`.
-
-**b. Item 2: one rule for values COMPOSE cannot bind.** Apply
-`/bigtemp/vnr3ne/ab/hdfs-decisive-verdicts/fix2/frame-wip.patch`, then:
-- An arrival with no attested producer is held at its recorded value and named "producer
-  unstated" in `concrete[]`.
-- So is a read whose writer no row states.
-- A FRAME finds its producer through the refused attach's handle and the export row; its
-  `movesWith` is that producer's roots. It is FREE when those roots move.
-- State exactly what UNSAT_CLOSED means, in STATUS.md and in `ComposeMain`: no world of the
-  explored corpus reaches the fatal, given the marker valuations each path ran and the held
-  `concrete[]` values.
-
-**c. Item 5.** An UNSAT whose unsat core names a `refuted_claim__` publishes `restsOnRefutations`.
-The free-formula ask and the self-check must request the core whenever refutations were asserted.
-
-**d. Item 7.** Fix the stale docs. `report.py` calls FREE rows "free (over-approximated)", and its
-row cut never hides the witness path's rows.
+**a-d, g, h: done on the branch** (lead review pending, then the merge into `system/hdfs`):
+- a. CONFIRM: `refutes` only for "CONFIRM refutes:" (the run as recorded); every "CONFIRM refused:"
+  is a RUN_DEFECT; a way-guard witness is planted and judged by the fatal, its closure cut at the
+  manifest's `cutoff` (37723587e).
+- b. One rule for values COMPOSE cannot bind (`SmtLowering#unbound`): FREE where the stated
+  producer moves, HELD "producer unstated" where no row states it (unattested arrivals, reads of
+  versions no write states, frames found through the refused attach's VM handle); `concrete[]`
+  rows state `pathId` and `reason`; UNSAT_CLOSED's meaning stated (7f19e2eba). A read of a
+  container state the VM marked incomplete keeps being refused (honest: an unhooked mutation ran
+  between its version and the read; the hold tried in 9119bde4a was reverted, 0105a1b4a); the fix is
+  admission of that unplanned occurrence, owned by the identity agent (11741 `allKeys`,
+  hdfs-adhoc-32).
+- c, d. `restsOnRefutations`; report.py FREE/HELD wording, witness rows first (ce7df0152); a refuted
+  model is no part of the run's own world (e44a4a632).
+- g. The run as recorded is a world: a writer whose block the run broke gets the observed arm
+  (a6681529b; hdfs-adhoc-16 decides). QJM 07's 57 contradictions have another cause: an identity
+  defect (every `Journal#getSegmentInfo` export of `SegmentStateProto.EndTxId` in a session states
+  one producer endpoint, so each arm binds both arrivals at `acceptRecovery` to one value).
+- h. EXPLORATION_CUT: a forced end that still owed arms is one BLOCKING row, so no UNSAT closes
+  over that corpus (0f0d331f7).
 
 **e. bug2's lost key-id binding.** The cause is found: `Identity#requestInHand` (ffa0cb4d3). After
 an IPC door fault the request gets no receipt and stays "in hand". Every later thread start on that
@@ -57,8 +59,9 @@ which sends the key id, gets an address no plan instrumented.
 - Done when bug2's witness binds the key id across the wire and `cone.py` passes without the
   exemption.
 
-**f. Gate.** Run the offline gate on V25 and on the HG4 corpora (none has run on these changes).
-Then a review agent re-reads the soundness batch before the merge into `system/hdfs`.
+**f. Gate.** Offline gate on V25, HG4's 46 and HG5A's 07/08/09/16/17/24/32:
+`/bigtemp/vnr3ne/ab/hdfs-decisive-verdicts/finish/` (`gate-head.sh`, `table.py`). Then a review agent
+re-reads the soundness batch before the merge into `system/hdfs`.
 
 ### 2. Finish HG6 = `hdfs-draw-sites` (one coding agent)
 

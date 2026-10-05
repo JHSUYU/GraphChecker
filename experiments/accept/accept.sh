@@ -239,6 +239,11 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/iteration-*/obligations-*/stderr.log'
   'schedule/iteration-*/obligations-*/*/stdout.log'
   'schedule/iteration-*/obligations-*/*/stderr.log'
+  'schedule/iteration-*/obligations-*/*/replay-stdout.log'
+  'schedule/iteration-*/obligations-*/*/replay-stderr.log'
+  'schedule/iteration-*/obligations-*/*/host.txt'
+  'schedule/iteration-*/obligations-*/*/replay-host.txt'
+  'schedule/iteration-*/obligations-*/explore_manifest.json'
 )
 
 acc_prune_case() {

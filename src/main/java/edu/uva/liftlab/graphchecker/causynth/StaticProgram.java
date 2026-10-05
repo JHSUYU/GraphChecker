@@ -81,7 +81,6 @@ public final class StaticProgram {
     private Map<String, List<Map<String, Object>>> graphEdgesByRegion;
     private Map<String, List<String>> skeletonRegionIdsByMethod;
     private Map<String, List<Map<String, Object>>> activationsByRegion;
-    private Map<String, Map<String, Object>> regionsById;
     private Map<String, List<String>> regionIdsByMethod;
     private Object regionStamp;
     private int regionCount = -1;
@@ -160,11 +159,6 @@ public final class StaticProgram {
         return text(edge.get("invoke"));
     }
 
-    Map<String, Map<String, Object>> regionsById() {
-        indexRegions();
-        return regionsById;
-    }
-
     /** The regions whose method set holds {@code method}. */
     List<String> regionsHolding(String method) {
         if (method.isEmpty()) {
@@ -181,11 +175,9 @@ public final class StaticProgram {
         if (regionCount == regions.size() && regionStamp == last) {
             return;
         }
-        regionsById = new LinkedHashMap<>();
         regionIdsByMethod = new LinkedHashMap<>();
         for (Map<String, Object> region : regions) {
             String regionId = text(region.get("regionId"));
-            regionsById.put(regionId, region);
             for (String method : strings(region.get("methods"))) {
                 regionIdsByMethod.computeIfAbsent(method,
                         ignored -> new ArrayList<>()).add(regionId);

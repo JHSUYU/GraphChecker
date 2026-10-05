@@ -489,7 +489,8 @@ ab_stage_compose() {
 
 # CONFIRM's planning half: what the confirmation replay would be handed, or
 # that the selected session already realized the claim.  A refusal (exit 1,
-# "CONFIRM refused:") is an outcome, compared like any other.
+# "CONFIRM refused:", or "CONFIRM refutes:" for the run as recorded) is an
+# outcome, compared like any other.
 ab_stage_confirm() {
   local dir compose=${ab_case_dir}/COMPOSE claim code=0
   dir=$(ab_stage_dir CONFIRM)

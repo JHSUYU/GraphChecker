@@ -82,7 +82,7 @@ public class ANodesStartupIsTheNodesTest {
             long request = RuntimeTraceContext.beginRequest(CLIENT, "test");
             String root = Identity.contextHere().render();
             String header = CausynthTraceRecorder.outboundExchange(
-                    "HADOOP_IPC", "corr-1", "0", "RESPONSE", owner, null);
+                    "HADOOP_IPC", "corr-1", "0", "RESPONSE", owner, null, "");
             MessageDoors.inbound(header, "", "HADOOP_IPC", "corr-1", "0",
                     "RESPONSE", owner, false);
             assertTrue(Identity.contextHere().render(),

@@ -850,13 +850,26 @@ public final class RuntimeSelectedRegionFinalizer {
         // An occurrence the recording threw at asks nothing: the run as
         // recorded is the failure, and a claim that moves no root is never a
         // finding (owner 2026-10-04).
-        if (demands.recordedFatal(instances.get(declared), scopeMap)) {
-            planGap(program.planGaps, GapKind.TARGET_FATAL_IN_RECORDING,
-                    GapClass.BLOCKING, declared, "the recording took the "
-                            + "fatal arm at the declared occurrence: the "
-                            + "case declares an occurrence that throws as "
-                            + "recorded, so no counterfactual is asked of "
-                            + "it; declare one the recording ran healthy");
+        // A guard of the declared target that reaches it on both arms states
+        // no fatal arm to judge the recording by: the declaration is refused
+        // by name (BLOCKING, a RUN_DEFECT at EMIT), never a stack trace.
+        try {
+            if (demands.recordedFatal(instances.get(declared), scopeMap)) {
+                planGap(program.planGaps,
+                        GapKind.TARGET_FATAL_IN_RECORDING, GapClass.BLOCKING,
+                        declared, "the recording took the fatal arm at the "
+                                + "declared occurrence: the case declares an "
+                                + "occurrence that throws as recorded, so no "
+                                + "counterfactual is asked of it; declare one "
+                                + "the recording ran healthy");
+            }
+        } catch (StaticScopeMap.AmbiguousFatalArm ambiguous) {
+            planGap(program.planGaps, GapKind.AMBIGUOUS_FATAL_ARM,
+                    GapClass.BLOCKING, declared, ambiguous.getMessage()
+                            + ", so no arm the recording took there is the "
+                            + "fatal one by the scope map: the declaration "
+                            + "names no question; declare the throw one "
+                            + "guard arm reaches");
         }
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, otherTargets);

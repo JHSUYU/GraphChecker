@@ -148,6 +148,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
 | `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path (DIAGNOSTIC: the claim is then `FORMULA_SAT`, CONFIRM's to judge; a witness that is the run as recorded CONFIRM refuses by name) |
 | `TARGET_FATAL_IN_RECORDING` | the declared occurrence took the fatal arm in the recording (`RuntimeSelectedRegionFinalizer`, PLAN, BLOCKING): a declaration of an occurrence that throws as recorded, so no counterfactual is asked of it |
+| `AMBIGUOUS_FATAL_ARM` | a guard of the declared target reaches it on both arms (`StaticScopeMap#fatalArm`, caught in PLAN by `RuntimeSelectedRegionFinalizer`, BLOCKING): no arm the recording took there is the fatal one, so the declaration names no question |
 | `SEED_OBSERVED_FATAL` | the seed replay observed the fatal at the declared occurrence (`ClaimPolicy`, COMPOSE, BLOCKING): the run as recorded is no counterfactual, so no claim stands on the corpus; beside `TARGET_FATAL_IN_RECORDING` the declaration's, else the replay diverged from its recording |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
 | `HOOK_UNDECLARED` | a tree hook that ran in a case whose plan declares its source nowhere (`ActiveRegion#observeConfiguredSourceEntry`): no root of the case, nothing minted, its value concrete (DIAGNOSTIC; an `UNSAT_CLOSED` result counts them, `undeclaredHookCount`) |
@@ -264,8 +265,10 @@ field=<f> <subject>`.
   manifest's `concreteReadings`), never a clock nor a derived root; `attested` = the
   producer's session has an instrumented activation for it, so it states a path condition.
 - `Family(interactionId, arms)`: the arms one interaction's consumer could have received.
-- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn)`: one composed path, its selector,
-  and the tracked locations its fatal predicate rests on (what a confirming run is held to).
+- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn, cutoff)`: one composed path, its
+  selector, the tracked locations its fatal predicate rests on (what a confirming run is held to),
+  and where it decided (`cutoff`: its target row's seq, or, for a path that left the way to the throw
+  at a guard, that guard's; the anchor's reads before it are its closure's, in COMPOSE and CONFIRM).
 - `RootDomain(rootId, kind, recordedValue, min, max)`: absolute bounds, both null = pinned.
   `RootDomain.declared(file)` is the one reader of `root-domains.jsonl` (rows `{sourceId,
   declaredDomainMin, declaredDomainMax}`, each absolute or `+k`/`-k` from the recorded value; no file
@@ -301,14 +304,14 @@ field=<f> <subject>`.
   `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
   or the value; where what it rests on can move -- a root or clock cell, a handoff, a read a STATE
   family may re-pair, through every read's own write -- the read is free instead, named with what it
-  rests on (`SmtLowering#frees`, `concrete[]`). A flip
+  rests on (`SmtLowering#unbound`, `concrete[]`). A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
   `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
   `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
   and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
   return is pinned to the node's `concreteValue` by a named assertion; where its arguments rest on
-  what can move, the return is free instead, named (`SmtLowering#frees`). A method-return node stating no
+  what can move, the return is free instead, named (`SmtLowering#unbound`). A method-return node stating no
   call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
   (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and
@@ -359,22 +362,20 @@ a run demands only the ports its `causynth.codec.ports` file names, and the `WIR
 ### 6.1 Declarations (`WireDeclarations`)
 
 One schema for the engine's library catalog and a system's `wire.jsonl`, read together:
-`WireDeclarations.of(rows)` takes every row of the five kinds, each keyed by where it was read
+`WireDeclarations.of(rows)` takes every row of the four kinds, each keyed by where it was read
 (`file:line`); the caller routes rows of other kinds away first (the library catalog's `DOOR` and
 `CONFIG_SOURCE` rows are `causynth/LibraryCatalog`'s, SYMBOL-SCOPE §4.2). `WireDeclarations.read`
 reads one file, a JSON row per line, passing over its `DOOR` rows;
 `WireDeclarations.configured` reads the file the system property `causynth.wire.declarations`
 (else the environment variable `CAUSYNTH_WIRE_DECLARATIONS`) names, and none when neither does.
 Every row states `schemaVersion 1` and its `kind`. A malformed row, a member its kind does not have, a declaration
-stated twice (same codec name, codec and type, space and method, transport name, or exchange
-method) and a name no row declares are refused, naming the row, never skipped.
+stated twice (same codec name, codec and type, transport name, or exchange method) and a name no row declares are refused, naming the row, never skipped.
 
 | kind | members | meaning |
 | --- | --- | --- |
 | `CODEC` | `codec, shape, space, encoders?, decoders` | one serialization format. `codec` `[A-Z][A-Z0-9_]*`; `shape` `TREE` (maps, lists, arrays and views), `PROTOBUF` (fields of generated messages) or `LEAF` (the graph is one leaf); `space` `[a-z][a-z0-9_]*`, the key space its ports are named in. At least one decoder |
 | encoder, decoder | `method` or `call`, `graph`, `encoded?`, `bind?` (encoders only) | `method` is a Soot signature whose body is hooked; `call` is a callee pattern (`*` = any run of characters) whose call sites in woven code are hooked. `graph` and `encoded` are `this`, `return` or `argN`, never the same; a decoder whose graph is an argument is hooked at entry. An encoder is bound to its `encoded` object (which it then states), or with `bind: EXCHANGE` to the innermost open exchange bracket |
 | `CODEC_VIEW` | `codec, type, map \| leaf \| pairs, put?` | how a TREE codec (`codec`, or `*` for every one) sees an application class: its map, one leaf, or a flat name/value list, through an accessor `name()` (a method) or `name` (a field); `put` = the extra keys a map view writes, key to accessor |
-| `KEY` | `space, role, method, key?, value?, pairs?` | a static accessor of a key space: `role` `GET`, `PRESENCE` (the key argument `key`), `PUT` (`key` and `value`, `"N[]"` for a varargs array) or `PUT_PAIRS` (`pairs`, the argument holding a key/value array) |
 | `TRANSPORT` | `transport, request?, response?, store?, envelopeBytes?` | the codec a door of the transport walks its request or response payload with (a missing half has none in hand), or `store: true` (its doors write and read stored versions), one of the two; `envelopeBytes` (beside a request or response, 4096 when unstated: half of Jetty's 8 KB request-header default) bounds a message's whole symbolic header, both its schemes' segments; what does not fit is named `BOUND_INSUFFICIENT` |
 | `EXCHANGE` | `transport, method` | a woven bracket owning the encodes inside it; its transport has a `TRANSPORT` row |
 

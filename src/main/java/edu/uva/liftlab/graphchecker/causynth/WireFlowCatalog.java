@@ -34,7 +34,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
  */
 public final class WireFlowCatalog {
     static final String PROPERTY = "causynth.communication.mappings";
-    static final String ENVIRONMENT = "CAUSYNTH_COMMUNICATION_MAPPINGS";
     static final String KIND = "WIRE_FLOW";
     static final int SCHEMA_VERSION = 2;
 
@@ -75,8 +74,7 @@ public final class WireFlowCatalog {
         List<Row> known = rows;
         if (known != null) return known;
         List<Row> read = new ArrayList<>();
-        String configured = firstNonBlank(System.getProperty(PROPERTY),
-                System.getenv(ENVIRONMENT));
+        String configured = firstNonBlank(System.getProperty(PROPERTY));
         if (!configured.isEmpty()) {
             Path path = Paths.get(configured).toAbsolutePath().normalize();
             if (!Files.isRegularFile(path)) {

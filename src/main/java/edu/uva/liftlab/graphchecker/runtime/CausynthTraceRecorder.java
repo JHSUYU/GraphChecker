@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.objectWithoutNulls;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -94,10 +95,6 @@ public final class CausynthTraceRecorder {
     private static BufferedWriter traceWriter;
     /** Guarded by {@link #LOCK}; a reset must not install duplicate hooks. */
     private static boolean shutdownHookRegistered;
-
-    /** {@code -Dcausynth.debug.producers=true}: print every send's producer. */
-    private static final boolean DEBUG_PRODUCERS =
-            Boolean.getBoolean("causynth.debug.producers");
 
     private CausynthTraceRecorder() {
     }
@@ -677,29 +674,12 @@ public final class CausynthTraceRecorder {
         return RuntimeTraceContext.captureScope();
     }
 
-    /** Sends one exchange leg and returns its message-carried trace context. */
-    public static String outboundExchange(String transport,
-                                          String correlationId,
-                                          String attemptId, String half,
-                                          Object localOwner) {
-        return outboundExchange(transport, correlationId, attemptId, half,
-                localOwner, null);
-    }
-
-    /** The same exchange, for work carrying the scope it was made in. */
-    public static String outboundExchange(String transport,
-                                          String correlationId,
-                                          String attemptId, String half,
-                                          Object localOwner,
-                                          Object carriedScope) {
-        return outboundExchange(transport, correlationId, attemptId, half,
-                localOwner, carriedScope, "");
-    }
-
     /**
-     * The same exchange, its message naming the operation it asks for
-     * ({@code verb}, "" for none): its site ({@code Endpoint#messageSite})
-     * names its producer endpoint and its SEND.
+     * Sends one exchange leg and returns its message-carried trace context:
+     * for work carrying the scope it was made in ({@code carriedScope}, or
+     * null), its message naming the operation it asks for ({@code verb}, ""
+     * for none): its site ({@code Endpoint#messageSite}) names its producer
+     * endpoint and its SEND.
      */
     public static String outboundExchange(String transport,
                                           String correlationId,
@@ -743,12 +723,6 @@ public final class CausynthTraceRecorder {
             ScheduleLog.observe(ScheduleEvent.Kind.SEND, site,
                     producer == null ? "" : producer.id(),
                     receipt == null ? null : receipt.stance);
-        }
-        if (DEBUG_PRODUCERS && producer != null) {
-            EngineConsole.println("CAUSYNTH-PRODUCER " + transport + "#"
-                    + half
-                    + " " + correlationId + " " + producer.id() + " "
-                    + producer.render());
         }
         // The row states the endpoint's components, not only its digest.
         refuseSharedProducer(transport, correlationId, half, producer);
@@ -992,12 +966,6 @@ public final class CausynthTraceRecorder {
         writeSourceTraceLine("SOURCE_ALIAS", source, null, 0L,
                 alias == null ? "" : alias.getClass().getName(),
                 identity(alias));
-    }
-
-    /** Captures the submitting context for an application-owned task queue. */
-    public static void captureAsync(Object carrier) {
-        initialize();
-        RuntimeTraceContext.captureAsync(carrier);
     }
 
     /**
@@ -1375,8 +1343,8 @@ public final class CausynthTraceRecorder {
             }
 
             String configuredTestName = firstNonBlank(
-                    System.getProperty("causynth.trace.test"),
-                    System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
+                    setting("causynth.trace.test", "CAUSYNTH_TRACE_TEST"),
+                    "unknown-test");
             // Which pass this JVM is is DECLARED by the campaign, never
             // inferred from which output keys happen to be set.
             boolean configuredContextOnly = RuntimeTraceMode.configured()

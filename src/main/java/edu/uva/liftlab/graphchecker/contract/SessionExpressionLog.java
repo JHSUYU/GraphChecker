@@ -17,6 +17,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
+
 /**
  * CONTRACT-SPEC §2.3: a session's {@code expressions.jsonl}, the DAG its rows'
  * refs name, appended as the replay files it: a header line, then each
@@ -182,7 +184,7 @@ public final class SessionExpressionLog {
                 if (line.trim().isEmpty()) continue;
                 JsonObject row = RowCodec.fromLine(line, pool);
                 if (!headed) {
-                    if (!KIND.equals(text(row, "kind")) || !row.has(
+                    if (!KIND.equals(primitiveString(row, "kind")) || !row.has(
                             "schemaVersion") || row.get("schemaVersion")
                             .getAsInt() != SCHEMA_VERSION) {
                         throw new IllegalArgumentException(
@@ -190,7 +192,7 @@ public final class SessionExpressionLog {
                     }
                     headed = true;
                 } else if (row.has(REF)) {
-                    refs.put(text(row, REF), node(nodes, row));
+                    refs.put(primitiveString(row, REF), node(nodes, row));
                 } else {
                     long number = row.get(NODE).getAsLong();
                     JsonElement expression = row.get(EXPRESSION);
@@ -248,7 +250,7 @@ public final class SessionExpressionLog {
 
     private static boolean numbered(JsonElement value) {
         return value != null && value.isJsonObject() && NODE_TYPE.equals(
-                text(value.getAsJsonObject(), "_type"));
+                primitiveString(value.getAsJsonObject(), "_type"));
     }
 
     private static JsonObject node(Map<Long, JsonObject> nodes,
@@ -261,11 +263,5 @@ public final class SessionExpressionLog {
                             + " is named before it is defined");
         }
         return node;
-    }
-
-    private static String text(JsonObject row, String field) {
-        JsonElement value = row.get(field);
-        return value != null && value.isJsonPrimitive()
-                ? value.getAsString() : "";
     }
 }

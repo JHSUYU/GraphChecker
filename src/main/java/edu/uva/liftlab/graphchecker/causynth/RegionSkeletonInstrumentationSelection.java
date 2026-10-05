@@ -74,12 +74,10 @@ final class RegionSkeletonInstrumentationSelection {
 
     private static String configuredFile() {
         String configured = firstNonBlank(
-                System.getProperty("causynth.region.skeletons"),
-                System.getenv("CAUSYNTH_REGION_SKELETONS"), "");
+                System.getProperty("causynth.region.skeletons"));
         if (configured.isEmpty()) {
             throw new IllegalStateException("REGION_STATE requires "
-                    + "causynth.region.skeletons or "
-                    + "CAUSYNTH_REGION_SKELETONS");
+                    + "causynth.region.skeletons");
         }
         return configured;
     }

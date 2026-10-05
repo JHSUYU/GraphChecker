@@ -274,8 +274,9 @@ def headline(stage, d, status):
             return "realized: confirmed=%s" % realized.get("confirmed")
         if status.get("exit") != "0":
             summary = load(j(d, "confirm_summary.json")) or {}
-            return "refused: " + summary.get("reason", "exit "
-                                              + status.get("exit", "?"))
+            return ("refutes: " if summary.get("refutes") is True
+                    else "refused: ") + summary.get(
+                        "reason", "exit " + status.get("exit", "?"))
         return "replay: %s expected edge(s)" % rows(
             j(worker, "expected_edges.jsonl"))
     return ""
@@ -285,7 +286,8 @@ def outcome_exit(stage, d, status):
     """Whether a non-zero exit is the stage's answer rather than a failure."""
     if stage == "CONFIRM" and status.get("exit") == "1":
         try:
-            return b"CONFIRM refused:" in read(os.path.join(d, "stderr.log"))
+            text = read(os.path.join(d, "stderr.log"))
+            return b"CONFIRM refused:" in text or b"CONFIRM refutes:" in text
         except OSError:
             return False
     return False

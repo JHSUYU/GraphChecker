@@ -11,8 +11,10 @@ the sources are the files the campaign wrote:
                      the weave's "GraphChecker started/ran for" log lines
   EXPLORE per round  obligations-NNNN/: in_flight.jsonl (copied as the planner
                      starts) to explore_manifest.json; the dispatch to
-                     its last obligation's end (a GROW re-run's included);
-                     the planner's wait for memory, off its stderr.log
+                     its last obligation's answer (a GROW re-run's included);
+                     its obligations' wait for a start, from the round's
+                     obligations.jsonl to each one's start; the planner's
+                     wait for memory, off its stderr.log
                      (campaign_head_place: "waiting for memory for a head
                      step", then "room ... after waiting <s> s")
   EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, confirms, round;
@@ -21,10 +23,16 @@ the sources are the files the campaign wrote:
                      explore_manifest.json; one step runs at a time, beside
                      the pool (an attempt's confirmation replay is a job of
                      the pool, witness-confirm/NNNN/)
-  witness attempts   witness-attempts/NNNN/: the directory's creation to its
-                     compose.log, and witness_attempts.jsonl's claims
-  one obligation     host.txt (claimed) -> the solver's files -> replay.log
-                     (the replay's end) -> stdout.log (the worker's end)
+  witness attempts   witness_attempts.jsonl: its step's witnesses (written as
+                     the step starts) to its compose.log, and its claim
+  one obligation     obligations-NNNN/<id>/ with an obligation_result.jsonl:
+                     host.txt (its solve started; in a run pruned before
+                     host.txt was kept, its logs' earliest last write) ->
+                     the solver's files ->
+                     replay-host.txt (its REPLAY started, a start of its own;
+                     replay-stderr.log when pruned; a run before the split
+                     replayed as its solve ended) -> replay.log (the replay's
+                     end) -> obligation_result.jsonl (its answer)
   a replay's outcome its obligation_result.jsonl: ADMITTED = flipped; NOT_ADMITTED
                      = refused, an error when the replay was killed on its bound
                      (a timed-out-sessions/ directory) or stated no verdict
@@ -119,20 +127,28 @@ def seed_split(root, log_text):
 
 
 def worker_times(worker):
-    """(start, solve_end, replay_end, end) of one obligation worker."""
-    start = mtime(os.path.join(worker, "host.txt"))
-    solver = [mtime(os.path.join(worker, name)) for name in
-              ("obligation.jsonl", "obligation_query.smt2", "gaps.jsonl",
-               "focused_task.jsonl", "schedule_prefix.jsonl", "schedule_suffix.jsonl")]
-    solver = [t for t in solver if t]
+    """(start, solve_end, replay_start, replay_end, end) of one obligation
+    worker (the docstring's "one obligation"); None where it states none."""
+    def first(*names):
+        for name in names:
+            stamp = mtime(os.path.join(worker, name))
+            if stamp:
+                return stamp
+        return None
+    replay_start = first("replay-host.txt", "replay-stderr.log")
     replay_end = mtime(os.path.join(worker, "replay.log"))
-    # Its answer is written last; a remote worker's log may fall silent
-    # long before (a wait for its solver logs once).
-    ends = [t for t in (mtime(os.path.join(worker, "stdout.log")), replay_end,
-                        mtime(os.path.join(worker, "obligation_result.jsonl")))
-            if t]
-    end = max(ends) if ends else None
-    return start, (max(solver) if solver else end), replay_end, end
+    end = mtime(os.path.join(worker, "obligation_result.jsonl"))
+    # A run pruned before host.txt was kept states its logs' last writes
+    # only: the earliest of them, never past its answer, is the nearest.
+    start = mtime(os.path.join(worker, "host.txt")) or min(
+        [t for t in (mtime(os.path.join(worker, "stderr.log")),
+                     mtime(os.path.join(worker, "stdout.log")), end) if t] or [None])
+    solver = [t for t in (mtime(os.path.join(worker, name)) for name in
+              ("obligation.jsonl", "obligation_query.smt2", "gaps.jsonl",
+               "focused_task.jsonl", "schedule_prefix.jsonl", "schedule_suffix.jsonl"))
+              if t]
+    solve_end = max(solver) if solver else (replay_start if replay_end else end)
+    return start, solve_end, replay_start, replay_end, end
 
 
 def replay_outcome(worker, result):
@@ -194,56 +210,58 @@ def head_wait(log):
     return sum(int(s) for s in waited) if waited else -1
 
 
+SOLVER_FAILED = "its host's solver did not answer"
+
+
 def round_rows(iteration):
     rows = []
-    previous_end = mtime(os.path.join(iteration, "import_gate.json"))
     for wave in sorted(glob.glob(os.path.join(iteration, "obligations-[0-9]*"))):
         name = os.path.basename(wave)
-        # The planner's start: its in-flight rows, copied as it starts, or --
-        # a wave loop's run -- its stderr while still empty.
         stderr = os.path.join(wave, "stderr.log")
-        plan_start = (mtime(os.path.join(wave, "in_flight.jsonl"))
-                      or (mtime(stderr) if os.path.isfile(stderr) and os.path.getsize(stderr) == 0
-                          else previous_end))
+        plan_start = mtime(os.path.join(wave, "in_flight.jsonl"))
         plan_end = mtime(os.path.join(wave, "explore_manifest.json"))
-        # A wave loop gated each wave after it: import-gates/<wave> to its
-        # import_gate.json.
-        gate_start = mtime(os.path.join(iteration, "import-gates", name))
-        gate_end = mtime(os.path.join(wave, "import_gate.json")) or gate_start
+        queued = mtime(os.path.join(wave, "obligations.jsonl"))
         obligations = []
         for worker in sorted(glob.glob(os.path.join(wave, "*", ""))):
             worker = worker.rstrip("/")
-            if not os.path.isfile(os.path.join(worker, "host.txt")):
-                continue
             result = read_json(os.path.join(worker, "obligation_result.jsonl"))
-            focused = os.path.join(worker, "focused_task.jsonl")
-            replayed = os.path.isfile(focused) and os.path.getsize(focused) > 0
-            start, solve_end, replay_end, end = worker_times(worker)
+            if result is None:
+                continue
+            start, solve_end, replay_start, replay_end, end = worker_times(worker)
+            replayed = replay_end is not None
+            said = ""
+            for log in ("stdout.log", "stderr.log"):
+                try:
+                    said += open(os.path.join(worker, log), errors="replace").read()
+                except OSError:
+                    pass
             try:
-                failed = "obligation solver failed" in open(os.path.join(worker, "stdout.log"), errors="replace").read()
+                host = open(os.path.join(worker, "host.txt")).read().strip()
             except OSError:
-                failed = False
+                host = "-"
             obligations.append({
                 "id": os.path.basename(worker),
-                "host": open(os.path.join(worker, "host.txt")).read().strip(),
-                "verdict": (result or {}).get("verdict", "?"),
+                "host": host,
+                "verdict": result.get("verdict", "?"),
                 "replayed": replayed,
-                "solver_failed": failed,
+                "solver_failed": SOLVER_FAILED in said,
                 "outcome": replay_outcome(worker, result) if replayed else None,
                 "early": early_end(worker, replay_end) if replayed else None,
+                "waited": (start - queued) if start and queued else None,
                 "solve": (solve_end - start) if start and solve_end else None,
-                "replay": (replay_end - solve_end) if replayed and replay_end and solve_end else None,
+                "queued": (replay_start - solve_end) if replay_start and solve_end else None,
+                "replay": (replay_end - (replay_start or solve_end or start))
+                          if replayed and (replay_start or solve_end or start) else None,
                 "wall": (end - start) if start and end else None,
+                "end": end,
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
             })
-        ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
-        dispatch_end = gate_start or (max(ends) if ends else plan_end)
+        ends = [o["end"] for o in obligations if o["end"]]
+        dispatch_end = max(ends) if ends else plan_end
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
                      "wait": head_wait(stderr),
                      "dispatch": (dispatch_end - plan_end) if plan_end and dispatch_end else None,
-                     "gate": (gate_end - gate_start) if gate_start and gate_end else None,
                      "obligations": obligations})
-        previous_end = gate_end or dispatch_end or plan_end
     return rows
 
 
@@ -275,7 +293,8 @@ def step_rows(iteration):
 
 
 def attempt_rows(iteration):
-    """(seconds, claim, accepted) of each COMPOSE attempt at a witness."""
+    """(seconds, claim, accepted) of each COMPOSE attempt at a witness: from
+    its step's start (steps/NNNN/witnesses) to its compose.log."""
     rows = []
     try:
         lines = open(os.path.join(iteration, "witness_attempts.jsonl")).read().splitlines()
@@ -283,7 +302,7 @@ def attempt_rows(iteration):
         return rows
     for line in lines:
         attempt = json.loads(line)
-        started = mtime(attempt["dir"])
+        started = mtime(os.path.join(iteration, "steps", attempt.get("step", ""), "witnesses"))
         ended = mtime(os.path.join(attempt["dir"], "compose.log"))
         rows.append(((ended - started) if started and ended else None,
                      "%s %s" % (attempt.get("claim") or "nothing", attempt.get("findingKind", "")),
@@ -351,14 +370,15 @@ def report(root, label):
     waves = round_rows(iteration) if os.path.isdir(iteration) else []
     replays = [o for w in waves for o in w["obligations"] if o["replayed"]]
     if waves:
-        print("   round plan     dispatch  oblig  UNSAT  NOT_ADM  solver-err  replays  replay min/med/max     refused/flipped/error  longest")
+        print("   round plan     dispatch  oblig  waited min/med/max     UNSAT  NOT_ADM  solver-err  replays  replay min/med/max     refused/flipped/error  longest")
         for w in waves:
             obl = w["obligations"]
             rep = [o for o in obl if o["replayed"]]
             count = lambda key: sum(1 for o in rep if o["outcome"] == key)
             longest = max((o["wall"] or 0 for o in obl), default=0)
-            print("   %-5s %-8s %-9s %-6d %-6d %-8d %-11d %-8d %-22s %-22s %s" % (
+            print("   %-5s %-8s %-9s %-6d %-22s %-6d %-8d %-11d %-8d %-22s %-22s %s" % (
                 w["wave"], dur(w["plan"]), dur(w["dispatch"]), len(obl),
+                spread(o["waited"] for o in obl),
                 sum(1 for o in obl if o["verdict"] == "UNSAT" and not o["replayed"]),
                 sum(1 for o in obl if o["verdict"] == "NOT_ADMITTED" and not o["replayed"]
                     and not o["solver_failed"]),
@@ -371,10 +391,12 @@ def report(root, label):
                     dur(w["plan"])))
         solves = [o["solve"] for w in waves for o in w["obligations"]]
         failed = [o["solve"] or 0 for w in waves for o in w["obligations"] if o["solver_failed"]]
-        print("   solver min/med/max %s, %s of slot time%s; replays %d, %s of slot time" % (
+        queued = [o["queued"] for o in replays if o["queued"] is not None]
+        print("   solver min/med/max %s, %s of slot time%s; replays %d, %s of slot time%s" % (
             spread(solves), dur(sum(s or 0 for s in solves)),
             " (%d failed JVMs: %s)" % (len(failed), dur(sum(failed))) if failed else "",
-            len(replays), dur(sum(o["replay"] or 0 for o in replays))))
+            len(replays), dur(sum(o["replay"] or 0 for o in replays)),
+            ", queued after their solve min/med/max %s" % spread(queued) if queued else ""))
         for outcome in ("refused", "flipped", "error"):
             chosen = [o for o in replays if o["outcome"] == outcome]
             if not chosen:
@@ -395,8 +417,7 @@ def report(root, label):
             print("   witness attempts: " + "; ".join("%s %s%s" % (dur(t), claim, " (ended EXPLORE)" if accepted else "")
                                                    for t, claim, accepted in attempts))
         steps = step_rows(iteration)
-        gates = ([(g, n) for _, g, n in steps if n] if steps
-                 else [(w["gate"], 0) for w in waves if w["gate"] is not None])
+        gates = [(g, n) for _, g, n in steps if n]
         if steps:
             print("   head steps: %d, %s each; %d gate(s) over %d session(s), %s each" % (
                 len(steps), spread(t for t, _, _ in steps), len(gates), sum(n for _, n in gates),
@@ -406,9 +427,8 @@ def report(root, label):
                 ("EXPLORE planners waiting for memory", planner_waits),
                 ("EXPLORE import gates", sum(g or 0 for g, _ in gates)),
                 ("EXPLORE witness attempts", sum(t or 0 for t, _, _ in attempts))]
-        # The head's JVM time: its steps, which run beside the pool, or --
-        # a wave loop's run, with no steps/ -- its rounds, between waves.
-        busy = sum(t or 0 for t, _, _ in steps) if steps else sum(t for _, t in head)
+        # The head's JVM time: its steps, which run beside the pool.
+        busy = sum(t or 0 for t, _, _ in steps)
         explore = dict(stages).get("EXPLORE")
         if explore is not None:
             head.append(("EXPLORE with no head JVM running", explore - busy))

@@ -272,9 +272,6 @@ public final class Corpus implements Arms.Rows {
      *  into itself (a DataNode's turn and its DataTransfer op). */
     private final Map<String, String> takenInByStance =
             new HashMap<String, String>();
-    /** session|occurrence -> the first value its run refused there. */
-    private final Map<String, GapRow> refusedIn =
-            new HashMap<String, GapRow>();
 
     private final Arms arms;
 
@@ -688,12 +685,6 @@ public final class Corpus implements Arms.Rows {
             remember(session.sessionId(), row.occurrence());
             targetsOn.add(row.occurrence().id(), row.sessionId(), row);
         }
-        for (GapRow row : session.gaps()) {
-            String occurrenceId = occurrenceNamed(row);
-            if (occurrenceId.isEmpty()) continue;
-            refusedIn.putIfAbsent(session.sessionId() + "|" + occurrenceId,
-                    row);
-        }
         for (ReadRow row : session.reads()) {
             remember(session.sessionId(), row.endpoint().occurrence());
             if (!row.symbol().isEmpty()) {
@@ -881,29 +872,6 @@ public final class Corpus implements Arms.Rows {
     public ActivationRow activation(String sessionId,
                                     OccurrenceAddress occurrence) {
         return activationOf(sessionId, occurrence.id());
-    }
-
-    /**
-     * The value one session's run refused inside one occurrence, or null: an
-     * UNSTATED_VALUE row it filed on that occurrence (an attach the VM
-     * refused, whose rows compute on the arrival as a constant; an attach
-     * that minted no boundary variable).  A REFUSAL IS ITS FRAME'S: what
-     * rests on that occurrence composes with the constants its rows state,
-     * and names the frame ({@code Composer#frames}).
-     */
-    public GapRow refusedIn(String sessionId, String occurrenceId) {
-        return refusedIn.get(sessionId + "|" + occurrenceId);
-    }
-
-    /** The occurrence an UNSTATED_VALUE row is filed on, or "". */
-    private static String occurrenceNamed(GapRow row) {
-        if (row.kind() != GapKind.UNSTATED_VALUE) return "";
-        try {
-            return OccurrenceAddress.parse(row.subject()).id();
-        } catch (IllegalArgumentException noOccurrence) {
-            // A port, a location, a root: not a frame.
-            return "";
-        }
     }
 
     /** Every session's activation rows of one occurrence, in read order. */

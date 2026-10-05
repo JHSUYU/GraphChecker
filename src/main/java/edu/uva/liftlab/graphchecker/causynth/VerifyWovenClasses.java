@@ -1,19 +1,17 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+
 import java.io.File;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -59,7 +57,7 @@ public final class VerifyWovenClasses {
         }
         List<Path> files;
         try {
-            files = classFiles(classes);
+            files = ArtifactIO.classFiles(classes);
         } catch (IOException failure) {
             refuse("could not read the instrumented classes directory "
                     + classes + ": " + failure);
@@ -161,23 +159,6 @@ public final class VerifyWovenClasses {
     private static void refuse(String reason) {
         System.out.println("VERIFY_WOVEN_CLASSES_REFUSED: " + reason);
         System.exit(2);
-    }
-
-    /** Every class file under {@code root}, in a stable order. */
-    static List<Path> classFiles(Path root) throws IOException {
-        List<Path> files = new ArrayList<>();
-        Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file,
-                                             BasicFileAttributes attributes) {
-                if (file.getFileName().toString().endsWith(".class")) {
-                    files.add(file);
-                }
-                return FileVisitResult.CONTINUE;
-            }
-        });
-        Collections.sort(files);
-        return files;
     }
 
     /** The replay's class loading layout, the woven tree (if any) first. */

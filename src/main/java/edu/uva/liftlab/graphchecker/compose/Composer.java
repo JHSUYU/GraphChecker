@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
-import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
@@ -139,11 +138,14 @@ public final class Composer {
         private final boolean fatalObserved;
         private final Set<String> interactionIds;
         private final Set<String> restsOn;
+        /** Where the path decided: its target row's seq, or the way guard's
+         *  ({@link PathEntry}). */
+        private final long cutoff;
 
         private Disjunct(Corpus.RecordedPath path, String selector,
                          String fatal, String withoutFatalArm,
                          boolean fatalObserved, Set<String> interactionIds,
-                         Set<String> restsOn) {
+                         Set<String> restsOn, long cutoff) {
             this.path = path;
             this.selector = selector;
             this.fatal = fatal;
@@ -151,6 +153,7 @@ public final class Composer {
             this.fatalObserved = fatalObserved;
             this.interactionIds = Collections.unmodifiableSet(interactionIds);
             this.restsOn = Collections.unmodifiableSet(restsOn);
+            this.cutoff = cutoff;
         }
 
         public Corpus.RecordedPath path() {
@@ -173,6 +176,11 @@ public final class Composer {
         /** The tracked locations its fatal predicate rests on. */
         public Set<String> restsOn() {
             return restsOn;
+        }
+
+        /** Where the path decided ({@link PathEntry}). */
+        public long cutoff() {
+            return cutoff;
         }
     }
 
@@ -205,6 +213,9 @@ public final class Composer {
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
+        /** refuted_claim__k -> the refuted model it excludes. */
+        private final Map<String, Refutations.Refuted> refutations;
+        private final List<JsonObject> refusedPaths;
         private final Map<String, List<String>> ownArms;
         private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
@@ -265,6 +276,11 @@ public final class Composer {
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
             this.armChoices = composed.composedFamilies.armChoices();
+            this.refutations = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Refutations.Refuted>(
+                            composed.refutationNames));
+            this.refusedPaths = Collections.unmodifiableList(
+                    new ArrayList<JsonObject>(composed.refusedPaths));
             this.concrete = Collections.unmodifiableList(
                     new ArrayList<Concrete>(composed.concrete.values()));
             this.declaredRoots = Collections.unmodifiableMap(
@@ -346,9 +362,10 @@ public final class Composer {
         /**
          * One path's question with its fatal arm left out ({@link
          * #pathQuery}, its {@code path_fatal__} command replaced by the
-         * same implication without phi): what its own run satisfied, every
-         * root free.  Unsat, the composition contradicts the run itself
-         * (ClaimPolicy's self-check).
+         * same implication without phi) and no refuted claim asserted (a
+         * model CONFIRM refuted is no part of the run itself): what its own
+         * run satisfied, every root free.  Unsat, the composition
+         * contradicts the run itself (ClaimPolicy's self-check).
          */
         public ArtifactIO.Body withoutFatalArm(String selector) {
             Disjunct disjunct = bySelector(selector);
@@ -359,7 +376,7 @@ public final class Composer {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
                     int end = commandEnds[index];
-                    if (!kept(index, selector)) {
+                    if (!kept(index, selector) || refutation(start, end)) {
                         start = end;
                         continue;
                     }
@@ -373,6 +390,14 @@ public final class Composer {
                 }
                 output.write("\n(assert " + selector + ")\n");
             };
+        }
+
+        /** Whether the command between these offsets asserts a refuted
+         *  claim ({@link Composer#refutations}): its name closes it. */
+        private boolean refutation(int start, int end) {
+            int at = body.indexOf(":named " + REFUTED_CLAIM,
+                    Math.max(start, end - 64));
+            return at >= 0 && at < end;
         }
 
         private boolean kept(int command, String selector) {
@@ -719,6 +744,46 @@ public final class Composer {
             return seedSessionId;
         }
 
+        /** The admitted paths the composition refused by name, each with
+         *  its first refusal: no disjunct of the formula, so an UNSAT says
+         *  nothing about them ({@code refusedPaths}). */
+        public List<JsonObject> refusedPaths() {
+            return refusedPaths;
+        }
+
+        /** Whether this formula asserts a refuted claim ({@link
+         *  Composer#refutations}): an UNSAT may then rest on one, which
+         *  only an unsat core shows. */
+        public boolean assertsRefutations() {
+            return !refutations.isEmpty();
+        }
+
+        /**
+         * The refutations an unsat core names (its {@code refuted_claim__k}
+         * labels), each as the model it excludes: what an UNSAT rests on
+         * beside the corpus ({@code restsOnRefutations}).
+         */
+        public List<JsonObject> restsOn(List<String> core) {
+            List<JsonObject> rows = new ArrayList<JsonObject>();
+            if (core == null) return rows;
+            for (String label : new LinkedHashSet<String>(core)) {
+                Refutations.Refuted model = refutations.get(label);
+                if (model == null) continue;
+                JsonObject row = new JsonObject();
+                row.addProperty("name", label);
+                row.addProperty("pathId", model.pathId);
+                JsonObject moved = new JsonObject();
+                for (Map.Entry<String, String> each
+                        : model.moved.entrySet()) {
+                    moved.addProperty(each.getKey(), each.getValue());
+                }
+                row.add("moved", moved);
+                row.addProperty("reason", model.reason);
+                rows.add(row);
+            }
+            return rows;
+        }
+
         /**
          * Every family ARM selector, so a claim can say which delivery of a
          * slot the witness model used.
@@ -861,10 +926,19 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
+    /** The admitted paths refused by name ({@link #refused}). */
+    private final List<JsonObject> refusedPaths = new ArrayList<JsonObject>();
+    /** Each refuted claim this formula excludes, by its assertion's name
+     *  ({@link #refutations}). */
+    private final Map<String, Refutations.Refuted> refutationNames =
+            new LinkedHashMap<String, Refutations.Refuted>();
     /** What the path being composed rests on concretely or leaves free
      *  ({@link Concrete}), kept once the path is a disjunct. */
     private final Map<String, Concrete> pathConcrete =
             new LinkedHashMap<String, Concrete>();
+    /** The arrivals the path being composed holds at their recorded value
+     *  ({@link #handoffRead}), conjoined with its terms. */
+    private final List<String> pathHolds = new ArrayList<String>();
     /** What the composed paths rest on concretely, by subject. */
     private final Map<String, Concrete> concrete =
             new LinkedHashMap<String, Concrete>();
@@ -989,7 +1063,7 @@ public final class Composer {
                 disjuncts.add(disjunct);
                 entries.add(PathEntry.of(path.pathId, path.sessionId,
                         disjunct.selector(), disjunct.fatalObserved(),
-                        disjunct.restsOn()));
+                        disjunct.restsOn(), disjunct.cutoff()));
                 ordinal++;
             }
         }
@@ -1218,7 +1292,8 @@ public final class Composer {
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
         pathConcrete.clear();
-        int freesBefore = lowering.frees().size();
+        pathHolds.clear();
+        int unboundBefore = lowering.unbound().size();
         frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
@@ -1313,7 +1388,8 @@ public final class Composer {
                     way == null ? anchor.render() : way.siteId() + "#"
                             + way.ordinal(), way == null ? ""
                     : way.outcome() + (way.term().isEmpty() ? ""
-                    : " " + way.term()), way == null
+                    : " " + way.term()), "the guard the path left the way "
+                    + "to the throw at", way == null
                     ? Collections.<String>emptyList()
                     : new ArrayList<String>(corpus.termSymbols(session,
                     way.term()))));
@@ -1351,6 +1427,7 @@ public final class Composer {
         reaching.addAll(joins.values());
         reachedHandoffs(session, reaching, interactionIds, handoffs,
                 refusals, bound);
+        terms.addAll(pathHolds);
 
         // Read BEFORE end() forgets them: any refusal drops the whole path
         // (it would otherwise rest on a free constant).
@@ -1368,7 +1445,7 @@ public final class Composer {
                             + "state, so it is not in the disjunction"));
         }
         if (!refusals.isEmpty()) {
-            refused(refusals);
+            refused(path, refusals);
             return null;
         }
 
@@ -1382,7 +1459,7 @@ public final class Composer {
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
             composedFamilies.discard();
-            refused(unproducible);
+            refused(path, unproducible);
             return null;
         }
         // (7) And the STATE families: which writer the read may have seen.
@@ -1408,18 +1485,22 @@ public final class Composer {
         lowering.assertNamed(fatal,
                 "(=> " + selector + " " + conjunction + ")");
         observedReads.put(path.pathId, observed);
-        for (SmtLowering.Free free : lowering.frees().subList(freesBefore,
-                lowering.frees().size())) {
-            pathConcrete.put(free.subject, new Concrete("FREE", free.subject,
-                    "", free.movesWith));
+        for (SmtLowering.Unbound value : lowering.unbound().subList(
+                unboundBefore, lowering.unbound().size())) {
+            pathConcrete.putIfAbsent(value.subject, new Concrete(value.kind,
+                    value.subject, value.value, value.reason,
+                    value.movesWith));
         }
-        concrete.putAll(pathConcrete);
+        for (Map.Entry<String, Concrete> row : pathConcrete.entrySet()) {
+            concrete.put(path.pathId + "|" + row.getKey(),
+                    row.getValue().on(path.pathId));
+        }
         observedArrivals.put(path.pathId,
                 arrivals(corpus.attachesOn(session, anchor)));
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, fatal, "(=> " + selector + " "
                 + VmTermLowering.and(withoutFatalArm) + ")",
-                target.observedFatal(), interactionIds, restsOn);
+                target.observedFatal(), interactionIds, restsOn, cutoff);
     }
 
     /**
@@ -1470,7 +1551,8 @@ public final class Composer {
             pathConcrete.put("decision:" + session + ":" + subject,
                     new Concrete("DECISION", subject, decision.outcome()
                             + (decision.term().isEmpty() ? ""
-                            : " " + decision.term()),
+                            : " " + decision.term()), "a decision over "
+                            + "nothing that moves, stated as a proposition",
                             Collections.singletonList(name)));
         }
         return stated;
@@ -1496,14 +1578,22 @@ public final class Composer {
         return selectors;
     }
 
-    /** Files one path's refusals; the first names an empty disjunction. */
-    private void refused(List<GapRow> rows) {
+    /** Files one admitted path's refusals, the path named with its first
+     *  ({@link Composition#refusedPaths}: a dropped path is never silent);
+     *  the first of all names an empty disjunction. */
+    private void refused(Corpus.RecordedPath path, List<GapRow> rows) {
         gaps.addAll(rows);
-        if (firstRefusal.isEmpty() && !rows.isEmpty()) {
-            GapRow first = rows.get(0);
-            firstRefusal = first.kind() + " " + first.subject() + ": "
-                    + first.detail();
-        }
+        if (rows.isEmpty()) return;
+        GapRow first = rows.get(0);
+        String reason = first.kind() + " " + first.subject() + ": "
+                + first.detail();
+        if (firstRefusal.isEmpty()) firstRefusal = reason;
+        JsonObject row = new JsonObject();
+        row.addProperty("pathId", path.pathId);
+        row.addProperty("sessionId", path.sessionId);
+        row.addProperty("refusals", rows.size());
+        row.addProperty("reason", reason);
+        refusedPaths.add(row);
     }
 
     /**
@@ -1736,9 +1826,12 @@ public final class Composer {
      * DataNode's key id with 119532 while the moved serial had its producer
      * deliver 119533, and the answer, pinned as a literal, let the solver
      * move the serial past it).  An arrival no producer this corpus attests
-     * delivered rests on what no row states, so it is FREE (a {@link
-     * Concrete} FREE naming the producer): a witness over it is CONFIRM's
-     * to refute.
+     * delivered has a producer no row states (THE ONE RULE, {@link
+     * SmtLowering#unbound}): it is HELD at the value its row states it
+     * received, conjoined with the path's terms and named (a {@link
+     * Concrete} HELD, "producer unstated"); never free by default, never a
+     * silent pin.  A row stating no value this lowering places leaves the
+     * path resting on what no row states: refused by name.
      */
     private void handoffRead(String session, AttachRow attach,
                              Set<String> interactionIds,
@@ -1747,26 +1840,47 @@ public final class Composer {
         if (!handoffs.add(attach.symbol())) return;
         Interaction interaction = attach.interaction();
         if (interaction == null) {
-            // No known source, so no family: named, and pinned below.
+            // No known source, so no family: named, and held below.
             composedFamilies.unpaired(session, attach);
         }
-        if (attestedArrival(attach)) {
+        List<ExportRow> attested = attach.producer() == null
+                ? Collections.<ExportRow>emptyList()
+                : arms.attestedExports(attach.producer());
+        if (attestedArrival(attach, attested)) {
             // An attested arrival has a producer, so its interaction.
             interactionIds.add(interaction.id());
             bound.add(attach);
             return;
         }
-        // No producer this corpus attests (or none named): what it delivered
-        // is stated and why is not, so what it rests on is unknown and a pin
-        // would hold it while a witness moves that (hdfs-17967-pathC rb1):
-        // the arrival is FREE, an over-approximation CONFIRM filters, named
-        // with the producer it came from.
-        lowering.declareStated(attach.symbol(),
-                JavaSmtSorts.sortOfJava(attach.javaType()));
-        pathConcrete.put(attach.symbol(), new Concrete("FREE",
-                attach.symbol(), "", Collections.singletonList(
-                attach.producer() == null ? "no producer named"
-                        : "unattested producer " + attach.producer().id())));
+        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
+        if (!attested.isEmpty()) {
+            // Its producer is attested and no export of it lowers: what it
+            // delivered is unknown, nothing pins it -- FREE, named.
+            lowering.declareStated(attach.symbol(), sort);
+            lowering.freedArrival(attach.symbol(), "attested producer "
+                    + attach.producer().id() + ", whose "
+                    + attested.size() + " export(s) did not lower");
+            return;
+        }
+        // No producer this corpus attests (or none named): held at what its
+        // row states it received, named; a value the lowering places
+        // nowhere pins nothing, FREE, named -- never a dropped path.
+        String received = JsonFields.firstNonBlank(attach.answeredValue(),
+                attach.arrival());
+        Term value = lowering.statedValue(received, attach.javaType());
+        if (value == null) {
+            lowering.declareStated(attach.symbol(), sort);
+            lowering.freedArrival(attach.symbol(), "no producer is attested "
+                    + "and its row states the value \"" + received
+                    + "\", which this lowering places nowhere");
+            return;
+        }
+        lowering.declareStated(attach.symbol(), value.sort);
+        pathHolds.add("(= " + attach.symbol() + " " + value.text + ")");
+        lowering.held(attach.symbol(), received, attach.producer() == null
+                ? "the attach names no producer"
+                : "no export row of this corpus attests its producer "
+                + attach.producer().id());
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
@@ -1787,10 +1901,9 @@ public final class Composer {
      * ({@link Arms#attestedExports}), from any session that ran it, lowered
      * in that session's scope; never ask the consumer's session.</p>
      */
-    private boolean attestedArrival(AttachRow attach) {
-        Endpoint producer = attach.producer();
-        if (producer == null) return false;
-        for (ExportRow export : arms.attestedExports(producer)) {
+    private boolean attestedArrival(AttachRow attach,
+                                    List<ExportRow> attested) {
+        for (ExportRow export : attested) {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "paired-arm", null);
             if (delivered == null) continue;
@@ -1895,43 +2008,80 @@ public final class Composer {
     }
 
     /**
-     * A REFUSAL IS ITS FRAME'S: a value the run refused inside an occurrence
-     * ({@link Corpus#refusedIn}) is one it computed on as a constant, which
-     * its rows state concretely, so a path or an arm whose closure reaches
-     * that occurrence composes with those constants: what the decision
-     * rested on concretely ({@link Concrete}, kind FRAME), never a refusal.
+     * A REFUSAL IS ITS FRAME'S ({@link SmtLowering.RefusalFrame}): an
+     * occurrence whose run refused an arrival computed on it as a constant,
+     * so a path
+     * or an arm whose closure reaches it rests on that arrival's producer,
+     * by THE ONE RULE ({@link SmtLowering#unbound}): where the producer the
+     * refused attach's handle names rests on what can move, every write of
+     * the frame a read joins is FREE over it ({@link SmtLowering#bind}),
+     * and the frame is named FREE with those roots; where no row states the
+     * producer, or it rests on nothing that moves, its constants hold,
+     * named HELD.  Never a refusal.
      */
     void frames(String session, Set<String> reached) {
+        SmtLowering.SessionJoin join = corpus.join(session);
         for (String occurrenceId : reached) {
-            GapRow refused = corpus.refusedIn(session, occurrenceId);
-            if (refused == null) continue;
-            pathConcrete.put(refused.subject(), new Concrete("FRAME",
-                    refused.subject(), refused.detail(),
-                    Collections.<String>emptyList()));
+            SmtLowering.RefusalFrame frame = join.frame(occurrenceId);
+            if (frame == null) continue;
+            List<String> moving = new ArrayList<String>(
+                    lowering.frameMovers(frame));
+            boolean moves = !moving.isEmpty();
+            pathConcrete.put("frame:" + occurrenceId, new Concrete(moves
+                    ? SmtLowering.Unbound.FREE : SmtLowering.Unbound.HELD,
+                    occurrenceId, frame.producer, moves ? "its run computed "
+                    + "on an arrival it refused, whose producer rests on "
+                    + "what can move: every write of it a read joins is free"
+                    : frame.producer.isEmpty()
+                    ? SmtLowering.Unbound.PRODUCER_UNSTATED + ": its run "
+                    + "computed on an arrival it refused, and no export row "
+                    + "of this session states the refused handle ("
+                    + frame.refusal + ")"
+                    : "its run computed on an arrival it refused, whose "
+                    + "producer rests on nothing that moves", moving));
         }
     }
 
     /**
-     * One thing a composed path rests on concretely or leaves free: a read,
-     * a call's return or an arrival left FREE because what it rests on can
-     * move ({@link SmtLowering#frees}, {@link #handoffRead}), an occurrence
-     * whose run computed on a value as a constant (FRAME), the guard a path
-     * left the way at (WAY), a decision stated as a proposition (DECISION).
-     * Information beside the verdict (result.json {@code concrete[]}), never
-     * a gap.
+     * One thing a composed path rests on concretely or leaves unbound, on
+     * the path it was composed for ({@code pathId}): a value COMPOSE could
+     * not bind ({@link SmtLowering#unbound}: FREE over what its stated
+     * producer rests on, which moves, or HELD at its recorded value where no
+     * row states its producer -- a read of a version no write states, an
+     * arrival no producer attests, a frame), the guard a path left the way
+     * at (WAY), a decision stated as a proposition (DECISION).  Information
+     * beside the verdict (result.json {@code concrete[]}), never a gap.
      */
     public static final class Concrete {
         public final String kind;
         public final String subject;
         public final String value;
+        /** Why, in words. */
+        public final String reason;
         public final List<String> movesWith;
+        /** The path it was composed on ({@link #on}). */
+        public final String pathId;
 
-        Concrete(String kind, String subject, String value,
+        Concrete(String kind, String subject, String value, String reason,
                  List<String> movesWith) {
+            this(kind, subject, value, reason, movesWith, "");
+        }
+
+        private Concrete(String kind, String subject, String value,
+                         String reason, List<String> movesWith,
+                         String pathId) {
             this.kind = kind;
             this.subject = subject;
             this.value = value;
+            this.reason = reason;
             this.movesWith = Collections.unmodifiableList(movesWith);
+            this.pathId = pathId;
+        }
+
+        /** The same row, on this path. */
+        Concrete on(String path) {
+            return new Concrete(kind, subject, value, reason, movesWith,
+                    path);
         }
     }
 
@@ -2486,9 +2636,11 @@ public final class Composer {
      * Read := the value the ROW states, bound before any lowering: the PIN
      * half of {@link #stateJoins}, hoisted so every leaf naming the symbol
      * resolves.  Only for reads neither the write log nor a mint covers
-     * (a root's version is its mint's, whatever the run read); rows stating
-     * no value are left to the join half.  {@code answered} keeps one
-     * refusal per row across both halves.
+     * (a root's version is its mint's, whatever the run read): no row
+     * states their producer, so each is HELD at that value and named
+     * ({@link SmtLowering#unbound}).  Rows stating no value are left to the
+     * join half.  {@code answered} keeps one refusal per row across both
+     * halves.
      */
     void statedReads(String session, Set<String> occurrences,
                      Independence relevant, SmtLowering.SessionJoin join,
@@ -2503,7 +2655,12 @@ public final class Composer {
                     read.observedVersion()))) {
                 continue;
             }
-            pin(session, read, refusals, joins, answered);
+            if (pin(session, read, refusals, joins, answered)
+                    && joins.containsKey(read.symbol())) {
+                lowering.held(SmtLowering.locationKey(read.location()) + "@"
+                        + read.observedVersion(), read.concreteValue(),
+                        "no write row states the version this read saw");
+            }
         }
     }
 
@@ -2548,8 +2705,8 @@ public final class Composer {
      * read's too, so the two cannot disagree): JOIN, the expression of the
      * write version it observed, if it lowers with no refusal; else its
      * MINT; else PIN; else REFUSE.  A join that refused gives way to the
-     * mint or the pin, which says what it cut where what it rests on can
-     * move ({@link SmtLowering#pins}).  No "latest write", no choice
+     * mint, else to a FREE read where what it rests on can move, else to
+     * the pin ({@link SmtLowering#unbound}).  No "latest write", no choice
      * between writers.
      */
     void stateJoins(String session, Set<String> occurrences,
@@ -2625,6 +2782,12 @@ public final class Composer {
                         return null;
                     }
                     return joins.containsKey(read.symbol());
+                }
+
+                @Override
+                public String returned() {
+                    return read.concreteValue() == null ? ""
+                            : read.concreteValue().trim();
                 }
 
                 @Override
@@ -3150,8 +3313,10 @@ public final class Composer {
                 conjuncts.add(clockStep(cell, clockReadings, clockBefore,
                         Long.signum(skew - previous)));
             }
-            lowering.assertNamed("refuted_claim__" + ordinal++,
+            String name = REFUTED_CLAIM + ordinal++;
+            lowering.assertNamed(name,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
+            refutationNames.put(name, model);
             gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
                     "CONFIRM refuted the model on this path with arms "
                             + model.arms + " at " + model.assignment
@@ -3464,6 +3629,10 @@ public final class Composer {
 
     /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";
+
+    /** The name prefix of a refuted claim's assertion ({@link
+     *  #refutations}), which an unsat core names. */
+    static final String REFUTED_CLAIM = "refuted_claim__";
 
     void gap(GapKind kind, GapClass cls, String subject,
                      String detail) {

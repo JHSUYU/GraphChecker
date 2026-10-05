@@ -83,12 +83,11 @@ marked * below.
 | `recording_max_trace_mb`* (4096) | the most trace the recording may write; past it the workload is ended and SEED fails `RECORDING_BOUND` (§2) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth` | EXPLORE's bounds (§7.4, §7.9) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
-| `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb`, `stream_max_in_flight` (0) | the pool's hosts, one replay's memory at the host gate (§7.7), the most heap a head JVM is given and a solver asked again, the obligations the capped explorations running at once keep in flight together (§7.7; 0 is no cap) |
+| `campaign_worker_hosts`, `engine_memory_mb`, `stream_shared_pool` (false) | the pool's hosts, the most heap a head JVM is given and a solver asked again, whether the exploration shares its hosts' replay slots with the other sharing explorations (§7.7; a sweep's cases) |
 | `campaign_stop_after` | empty, `SEED` or `IMPORT` |
 | `reproduce_runs`* (10), `reproduce_time_factor`* (3) | how many native reproduction runs, and each one's wall clock as a multiple of the recording's workload (§10b) |
 
-Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
-none.
+Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
 
 ## 1. PREFLIGHT, FREEZE_TOOL, SETUP, FREEZE
 
@@ -596,9 +595,9 @@ come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside t
 question still waiting when its solver ended starts the next one. A question that waits for its
 solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A host
 with no room to start a solver now answers the question in a solver JVM of its own at once
-(`campaign_solve_obligation_alone ... now`, `ObligationSolverMain --obligation-id`), under the
-obligation's own charge (its replay comes after it), what it grows past that asked of the host as
-it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
+(`campaign_solve_obligation_alone ... <charged_mb>`, `ObligationSolverMain --obligation-id`),
+under the solve's own charge (what a solver starts at, §7.7), what it grows past that asked of the
+host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
 ended while answering it) is no answer: it is asked once more of a solver JVM of its own at
 `engine_memory_mb`, once the host has room for it (`campaign_solve_obligation_alone`, the offline
 gate's entry too); neither settles a question (`question.txt`/`question.asked` are removed), and
@@ -665,8 +664,10 @@ operator the lowering writes (the string operators `str.substr`, `str.indexof`, 
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
-none it names, none a definition it rests on names (`FlipQuery#flipMoves`) -- is not asked
-(`ADMISSION_GAP`), whatever variables a prefix decision binds. A construct the
+none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked
+(`ADMISSION_GAP`), whatever variables a prefix decision binds; one that reaches only leaves a frame's
+write was freed to (`SmtLowering#framedLeaves`: the writer computed on an arrival it refused, so no
+plant reaches them) is refused before it is solved (`UNPRODUCIBLE_ANSWER`, DIAGNOSTIC, named). A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
 each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`explore.ClockMargin`;
@@ -784,18 +785,34 @@ CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 
-One pool for the whole exploration. The head starts each queued obligation, and each GROW re-run
-(§7.8), first first, while the exploration runs fewer than its share of `stream_max_in_flight`
-(below), on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin
-from the host after the last one chosen (`campaign_stream_admit_host`), an obligation first on a
-host where it started one within the solver's idle time (`campaign_stream_warm`: that host's solver
-of its corpus likely still serves, so the question needs no solver started and no corpus read): a
-host is taken while it runs fewer of the campaign's starts than it has cores (read once,
+One pool for the whole exploration. An obligation is two starts: its SOLVE
+(`campaign_obligation_worker`: its question answered by its host's solver, §7.5) and, when the
+solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
+worker directory, on the model's focus row the solve left there), which the head queues first the
+moment the solve returns (`campaign_stream_ended`; between two starts of a dispatch too,
+`campaign_stream_collect_jobs`), not at the next step, on the class tree and
+plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
+since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
+`--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
+replay's verdict lands, and an UNSAT, NOT_ADMITTED or reused ADMITTED answer of the solve lands as
+the obligation's. The replay's answer replaces the solver's row as a new inode
+(`campaign_write_whole`), never in place: written on another host than the row it replaces, an
+NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: the replay's row,
+then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
+first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
+counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
+ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
+first on a host where it started one within the solver's idle time (`campaign_stream_warm`: that
+host's solver of its corpus likely still serves, so the question needs no solver started and no
+corpus read), a REPLAY on whichever host admits it (its worker is on the shared home): a host is
+taken while it runs fewer of the campaign's starts than it has cores (read once,
 `campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
 for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
-a background subshell, or remotely through `ssh`: an obligation as `run_engine.sh --run-obligation`
-with the frozen jar and its sha256, a re-run as a placed step (below) (`campaign_stream_job`); each
-takes the class tree and plan of the generation current when it starts (§7.8). The memory gate
+a background subshell, or remotely through `ssh`: a solve as `run_engine.sh --run-obligation`
+with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below)
+(`campaign_stream_job`; a REPLAY's logs `replay-stdout.log`, `replay-stderr.log` and
+`replay-host.txt` beside its solve's); each other start takes the class tree and plan of the
+generation current when it starts (§7.8). The memory gate
 (`campaign_host_try_start <host> <need>`) is a ledger shared by all campaigns, gates and
 `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`, handed to every
 peer with the ceiling): one file per live charge, `charges/<mb>.<id>`, and a start is allowed when
@@ -809,33 +826,47 @@ lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute 
 every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
-leases old is deleted. Every start states its measured need, with no default. An obligation or a
-re-run needs `obligation_memory_mb`: its replay's, since its question goes to its host's solver
-(§7.5), charged at its own start; the head holds the charge, the job releases it as soon as its
-work returned, before the head waits to see what a peer wrote, and the head again once it
-collected or reaped the job (`campaign_stream_release`). A replay JVM is handed what its host was
-charged for it (`CAUSYNTH_CHARGED_MB`): its heap is half of it (2 GB at least), and
+leases old is deleted. Every start states its measured need, with no default. A solve needs what
+a solver JVM starts at (`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its
+own under that charge when its host has no room for its solver; the host's solver is charged on its
+own, §7.5), never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
+or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
+stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
+CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
+times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
+(`campaign_replay_charge_mb`). An obligation replay peaks near its own seed replay (round HG4:
+hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation
+and seven times the recording per CONFIRM held the lifts' ledger at 11-22 GB over 3-7 GB of real
+use (HG5A); one that outgrows the need grows its charge as below and raises the need of every
+start after it (hdfs-adhoc-15: seed 514 MB, obligations 939-2003). The charge is taken at the
+start (`campaign_stream_admit_host`, `stream_admitted_mb`, handed to the job); the head holds it,
+the job releases it as soon as its work returned, before the head waits to see what a peer wrote,
+and the head again once it collected or reaped the job (`campaign_stream_release`). A replay JVM
+is handed what its host was charged for it (`CAUSYNTH_CHARGED_MB`) and its whole need
+(`CAUSYNTH_HEAP_BASIS_MB`): its heap is half the need (4 GB at least), and
 `experiments/lib/execute.sh` watches it until it ends (`campaign_watch_workload`): one whose
 resident memory grows past its charge asks its host's ledger for the excess, as one more charge,
 granted unless the host's real use would pass `L` with it, and holds what it was granted, released
-when it ends; one the host cannot take is ended, saying
-so; each states its peak at its end.
+when it ends; one the host cannot take is ended, saying so; each states its peak at its end and
+writes it to `workload_rss_mb` in its worker directory, where the head reads it.
 
-THE CAP. `stream_max_in_flight` = N > 0 is how many obligations the capped explorations running
-at once keep in flight together (`campaign_stream_has_slot`, the one dispatch point): each starts
-one more only while it runs fewer than its share, N over the capped explorations whose entry in
+THE SHARED POOL. With `stream_shared_pool=true` (a sweep's cases, `tools/adhoc/sweep.sh`) the
+explorations running at once share their hosts (`campaign_stream_has_slot`, the one dispatch
+point): each starts one more only while it runs fewer than its share, the slots its hosts hold at
+its measured replay charge (`campaign_pool_slots`: on each host as many starts as fit under the
+ceiling above at that charge, at most its cores) over the sharing explorations whose entry in
 `$CAUSYNTH_HOST_LEDGER/explorations/` is fresh (written when the loop starts, kept fresh by the
 head's heartbeat like its room, `campaign_head_reservation_stale_s`, removed when it ends), at
 least one, read again at every start; it says once for each share it waits at. So the share
-grows as others end and shrinks as others begin (what already runs past it runs out), and one
-exploration alone keeps all N. N = 0, the default and a named acceptance run's, is no cap. A
-sweep (`tools/adhoc/sweep.sh`) gives every case N = the lifts' obligation slots for its
-`obligation_memory_mb` (`campaign_pool_slots`: on each
-host as many starts as fit under the ceiling above at their charge, at most its cores; ten 31.5 GB
-lifts at 70 % hold 30 of 6000 MB), and admits its head for the room it reserves on its host
-(HEAD ROOM below; `tools/lib/heads.sh` `case_head_reserve_mb`). Round a40 without it: one Solr
-case kept 27-32 replays in flight on all ten lifts, the other cases' heads waited for room, and
-20 Solr checks would have taken over 15 h.
+follows the measured need, grows as others end and shrinks as others begin (what already runs past
+it runs out), and one exploration alone keeps all of it. `false`, the default and a named
+acceptance run's, shares nothing: the hosts' memory and cores alone decide. A sweep admits each
+head for the room it reserves on its host (HEAD ROOM below; `tools/lib/heads.sh`
+`case_head_reserve_mb`). Round a40 without sharing: one Solr case kept 27-32 replays in flight on
+all ten lifts, the other cases' heads waited for room, and 20 Solr checks would have taken over
+15 h; with a static per-case charge, adhoc-07's 151 replays of ~93 s each waited a median 35 min
+for a slot (HG4).
 
 HEAD STEPS. Every heavy step of a head (`do_campaign`) goes where there is room through one rule
 (`campaign_head_charged`, `campaign_head_place`): the head's own host when it fits there (its own
@@ -860,12 +891,14 @@ the 16 GB engine heap at once found no lift of a running sweep with it free and 
 (a40s); every run ends
 at its first out-of-heap error, at `engine_memory_mb` too (exit 3: the most heap a head JVM is given,
 told apart from a crash) -- the seed
-and CONFIRM replays (`campaign_seed_replay`, `campaign_obligation_replay`), each charged
-seven times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its
-native recording, up to 6.94 times in round x1) when above `obligation_memory_mb`, else that,
-charged at most half a host's ceiling at its start (a charge only an idle host can hold waited 75
-minutes in round HG1; past its charge the replay grows while its host has room) and its heap sized
-by the whole need (`CAUSYNTH_HEAP_BASIS_MB`) (`campaign_replay_need_mb`, `campaign_replay_charge_mb`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
+replay (`campaign_session_replay`), before any replay of the campaign was measured, needing seven
+times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its native
+recording, up to 6.94 times in round x1; a recording that measured none, or a seed replay that
+states no peak, fails REPLAY by name), and the final CONFIRM replay (`campaign_confirm_claim`),
+needing the measured replay need (above), each charged at most half a host's ceiling at its start
+(`campaign_replay_charge_mb`: a charge only an idle host can hold waited 75 minutes in round HG1;
+past its charge the replay grows while its host has room) and its heap sized by the whole need
+(`CAUSYNTH_HEAP_BASIS_MB`), and REPRODUCE's native runs (§10b). A running JVM that outgrows its
 charge is ended only when the host's real use would pass the ceiling with it
 (`campaign_host_try_grow`). They read and write only the run's
 shared directories -- the case's scope copy among them (§1) -- so each runs alike on any host. What
@@ -908,8 +941,8 @@ keeps its own inode for whatever runs on it -- and INSTRUMENT weaves it into the
 tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
-re-run has returned and no obligation runs that started before them, no obligation starts and no
-round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
+re-run has returned and no obligation's solve runs that started before them, no solve starts and
+no round is planned (a REPLAY reads no corpus and goes on, on its solve's generation); then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
 worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
 worker's, its session lands, and its verdict replaces the obligation's row in
 `obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
@@ -976,7 +1009,8 @@ cancelled or reaped, by id):
   witnesses wait and are attempted again once a verdict lands that does not end the exploration.
   Confirmed, the attempt ends the exploration at once: the queue is cancelled, every running job is
   reaped (its process tree here, its workers on every peer) -- an obligation's worker directory moves
-  to `<campaign>/explore-reaped/`, as does every one that returned after the step began, and a
+  to `<campaign>/explore-reaped/`, as does every one that returned after the step began or whose
+  REPLAY is still queued, and a
   confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
   attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
   (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
@@ -996,17 +1030,33 @@ cancelled or reaped, by id):
   attempts; the seed's REPLAY standing for a CONFIRM not yet run), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
-  unlanded reaped), and the stop is a DIAGNOSTIC row.
+  unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
-  work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
-  lands, and the stop is a DIAGNOSTIC row.
+  work is not dispatched (its proposals are named cancelled): the queued solves are cancelled, what
+  runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is
+  declared: it defines the explored space (how deep closures nest), so it cuts nothing.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
 - **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
-  BLOCKING row naming the round, the corpus's size on disk and the planner's error -- rounds were
-  still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
+  DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error -- rounds
+  were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
+
+**THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
+only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations
+cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped from the queue (the
+exposing round's growth and obligations with them), a round due when the budget stopped it
+(answers landed since the last round, or re-runs and swaps owed) -- and an end that owed work
+(CAMPAIGN_BUDGET_REACHED or WITNESSED with any of it, PLANNER_HEAP_EXCEEDED always) under a claim
+that is no `SAT_CANDIDATE` is one BLOCKING `EXPLORATION_CUT` row: an UNSAT over a corpus missing
+those arms says nothing about them, so EMIT publishes it as a `RUN_DEFECT`. A SAT the corpus holds
+stands, as CONFIRM validates it (the row DIAGNOSTIC); a WITNESSED end whose witness CONFIRM then
+refuted owes it all, since the next claim is composed over the trimmed corpus with no new EXPLORE
+(`campaign_next_claim`). FIXED_POINT and the declared wave bound, which defines the explored space,
+owe nothing (HG5A: hdfs-adhoc-17 cancelled 151 queued obligations with none answered, 24 reaped 3
+jobs, QJM 07/08/09 cancelled 1215/157/108 and reaped 2/16/25, and each but 07 had published
+UNSAT_CLOSED).
 
 A round never proposes an arm answered or in flight (§7.3), so the same obligations cannot be
 proposed twice; the wave budget is what bounds the derivation. A case whose corpus outgrows the
@@ -1054,10 +1104,14 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
   including earlier versions of every reached write's location; a refusal is its frame's
-  (`frames`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
-  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) is a value its run computed on as a
-  constant, which its rows state, so the path or arm composes with those constants and names the
-  frame (`Composer.Concrete` FRAME, `concrete[]`);
+  (`frames`, `SmtLowering.RefusalFrame`, `SessionJoin#frame`, `#frameOfWrite`, indexed once per
+  session): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused attach,
+  an attach that minted no `v_H`) is an arrival its run computed on as a constant; its producer is
+  the export the refused attach's VM handle names in the session (`ExportRow#handle`), and by the
+  one rule below every write of the frame a read joins is FREE over what that export rests on that
+  moves (`SmtLowering#frameMovers`: `#movers`, the one predicate every pin asks, through a read to
+  its write and a family's re-paired reads; named FREE in `concrete[]` with them), else the frame's
+  constants hold, named HELD (its producer unstated where no export states the handle);
 - constraint independence (`compose.Independence.of`), by what MOVES: a root of the session, what a
   family binds (an anchor handoff's symbol, a location a STATE family may re-pair), a read whose value
   (its observed write's, walked, and the construction guards of its referent) rests on one. A
@@ -1089,19 +1143,26 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   session neither minted nor read refuses the path only when the path's terms name it;
 - anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
-  an attach no session attests the producer of (or with no producer named) rests on what no row
-  states, so it is FREE, named as a `Composer.Concrete` FREE with its producer (a witness over it is
-  CONFIRM's to judge: completeness first);
+  an attach no session attests the producer of (or with no producer named) has a producer no row
+  states: HELD at the value its row states it received, conjoined with the path and named
+  (`Composer.Concrete` HELD, "producer unstated"); one whose producer is attested and no export of
+  it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
+  it, and a path is never dropped for it;
+- THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
+  rests on, where its stated producer rests on what can move; HELD at its recorded value, named
+  "producer unstated", where no row states its producer; never free by default, never a silent
+  pin. Every `concrete[]` row names the path it was composed on (`pathId`) and why (`reason`);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else -- where what the refused write rests on can move (a root, a
   clock cell, a handoff, an anchor location a STATE family may re-pair: `SmtLowering#movers`, the one
   walk every pin asks, a method return's and a container answer's too, and EXPLORE's flip query
   alike, where a read of any location with write rows moves, `SmtLowering#forSession`) -- FREE, the
-  read unconstrained and named with what it rests on (`SmtLowering#frees`, a `Composer.Concrete` FREE
-  in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value the
-  row states, else REFUSE (`UNSTATED_VALUE`); dropped, the join raises nothing (no refusal, side
-  condition or gap); what a read
+  read unconstrained and named with what it rests on (`SmtLowering#unbound`, a `Composer.Concrete`
+  FREE in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value
+  the row states (a version no write row states: HELD, named "producer unstated"), else REFUSE
+  (`UNSTATED_VALUE`); a write of a frame whose producer moves is FREE before any join; dropped, the
+  join raises nothing (no refusal, side condition or gap); what a read
   row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
@@ -1127,7 +1188,9 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
 
 Any refusal drops the path and is filed with its own class (an open lowering refusal is a
-DIAGNOSTIC `UNSTATED_VALUE`).
+DIAGNOSTIC `UNSTATED_VALUE`); a dropped path is never silent: the claim names every admitted path
+COMPOSE refused, with its first refusal (`Composition#refusedPaths`, `result.json` `refusedPaths`),
+and an UNSAT says nothing about them.
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id --
 a codec hole's is its message key, so the N readers of one stored version, and one decode read
@@ -1191,7 +1254,12 @@ location's INITIAL, the writer at version 0, where the read observed it or the s
 decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
 own join or pin wherever the run is no one writer's arm -- the reads saw several writes (a nested
 region of the reader's own thread wrote between two of its reads: hdfs-adhoc-23's
-`StorageInfo.layoutVersion`), or a version one of them observed has no writing row; the writer
+`StorageInfo.layoutVersion`), or a version one of them observed has no writing row, or -- THE
+RUN AS RECORDED IS A WORLD -- the one writer every read observed is no arm of the run because its
+selector binds its whole block (every location its arm states here) and the run read another
+location of that block from another writer (hdfs-adhoc-16 HG5A: a `Block` constructor wrote
+`blockId`, `genStamp` and `numBytes`, and the run read the last two from later writers; one pass is
+the fixed point); the writer
 arms stay beside it, each binding every read, and where the reads saw several versions only a
 write each of them could have seen (`Arms#eligible` for every version; hdfs-adhoc-16: the first
 read's own later write is none); exactly one per location that has two arms or more, one of them
@@ -1515,7 +1583,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    occurrence leaves no claim (BLOCKING `SEED_OBSERVED_FATAL`): the run as recorded is no
    counterfactual (owner 2026-10-04: a claim moving no root is never a finding); beside PLAN's
    `TARGET_FATAL_IN_RECORDING` (the recording took the fatal arm there, `RuntimeSelectedRegionFinalizer`)
-   it is a declaration defect, else the replay diverged. A witness moving configuration only (`Composition#configurationOnly`:
+   it is a declaration defect, else the replay diverged. A guard of the declared target that
+   reaches it on both arms states no fatal arm to judge the recording by: PLAN names it BLOCKING
+   `AMBIGUOUS_FATAL_ARM` (`StaticScopeMap.AmbiguousFatalArm`, caught by the finalizer), a
+   RUN_DEFECT at EMIT, never a stack trace. A witness moving configuration only (`Composition#configurationOnly`:
    every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
    second, and only then the first rule takes a configuration-only one. A witness moving a
    configuration whose plant leaves reads of its key at the recording's value (the scope map's
@@ -1571,7 +1642,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
 defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
 kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's own answer unsat →
-`UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). EMIT publishes
+`UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). `UNSAT_CLOSED` means
+exactly: no world of the explored corpus reaches the fatal -- each admitted path under the marker
+valuation its own run ran (`valuationOf`), every declared root free over its domain, every clock
+over its window, and the values `concrete[]` holds (HELD, producer unstated) -- and nothing about a
+path the exploration did not admit. EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
 when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
@@ -1588,16 +1663,23 @@ the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witne
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
 Only a `SAT_CANDIDATE` is confirmed. ConfirmMain reads `claim.json` and the manifest, takes the claim's
-valuation, its selected path and session, and the selected arms of that path; the selected session
-must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
+valuation, its selected path and session, and the selected arms of that path. The manifest states
+where the path decided (`cutoff`): its target row, or, for a path that left the way to the throw at a
+guard and never reached the anchor, that guard; the anchor's join closure runs to it. A witness that
+turns a symbolic way guard is planted and judged as any other, by the fatal at the declared
+occurrence: no target row of its own run is asked for. A manifest that states no selector, `restsOn`
+or `cutoff` for the path, a schedule, pairing, arm or moved root the rows do not state is refused by
+name (`CONFIRM refused:`, exit 1): a defect of the rows, `refutes` false, so a claim EMIT publishes
+with it is a `RUN_DEFECT`.
 
 - **The run as recorded**: a claim whose selected session is the seed's, that moves no root and no
   clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
-  is refused by name (`refutes`): it is no counterfactual, whatever a run of it observes (owner
-  2026-10-04: a claim moving no root is never a finding), and the campaign excludes it.
+  is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a run of
+  it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
+  excludes it.
 - **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
   run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
-  that target row observed the fatal, every selected arm is the session's own
+  a target row of it at the anchor reached it and observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
   rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
   every moved non-clock root at the model's value, and its clocks are the model's (on every cell
@@ -1689,16 +1771,23 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
   `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
   the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
-  occurrence of the target site does not confirm. A ConfirmMain that exits nonzero is
-  "unconfirmed" with its log named.
+  occurrence of the target site does not confirm. Only the last refutes, and only where the run
+  ran the model (`ConfirmMain#unplanted`: every root the claim moved minted at the model's value,
+  a clock's cell minted, no `ASSIGNMENT_UNPLANTED`); a `CONFIRM_MISMATCH` (the run took an edge the
+  model did not choose) or a run without the model's plant did not run it. A ConfirmMain that
+  exits nonzero is "unconfirmed" with its log named.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
 sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says the
-model is refuted: the replay ran it and disagreed (a `CONFIRM_MISMATCH`, no fatal at the anchor),
-or ConfirmMain refused it by name (`CONFIRM refused:`, no run can realize it). A replay that was
-not ADMITTED, published no readable session or no verdict, or a decision that failed, refutes
-nothing: the claim is unconfirmed and its model stays open; if it is the claim EMIT publishes, the
-run has no verdict (`RUN_DEFECT`, never `SAT_UNCONFIRMED`).
+model is refuted: the replay ran it and disagreed (no fatal at the anchor, the model planted), or
+ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A refusal (`CONFIRM
+refused:`), a mismatch, a run without the model's plant, a replay that was not ADMITTED,
+published no readable session or no verdict, or a decision that failed, refutes nothing: the model
+is REFUSED (`campaign_refuse`, one row of `<iteration>/refused_models.jsonl`, `result.json`
+`refusedModels`). No witness attempt of the campaign confirms a refused model again, and the final
+CONFIRM takes its row instead of a replay; a campaign that ends with a refused model and no
+confirmed SAT publishes no claim, an UNSAT included (`RUN_DEFECT`, `CONFIRM_REFUSED`, or
+`CONFIRM_NO_VERDICT` for the final claim's own).
 
 **A refuted claim is followed by the next.** A refuted claim (`campaign_refute`) is one row of
 `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
@@ -1714,7 +1803,11 @@ cell of the query runs on from the cell before it (`Composer#clockStep`, the spe
 witness's run-on pins too); an instant alone excluded one point, and the next model sat a tick
 beside it --, a
 DIAGNOSTIC `CLAIM_REFUTED` gap names it, and a model whose path or arm the query no longer composes
-is not stated. During EXPLORE a refuted witness attempt lets the exploration go on (§7.9); after
+is not stated. A refutation excludes a region, so an UNSAT may rest on one: whenever a refutation is
+asserted, the free-formula ask and the self-check ask for the unsat core, and an `UNSAT_CLOSED`
+whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (its path, moved
+roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`).
+During EXPLORE a refuted witness attempt lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a refuted
 `SAT_CANDIDATE` whose model is refuted once (recorded, and not one the composition was told was
 refuted already), the campaign's budget has room for its reserve (`campaign_claim_room`) and
@@ -1873,13 +1966,15 @@ comparison.
 - `final/gaps.json` `byStage`/`byCode`, then the BLOCKING rows' `detail`.
 - Where the wall time went: `tools/analysis/timeline.py <accept-dir>...` reads a campaign's own
   files (stage metrics, file mtimes, the log) and prints each stage (SEED split into static pass,
-  weave, recording and aggregation), each planner round (planning, dispatch, the gates of the
-  sessions its obligations landed; obligations by
-  verdict, solver JVMs that failed; focused replays with min/median/max duration and how many
-  were refused, flipped or ended in error, and how many ended early (§5) with the time from the
-  end's replay-log line to the JVM's last write), the witness attempts, the CONFIRM replay and the
-  top time sinks (EXPLORE's planning, gates and attempts, and the rest of its wall: waiting on the
-  pool). A gate or
+  weave, recording and aggregation), each planner round (planning, dispatch to its last answer,
+  its obligations' wait for a start; obligations by verdict, solver JVMs that failed; focused
+  replays with min/median/max duration, their wait after their solve, and how many were refused,
+  flipped or ended in error, and how many ended early (§5) with the time from the end's
+  replay-log line to the JVM's last write), the head steps and their gates, the witness attempts,
+  the CONFIRM replay and the top time sinks (EXPLORE's planning, gates and attempts, and the rest
+  of its wall: waiting on the pool).  It reads the streaming layout (`obligations-NNNN/<id>/`:
+  `host.txt` and `replay-host.txt` the starts, `obligation_result.jsonl` the answer), and a run
+  pruned before those were kept (`accept.sh` `ACCEPT_KEEP_GLOBS`) by its logs' last writes. A gate or
   stage that started a head JVM includes the head's wait for memory (§7.7), which the log counts.
 - Why a check stayed concrete: `tools/analysis/rootcov.py <round-or-campaign>...` prints, per
   campaign and over all, the anchor rows with a phi, wave-0 obligations, roots by category, PLAN
@@ -1901,6 +1996,3 @@ comparison.
   the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
   say where each occurrence opened; a SEND's `endpoint` joins the recording's `EXCHANGE_SEND` rows
   in `runtime/runtime_trace.jsonl`.
-- `CAUSYNTH_WORKLOAD_JAVA_OPTS=-Dcausynth.debug.producers=true` (read by `experiments/lib/execute.sh`
-  for every workload JVM) prints each send's producer endpoint (`CAUSYNTH-PRODUCER` lines on stderr),
-  to diff against the recording's when anchors drift.

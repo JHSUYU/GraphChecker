@@ -176,6 +176,17 @@ public final class JsonFields {
         return "";
     }
 
+    /**
+     * A JVM setting: the system property {@code property}, else the
+     * environment variable {@code environment} (what a launcher hands a JVM
+     * it does not start with {@code -D}: a replay's, through the adapter),
+     * trimmed; "" when neither names one.
+     */
+    public static String setting(String property, String environment) {
+        return firstNonBlank(System.getProperty(property),
+                System.getenv(environment));
+    }
+
     /** Copies one record shell while retaining its immutable nested values. */
     public static JsonObject shallowCopy(JsonObject source) {
         JsonObject result = new JsonObject();

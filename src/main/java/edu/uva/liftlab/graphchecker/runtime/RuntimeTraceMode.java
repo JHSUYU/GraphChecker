@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 
 import java.util.Locale;
 
@@ -18,8 +19,8 @@ public enum RuntimeTraceMode {
 
     public static RuntimeTraceMode configured() {
         String value = firstNonBlank(
-                System.getProperty("causynth.trace.mode"),
-                System.getenv("CAUSYNTH_TRACE_MODE"), "discovery");
+                setting("causynth.trace.mode", "CAUSYNTH_TRACE_MODE"),
+                "discovery");
         String normalized = value.trim().toLowerCase(Locale.ROOT)
                 .replace('_', '-');
         if ("discovery".equals(normalized)) {

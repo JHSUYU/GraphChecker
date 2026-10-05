@@ -28,6 +28,7 @@ import java.util.function.Function;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.textString;
 
 /**
  * Content-addressed storage for immutable symbolic-expression DAGs.
@@ -74,7 +75,7 @@ public final class SharedExpressionTable {
     }
 
     private static boolean expression(JsonObject value) {
-        String type = exactString(value, "_type");
+        String type = textString(value, "_type");
         return !type.isEmpty() && !REFERENCE_TYPE.equals(type);
     }
 
@@ -103,7 +104,7 @@ public final class SharedExpressionTable {
 
     private static boolean declaresReference(JsonElement value) {
         return value != null && value.isJsonObject()
-                && REFERENCE_TYPE.equals(exactString(
+                && REFERENCE_TYPE.equals(textString(
                 value.getAsJsonObject(), "_type"));
     }
 
@@ -113,26 +114,19 @@ public final class SharedExpressionTable {
             throw new IllegalArgumentException(
                     "shared expression reference has unsupported members");
         }
-        requireAnchor(exactString(value, ANCHOR));
+        requireAnchor(textString(value, ANCHOR));
     }
 
     private static boolean referenceMembers(JsonObject value,
                                             boolean allowArtifactTable) {
         if (value == null || !REFERENCE_TYPE.equals(
-                exactString(value, "_type"))
-                || exactString(value, ANCHOR).isEmpty()) {
+                textString(value, "_type"))
+                || textString(value, ANCHOR).isEmpty()) {
             return false;
         }
         int expected = allowArtifactTable && value.has(FIELD) ? 3 : 2;
         return value.size() == expected
                 && (!value.has(FIELD) || allowArtifactTable);
-    }
-
-    private static String exactString(JsonObject value, String field) {
-        JsonElement encoded = value == null ? null : value.get(field);
-        return encoded != null && encoded.isJsonPrimitive()
-                && encoded.getAsJsonPrimitive().isString()
-                ? encoded.getAsString() : "";
     }
 
     private static String anchorFor(JsonObject definition) {
@@ -170,7 +164,7 @@ public final class SharedExpressionTable {
                         "shared expression definition has unsupported "
                                 + "members");
             }
-            String anchor = exactString(row, ANCHOR);
+            String anchor = textString(row, ANCHOR);
             JsonObject definition = object(row, "expression");
             requireAnchor(anchor);
             if (!expression(definition)) {
@@ -443,7 +437,7 @@ public final class SharedExpressionTable {
                 (value, visit) -> eachReference(value, null, row -> {
                     if (!declaresReference(row)) return null;
                     requireReference(row, false);
-                    return exactString(row, ANCHOR);
+                    return textString(row, ANCHOR);
                 }, visit, Collections.newSetFromMap(
                         new IdentityHashMap<JsonElement, Boolean>())));
     }
@@ -461,7 +455,7 @@ public final class SharedExpressionTable {
         String reference(JsonObject object, boolean root) {
             if (!declaresReference(object)) return null;
             requireReference(object, root && object.has(FIELD));
-            return exactString(object, ANCHOR);
+            return textString(object, ANCHOR);
         }
 
         @Override
