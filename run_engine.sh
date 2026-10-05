@@ -5554,13 +5554,15 @@ campaign_confirm_claim() {
 # The claim <claims>/claim.json states, beside its
 # candidate_composition_manifest.json, planned: ConfirmMain's task into
 # <dir>/worker, its log <dir>/confirm.log.  A verdict known now is written
-# to <claims>/confirm.json: a refusal ConfirmMain names (the claim's own: no
-# run can realize it), any other exit of it (which says nothing about the
-# model), or the selected session itself the run (realized.json: every edge
-# the model chose is its own, with the moved roots at the model's values, and
-# it observed the fatal -- a replay of its world would test only whether a
-# race the order does not hold goes the same way twice).  Otherwise the
-# replay is owed.
+# to <claims>/confirm.json: a claim ConfirmMain refutes by name ("CONFIRM
+# refutes:", the run as recorded: no run of it is a counterfactual), a
+# refusal it names ("CONFIRM refused:", rows that state no runnable model --
+# a defect of the run, which refutes nothing) or any other exit of it (which
+# says nothing about the model), or the selected session itself the run
+# (realized.json: every edge the model chose is its own, with the moved roots
+# at the model's values, and it observed the fatal -- a replay of its world
+# would test only whether a race the order does not hold goes the same way
+# twice).  Otherwise the replay is owed.
 campaign_confirm_plan() {
   local iteration_dir=$1 claims=$2 dir=$3 worker status=0 reason
   [[ ! -e "${dir}" ]] \
@@ -5574,12 +5576,12 @@ campaign_confirm_plan() {
     --manifest "${claims}/candidate_composition_manifest.json" \
     --output "${worker}" >"${dir}/confirm.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
-    reason=$(grep -m 1 'CONFIRM refused:' "${dir}/confirm.log" \
+    reason=$(grep -m 1 -E 'CONFIRM (refutes|refused):' "${dir}/confirm.log" \
       || grep -v -E '^[[:space:]]+at ' "${dir}/confirm.log" \
         | tail -n 1)
     campaign_confirm_verdict false \
       "${reason:-ConfirmMain exited ${status}}" "" \
-      "$([[ "${reason}" == *'CONFIRM refused:'* ]] && echo true \
+      "$([[ "${reason}" == *'CONFIRM refutes:'* ]] && echo true \
         || echo false)" >"${claims}/confirm.json"
   elif [[ -s "${worker}/realized.json" ]]; then
     jq -c '.' "${worker}/realized.json" >"${claims}/confirm.json"
@@ -5622,7 +5624,7 @@ confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
 
 # A verdict written: the claim refuted (campaign_refute) only when the
 # verdict refutes it -- the replay ran the model and disagreed, or ConfirmMain
-# refused it by name.
+# refuted it by name (the run as recorded).
 campaign_confirm_settle() {
   local iteration_dir=$1 claims=$2
   require_nonempty "confirmation" "${claims}/confirm.json"

@@ -265,8 +265,10 @@ field=<f> <subject>`.
   manifest's `concreteReadings`), never a clock nor a derived root; `attested` = the
   producer's session has an instrumented activation for it, so it states a path condition.
 - `Family(interactionId, arms)`: the arms one interaction's consumer could have received.
-- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn)`: one composed path, its selector,
-  and the tracked locations its fatal predicate rests on (what a confirming run is held to).
+- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn, cutoff)`: one composed path, its
+  selector, the tracked locations its fatal predicate rests on (what a confirming run is held to),
+  and where it decided (`cutoff`: its target row's seq, or, for a path that left the way to the throw
+  at a guard, that guard's; the anchor's reads before it are its closure's, in COMPOSE and CONFIRM).
 - `RootDomain(rootId, kind, recordedValue, min, max)`: absolute bounds, both null = pinned.
   `RootDomain.declared(file)` is the one reader of `root-domains.jsonl` (rows `{sourceId,
   declaredDomainMin, declaredDomainMax}`, each absolute or `+k`/`-k` from the recorded value; no file

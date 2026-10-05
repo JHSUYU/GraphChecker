@@ -3524,6 +3524,7 @@ confirm_stub_gaps=""
 confirm_stub_fatal=true
 confirm_stub_target_iteration=0
 confirm_stub_task_status=0
+confirm_stub_task_line="CONFIRM refused: the claim moves a cell nobody minted"
 confirm_stub_realized=false
 # The recording's measured peak resident memory, in MB (none: unmeasured).
 confirm_recorded_rss=""
@@ -3540,7 +3541,7 @@ confirm_stub_main() {
     esac
   done
   if [[ "${confirm_stub_task_status}" -ne 0 ]]; then
-    echo "CONFIRM refused: the claim moves a cell nobody minted" >&2
+    echo "${confirm_stub_task_line}" >&2
     return "${confirm_stub_task_status}"
   fi
   if [[ "${confirm_stub_realized}" == true ]]; then
@@ -3702,13 +3703,33 @@ confirm_says true "is itself the run" "a realized claim was not confirmed"
 [[ ! -e "${confirm_root}/replay-ran" ]] \
   || fail "a claim the selected session already realized was replayed"
 confirm_stub_realized=false
-# A confirmation nothing can run is refused by name, and the claim is
-# unconfirmed for that reason -- the campaign goes on to EMIT.
+# A confirmation nothing can run is refused by name: a defect of the rows,
+# which refutes nothing -- the claim is unconfirmed for that reason, its
+# model stays open, and the campaign goes on to EMIT.  Only a claim
+# ConfirmMain refutes by name (the run as recorded) is refuted without a
+# replay.
 confirm_stub_task_status=1
+refuted_before=$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")
 run_confirm SAT_CANDIDATE
 confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
   "a refused confirmation task did not name its reason"
+[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
+    && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" \
+      -eq "${refuted_before}" ]] \
+  || fail "a refused confirmation refuted the model: \
+$(cat "${campaign_final}/confirm.json")"
+confirm_stub_task_line="CONFIRM refutes: the claim moves nothing: its \
+witness is the run as recorded"
+run_confirm SAT_CANDIDATE
+confirm_says false "CONFIRM refutes: the claim moves nothing" \
+  "a refuted confirmation task did not name its reason"
+[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true \
+    && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" \
+      -eq $((refuted_before + 1)) ]] \
+  || fail "the run as recorded was not refuted: \
+$(cat "${campaign_final}/confirm.json")"
 confirm_stub_task_status=0
+confirm_stub_task_line="CONFIRM refused: the claim moves a cell nobody minted"
 # The exploration's witness was confirmed as it was accepted: the same model,
 # composed again, takes that confirmation and is not replayed.
 campaign_witness_attempt="${confirm_root}/witness-attempt"

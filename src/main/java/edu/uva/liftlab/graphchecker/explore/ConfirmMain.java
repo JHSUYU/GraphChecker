@@ -120,11 +120,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * cutoff}: its target row, or -- a witness whose path left the way to the
  * throw at a symbolic guard, which never reached the anchor -- that guard;
  * such a witness is planted and judged as any other, by the fatal at the
- * declared occurrence.  An unrunnable confirmation is refused by name (exit
- * 1): a defect of the rows (RUN_DEFECT), never a refutation, since no replay
+ * declared occurrence, and no target row of its own run is asked for.  An
+ * unrunnable confirmation is refused by name (exit 1, "CONFIRM refused:"):
+ * a defect of the rows (RUN_DEFECT), never a refutation, since no replay
  * ran the model -- except a claim that is the run as recorded, which no
- * replay could make a counterfactual, refuted by name ({@link
- * Refused#refutes}).</p>
+ * replay could make a counterfactual, refuted by name ("CONFIRM refutes:",
+ * {@link Refused#refutes}).</p>
  *
  * <p>The decision ({@code --sessions}): confirmed iff the replay was ADMITTED,
  * its session published a readable gaps file with no {@code
@@ -260,22 +261,11 @@ public final class ConfirmMain {
             }
         }
         SessionReader session = SessionReader.read(iteration, sessionId);
-        // The row COMPOSE composed the path from: one that reached the
-        // anchor, or one whose path left the way at a guard (no row of it
-        // stands at the anchor; its cutoff is that guard).
-        TargetRow target = null;
-        for (TargetRow row : session.targets()) {
-            if (row.occurrence().id().equals(anchor.id())
-                    && (target == null || row.reachedAnchor())) {
-                target = row;
-            }
-        }
-        if (target == null) {
-            throw new Refused("the selected session " + sessionId
-                    + " states no target row at the anchor " + anchor.id());
-        }
         // The writes the model chose for the anchor's join closure, up to
-        // where the path decided.
+        // where the path decided: its target row, or the way guard it left
+        // the way to the throw at -- a witness that turns that guard never
+        // reached the anchor in its own run, and is planted and judged as
+        // any other.
         StateClosure closure = new StateClosure(session, anchor, cutoff);
         Map<String, WriteRow> chosen = closure.chosen(arms);
         // A choice at a location the fatal does not rest on is the solver's
@@ -303,7 +293,7 @@ public final class ConfirmMain {
                     + "own delivery -- so no run of it is a counterfactual");
         }
         String realized = realizedBy(moved, world, sessionId, arms, session,
-                target, sawChosen);
+                anchor, sawChosen);
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
                     Collections.singletonList(
@@ -804,17 +794,22 @@ public final class ConfirmMain {
      *  deliveries and its reads saw every write the model chose
      *  ({@code sawChosen}, {@link StateClosure#ran}: another writer, or
      *  another state of a delivered object, is a run a replay has to make),
-     *  it observed the fatal, and it ran the model's world: every moved
+     *  a target row of it at the anchor reached it and observed the fatal
+     *  ({@link #decide}'s rule), and it ran the model's world: every moved
      *  root at the model's value (its mint row), and its clocks the model's
      *  jumps and nothing else ({@link Moved#clocksOf}: skews, each off its
      *  own run's host, so the two timelines compare; an instant of the
      *  replay is not one of the recording's). */
     static String realizedBy(Moved moved, JsonObject world, String sessionId,
                              List<JsonObject> arms, SessionReader session,
-                             TargetRow target, boolean sawChosen) {
+                             OccurrenceAddress anchor, boolean sawChosen) {
+        boolean fatal = false;
+        for (TargetRow row : session.targets()) {
+            fatal |= row.occurrence().id().equals(anchor.id())
+                    && row.reachedAnchor() && row.observedFatal();
+        }
         if (!ExploreCodec.map(object(world, "pairings")).isEmpty()
-                || !target.observedFatal() || !sawChosen
-                || !moved.refusal.isEmpty()) {
+                || !fatal || !sawChosen || !moved.refusal.isEmpty()) {
             return "";
         }
         if (!ownDeliveries(sessionId, arms)) return "";
@@ -997,8 +992,9 @@ public final class ConfirmMain {
     /**
      * The anchor's join closure in the selected session (the Composer's P3
      * rule): every read of each reached occurrence before its cutoff, the
-     * anchor's before its target, with the write it joined; every write of
-     * the session, by location and by version.
+     * anchor's before where the path decided (its target row, or its way
+     * guard), with the write it joined; every write of the session, by
+     * location and by version.
      */
     private static final class StateClosure {
         private final Map<String, WriteRow> writes =
@@ -1565,7 +1561,7 @@ public final class ConfirmMain {
                               Map<String, Long> reached, List<String> pending,
                               List<WriteRow> versions, Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
-        // Never the anchor: its cutoff is the target observation.
+        // Never the anchor: its cutoff is where the path decided.
         if (write.initial() || anchor.id().equals(writer)) return;
         if (handled.add(version(write.location(), write.version()))) {
             versions.add(write);

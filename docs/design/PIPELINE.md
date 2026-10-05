@@ -1591,16 +1591,23 @@ the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witne
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
 Only a `SAT_CANDIDATE` is confirmed. ConfirmMain reads `claim.json` and the manifest, takes the claim's
-valuation, its selected path and session, and the selected arms of that path; the selected session
-must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
+valuation, its selected path and session, and the selected arms of that path. The manifest states
+where the path decided (`cutoff`): its target row, or, for a path that left the way to the throw at a
+guard and never reached the anchor, that guard; the anchor's join closure runs to it. A witness that
+turns a symbolic way guard is planted and judged as any other, by the fatal at the declared
+occurrence: no target row of its own run is asked for. A manifest that states no selector, `restsOn`
+or `cutoff` for the path, a schedule, pairing, arm or moved root the rows do not state is refused by
+name (`CONFIRM refused:`, exit 1): a defect of the rows, `refutes` false, so a claim EMIT publishes
+with it is a `RUN_DEFECT`.
 
 - **The run as recorded**: a claim whose selected session is the seed's, that moves no root and no
   clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
-  is refused by name (`refutes`): it is no counterfactual, whatever a run of it observes (owner
-  2026-10-04: a claim moving no root is never a finding), and the campaign excludes it.
+  is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a run of
+  it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
+  excludes it.
 - **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
   run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
-  that target row observed the fatal, every selected arm is the session's own
+  a target row of it at the anchor reached it and observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
   rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
   every moved non-clock root at the model's value, and its clocks are the model's (on every cell
@@ -1698,10 +1705,10 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
 sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says the
 model is refuted: the replay ran it and disagreed (a `CONFIRM_MISMATCH`, no fatal at the anchor),
-or ConfirmMain refused it by name (`CONFIRM refused:`, no run can realize it). A replay that was
-not ADMITTED, published no readable session or no verdict, or a decision that failed, refutes
-nothing: the claim is unconfirmed and its model stays open; if it is the claim EMIT publishes, the
-run has no verdict (`RUN_DEFECT`, never `SAT_UNCONFIRMED`).
+or ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A refusal
+(`CONFIRM refused:`), a replay that was not ADMITTED, published no readable session or no verdict,
+or a decision that failed, refutes nothing: the claim is unconfirmed and its model stays open; if
+it is the claim EMIT publishes, the run has no verdict (`RUN_DEFECT`, never `SAT_UNCONFIRMED`).
 
 **A refuted claim is followed by the next.** A refuted claim (`campaign_refute`) is one row of
 `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
