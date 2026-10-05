@@ -18,8 +18,8 @@ final class SmtText {
      * One recorded value as a literal of the query sort it is bound at (a
      * {@link VmTermLowering.Sort#smt} spelling), or "" when it is not one:
      * the composition's one literal rule ({@link VmTermLowering#smtLiteral}),
-     * so a String hole's arrival is its JSON string literal's content quoted
-     * here as there (WIRE-CODEC §6.1).
+     * so a String's arrival is its JSON string literal's content quoted here
+     * as there.
      */
     static String literal(String value, String sort) {
         for (VmTermLowering.Sort each : VmTermLowering.Sort.values()) {

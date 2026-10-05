@@ -34,6 +34,18 @@ everything lives, how to build, test, run and read a campaign, and the traps the
 /bigtemp/vnr3ne/bin/pick-lift.sh [min-free-GB]   # prints the best lift
 ```
 
+Round tools (in the repo, `tools/rounds/`; `GC_OUT` names the output root): `round-status.sh <round>` (every started
+case: age, stage, seed give-ups, or its verdict), `round-watch.sh <round> [<baseline>]` (one line per finished case, per seed
+replay past 30/80 give-ups, and STALLS-REGRESSION when a seed replay passes twice the baseline round's give-ups of the
+same case), `round-slow.sh <round> <baseline>` (a running case past 2x/4x its baseline time),
+`round-verify.sh <round> [case...]` (how EXPLORE ended, z3 on the exported formula, BLOCKING gaps, moved roots,
+CONFIRM, and the formula's leaf symbols: NO-SYMBOL marks an UNSAT over nothing that moves, a scope hole to read before
+it counts), `obl-times.py <case>/schedule` (EXPLORE: run time vs queue wait per verdict, concurrency, refusal
+reasons). How to debug a slow case: [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §4. Reading a `.smt` by hand:
+`tools/analysis/smt-legend.py <out/case> --repo <tree>` names every leaf symbol of `final/candidate.smt2` (each root's
+door or configuration and where it was minted, each read's node, region, method and field, each handoff's port and
+producer), the starting point of every causal-chain check.
+
 ## 3. Build, test, commit
 
 ```bash
@@ -90,15 +102,17 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   at that charge, at most its cores) over the sharing explorations running now (their entries in
   `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
   (`campaign_stream_has_slot`).
-  A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host, what
-  its planner or composer starts at (`tools/lib/heads.sh` `case_head_reserve_mb`, 8 GB), not
-  its engine heap: a40's Solr heads asked for 16 GB and waited while one case's 27-32 replays
-  filled the lifts.
+  A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host
+  before it measured anything, what its planner or composer starts at (`tools/lib/heads.sh`
+  `case_head_reserve_mb`, 8 GB), not its engine heap: a40's Solr heads asked for 16 GB and waited
+  while one case's 27-32 replays filled the lifts. Once its engine JVMs have run, the room it holds
+  is their measured peak times 1.25 (`run_engine.sh` `campaign_head_need_mb`). A lift holds the
+  largest idle reservation of its heads, not their sum.
 - A round name is written once (`accept-<round>-<case>` exists → refused). Names used so far:
   `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, `F1`, `F1b`, `F2`, `K*`, `L*`, `N1`,
   `V1`–`V25`, `V4h`, `V5h`, `V7b`, `V16b`, `V18b`, `V22b`, `V22c`, `V24b`, `PP1`, `PP1b`, `M1`, `CF1`, `STO1`, agents' `a37f*`,
   `ee*`, `agent-*`, `w4-*`, `R5x*`, `r6s*`, `R7*`, `nr*`, `SB*`, `SBX*`, `SBR*`, `EO*`, `ZK*`, `SD*`, `HB*`, `HBA*`,
-  `W6C*`, `Z*`, `G*` (in their own `GC_OUT`). Use a fresh name: the next `main` round is `V26`, the next HDFS group round `HG6` (HDFS-study names used: `HG1`-`HG5`, `HS*`, `HN*`, `TD*`, `DS2`-`DS8`, `DC*`, `IOF*`, `HSS*`, `HSC*`, `HOA*`, `HDV*`, `HCS*`).
+  `W6C*`, `Z*`, `G*` (in their own `GC_OUT`). Use a fresh name: the next `main` round is `V26`, the next HDFS group round `HG8` (HDFS-study names used: `HG1`-`HG5`, `HG5A`, `HG7`, `HS*`, `HN*`, `TD*`, `DS2`-`DS8`, `DC*`, `IOF*`, `HSS*`, `HSC*`, `HOA*`, `HDV*`, `HCS*`; agents' of 2026-10-05, each in its own `GC_OUT`: `RIH*`, `MCH*`, `WHF*`, `HCL*`, `PS*`, `AS*`, `HR*`, `DW*`, `D1`).
 - Typical wall time on main (round `V25`, cluster shared with agent runs): HDFS RPC cases 7–12 min (up to 30
   on a busy cluster), 17960 ~12 min, 11741 ~34 min, solr-18406 ~20 min, solr-18413 ~23 min, quota-init ~10 min,
   election-offer ~34 min, slowdisk-zero ~9 min. After the campaign, the acceptance report's
@@ -110,28 +124,43 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   (≤ 70 % memory per lift); `lift11` (the owner's machine, where the lead session runs) works but
   never heads; builds with `onlift.sh -g 10`.
 
-**The HDFS group (a sweep of the 46 cases), as the 2026-10-04 lead ran it:**
+**The HDFS group (a sweep of the 46 cases), as the 2026-10-05 lead ran it (round HG7):**
 
 ```bash
 git -C ~/GraphChecker worktree add --detach ~/gc-run/<snap> system/hdfs
 (cd ~/gc-run/<snap> && /bigtemp/vnr3ne/bin/onlift.sh -g 6 mvn -q -o package -DskipTests)
 out=/bigtemp/vnr3ne/gc-out/hdfs-study
-cp $out/rounds/HG5.cases $out/rounds/<ROUND>.cases            # the 46 case ids, one per line
-cd ~/gc-run/<snap> && (GC_OUT=$out VM_IMAGE=/bigtemp/vnr3ne/vm-hg5/j2sdk-image setsid nohup \
+cp $out/rounds/HG7.cases $out/rounds/<ROUND>.cases            # the 46 case ids, one per line
+cd ~/gc-run/<snap> && (GC_OUT=$out VM_IMAGE=/bigtemp/vnr3ne/vm-hg5/j2sdk-image PRUNE=0 setsid nohup \
   bash tools/adhoc/sweep.sh ~/gc-run/<snap> <ROUND> $out/rounds/<ROUND>.cases 2 \
   > $out/sweep-<ROUND>.log 2>&1 < /dev/null &)
-/bigtemp/vnr3ne/bin/round-watch.sh <ROUND>      # one line per finished case (claim, verdict) and per seed
-                                                # replay past 30/80 schedule give-ups; run it under a Monitor
+# under a Monitor (it expires after 30 min; the tools keep state in $out/.watch-<ROUND>, so a re-armed one
+# does not repeat itself):
+(tools/rounds/round-watch.sh <ROUND> & GC_OUT=$out tools/rounds/round-slow.sh <ROUND> HG7 & wait) 2>&1 \
+  | grep --line-buffered -E 'DONE|STALLS>=80|SLOW x4|rror'
+GC_OUT=$out tools/rounds/round-status.sh <ROUND>     # every started case: age, stage, seed give-ups or its verdict
+GC_OUT=$out tools/rounds/round-verify.sh <ROUND>     # every finished case: how EXPLORE ended, z3 on candidate.smt2,
+                                                     # BLOCKING gaps, moved roots, CONFIRM
+tools/rounds/obl-times.py $out/accept-<ROUND>-<n>/out/<case>/schedule   # EXPLORE's run time vs queue wait
 ```
 
 - `2` is the number of heads per host. The sweep needs about 5 minutes on NFS before the first
-  `accept-<ROUND>-<n>` appears.
+  `accept-<ROUND>-<n>` appears; its first wave (20 heads at once) runs SEED ~3x slower than later starts.
+- `PRUNE=0` keeps every artifact (the recordings the offline gate needs; ~1.5-6 GB per case, /bigtemp has room);
+  `PRUNE=1` (the default) keeps what a verdict needs.
+- A case at 80+ seed give-ups whose class is known (the start-up/clock family, until the time model lands) is
+  stopped, not waited out; mark it in `$out/.watch-<ROUND>/slow.<n>.{2,4}` so the slow watcher stops naming it.
 - Stopping a sweep takes two steps:
   1. Kill its `fanout.sh` driver by pid, on the host you launched it from. Find it with
      `ps -eo pid,cmd | grep '[f]anout.sh'`.
-  2. Run `GC_OUT=$out tools/rounds/stop-run.sh <ROUND>-0 <ROUND>-1 …`. The names are the
-     `accept-` suffixes.
+  2. Write the run names (`accept-` suffixes) to a file and run `stop-run.sh` ALONE on its command line:
+     `ls -d $out/accept-<ROUND>-* | sed 's#.*/accept-##' > /tmp/runs; cd <snap> && GC_OUT=$out xargs
+     tools/rounds/stop-run.sh < /tmp/runs` (a command line that also names a run's directory gets killed too).
 - A finished case has two lines in its `summary.tsv`; the header is there from the start.
+- **A deep closure alone on the cluster** (a case the sweep's time limit cut; the owner: a large closure must
+  converge): `CASE_TIMEOUT_SECONDS=10800 GC_OUT=$out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-hg5/j2sdk-image
+  tools/rounds/launch-run.sh ~/gc-run/<snap> <case> <suffix>` with nothing else running: no shared pool, up to ~120
+  replays in flight.
 
 ## 5. A snapshot for a branch that needs another tree
 
@@ -238,3 +267,18 @@ breaks a campaign's time down by stage.
   younger than 120 s, not by `ls | wc -l`.
 - **The home quota is 100 GB** and has filled twice: round outputs, VM images and worktrees of other trees go
   to `/bigtemp/vnr3ne`. Remove old snapshots with `tools/rounds/snapshot-gc.sh` (it refuses one in use).
+- **`stop-run.sh` kills every process whose command line names the run's directory, your own shell included**: a
+  command that ran `stop-run.sh HG5A-0` and, in the same line, grepped `accept-HG5A-0/...` killed the lead's shell
+  (exit 144). Run it alone; feed many names through a file and `xargs`.
+- **Kill by pid, never by pattern**: an agent's `kill` of `tools/regress/offline-ab.sh` by pattern hit another agent's
+  gate on lift11.
+- **`jstack` leaves `.attach_pid<pid>` in the target JVM's working directory**, which is a case tree for a workload:
+  FREEZE's checkout digest once failed on it vanishing mid-hash (now tolerated, d8d26347e); jstack sparingly while a
+  sweep freezes.
+- **`onlift.sh` goes over ssh, which drops exported variables**: `onlift.sh -g 12 env MAVEN_REPO_LOCAL=... cmd`, never
+  `MAVEN_REPO_LOCAL=... onlift.sh cmd` (a tree build then installs into the shared `~/.m2`).
+- **A sweep's `PRUNE=1` deletes the recordings** (`runtime/`) the offline gate replays; HG5A could not feed any gate.
+  Keep `PRUNE=0` for a round you will gate against.
+- **A verdict row is not a verdict**: a `UNSAT_CLOSED` whose exploration ended `CAMPAIGN_BUDGET_REACHED` was cut
+  (now EXPLORATION_CUT, a RUN_DEFECT); always check with `tools/rounds/round-verify.sh`.
+- **A stopped run still writes its summary row** (`MISSING`, after the stop): do not read it as a failure of the case.

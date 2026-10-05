@@ -441,7 +441,6 @@ final class ConcolicResultPublisher {
         }
         try {
             configuration().publishUnansweredAddresses();
-            CodecRuntime.publishTotals();
             // Called from every exit path: a halt runs no shutdown hook.
             RowRuntime.closeSession();
         } finally {

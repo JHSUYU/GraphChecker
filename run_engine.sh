@@ -190,8 +190,7 @@ workflow_config_keys=(
   # past that the exploration ends and the claim it has is published.
   "campaign_budget_s CAUSYNTH_CAMPAIGN_BUDGET_S krp 21600"
   # The least the stages after the exploration are kept of that budget, in
-  # seconds: one COMPOSE and one CONFIRM, before the campaign has measured
-  # either (campaign_reserve).
+  # seconds, however short the stages it is measured from (campaign_reserve).
   "campaign_reserve_s CAUSYNTH_CAMPAIGN_RESERVE_S krp 600"
   # How many times the final stages decide a claim again after CONFIRM
   # refuted one (campaign_next_claim): each refutation excludes that claim's
@@ -499,7 +498,8 @@ engine_java() {
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "${start}" \
+    campaign_head_charged "${start}" campaign_engine_jvm \
+      "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
@@ -515,9 +515,37 @@ engine_java() {
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "${heap}" \
+  campaign_head_charged "${heap}" campaign_engine_jvm \
+    "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     -XX:+ExitOnOutOfMemoryError "$@"
+}
+
+# campaign_engine_jvm <peak_file> <command...>: one engine JVM of a head
+# (engine_java), run where its step was placed and watched until it ends
+# (campaign_watch_workload, charging nothing past its step's charge): its
+# peak resident memory joins <peak_file> (the campaign's
+# ${campaign_root}/engine_peak_mb, the largest any of its engine JVMs
+# reached; none named outside a campaign), what the head's held room is
+# sized by (campaign_head_need_mb).  Its status is the JVM's.
+campaign_engine_jvm() {
+  local file=$1 jvm dir peak held status=0
+  shift
+  dir=$(mktemp -d) || return
+  "$@" &
+  jvm=$!
+  campaign_watch_workload "${jvm}" 0 "${dir}"
+  wait "${jvm}" || status=$?
+  read -r peak 2>/dev/null <"${dir}/workload_rss_mb" || peak=0
+  rm -rf -- "${dir}"
+  if [[ -n "${file}" && "${peak}" =~ ^[0-9]+$ ]]; then
+    read -r held 2>/dev/null <"${file}" || held=0
+    if (( peak > ${held:-0} )); then
+      dir=$(mktemp "${file}.XXXXXX") \
+        && printf '%s\n' "${peak}" >"${dir}" && mv -f -- "${dir}" "${file}"
+    fi
+  fi
+  return "${status}"
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
@@ -569,12 +597,27 @@ campaign_engine_need_mb() {
   esac
 }
 
-# The room a head reserves on its host, in MB (campaign_head_reserve): what
-# the largest of its engine JVMs that come back every round starts at -- a
-# round's planner, a witness's composer (engine_java) -- not the case's
-# engine heap, unless one of them outgrew its need.
+# The room a head reserves on its host, in MB (campaign_head_reserve): its
+# measured step need -- the largest peak any of its engine JVMs reached
+# (${campaign_root}/engine_peak_mb, campaign_engine_jvm) times 1.25, rounded
+# up to 128 MB, at least 1024 and at most the engine heap, read again at
+# every heartbeat; before any was measured, what the largest of its engine
+# JVMs that come back every round starts at -- a round's planner, a
+# witness's composer (engine_java) -- not the case's engine heap, unless one
+# of them outgrew its need.  An idle 8 GB hold for steps that peaked at a
+# median 0.7 GB (p90 3.7, p99 7.8; 609 planners and composers of sweep HG5A
+# and round MCH2) kept 8 GB of every lift from the pool.  A step its held
+# room does not cover is placed by its own charge (campaign_head_charged).
 campaign_head_need_mb() {
-  local main start largest=0
+  local main start largest=0 peak heap=${engine_memory_mb:-8192}
+  if [[ -n "${campaign_root}" ]] \
+      && read -r peak 2>/dev/null <"${campaign_root}/engine_peak_mb" \
+      && [[ "${peak}" =~ ^[1-9][0-9]*$ ]]; then
+    largest=$(( (peak * 5 + 511) / 512 * 128 ))
+    (( largest >= 1024 )) || largest=1024
+    printf '%s\n' "$(( largest < heap ? largest : heap ))"
+    return 0
+  fi
   for main in edu.uva.liftlab.graphchecker.explore.ExploreMain \
       edu.uva.liftlab.graphchecker.compose.ComposeMain; do
     start=$(campaign_engine_start_mb "${main}")
@@ -5915,12 +5958,15 @@ campaign_claim_room() {
 
 # What the stages after the exploration are owed, in seconds: COMPOSE and
 # EMIT, which reads the corpus COMPOSE read, each as long as the longest
-# COMPOSE this campaign measured; CONFIRM and REPRODUCE, whose native runs
+# COMPOSE this campaign measured -- its stage metrics and its witness
+# attempts; the last planner round, which reads the same corpus, stands for
+# a COMPOSE none has run yet -- and CONFIRM and REPRODUCE, whose native runs
 # of the witness take less than one replay of it, each as long as the
-# longest CONFIRM -- its stage metrics and its witness attempts; the seed's
-# REPLAY stands for a CONFIRM replay none has run yet -- and never less than
-# campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
-# the case timeout when the reserve owed COMPOSE and CONFIRM alone.)
+# longest CONFIRM -- the seed's REPLAY stands for a CONFIRM replay none has
+# run yet -- and never less than campaign_reserve_s.  (HG4: hdfs-11741's
+# EMIT, 118 s in HG3, was killed at the case timeout when the reserve owed
+# COMPOSE and CONFIRM alone; HR1: hdfs-adhoc-07's first COMPOSE, over 556
+# sessions after planner rounds of 4 min, had the floor's 10 min.)
 campaign_reserve() {
   local measured
   measured=$( {
@@ -5928,10 +5974,25 @@ campaign_reserve() {
         print $1, $2 }' "${campaign_stage_metrics}" 2>/dev/null
       jq -r '"COMPOSE \(.composeMillis // 0)", "CONFIRM \(.confirmMillis // 0)"' \
         "${campaign_root}/iteration-0000/witness_attempts.jsonl" 2>/dev/null
+      campaign_last_round_millis
     } | awk '$1 == "COMPOSE" { if ($2 > c) c = $2; next }
+        $1 == "PLANNER" { p = $2; next }
         { if ($2 > r) r = $2 }
-        END { printf "%d\n", 2 * (c + r) / 1000 }')
+        END { printf "%d\n", 2 * ((c > 0 ? c : p) + r) / 1000 }')
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
+}
+
+# "PLANNER <ms>": the wall of the last round the planner finished, from
+# its in_flight.jsonl, copied as the planner starts (campaign_stream_step),
+# to its explore_manifest.json, written as it ends; nothing before one has.
+campaign_last_round_millis() {
+  local manifest started ended last=""
+  for manifest in "${campaign_root}"/iteration-0000/obligations-[0-9]*/explore_manifest.json; do
+    started=$(stat -c %Y "${manifest%/*}/in_flight.jsonl" 2>/dev/null) \
+      && ended=$(stat -c %Y "${manifest}" 2>/dev/null) \
+      && last="PLANNER $(( (ended - started) * 1000 ))"
+  done
+  [[ -z "${last}" ]] || echo "${last}"
 }
 
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE

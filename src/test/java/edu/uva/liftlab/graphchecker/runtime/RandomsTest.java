@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -20,9 +19,10 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * What a draw is keyed by (SYMBOL-SCOPE §4.5): its endpoint in an occurrence
- * with a context; anywhere else its node, handoffs, site and count under
- * that key in this window, so draws a Lost context makes stay apart.
+ * What a draw is keyed by (SYMBOL-SCOPE §4.5): inside the window its schedule
+ * context, site and count; before it its node, handoffs, site and count; the
+ * counts restart at each window, and a region woven around a draw moves
+ * nothing.
  */
 public class RandomsTest {
     private static final String SITE =
@@ -39,18 +39,19 @@ public class RandomsTest {
     }
 
     @Test
-    public void aDrawWithNoContextOfItsOwnIsKeyedByItsCountInItsWindow() {
+    public void aDrawIsKeyedByItsContextSiteAndCountInItsWindow() {
         String unregistered = "#" + RuntimeTraceContext.nodeHere() + "|#"
                 + SITE + "#";
         assertEquals("before the window", Arrays.asList("0" + unregistered
                 + "0", "0" + unregistered + "1"), Arrays.asList(
                 Randoms.key(SITE), Randoms.key(SITE)));
         RecordingWindow.open();
-        assertEquals("a Lost context inside the window, counted afresh",
-                "1" + unregistered + "0", Randoms.key(SITE));
+        String context = ScheduleLog.contextOf(Identity.contextHere());
+        assertEquals("inside the window, by its schedule context",
+                "1#" + context + "#" + SITE + "#0", Randoms.key(SITE));
         RecordingWindow.open();
-        assertEquals("every window counts from 0", "2" + unregistered + "0",
-                Randoms.key(SITE));
+        assertEquals("every window counts from 0",
+                "2#" + context + "#" + SITE + "#0", Randoms.key(SITE));
     }
 
     /** Each node's thread counts its own draws, in its own program order,
@@ -64,9 +65,10 @@ public class RandomsTest {
         other.start();
         other.join();
         first.addAll(drawsOn("t/dn0", 1));
-        assertEquals(Arrays.asList("1#t/dn0#epoch0|#" + SITE + "#0",
-                "1#t/dn0#epoch0|#" + SITE + "#1"), first);
-        assertEquals(Arrays.asList("1#t/dn1#epoch0|#" + SITE + "#0"), second);
+        String lost = "|" + Identity.contextHere().render() + "#" + SITE;
+        assertEquals(Arrays.asList("1#t/dn0#epoch0" + lost + "#0",
+                "1#t/dn0#epoch0" + lost + "#1"), first);
+        assertEquals(Arrays.asList("1#t/dn1#epoch0" + lost + "#0"), second);
     }
 
     /** {@code draws} keys of the running thread inside a startup of node
@@ -104,26 +106,36 @@ public class RandomsTest {
         assertEquals(3, new HashSet<>(drawn).size());
     }
 
+    /**
+     * A draw's key is no occurrence's: a region a GROW weaves around the
+     * draw site (IDENTITY §9: its occurrences and endpoints are new ids)
+     * leaves the keys and the values drawn as they were, run after run.
+     */
     @Test
-    public void aDrawInAnOccurrenceWithAContextIsKeyedByItsEndpoint() {
-        RecordingWindow.open();
-        long turn = Lineage.pushRoot("hdfs/dn0", Role.of("BP_SERVICE_ACTOR"),
-                "");
-        String first = Randoms.key(SITE);
-        String second = Randoms.key(SITE);
-        Lineage.pop(turn);
-        assertNotEquals("two draws of one site in one occurrence", first,
-                second);
-        assertFalse("an endpoint, not a count", first.contains(SITE));
-
-        Identity.resetForTests();
-        RuntimeTraceContext.resetForTests();
-        RecordingWindow.reset();
-        RecordingWindow.open();
-        turn = Lineage.pushRoot("hdfs/dn0", Role.of("BP_SERVICE_ACTOR"), "");
-        assertEquals("the same inputs, the same key, in another run", first,
-                Randoms.key(SITE));
-        Lineage.pop(turn);
+    public void aRegionWovenAroundADrawMovesNoKeyAndNoValue() {
+        List<List<Object>> runs = new java.util.ArrayList<>();
+        for (boolean woven : new boolean[] {false, true}) {
+            freshRun();
+            RecordingWindow.open();
+            long turn = Lineage.pushRoot("hdfs/dn0",
+                    Role.of("BP_SERVICE_ACTOR"), "");
+            if (woven) {
+                Identity.occurrence(RuntimeTraceContext.nodeHere(),
+                        "REGION.grown", true);
+            }
+            String first = Randoms.key(SITE);
+            String second = Randoms.key(SITE);
+            long drawn = Randoms.at(SITE).nextLong();
+            if (woven) Identity.regionExit();
+            Lineage.pop(turn);
+            assertNotEquals("two draws of one site in one context", first,
+                    second);
+            runs.add(Arrays.asList(first, second, drawn));
+        }
+        assertTrue(runs.get(0).get(0).toString(),
+                runs.get(0).get(0).toString().contains("Root:"));
+        assertEquals("woven or not, the same keys and the same value",
+                runs.get(0), runs.get(1));
     }
 
     /** Neighbouring counts of one site start unlike generators: unmixed,
@@ -139,20 +151,20 @@ public class RandomsTest {
     }
 
     /**
-     * {@code ThreadLocalRandom.current()}'s stand-in draws, in a fresh run,
-     * what the first drew; its bounded draws keep ThreadLocalRandom's
-     * contract: in [origin, bound), and a bad bound refused.
+     * A draw keyed by its site draws, in a fresh run, what the first drew;
+     * the bounded draws keep ThreadLocalRandom's contract: in [origin,
+     * bound), and a bad bound refused.
      */
     @Test
-    public void aThreadLocalDrawRepeatsInEveryPassWithinItsBounds() {
+    public void aSiteKeyedDrawRepeatsInEveryPassWithinItsBounds() {
         List<Long> passes = new java.util.ArrayList<>();
         for (int pass = 0; pass < 2; pass++) {
             freshRun();
-            Random drawn = Randoms.current(SITE);
+            Random drawn = Randoms.at(SITE);
             passes.add(Randoms.nextLong(drawn, 1L << 40));
         }
         assertEquals(passes.get(0), passes.get(1));
-        Random drawn = Randoms.current(SITE);
+        Random drawn = Randoms.at(SITE);
         for (int i = 0; i < 100; i++) {
             int one = Randoms.nextInt(drawn, -3, 4);
             long other = Randoms.nextLong(drawn, Long.MIN_VALUE, -5L);

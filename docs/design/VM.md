@@ -529,8 +529,8 @@ with a `reason`.
   `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
   or `Boolean.TRUE/FALSE`; an enum constant is never a leaf (`UNSUPPORTED`) and, as a holder,
   `SHARED`.
-- The codec runtime calls them (`runtime/CodecExport`, `HandoffMint#mintHoles`; IDENTITY.md §7.5);
-  a `WIRE_FLOW` row still crosses through the expression broker.
+- No engine code calls them: the WIRE-CODEC runtime that did lives on branch `wire-codec-p1`. A
+  `WIRE_FLOW` row crosses through the expression broker.
 
 **Expression broker** (`VM/concolic/expressionBroker.{hpp,cpp}`): `exportExpression` publishes the
 live expression of an instance field and returns an opaque handle `(epoch << 32) | serial`;
@@ -547,13 +547,12 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 
 `jdk/src/share/classes/java/lang/System.java` declares 35 concolic natives (registered in
 `jdk/src/share/native/java/lang/System.c`, implemented in `VM/prims/jvm.cpp`).
-`runtime/ConcolicVmBroker` looks 26 of them up by reflection, so it loads on a stock JDK, and
+`runtime/ConcolicVmBroker` looks 24 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
 `observeField`, `observeContainer`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
-`getTrackedLocationVersions`, `installGuardedStoreSites`, `exportLeaf`/`mintLeaf` (§7; bound as
-`ConcolicVmBroker#exportLeaf`/`#mintLeaf` with a `SlotKind` whose ordinal is the VM's). `markConcolicBranch` and the pause
+`getTrackedLocationVersions`, `installGuardedStoreSites`. `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
 statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATION_FAILED -1001`,
 `MALFORMED_RESULT -1002`, and names every status in the gap a refused export or attach files
@@ -635,7 +634,7 @@ that does not hold.
 | list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
 | a cached box, `Boolean.TRUE/FALSE`, an interned String returned by `valueOf` or a container | hooked: the value rides the result slot; the shared object stays clean |
-| a mint (`symbolize*`, `mintLeaf`) on a JVM-wide object | refused: a box a field holds is minted on the field; a shared root, owner or holder is not minted, and the runtime names it by its cause (`RootMint#mintRefused`, `HandoffMint#mintTemplate`) |
+| a mint (`symbolize*`, `mintLeaf`) on a JVM-wide object | refused: a box a field holds is minted on the field; a shared root, owner or holder is not minted, and the runtime names it by its cause (`RootMint#mintRefused`) |
 | `Unsafe` volatile or object gets | the field shadow or nothing; a tracked location's get is not a versioned read |
 | a native method with a symbolic argument (JNI, most JDK natives) | silently lost |
 | `String.toCharArray`/`getBytes`/`getChars`, `new String(bytes)` | silently lost |

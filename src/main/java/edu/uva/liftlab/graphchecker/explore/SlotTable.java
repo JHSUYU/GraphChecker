@@ -49,15 +49,15 @@ import java.util.Set;
  * consumers with producers no session of the corpus states, and the re-run
  * and every later session of its world would read as replacing them.</p>
  *
- * <p>An occurrence a replay answered by its question (IDENTITY §9) stands
- * at the declared address but ran under another chain of its shape, so its
+ * <p>An occurrence a replay answered by its shape (IDENTITY §9) stands at
+ * the planned address but ran under another chain of its shape, so its
  * consumers' producers are that chain's: its pairings open slots of their
- * own beside the declared occurrence's, replace none, and are no pairing a
+ * own beside the planned occurrence's, replace none, and are no pairing a
  * later one replaces -- whichever session lands first, and however a slot
  * file orders them, since which slots are answered is read off their opening
  * sessions ({@link #standing}).  Only another answered pairing fills such a
- * slot: a session that ran the declared address itself and pairs its
- * consumer with that chain's producer replaces the declared pairing.</p>
+ * slot: a session that ran the planned address itself and pairs its
+ * consumer with that chain's producer replaces the planned pairing.</p>
  */
 public final class SlotTable {
     public static final String FILE = "slots.jsonl";

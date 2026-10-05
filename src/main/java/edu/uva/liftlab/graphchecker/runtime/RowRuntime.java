@@ -14,7 +14,6 @@ import edu.uva.liftlab.graphchecker.contract.ExpressionRefs;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
-import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -199,17 +198,17 @@ public final class RowRuntime {
 
     /**
      * States that the occurrence this run ran at {@code ran} answers the
-     * declared occurrence by its question's rule (IDENTITY §9) and states its
-     * rows at {@code declared}: never silent, since the address the run
-     * computed is gone from every row.
+     * planned occurrence {@code planned} by its shape (IDENTITY §9) and
+     * states its rows at {@code planned}: never silent, since the address
+     * the run computed is gone from every row.
      */
-    static void answered(OccurrenceAddress ran, OccurrenceAddress declared) {
+    static void answered(OccurrenceAddress ran, OccurrenceAddress planned) {
         if (ran == null) return;
-        gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, declared.render(),
-                "the declared occurrence ran at " + ran.render() + ", under"
-                        + " a chain of its question's shape whose counts"
-                        + " differ from the recording's, and answers it:"
-                        + " its rows state the declared address");
+        gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, planned.render(),
+                "the planned occurrence ran at " + ran.render() + ", under"
+                        + " a chain of its shape whose counts differ from"
+                        + " the recording's, and answers it: its rows state"
+                        + " the planned address");
     }
 
     /**
@@ -333,7 +332,7 @@ public final class RowRuntime {
                             + ", so the producer is the message's and not"
                             + " the staged expression's");
         }
-        confirm(endpoint, producer, null, arrival);
+        confirm(endpoint, producer, arrival);
         SessionPublisher session = publisher;
         if (session != null) {
             String type = statedJavaType("attach", endpoint.id(), javaType,
@@ -364,14 +363,14 @@ public final class RowRuntime {
 
     /**
      * CONFIRM (b): one delivery compared with the edge the model chose --
-     * its producer, message and value -- never enforced.  A difference is a
+     * its producer and value -- never enforced.  A difference is a
      * {@code CONFIRM_MISMATCH}; a producer taken because it answers the
      * model's producer's question is never silent either.
      */
     private static void confirm(Endpoint consumer, Endpoint producer,
-                                String messageKey, String arrival) {
+                                String arrival) {
         Confirmation.Compared compared = Confirmation.attached(consumer,
-                producer, messageKey, arrival);
+                producer, arrival);
         if (!compared.mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, consumer.id(),
                     compared.mismatch);
@@ -380,45 +379,6 @@ public final class RowRuntime {
             gap(GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC, consumer.id(),
                     compared.substitution);
         }
-    }
-
-    /**
-     * One hole a codec's encode exported, published when a message carries
-     * it (WIRE-CODEC §4.6): its operand is {@code e_p}, keyed by the message
-     * its consumers name as their correlation id.
-     */
-    static void exportedHole(CodecMessages.Entry entry, String messageKey) {
-        SessionPublisher session = publisher;
-        if (session == null) return;
-        String ref = expressionRef(entry.operand);
-        if (ref.isEmpty() || Text.safe(entry.javaType).isEmpty()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    entry.producer.id(), "the hole " + entry.contractHole()
-                            + " a message carried states no operand or sort,"
-                            + " so no arm is keyed by its producer");
-            return;
-        }
-        session.export(ExportRow.of(sessionId(), sequence(entry.exportSeq),
-                entry.producer, ref, entry.javaType, 0L, entry.text,
-                entry.contractHole(), messageKey));
-    }
-
-    /**
-     * One hole a decode minted: paired by the envelope that carried its
-     * producer ({@link AttachRow#ENVELOPE}), its correlation id the
-     * message's key.
-     */
-    static void attachedHole(Endpoint endpoint, long seq, Endpoint producer,
-                             String messageKey, Hole hole, String symbol,
-                             String javaType, String arrival,
-                             boolean answered, String answeredValue) {
-        confirm(endpoint, producer, messageKey, arrival);
-        SessionPublisher session = publisher;
-        if (session == null) return;
-        session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,
-                symbol, javaType, arrival, answered,
-                answered ? answeredValue : null, producer, messageKey,
-                AttachRow.ENVELOPE, hole));
     }
 
     /**

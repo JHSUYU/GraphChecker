@@ -53,6 +53,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -219,10 +220,12 @@ public final class Composer {
         private final Map<String, List<String>> ownArms;
         private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
-        /** Where each top-level command of the body ends, and the path
-         *  selector it is guarded by (null: every path's); #pathQuery. */
+        /** Where each top-level command of the body ends, the path
+         *  selector it is guarded by (null: every path's; #pathQuery), and
+         *  whether it asserts a refuted claim (#withoutFatalArm). */
         private final int[] commandEnds;
         private final String[] commandGuards;
+        private final boolean[] commandRefuted;
 
         /** The composer's state once every path is composed. */
         private Composition(Composer composed, String body,
@@ -302,8 +305,13 @@ public final class Composer {
             commands(body, new LinkedHashSet<String>(
                     Composer.selectors(disjuncts)), ends, guards);
             this.commandEnds = new int[ends.size()];
+            this.commandRefuted = new boolean[ends.size()];
+            int start = 0;
             for (int index = 0; index < ends.size(); index++) {
                 this.commandEnds[index] = ends.get(index);
+                this.commandRefuted[index] = refutation(body, start,
+                        commandEnds[index]);
+                start = commandEnds[index];
             }
             this.commandGuards = guards.toArray(new String[0]);
         }
@@ -376,7 +384,7 @@ public final class Composer {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
                     int end = commandEnds[index];
-                    if (!kept(index, selector) || refutation(start, end)) {
+                    if (!kept(index, selector) || commandRefuted[index]) {
                         start = end;
                         continue;
                     }
@@ -392,12 +400,17 @@ public final class Composer {
             };
         }
 
-        /** Whether the command between these offsets asserts a refuted
-         *  claim ({@link Composer#refutations}): its name closes it. */
-        private boolean refutation(int start, int end) {
-            int at = body.indexOf(":named " + REFUTED_CLAIM,
-                    Math.max(start, end - 64));
-            return at >= 0 && at < end;
+        /**
+         * Whether the command between these offsets asserts a refuted claim
+         * ({@link Composer#refutations}): its name closes it, so only its
+         * last characters are read.  An unbounded search from there read the
+         * rest of the body per command and per path (HR1 hdfs-adhoc-07: 556
+         * sessions, and the self-check of an UNSAT ran past the case's
+         * limit).
+         */
+        private static boolean refutation(String body, int start, int end) {
+            return body.substring(Math.max(start, end - 64), end)
+                    .contains(":named " + REFUTED_CLAIM);
         }
 
         private boolean kept(int command, String selector) {
@@ -814,8 +827,8 @@ public final class Composer {
 
         /**
          * The symbol of every leaf an arm binds that CONFIRM holds a run to
-         * ({@link ComposedFamilies.BoundLeaf#held}: a codec hole, a
-         * delivery into the anchor), so a claim can state the model's
+         * ({@link ComposedFamilies.BoundLeaf#held}: a delivery into the
+         * anchor), so a claim can state the model's
          * valuation of each ({@link ComposedFamilies#texts}).
          */
         public List<String> heldSymbols() {
@@ -978,6 +991,9 @@ public final class Composer {
                 scope).run();
     }
 
+    /** Every how many admitted paths the composer says how far it is. */
+    private static final int PROGRESS_PATHS = 25;
+
     private Composition run() {
         // One symbol for two roots makes paths unsat; refuse it.
         for (Map.Entry<String, Set<String>> collision
@@ -1057,6 +1073,8 @@ public final class Composer {
         List<PathEntry> entries = new ArrayList<PathEntry>();
         List<Corpus.RecordedPath> admitted = admit();
         int ordinal = 0;
+        int done = 0;
+        long started = System.nanoTime();
         for (Corpus.RecordedPath path : admitted) {
             Disjunct disjunct = compose(path, ordinal);
             if (disjunct != null) {
@@ -1065,6 +1083,12 @@ public final class Composer {
                         disjunct.selector(), disjunct.fatalObserved(),
                         disjunct.restsOn(), disjunct.cutoff()));
                 ordinal++;
+            }
+            if (++done % PROGRESS_PATHS == 0 || done == admitted.size()) {
+                System.err.println("compose: path " + done + " of "
+                        + admitted.size() + " (" + ordinal + " composed) in "
+                        + TimeUnit.NANOSECONDS.toSeconds(System.nanoTime()
+                        - started) + " s");
             }
         }
         if (disjuncts.isEmpty()) {
@@ -1890,9 +1914,7 @@ public final class Composer {
 
     /**
      * Whether an ATTESTED arm delivers this arrival; if so, declares the
-     * symbol at the arm's sort -- a codec hole's at its decoded leaf's
-     * (WIRE-CODEC §6.1), which the arm is widened or read back to
-     * ({@link VmTermLowering#holeArm}). States NOTHING about the value: the
+     * symbol at the arm's sort. States NOTHING about the value: the
      * family ({@link ComposedFamilies#closeFamilies}) binds it, and pinning
      * the recorded delivery here too made paths self-contradictory.
      *
@@ -1907,9 +1929,7 @@ public final class Composer {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "paired-arm", null);
             if (delivered == null) continue;
-            lowering.declareStated(attach.symbol(), attach.hole() == null
-                    ? delivered.sort
-                    : JavaSmtSorts.sortOfJava(attach.javaType()));
+            lowering.declareStated(attach.symbol(), delivered.sort);
             return true;
         }
         return false;

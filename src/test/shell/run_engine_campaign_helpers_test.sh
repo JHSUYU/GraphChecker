@@ -4266,19 +4266,37 @@ next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
 unset -f next_claim
 reset_config
 
-# RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE,
-# CONFIRM and REPRODUCE as long as the longest CONFIRM (the seed's REPLAY
-# standing for one).  HG4's hdfs-11741 lost its EMIT to the case timeout
-# when it owed COMPOSE and CONFIRM alone.
-mkdir -p "${test_tmp}/reserve-root"
-printf 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
-  >"${test_tmp}/reserve-metrics.tsv"
-reserve_got=$(campaign_reserve_s=20 \
-  campaign_stage_metrics="${test_tmp}/reserve-metrics.tsv" \
-  campaign_root="${test_tmp}/reserve-root" campaign_reserve)
-[[ "${reserve_got}" == 300 ]] \
-  || fail "RESERVE-1: the reserve over COMPOSE 100 s and CONFIRM 50 s is \
-${reserve_got} s, not 300 s"
+# RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE
+# (the last planner round, which reads the same corpus, standing for one not
+# yet run), CONFIRM and REPRODUCE as long as the longest CONFIRM (the seed's
+# REPLAY standing for one), never less than campaign_reserve_s.  HG4's
+# hdfs-11741 lost its EMIT to the case timeout when it owed COMPOSE and
+# CONFIRM alone; HR1's hdfs-adhoc-07 had the floor's 600 s for its first
+# COMPOSE.  Rows: name | stage metrics | planner rounds, each its start and
+# end second (- : still planning) | campaign_reserve_s | the reserve.
+reserve_case() {
+  local root=${test_tmp}/reserve-$1 round=0 span dir got
+  mkdir -p "${root}/iteration-0000"
+  printf "$2" >"${root}/stage_metrics.tsv"
+  for span in $3; do
+    dir=$(printf '%s/iteration-0000/obligations-%04d' "${root}" "${round}")
+    round=$((round + 1))
+    mkdir -p "${dir}"
+    touch -d "@$((1000000 + ${span%:*}))" "${dir}/in_flight.jsonl"
+    [[ "${span#*:}" == - ]] || touch -d "@$((1000000 + ${span#*:}))" \
+      "${dir}/explore_manifest.json"
+  done
+  got=$(campaign_reserve_s=$4 \
+    campaign_stage_metrics="${root}/stage_metrics.tsv" \
+    campaign_root="${root}" campaign_reserve)
+  [[ "${got}" == "$5" ]] \
+    || fail "RESERVE-1 $1: the reserve is ${got} s, not $5 s"
+}
+reserve_case composed 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
+  '0:400' 20 300
+reserve_case planned 'REPLAY\t30000\n' '0:5 10:130 140:-' 20 300
+reserve_case floor 'REPLAY\t30000\n' '' 100 100
+unset -f reserve_case
 
 # BUDGET-1: a budget its reserve takes whole is refused by name.
 budget_validate() (
@@ -4732,6 +4750,46 @@ $(tr '\n' ' ' <"${engine_test}/log")"
 $(tail -n 1 "${engine_test}/log")"
 )
 reset_config
+
+# HEAD-NEED: every engine JVM is watched where its step runs
+# (campaign_engine_jvm) and its peak joins the campaign's engine_peak_mb,
+# never lowering it; its status is the JVM's.  The head's held room is that
+# peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
+# heap; before any was measured, what its planner or composer starts at.
+# Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
+# file after them, and the held room (engine heap 12000).
+need_dir=${test_tmp}/head-need
+while IFS='|' read -r need_peaks need_file need_room; do
+  rm -rf -- "${need_dir}"
+  mkdir -p "${need_dir}"
+  need_said=$(
+    campaign_root=${need_dir}
+    engine_memory_mb=12000
+    campaign_watch_interval_s=0.1
+    for need_run in ${need_peaks}; do
+      need_peak=${need_run%:*}
+      need_exit=${need_run#*:}
+      campaign_process_rss_mb() { echo "${need_peak}"; }
+      need_status=0
+      campaign_engine_jvm "${campaign_root}/engine_peak_mb" \
+        bash -c "sleep 0.3; exit ${need_exit}" || need_status=$?
+      [[ "${need_status}" == "${need_exit}" ]] \
+        || fail "an engine JVM's exit ${need_exit} came back as ${need_status}"
+    done
+    printf '%s|%s' "$(cat "${campaign_root}/engine_peak_mb" 2>/dev/null \
+      || echo -)" "$(campaign_head_need_mb)"
+  )
+  [[ "${need_said}" == "${need_file}|${need_room}" ]] \
+    || fail "engine peaks ${need_peaks} left ${need_said}, not \
+${need_file}|${need_room}"
+done <<'EOF'
+|-|8192
+700:0|700|1024
+2949:0 1200:3|2949|3712
+9000:0|9000|11264
+20000:0 300:0|20000|12000
+EOF
+campaign_root=""
 
 # FANOUT-1: fanout.sh charges each job to the same ledger with the need its
 # line states, releases it when the job returns, and a restart over the same

@@ -50,9 +50,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * ({@code FocusedReplay}, {@code PAIRING_UNTAKEN}).</p>
  *
  * <p>WIRE is compared at the attach, where the producer is known -- a
- * codec's hole at its mint, by the store version its message was and the
- * text it decoded too (WIRE-CODEC §6.5); a delivery into the anchor by the
- * value that arrived too, and, where the model's arm answered the anchor by
+ * delivery into the anchor by the value that arrived too, and, where the model's arm answered the anchor by
  * its question, by its producer's question ({@link Wire#answeredBy}); STATE
  * at the close, since a writer's log is read out after the read that saw
  * it.
@@ -134,15 +132,12 @@ public final class Confirmation {
     }
 
     /**
-     * One delivery the model chose: its producer endpoint; for a codec's
-     * hole, the store version its message was (null for an exchange, whose
-     * correlation is its run's own); for a hole or a consumer of the anchor,
-     * the text that must arrive (null where the model's value rests on a
-     * clock, which a replay reads afresh).
+     * One delivery the model chose: its producer endpoint; for a consumer
+     * of the anchor, the text that must arrive (null where the model's value
+     * rests on a clock, which a replay reads afresh).
      */
     private static final class Wire {
         private final String producer;
-        private final String messageKey;
         private final String value;
         /** The question the model's producer answers, or null: its
          *  occurrence, site, site index, attempt and context shape. */
@@ -152,10 +147,8 @@ public final class Confirmation {
         private final int questionAttempt;
         private final List<String> questionShape;
 
-        private Wire(String producer, String messageKey, String value,
-                     JsonObject question) {
+        private Wire(String producer, String value, JsonObject question) {
             this.producer = producer;
-            this.messageKey = messageKey;
             this.value = value;
             this.questionOccurrence = question == null ? null
                     : OccurrenceAddress.parse(
@@ -221,13 +214,9 @@ public final class Confirmation {
         }
     }
 
-    /**
-     * One delivery this run paired, with the message it was decoded from (a
-     * codec's hole; null for a declared port's attach) and the text that
-     * arrived.
-     */
+    /** One delivery this run paired, and the text that arrived. */
     static Compared attached(Endpoint consumer, Endpoint producer,
-                             String messageKey, String text) {
+                             String text) {
         if (!expected() || consumer == null) return Compared.NOTHING;
         String actual = producer == null ? "" : id(producer);
         Wire chosen;
@@ -245,11 +234,6 @@ public final class Confirmation {
             differs.add("the model chose producer " + chosen.producer
                     + ", the run paired "
                     + (actual.isEmpty() ? "no export" : actual));
-        }
-        if (chosen.messageKey != null
-                && !chosen.messageKey.equals(messageKey)) {
-            differs.add("the model's arm came from message "
-                    + chosen.messageKey + ", the run decoded " + messageKey);
         }
         if (chosen.value != null && !chosen.value.equals(text)) {
             differs.add("the model's value is \"" + chosen.value
@@ -515,7 +499,6 @@ public final class Confirmation {
                     if ("WIRE".equals(kind)) {
                         WIRE.put(optionalString(row, "consumer"), new Wire(
                                 optionalString(row, "producer"),
-                                stated(row, "messageKey"),
                                 stated(row, "value"),
                                 row.has(PRODUCER_QUESTION)
                                         ? row.getAsJsonObject(

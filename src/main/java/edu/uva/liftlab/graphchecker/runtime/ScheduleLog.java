@@ -1673,6 +1673,17 @@ public final class ScheduleLog {
         return marks;
     }
 
+    /** This thread waits on something no slot holds ({@code StartupOrder}'s
+     *  hold): it is away from the frontier, deferring no stall. */
+    static void elsewhere() {
+        synchronized (LOCK) {
+            long self = Thread.currentThread().getId();
+            if (firstBlocking < order.size() && !RELEASED.contains(self)) {
+                ELSEWHERE.add(self);
+            }
+        }
+    }
+
     /** A divergence the order states by name ({@code SCHEDULE_DIVERGED}). */
     static void diverged(String where, String detail) {
         stateLocked(where, detail);

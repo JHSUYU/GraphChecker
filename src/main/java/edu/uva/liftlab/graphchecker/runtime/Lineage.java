@@ -357,8 +357,10 @@ public final class Lineage {
      * The token of that root, or 0: which root hop is running here.
      *
      * <p>The lifetime of an execution-index level's counters ({@code
-     * Identity.Level}); without it the thread base level counts for the whole
-     * thread, a run-length ordinal IDENTITY §3 forbids.  Tokens are
+     * Identity.Level}) where no occurrence runs (one that runs keeps the
+     * root it was opened under, {@code Identity.State#countingRoot});
+     * without it the thread base level counts for the whole thread, a
+     * run-length ordinal IDENTITY §3 forbids.  Tokens are
      * thread-local and never published: replays compare the k they produce.
      * Carried frames are shared by reference ({@link #capture}), so pool work
      * counts under the root that created it.</p>

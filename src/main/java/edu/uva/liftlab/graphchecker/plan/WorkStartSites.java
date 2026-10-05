@@ -21,18 +21,82 @@ public final class WorkStartSites {
     }
 
     /**
-     * The unseeded draws the weave seeds ({@code
-     * CausynthPipeline#replaceRandom}), by JVM owner, name and descriptor:
-     * a class making one is kept in the lineage scope ({@link LineageScan}).
+     * The receivers whose draws the weave keys by their site ({@code
+     * CausynthPipeline#replaceRandom}): a draw on one reads {@code
+     * Randoms#at(site)}, never the receiver's stream.
      */
-    public static final Set<String> UNSEEDED_DRAWS =
+    public static final Set<String> RANDOM_RECEIVERS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                    "java/util/Random.<init>()V",
+                    "java.util.Random",
+                    "java.util.concurrent.ThreadLocalRandom",
+                    "java.security.SecureRandom")));
+
+    /** The draws Random declares, by name and JVM descriptor: one on any
+     *  receiver becomes Random's on the site's Random. */
+    public static final Set<String> RANDOM_DRAWS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "nextInt()I", "nextInt(I)I", "nextLong()J",
+                    "nextDouble()D", "nextBoolean()Z", "nextFloat()F",
+                    "nextGaussian()D", "nextBytes([B)V",
+                    "ints()Ljava/util/stream/IntStream;",
+                    "ints(J)Ljava/util/stream/IntStream;",
+                    "ints(II)Ljava/util/stream/IntStream;",
+                    "ints(JII)Ljava/util/stream/IntStream;",
+                    "longs()Ljava/util/stream/LongStream;",
+                    "longs(J)Ljava/util/stream/LongStream;",
+                    "longs(JJ)Ljava/util/stream/LongStream;",
+                    "longs(JJJ)Ljava/util/stream/LongStream;",
+                    "doubles()Ljava/util/stream/DoubleStream;",
+                    "doubles(J)Ljava/util/stream/DoubleStream;",
+                    "doubles(DD)Ljava/util/stream/DoubleStream;",
+                    "doubles(JDD)Ljava/util/stream/DoubleStream;")));
+
+    /** The bounded draws only ThreadLocalRandom declares: each becomes the
+     *  {@code Randoms} helper of its name, the site's Random first. */
+    public static final Set<String> BOUNDED_DRAWS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "nextInt(II)I", "nextLong(J)J", "nextLong(JJ)J",
+                    "nextDouble(D)D", "nextDouble(DD)D")));
+
+    /** The static draws, by JVM owner, name and descriptor: each becomes
+     *  the {@code Randoms} stand-in of its name. */
+    public static final Set<String> STATIC_DRAWS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "java/lang/Math.random()D",
                     "java/util/Collections.shuffle(Ljava/util/List;)V",
-                    "java/util/UUID.randomUUID()Ljava/util/UUID;",
-                    "java/util/concurrent/ThreadLocalRandom.current()"
-                            + "Ljava/util/concurrent/ThreadLocalRandom;")));
+                    "java/util/UUID.randomUUID()Ljava/util/UUID;")));
+
+    /** Whether {@code nameAndDescriptor} is a draw on a Random receiver. */
+    public static boolean drawn(String nameAndDescriptor) {
+        return RANDOM_DRAWS.contains(nameAndDescriptor)
+                || BOUNDED_DRAWS.contains(nameAndDescriptor);
+    }
+
+    /**
+     * Whether a call (JVM owner, name, descriptor) draws, or hands a Random
+     * out of the weave ({@link #handsRandomOut}): a class making one is kept
+     * in the lineage scope ({@link LineageScan}), so the weave keys it.
+     */
+    public static boolean draws(String owner, String name, String descriptor) {
+        return RANDOM_RECEIVERS.contains(owner.replace('/', '.'))
+                && drawn(name + descriptor)
+                || STATIC_DRAWS.contains(owner + "." + name + descriptor)
+                || handsRandomOut(owner, descriptor);
+    }
+
+    /**
+     * Whether a call (JVM owner, descriptor) hands a {@code java.util.Random}
+     * to a method no weave reaches, which would draw from its stream: a JDK
+     * method ({@code java/}, {@code javax/}) taking one ({@code
+     * Collections.shuffle(list, random)}).  The weave gives it {@code
+     * Randoms#at(site)} at that call; the lineage scan keeps the caller.  The
+     * one rule both ask: a library outside the JDK is not recognized by it.
+     */
+    public static boolean handsRandomOut(String owner, String descriptor) {
+        return (owner.startsWith("java/") || owner.startsWith("javax/"))
+                && descriptor.substring(0, descriptor.indexOf(')'))
+                        .contains("Ljava/util/Random;");
+    }
 
     /** Whether a type is, or inherits, the named one. */
     public interface Types {

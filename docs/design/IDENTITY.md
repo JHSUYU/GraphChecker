@@ -109,7 +109,7 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 | opener | hop |
 |---|---|
 | `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call |
-| `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`) |
+| `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`), once the exchange the thread served has ended (§7.1) |
 | `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn (a request, a served message, a node startup are not: a wait inside them is a pause) |
 | `enterInbound` (a received message) | role = the transport, api = the request's `<source>/<api>`; the anchor is `Interactions.sender(transport, correlation, half)`, rpcSite `<TRANSPORT>[.<VIA>]/<api>` |
 | `enterCarriedScope`, `claimCarried` (queued or started work) | the carried lineage restored, plus a nested hop (`EXECUTOR_TASK` for a claimed start) |
@@ -137,8 +137,14 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
 
 - **Frames.** Every application-scope method opens a level at entry and closes it at every exit,
   in both passes (`Identity#enterFrame`, `#exitFrame`). A frame's `k` is the k-th event at that
-  site in the enclosing level under the current root hop (`State#nextSiteEvent`, keyed by level,
-  root-hop token and site). It is not a loop-iteration count.
+  site in the enclosing level under the root hop that owns the count (`State#nextSiteEvent`, keyed
+  by level, root-hop token and site): the one the occurrence running on the thread was opened or
+  named under (`State#countingRoot`, `Region#root`), else the current root hop. It is not a
+  loop-iteration count. An occurrence's address is its frame path within it and names no root hop
+  opened inside it, so such a hop restarts none of its counts: in round HG5A's hdfs-adhoc-21 a
+  DataNode actor's `run()` occurrence, entered in the startup window under the test's request,
+  sent every turn's heartbeat at `offerService@0/sendHeartBeat@0`, one producer endpoint for three
+  turns, and the NameNode served all three under one anchor at one address.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
   index from its scope base followed by a frame (site, k-th start at that site) with the carrier.
   That `k` counts starts at the site in the top level under the hop that gives the context -- the
@@ -250,8 +256,7 @@ attach by `HANDLE`, else -- when the message it received (`MessageDoors#current`
 for the port -- `CORRELATION_PORT` (that message's correlation and half, and the port), else
 unpaired: an element the message did not carry (`SymbolicMessageEnvelope#take` `ABSENT`: a value its
 sender forwarded without exporting it) pairs with nothing and is named `LINEAGE_LOST`. A queue item
-`MessageDoors#consumed` installs states no message, so its concrete elements stay unpaired. The `WIRE_FLOW` header does not carry the producer endpoint; a codec hole's envelope does,
-and its attach is paired by `ENVELOPE` (§7.5).
+`MessageDoors#consumed` installs states no message, so its concrete elements stay unpaired. The `WIRE_FLOW` header does not carry the producer endpoint.
 
 **Interactions** (`contract/Interaction`): (kind, producer endpoint, consumer endpoint), `id =
 sha16(kind + producer.id + consumer.id)`, kind `WIRE` (export to attach, `AttachRow#interaction`)
@@ -319,7 +324,11 @@ thread its constructor creates. A system's cluster adapter brackets each node's 
 registers the node by once built, and a registered node's start in `beginNodeStartup(node)`: a
 restart builds the node anew under its name at its next epoch (`restartSource` first; HDFS
 `CausynthCluster`: every NameNode, DataNode and JournalNode an automatic `MiniDFSCluster` or
-`MiniJournalCluster` builds or restarts). Attribution only -- no event, no lineage hop, no flow: the
+`MiniJournalCluster` builds or restarts). A startup first ends the exchange the thread served
+(`MessageDoors#endInbound`): a construction is the test's own work, so the node and its threads stand
+in the test's request, not under the anchor of the last response the test's thread received (round
+HG4, hdfs-adhoc-22: a response that differed after a divergence re-anchored every later cluster's
+build, and 10560 slots were given up at once). Attribution only -- no event, no lineage hop, no flow: the
 startup is the node's explicit scope while it stands (rule 1), so what the test's thread itself runs
 inside a construction (a NameNode's format and fsimage load) is the node's, under the test's context,
 and work started or created inside carries the startup's node in place of its starter's explicit node
@@ -390,27 +399,28 @@ it.
 
 `runtime/MessageDoors` is the transport-neutral API every system's transports call:
 
-- `outbound(transport, correlationId, attemptId, half, localOwner, scope[, payload])`: the
-  sender's trace header plus its symbolic header. The trace header is `1|span|epoch|kind|role|id|
+- `outbound(transport, correlationId, attemptId, half, localOwner, scope)`: the sender's trace
+  header plus its symbolic header. The trace header is `1|span|epoch|kind|role|id|
   requestKey|requestApi` (`RuntimeTraceContext#header`); a send with no source or request flow goes
-  without one and is named as a `MESSAGE_CONTEXT_REFUSED` DIAGNOSTIC row. The symbolic header holds
-  one space-separated segment per scheme: `CSE5` (the `WIRE_FLOW` values the thread staged) and
-  `CSE6` (the codec holes of §7.5: the payload the door holds, walked with its transport's codec,
-  and what the thread's open bracket of this transport staged).
-- `beginExchange(transport)` / `endExchange(token)`: a bracket on the thread (a declared `EXCHANGE`
-  method, woven; the SASL handshake, `beginSasl`/`endSasl` in the shim) whose EXCHANGE-bound
-  encodes the next outbound message of that transport carries.
+  without one and is named as a `MESSAGE_CONTEXT_REFUSED` DIAGNOSTIC row. The symbolic header is
+  `CSE5`: the `WIRE_FLOW` values the thread staged.
 - `inbound(trace, symbolic, ...)`: ends the exchange the thread served and installs this one until
-  the next message or `endInbound`, with the codec holes its envelope carried for the decodes the
-  thread runs; `keepSymbolic` keeps a multi-message exchange's values of both schemes.
+  the next message or `endInbound`, with the values its symbolic header carried for the attaches
+  the thread makes; `keepSymbolic` keeps a multi-message exchange's values.
 - `received(symbolic, ...)`: a request taken into the thread's own context, which it does not
-  anchor (a DataTransfer op a DataNode's turn received): its values are installed for the decodes
-  the thread runs, and `CausynthTraceRecorder#receivedExchange` records its RECV naming the producer
+  anchor (a DataTransfer op a DataNode's turn received): its values are installed for the attaches
+  the thread makes, and `CausynthTraceRecorder#receivedExchange` records its RECV naming the producer
   endpoint it took in (`ScheduleEvent#received`) and its RECEIVE leg; no response endpoint is
   minted, since nothing answers it through a door.
 - `setAside` / `restore`: a serving thread that runs an exchange of its own as a client.
 - `beginTick` / `vacant` / `endTick`: a daemon turn as a root; a vacant turn is one the recording
-  never made, which a replay held and let go only because the run could go no further.
+  never made, which a replay held and let go only because the run could go no further. A turn, like
+  a node startup (§5) and a request, first ends the exchange its thread served: the turn serves no
+  message it did not take in itself. Left standing below the turn, the next message's end of it
+  closed the turn too (round HG5A, hdfs-adhoc-21/22/23/25: a DataNode actor built inside the window
+  stood in its registration's response when its first turn began; the IPC client ends that exchange
+  before its heartbeat, so the heartbeat went out in the test's request and the turn stated no
+  `END`).
 
 The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`, shipped
 with GraphChecker: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
@@ -427,8 +437,8 @@ op's correlation and every value the thread exported for the op on the op's trac
 (`DataTransferTraceInfoProto`, in its header's base header, or its own for the two short-circuit
 shared-memory ops; `DataTransferProtoUtil#withCausynth` on `gc/hdfs-unified-dtx`). The DataNode
 takes it in at `Receiver#continueTraceSpan`, after the op's parse and before any of its fields is
-read, inside the op's turn (`DataXceiver` ends the exchange a SASL handshake opened before the turn
-begins, and the op's with the turn). The turn keeps its own `Root:DATA_XCEIVER` address: standing
+read, inside the op's turn (the exchange a SASL handshake opened ends as the turn begins, and the
+op's with the turn). The turn keeps its own `Root:DATA_XCEIVER` address: standing
 on the sender would hand the DataNode's occurrences the sender thread's IPC chain, whose counts a
 replay does not reproduce (b20h FsDatasetImpl-1843: 15 of 16 such tasks unanswered). The op is a
 message for everything else: its header's protobuf leaves pair with the sender's exports by handle,
@@ -446,16 +456,14 @@ SYMBOL-SCOPE.md §4.2's.
 
 For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
-- `stored(transport, key, owner[, data])`: a write of `path@version` is a SEND; its staged values
-  are kept with the version, and so are the codec holes an encode bound to `data` (§7.5).
+- `stored(transport, key, owner)`: a write of `path@version` is a SEND; its staged values are kept
+  with the version.
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
   `.<n>` from a node's second delivery of that version on; how many deliveries a run takes is the
   store's timing, so CONFIRM names every delivery of one version alike,
   `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
   they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
-  `fetched(transport, key, owner, data)` binds `data` to the version's codec holes on every read,
-  inside a callback or not: a value is data, a notification a cause.
 - `consumed(transport, key)`: a queue item's staged values arrive with it; the consumer keeps its
   own context.
 - `storing(transport, location)` ... `storeEnded(transport, token)`: a write in flight at one
@@ -463,10 +471,10 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   and notifies the version's watchers, before the write's call returns, so another thread can
   read the version before its writer files it (SOLR-18413 F2: node1's state watchers read the
   routing rule's version while the Overseer's turn was still in `stored`, and their work opened
-  no occurrence). `stored` is in flight at its key's location until it has filed, and files the
-  version last, after its codec holes; an adapter opens the bracket before the store's call and
+  no occurrence). `stored` is in flight at its key's location until it has filed the version; an
+  adapter opens the bracket before the store's call and
   closes it in a `finally` after `stored`, so the store's own latency is inside it too. A read
-  that takes what its write carried (`consumed`, `fetched` in a callback or with its bytes) and
+  that takes what its write carried (`consumed`, `fetched` in a callback) and
   finds the version unfiled waits for the writes other threads had in flight at the version's
   location when it read -- that location, or a sequential prefix of it, never a parent --
   (`MessageDoors#filed`): the one that made the version files it before its bracket ends. A
@@ -494,53 +502,6 @@ transport with no woven door in the case's scope), or a role -- is a DIAGNOSTIC 
 PLAN binds each wire capture of an activation to the exchange it ran in
 (`RuntimeRegionPlanner#bindObservedCommunicationCaptures`): an OUT capture to the next SEND on its
 lane, an IN capture to the latest RECEIVE, rewound to that exchange's first frame.
-
-### 7.5 Codec holes
-
-A value a serialization format carries crosses as holes (WIRE-CODEC; declarations in
-[CONTRACT-SPEC.md §6](CONTRACT-SPEC.md)). `causynth/CodecWeave` hooks each declared encoder's
-returns, each decoder's returns (or entry, for a graph argument) and each `call` pattern's call
-sites, entering its codec on entry and leaving it on every exit so a declared method inside another
-of the same codec is transparent; and brackets each declared `EXCHANGE` method.
-
-- **Encode** (`runtime/CodecRuntime#encoded`): `runtime/CodecWalker` walks the graph through the
-  codec's views (a TREE's maps, ordered collections, arrays and `CODEC_VIEW` objects; a PROTOBUF
-  message's `*_` fields; a LEAF graph whole) to every leaf whose port (`codecPortId(space, key)`) is
-  demanded (`runtime/DemandedPorts`: the `CODEC_PORT` rows the file `causynth.codec.ports` names).
-  `runtime/CodecExport` reads each leaf's expression from the VM (`exportLeaf`, by its slot) and
-  cuts it into a template of literals and holes; each hole's producer endpoint is minted now.
-- **Binding** (`runtime/CodecMessages`), never the thread: an encode bound to its encoded object
-  waits for the store door that writes that object; an EXCHANGE-bound encode stages into the
-  innermost open bracket; a door's own payload is walked at the door. An encode no message carries
-  is counted (`CODEC_MISMATCH` `UNSENT`, one row per codec at the run's close).
-- **Envelope** (`runtime/CodecEnvelope`, `CSE6`): per hole its codec, encode ordinal, key path,
-  hole index, the leaf's template, the producer endpoint, the export event and the recorded texts;
-  at most 256 per message, and the whole symbolic header (`CSE5` first) within its transport's
-  `envelopeBytes` (4096 unless declared), each cut named `BOUND_INSUFFICIENT`. A header segment of
-  no scheme is refused by name (`MESSAGE_CONTEXT_REFUSED`). Each hole a message carries publishes
-  its `ExportRow` then, keyed by the message (`<transport> <path>@<version>` or the correlation id).
-- **Decode** (`CodecRuntime#decoded`): the message bound to the encoded argument (a stored
-  version's read), else the thread's inbound exchange's, else none; the first encode of the codec
-  whose paths all resolve in the graph. `HandoffMint#mintHoles` reads each leaf against its
-  template (`CodecExport.Reading`): only the value the producer recorded is minted, as the template
-  or, when the producer's template was one whole-leaf hole, as one hole of the leaf's own sort;
-  anything else is a `CODEC_MISMATCH` and the leaf stays concrete, paired with nothing (local data
-  of the same message type meets an exchange's entries this way; WIRE-CODEC designer decision 14,
-  over §4.3's one STR hole). It plants a wave's answer, stores a fresh copy of a
-  String leaf wherever its holder can hold one, and mints the holes (`mintLeaf`: a String's template
-  on its own object, so any read that returns it hands a parse or split the template itself; a
-  primitive or a box at its slot; the VM never puts an expression on a JVM-wide object and never
-  replaces one: a refusal of the leaf object (`landsOn: OBJECT`, `SHARED` or `SHADOWED`) is
-  re-homed by a fresh equal object stored through its holder, or named `LEAF_SHARED` /
-  `LEAF_SHADOWED` when the holder cannot take one; a slot's refusal stands, named by its status)
-  and publishes one `AttachRow` per hole, paired by `ENVELOPE`. Entries are never consumed: N readers of one version, and one decode twice, each mint
-  their own.
-- **Endpoints**: a hole's endpoint site is the port; its event frame is
-  `port@<storeKey><keyPath>#<hole>` (`Identity#endpointAt` with a frame site; the store key is
-  empty for an exchange and at the encode), with `/`, `@` and `%` escaped, so two queue items one
-  occurrence decodes stay apart. The consumer is the innermost live region, else the occurrence
-  running here (an ambient mint, which records no path). A hole's symbol is named by
-  `(port, consumer occurrence, k, keyPath#hole)`, as a `WIRE_FLOW` attach's is.
 
 ## 8. The schedule
 
@@ -585,14 +546,17 @@ was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameter
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
 `{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names
-(`MessageDoors#startupStep(step, who)`/`#startupDone`): a step taken before the window that builds
-state a replay reads, which no slot holds; `who` names the taker the same in both passes. Marks are
-written in completion order, before the window as inside it, and handed on with every order
-(`SchedulePrefix#write`). Before its window a replay holds the taker at the step until every pass
-marked before its own (a taker's n-th pass is its n-th mark) completed it, at most one schedule
-timeout, then gives the missing ones up by name (`runtime/StartupOrder`, a `SCHEDULE_DIVERGED`
-DIAGNOSTIC `startup#<step>`; an interrupt ends the hold by that name too). Inside the window nothing
-holds there: the schedule's slots order the step's events, and no hold is hidden from the watchdog.
+(`MessageDoors#startupStep(step, who)`/`#startupDone`): a step that builds state a replay reads and
+that no slot orders, before the window or inside it (the NameNode's IPC handler takes no slot between
+its `RECV` and the write lock its step runs under); `who` names the taker the same in both passes.
+Marks are written in completion order and handed on with every order (`SchedulePrefix#write`). A
+replay holds every taker at the step until every pass marked before its own (a taker's n-th pass is
+its n-th mark) completed it, whatever either run's window -- two passes' windows may open at
+different points of the start-up (hdfs-adhoc-43, round SS5: two DataNodes added in the other order,
+no hold) -- at most one schedule timeout, then gives the missing ones up by name
+(`runtime/StartupOrder`, a `SCHEDULE_DIVERGED` DIAGNOSTIC `startup#<step>`; an interrupt ends the
+hold by that name too). Inside its own window a held thread is away from the frontier
+(`ScheduleLog#elsewhere`), so a hold defers no give-up.
 HDFS's step is the NameNode adding a DataNode (`FSNamesystem#registerDatanode`, around its write
 lock), named by the DataNode's UUID, which its seeded draw makes equal in both passes: the topology
 orders DataNodes as they are added, and block placement picks pipelines by position there
@@ -718,45 +682,57 @@ a replay admits a planned task by its whole address, id against id
 recording minted it; nothing else stands in for where it ran (sweep `b20h`: a test thread calling a
 NameNode's `FSNamesystem#startActiveServices` or a DataNode's `BlockPoolTokenSecretManager#get`
 runs in the test's own scope, at the client in both passes, and a second rule that took the
-receiver's registration for where it ran refused it). One exception: the declared occurrence is also
-answered by its question. PLAN states its context's shape over the recording's senders on its row
-(`questionShape`, `causynth/RuntimeSelectedRegionFinalizer`, `RecordedMessages#shape`); an
-activation of its region on its node, in a context no task of that root plans an occurrence of the
-region in (`ConcolicTaskPlan#occupies`: not its address, and not another invocation under the same
-anchor, which is the planned occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer
-handshake, under the anchor of that handshake's planned first call, answered the declared second
-handshake, which then ran unplanned), at an address the recording did not open itself (PLAN states
-the ids of every other occurrence the recording opened in the region on the node, `questionRecorded`,
-`RuntimeTask#recorded`: an activation at one of them is that occurrence, whatever it serves this run;
-accept-SB2: the Solr Overseer's first task, the collection's CREATE, took the address of the declared
-second, the REINDEX, whose own entry then ran unplanned), in an entry that
-opened its own occurrence, answers it when its own context, shaped over this run's senders
-(`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), has that shape hop for hop and
-reaches a root (`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then
-takes the declared address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule
-mark and close state it, so every later stage reads the declared address as before, and a
-DIAGNOSTIC `ADDRESS_UNSTABLE` row names the address the run computed (`RowRuntime#answered`). A
-declared loop body is asked where its occurrence opens, at its loop root's enclosing entry
-(`ConcolicTaskPlan#addressLoopRootInvocation`, the same four tests, `#answeredHere`), since no root
-entry admits a body: the entry binds the declared task (`RuntimeTask#claimsEnclosingInvocation`), its
-bodies run under it, and the entry's occurrence takes the declared address there, once
-(`LoopAccounting#enterLoopRoot`; hdfs-adhoc-29: a block recovery's worker under the response of
-another DataNode heartbeat than the recorded one). Which
+receiver's registration for where it ran refused it). Every planned occurrence is also answered by
+its shape. PLAN states on each plan row its context's shape over the recording's senders
+(`contextShape`, `causynth/RuntimeSelectedRegionFinalizer#stateShapes`, `RecordedMessages#shape`), its
+recorded root call (`rootCallId`) and the ids of the other occurrences the recording opened in its
+region on its node under that shape (`recordedBeside`). **The order rule:** an activation takes the
+task whose address it ran at; else the earliest task by recorded root call, of its root hook group,
+region and node, not yet live or done, whose shape its own context has hop for hop
+(`ConcolicTaskPlan#earlier`, `RuntimeTask#answers`), so a run's activations of one shape answer
+the planned tasks of that shape one to one, in order, and never two tasks one activation nor one
+task two activations. An activation so answering must also pass three tests (`#answeredHere`): its
+context is one no task of that root plans an occurrence of the region in (`ConcolicTaskPlan#occupies`:
+not its address, and not another invocation under the same anchor, which is the planned
+occurrence's; hdfs-11741 K2: the second `handle()` call of one balancer handshake, under the anchor
+of that handshake's planned first call, answered the declared second handshake, which then ran
+unplanned), its address is none the recording opened itself (`RuntimeTask#recorded`: an activation at
+one of them is that occurrence, whatever it serves this run; accept-SB2: the Solr Overseer's first
+task, the collection's CREATE, took the address of the declared second, the REINDEX, whose own entry
+then ran unplanned), and its entry opened its own occurrence; its context, shaped over this run's
+senders (`runtime/ScheduleLog#shape`: each producer endpoint's SEND stance), reaches a root
+(`ContextShape#answers`: no unnamed hop, no `Lost`). The occurrence it opened then takes the planned
+address (`Identity#answer`): its rows, endpoints, decision ordinals, schedule mark and close state
+it, so every later stage reads the planned address as before, and a DIAGNOSTIC `ADDRESS_UNSTABLE`
+row names the address the run computed (`RowRuntime#answered`). A task answered so is done: a later
+activation at that task's own recorded address runs unplanned, since the task took an earlier
+activation of its shape (the replay ran one more activation of that shape before it than the
+recording did). An occurrence a replay exposed (GROW) states no shape and is answered by its address
+alone. A planned loop body is asked where its occurrence opens, at its loop root's enclosing entry
+(`ConcolicTaskPlan#addressLoopRootInvocation`, the same rule, `#answeredHere`), since no root entry
+admits a body: the entry binds the task (`RuntimeTask#claimsEnclosingInvocation`; a task bound to
+another entry answers no other), its bodies run under it, and the entry's occurrence takes the
+planned address there, once (`LoopAccounting#enterLoopRoot`; hdfs-adhoc-29: a block recovery's
+worker under the response of another DataNode heartbeat than the recorded one). Which
 turn of a daemon carries another node's asynchronous work is that node's timing, which no schedule
 holds: in round `a40h` a NameNode command (block recovery queued by the lease monitor, replication
 after a volume removal) rode a DataNode heartbeat other than the recorded one (#4 for #3, #8 for #6),
-so every anchor below it differed in the root's k alone and the target was never admitted; two
-recordings of one workload differ the same way. A GROW does it to every replay after it: a region
-woven since the seed opens occurrences of its own, so every send under it, and every anchor below,
-has new ids, and no planned address there recurs. The answered occurrence's consumers then pair
-with that chain's producers, not the recorded chain's: the slot table takes them as growth beside
-the declared occurrence's slots, never as replacing them, whichever session lands first (PIPELINE.md
-§7.1 step 4; hdfs-11741 V4, whose declared balancer handshake was answered by the other move's).
-Where the model's arm came from such a session, CONFIRM takes a delivery into the anchor from any
-producer that answers the model's producer's question -- the same site, site index and attempt
-under a chain of the same shape -- and still holds it to the model's value; each substitution is a
-named `ADDRESS_UNSTABLE` row (PIPELINE.md §10; hdfs-11741 V6: which balancer dispatcher iteration
-carried the second move to dn1 is the balancer's timing).
+so every anchor below it differed in the root's k alone and the target was never admitted; in round
+HG5A hdfs-11741's DataNode ran the NameNode's key update (`BlockTokenSecretManager#addKeys`, the
+`allKeys` writes the witness reads) under another heartbeat than the seed's, outside every region,
+so its reads were marked incomplete in 169 of 170 focused sessions; two recordings of one workload
+differ the same way. A GROW does it to every replay after it: a region woven since the seed opens
+occurrences of its own, so every send under it, and every anchor below, has new ids, and no planned
+address there recurs. The answered occurrence's consumers then pair with that chain's producers, not
+the recorded chain's: the slot table takes them as growth beside the planned occurrence's slots,
+never as replacing them, whichever session lands first (PIPELINE.md §7.1 step 4; hdfs-11741 V4, whose
+declared balancer handshake was answered by the other move's). Where the model's arm came from such
+a session, CONFIRM takes a delivery into the anchor from any producer that answers the model's
+producer's question -- the same site, site index and attempt under a chain of the same shape -- and
+still holds it to the model's value; each substitution is a named `ADDRESS_UNSTABLE` row (PIPELINE.md
+§10; hdfs-11741 V6: which balancer dispatcher iteration carried the second move to dn1 is the
+balancer's timing). A delivery into another answered occurrence is compared by its producer as
+recorded: no model value holds it.
 
 ## 10. Pass equality
 
@@ -766,28 +742,24 @@ an event (`startWork`, `claimStart`, `endClaim`, `claimItem`, `enterMethodFrame`
 in both hook catalogs (`CausynthPipeline.HookCatalog#shared`); every site string is stabilized once
 by `contract/JvmNames#stable` (reflection accessors and lambda proxies lose their JVM-minted
 counters; a desugared lambda class is named by content in every weave, `LambdaClassNames`);
-randomness is seeded by endpoint where the occurrence has a context, else by node, handoffs, site
-and count, equal in both passes where one thread alone draws under that key (SYMBOL-SCOPE.md §4.5).
+randomness is keyed by the schedule context (before the window by node and handoffs), site and
+count, never by an occurrence a GROW may rename, equal in both passes where one thread alone draws
+under that key (SYMBOL-SCOPE.md §4.5).
 
 ## 11. Current limits
 
 - The anchor is found through JVM-global tables (`Interactions`, `MessageDoors` stored versions);
-  the trace header carries no endpoint, so a context crosses only between nodes of one JVM (a codec
-  hole's producer travels in its envelope).
+  the trace header carries no endpoint, so a context crosses only between nodes of one JVM.
 - `Interactions` evicts past 8192 entries; a receipt whose sender was evicted or never filed gets
   no anchor, and its work takes a `Root` or `Lost` context instead, named by a `LINEAGE_LOST` gap
   on the receiving occurrence with the eviction count (`RuntimeTraceContext#unanchored`).
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
-- Only the declared occurrence is answered by its question (§9). Every other task still needs its
-  whole address, so the chain a replay took to the
-  declared occurrence instead of the recorded one has no planned rows, and that session sends no
-  message under the declared anchor: EXPLORE finds no door of it there
-  (`explore/ClosurePlanner#controlProducer`).
-- A codec decode on a thread no node is attributed to mints its holes under the unregistered
-  address (the Solr Overseer reads its queue item before its tick opens, so the queue's holes are
-  minted there, not in the tick).
+- An occurrence answered by its shape (§9) states the planned anchor, which that session never sent:
+  it names no sender or receiver of it, so EXPLORE finds no door of the message the run's
+  occurrence actually ran under (`explore/ClosurePlanner#controlProducer`). An activation the
+  recording never made, of a planned shape, takes that shape's earliest open task.
 - Contexts and anchors exist only where a transport calls the doors. A DataNode's DataTransfer op
   is a tick root, made by the op only through its RECV (§7.1); on a tree without the op's envelope
   (`gc/hdfs-unified`, `gc/hdfs-11741`) nothing names the op and its header's leaves pair with

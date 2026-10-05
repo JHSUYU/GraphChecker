@@ -224,9 +224,9 @@ final class ComposedFamilies {
         }
 
         /**
-         * The leaves this arm binds -- a codec's hole or a declared port's
-         * delivery -- by consumer endpoint id: what a model's valuation of
-         * each delivers ({@link #texts}).
+         * The leaves this arm binds -- a declared port's deliveries -- by
+         * consumer endpoint id: what a model's valuation of each delivers
+         * ({@link #texts}).
          */
         public Map<String, BoundLeaf> leaves() {
             return leaves;
@@ -235,9 +235,9 @@ final class ComposedFamilies {
 
     /**
      * One leaf an arm binds: its symbol, the consumer's {@code javaType} (a
-     * primitive or a String), the occurrence it was delivered into, whether
-     * it is a codec's hole (WIRE-CODEC §6.5), and whether the value it was
-     * bound to rests on a clock -- directly, or through the {@code nested}
+     * primitive or a String), the occurrence it was delivered into, and
+     * whether the value it was bound to rests on a clock -- directly, or
+     * through the {@code nested}
      * deliveries its operand names.  A replay reads its clocks afresh
      * (CONFIRM holds a run to the model's edges and roots, never to its
      * instants), so only a value resting on no clock is one a replay
@@ -247,35 +247,32 @@ final class ComposedFamilies {
         public final String symbol;
         public final String javaType;
         public final String occurrenceId;
-        public final boolean hole;
         public final boolean clocked;
         public final Set<String> nested;
 
         BoundLeaf(String symbol, String javaType, String occurrenceId,
-                  boolean hole, boolean clocked, Set<String> nested) {
+                  boolean clocked, Set<String> nested) {
             this.symbol = symbol;
             this.javaType = javaType;
             this.occurrenceId = occurrenceId;
-            this.hole = hole;
             this.clocked = clocked;
             this.nested = Collections.unmodifiableSet(nested);
         }
 
         /**
-         * Whether CONFIRM holds a run to this leaf's value: a hole's
-         * always, and a delivery into the anchor, which CONFIRM may take
-         * from another producer of the model's producer's question
-         * (PIPELINE §10).
+         * Whether CONFIRM holds a run to this leaf's value: a delivery into
+         * the anchor, which CONFIRM may take from another producer of the
+         * model's producer's question (PIPELINE §10).
          */
         public boolean held(String anchorId) {
-            return hole || occurrenceId.equals(anchorId);
+            return occurrenceId.equals(anchorId);
         }
     }
 
     /**
      * WHAT A REPLAY MUST RECEIVE AT EACH HELD LEAF of these selected arms
-     * ({@link BoundLeaf#held}: every codec hole, WIRE-CODEC §6.5, and every
-     * delivery into the anchor {@code anchorId}): the model's valuation of
+     * ({@link BoundLeaf#held}: every delivery into the anchor {@code
+     * anchorId}): the model's valuation of
      * the leaf as the text that arrives -- an integral's decimal, a
      * boolean's {@code true}/{@code false}, a String's characters -- by
      * consumer endpoint id, for every held leaf whose value rests on no
@@ -877,30 +874,6 @@ final class ComposedFamilies {
     }
 
     /**
-     * ONE HOLE'S ARM (WIRE-CODEC §6.1, §6.3): the hole's symbol, declared at
-     * the decoded leaf's sort, bound to the operand the producer's export
-     * cut out of its leaf by the one hole-arm rule
-     * ({@link VmTermLowering#holeArm}); a relay's operand is the upstream
-     * hole's symbol, closed below as a nested family.
-     *
-     * @return the binding, or null with the refusal in {@code refused}
-     */
-    private String hole(String session, Arms.Arm arm, Term delivered,
-                        List<GapRow> refused) {
-        AttachRow consumer = arm.attach();
-        VmTermLowering.HoleArm bound = VmTermLowering.holeArm(arm.symbol(),
-                delivered, arm.export().javaType(), consumer.javaType());
-        if (bound.refusal != null) {
-            refused.add(GapRow.of(session, bound.refusal,
-                    GapClass.DIAGNOSTIC, arm.slotId(), bound.detail));
-            return null;
-        }
-        lowering.declareStated(arm.symbol(),
-                JavaSmtSorts.sortOfJava(consumer.javaType()));
-        return bound.formula;
-    }
-
-    /**
      * What one wire leaf an arm binds rests on, noted for CONFIRM ({@link
      * BoundLeaf}): the clock roots and the deliveries of its session that
      * its delivered term names.
@@ -921,7 +894,7 @@ final class ComposedFamilies {
         }
         bound.put(consumer.endpoint().id(), new BoundLeaf(arm.symbol(),
                 consumer.javaType(), consumer.endpoint().occurrence().id(),
-                arm.hole(), clocked, nested));
+                clocked, nested));
     }
 
     /**
@@ -984,11 +957,10 @@ final class ComposedFamilies {
         }
 
         /**
-         * The bindings: what this run delivered at each out -- a hole's
-         * operand ({@link #hole}), else each bound variable equal to the
-         * delivered value and, for a store, the states of the stored object
-         * the reader could have seen through this very store -- and the
-         * roots each delivery's replay held under.
+         * The bindings: what this run delivered at each out -- each bound
+         * variable equal to the delivered value and, for a store, the states
+         * of the stored object the reader could have seen through this very
+         * store -- and the roots each delivery's replay held under.
          *
          * @return false at the first delivery that does not lower
          */
@@ -1000,20 +972,14 @@ final class ComposedFamilies {
                 if (out.arm.attach() != null) {
                     bind(session, out.arm, delivered, leaves);
                 }
-                if (out.arm.hole()) {
-                    String arm = hole(session, out.arm, delivered, local);
-                    if (arm == null) return false;
-                    conjuncts.add(arm);
-                } else {
-                    for (String symbol : out.symbols) {
-                        if (symbol == null || symbol.isEmpty()) continue;
-                        lowering.declareStated(symbol, delivered.sort);
-                        conjuncts.add("(= " + symbol + " " + delivered.text
-                                + ")");
-                        if (out.arm.write() != null) {
-                            conjuncts.add(lowering.storeChoice(symbol,
-                                    out.arm.write()));
-                        }
+                for (String symbol : out.symbols) {
+                    if (symbol == null || symbol.isEmpty()) continue;
+                    lowering.declareStated(symbol, delivered.sort);
+                    conjuncts.add("(= " + symbol + " " + delivered.text
+                            + ")");
+                    if (out.arm.write() != null) {
+                        conjuncts.add(lowering.storeChoice(symbol,
+                                out.arm.write()));
                     }
                 }
                 guards.putAll(out.arm.guard());

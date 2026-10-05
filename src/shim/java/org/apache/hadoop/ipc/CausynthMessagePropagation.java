@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.ipc;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.UUID;
 
 import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
@@ -51,9 +49,6 @@ public final class CausynthMessagePropagation {
       new ThreadLocal<>();
   private static final ThreadLocal<Integer> SASL_DEPTH =
       ThreadLocal.withInitial(() -> 0);
-  /** The exchange bracket the open SASL exchange owns: the user name its
-   * client encodes travels with its next message. */
-  private static final ThreadLocal<Long> SASL_BRACKET = new ThreadLocal<>();
 
   private CausynthMessagePropagation() {
   }
@@ -73,18 +68,6 @@ public final class CausynthMessagePropagation {
       String attemptId, String half, Object localOwner, Object scope) {
     return new Outbound(MessageDoors.outbound(transport, correlationId,
         attemptId, half, localOwner, scope));
-  }
-
-  /**
-   * The same leg with the payload the door holds before it is serialized:
-   * the IPC client's {@code call.rpcRequest}, the server's response.  Its
-   * protobuf message is what the transport's codec walks.
-   */
-  public static Outbound outbound(String transport, String correlationId,
-      String attemptId, String half, Object localOwner, Object scope,
-      Object payload) {
-    return new Outbound(MessageDoors.outbound(transport, correlationId,
-        attemptId, half, localOwner, scope, message(transport, payload)));
   }
 
   /**
@@ -116,37 +99,6 @@ public final class CausynthMessagePropagation {
     int method = named.lastIndexOf('.');
     int protocol = method < 0 ? -1 : named.lastIndexOf('.', method - 1);
     return named.substring(protocol + 1);
-  }
-
-  /**
-   * The protobuf message an IPC payload wraps: an {@code RpcProtobufRequest}
-   * holds it in its {@code payload} field, a {@code ProtobufWrapper} answers
-   * it from {@code getMessage()} (both package-private in Hadoop, read here
-   * reflectively); anything else is its own message.  One it cannot read
-   * is named, and the message carries none of its values.
-   */
-  static Object message(String transport, Object payload) {
-    if (payload == null) {
-      return null;
-    }
-    try {
-      switch (payload.getClass().getSimpleName()) {
-        case "RpcProtobufRequest":
-          Field field = payload.getClass().getDeclaredField("payload");
-          field.setAccessible(true);
-          return field.get(payload);
-        case "ProtobufWrapper":
-          Method getter = payload.getClass().getDeclaredMethod("getMessage");
-          getter.setAccessible(true);
-          return getter.invoke(payload);
-        default:
-          return payload;
-      }
-    } catch (ReflectiveOperationException | RuntimeException unreadable) {
-      MessageDoors.payloadUnread(transport, payload.getClass().getName()
-          + ": " + unreadable);
-      return null;
-    }
   }
 
   public static String rpcCorrelation(byte[] clientId, int callId) {
@@ -201,7 +153,6 @@ public final class CausynthMessagePropagation {
     SASL_DEPTH.set(depth + 1);
     if (depth == 0) {
       PENDING_SASL.set("hdfs-sasl-" + UUID.randomUUID());
-      SASL_BRACKET.set(MessageDoors.beginExchange(SASL));
       MessageDoors.Inbound serving = MessageDoors.setAside();
       if (serving != null) {
         SERVING.set(serving);
@@ -217,11 +168,6 @@ public final class CausynthMessagePropagation {
     }
     SASL_DEPTH.remove();
     PENDING_SASL.remove();
-    Long bracket = SASL_BRACKET.get();
-    if (bracket != null) {
-      SASL_BRACKET.remove();
-      MessageDoors.endExchange(bracket);
-    }
     MessageDoors.endInbound();
     MessageDoors.Inbound serving = SERVING.get();
     if (serving != null) {

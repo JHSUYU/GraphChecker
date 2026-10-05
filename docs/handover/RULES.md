@@ -82,6 +82,10 @@ recommendation.
   ("只有sat我们要经过validation"): CONFIRM plus a native reproduction. A witness moving no root is never SAT. A real run
   failure (the occurrence never ran, a self-contradictory path, a solver timeout, CONFIRM without a verdict) is a
   named RUN_DEFECT: a bug to fix, not a verdict.
+- **A large closure converges; a bound is only a last-resort valve** (owner 2026-10-05: "当然，我允许给一个合理的exploration的bound。如果过这个bound我们合理停下。但你不能大量的case都是触碰到这个bound"; "有些case的 exploration过深。是真的因为闭包region很多而要很久。理论上我们当然希望所有闭包可以收敛，这种情况你也不能因为bound就把人家限死…毕竟我们单独跑这个case的时候有很多的集群资源，并行可以降低时间的"):
+  - a closure deep because it is genuinely large must converge: give it resources (many obligations in parallel over all ten lifts, a longer case budget), never a cut; depth from redundant work (equivalent occurrences, re-asked arms) is an engine defect, fixed by a general rule;
+  - the sweep's case time limit is a convenience of a shared cluster, not a verdict: a case cut there (EXPLORATION_CUT) is rerun alone to its fixed point;
+  - a generous declared bound (a nesting depth, an obligation cap) may stop exploration as a last resort; such a stop is named in result.json, rare, counted every round, and each one is investigated (large or redundant).
 - **A check is done when its `.smt` is right** ("如果我们确实正确的跑出了.smt。包含必要的因果链，符号变量，符号传播。没有新bug也是
   可以理解的"): the causal chain, the symbols and their propagation read against the system's code; no new bug is then
   an acceptable outcome.
@@ -94,8 +98,9 @@ recommendation.
   "Per-system surface" with the checks it serves; never to force an expected mechanism; general engine rules first.
 - **Every case should be fast** ("整体我们跑通每个case都会比较快。如果有的case特别久，那可能就是有问题了。你要去看一下，不要傻等",
   "如果你发现时间显著变慢，就要多看几眼了"): a case far slower than its peers or its history is investigated at once.
-  Slowness from ten busy lifts is understood; the final acceptance runs each case alone on the whole cluster
-  ("最终我们每个case挨个跑，每个case独占集群，那才是最终实现").
+  Slowness from ten busy lifts is understood. The final acceptance does NOT need each case alone on the cluster
+  (owner 2026-10-05: "我们不必强行要求独占。一定要最大化10个集群的使用。我们的核心目标是46个adhoc check先跑通出有正确因果链的.smt";
+  this replaces the earlier "每个case独占集群"): cases run concurrently through the ledger; the goal is a right `.smt`.
 - **Agents** ("具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"): see [AGENTS.md](AGENTS.md).
 
 **Engineering**
@@ -155,9 +160,46 @@ recommendation.
   current.
 - **Outcomes, not reports** (owner 2026-09-30/10-04): no report documents as deliverables; a check is done when
   its `.smt` is right. Agents report in a few lines.
-- **The servers** (owner 2026-09-28/30): every fan-out (obligations, rounds, sweeps, builds) uses all ten lifts
-  `lift06`–`lift15`, `lift11` included as a worker; no lift above 70 % memory (the host ledger enforces it;
-  stop or move work past it); kill orphan z3 processes. Details in [OPERATIONS.md](OPERATIONS.md).
+- **The servers: MAXIMIZE all ten** (owner 2026-09-28/30, restated 2026-10-05 long-term: "一定要最大化利用10个server。这10个
+  server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的长期记忆"): keep `lift06`–`lift15` (`lift11` included as a
+  worker) full at all times. Every case or probe that does not wait on a pending fix runs now; a landed fix is validated
+  at once on the cases it touches, never waiting for a whole round; check utilization (memory and load on every lift)
+  at every lull and fill it. NFS shares everything, so isolation is what makes this safe: every agent and run on its
+  own worktree, frozen snapshot and `GC_OUT`, never a tree or snapshot someone reads. The only limit: no lift above
+  70 % memory (the host ledger enforces it; stop or move work past it); kill orphan z3 processes. Details in
+  [OPERATIONS.md](OPERATIONS.md); how development keeps them full (levels, isolation and sharing, the loop):
+  [PARALLEL.md](PARALLEL.md), part of every agent's long-term memory.
+
+**Code health: delete redundancy, refactor ugly code** (owner, goal of 2026-10-04 night: "代码可能现在有点臃肿。在你跑通hdfs
+的同时，你也要删除冗余，不用的代码。并重构非常ugly的代码"; and "每次这些你就要把旧代码，不用的代码，都删掉。我们也不需要保留fallback",
+"对不用的旧代码，旧产物，文件都清理了"). This is part of every goal, not a separate phase:
+1. **Every change deletes what it replaces and what it leaves unused**, in the same commit: no fallback, no flag that
+   keeps an old path, no compatibility shim, no "kept just in case"; the tests of a removed mechanism go with it. The
+   commit message (or the agent's report) lists what was deleted.
+2. **Dead code is found with evidence, never guessed**: bytecode reachability from the real entry points (the Java
+   mains `run_engine.sh` and `tools/` launch, the hook methods `CausynthPipeline` weaves by name, the system trees'
+   calls into `MessageDoors` and the shim, reflection, VM natives), then a grep over `src/`, `run_engine.sh`, `tools/`,
+   `experiments/` and every system tree (`/bigtemp/vnr3ne/wt/hadoop-*`, `lucene-solr-*`, `zookeeper-*`,
+   `hbase-unified`); config keys and environment variables no launcher sets; shell functions nothing calls; scripts no
+   tool or doc names. The 2026-10-05 audit's tables: `/bigtemp/vnr3ne/analysis/study-2026-10-04/cleanup-audit/`.
+3. **One mechanism per concept**: two implementations of one idea (a second "does this move" walk, two pairing rules,
+   nine "property else environment" lookups, JSON helpers beside `smt/JsonFields`, a forwarding layer that only
+   re-calls the next one) become one.
+4. **Very ugly code is refactored**: a method of more than ~150-200 lines or ~50 branches becomes named steps over one
+   context object; parallel switch ladders become one table; a file that mixes responsibilities is split by them
+   (`SmtLowering` -> `VmTermLowering` + `SmtSymbolTable`; `CausynthTraceRecorder`'s offline aggregation into its own
+   class; `CausynthPipeline`'s weaves apart from the analysis orchestration). Comments state what the code does, at
+   its points; history belongs in git.
+5. **A refactor or deletion changes no result**: gated by `tools/regress/offline-ab.sh` with byte-identical outputs of
+   every stage it touches (COMPOSE's `candidate.smt2`/`claim.json`/manifest, SEED.static), only named run-to-run noise
+   excluded (`solverRuns`, `unsatCore`), plus `mvn -q -o package` and the shell test on every commit.
+6. **No conflicts with live work**: clean up files no in-flight branch touches (a busy-file list from
+   `git diff --name-only system/<sys>...<branch>` of each open branch), the rest after the merges.
+7. **Artifacts too**: merged branches and their worktrees, stale snapshots (`tools/rounds/snapshot-gc.sh`), finished
+   agents' outputs, outdated documents are deleted; evidence still needed is named in STATE.
+Progress and what is still owed: STATE.md §2 (deleted so far: the WIRE-CODEC runtime, 6131 lines; dead symbols,
+unused config and duplicate helpers, 664 lines; the COMPOSE refactor steps 1-4 on `hdfs-refactor-compose`), TODO.md
+HDFS §1 and §8.
 
 **Acceptance**
 - **What a real PASS is:** the claim, polarityDecides, the mechanism's roots in

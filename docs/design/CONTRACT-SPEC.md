@@ -68,21 +68,14 @@ or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `
 - occurrence: `{node, regionId, context, index}` with `context` = `{form: ANCHOR, producerEndpointId,
   rpcSite}` | `{form: ROOT, role, api?, windowIndex}` | `{form: LOST, role}` and `index` =
   `[{callSite, iteration}, …]` (parts, never the render);
-- endpoint: `{occurrence, site, siteIndex: [...], attempt}`; location: `{kind, owner, slot}`;
-- hole (`Hole`): three flat fields `codec, keyPath: [...], hole`, all or none. One typed piece of
-  one leaf of one message a codec carried: the codec that wrote the message, the key path from the
-  message's root to the leaf (a map key or NamedList name is a string, `name#k` for a name's k-th
-  repeat; a list or array index is a number; `[]` is a leaf that is the whole message), and the
-  hole's index in the leaf's template (from 0). `Hole.path()` is the key path's text form
-  `/a/b[3]/c` (`% / [ ]` in a key escaped `%25 %2F %5B %5D`), `render()` is
-  `<codec>:<path>#<hole>`.
+- endpoint: `{occurrence, site, siteIndex: [...], attempt}`; location: `{kind, owner, slot}`.
 
 | row | fields (`?` = omitted when null) | meaning |
 | --- | --- | --- |
 | `ActivationRow` | `occurrence, taskId, focused, instrumented, threadKey, anchorProducer?` | one per activation. `focused`: ran symbolically as a task's region. `instrumented=false`: only the entry hook ran, so "no decisions" is no evidence. Same `threadKey` = program order: the claimed start the activation runs inside (a queue item or task claimed on a consumer thread, `start:<node>\|<context>\|<start frames>`), else its thread (`<name>#<id>`); two items one consumer claims run in the order their starters queued them. `anchorProducer`: the endpoint of this run that sent the message the context's anchor names. No thread-start edge exists |
 | `DecisionRow` | `seq, occurrence, siteId, ordinal, outcome, term, clockReadings{symbol: reading}` | one branch: `ordinal` = k-th decision of the site in the occurrence (1-based); `term` = the predicate as written at the site (SMT-LIB over declared symbols and `EXPR.` refs; empty for a concrete branch); `outcome` = whether the term held. The conjunct is `outcome ? term : (not term)`, applied by the readers (`smt.Arms.conjunct`, `Arms.pathCondition`), never by the runtime |
-| `ExportRow` | `seq, endpoint, expressionRef, javaType, handle, recordedValue, codec?, keyPath?, hole?, messageKey?` | a value put on the wire (`e_p`); `seq` cuts the producer's path condition; the sort comes from `javaType`. A codec's export states its hole and `messageKey`, both or neither: the message that carried it, spelled as its consumers' `correlationId` (`<transport> <path>@<version>` for a store, the exchange's correlation id otherwise) |
-| `AttachRow` | `seq, endpoint, symbol, javaType, arrival, answered, answeredValue?, producer?, correlationId, pairedBy?, codec?, keyPath?, hole?` | a value taken off the wire: `symbol` = the handoff variable `v_H` minted at the port; `producer` absent = unpaired; `pairedBy` = `HANDLE`, `CORRELATION_PORT` (the received message's correlation and half, and the port, for an element it carried; IDENTITY §4) or `ENVELOPE` (absent = unstated); `answered` = an obligation's answer replaced the arrival. A codec's attach states the hole it minted; its `correlationId` is the message's key and it is paired by `ENVELOPE`: the producer endpoint the message carried. A String hole's `arrival` and `answeredValue` are spelled as a read row spells a String, its JSON string literal |
+| `ExportRow` | `seq, endpoint, expressionRef, javaType, handle, recordedValue` | a value put on the wire (`e_p`); `seq` cuts the producer's path condition; the sort comes from `javaType` |
+| `AttachRow` | `seq, endpoint, symbol, javaType, arrival, answered, answeredValue?, producer?, correlationId, pairedBy?` | a value taken off the wire: `symbol` = the handoff variable `v_H` minted at the port; `producer` absent = unpaired; `pairedBy` = `HANDLE` or `CORRELATION_PORT` (the received message's correlation and half, and the port, for an element it carried; IDENTITY §4) (absent = unstated); `answered` = an obligation's answer replaced the arrival |
 | `WriteRow` | `seq, endpoint, location, version, expressionRef, javaType, referentState?, referentStateRefused?, initial?` | a write and the version of the location it produced; versions join reads within one session. `initial` = `true` for the location's INITIAL version, what it held before every write its log names (a scalar's word, a container's members): Writers_W(l)'s writer at version 0, which no occurrence wrote, placed at the access that started the log; it states no referent. A write of a reference to a modeled container (or a view or wrapper of one) states `referentState` = `{location, version}`: the canonical container's `MAP` location and its version live at the store (invariant 12), else `referentStateRefused` = the VM's reason (`UNREADABLE_CONTAINER:<class>`, `TRUNCATED`, `RESIZING`, `NO_CONTEXT`); neither for null or a plain object |
 | `ReadRow` | `seq, endpoint, location, observedVersion, symbol, javaType, mintVersion?, concreteValue?, unnamedWriter?` | a read: `observedVersion` = the version seen, `-1` when unknown (never 0) -- known when the location's writer set was whole or the VM verified the read (`observedExact`, `VmRows#joinable`); `mintVersion` = a placeholder's own store version (a placeholder's site contains `#PLACEHOLDER#`); `concreteValue` = what the read returned as `ReadRow.returned` spells it (a scalar's payload, a String as its JSON string literal, Java null as `N`, an object as its identity's name `M_L'<class>'_<rid>`, an array as `A<type>_<rid>-<version>`; for an exact read the VM left unstated, its version's leaf of those kinds; absent for a String the VM cut); `unnamedWriter` = `true` only when a writer the VM's log never named had reached the location (any incompleteness but the version bound), which leaves the read no alternative writer (`Arms#stateArms`) |
 | `RootMintRow` | `seq, occurrence, rootId, symbol, kind, category, recordedValue, domainMin?, domainMax?, declared, clockNanos?, clockSource?, clockSkew?` | a root minted here. `kind` `MARKER` (a boolean: fault marker, boolean configuration or configured source, READ placeholder), `INTEGRAL`, `CLOCK`; `category` (`contract.RootCategory`) where its value enters the world: `CLOCK` (exactly the CLOCK kind), `FAULT` (a door's or the workload's fault marker), `CONFIG` (a configuration, `rootId` `CONFIG:<key>`), `READ` (a boolean READ placeholder), `HOOK` (a tree's configured source) -- a decision reaching a `FAULT` root is a fault flip site, one reaching another MARKER is not; required: a row recorded before it is refused by name; `symbol` is the root's one solver name; `recordedValue` is the value the region ran the root at — a fresh-box mint states the box it handed the region, the plant where one was applied (`runtime.RootMint.materializePrimitiveValue`); for a CLOCK the instant its node's clock read there, and `clockSkew` how far that clock ran off the host's reading (a plant, or the jump it ran on from, `runtime.NodeClocks`; absent = 0, the host's own instant, always so in the seed): the host's reading, `hostReading` = `recordedValue − clockSkew`, is what a clock's counterfactual (the focus row's skew) is off. A CLOCK row's `seq` is the event the recording read it at, the same in every session. A clock site read again inside the occurrence is a later instant of the same root and stays concrete, so a clock root is the site's first reading in the occurrence. `domainMin/Max` absolute or absent (both absent = pinned); `clockNanos` = a CLOCK's tick in ns (1 for `nanoTime`, 1,000,000 for `currentTimeMillis`), present exactly for CLOCK; `clockSource` = the JVM clock it wraps (`currentTimeMillis`, `nanoTime`; absent when the plan states none), which with the tick is the clock's identity (`contract.Clock`) |
@@ -170,7 +163,6 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |
 | `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
 | `CLAIM_REFUTED` | a model CONFIRM refuted (`<iteration>/refuted_claims.jsonl`), which the composition excludes (DIAGNOSTIC; BLOCKING when the file cannot be read), [PIPELINE.md §10](PIPELINE.md) |
-| `CODEC_MISMATCH` | a value a codec carried that crossed with less than its template (DIAGNOSTIC: the leaf stays as it was decoded and pairs with nothing; a decoded leaf is paired only when its value is the one its producer recorded, as the producer's template or, when that template is one hole over the whole leaf, as one hole of the leaf's own sort -- WIRE-CODEC designer decision 14); the detail starts with the reason: `PATH_UNMATCHED` (the entry's key path is absent from the decoded graph), `VALUE_MISMATCH`, `TEMPLATE_MISMATCH`, `LEAF_SHARED`, `LEAF_SHADOWED` (a leaf object that already carries an expression its holder cannot replace), `LEAF_UNSUPPORTED`, `LEAF_UNADDRESSABLE`, `VIEW_MISSING`, `NULL_LEAF`, `UNSENT` (encodes no message carried, one row per codec and session with their count). Raised by the codec runtime (`runtime/CodecRuntime`, `HandoffMint#mintHoles`) |
 
 ### 2.6 The row invariants (`RowInvariants`, run by `ImportGateMain`)
 
@@ -188,10 +180,10 @@ field=<f> <subject>`.
 | # | rule | kind, class |
 | --- | --- | --- |
 | 1 | exactly one session states role SEED, and the SEED names no obligation; every session reads whole (`SESSION_INCOMPLETE`); every decision, target, read and write row's occurrence has an `ActivationRow` in its session | `ADMISSION_GAP`, BLOCKING |
-| 2 | a read with `observedVersion < 0` states a `concreteValue`; an attach's `pairedBy` is absent, `HANDLE`, `CORRELATION_PORT` or `ENVELOPE`, and it is `ENVELOPE` exactly when the attach states a hole, which then names its `producer` | `UNSTATED_VALUE`, BLOCKING |
+| 2 | a read with `observedVersion < 0` states a `concreteValue`; an attach's `pairedBy` is absent, `HANDLE` or `CORRELATION_PORT` | `UNSTATED_VALUE`, BLOCKING |
 | 3 | every `EXPR.`-like token in `term`, `phiTerm`, `expressionRef`, an attach's `symbol` and `arrival` is `EXPR.` + 16 hex and is in the session's table | `UNSTATED_VALUE`, BLOCKING |
 | 4 | one row per event: no two reads or writes at one (seq, location), decisions at one (seq, site, ordinal), targets at one (occurrence, seq when reached else 0, anchor site) — BLOCKING; events of one kind at different seqs sharing one endpoint id — DIAGNOSTIC `LINEAGE_LOST` (the site index does not tell them apart) | `UNSTATED_VALUE` |
-| 5 | a minted symbol `M_<sort>_<name>` has one sort per name across roots, attaches and reads, and a read's or a hole attach's symbol sort is its `javaType`'s; a hole's `javaType` (export or attach) is a primitive or `Ljava/lang/String;` | `UNSTATED_VALUE`, BLOCKING |
+| 5 | a minted symbol `M_<sort>_<name>` has one sort per name across roots, attaches and reads, and a read's symbol sort is its `javaType`'s | `UNSTATED_VALUE`, BLOCKING |
 | 6 | a decision term that evaluates at the valuation the session ran under (declared roots and literals through `==, !=, <, <=, >, >=, +, -, *, &, \|, ^`, boundary and read-from nodes) agrees with `outcome`; the valuation is the mints' `recordedValue` for the seed and the focus row's ask for a focused session (a CLOCK = its `recordedValue`); a FOCUSED session with no focus row is BLOCKING | `UNSTATED_VALUE`, BLOCKING |
 | 7 | an observed version no `WriteRow` and no `mintVersion` of the session states — DIAGNOSTIC; a placeholder read without `mintVersion`, or a `WriteRow` at a placeholder's minted version (a fabricated write) — BLOCKING | `UNSTATED_VALUE` |
 | 8 | a `RootMintRow` only for a declared root (`DECLARATION_MISSING`); a MARKER reads `true`/`false`, an INTEGRAL or CLOCK a plain decimal; one row per (occurrence, root id) (`UNSTATED_VALUE`) | BLOCKING |
@@ -209,7 +201,7 @@ field=<f> <subject>`.
 - `Obligation(obligationId, taskId, pathId, siteId, ordinal, flippedOutcome, rootAssignments,
   answers, unproducible)`: one path prefix and one decision to take the other way.
   `rootAssignments` = root id → value, `answers` = attach endpoint id → value (one attach, not a
-  port; a String attach's -- a codec's STR hole -- as its JSON string literal, planted verbatim),
+  port; a String attach's as its JSON string literal, planted verbatim),
   `unproducible` = attach endpoint ids answered without a producer arm. `pathId` = sha16(session
   id + `|` + occurrence id) (`explore.Corpus.pathId`). `Obligation.confirming` is a CONFIRM run: empty
   site, ordinal 0, `flips()` false. `obligations.jsonl` rows carry exactly these fields.
@@ -239,10 +231,8 @@ field=<f> <subject>`.
   the replay adds to its own host reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
-  producer, selector, messageKey?, value?, producerQuestion?}` (a codec hole's `messageKey`: the
-  store version its arm's message was, when that key is a store's `<transport> <path>@<version>` --
-  an exchange's correlation id is its own run's; `value`: the text a held leaf -- a codec hole, a
-  delivery into the anchor -- must receive, the arm's `texts` in the claim; `producerQuestion
+  producer, selector, value?, producerQuestion?}` (`value`: the text a held leaf -- a delivery into
+  the anchor -- must receive, the arm's `texts` in the claim; `producerQuestion
   {occurrence, site, siteIndex, attempt, shape}`: for a delivery into the anchor where the arm's
   session answered the anchor by its question, IDENTITY §9), `STATE {reader, readerAnyTurn, mint, writer, version, location}` (`writer`
   `INITIAL` for a location's INITIAL, `Confirmation#INITIAL`; a `mint` row is compared by its writer
@@ -314,7 +304,7 @@ field=<f> <subject>`.
   what can move, the return is free instead, named (`SmtLowering#unbound`). A method-return node stating no
   call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
-  (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and
+  (`compose.StringIdentities`), read on the expression IR before any text and
   never through a read (its value is the write a family pairs it with): `String.valueOf` of a
   primitive and a primitive `concat` operand are its `toString`; a parse of a lone decimal
   rendering `toString(e)` is `e`, widened to the parse's type (`parseInt` of a long's rendering is
@@ -333,16 +323,6 @@ field=<f> <subject>`.
   COMPOSE's and, through `explore.SmtText#literal`, a flip query's): a Bool `true`/`false` (the
   VM's `1`/`0`), an integral's decimal, a floating value's bits, a String's JSON string literal's
   content quoted; Java null (`N`) is no String literal.
-- A codec's hole (WIRE-CODEC §6.1, §6.3) is bound to an arm by one rule,
-  `compose.VmTermLowering#holeArm`, in COMPOSE and flip queries alike: its symbol has the DECODED
-  leaf's sort (the attach's `javaType`), the arm is the operand the export cut out of its leaf (of
-  the export's `javaType`), and its arms are the exports of its own message and hole
-  (`smt.Arms#sameMessage`). The same sort is equality; an integral operand is widened by Java's
-  rule (its range inside the hole's); a String operand of an integral or boolean hole is its
-  canonical rendering read back (`(= (java_int_to_string v) s)` within the hole's range, `"true"`
-  or `"false"`); a narrowing or any other change of sort is refused by name (`HoleNarrowed`,
-  `HoleSortChanged`, `UNSTATED_VALUE`); Java null is `CODEC_MISMATCH` `NULL_LEAF`; a String that
-  may be null holds only where it is not, one whose nullness nothing states is refused.
 - A per-session fact — arrivals, clock readings, the valuation — stays inside that path's
   conjunction, never a global assertion.
 - A root without a domain is pinned in COMPOSE and in flip queries; a declared MARKER is free over
@@ -350,40 +330,3 @@ field=<f> <subject>`.
   reading is the session's host reading, COMPOSE's the cell's on the recording's timeline)
   (`smt.JavaPrimitiveSmtSemantics.clockDomain`/`clockSkewCeiling`), in COMPOSE replaced by the
   case's bounds when `root-domains.jsonl` declares them.
-
-## 6. Codecs: declarations and ports
-
-Values that cross processes inside a serialized message are declared per serialization format
-(codec), not per value. The codec weave and the codec runtime read these declarations and write
-the hole rows ([IDENTITY.md §7.5](IDENTITY.md)); nothing on HEAD writes a `CODEC_PORT` row yet, so
-a run demands only the ports its `causynth.codec.ports` file names, and the `WIRE_FLOW` ports
-([SYMBOL-SCOPE.md §6](SYMBOL-SCOPE.md)) still carry every value a case declares that way.
-
-### 6.1 Declarations (`WireDeclarations`)
-
-One schema for the engine's library catalog and a system's `wire.jsonl`, read together:
-`WireDeclarations.of(rows)` takes every row of the four kinds, each keyed by where it was read
-(`file:line`); the caller routes rows of other kinds away first (the library catalog's `DOOR` and
-`CONFIG_SOURCE` rows are `causynth/LibraryCatalog`'s, SYMBOL-SCOPE §4.2). `WireDeclarations.read`
-reads one file, a JSON row per line, passing over its `DOOR` rows;
-`WireDeclarations.configured` reads the file the system property `causynth.wire.declarations`
-(else the environment variable `CAUSYNTH_WIRE_DECLARATIONS`) names, and none when neither does.
-Every row states `schemaVersion 1` and its `kind`. A malformed row, a member its kind does not have, a declaration
-stated twice (same codec name, codec and type, transport name, or exchange method) and a name no row declares are refused, naming the row, never skipped.
-
-| kind | members | meaning |
-| --- | --- | --- |
-| `CODEC` | `codec, shape, space, encoders?, decoders` | one serialization format. `codec` `[A-Z][A-Z0-9_]*`; `shape` `TREE` (maps, lists, arrays and views), `PROTOBUF` (fields of generated messages) or `LEAF` (the graph is one leaf); `space` `[a-z][a-z0-9_]*`, the key space its ports are named in. At least one decoder |
-| encoder, decoder | `method` or `call`, `graph`, `encoded?`, `bind?` (encoders only) | `method` is a Soot signature whose body is hooked; `call` is a callee pattern (`*` = any run of characters) whose call sites in woven code are hooked. `graph` and `encoded` are `this`, `return` or `argN`, never the same; a decoder whose graph is an argument is hooked at entry. An encoder is bound to its `encoded` object (which it then states), or with `bind: EXCHANGE` to the innermost open exchange bracket |
-| `CODEC_VIEW` | `codec, type, map \| leaf \| pairs, put?` | how a TREE codec (`codec`, or `*` for every one) sees an application class: its map, one leaf, or a flat name/value list, through an accessor `name()` (a method) or `name` (a field); `put` = the extra keys a map view writes, key to accessor |
-| `TRANSPORT` | `transport, request?, response?, store?, envelopeBytes?` | the codec a door of the transport walks its request or response payload with (a missing half has none in hand), or `store: true` (its doors write and read stored versions), one of the two; `envelopeBytes` (beside a request or response, 4096 when unstated: half of Jetty's 8 KB request-header default) bounds a message's whole symbolic header, both its schemes' segments; what does not fit is named `BOUND_INSUFFICIENT` |
-| `EXCHANGE` | `transport, method` | a woven bracket owning the encodes inside it; its transport has a `TRANSPORT` row |
-
-### 6.2 Codec ports (`plan.CommunicationCatalogContract`)
-
-A codec port is one key of one key space, named `<space>:<key>` (in `kv` a string key, in `pb`
-`<MessageSimpleName>.<field>`, in a LEAF codec's space the codec's name). Its id is
-`codecPortId(space, key)` = `portId(exchangeSiteKey("codec\n" + space + "\n" + key), space + ":" +
-key)`, a declared port id; a space naming `:` is refused. The catalog row of kind `CODEC_PORT` is
-`{portId, space, key, presence, producers: [{callSiteId, definitionMethod, callee, role, keyArg,
-valueArg}], consumers: [{callSiteId, definitionMethod, callee}]}`.

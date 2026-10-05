@@ -50,7 +50,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -906,9 +905,7 @@ public final class ConfirmMain {
             throws IOException {
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
             if (!sessionId.equals(worker.sessionId())) continue;
-            List<JsonObject> rows = RowCodec.readJsonl(
-                    worker.dir().resolve(ObligationDir.FOCUSED_TASK));
-            if (!rows.isEmpty()) return rows.get(0);
+            if (!worker.focus().isEmpty()) return worker.focus().get(0);
         }
         return new JsonObject();
     }
@@ -934,20 +931,10 @@ public final class ConfirmMain {
         return markers;
     }
 
-    /**
-     * A store's message key, {@code <transport> <path>@<version>}
-     * (CONTRACT-SPEC §2.2): every run that reads that version spells it
-     * alike.  An exchange's correlation id is its own run's, so a replay's
-     * never equals the model's arm's, and only its consumer and producer
-     * are compared.
-     */
-    private static final Pattern STORE_KEY =
-            Pattern.compile("\\S+ \\S.*@[0-9]+");
-
     /** One WIRE edge per consumer of each selected message arm, paired as that
-     *  arm's session recorded; a codec hole's with its message's store
-     *  version; a held leaf's (a hole, a consumer of the anchor) with the
-     *  text the model's valuation of it delivers ({@code texts}, COMPOSE's);
+     *  arm's session recorded; a held leaf's (a consumer of the anchor) with
+     *  the text the model's valuation of it delivers ({@code texts},
+     *  COMPOSE's);
      *  a consumer of the anchor's, where the arm's own session answered the
      *  anchor by its question, with its producer's question
      *  ({@link #question}): only there did another chain of the question's
@@ -986,12 +973,6 @@ public final class ConfirmMain {
                         anchor.render())) {
                     edge.add(Confirmation.PRODUCER_QUESTION,
                             question(paired.producer(), producerSession));
-                }
-                // A codec's hole (WIRE-CODEC §6.5): the version of the store
-                // its message was.
-                if (paired.hole() != null
-                        && STORE_KEY.matcher(paired.correlationId()).matches()) {
-                    edge.addProperty("messageKey", paired.correlationId());
                 }
                 // A held leaf: what must arrive there.
                 JsonObject texts = object(arm, ComposeMain.TEXTS);

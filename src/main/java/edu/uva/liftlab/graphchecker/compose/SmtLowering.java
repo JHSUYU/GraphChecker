@@ -3659,8 +3659,8 @@ public final class SmtLowering {
         lines.add("(set-option :produce-models true)");
         for (String line : VmTermLowering.preamble()) lines.add(line);
         // Offered always: a query keeps only the definitions it reaches
-        // (SmtNames#reachedPreamble), and a hole's arm reads a rendering
-        // back through it (VmTermLowering#holeArm).
+        // (SmtNames#reachedPreamble), and an integral's String.valueOf is
+        // lowered through it.
         lines.add(VmTermLowering.JAVA_INT_TO_STRING);
         lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
         lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);

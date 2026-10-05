@@ -149,7 +149,7 @@ final class LoopAccounting {
         ConcolicTaskPlan.LoopRootAdmission admission =
                 config.addressLoopRootInvocation(loopRootHookGroup,
                         rootMethod, receiver, rootArguments, token);
-        // The declared occurrence its question answered takes the declared
+        // The planned occurrence it answered by shape takes the planned
         // address here, once, where it opened (IDENTITY §9): its bodies'
         // rows, endpoints and ordinals state it.
         if (admission.answered != null) {

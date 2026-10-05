@@ -21,18 +21,21 @@ defaulted.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
-[AGENTS.md](docs/handover/AGENTS.md) and [OPERATIONS.md](docs/handover/OPERATIONS.md) as its own
-long-term memory.
+[AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md) and
+[PARALLEL.md](docs/handover/PARALLEL.md) as its own long-term memory.
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands, as of the 2026-10-04 night handover: the goal (verbatim); every branch with its head, worktree and content (what each branch is doing); the checks selected per system; the 19 known bugs and their status; the HDFS rounds HG2–HG5 and the state of each HDFS check; trees, VM images, snapshots; where the analyses live. |
-| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper), then the cross-cutting engine items. HDFS first: finish the two in-flight branches, the next round of the 46, the remaining defects, the end-of-system checks. |
-| 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted. Includes what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, workarounds with measure, system by system, git and safety. |
-| 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 4 coding agents, reviews only at key complex places, briefs, worktrees, merges, stopping; how each lead ran them and the lessons. |
-| 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands, build and test, rounds and sweeps, the offline gate, reading and debugging a campaign, traps. |
-| 6 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM). |
-| 7 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds). |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands at the 2026-10-05 handover: the goals (verbatim); every GraphChecker branch with its head, worktree and state; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and what must change; VM images and snapshots; the rounds (HG4, HG5A, HG7, the agents') and the state of each HDFS check; where the evidence lives. |
+| 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the WIP to land, the r4 trees, the time model, 11741's binding, the open checks, speed, the next round and the end of HDFS, the cleanup still owed. |
+| 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
+| 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 4 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
+| 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
+| 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
+| 7 | [docs/checks/README.md](docs/checks/README.md) | Every ad hoc coordination check of the four systems (HDFS, Solr, HBase, ZooKeeper) and every bug check: site, guard, workload and live state; the per-system point tables and the owner's selection. |
+| 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
+| 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
+| 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds). |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
@@ -129,7 +132,8 @@ if it runs out; PIPELINE §7.7), REPRODUCE's runs (the recording's peak), an off
 heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
 (`stream_shared_pool`): each keeps in flight its share of the slots its hosts hold at its measured
 replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
-(`MemTotal` less `MemAvailable`), each with the start and a head's held room, stay within
+(`MemTotal` less `MemAvailable`), each with the start and a head's held room (its engine JVMs'
+measured peak times 1.25, the largest idle head's of the host), stay within
 `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its
@@ -202,8 +206,7 @@ src/main/java/edu/uva/liftlab/graphchecker/
                ConfirmMain
   compose/     Composer, families, SMT lowering, container codec, string identities, ClaimPolicy,
                ComposeMain
-  contract/    row kinds, holes, wire declarations, identity types, gap registry, session layout,
-               IMPORT gate, row pool
+  contract/    row kinds, identity types, gap registry, session layout, IMPORT gate, row pool
   smt/         expression IR, arms and families, z3 driver
   annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
 src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
@@ -219,13 +222,18 @@ tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for ever
                                   (which runs a process on any lift still names), heads.sh (a
                                   case's configuration, its head's weight and
                                   room, and which host heads it)
-tools/rounds/                     launch, monitor and stop campaigns on the lifts; snapshot-gc.sh
+tools/rounds/                     launch, monitor and stop campaigns on the lifts (launch-round.sh, launch-run.sh,
+                                  stop-run.sh, round-status.sh, round-watch.sh, round-slow.sh, round-verify.sh,
+                                  obl-times.py); snapshot-gc.sh
 tools/adhoc/                      sweep.sh (a list of cases over the lifts), fanout.sh, triage.py,
                                   findings.py
 tools/regress/                    offline-ab.sh: the offline merge gate
 tools/analysis/                   timeline.py (where a campaign's wall time went), rootcov.py (roots
-                                  and symbolic predicates per campaign)
+                                  and symbolic predicates per campaign), smt-legend.py (a formula's
+                                  symbols named in the system's code, for checking a chain by hand)
 docs/STATUS.md                    done / partial / not done, per requirement; open defects
-docs/design/                      the design (index and design at a glance: docs/design/README.md)
+docs/design/                      the design (index and design at a glance: docs/design/README.md; speed and the
+                                  cluster: PERFORMANCE.md)
+docs/checks/                      every ad hoc coordination check of HDFS, Solr, HBase and ZooKeeper, with its live state
 docs/handover/                    STATE, TODO, RULES, AGENTS, OPERATIONS: the handover (start here)
 ```

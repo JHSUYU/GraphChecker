@@ -62,6 +62,54 @@ public class ANodesStartupIsTheNodesTest {
     }
 
     /**
+     * A construction is the test's own work, and a daemon's turn is a root of
+     * its own: each ends the exchange the thread served, so the node stands
+     * in the test's request, not under the anchor of the last response the
+     * test's thread received (round HG4, hdfs-adhoc-22), and the turn
+     * outlives the end the next message gives that exchange -- left below
+     * it, the IPC client's end of it before a DataNode actor's heartbeat
+     * closed the turn too (round HG5A, hdfs-adhoc-21).
+     */
+    @Test
+    public void aStartupOrATurnEndsTheExchangeItsThreadServed() {
+        for (boolean turn : new boolean[] {false, true}) {
+            reset();
+            Object owner = new Object();
+            RuntimeTraceContext.registerSource(owner, CLIENT);
+            Object dataNode = new Object();
+            RuntimeTraceContext.registerSource(dataNode, NODE);
+            RecordingWindow.open();
+            long request = RuntimeTraceContext.beginRequest(CLIENT, "test");
+            String root = Identity.contextHere().render();
+            String header = CausynthTraceRecorder.outboundExchange(
+                    "HADOOP_IPC", "corr-1", "0", "RESPONSE", owner, null, "");
+            MessageDoors.inbound(header, "", "HADOOP_IPC", "corr-1", "0",
+                    "RESPONSE", owner, false);
+            assertTrue(Identity.contextHere().render(),
+                    Identity.contextHere().render().startsWith("Anchor:"));
+            long opened = turn ? MessageDoors.beginTick(dataNode, "ACTOR")
+                    : MessageDoors.beginNodeStartup("CLUSTER_NODE",
+                            "DATANODE", "t/dn0");
+            String expected = turn ? "Root:ACTOR#1" : root;
+            assertEquals("turn=" + turn, expected,
+                    Identity.contextHere().render());
+            assertTrue("turn=" + turn + ": the served exchange ended",
+                    MessageDoors.current() == null);
+            // What the next message's door does first: nothing to end.
+            MessageDoors.endInbound();
+            assertEquals("turn=" + turn + " outlives the next message",
+                    expected, Identity.contextHere().render());
+            if (turn) {
+                MessageDoors.endTick(opened);
+            } else {
+                MessageDoors.endNodeStartup(opened);
+            }
+            RuntimeTraceContext.endRequest(request);
+            RecordingWindow.reset();
+        }
+    }
+
+    /**
      * A startup names the node's live epoch: one naming an epoch the run
      * registered a later one of is refused by name.
      */
