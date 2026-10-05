@@ -55,17 +55,18 @@ import java.util.concurrent.atomic.LongAdder;
  * start-up times).</p>
  *
  * <p>A read never blocks: the cap holds time, never a thread.  A read that
- * finds a cap standing a stall -- the watchdog's test: a schedule timeout
- * with nothing computing, or eight whatever runs ({@code
- * ScheduleLog#stalledLocked}) -- asks for it to be lifted: before the window
- * it is, by name: time standing at a pass runs on toward the next mark, and
- * time standing at the next mark runs past it ({@link #liftLocked});
- * inside, only when no thread waits on the order, whose watchdog otherwise
+ * finds a cap standing long enough asks for it to be lifted: before the
+ * window, after the watchdog's ceiling of eight timeouts, never while a
+ * startup taker is held, by name: time standing at a pass runs on toward
+ * the next mark, and time standing at the next mark runs past it ({@link
+ * #liftLocked}); inside, after a stall by the watchdog's test (a timeout
+ * with nothing computing, or the ceiling, {@code ScheduleLog#stalledLocked})
+ * and only when no thread waits on the order, whose watchdog otherwise
  * moves the frontier ({@code ScheduleLog#clockAtCap}).  A slow start-up
- * computing past its cap is no stall: lifted, its time would run ahead of
- * the window's opening and stand there while the order caught up
- * (hdfs-11741, round TM1: lifted after a timeout, the window opened 62 s
- * of model time past its recorded instant).  Lifts are counted at exit.</p>
+ * is no stall: lifted, its time would run ahead of the window's opening and
+ * stand there while the order caught up (hdfs-11741, round TM1: lifted
+ * after a timeout, the window opened 62 s of model time past its recorded
+ * instant).  Lifts are counted at exit.</p>
  */
 public final class Clocks {
     private static final Object LOCK = new Object();
@@ -256,8 +257,7 @@ public final class Clocks {
     /**
      * A read stood at the cap; at most once a second, a lift is asked for:
      * inside the window of the order ({@code ScheduleLog#clockAtCap}),
-     * before it here, once the cap stood a stall ({@code
-     * ScheduleLog#capStalled}).
+     * before it here, once the cap stood the watchdog's ceiling.
      */
     private static void atCap(Bounds at, long host) {
         at.reached.compareAndSet(0L, host);
@@ -271,12 +271,16 @@ public final class Clocks {
             return;
         }
         long stood = host - at.reached.get();
-        // A held startup taker bounds its own wait (one timeout): the cap
-        // at its mark stands for it (round TM8, hdfs-adhoc-17: six lifts,
-        // each beside a registration held out of the recorded order).
-        if (StartupOrder.holding()
-                || !ScheduleLog.capStalled(TimeUnit.NANOSECONDS.toMillis(
-                        stood))) {
+        // Before the window only the watchdog's ceiling lifts a cap: the
+        // replay's own start-up -- reading its plan over NFS, I/O no CPU
+        // look sees -- stood 38-70 s at hdfs-adhoc-22/23/25's first
+        // registration with "nothing computing", and lifted, time ran on
+        // to the opening and past it (round TM8: 22's window opened 10 s of
+        // model time late).  A held startup taker bounds its own wait (one
+        // timeout): the cap at its mark stands for it (17: six lifts, each
+        // beside a registration held out of the recorded order).
+        if (StartupOrder.holding() || stood < TimeUnit.MILLISECONDS.toNanos(
+                ScheduleLog.CEILING * ScheduleLog.timeoutMillis())) {
             return;
         }
         String lifted;
@@ -287,8 +291,8 @@ public final class Clocks {
             ScheduleLog.diverged("clock#" + lifted, "the application's"
                     + " clocks stood " + TimeUnit.NANOSECONDS.toMillis(stood)
                     + " ms at the instant of " + lifted + ", marked in the"
-                    + " order before the window, with nothing computing:"
-                    + " they run on past it toward the next mark");
+                    + " order before the window: they run on past it toward"
+                    + " the next mark");
         }
     }
 

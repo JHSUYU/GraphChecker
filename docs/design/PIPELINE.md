@@ -277,12 +277,14 @@ and no read goes back. The window's opening moves `lo` to the order's opening an
 the order publishes its cap (reading the order takes the concolic VM seconds: round TM3 ran 2-12 s of
 model time free while it did), or keeps a cap the order already published (another thread may meet the
 open window first and load the order). No read is keyed or written. A read never blocks;
-a cap that stood a stall by the watchdog's own test (a schedule timeout with nothing computing, or eight
-whatever runs: `ScheduleLog#stalledLocked`) is lifted by name (`SCHEDULE_DIVERGED`): before the window
-by the clock itself (`clock#<mark>`: time standing at a pass runs on toward the next mark, time at
-the next mark past it), never while a startup taker is held (`StartupOrder#holding`: its hold, at most one
-timeout, bounds that wait; round TM8: 17's six lifts each stood beside a registration held out of the
-recorded order); inside it only when no thread waits on the
+a cap that stood long enough is lifted by name (`SCHEDULE_DIVERGED`): before the window by the clock
+itself after the watchdog's ceiling of eight timeouts (`clock#<mark>`: time standing at a pass runs on
+toward the next mark, time at the next mark past it), never while a startup taker is held
+(`StartupOrder#holding`: its hold, at most one timeout, bounds that wait; round TM8: 17's six lifts each
+stood beside a registration held out of the recorded order) -- the replay's own start-up, reading its
+plan over NFS, is I/O no CPU look sees, and lifted on a timeout with "nothing computing" round TM8 ran
+22's window 10 s of model time late; inside it after a stall by the watchdog's own test (a timeout with
+nothing computing, or the ceiling: `ScheduleLog#stalledLocked`) and only when no thread waits on the
 order (`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier.
 A slow start-up computing past its cap is no stall: lifted after a bare timeout, hdfs-11741's opened its
 window 62 s of model time past the recorded opening, and its window's time stood there (round TM1). The

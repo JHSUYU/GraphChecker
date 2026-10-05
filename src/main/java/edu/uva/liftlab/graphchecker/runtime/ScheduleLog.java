@@ -1325,27 +1325,13 @@ public final class ScheduleLog {
     /**
      * Whether a cap of the application's clocks that stood {@code stood} ms
      * is a stall, by the watchdog's own test: a timeout with nothing
-     * computing ({@link #computingLocked}: a slow start-up on the concolic
-     * VM is progress, not a wait for time), or {@link #CEILING} timeouts
+     * computing ({@link #computingLocked}), or {@link #CEILING} timeouts
      * whatever runs.
      */
     private static boolean stalledLocked(long stood, long now) {
         long timeout = timeoutMillis();
         return stood >= CEILING * timeout
                 || stood >= timeout && !computingLocked(now);
-    }
-
-    /** {@link #stalledLocked} for a cap before the window ({@link Clocks}),
-     *  where no order is held yet. */
-    static boolean capStalled(long stood) {
-        mute();
-        try {
-            synchronized (LOCK) {
-                return stalledLocked(stood, System.currentTimeMillis());
-            }
-        } finally {
-            unmute();
-        }
     }
 
     /** The frontier moved: every waiter's stall starts over, and what was
