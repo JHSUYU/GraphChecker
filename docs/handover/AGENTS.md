@@ -220,3 +220,42 @@ eleven merges into main, none reverted)
   its header from the start.
 - **The owner reads progress as counts** (how many checks have a right `.smt`, how many known bugs
   pass, new bugs). Answer in those terms, in Chinese, briefly, before continuing.
+
+**How the 2026-10-05 lead ran the agents** (one night, `system/hdfs` 43ba5d565 -> 2e89a9e69: ten merges, ~6,800 lines
+deleted, rounds HG5A and HG7)
+- **Four coding agents, each kept in one area across packages.** When an agent finished a package it got the next one
+  in the same area by `SendMessage` (it keeps its context): COMPOSE/verdicts (decisive-verdicts -> closure E1 ->
+  COMPOSE refactor and cost), identity (request-in-hand -> address-shared rule B -> planned shape -> anchored index),
+  schedule (HG6 -> time model), driver/ledger (measured charges -> wire-half -> head reserve + WIRE-CODEC deletion ->
+  SEED speed). Changes to one concept stay on one branch, so identity changes were serialized in one agent.
+- **Read-only agents where they pay:** a dead-code audit (bytecode reachability + grep, a ranked deletion list), a
+  diagnosis agent for the 11741 regression (one rerun with a debug print in its own snapshot: the real cause in 40 min,
+  the lead's guess was wrong), and one review agent per soundness or schedule/identity batch before its merge.
+- **Design gates.** Every identity, schedule, symbolic or soundness change sent a <= 20-line design first; the lead
+  approved, narrowed ("one mechanism, not two": rule A was dropped because HG6's beginTick already covered it) or
+  redirected (option A, a tree point, instead of an engine rule).
+- **Briefs on disk** (`/bigtemp/vnr3ne/analysis/study-2026-10-04/brief-*.md`) with the evidence paths and the lead's
+  decisions; short follow-ups by message.
+- **The lead merged into `system/hdfs` directly** (worktree `/bigtemp/vnr3ne/wt/gc-hdfs`), each merge built and
+  tested (mvn + the shell test via `onlift.sh`), conflicts resolved as the union of both sides' state; then told every
+  agent whose branch sat on an older base to merge `system/hdfs` before validating.
+- **A busy-file list** let the cleanup agent work beside three feature branches without conflicts (phase 1 = free files
+  only; phase 2 after the merges).
+- **The lead kept** the baseline round, reading every failure itself first (most causes were found in minutes from the
+  formula, the gaps or the log), small general fixes (FREEZE's digest, array identities), the merges, the docs.
+
+**Lessons from 2026-10-05**
+- **A verdict is not real until checked**: how EXPLORE ended (FIXED_POINT / WITNESSED vs a budget cut), z3 on the
+  exported file, moved roots (`tools/rounds/round-verify.sh`). HG4's "23 UNSAT" hid budget cuts and a silently wrong
+  read; the decisive rules made them RUN_DEFECTs, so the count dropped before it rose.
+- **Measure before designing**: replay peaks vs charges (one grep of the replay logs) made the measured-charges design
+  obvious; an strace of one static pass found SEED's real cost (failed NFS stats), not the guess (contention).
+- **A correct new detection can look like a regression**: vm-hg5's outside-mutation mark exposed 11741's unplanned
+  key-update occurrence that the old VM missed silently; the fix belonged in admission, not in the VM or COMPOSE.
+- **Reviews keep finding blockers**: decisive-verdicts (4: a skipped self-check, under-counted cuts, a second "moves"
+  walk, silent path drops) and HG6 (draw keys moved by GROW). Never merge such a batch unreviewed.
+- **Kill by pid, never by pattern**: an agent's pattern kill hit another agent's offline gate on lift11; the lead's
+  `stop-run.sh` with a run's path in the same command line killed its own shell.
+- **`onlift.sh` runs over ssh, which drops exported variables**: pass them on the remote command line (`onlift.sh ...
+  env VAR=... cmd`), or a build may write `~/.m2`.
+- **Agents' live runs and the lead's sweep share the ledger**; judge any run by stage times and queue waits.
