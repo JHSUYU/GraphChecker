@@ -63,38 +63,40 @@ which sends the key id, gets an address no plan instrumented.
 `/bigtemp/vnr3ne/ab/hdfs-decisive-verdicts/finish/` (`gate-head.sh`, `table.py`). Then a review agent
 re-reads the soundness batch before the merge into `system/hdfs`.
 
-### 2. Finish HG6 = `hdfs-draw-sites` (one coding agent)
+### 2. Finish HG6 = `hdfs-draw-sites2` (one coding agent)
 
-The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites`; probe snapshot `~/gc-run/hds8`.
+Worktree `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites`, branch `hdfs-draw-sites2`; runs in
+`/bigtemp/vnr3ne/gc-out/hdfs-draw-sites/accept-DW*` (one line each in `hg6/runs.txt`), snapshots `~/gc-run/hds11`
+(the branch before the merge of `4bfe1a6e1`) and `hds12` (the same without the turn rule).
 
-**a. Canaries.** Rerun the 11741 and 17897 canaries to a verdict. On 11741, check whether the 3
-BLOCKING `TOPOLOGY_DIVERGENCE` gaps (seen with C1) survive without C1.
+**a. Canaries.** 17897 PASS, MARKER_FLIPPED (DW1). 11741 (DW2, stopped after 63 min): its exposure
+`f9fb3c4ff841e29b` composes UNSAT_CLOSED NO_SUPPORTED_WITNESS (the witness path rests on an
+UNSTATED_VALUE map read), as on HG5A-36; no BLOCKING `TOPOLOGY_DIVERGENCE` (41 DIAGNOSTIC ones).
 
-**b. Gate and probes.** Run the V25 gate with `AB_HEAP_MB=4096`. Finish 17, 21, 43, 23, 25 and 35 to
-a verdict, plus 01, which was not rerun. Their give-ups at the stop, on `3a27177b3`:
+**b. Probes** (seed replay, stopped after IMPORT). The give-ups listed at the stop on `3a27177b3` were
+counts of replays killed early (43 had taken 151 of 8074 slots), so the base is HG5A (system/hdfs):
 
-| case | give-ups |
-| --- | --- |
-| 16 | 3, and finished |
-| 22 | 10 |
-| 23 | 19 |
-| 24 | 2 |
-| 25 | 17 |
-| 32 | 19 |
-| 34 | 2 |
-| 35 | 18 |
-| 17 | 52 |
-| 21 | 17 |
-| 43 | 1 |
+| case | HG5A: lines / slots given up / taken of order | DW3 (branch) | DW4 (branch without the turn rule) |
+| --- | --- | --- | --- |
+| 17 | 97 / 1578 / 2022 of 2268 | 89 / 170 / 1897 of 2062 | |
+| 21 | 47 / 89 / 2322 of 2651 | 108 / 230 / 1894 of 2037 | 158 / 291 / 1502 of 1656 |
+| 43 | 39 / 213 / 3707 of 7883, target not reached | 59 / 310 / 4021 of 7937, not reached | |
+| 23 | 144 / 408 / 6293 of 13056 | 234 / 386 / 5018 of 10852 | |
 
-17's 52 give-ups need a look of their own: with C1 and no hold it had 18 and finished.
+22, 25, 34, 35 (the same `testVersions` workload as 23) and 01 were not probed on the branch. The
+large counts are the clock class: a DataNode actor's turn decides by `monotonicNow` (heartbeat and
+block report due, `BPServiceActor.Scheduler`) and by state event-less threads set (the NameNode's
+block-report leases, at most 6 pending for 17's 9 DataNodes; a block's IBR), and the VM replay runs
+slower than the recording: 43's dn2 turn #2 sent a heartbeat its recorded turn did not (seq 105) and
+its IBR came after its slot was given up; 17's turn-#1 block reports were not made; 23's IPC handlers
+and `CacheReplicationMonitor` time out where the recording's never did. 21's
+`OCCURRENCE_ADDRESS_SHARED` remains (one heartbeat endpoint for every turn of the DataNode actor run
+occurrence opened under the test's request): `hdfs-address-shared`'s package.
 
 **c. Review and merge.**
 - A review agent reads the batch (schedule/identity: high risk).
-- Then merge into `system/hdfs`. The branch is based on `d916851fa`, before campaign-schedule, and
-  runs CONFIRM inline: keep `system/hdfs`'s CONFIRM-as-pool-job and its remote-wait fix
-  (`71df98a00`).
-- Delete `hds8` and `/bigtemp/vnr3ne/wt/gc-hdfs-seed-stalls` afterwards.
+- Then merge into `system/hdfs` (the branch already holds `4bfe1a6e1`).
+- Delete `hdfs-draw-sites`, `hds8`-`hds12` and `/bigtemp/vnr3ne/wt/gc-hdfs-seed-stalls` afterwards.
 
 ### 3. The next live round of the 46
 
