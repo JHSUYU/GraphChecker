@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -11,12 +10,15 @@ import org.junit.Test;
 
 /**
  * Counts restarted at the window's opening start at 1 for a site the level
- * reached before it ({@code Identity.Counters#reopened}): a call the window
- * opens in names its entries as one it opened before, or after, does.  Round
- * SL1, hdfs-adhoc-39: a DataNode's blockReport handler queued two storage
- * reports through {@code runBlockOp}, the first before the window; the second
- * entry restarted at 0, and both reports' work stood at {@code runBlockOp@0},
- * one address for two activations.
+ * reached before it ({@code Identity.Counters#reopened}): with m entries
+ * before the window, in-window entry j is {@code @(j + [m > 0])}, so a call
+ * the window opens in (m = 1) names its entries as one it opened before (m =
+ * 0) does, and m = 0 starts at 0 even where the level itself was entered
+ * before the window.  Round SL1, hdfs-adhoc-39: the NameNode's blockReport
+ * handler serving a DataNode's report queued two storage reports through
+ * {@code runBlockOp}, the first before the window; the second entry
+ * restarted at 0, and both reports' work stood at {@code runBlockOp@0}, one
+ * address for two activations.
  */
 public class AWindowOpenedInACallKeepsItsEntriesApartTest {
     private static final SourceRef NODE =
@@ -28,7 +30,9 @@ public class AWindowOpenedInACallKeepsItsEntriesApartTest {
     private static final String ENQUEUE = "<a.Queue: void "
             + "enqueue(java.lang.Runnable)>#u3";
 
-    private enum Window { BEFORE, DURING, AFTER }
+    /** Where the window opens: before the handler; inside it, before its
+     *  first report (m = 0); during the first report or after it (m = 1). */
+    private enum Window { BEFORE, IN_HANDLER, DURING, AFTER }
 
     @Before
     public void reset() {
@@ -40,18 +44,15 @@ public class AWindowOpenedInACallKeepsItsEntriesApartTest {
     @Test
     public void eachQueuedReportStandsApartWhereverTheWindowOpened()
             throws Exception {
-        List<String> before = null;
+        List<String> expected = new ArrayList<String>();
+        for (int report = 0; report < 2; report++) {
+            expected.add(HANDLER + "@0/" + RUN_OP + "@" + report + "/"
+                    + ENQUEUE + "@0");
+        }
         for (Window window : Window.values()) {
             reset();
-            List<String> reports = reports(window);
-            assertFalse(window + ": two reports, two addresses " + reports,
-                    reports.get(0).equals(reports.get(1)));
-            if (before == null) {
-                before = reports;
-            } else {
-                assertEquals(window + " names them as BEFORE does", before,
-                        reports);
-            }
+            assertEquals(window + ": the first report at 0, the second at 1",
+                    expected, reports(window));
         }
     }
 
@@ -63,6 +64,7 @@ public class AWindowOpenedInACallKeepsItsEntriesApartTest {
         if (window == Window.BEFORE) RecordingWindow.open();
         long request = RuntimeTraceContext.beginRequest(node, "report");
         long handler = Identity.enterFrame(HANDLER, null);
+        if (window == Window.IN_HANDLER) RecordingWindow.open();
         Object[] items = {new Object(), new Object()};
         for (int report = 0; report < items.length; report++) {
             long op = Identity.enterFrame(RUN_OP, null);

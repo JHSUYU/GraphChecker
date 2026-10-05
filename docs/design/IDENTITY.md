@@ -219,11 +219,20 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
 - **Window rule** (`runtime/RecordingWindow`): the workload opens the window
   (`MessageDoors.startRecording`) and may close it (`stopRecording`); every count restarts at the
   window, and a frame entered before it stands at `k = 0` in any address. A site its level reached
-  before the window restarts at 1 (`Counters#reopened`): those entries all stand at 0, one perhaps
-  still running, so the window's first entry is the second, and a call the window opens in names its
-  entries as one it opened before or after does (round SL1, hdfs-adhoc-39: two storage reports a
-  blockReport handler queued through `runBlockOp`, the first before the window, both at
-  `runBlockOp@0`, one address for two activations). Neither the trace nor the
+  before the window under a hop still open restarts at 1 (`Counters#reopened`): with m entries
+  before the window, in-window entry j is `@(j + [m > 0])`, the m entries standing at 0, one perhaps
+  still running (round SL1, hdfs-adhoc-39: the NameNode's blockReport handler serving a DataNode's
+  report queued two storage reports through `runBlockOp`, the first before the window; restarted at
+  0 both lambdas stood at `runBlockOp@0`, one address for two activations). Two passes agree where
+  their m are equal, or 0 and 1 (the window opened before, or during, one call); they do not where m
+  is 1 and 2, nor 0 and m >= 1 where the earlier entries are set-up noise that differs between the
+  passes (the first in-window entry is then `@0` in one, `@1` in the other). Two entries before the
+  window still share `@0`, reachable within one pass where a handler queues work once per storage
+  without waiting (`NameNodeRpcServer#blockReceivedAndDeleted`): PLAN names that address
+  OCCURRENCE_ADDRESS_SHARED (`RuntimeSelectedRegionFinalizer`, BLOCKING when the closure retains
+  it), reported, never silent. An entry reads the window once, for its count and its level (a
+  start: for its count and its filed frames), so an entry racing the opening keeps no set-up count
+  inside the window. Neither the trace nor the
   schedule states anything before the window opens. The system's cluster adapter opens it once the
   cluster is up, or, for a case that declares `recording_window=startup` (an opt-in, owner-approved
   for bugs whose guard runs or whose fatal value is set while the cluster starts: a DataNode's
