@@ -41,9 +41,11 @@ import java.util.concurrent.atomic.LongAdder;
  * it joined, the recording did at once (17's first heartbeats, in the
  * millisecond of the last registration), and the replay's lag after it is
  * its own slowness.  Past the line, after the window closed, or with no
- * order, nothing caps it.  So a replay's application time never runs ahead
- * of its place in the order (a slower replay waits at the cap where the
- * recording's heartbeat was not yet due), nor behind it (a turn its slot
+ * order, nothing caps it, and past a cap time creeps on at a thousandth of
+ * the host's pace ({@link #CREEP}), never standing still.  So a replay's
+ * application time runs ahead of its place in the order by no more than that
+ * creep (a slower replay waits at the cap where the recording's heartbeat
+ * was not yet due), never behind it (a turn its slot
  * released early reads at least its slot's instant), and two threads never
  * read time going back.  No read is keyed and none is written: a value set
  * at start-up and a read compared with it stand on one timeline (the parked
@@ -65,6 +67,15 @@ import java.util.concurrent.atomic.LongAdder;
  */
 public final class Clocks {
     private static final Object LOCK = new Object();
+    /**
+     * How much slower than the host time creeps on past its cap: a
+     * millisecond a host second.  A real clock moves across a sleep, and
+     * code divides by what it moved (Hadoop's GcTimeMonitor, by its run's
+     * span after its first five-second sleep: standing still, it died in
+     * every replay of rounds TM1 and TM2); a stall of the watchdog's eight
+     * timeouts moves it 120 ms.
+     */
+    static final long CREEP = 1000L;
     /** What a cap allows past its instant: one millisecond tick. */
     static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
     /** One cap's ask for a lift at most this often. */
@@ -100,12 +111,17 @@ public final class Clocks {
         }
 
         long nanos(long host) {
-            return Math.min(hiNanos, baseNanos + (host - hostAt));
+            return capped(baseNanos + (host - hostAt), hiNanos);
         }
 
         long millis(long host) {
-            return Math.min(hiMillis, baseMillis
-                    + TimeUnit.NANOSECONDS.toMillis(host - hostAt));
+            return capped(baseMillis
+                    + TimeUnit.NANOSECONDS.toMillis(host - hostAt), hiMillis);
+        }
+
+        /** Past its cap, time creeps on at {@link #CREEP}'s pace. */
+        private static long capped(long ran, long hi) {
+            return ran <= hi ? ran : hi + (ran - hi) / CREEP;
         }
     }
 
@@ -373,9 +389,16 @@ public final class Clocks {
             if (bounds == null) return;
             Mark open = index >= 1 && index <= OPENS.size()
                     ? OPENS.get(index - 1) : null;
+            // The order may have capped time already, from another thread
+            // that met the window open first: its cap stands (round TM2,
+            // hdfs-adhoc-17: overwritten, time ran three seconds free and
+            // stood there for the window's first two).
+            Bounds now = bounds;
             moveLocked(open == null ? Long.MIN_VALUE : open.nanos,
                     open == null ? Long.MIN_VALUE : open.millis,
-                    Long.MAX_VALUE, Long.MAX_VALUE, null, true);
+                    now.inWindow ? now.hiNanos : Long.MAX_VALUE,
+                    now.inWindow ? now.hiMillis : Long.MAX_VALUE, now.inWindow
+                            ? now.cap : null, true);
         }
     }
 

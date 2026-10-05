@@ -79,7 +79,7 @@ public class ClocksTest {
         long firstMillis = RowCodec.scheduleMillis(marks(
                 ScheduleEvent.ORIGIN).get(0));
         Thread.sleep(150L);
-        assertEquals("never past a startup pass it has not made",
+        atCap("never past a startup pass it has not made",
                 first + 100L * MS + TICK, Clocks.nanos());
         assertEquals("on both clocks", firstMillis + 101L, Clocks.millis());
         StartupOrder.done(StartupOrder.begin("register", "dn0"));
@@ -90,14 +90,18 @@ public class ClocksTest {
                 RowCodec.scheduleNanos(marks(ScheduleEvent.STARTUP).get(0))
                         >= first + 100L * MS);
         Thread.sleep(250L);
-        assertEquals("from a pass on, time stands at the pass reached",
+        atCap("from a pass on, time stands at the pass reached",
                 first + 100L * MS + TICK, Clocks.nanos());
+        long standing = Clocks.nanos();
+        Thread.sleep(50L);
+        assertTrue("and creeps on: a sleep always sees its clock move",
+                Clocks.nanos() > standing);
 
         openWindow();
         ScheduleLog.enforceForTests(Arrays.asList(
                 event("x", 400L), event("y", 2000L)));
         Thread.sleep(150L);
-        assertEquals("inside, never past the frontier's instant",
+        atCap("inside, never past the frontier's instant",
                 first + 400L * MS + TICK, Clocks.nanos());
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         long atX = Clocks.nanos();
@@ -126,7 +130,7 @@ public class ClocksTest {
         long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
                 .get(0));
         Thread.sleep(100L);
-        assertEquals(first + 50L * MS + TICK, Clocks.nanos());
+        atCap("at the first pass", first + 50L * MS + TICK, Clocks.nanos());
         standUntilLifted("1 at a startup mark");
         Thread.sleep(100L);
         assertTrue("a startup pass that never came, nothing computing: time"
@@ -136,11 +140,20 @@ public class ClocksTest {
         ScheduleLog.enforceForTests(Collections.singletonList(
                 event("x", 10_050L)));
         Thread.sleep(100L);
-        assertEquals(first + 10_050L * MS + TICK, Clocks.nanos());
+        atCap("at the frontier", first + 10_050L * MS + TICK,
+                Clocks.nanos());
         standUntilLifted("1 with no thread waiting on the order");
         Thread.sleep(100L);
         assertTrue("a frontier no thread waits on: time runs past it",
                 Clocks.nanos() > first + 10_100L * MS);
+    }
+
+    /**
+     * A read at a cap: past it only by the creep, a thousandth of the host
+     * time it stood there (under a second here), so never by a tick.
+     */
+    private static void atCap(String why, long cap, long read) {
+        assertTrue(why + ": " + (read - cap), read >= cap && read < cap + TICK);
     }
 
     /** Reads at the cap, idle between, until the lift is counted. */
