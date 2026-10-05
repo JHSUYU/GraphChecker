@@ -717,6 +717,16 @@ draw on `new Random(seed)`, or on HDFS's `NetworkTopology.setRandomSeed` Random,
 mixed into the seed (`Randoms#seed`): neighbouring counts of one site would otherwise start
 generators nearly alike (alike UUID prefixes, one pick of four for every count).
 
+A directory listing is no root either: `java.io.File`'s `list` and `listFiles` (`WorkStartSites#LISTINGS`) are the
+`runtime/Listings` stand-ins of their names in both passes (`CausynthPipeline#replaceListing`), which return the
+listing sorted by name, and the lineage scan keeps every class that lists (`WorkStartSites#lists`). The JDK leaves
+the order to the file system, which lists in its own (ext4: hash order, per file system and per name), so a
+recording in one host's `/tmp` and its replay in another's `/localtmp` walked a copied tree in different orders:
+`FileUtil.copy` issued its shell commands per file in another order, the threads they started took other start
+counts, and every such thread's claim waited a watchdog timeout (round HG7R: hdfs-adhoc-24/26/37 at 72-89 schedule
+give-ups where HG5A, recorded and replayed on one file system, had 8-32). `java.nio.file` directory streams are
+not sorted (no case lists through them on the traced flow).
+
 ### 4.6 Root demand
 
 `causynth/RootDemand` asks where the values the declared throw's path guards decide on enter what
