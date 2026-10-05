@@ -47,8 +47,8 @@ workload asserts the gap itself.
 
 ## What these cases declare
 
-`workflow.properties`, `root-domains.jsonl` and
-`communication-mappings.jsonl` are shared by all three; `case.sh` carries what is per case.
+`workflow.properties` and `root-domains.jsonl` are shared by all three (the wire flows are every
+HDFS case's `../communication-mappings.jsonl`); `case.sh` carries what is per case.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ workload asserts the gap itself.
 | fault points | the engine's library catalog (`docs/design/SYMBOL-SCOPE.md` §4.2), not this directory | every catalog door of a class the system calls is woven with its Boolean fault points: `FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure), `FAULT:HADOOP_IPC:RESPONSE`, `FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`, `FAULT:HDFS_DATA_TRANSFER:REQUEST` in `datatransfer.Sender.send` and `FAULT:HDFS_DATA_TRANSFER:RESPONSE` after each response or ack parse of a class in scope (`DataNode$DataTransfer`'s close ack, `BlockDispatcher`'s response). The recorded polarity is false; true throws the transport's failure before the request leaves (after the response arrives) |
 | hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither is listed in `symbolic-inputs.jsonl` |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
-| wire mappings | `communication-mappings.jsonl`, four `WIRE_FLOW` rows | `block-key-id`, `block-key-expiry-date`, `data-encryption-key-id` and `namenode-data-encryption-key-id`, each with an exact producer and consumer capture (`CALL_ARGUMENT`, `CALL_RETURN`, `METHOD_PARAMETER`). Declared ports are tracked and mint nothing: the attach installs the producer's own propagated expression at the consumer |
+| wire mappings | `../communication-mappings.jsonl` (every HDFS case's one declaration), four `WIRE_FLOW` rows | `block-key-id`, `block-key-expiry-date`, `namenode-data-encryption-key-id` (`CALL_ARGUMENT` into the proto builder, `CALL_RETURN` out of the proto getter) and `data-encryption-key-id` (`CALL_ARGUMENT` at the SASL client, `METHOD_PARAMETER` 0 of `retrieveDataEncryptionKey`: the key id travels inside the SASL user name, where no automatic port sees it). Declared ports are tracked and mint nothing: the consumer gets the producer's own propagated expression |
 | loop bounds | `loop-bounds.jsonl` (five rows) for `bug1`/`bug2`, `loop-bounds-datanode.jsonl` (four rows) for `bug3`, every row at `loopBodyBound: 8`; `causynth_loop_default_bound=8` | `case.sh` selects the file and `run.sh` exports it as `CAUSYNTH_LOOP_BOUNDS` |
 
 ## Build and run

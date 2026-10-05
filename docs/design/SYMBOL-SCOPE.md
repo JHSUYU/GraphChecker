@@ -986,7 +986,8 @@ id (`plan/CommunicationCatalogContract#portId`).
 ### 6.1 Declared rows
 
 `communication-mappings.jsonl` (`-Dcausynth.communication.mappings`, from
-`causynth_communication_mappings`) holds WIRE_FLOW rows; a
+`causynth_communication_mappings`; one per system where the rows are the system's protocol, HDFS's
+`experiments/hadoop/communication-mappings.jsonl` for every HDFS case) holds WIRE_FLOW rows; a
 row of any other kind (a DOOR row: doors are the library catalog's, §4.2) is refused:
 
 ```json
