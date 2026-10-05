@@ -1461,11 +1461,18 @@ the read names no object, `Composer#containerOwners`).
 
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
-is a window; otherwise the root is pinned. `clocks`: every clock cell the formula names gets a
-reading on the recording's timeline -- the seed's, or, for a cell the seed never read (a region
-woven after it), the seed's reading of the nearest cell (by seq) of the same clock that a session
-reading it also read, plus the time that session's host read between the two; a cell no session can
-place is BLOCKING (`DECLARATION_MISSING`) -- and a domain, floor = the reading, ceiling = reading +
+is a window; otherwise the root is pinned. `placeClocks`, before any path composes, puts every
+clock cell of the corpus on the recording's timeline -- the seed's reading, or, for a cell the seed
+never read (a region woven after it, an occurrence a replay moved: hdfs-17897 NP3, dn0's `addKeys`
+run under the command queue's anchor instead of the heartbeat's), the seed's reading of the nearest
+cell (by seq) of the same clock of the same node that a session reading it also read, plus the time
+that session's host read between the two; every seed reading anchors, whatever the formula names. A
+cell no session can place refuses each path whose own terms name it, by name (`DECLARATION_MISSING`,
+DIAGNOSTIC, in `refusedPaths`: no claim could say whether a witness moved it), beside
+`unstatedRoots` at step (1b); every other path composes, and only when every path is refused does the
+ADMISSION_GAP close the composition. `clocks`: every clock cell the formula names gets its reading
+(one still in the formula with none is named, DIAGNOSTIC, and has no domain) and a domain, floor =
+the reading, ceiling = reading +
 30 days (in its ticks), unless the case declares bounds. On one node, each cell is no earlier than
 the nearest earlier cell by seq (the recording's event, the order a replay runs a plant on in) of the
 same clock (`contract.Clock#same`: the JVM clock its row states and the same tick; a cell stating
