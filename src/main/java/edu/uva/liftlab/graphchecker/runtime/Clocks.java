@@ -271,7 +271,12 @@ public final class Clocks {
             return;
         }
         long stood = host - at.reached.get();
-        if (!ScheduleLog.capStalled(TimeUnit.NANOSECONDS.toMillis(stood))) {
+        // A held startup taker bounds its own wait (one timeout): the cap
+        // at its mark stands for it (round TM8, hdfs-adhoc-17: six lifts,
+        // each beside a registration held out of the recorded order).
+        if (StartupOrder.holding()
+                || !ScheduleLog.capStalled(TimeUnit.NANOSECONDS.toMillis(
+                        stood))) {
             return;
         }
         String lifted;

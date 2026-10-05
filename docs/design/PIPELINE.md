@@ -280,7 +280,9 @@ open window first and load the order). No read is keyed or written. A read never
 a cap that stood a stall by the watchdog's own test (a schedule timeout with nothing computing, or eight
 whatever runs: `ScheduleLog#stalledLocked`) is lifted by name (`SCHEDULE_DIVERGED`): before the window
 by the clock itself (`clock#<mark>`: time standing at a pass runs on toward the next mark, time at
-the next mark past it); inside it only when no thread waits on the
+the next mark past it), never while a startup taker is held (`StartupOrder#holding`: its hold, at most one
+timeout, bounds that wait; round TM8: 17's six lifts each stood beside a registration held out of the
+recorded order); inside it only when no thread waits on the
 order (`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier.
 A slow start-up computing past its cap is no stall: lifted after a bare timeout, hdfs-11741's opened its
 window 62 s of model time past the recorded opening, and its window's time stood there (round TM1). The

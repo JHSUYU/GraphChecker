@@ -43,6 +43,10 @@ public final class StartupOrder {
     /** Per step, the passes completed in this run, or given up. */
     private static final Map<String, Set<String>> PASSED =
             new HashMap<String, Set<String>>();
+    /** How many takers are held right now: while one is, its step's mark
+     *  is a wait the hold itself bounds, and the clock standing at it is no
+     *  stall ({@link #holding}).  Guarded by LOCK. */
+    private static int held;
     /** Per step and taker, how often it began the step in this run. */
     private static final Map<String, Integer> BEGUN =
             new HashMap<String, Integer>();
@@ -74,33 +78,48 @@ public final class StartupOrder {
             }
             long deadline = System.currentTimeMillis()
                     + ScheduleLog.timeoutMillis();
-            while (!passed.containsAll(before)) {
-                long left = deadline - System.currentTimeMillis();
-                if (left <= 0L) {
-                    before.removeAll(passed);
-                    passed.addAll(before);
-                    for (String missing : before) {
-                        Clocks.passed(named, missing);
+            boolean holding = !passed.containsAll(before);
+            if (holding) held++;
+            try {
+                while (!passed.containsAll(before)) {
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0L) {
+                        before.removeAll(passed);
+                        passed.addAll(before);
+                        for (String missing : before) {
+                            Clocks.passed(named, missing);
+                        }
+                        ScheduleLog.diverged("startup#" + named, pass
+                                + " took " + named + " after waiting "
+                                + ScheduleLog.timeoutMillis() + " ms for "
+                                + before + ", marked before it, which did"
+                                + " not complete it: they are given up");
+                        break;
                     }
-                    ScheduleLog.diverged("startup#" + named, pass + " took "
-                            + named + " after waiting "
-                            + ScheduleLog.timeoutMillis() + " ms for " + before
-                            + ", marked before it, which did not complete it:"
-                            + " they are given up");
-                    break;
+                    try {
+                        LOCK.wait(left);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        before.removeAll(passed);
+                        ScheduleLog.diverged("startup#" + named, pass
+                                + " took " + named + " when interrupted"
+                                + " while waiting for " + before
+                                + ", marked before it");
+                        break;
+                    }
                 }
-                try {
-                    LOCK.wait(left);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    before.removeAll(passed);
-                    ScheduleLog.diverged("startup#" + named, pass + " took "
-                            + named + " when interrupted while waiting for "
-                            + before + ", marked before it");
-                    break;
-                }
+            } finally {
+                if (holding) held--;
             }
             return new String[] {named, pass};
+        }
+    }
+
+    /** Whether a taker is held now ({@link Clocks} lifts no cap while one
+     *  is: StartupOrder gives the missing passes up within a timeout). */
+    static boolean holding() {
+        synchronized (LOCK) {
+            return held > 0;
         }
     }
 
@@ -146,6 +165,7 @@ public final class StartupOrder {
     static void resetForTests() {
         synchronized (LOCK) {
             marked = null;
+            held = 0;
             PASSED.clear();
             BEGUN.clear();
         }
