@@ -4340,12 +4340,15 @@ public class ComposerTest {
      * of one location saw two writes, which no writer arm is (each binds
      * both reads), and (p) a second read saw a version no row wrote: the
      * pins' arm, holding each read to its own join or pin, is the run,
-     * whichever read came first.  (c) The one writer read has no arm: its
-     * block, stretched to its write of another location, rests on a
-     * decision nothing states.
+     * whichever read came first.  (c) The one writer read has a block
+     * stretched to its write of another location the run read from
+     * another writer (and its body rests on a decision nothing states):
+     * its selector would force that location's value too, so it is no arm
+     * of the run, which is held by the pins' arm -- the run as recorded is
+     * a world of the formula (hdfs-adhoc-16 HG5A).
      */
     @Test
-    public void theRecordedArmIsTheWriteReadOrABlockingGap()
+    public void theRecordedArmIsTheWriteReadOrThePinsArm()
             throws Exception {
         OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
                 CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
@@ -4418,30 +4421,17 @@ public class ComposerTest {
                     solver());
             assertEquals(shape + ": both runs are paths", 2,
                     composition.disjuncts().size());
-            boolean stated = !"c".equals(shape);
-            assertEquals(shape + ": a recorded pairing iff one arm is it",
-                    stated, !composition.recordedPairings().isEmpty());
+            assertFalse(shape + ": an arm is the recorded pairing",
+                    composition.recordedPairings().isEmpty());
             assertEquals(shape + ": the pins' arm iff no writer's arm is "
-                            + "the run", "b".equals(shape)
-                            || "p".equals(shape),
+                            + "the run", !"a".equals(shape),
                     composition.body().contains("observed_arm__"));
-            boolean named = false;
-            for (GapRow gap : decision.claim().gaps()) {
-                named |= gap.kind() == GapKind.UNSTATED_VALUE
-                        && gap.blocking()
-                        && gap.subject().equals(SmtLowering.locationKey(keys));
-            }
-            assertEquals(shape + ": else the location is named", !stated,
-                    named);
-            assertEquals(shape + ": and the claim is blocked " + decision
-                    .claim().gaps(), !stated, decision.claim().blocked());
-            if (stated) {
-                assertEquals(shape + ": the run as it happened is healthy",
-                        "unsat", decision.outcomes().get(0).answer()
-                                .status());
-                assertEquals(shape, ClaimKind.STATE_PAIRING_FLIPPED,
-                        decision.claim().kind());
-            }
+            assertFalse(shape + ": nothing blocks the claim " + decision
+                    .claim().gaps(), decision.claim().blocked());
+            assertEquals(shape + ": the run as it happened is healthy",
+                    "unsat", decision.outcomes().get(0).answer().status());
+            assertEquals(shape, ClaimKind.STATE_PAIRING_FLIPPED,
+                    decision.claim().kind());
         }
     }
 

@@ -1215,7 +1215,12 @@ location's INITIAL, the writer at version 0, where the read observed it or the s
 decided, `ComposedFamilies#initialBody`), plus an `observed_arm__` holding each read to its
 own join or pin wherever the run is no one writer's arm -- the reads saw several writes (a nested
 region of the reader's own thread wrote between two of its reads: hdfs-adhoc-23's
-`StorageInfo.layoutVersion`), or a version one of them observed has no writing row; the writer
+`StorageInfo.layoutVersion`), or a version one of them observed has no writing row, or -- THE
+RUN AS RECORDED IS A WORLD -- the one writer every read observed is no arm of the run because its
+selector binds its whole block (every location its arm states here) and the run read another
+location of that block from another writer (hdfs-adhoc-16 HG5A: a `Block` constructor wrote
+`blockId`, `genStamp` and `numBytes`, and the run read the last two from later writers; one pass is
+the fixed point); the writer
 arms stay beside it, each binding every read, and where the reads saw several versions only a
 write each of them could have seen (`Arms#eligible` for every version; hdfs-adhoc-16: the first
 read's own later write is none); exactly one per location that has two arms or more, one of them
