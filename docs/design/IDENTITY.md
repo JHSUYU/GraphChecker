@@ -310,7 +310,11 @@ thread its constructor creates. A system's cluster adapter brackets each node's 
 registers the node by once built, and a registered node's start in `beginNodeStartup(node)`: a
 restart builds the node anew under its name at its next epoch (`restartSource` first; HDFS
 `CausynthCluster`: every NameNode, DataNode and JournalNode an automatic `MiniDFSCluster` or
-`MiniJournalCluster` builds or restarts). Attribution only -- no event, no lineage hop, no flow: the
+`MiniJournalCluster` builds or restarts). A startup first ends the exchange the thread served
+(`MessageDoors#endInbound`): a construction is the test's own work, so the node and its threads stand
+in the test's request, not under the anchor of the last response the test's thread received (round
+HG4, hdfs-adhoc-22: a response that differed after a divergence re-anchored every later cluster's
+build, and 10560 slots were given up at once). Attribution only -- no event, no lineage hop, no flow: the
 startup is the node's explicit scope while it stands (rule 1), so what the test's thread itself runs
 inside a construction (a NameNode's format and fsimage load) is the node's, under the test's context,
 and work started or created inside carries the startup's node in place of its starter's explicit node

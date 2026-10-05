@@ -62,6 +62,33 @@ public class ANodesStartupIsTheNodesTest {
     }
 
     /**
+     * A construction is the test's own work: it ends the exchange the
+     * thread served, so the node stands in the test's request, not under the
+     * anchor of the last response the test's thread received (round HG4,
+     * hdfs-adhoc-22).
+     */
+    @Test
+    public void aStartupEndsTheExchangeItsThreadServed() {
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, CLIENT);
+        RecordingWindow.open();
+        long request = RuntimeTraceContext.beginRequest(CLIENT, "test");
+        String root = Identity.contextHere().render();
+        String header = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                "corr-1", "0", "RESPONSE", owner, null);
+        MessageDoors.inbound(header, "", "HADOOP_IPC", "corr-1", "0",
+                "RESPONSE", owner, false);
+        assertTrue(Identity.contextHere().render(),
+                Identity.contextHere().render().startsWith("Anchor:"));
+        long startup = MessageDoors.beginNodeStartup("CLUSTER_NODE",
+                "DATANODE", "t/dn0");
+        assertEquals(root, Identity.contextHere().render());
+        MessageDoors.endNodeStartup(startup);
+        RuntimeTraceContext.endRequest(request);
+        RecordingWindow.reset();
+    }
+
+    /**
      * A startup names the node's live epoch: one naming an epoch the run
      * registered a later one of is refused by name.
      */

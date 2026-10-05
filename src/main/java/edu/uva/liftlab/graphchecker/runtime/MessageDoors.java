@@ -677,18 +677,28 @@ public final class MessageDoors {
      * and a registered node's start, a restart's included, by {@link
      * #beginNodeStartup(Object)}.
      *
+     * <p>A construction is the test's own work, not the serving of the last
+     * message its thread received: the exchange the thread served ends
+     * first, so the node and the threads it starts stand in the test's
+     * request, not under that message's anchor (round HG4, hdfs-adhoc-22: one
+     * response that differed after a divergence re-anchored every later
+     * cluster's build, and 10560 slots were given up at once).</p>
+     *
      * @return the token {@link #endNodeStartup} takes
      */
     public static long beginNodeStartup(String kind, String role,
                                         String sourceId) {
+        endInbound();
         return CausynthTraceRecorder.beginNodeStartup(kind, role, sourceId);
     }
 
     /**
      * Opens one startup of a node already registered -- its threads' start
-     * -- or of none when it is not: what it starts belongs to the node.
+     * -- or of none when it is not: what it starts belongs to the node.  The
+     * exchange the thread served ends first, as for a construction.
      */
     public static long beginNodeStartup(Object node) {
+        endInbound();
         return CausynthTraceRecorder.beginNodeStartup(node);
     }
 
