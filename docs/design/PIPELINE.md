@@ -177,7 +177,10 @@ whose chain the window holds back to its root (`RuntimeWorkflowDiscovery#declare
 `DECLARED_TARGET_BEFORE_WINDOW`, IDENTITY.md §9) and marks that row `declaredOccurrence`; PLAN takes
 the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNED`), and the shell
 uses the address PLAN's index states for every later stage, whatever form the declaration had
-(`campaign_plan`). When the closure holds more occurrences than
+(`campaign_plan`). The seed's closure already plans one occurrence per class of equivalent deciders
+(SYMBOL-SCOPE.md §4.4, `deciderClass` on its row: `members`, `first`, `last`), and PLAN's log line
+and cut summary name the classes (`ConcolicScheduler#deciderClasses`). When the closure still holds
+more occurrences than
 `schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
 seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
 near) and states the rest in the index (`closureCut`: `keptDepth`, `occurrences`, `byDepth`;
@@ -495,7 +498,9 @@ row (a port event outside every admitted activation, `RowRuntime#ambientActivati
 event ran, not a region that ran the site, so it makes no static candidate
 (`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
 it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
-not a task. One anchor's walk scans one site's holders on one node once and offers an occurrence
+not a task. A decider the seed's closure left out for its class's planned first member (§3) runs
+unplanned in every replay: no activation row names it, so it is no static candidate, and its class is
+asked through the planned member. One anchor's walk scans one site's holders on one node once and offers an occurrence
 once per (reason, site, guard set, node), whichever read or attach asks for it: asked again it is the
 same demand, and folding it changes nothing (`ClosurePlanner#candidates`); the walk says each gap
 once. Each demanded occurrence becomes a `Task` (id =

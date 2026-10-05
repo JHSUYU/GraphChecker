@@ -299,6 +299,9 @@ public final class ConcolicScheduler {
                     + " occurrences not planned (max jobs "
                     + arguments.maxJobs + "); "
                     + closureAdmissionSummary(loaded.regionPlans));
+        } else {
+            String classes = deciderClasses(loaded.regionPlans);
+            if (!classes.isEmpty()) System.err.println(classes.trim());
         }
 
         List<List<ExecutionTask>> scheduled = scheduleSelections(arguments,
@@ -1009,7 +1012,37 @@ public final class ConcolicScheduler {
             summary.append(anchors.get(index).getValue()).append("x ")
                     .append(anchors.get(index).getKey());
         }
-        return summary.append(']').toString();
+        return summary.append(']').append(deciderClasses(rows)).toString();
+    }
+
+    /** The classes of equivalent deciders the plan rows stand for ({@link
+     *  RuntimeSelectedRegionFinalizer#DECIDER_CLASS}): how many, the
+     *  occurrences they stand for, and the largest three with their first
+     *  and last addresses; empty for none. */
+    private static String deciderClasses(List<RegionInstancePlan> rows) {
+        List<JsonObject> classes = new ArrayList<>();
+        int members = 0;
+        for (RegionInstancePlan plan : rows) {
+            JsonElement held = plan.json().get(
+                    RuntimeSelectedRegionFinalizer.DECIDER_CLASS);
+            if (held == null || !held.isJsonObject()) continue;
+            classes.add(held.getAsJsonObject());
+            members += optionalInteger(held.getAsJsonObject(), "members", 0);
+        }
+        if (classes.isEmpty()) return "";
+        classes.sort(Comparator.<JsonObject>comparingInt(held ->
+                optionalInteger(held, "members", 0)).reversed());
+        StringBuilder text = new StringBuilder(" deciderClasses=")
+                .append(classes.size()).append(" planned once each for ")
+                .append(members).append(" equivalent decider occurrence(s) [");
+        for (int index = 0; index < classes.size() && index < 3; index++) {
+            JsonObject held = classes.get(index);
+            if (index > 0) text.append(", ");
+            text.append(optionalInteger(held, "members", 0)).append("x ")
+                    .append(optionalString(held, "first")).append(" .. ")
+                    .append(optionalString(held, "last"));
+        }
+        return text.append(']').toString();
     }
 
     /** Describes the existing selection/admission decision without adding one.

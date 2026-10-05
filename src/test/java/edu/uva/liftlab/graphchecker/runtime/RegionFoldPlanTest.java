@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.causynth.RecordedAccesses;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -212,6 +213,51 @@ public class RegionFoldPlanTest {
         }
     }
 
+    /**
+     * A SIGNATURE IS WHAT A FLIP QUERY OF THE OCCURRENCE READS ({@code
+     * RuntimeRegionPlanner#stampSignatures}): two ticks that read one
+     * version of a field digest alike; a store between the second and the
+     * third gives the third's read another version, so another digest,
+     * though it read the same value.  The seqs it ran between ride along.
+     */
+    @Test
+    public void aSignatureIsWhatTheOccurrenceRead() {
+        String field = "<o.a.h.BlockTokenSecretManager: long serial>";
+        List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
+        List<RuntimeRegionPlanner.FieldAccessEvent> fields =
+                new ArrayList<>();
+        for (long tick = 1; tick <= 3; tick++) {
+            methods.add(entry(10 * tick, TICK, 0L, "wl/nn0#epoch0/region/"
+                    + TICK_REGION + "/ctx:Root:TICK#" + tick, false));
+            fields.add(new RuntimeRegionPlanner.FieldAccessEvent(
+                    10 * tick + 1, "FIELD_READ", TICK, 10 * tick, 3, "",
+                    field, 5, 0, "7"));
+        }
+        fields.add(new RuntimeRegionPlanner.FieldAccessEvent(25L,
+                "FIELD_WRITE", BELOW, 99L, 1, "", field, 5, 0, "7"));
+        RuntimeRegionPlanner.Result plan =
+                RuntimeRegionPlanner.planSkeletonGraph(skeletons(), methods,
+                        Collections.<RuntimeRegionPlanner.RuntimeEvent>
+                                emptyList(), fields,
+                        Collections.<RuntimeRegionPlanner.ProtocolEvent>
+                                emptyList(),
+                        Collections.<String>emptySet(),
+                        Collections.<String, String>emptyMap());
+        Map<Object, Map<String, Object>> byRoot = new LinkedHashMap<>();
+        for (Map<String, Object> activation : plan.runtimeInstances) {
+            byRoot.put(activation.get("rootCallId"), activation);
+        }
+        String signature = RuntimeSelectedRegionFinalizer.SIGNATURE;
+        assertEquals(byRoot.get(10L).get(signature),
+                byRoot.get(20L).get(signature));
+        assertFalse(byRoot.get(20L).get(signature).equals(
+                byRoot.get(30L).get(signature)));
+        assertEquals(10L, byRoot.get(10L).get(
+                RuntimeSelectedRegionFinalizer.FIRST_SEQ));
+        assertEquals(11L, byRoot.get(10L).get(
+                RuntimeSelectedRegionFinalizer.LAST_SEQ));
+    }
+
     /** The activations the fixture's recording planned. */
     private static RuntimeRegionPlanner.Result activations(
             List<RuntimeRegionPlanner.MethodEvent> events) {
@@ -245,7 +291,8 @@ public class RegionFoldPlanTest {
                 cutSkeletons(), "test", Arrays.asList(HANDLER, LEAF),
                 activations.runtimeInstances, cutObservations(threw),
                 cutScopeMap(ambiguous), RuntimeWorkflowDiscovery.FIRST,
-                Collections.<ScheduleEvent>emptyList());
+                Collections.<ScheduleEvent>emptyList(),
+                RecordedAccesses.NONE);
     }
 
     /**
