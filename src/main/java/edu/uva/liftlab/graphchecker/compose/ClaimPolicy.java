@@ -344,7 +344,7 @@ public final class ClaimPolicy {
 
     /**
      * The claim the solved valuations support: first every answer the claim
-     * is read off ({@link Reading#of}), then the claim, narrowest evidence
+     * is read off ({@link Reading}), then the claim, narrowest evidence
      * first -- a moved root (1), no moved root but the clocks or a pairing
      * (2), a moved configuration only, ranked after both, and another
      * session's path that observed the fatal at the recorded roots (3) --
@@ -355,7 +355,7 @@ public final class ClaimPolicy {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         Decision unasked = unasked(composition, gaps);
         if (unasked != null) return unasked;
-        Reading reading = Reading.of(composition, asks, gaps);
+        Reading reading = new Reading(composition, asks, gaps);
         Decision claimed = reading.movedRoot(false);
         if (claimed == null) claimed = reading.clockOrPairing();
         if (claimed == null) claimed = reading.movedRoot(true);
@@ -431,20 +431,34 @@ public final class ClaimPolicy {
         /** Configuration roots a witness's plant cannot reach, named. */
         private final Set<String> partial = new LinkedHashSet<String>();
 
-        private Reading(Composer.Composition composition, Disjunction asks,
-                        List<GapRow> gaps, List<Outcome> outcomes,
-                        List<String> asHappened, Outcome asRecorded,
-                        boolean recordingDecides, boolean clockDriven) {
+        Reading(Composer.Composition composition, Disjunction asks,
+                List<GapRow> gaps) {
             this.composition = composition;
             this.asks = asks;
             this.gaps = gaps;
-            this.outcomes = outcomes;
-            this.cells = composition.clockCells();
-            this.asHappened = asHappened;
-            this.asRecorded = asRecorded;
-            this.recordingDecides = recordingDecides;
-            this.clockDriven = clockDriven;
-            this.recorded = outcomes.isEmpty() ? null : outcomes.get(0);
+            selfContradictory(composition, asks, gaps);
+            outcomes = new ArrayList<Outcome>(inParallel(
+                    composition.valuations(), valuation -> outcome(
+                            composition, asks, valuation,
+                            Collections.<String>emptyList(),
+                            valuation.ordinal() == 0)));
+            for (Outcome outcome : outcomes) {
+                if (!outcome.answer().decided()) undecided(outcome, gaps);
+            }
+            recorded = outcomes.isEmpty() ? null : outcomes.get(0);
+            cells = composition.clockCells();
+            asHappened = new ArrayList<String>(pins(composition, cells));
+            asHappened.addAll(composition.recordedPairings());
+            asRecorded = recorded != null && recorded.witness()
+                    && !asHappened.isEmpty()
+                    ? outcome(composition, asks, recorded.valuation(),
+                            asHappened, false) : null;
+            recordingDecides = asRecorded != null
+                    && asRecorded.answer().unsat();
+            clockDriven = recordingDecides && !cells.isEmpty()
+                    && outcome(composition, asks, recorded.valuation(),
+                            pins(composition, cells), false).answer()
+                            .unsat();
             if (clockDriven) {
                 recorded = leastClocks(composition, asks, recorded, cells,
                         true, gaps);
@@ -461,39 +475,9 @@ public final class ClaimPolicy {
                                 + "root at its recorded value, and its own "
                                 + "recording took the healthy arm"));
             }
-            this.polarityDecides = recorded != null
+            polarityDecides = recorded != null
                     && recorded.answer().unsat()
                     && namesAValuation(recorded.answer().core());
-        }
-
-        static Reading of(Composer.Composition composition,
-                          Disjunction asks, List<GapRow> gaps) {
-            selfContradictory(composition, asks, gaps);
-            List<Outcome> outcomes = new ArrayList<Outcome>(inParallel(
-                    composition.valuations(), valuation -> outcome(
-                            composition, asks, valuation,
-                            Collections.<String>emptyList(),
-                            valuation.ordinal() == 0)));
-            for (Outcome outcome : outcomes) {
-                if (!outcome.answer().decided()) undecided(outcome, gaps);
-            }
-            Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
-            List<String> cells = composition.clockCells();
-            List<String> asHappened = new ArrayList<String>(pins(composition,
-                    cells));
-            asHappened.addAll(composition.recordedPairings());
-            Outcome asRecorded = recorded != null && recorded.witness()
-                    && !asHappened.isEmpty()
-                    ? outcome(composition, asks, recorded.valuation(),
-                            asHappened, false) : null;
-            boolean recordingDecides = asRecorded != null
-                    && asRecorded.answer().unsat();
-            boolean clockDriven = recordingDecides && !cells.isEmpty()
-                    && outcome(composition, asks, recorded.valuation(),
-                            pins(composition, cells), false).answer()
-                            .unsat();
-            return new Reading(composition, asks, gaps, outcomes, asHappened,
-                    asRecorded, recordingDecides, clockDriven);
         }
 
         /** An undecided valuation is named: no witness there.  The verdict
@@ -873,7 +857,7 @@ public final class ClaimPolicy {
      *       the interleaving).</li>
      *   <li>MARKER_FLIPPED -- the valuation moved a declared root.</li>
      *   <li>CLOCK_SKEW -- nothing moved and the clocks are necessary
-     *       ({@code clockDriven}, asked once in {@link Reading#of}).</li>
+     *       ({@code clockDriven}, asked once by {@link Reading}).</li>
      *   <li>NO_SUPPORTED_WITNESS -- none of them; never a default.</li>
      * </ul>
      */
@@ -894,8 +878,8 @@ public final class ClaimPolicy {
         if (!outcome.valuation().moved().isEmpty()) {
             return ClaimKind.MARKER_FLIPPED;
         }
-        // Nothing moved: whether the clocks are necessary was asked in
-        // Reading#of.
+        // Nothing moved: whether the clocks are necessary was asked by
+        // Reading.
         if (clockDriven) return ClaimKind.CLOCK_SKEW;
         return ClaimKind.NO_SUPPORTED_WITNESS;
     }
