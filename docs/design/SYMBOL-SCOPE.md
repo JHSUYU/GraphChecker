@@ -278,8 +278,16 @@ branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
-those callers (`Guards#callersOf`). A guard that tests a helper's constant return names the helper
-branch that decides it (`causynth/BooleanReturns`, `guardDeciders`).
+those callers (`Guards#callersOf`). A guard `v ==/!= c` (`c` an int or null) on the result of one
+call of an application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
+`guardDeciders`): every arm of a helper branch that runs straight (constant stores, jumps, at most
+16 units) to a return of a constant of `c`'s kind -- a branch whose two arms return constants the
+guard takes alike decides nothing, a helper with a switch has none -- each with the deciders of
+the nested helper return its branch tests, three helpers deep (hdfs-adhoc-40's
+`!isSufficientlyReplicated(b)`: the helper's first branch tests `hasMinStorage`'s return and
+returns true on one arm, its second compares the live count). At run time the decision that chose
+the return is the latest one in the helper's method before the guard, when it is a decider arm, and
+a concrete one is decided by its nested helper's in turn (`runtime.RowPublication#decidedBy`).
 
 The slice (§2.2) and the map use two relations: the slice widens by may-reach, the map's guards
 are post-dominance.
@@ -685,7 +693,8 @@ is a row, never a freed value: freeing it would invent a value no execution prod
 `root_demand.jsonl` lists every boundary (`class`, `distance`, `cell`, `siteId`, `edgeKind`,
 `chosen`, `cut`, `measured`); every DECLARED_SITE and READ_SITE the demand reached states its `demandDistance`.
 That mark is the static half of a concrete anchor's demand: an anchor every admitted path decided
-on no symbol demands the reads it made before it decided that carry it
+on no symbol demands the reads its deciding predicate names (by read event: a compound guard's later
+tests read after the target row) and the reads it made before it decided that carry it
 (`explore.ClosurePlanner#concrete`, `StaticScopeMap#demandedAt`; PIPELINE §7.2), their writers
 asked as a symbolic predicate's are.
 
@@ -785,6 +794,16 @@ just after it marks a standing log incomplete (`UNHOOKED_CONTAINER_MUTATION`) in
 chain stale -- after, so a log another thread started meanwhile is marked too. A value
 no container model knows (a `TreeMap`, a `CopyOnWriteArrayList`) is an `UNSTATED_VALUE` DIAGNOSTIC
 row naming its class, once per site.
+
+Every observed `READ_SITE` access is a read row, whether or not a published expression holds its
+value: the VM's read log states each read's chosen version (VM.md §5.2), and `runtime/RowPublication
+#loggedReads` publishes every logged read in the method of a `READ_SITE` (its `vmSite`, the map the
+replay reads with its guarded-store table) through the read path an expression's read node takes,
+so a read both state is one row. Before it a read whose value reached no expression -- a reference
+compared with a constant (hdfs-adhoc-45's `state == State.IN_SEGMENT` in `FSEditLog.isSegmentOpen`),
+a value handed to a call the VM does not model -- was no row, and neither the closure nor a STATE
+family saw it. A read log the VM cut at its 1024-read bound is an `UNSTATED_VALUE` DIAGNOSTIC, and so
+is a logged read of a version the location's log does not list: it would pair with nothing.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).

@@ -668,11 +668,24 @@ public:
   /** One location's versions as evidence, for tests and tracing. */
   static std::string describe(const Location &location);
 
-  /** One resolved read, kept so that a consumer can audit the decision. */
+  /**
+   * One resolved read, kept so that a consumer can audit the decision: what
+   * its plan chose, as its read-from node states it, so a read whose value
+   * reached no published expression (a reference compared with a constant)
+   * is still a read of its version.  `java_type` is the loaded word's type
+   * letter, 0 where the read loaded no word (a container's state).
+   */
   struct ReadRecord {
     jlong read_event_id;
     Attribution reader;
-    ReadRecord() : read_event_id(0) {}
+    jlong observed_version_id;
+    bool observed_exact;
+    bool writer_set_complete;
+    bool unnamed_writer;
+    char java_type;
+    ReadRecord()
+        : read_event_id(0), observed_version_id(0), observed_exact(false),
+          writer_set_complete(true), unnamed_writer(false), java_type(0) {}
   };
 
   /** One location's retained history; guarded by its stripe. */

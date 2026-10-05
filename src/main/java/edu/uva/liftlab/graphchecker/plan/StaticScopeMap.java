@@ -16,10 +16,12 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -159,27 +161,44 @@ public final class StaticScopeMap {
 
     /** One branch a site is control-dependent on, with the arm that reaches it
      *  (for the declared throw, the fatal polarity). {@code null} outcome: not
-     *  binary (a switch). */
+     *  binary (a switch).  A decider (causynth.BooleanReturns) is one too:
+     *  a helper's branch and the arm of it that runs to a constant return. */
     public static final class Guard {
         private final String siteId;
         private final Boolean outcome;
-        /** A helper's branch that decides this guard's arm when the guard
-         *  tests the constant it returned (causynth.BooleanReturns), or
-         *  null. */
-        private final Guard decider;
+        /** The helper branch arms that decide this guard's arm when the
+         *  guard tests the constant a helper returned
+         *  (causynth.BooleanReturns), each with its own; none for another
+         *  guard. */
+        private final List<Guard> deciders;
 
         public Guard(String siteId, Boolean outcome) {
-            this(siteId, outcome, null);
+            this(siteId, outcome, Collections.<Guard>emptyList());
         }
 
-        public Guard(String siteId, Boolean outcome, Guard decider) {
+        public Guard(String siteId, Boolean outcome, List<Guard> deciders) {
             this.siteId = siteId == null ? "" : siteId;
             this.outcome = outcome;
-            this.decider = decider;
+            this.deciders = Collections.unmodifiableList(
+                    new ArrayList<Guard>(deciders));
         }
 
-        public Guard decider() {
-            return decider;
+        public List<Guard> deciders() {
+            return deciders;
+        }
+
+        /** Every decider site under these guards, theirs too. */
+        public static Set<String> decidingSites(Collection<Guard> guards) {
+            Set<String> sites = new LinkedHashSet<String>();
+            Deque<Guard> pending = new ArrayDeque<Guard>(guards);
+            while (!pending.isEmpty()) {
+                Guard guard = pending.pop();
+                for (Guard decider : guard.deciders) {
+                    sites.add(decider.siteId);
+                    pending.push(decider);
+                }
+            }
+            return sites;
         }
 
         public String siteId() {
@@ -220,8 +239,8 @@ public final class StaticScopeMap {
         /** Arm of each {@link #guards} entry reaching this site; null if not
          *  binary. */
         public final List<Boolean> guardOutcomes;
-        /** The deciders of those guards that have one, by guard site. */
-        public final Map<String, Guard> guardDeciders;
+        /** The deciders of those guards that have any, by guard site. */
+        public final Map<String, List<Guard>> guardDeciders;
         /**
          * TARGET_SITE: the guards on every path to {@link #guards}, each on
          * its arm toward the throw -- their guards, and theirs, within the
@@ -272,7 +291,7 @@ public final class StaticScopeMap {
              List<String> guards, List<Boolean> guardOutcomes) {
             this(role, regionId, siteId, vmSite, cell, carrier, portId,
                     declaredCallee, local, declared, guards, guardOutcomes,
-                    Collections.<String, Guard>emptyMap(),
+                    Collections.<String, List<Guard>>emptyMap(),
                     Collections.<Guard>emptyList(),
                     Collections.<String>emptyList(), "", false, false, "",
                     -1);
@@ -282,7 +301,7 @@ public final class StaticScopeMap {
              String cell, String carrier, String portId,
              String declaredCallee, String local, Declared declared,
              List<String> guards, List<Boolean> guardOutcomes,
-             Map<String, Guard> guardDeciders, List<Guard> chain,
+             Map<String, List<Guard>> guardDeciders, List<Guard> chain,
              List<String> callers, String trackedKind, boolean staticField,
              boolean constructionOnly, String publishedFrom,
              int demandDistance) {
@@ -301,7 +320,7 @@ public final class StaticScopeMap {
             this.guardOutcomes = Collections.unmodifiableList(
                     new ArrayList<Boolean>(guardOutcomes));
             this.guardDeciders = Collections.unmodifiableMap(
-                    new LinkedHashMap<String, Guard>(guardDeciders));
+                    new LinkedHashMap<String, List<Guard>>(guardDeciders));
             this.chain = Collections.unmodifiableList(
                     new ArrayList<Guard>(chain));
             this.callers = Collections.unmodifiableList(
@@ -316,12 +335,13 @@ public final class StaticScopeMap {
         Site withGuards(List<Guard> found) {
             List<String> sites = new ArrayList<String>();
             List<Boolean> outcomes = new ArrayList<Boolean>();
-            Map<String, Guard> deciders = new LinkedHashMap<String, Guard>();
+            Map<String, List<Guard>> deciders =
+                    new LinkedHashMap<String, List<Guard>>();
             for (Guard guard : found) {
                 sites.add(guard.siteId());
                 outcomes.add(guard.outcome());
-                if (guard.decider() != null) {
-                    deciders.put(guard.siteId(), guard.decider());
+                if (!guard.deciders().isEmpty()) {
+                    deciders.put(guard.siteId(), guard.deciders());
                 }
             }
             return copy(regionId, declared, sites, outcomes, deciders, chain,
@@ -352,7 +372,8 @@ public final class StaticScopeMap {
 
         private Site copy(String held, Declared stated, List<String> sites,
                           List<Boolean> outcomes,
-                          Map<String, Guard> deciders, List<Guard> chained,
+                          Map<String, List<Guard>> deciders,
+                          List<Guard> chained,
                           List<String> calling) {
             return new Site(role, held, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, stated, sites, outcomes,
@@ -369,12 +390,8 @@ public final class StaticScopeMap {
          */
         public Set<String> pathSites() {
             Set<String> sites = new LinkedHashSet<String>(guards);
-            for (Guard guard : chain) {
-                sites.add(guard.siteId());
-                if (guard.decider() != null) {
-                    sites.add(guard.decider().siteId());
-                }
-            }
+            for (Guard guard : chain) sites.add(guard.siteId());
+            sites.addAll(Guard.decidingSites(chain));
             return sites;
         }
 
@@ -932,12 +949,9 @@ public final class StaticScopeMap {
         }
         if (!site.guardDeciders.isEmpty()) {
             JsonObject deciders = new JsonObject();
-            for (Map.Entry<String, Guard> decider
+            for (Map.Entry<String, List<Guard>> decided
                     : site.guardDeciders.entrySet()) {
-                JsonObject helper = new JsonObject();
-                helper.addProperty("siteId", decider.getValue().siteId());
-                helper.addProperty("outcome", decider.getValue().outcome());
-                deciders.add(decider.getKey(), helper);
+                deciders.add(decided.getKey(), guardsJson(decided.getValue()));
             }
             row.add("guardDeciders", deciders);
         }
@@ -958,20 +972,36 @@ public final class StaticScopeMap {
         JsonObject json = new JsonObject();
         json.addProperty("siteId", guard.siteId());
         json.addProperty("outcome", guard.outcome());
-        if (guard.decider() != null) {
-            json.add("decider", guardJson(guard.decider()));
+        if (!guard.deciders().isEmpty()) {
+            json.add("deciders", guardsJson(guard.deciders()));
         }
         return json;
     }
 
+    /** Guards as rows, each with its deciders: the one spelling the map
+     *  and a plan's target branch ({@code decidedBy}) share. */
+    public static JsonArray guardsJson(List<Guard> guards) {
+        JsonArray json = new JsonArray();
+        for (Guard guard : guards) json.add(guardJson(guard));
+        return json;
+    }
+
+    /** {@link #guardsJson} read back; a member that is no array is none. */
+    public static List<Guard> guardsOf(JsonElement json) {
+        List<Guard> guards = new ArrayList<Guard>();
+        if (json == null || !json.isJsonArray()) return guards;
+        for (JsonElement guard : json.getAsJsonArray()) {
+            if (guard.isJsonObject()) guards.add(guardOf(guard.getAsJsonObject()));
+        }
+        return guards;
+    }
+
     private static Guard guardOf(JsonObject json) {
         JsonElement outcome = json.get("outcome");
-        JsonElement decider = json.get("decider");
         return new Guard(optionalString(json, "siteId"),
                 outcome == null || outcome.isJsonNull() ? null
                         : Boolean.valueOf(outcome.getAsBoolean()),
-                decider == null || !decider.isJsonObject() ? null
-                        : guardOf(decider.getAsJsonObject()));
+                guardsOf(json.get("deciders")));
     }
 
     /** ROOT_SITE rows of an edge defining a local of its own method from a
@@ -1105,8 +1135,8 @@ public final class StaticScopeMap {
             Collections.<String>emptyList();
     private static final List<Boolean> NO_OUTCOMES =
             Collections.<Boolean>emptyList();
-    private static final Map<String, Guard> NO_DECIDERS =
-            Collections.<String, Guard>emptyMap();
+    private static final Map<String, List<Guard>> NO_DECIDERS =
+            Collections.<String, List<Guard>>emptyMap();
     private static final List<Guard> NO_CHAIN =
             Collections.<Guard>emptyList();
     private static final List<String> NO_CALLERS =
@@ -1284,26 +1314,18 @@ public final class StaticScopeMap {
 
     /** A row's {@code chain}. */
     private static List<Guard> chain(JsonObject row) {
-        List<Guard> chain = new ArrayList<Guard>();
-        JsonElement stated = row.get("chain");
-        if (stated == null || !stated.isJsonArray()) return chain;
-        for (JsonElement guard : stated.getAsJsonArray()) {
-            if (guard.isJsonObject()) chain.add(guardOf(guard.getAsJsonObject()));
-        }
-        return chain;
+        return guardsOf(row.get("chain"));
     }
 
     /** A row's {@code guardDeciders}, by guard site. */
-    private static Map<String, Guard> deciders(JsonObject row) {
-        Map<String, Guard> deciders = new LinkedHashMap<String, Guard>();
+    private static Map<String, List<Guard>> deciders(JsonObject row) {
+        Map<String, List<Guard>> deciders =
+                new LinkedHashMap<String, List<Guard>>();
         JsonElement stated = row.get("guardDeciders");
         if (stated == null || !stated.isJsonObject()) return deciders;
-        for (Map.Entry<String, JsonElement> decider
+        for (Map.Entry<String, JsonElement> decided
                 : stated.getAsJsonObject().entrySet()) {
-            JsonObject helper = decider.getValue().getAsJsonObject();
-            deciders.put(decider.getKey(), new Guard(
-                    optionalString(helper, "siteId"),
-                    helper.get("outcome").getAsBoolean()));
+            deciders.put(decided.getKey(), guardsOf(decided.getValue()));
         }
         return deciders;
     }

@@ -252,7 +252,10 @@ public final class ClosurePlanner {
      * leaves at a concrete test of the boolean a clock-decided {@code
      * isExpired} returned).</p>
      *
-     * <p>Its PREDICATE READS are then the shared-state reads the anchor made
+     * <p>Its PREDICATE READS are then the reads its deciding predicate
+     * names (phi, or the decisions at the flip sites; by read event, so a
+     * compound guard's later tests count though they read after the target
+     * row's seq), and the shared-state reads the anchor made
      * before it decided, in each admitted path, that the root demand found
      * on the throw's path guards ({@link StaticScopeMap#demandedAt},
      * SYMBOL-SCOPE §4.6: the nearest read of each path back from the guards'
@@ -283,11 +286,17 @@ public final class ClosurePlanner {
             if (session == null || !session.admitted()) continue;
             if (row.observedFatal()) return null;
             long at = 0L;
+            // What the deciding predicate itself read, by read event: a
+            // compound guard's phi stands at its first test, and its later
+            // tests read after that (hdfs-adhoc-26: the cTime reads of
+            // `LV >= cur && cTime <= ns.cTime`, events past the target row).
+            Set<Long> named = new LinkedHashSet<Long>();
             if (row.reachedAnchor()) {
                 if (!corpus.termSymbols(sessionId, row.phiTerm()).isEmpty()) {
                     return null;
                 }
                 at = row.seq();
+                named.addAll(corpus.readEvents(sessionId, row.phiTerm()));
             } else {
                 for (DecisionRow decision
                         : corpus.decisionsOf(sessionId, anchor)) {
@@ -297,14 +306,19 @@ public final class ClosurePlanner {
                         return null;
                     }
                     at = Math.max(at, decision.seq());
+                    named.addAll(corpus.readEvents(sessionId,
+                            decision.term()));
                 }
             }
             paths++;
             if (at > 0L) decided++;
             for (ReadRow read : corpus.readsOn(sessionId, anchor)) {
-                if (read.seq() >= at) continue;
-                if (scope.demandedAt(read.endpoint().site(), read.javaType(),
-                        read.location().kind())) {
+                if (named.contains(Long.valueOf(read.seq()))) {
+                    reads.add(read);
+                } else if (read.seq() >= at) {
+                    continue;
+                } else if (scope.demandedAt(read.endpoint().site(),
+                        read.javaType(), read.location().kind())) {
                     reads.add(read);
                 } else {
                     offCone++;
