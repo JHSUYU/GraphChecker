@@ -426,7 +426,13 @@ The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropag
 with GraphChecker: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
 several messages on one thread, possibly opened by a thread serving a request) and
 `HDFS_DATA_TRANSFER` (one op, a request on a correlation of its own: `outboundOp`, `inboundOp`). The HDFS trees call
-it from IPC `Client`/`Server`, the SASL data-transfer classes and the DataTransfer op's two ends; the Solr trees call
+it from IPC `Client`/`Server`, the SASL data-transfer classes and the DataTransfer op's two ends. The IPC server's
+handler opens a call's exchange, its carried scope and its inbound, before any of the call's work, the remote user's
+`doAs` included (`Server.Handler#work`, `Call#causynthEnter`, on `gc/hdfs-study-r4` and `gc/hdfs-11741-r4`), so every
+occurrence a handler runs for a call stands on the call's own anchor, indexed from its inbound; opened inside the call,
+the `doAs` region opened first, under the context the Reader carried with the queued call, and only the Reader's and
+the handler's start counts told two calls apart (round HG5A hdfs-adhoc-14: one address planned, another run each
+replay). The Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid

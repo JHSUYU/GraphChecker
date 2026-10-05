@@ -12,7 +12,7 @@ passes (owner 2026-10-05: no exclusive runs required; keep all ten lifts full; t
 [STATE.md](STATE.md); every check with its live state in [../checks/README.md](../checks/README.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
-## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3` -> r4, image `vm-hg5`)
+## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r4`, image `vm-hg5`)
 
 Where it stands (STATE §4): 9 of 10 known bugs PASS; 7 study verdicts on the merged body + 10 to rerun; 8 open with a
 fix landed or a rerun owed; 2 with a named defect; 9 in the time-model class; no new bug. Do these in order; 1-4 can
@@ -29,16 +29,11 @@ run in parallel (one coding agent each, at most 4), each validated alone, merged
   VmTermLowering, declarations/rendering into a new SmtSymbolTable; SmtLowering.binary by operand sort), each step
   gated identical. Brief `brief-refactor-compose.md`.
 
-### 2. hdfs-adhoc-14: the r4 trees (identity, one general tree point)
-- Build both r4 trees with the variables on the remote command line (ssh drops them):
-  `onlift.sh -g 12 env SKIP_GRAPHCHECKER_INSTALL=1 MAVEN_REPO_LOCAL=/bigtemp/vnr3ne/m2/hdfs-study-r4 bash experiments/hadoop/build.sh /bigtemp/vnr3ne/wt/hadoop-hdfs-study-r4 org.apache.hadoop.hdfs.TestEncryptedTransfer 'testEncryptedReadDefaultAlgorithmCipherSuite[1]'`,
-  and the same for `hadoop-hdfs-11741-r4` with `/bigtemp/vnr3ne/m2/hdfs-11741-r4`,
-  `TestCausynthExpiredBalancerKey testEncryptedBalancerAfterKeyRotations`.
-- Snapshot system/hdfs, point its `case.sh repo=` lines at the r4 trees IN THE SNAPSHOT ONLY (OPERATIONS §5), run:
-  14 to a verdict (REGION.084d06ab must stand on `Anchor:<call>` with index `[doAs@0, ...]`), 21 to PLAN, bug1,
-  17897, 17960, 11741 on its r4 tree.
-- Then commit the `repo=` switch to r4 on system/hdfs, merge `hdfs-anchored-index` (its STATUS/IDENTITY rows), and
-  never touch r3 again.
+### 2. hdfs-adhoc-14: the r4 trees -- done (R4A, `/bigtemp/vnr3ne/gc-out/hdfs-r4`)
+Every HDFS `case.sh` names the r4 trees (`hdfs-anchored-index`). R4A: 14 UNSAT_CLOSED at FIXED_POINT (was RUN_DEFECT;
+REGION.084d06ab stands on `Anchor:3093ec49939a753e@HADOOP_IPC/test` with index `[doAs@0]`, instrumented and answering
+its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, the time-model class); bug1, 17897,
+17960 PASS; 11741 confirmed CLOCK_SKEW, its key id the open binding of §4. r3 is never touched again.
 
 ### 3. The time model (the start-up/clock family: 01 17 21 22 23 25 34 35 43)
 - The cause (HG6 probes, DW1-DW5a): a DataNode actor's turn decides by `monotonicNow` (heartbeat, block report due,
