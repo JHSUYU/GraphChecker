@@ -1703,7 +1703,8 @@ public final class SmtLowering {
         if (pinned != null) {
             if (joined != null) top().dropped.add(joined.value().text);
             if (unwritten) {
-                String returned = binder.returned();
+                String returned = binder.returned() == null ? ""
+                        : binder.returned();
                 held(key + "@" + version, returned, returned.isEmpty()
                         ? "no write row states this version, and the read "
                         + "states no word: an opaque base, each query over "
