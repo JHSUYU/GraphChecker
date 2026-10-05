@@ -2112,6 +2112,21 @@ printf 'untracked, differently\n' >"${checkout_repo}/loose.txt"
 [[ "$(campaign_checkout_state "${checkout_repo}" | jq -r '.worktreeDigest')" \
     != "$(printf '%s' "${dirty_state}" | jq -r '.worktreeDigest')" ]] \
   || fail "CHECKOUT-STATE-1: the content of a stated entry is not digested"
+# A file gone between the walk and its hash (a JVM attach's .attach_pid<pid>)
+# is no part of the state; one still there that cannot be read fails it.
+printf 'transient\n' >"${checkout_repo}/.attach_pid1"
+sha256sum() {
+  [[ "${2:-}" != *.attach_pid1 ]] || rm -f -- "$2"
+  command sha256sum "$@"
+}
+campaign_checkout_state "${checkout_repo}" >/dev/null \
+  || fail "CHECKOUT-STATE-2: a file gone before its hash failed the digest"
+unset -f sha256sum
+printf 'locked\n' >"${checkout_repo}/locked.txt"
+chmod 000 "${checkout_repo}/locked.txt"
+! campaign_checkout_state "${checkout_repo}" >/dev/null 2>&1 \
+  || fail "CHECKOUT-STATE-2: an unreadable file was left out of the digest"
+rm -f -- "${checkout_repo}/locked.txt"
 # STREAM: EXPLORE is one streaming loop (PIPELINE §7.7, §7.9).  The planner,
 # the worker, the gate and COMPOSE are stubbed -- each stands where its JVM
 # stands -- and everything between them is the production loop: the queue,

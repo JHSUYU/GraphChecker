@@ -1300,8 +1300,15 @@ campaign_checkout_state() {
             # vendored sources and agent worktrees included.
             [[ -n "${entry}" ]] || continue
             [[ -e "${repo}/${entry}" ]] || continue
-            find "${repo}/${entry}" -type f -print0 | LC_ALL=C sort -z \
-              | xargs -0 -r sha256sum
+            # A file gone before it is hashed is no part of the state (a
+            # JVM attach's .attach_pid<pid> in a workload's directory,
+            # round HG5A hdfs-adhoc-33); one still there that cannot be
+            # read fails the digest.
+            { find "${repo}/${entry}" -type f -print0 2>/dev/null || :; } \
+              | LC_ALL=C sort -z | while IFS= read -r -d '' file; do
+                  sha256sum -- "${file}" 2>/dev/null \
+                    || [[ ! -e "${file}" ]] || exit 1
+                done || exit 1
           done; } | sha256sum | awk '{print $1}'); then
     return 1
   fi
