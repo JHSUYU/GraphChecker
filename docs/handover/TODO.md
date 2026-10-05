@@ -128,6 +128,7 @@ target with few give-ups.
   rows; follow receivers built by calls.
 - 17: the lease grant state.
 - 15/39: a turn for tracked-write ordering (complete vs IBR).
+- 07 (later, SEED): an export capture where the QJM client sets the segment it attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), and jn1's own response export of it, so jn0's attach pairs by HANDLE instead of arriving unattested (hdfs-wire-half, `f4a325af7`).
 
 **A possible flake.** Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 
