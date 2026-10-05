@@ -93,11 +93,18 @@ public class ClocksTest {
         atCap("from a pass on, time stands exactly at the pass reached",
                 first + 100L * MS, Clocks.nanos());
         long standing = Clocks.nanos();
+        long standingMillis = Clocks.millis();
         Thread.sleep(50L);
         assertEquals("time stands", standing, Clocks.nanos());
         TimedWaits.sleep(50L, "<ClocksTest: void sleep()>#u1");
-        assertTrue("but a thread that slept sees its own clock move a tick",
-                Clocks.nanos() >= standing + TICK);
+        long slept = Clocks.nanos();
+        assertTrue("but a sleep moves it a nanosecond", slept > standing
+                && slept < standing + 1000L);
+        assertTrue("for every thread", elsewhere(true) >= slept);
+        assertEquals("and the sleeper's millisecond clock a millisecond",
+                standingMillis + 1L, Clocks.millis());
+        assertEquals("for the sleeper alone", standingMillis,
+                elsewhere(false));
 
         openWindow();
         Thread.sleep(100L);
@@ -190,15 +197,22 @@ public class ClocksTest {
         Clocks.waited(heartbeat);
         assertTrue("a wait that ran out reads its deadline",
                 Clocks.nanos() >= first + 2100L * MS);
-        final long[] other = new long[1];
-        Thread reader = new Thread(() -> other[0] = Clocks.nanos());
-        reader.start();
-        reader.join();
-        assertTrue("for its own thread only", other[0] < first + 2100L * MS);
+        assertTrue("and so does every thread after it (a value it sets,"
+                + " another compares)", elsewhere(true) >= first + 2100L * MS);
         Clocks.timedOut(lease);
         Clocks.waited(lease);
         atCap("and never past the cap", first + 5000L * MS + TICK,
                 Clocks.nanos());
+    }
+
+    /** What another thread's clock reads now. */
+    private static long elsewhere(boolean nanos) throws Exception {
+        final long[] read = new long[1];
+        Thread reader = new Thread(() -> read[0] = nanos ? Clocks.nanos()
+                : Clocks.millis());
+        reader.start();
+        reader.join();
+        return read[0];
     }
 
     /** This replay follows an order stating these marks. */

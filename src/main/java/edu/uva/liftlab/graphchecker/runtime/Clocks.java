@@ -42,14 +42,15 @@ import java.util.concurrent.atomic.LongAdder;
  * it joined, the recording did at once (17's first heartbeats, in the
  * millisecond of the last registration), and the replay's lag after it is
  * its own slowness.  Past the line, after the window closed, or with no
- * order, nothing caps it.  A thread that waited reads at least one tick
- * past where time stood when its wait began ({@link #FLOOR}), so its clock
- * moves across a sleep.  So a replay's application time never runs ahead of
- * its place in the order but by those ticks (a slower replay waits at the
- * cap where the recording's heartbeat was not yet due), never behind it (a
- * turn its slot
- * released early reads at least its slot's instant), and two threads never
- * read time going back.  No read is keyed and none is written: a value set
+ * order, nothing caps it.  A timed wait moves time a nanosecond past where
+ * it stood when the wait began, and a wait that ran its time out to its
+ * deadline, never past the cap; the waiter's own millisecond clock moves one
+ * millisecond ({@link #waited}).  So a replay's application time never runs
+ * ahead of its place in the order but by those steps (a slower replay waits
+ * at the cap where the recording's heartbeat was not yet due), never behind
+ * it (a turn its slot released early reads at least its slot's instant), and
+ * no thread reads time going back, nor its nanosecond clock behind what
+ * another thread read before it.  No read is keyed and none is written: a value set
  * at start-up and a read compared with it stand on one timeline (the parked
  * keyed replay mixed two, and handed threads sharing a key each other's
  * start-up times).</p>
@@ -70,22 +71,10 @@ import java.util.concurrent.atomic.LongAdder;
  */
 public final class Clocks {
     private static final Object LOCK = new Object();
-    /**
-     * Per thread, the floor its reads stand on (nanos, millis): one tick
-     * past where time stood when its last timed wait began, its deadline
-     * when the wait ran its time out, never past the cap ({@link
-     * #waited}).  A real clock moves across a sleep and code divides by what
-     * it moved: Hadoop's GcTimeMonitor divides by its run's span after its
-     * first five-second sleep, and with time standing at a cap it died in
-     * every replay of rounds TM1 and TM2.  Per thread and from where time
-     * stood, so a polling loop never pushes it on: time creeping on for
-     * every reader instead ran hdfs-adhoc-17's start-up 29 ms past its
-     * first registration and no DataNode's turn #1 heartbeat came due
-     * (round TM5).
-     */
-    private static final ThreadLocal<long[]> FLOOR =
-            ThreadLocal.withInitial(() -> new long[] {Long.MIN_VALUE,
-                    Long.MIN_VALUE});
+    /** Per thread, the millisecond its {@code currentTimeMillis} reads stand
+     *  on since its last timed wait ({@link #waited}). */
+    private static final ThreadLocal<long[]> OWN_MILLIS =
+            ThreadLocal.withInitial(() -> new long[] {Long.MIN_VALUE});
     /** What a cap allows past its instant: one millisecond tick. */
     static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
     /** One cap's ask for a lift at most this often. */
@@ -211,7 +200,7 @@ public final class Clocks {
         }
         long read = (nanos ? LAST_NANOS : LAST_MILLIS).accumulateAndGet(ran,
                 Math::max);
-        return asks ? Math.max(read, FLOOR.get()[nanos ? 0 : 1]) : read;
+        return asks && !nanos ? Math.max(read, OWN_MILLIS.get()[0]) : read;
     }
 
     /**
@@ -232,26 +221,54 @@ public final class Clocks {
     }
 
     /**
-     * The timed wait {@code began} returned: this thread reads at least one
-     * tick past where time stood then, and past a timeout its deadline, but
-     * never past the cap -- a wait that ran its time out saw that time pass
-     * (hdfs-adhoc-17, round TM7: a DataNode's wait for its next heartbeat
-     * ran out on the host while the order still stood 0.6 s before it, and
-     * its turn found the heartbeat not due), and the order still holds what
-     * no recorded event has reached (a wait the recording ended by a signal
-     * before its timeout finds its deadline past the cap).
+     * The timed wait {@code began} returned: time moves a nanosecond past
+     * where it stood then, and past a timeout to the deadline on both
+     * clocks, never past the cap; this thread's millisecond clock moves one
+     * millisecond past where it stood then.
+     *
+     * <p>A real clock moves across a sleep, and code divides by what it
+     * moved: Hadoop's GcTimeMonitor divides by its run's span on {@code
+     * currentTimeMillis} after its first sleep, and with time standing at a
+     * cap it died in every replay of rounds TM1 and TM2.  A wait that ran
+     * its time out saw that time pass (hdfs-adhoc-17, round TM7: a
+     * DataNode's wait for its next heartbeat ran out on the host while the
+     * order still stood 0.6 s before it, and its turn found the heartbeat
+     * not due); the order still holds what no recorded event has reached (a
+     * wait the recording ended by a signal before its timeout finds its
+     * deadline past the cap).</p>
+     *
+     * <p>Every thread's clock, since a value one thread sets another
+     * compares: a step one thread alone saw put a DataNode actor's {@code
+     * lastIBR} past what its DataXceiver then read, {@code sendImmediately}
+     * found the received block's report not due, and hdfs-adhoc-25's client
+     * met NotReplicatedYet where the recording logged its edit (round TM9:
+     * 32 give-ups against 8 with no model).  A nanosecond, so the waits of
+     * a whole start-up move no decision made in milliseconds: time creeping
+     * on for every reader ran 17's start-up 29 ms past its first
+     * registration (round TM5), and one millisecond past a pass set a
+     * heartbeat 0.4 ms late (round TM6).  The millisecond clock moves for the
+     * waiter alone, from where every thread's stood: a step every sleep
+     * added for everyone would carry it a millisecond per sleep.</p>
      */
     static void waited(long[] began) {
-        if (began == null) return;
-        long[] floor = FLOOR.get();
-        floor[0] = Math.max(floor[0], began[0] + TICK_NANOS);
-        floor[1] = Math.max(floor[1], began[1] + 1L);
         Bounds at = bounds;
-        if (began[3] == 0L || at == null) return;
-        floor[0] = Math.max(floor[0], Math.min(at.hiNanos,
-                began[0] + began[2]));
-        floor[1] = Math.max(floor[1], Math.min(at.hiMillis,
-                began[1] + TimeUnit.NANOSECONDS.toMillis(began[2])));
+        if (began == null || at == null) return;
+        long nanos = began[0] + 1L;
+        long millis = Long.MIN_VALUE;
+        if (began[3] != 0L && at.cap != null) {
+            nanos = Math.max(nanos, upTo(began[0], began[2], at.hiNanos));
+            millis = upTo(began[1], TimeUnit.NANOSECONDS.toMillis(began[2]),
+                    at.hiMillis);
+        }
+        LAST_NANOS.accumulateAndGet(nanos, Math::max);
+        LAST_MILLIS.accumulateAndGet(millis, Math::max);
+        long[] own = OWN_MILLIS.get();
+        own[0] = Math.max(own[0], began[1] + 1L);
+    }
+
+    /** {@code from + by}, at most {@code cap}. */
+    private static long upTo(long from, long by, long cap) {
+        return by >= cap - from ? cap : from + by;
     }
 
     /**
@@ -555,7 +572,7 @@ public final class Clocks {
             windowSeen = false;
             AT_CAP.reset();
             ASKED.set(0L);
-            FLOOR.remove();
+            OWN_MILLIS.remove();
             liftsUnwaited = 0;
             liftsStartup = 0;
         }
