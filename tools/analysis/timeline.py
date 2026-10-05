@@ -23,8 +23,10 @@ the sources are the files the campaign wrote:
                      the pool, witness-confirm/NNNN/)
   witness attempts   witness-attempts/NNNN/: the directory's creation to its
                      compose.log, and witness_attempts.jsonl's claims
-  one obligation     host.txt (claimed) -> the solver's files -> replay.log
-                     (the replay's end) -> stdout.log (the worker's end)
+  one obligation     host.txt (its solve claimed) -> the solver's files ->
+                     replay-host.txt (its REPLAY claimed, a start of its own;
+                     a run before the split replayed as its solve ended) ->
+                     replay.log (the replay's end)
   a replay's outcome its obligation_result.jsonl: ADMITTED = flipped; NOT_ADMITTED
                      = refused, an error when the replay was killed on its bound
                      (a timed-out-sessions/ directory) or stated no verdict
@@ -119,7 +121,9 @@ def seed_split(root, log_text):
 
 
 def worker_times(worker):
-    """(start, solve_end, replay_end, end) of one obligation worker."""
+    """(start, solve_end, replay_start, replay_end, end) of one obligation
+    worker: its solve claimed, the solver's files, its REPLAY claimed (none
+    without one), the replay's end, its answer."""
     start = mtime(os.path.join(worker, "host.txt"))
     solver = [mtime(os.path.join(worker, name)) for name in
               ("obligation.jsonl", "obligation_query.smt2", "gaps.jsonl",
@@ -132,7 +136,8 @@ def worker_times(worker):
                         mtime(os.path.join(worker, "obligation_result.jsonl")))
             if t]
     end = max(ends) if ends else None
-    return start, (max(solver) if solver else end), replay_end, end
+    return (start, (max(solver) if solver else end),
+            mtime(os.path.join(worker, "replay-host.txt")), replay_end, end)
 
 
 def replay_outcome(worker, result):
@@ -218,7 +223,7 @@ def round_rows(iteration):
             result = read_json(os.path.join(worker, "obligation_result.jsonl"))
             focused = os.path.join(worker, "focused_task.jsonl")
             replayed = os.path.isfile(focused) and os.path.getsize(focused) > 0
-            start, solve_end, replay_end, end = worker_times(worker)
+            start, solve_end, replay_start, replay_end, end = worker_times(worker)
             try:
                 failed = "obligation solver failed" in open(os.path.join(worker, "stdout.log"), errors="replace").read()
             except OSError:
@@ -232,11 +237,13 @@ def round_rows(iteration):
                 "outcome": replay_outcome(worker, result) if replayed else None,
                 "early": early_end(worker, replay_end) if replayed else None,
                 "solve": (solve_end - start) if start and solve_end else None,
-                "replay": (replay_end - solve_end) if replayed and replay_end and solve_end else None,
+                "queued": (replay_start - solve_end) if replay_start and solve_end else None,
+                "replay": (replay_end - (replay_start or solve_end))
+                          if replayed and replay_end and solve_end else None,
                 "wall": (end - start) if start and end else None,
                 "rerun": bool(glob.glob(os.path.join(worker, "before-*"))),
             })
-        ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[3] for o in obligations) if t]
+        ends = [t for t in (worker_times(os.path.join(wave, o["id"]))[4] for o in obligations) if t]
         dispatch_end = gate_start or (max(ends) if ends else plan_end)
         rows.append({"wave": name[-4:], "plan": (plan_end - plan_start) if plan_start and plan_end else None,
                      "wait": head_wait(stderr),
@@ -371,10 +378,12 @@ def report(root, label):
                     dur(w["plan"])))
         solves = [o["solve"] for w in waves for o in w["obligations"]]
         failed = [o["solve"] or 0 for w in waves for o in w["obligations"] if o["solver_failed"]]
-        print("   solver min/med/max %s, %s of slot time%s; replays %d, %s of slot time" % (
+        queued = [o["queued"] for o in replays if o["queued"] is not None]
+        print("   solver min/med/max %s, %s of slot time%s; replays %d, %s of slot time%s" % (
             spread(solves), dur(sum(s or 0 for s in solves)),
             " (%d failed JVMs: %s)" % (len(failed), dur(sum(failed))) if failed else "",
-            len(replays), dur(sum(o["replay"] or 0 for o in replays))))
+            len(replays), dur(sum(o["replay"] or 0 for o in replays)),
+            ", queued after their solve min/med/max %s" % spread(queued) if queued else ""))
         for outcome in ("refused", "flipped", "error"):
             chosen = [o for o in replays if o["outcome"] == outcome]
             if not chosen:
