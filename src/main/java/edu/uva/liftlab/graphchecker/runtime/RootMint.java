@@ -986,6 +986,11 @@ final class RootMint {
                             !assigned.isEmpty()) : 0L);
             if (!assigned.isEmpty()) FocusedReplay.planted(root);
             if (config) active.configurationMinted(root, fresh);
+            // The region takes a door fault: it ends the exchange in hand,
+            // as a native plant's does (any other root names no marker).
+            if (Boolean.TRUE.equals(fresh)) {
+                Identity.doorFaulted(action.marker);
+            }
             return fresh;
         } catch (Throwable throwable) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(root)

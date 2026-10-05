@@ -30,6 +30,10 @@ public final class InputActionCatalog {
     /** A configuration input's static domain bounds, beside its source. */
     public static final String DECLARED_DOMAIN_MIN = "domainMin";
     public static final String DECLARED_DOMAIN_MAX = "domainMax";
+    /** Input that is a fault marker's return, stating the marker's name
+     *  ({@code FAULT:<TRANSPORT>:<DIRECTION>[:<Kind>]}): the replay that
+     *  answers it {@code true} knows which door failed. */
+    public static final String DECLARED_FAULT_MARKER = "marker";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY

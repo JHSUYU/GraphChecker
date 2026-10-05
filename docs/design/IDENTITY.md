@@ -151,7 +151,15 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   the message's verb (`""` where its door names none, and for a response), cleared by every inbound,
   and never inherited by a thread the holder starts; the Hadoop IPC caller sends its request, offers
   it to the connection's sender (the start), waits and receives the response, so a DataNode turn's
-  heartbeat hand-off no longer takes its block report's `START` and `CLAIM` (hdfs-adhoc-15).
+  heartbeat hand-off no longer takes its block report's `START` and `CLAIM` (hdfs-adhoc-15). A
+  message door's fault clears it too, as a receipt does: the exchange ended, in failure
+  (`Identity#doorFaulted`, one rule, called where a run decides a marker `true`: a replay's mint,
+  `RootMint`, by the marker name its FAULT input states (SYMBOL-SCOPE.md §4.2), and a native
+  reproduction's plant, `RecordingPlant#marker`). A demanded door's fault, a local file operation,
+  ends no exchange (`LibraryCatalog#exchangeMarker`). Left in hand, a fault renamed every later start
+  of its thread: in hdfs-17899-bug2 the test thread started the SPS daemon, after the key manager's
+  `getBlockKeys` faulted at its IPC request door, as `Daemon.start()#u5:NamenodeProtocol.getBlockKeys`,
+  an address no plan instrumented, so the key id's producer went unattested.
   The frames go with the carrier;
   the started work claims them at its first identity event or at its functional method's entry
   (`#claimStart`). A task claimed on a pool's thread stands on all of them; a started thread

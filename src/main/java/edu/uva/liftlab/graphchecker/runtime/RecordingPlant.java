@@ -32,7 +32,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *   by {@link OccurrenceAddress#id}, as a focused replay matches its
  *   occurrences -- inside the recording window; otherwise, and always
  *   without a plant, its recorded polarity {@code false}.  Every planted
- *   answer is an {@link #APPLIED} trace row.</li>
+ *   answer is an {@link #APPLIED} trace row; a {@code true} one is a door
+ *   fault for the thread's identity as in a replay
+ *   ({@link Identity#doorFaulted}).</li>
  *   <li>{@code {"kind":"TARGET","occurrence":<the anchor's id>,"siteId":
  *   <a TARGET_SITE guard>,"value":<its fatal arm>}} per guard of the
  *   target.  A decision there that takes the fatal arm inside the window is
@@ -103,6 +105,7 @@ public final class RecordingPlant {
                 OccurrenceAddress.parse(occurrence).id());
         CausynthTraceRecorder.plantApplied(name, site.siteId(), occurrence,
                 value);
+        if (value) Identity.doorFaulted(name);
         return value;
     }
 

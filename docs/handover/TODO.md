@@ -44,9 +44,11 @@ row cut never hides the witness path's rows.
 an IPC door fault the request gets no receipt and stays "in hand". Every later thread start on that
 thread then appends `:NamenodeProtocol.getBlockKeys` to its name, so the SPS daemon's occurrence,
 which sends the key id, gets an address no plan instrumented.
-- Fix: a fault marker that comes out true clears the request in hand. In replays this is
-  `RootMint#materializePrimitive`; in a native run, `RecordingPlant#marker`.
-- This is an identity change: send a short design to a review agent, then a live bug2 run.
+- Fix, on branch `hdfs-request-in-hand` (worktree `/bigtemp/vnr3ne/wt/gc-hdfs-request-in-hand`): a
+  message door's marker that comes out true clears the request in hand (`Identity#doorFaulted`),
+  called by a replay's mint (`RootMint`, which learns the marker's name from the scope map's FAULT
+  input, `marker`) and by a native plant (`RecordingPlant#marker`); a LOCAL_IO door's does not.
+- Next: the review agent (identity change), then a live bug2 run, then bug1 and bug3 once each.
 - Done when bug2's witness binds the key id across the wire and `cone.py` passes without the
   exemption.
 
