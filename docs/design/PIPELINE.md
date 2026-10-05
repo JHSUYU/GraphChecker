@@ -787,12 +787,16 @@ One pool for the whole exploration. An obligation is two starts: its SOLVE
 (`campaign_obligation_worker`: its question answered by its host's solver, §7.5) and, when the
 solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
 worker directory, on the model's focus row the solve left there), which the head queues first the
-moment the solve returns (`campaign_stream_ended`), not at the next step, on the class tree and
+moment the solve returns (`campaign_stream_ended`; between two starts of a dispatch too,
+`campaign_stream_collect_jobs`), not at the next step, on the class tree and
 plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
 since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
 `--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
 replay's verdict lands, and an UNSAT, NOT_ADMITTED or reused ADMITTED answer of the solve lands as
-the obligation's. The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
+the obligation's. The replay's answer replaces the solver's row as a new inode
+(`campaign_write_whole`), never in place: written on another host than the row it replaces, an
+NFS client holding the old row cached rewrote it past a truncate it lost (MCH1: the replay's row,
+then the tail of the solver's, and the planner failed on the line). The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
 first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
 counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
 ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve

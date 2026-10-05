@@ -1900,12 +1900,19 @@ solver_timeout_ms=1000
 schedule_max_jobs=1
 trace_test=T
 bound_solved "${worker_dir}" OB.1
+bound_inode=$(stat -c %i "${worker_dir}/obligation_result.jsonl")
 (
   campaign_obligation_replay OB.1 "${bound_dir}/classes" "${worker_dir}" \
     "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
 $(cat "${worker_dir}/worker.log")"
+# The answer replaces the solver's row as a new inode, never in place: the
+# REPLAY runs on another host than the solve, whose NFS client may hold the
+# old row (campaign_write_whole).
+[[ "$(stat -c %i "${worker_dir}/obligation_result.jsonl")" != "${bound_inode}" \
+   && ! -e "${worker_dir}/obligation_result.jsonl.part" ]] \
+  || fail "the replay's answer was written over the solver's row in place"
 [[ "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
     == NOT_ADMITTED ]] \
   || fail "a replay killed on its bound did not record NOT_ADMITTED: \

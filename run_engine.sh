@@ -3182,7 +3182,7 @@ session"
       --arg detail "replay ${campaign_replay_killed}" \
       '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
         verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
-      >"${result_row}"
+      | campaign_write_whole "${result_row}"
     return 0
   fi
   # THE REPLAY OWNS THE VERDICT: the rows FocusedReplay.results built, the
@@ -3205,9 +3205,9 @@ session"
     || campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
       "${worker}/refused-sessions" "a refusal decided every obligation its \
 replay carried and the replay ended there, so its rows are a prefix of a run"
-  # In place, as the solver's row was written: a head reading a peer's file
-  # over NFS opens the same inode, fresh on open.
-  cat -- "${statement}" >"${result_row}"
+  # A new inode over the solver's row (campaign_write_whole); a head reading
+  # it over NFS opens the new one.
+  campaign_write_whole "${result_row}" <"${statement}"
   # The replay decided it, so its answer settles the question its solver
   # asked -- unless the replay ended without a publication, which withdrew
   # the question itself (RowRuntime#closeSession).
@@ -4041,6 +4041,17 @@ ${status}; its logs, and ssh's own output, are in ${worker}"
   campaign_await_remote_result "${worker}" "${host}" "${id}" "${staged}"
 }
 
+# campaign_write_whole <file>: its standard input becomes <file> as a new
+# inode (<file>.part renamed over it), never a rewrite in place: an
+# obligation's answer is rewritten on another host than the one that wrote
+# its solver's row (its REPLAY's), and a host whose NFS client held the old
+# row cached rewrote it past a truncate it lost -- the replay's row, then
+# the tail of the solver's (MCH1: three such rows in hdfs-17899-bug1 and
+# hdfs-17897 failed the planner on a malformed line).
+campaign_write_whole() {
+  cat >"$1.part" && mv -f -- "$1.part" "$1"
+}
+
 # An obligation whose worker did not finish (it exited <status>, or the head
 # could not see what it wrote), answered as itself: one obligation's answer,
 # never the campaign's death.  Nothing of it may still run -- a peer's
@@ -4072,7 +4083,7 @@ campaign log says}); its logs are in ${worker}"
   jq -n -c --arg id "${obligation_id}" --arg detail "${why}" \
     '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
       verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
-    >"${worker}/obligation_result.jsonl"
+    | campaign_write_whole "${worker}/obligation_result.jsonl"
   # Loud: the campaign's own gap row, which EMIT carries, counted in the
   # iteration manifest (unfinishedObligations).  The slots run on the head,
   # so the appends are one host's.
@@ -4173,7 +4184,7 @@ campaign_explore() {
   local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
   local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
-  local -A stream_job_tree=() stream_flying=()
+  local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_solver_seen=() stream_confirming=()
   : >"${results}"
@@ -4840,6 +4851,7 @@ campaign_process_tree() {
 campaign_stream_dispatch() {
   local entry
   while (( ${#stream_queue[@]} > 0 )); do
+    campaign_stream_collect_jobs
     entry=${stream_queue[0]}
     [[ "${entry}" != OBLIGATION\ * ]] || (( stream_hold == 0 )) || return 0
     campaign_stream_has_slot || return 0
@@ -4865,7 +4877,12 @@ campaign_stream_has_slot() {
     -type f -newermt "@${fresh}" | grep -c '') || sharers=0
   (( sharers > 0 )) || sharers=1
   charge=$(campaign_stream_charge_mb)
-  slots=$(campaign_pool_slots "${charge}" "${stream_hosts[@]}")
+  # Its hosts' MemTotal and cores never move: their slots are read once per
+  # charge.
+  [[ -n "${stream_pool_slots[${charge}]:-}" ]] \
+    || stream_pool_slots[${charge}]=$(campaign_pool_slots "${charge}" \
+      "${stream_hosts[@]}")
+  slots=${stream_pool_slots[${charge}]}
   share=$(( slots / sharers ))
   (( share > 0 )) || share=1
   (( ${#stream_jobs[@]} >= share )) || return 0
@@ -5053,6 +5070,21 @@ campaign_stream_start() {
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
+}
+
+# The jobs that ended, taken without waiting (campaign_stream_ended), between
+# two starts of a dispatch: an obligation solved SAT_MODEL_READY has its
+# REPLAY first in the queue before the next start, not behind the burst of
+# starts the dispatch is in (MCH1: each start's ledger round over ten lifts
+# took about a second, and REPLAYs started 13-50 s after their solve).
+campaign_stream_collect_jobs() {
+  local pid status
+  for pid in "${!stream_jobs[@]}"; do
+    ! kill -0 "${pid}" 2>/dev/null || continue
+    status=0
+    wait "${pid}" || status=$?
+    campaign_stream_ended "${pid}" "${status}"
+  done
 }
 
 # Waits for the next return -- a job's or the step's -- or for the poll
