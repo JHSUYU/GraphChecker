@@ -263,14 +263,22 @@ public class ConfirmMainTest {
         return file;
     }
 
-    /** The composition manifest, its selected path resting on these. */
+    /** The composition manifest, its selected path resting on these and
+     *  decided at its target row (seq 40). */
     private Path manifest(String... restsOn) throws Exception {
+        return manifestCut(40L, restsOn);
+    }
+
+    /** The same, its selected path decided at {@code cutoff}. */
+    private Path manifestCut(long cutoff, String... restsOn)
+            throws Exception {
         Path file = Files.createTempFile(folder.getRoot().toPath(),
                 "manifest", ".json");
         Files.write(file, ("{\"kind\":\"COMPOSITION_MANIFEST\",\"paths\":["
                 + "{\"pathId\":\"p1\",\"sessionId\":\"sel\","
                 + "\"selector\":\"path_selector__1__abc\","
-                + "\"fatalObserved\":true,\"restsOn\":"
+                + "\"fatalObserved\":true,\"cutoff\":" + cutoff
+                + ",\"restsOn\":"
                 + new com.google.gson.Gson().toJson(restsOn) + "},"
                 + "{\"pathId\":\"p2\",\"sessionId\":\"other\","
                 + "\"selector\":\"path_selector__2__zzz\","
@@ -752,12 +760,15 @@ public class ConfirmMainTest {
     /**
      * The run as recorded is no counterfactual (owner 2026-10-04): a claim
      * on the seed's own path that moves no root and takes only the seed's
-     * own deliveries is refused by name before anything is planted or
+     * own deliveries is refuted by name before anything is planted or
      * replayed -- hdfs-adhoc-32 (HG4) was confirmed by its seed replay,
-     * which had diverged from its recording into the fatal.
+     * which had diverged from its recording into the fatal.  Rows that
+     * state no runnable model (here, a manifest stating no cutoff) are
+     * refused: a defect of the run, which refutes nothing.
      */
     @Test
-    public void theRunAsRecordedIsRefusedByName() throws Exception {
+    public void theRunAsRecordedIsRefutedAndADefectRefusedByName()
+            throws Exception {
         Path iteration = iteration();
         Path claim = claim("FAULT:IPC", "true");
         JsonObject recorded = ExploreCodec.readObject(claim);
@@ -765,16 +776,113 @@ public class ConfirmMainTest {
         recorded.getAsJsonObject("claim").add("movedRoots", new JsonObject());
         Files.write(claim, recorded.toString().getBytes(
                 StandardCharsets.UTF_8));
-        Path out = folder.newFolder("as-recorded").toPath();
-        try {
-            ConfirmMain.write(iteration, claim, manifest(), out);
-            fail("the run as recorded was handed to a confirmation");
-        } catch (ConfirmMain.Refused refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().startsWith(
-                    "the claim moves nothing: its witness is the run as "
-                            + "recorded"));
+        JsonObject uncut = ExploreCodec.readObject(manifest());
+        uncut.getAsJsonArray("paths").get(0).getAsJsonObject()
+                .remove("cutoff");
+        Path uncutFile = Files.createTempFile(folder.getRoot().toPath(),
+                "uncut", ".json");
+        Files.write(uncutFile, uncut.toString().getBytes(
+                StandardCharsets.UTF_8));
+        // manifest, the refusal's start, whether it refutes
+        Object[][] table = {
+                {manifest(), "the claim moves nothing: its witness is the "
+                        + "run as recorded", true},
+                {uncutFile, "the manifest states no selector, no restsOn or "
+                        + "no cutoff", false}};
+        for (Object[] row : table) {
+            Path out = folder.newFolder().toPath();
+            try {
+                ConfirmMain.write(iteration, claim, (Path) row[0], out);
+                fail(row[1] + ": handed to a confirmation");
+            } catch (ConfirmMain.Refused refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .startsWith((String) row[1]));
+                assertEquals(refused.getMessage(), row[2], refused.refutes);
+            }
+            assertFalse(Files.exists(out.resolve(ConfirmMain.REALIZED)));
         }
-        assertFalse(Files.exists(out.resolve(ConfirmMain.REALIZED)));
+    }
+
+    /**
+     * A witness whose path left the way to the throw at a symbolic guard
+     * (its fatal arm that guard's other arm) never reached the anchor in
+     * its own run, and its session may state no target row there at all:
+     * it is planted and judged as any other, its closure cut at the guard
+     * the manifest names -- a read after the guard is no edge.
+     */
+    @Test
+    public void aWayGuardWitnessIsPlantedWithItsClosureCutAtTheGuard()
+            throws Exception {
+        for (boolean anyTarget : new boolean[]{true, false}) {
+            Path iteration = folder.newFolder("way-" + anyTarget).toPath()
+                    .resolve("iteration-0000");
+            Files.move(iteration(), iteration);
+            RowCodec.writeAll(SessionDir.of(iteration, "sel").targets(),
+                    anyTarget ? Collections.singletonList(TargetRow.of("sel",
+                            40L, anchor, "<a.Handler: void handle()>#u8#1",
+                            "false", false, false))
+                            : Collections.<TargetRow>emptyList(),
+                    RowCodec::writeTarget);
+            Path out = folder.newFolder("way-out-" + anyTarget).toPath();
+            JsonObject summary = ConfirmMain.write(iteration,
+                    claim("M_J_clock.sel"), manifestCut(31L,
+                            "INSTANCE/1#40"), out);
+            assertFalse("a run that never observed the fatal is no "
+                    + "realization: " + summary, summary.has("realizedBy"));
+            List<String> readers = new ArrayList<String>();
+            long cut = -1L;
+            for (JsonObject edge : RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE))) {
+                String kind = edge.get("kind").getAsString();
+                if ("STATE".equals(kind)) {
+                    readers.add(edge.get("reader").getAsString());
+                } else if ("ANCHOR".equals(kind)) {
+                    cut = edge.get("seq").getAsLong();
+                }
+            }
+            assertEquals("the read before the guard", Collections
+                    .singletonList(Confirmation.id(reader)), readers);
+            assertEquals(31L, cut);
+        }
+    }
+
+    /**
+     * A healthy confirmation run refutes the model only where it ran it:
+     * every moved root minted at the model's value (a clock's cell minted)
+     * and no plant refused; else it names why it did not run the model.
+     */
+    @Test
+    public void aHealthyRunRefutesOnlyWhereItPlantedTheModel()
+            throws Exception {
+        JsonObject claim = ExploreCodec.readObject(claim("FAULT:IPC",
+                "true"));
+        JsonObject planted = RowCodec.writeRootMint(root("c", "FAULT:IPC",
+                "M_Z_fault", RootKind.MARKER, "true"));
+        JsonObject other = RowCodec.writeRootMint(root("c", "FAULT:IPC",
+                "M_Z_fault", RootKind.MARKER, "false"));
+        JsonObject refusedPlant = new JsonObject();
+        refusedPlant.addProperty("kind", "ASSIGNMENT_UNPLANTED");
+        refusedPlant.addProperty("subject", "PORT.x");
+        // roots minted, gaps, the reason's start ("" = it ran the model)
+        Object[][] table = {
+                {Collections.singletonList(planted),
+                        Collections.<JsonObject>emptyList(), ""},
+                {Collections.singletonList(other),
+                        Collections.<JsonObject>emptyList(),
+                        "it ran the moved root FAULT:IPC at false"},
+                {Collections.<JsonObject>emptyList(),
+                        Collections.<JsonObject>emptyList(),
+                        "it minted no row of the moved root FAULT:IPC"},
+                {Collections.singletonList(planted),
+                        Collections.singletonList(refusedPlant),
+                        "it refused a plant (PORT.x)"}};
+        for (Object[] row : table) {
+            @SuppressWarnings("unchecked")
+            String why = ConfirmMain.unplanted(claim,
+                    (List<JsonObject>) row[1], (List<JsonObject>) row[0]);
+            assertTrue(why, row[2].equals("") ? why.isEmpty()
+                    : why.startsWith((String) row[2]));
+        }
     }
 
     /**

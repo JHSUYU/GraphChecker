@@ -148,6 +148,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
 | `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path (DIAGNOSTIC: the claim is then `FORMULA_SAT`, CONFIRM's to judge; a witness that is the run as recorded CONFIRM refuses by name) |
 | `TARGET_FATAL_IN_RECORDING` | the declared occurrence took the fatal arm in the recording (`RuntimeSelectedRegionFinalizer`, PLAN, BLOCKING): a declaration of an occurrence that throws as recorded, so no counterfactual is asked of it |
+| `AMBIGUOUS_FATAL_ARM` | a guard of the declared target reaches it on both arms (`StaticScopeMap#fatalArm`, caught in PLAN by `RuntimeSelectedRegionFinalizer`, BLOCKING): no arm the recording took there is the fatal one, so the declaration names no question |
 | `SEED_OBSERVED_FATAL` | the seed replay observed the fatal at the declared occurrence (`ClaimPolicy`, COMPOSE, BLOCKING): the run as recorded is no counterfactual, so no claim stands on the corpus; beside `TARGET_FATAL_IN_RECORDING` the declaration's, else the replay diverged from its recording |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
 | `HOOK_UNDECLARED` | a tree hook that ran in a case whose plan declares its source nowhere (`ActiveRegion#observeConfiguredSourceEntry`): no root of the case, nothing minted, its value concrete (DIAGNOSTIC; an `UNSAT_CLOSED` result counts them, `undeclaredHookCount`) |
@@ -264,8 +265,10 @@ field=<f> <subject>`.
   manifest's `concreteReadings`), never a clock nor a derived root; `attested` = the
   producer's session has an instrumented activation for it, so it states a path condition.
 - `Family(interactionId, arms)`: the arms one interaction's consumer could have received.
-- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn)`: one composed path, its selector,
-  and the tracked locations its fatal predicate rests on (what a confirming run is held to).
+- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn, cutoff)`: one composed path, its
+  selector, the tracked locations its fatal predicate rests on (what a confirming run is held to),
+  and where it decided (`cutoff`: its target row's seq, or, for a path that left the way to the throw
+  at a guard, that guard's; the anchor's reads before it are its closure's, in COMPOSE and CONFIRM).
 - `RootDomain(rootId, kind, recordedValue, min, max)`: absolute bounds, both null = pinned.
   `RootDomain.declared(file)` is the one reader of `root-domains.jsonl` (rows `{sourceId,
   declaredDomainMin, declaredDomainMax}`, each absolute or `+k`/`-k` from the recorded value; no file
@@ -301,14 +304,14 @@ field=<f> <subject>`.
   `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
   or the value; where what it rests on can move -- a root or clock cell, a handoff, a read a STATE
   family may re-pair, through every read's own write -- the read is free instead, named with what it
-  rests on (`SmtLowering#frees`, `concrete[]`). A flip
+  rests on (`SmtLowering#unbound`, `concrete[]`). A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
   `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
   `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
   and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
   return is pinned to the node's `concreteValue` by a named assertion; where its arguments rest on
-  what can move, the return is free instead, named (`SmtLowering#frees`). A method-return node stating no
+  what can move, the return is free instead, named (`SmtLowering#unbound`). A method-return node stating no
   call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
   (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and

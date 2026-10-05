@@ -4170,8 +4170,10 @@ campaign log says}); its logs are in ${worker}"
 #               at a witness, the queue is cancelled and what runs reaped.
 #   PLANNER_HEAP_EXCEEDED  a round's planner outgrew the head's heap.
 #
-# Each end is stated in exploration.json, and a forced one as a DIAGNOSTIC
-# row of campaign_gaps.jsonl; none fails the campaign, which goes on to
+# Each end is stated in exploration.json with the work it left owed, and a
+# forced one as a DIAGNOSTIC row of campaign_gaps.jsonl; whether it cut the
+# exploration short is judged once, at EMIT, against the claim published
+# (campaign_exploration_cut).  None fails the campaign, which goes on to
 # COMPOSE over the corpus EXPLORE left.
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
@@ -4184,12 +4186,13 @@ campaign_explore() {
   local stream_generation=0 stream_next_host=0 stream_ticker=""
   local stream_waiting="" stream_admitted_host="" stream_admitted_mb=""
   local stream_stop=""
-  local stream_share_said=""
+  local stream_share_said="" stream_round_due=false
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
+  local -a stream_reruns_dropped=() stream_confirms_reaped=()
   local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
@@ -4216,6 +4219,9 @@ campaign_explore() {
 campaign's ${campaign_budget_s}s budget (campaign_budget_s) are spent, and \
 the stages after the exploration are owed $(campaign_reserve)s of it \
 (campaign_reserve)"
+      # A round owed and not planned: answers landed since the last one,
+      # or GROW's re-runs or swaps still owed.
+      (( stream_dirty == 0 && stream_hold == 0 )) || stream_round_due=true
     fi
     if [[ "${stream_stop}" == WITNESSED \
         || "${stream_stop}" == CAMPAIGN_BUDGET_REACHED ]]; then
@@ -4523,18 +4529,28 @@ campaign_stream_gap() {
   campaign_log "exploration: ${kind}: ${detail}"
 }
 
-# The closure the exploration ended on, judged.  An accepted witness ended
+# The closure the exploration ended on, judged, and a forced end's
+# DIAGNOSTIC row with what it left owed (whether that cut the exploration
+# short is EMIT's, campaign_exploration_cut).  An accepted witness ended
 # it: nothing past that point is asked, so a truncation asks nothing more
-# (each round's own row is DIAGNOSTIC, ExploreMain).  A planner that could
-# not hold the corpus ended it with rounds still owed: BLOCKING.  Any other
-# end: when its last round's closure was truncated at the task bound
-# (--max-tasks, the manifest's `truncated`), a claim over it misses arms,
-# BLOCKING.  The same
-# holds for the occurrences PLAN left out to fit schedule_max_jobs (the
-# index's `closureCut`, RuntimeWorkflowDiscovery.Workflow#nearest), stated
-# whatever the end: DIAGNOSTIC under a witness, BLOCKING otherwise.
+# (each round's own row is DIAGNOSTIC, ExploreMain).  Any other end: when its last round's
+# closure was truncated at the task bound (--max-tasks, the manifest's
+# `truncated`), a claim over it misses arms, BLOCKING.  The same holds for
+# the occurrences PLAN left out to fit schedule_max_jobs (the index's
+# `closureCut`, RuntimeWorkflowDiscovery.Workflow#nearest), stated whatever
+# the end: DIAGNOSTIC under a witness, BLOCKING otherwise.
 campaign_stream_truncation() {
   local last truncated cut cls=BLOCKING
+  [[ "${stream_stop}" == FIXED_POINT \
+      || "${stream_stop}" == REGION_PATH_WAVE_BUDGET_REACHED ]] \
+    || campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}; \
+${#stream_cancelled[@]} queued obligation(s) cancelled, ${#stream_reaped[@]} \
+unlanded job(s) and ${#stream_confirms_reaped[@]} confirmation(s) reaped, \
+${#stream_reruns_dropped[@]} GROW re-run(s) dropped, a round due: \
+${stream_round_due}, and ${#stream_after_witness[@]} session(s) that landed \
+after the accepted attempt composed out of the corpus (exploration.json; \
+whether it cut the exploration short is EMIT's to judge, \
+campaign_exploration_cut)"
   cut=$(jq -r '.closureCut // empty | "\(.occurrences) \(.keptDepth)"' \
     "${iteration_dir}/runtime_workflow_schedule_index.json")
   if [[ -n "${cut}" ]]; then
@@ -4544,10 +4560,6 @@ closure only to demand depth ${cut#* } to fit schedule_max_jobs: ${cut%% *} \
 deeper occurrence(s) were not planned, so a claim over it misses their arms \
 (the exploration ended ${stream_stop})"
   fi
-  [[ "${stream_stop}" != PLANNER_HEAP_EXCEEDED ]] \
-    || campaign_stream_gap BLOCKING "${stream_stop}" "${stream_stop_detail}: \
-the exploration ended on the rounds before it, so a claim over its corpus \
-misses the arms the rounds still owed would ask"
   [[ "${stream_stop}" != WITNESSED ]] && (( stream_round > 0 )) || return 0
   last=$(printf '%s/obligations-%04d' "${iteration_dir}" \
     "$((stream_round - 1))")
@@ -4620,6 +4632,13 @@ campaign_stream_attempt() {
     campaign_stream_witnessed "${step}" "${dir}" null
   else
     model=$(campaign_claim_model "${dir}/claim.json")
+    if [[ -n "$(campaign_refused_reason "${iteration_dir}" "${model}")" ]]
+    then
+      campaign_stream_attempt_row "${dir}" null "its model got no verdict \
+from an earlier confirmation (refused_models.jsonl): not confirmed again" 0 \
+        false
+      return 0
+    fi
     if grep -q -x -F -- "${model}" "${step}/confirming"; then
       printf '%s\n' "$@" >"${step}/deferred"
       campaign_stream_attempt_row "${dir}" null "its model is under \
@@ -4742,7 +4761,7 @@ campaign_stream_drop() {
 # corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
 # COMPOSE reads next is exactly the one the accepted attempt read.
 campaign_stream_end() {
-  local pid entry kind round id host status session dir queued=0
+  local pid entry kind round id host status session dir
   local -a dropped=() confirms=() withdrawn=()
   for pid in "${!stream_jobs[@]}"; do
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
@@ -4752,15 +4771,15 @@ campaign_stream_end() {
     read -r kind round id host status session <<<"${entry}"
     dropped+=("${kind} ${round} ${id}")
   done
-  for entry in "${stream_queue[@]}"; do
-    [[ "${entry}" != OBLIGATION\ * ]] || queued=$((queued + 1))
-  done
   campaign_stream_drop
   for entry in "${stream_queue[@]}"; do
     read -r kind round id _ <<<"${entry}"
     case "${kind}" in
       CONFIRM) confirms+=("${id}") ;;
       REPLAY) dropped+=("${kind} ${round} ${id}") ;;
+      # A GROW re-run never run: its exposing round's growth and the
+      # obligations it holds are owed.
+      RERUN) stream_reruns_dropped+=("${id}") ;;
     esac
   done
   stream_queue=()
@@ -4793,11 +4812,7 @@ ${stream_stop}" 0 false
         -printf '%f\n' | LC_ALL=C sort \
       | LC_ALL=C comm -23 - "${campaign_witness_attempt}/corpus.txt")
   fi
-  campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}; \
-${queued} queued obligation(s) cancelled, ${#dropped[@]} unlanded job(s) and \
-${#confirms[@]} confirmation(s) reaped, and ${#withdrawn[@]} session(s) that \
-landed after the accepted attempt composed out of the corpus \
-(exploration.json)"
+  stream_confirms_reaped=("${confirms[@]}")
   stream_after_witness=("${withdrawn[@]}")
   stream_jobs=()
   stream_pending=()
@@ -5411,8 +5426,10 @@ campaign_stream_promote_generation() {
 # exploration.json: how EXPLORE ended, how many rounds and head steps it
 # took, every COMPOSE attempt at a witness (by attempt order), every
 # obligation it dropped -- cancelled from the queue, or reaped before it
-# landed -- by id, and the sessions that left the corpus after the
-# witness's attempt composed.
+# landed -- by id, the GROW re-runs dropped from the queue and the
+# confirmations reaped, whether a round was due when the budget stopped
+# it, and the sessions that left the corpus after the witness's attempt
+# composed: what EMIT judges a cut by (campaign_exploration_cut).
 campaign_stream_manifest() {
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
@@ -5425,13 +5442,64 @@ campaign_stream_manifest() {
       | jq -R 'select(length > 0)' | jq -s -c .)" \
     --argjson afterWitness "$(printf '%s\n' "${stream_after_witness[@]}" \
       | jq -R 'select(length > 0)' | jq -s -c .)" \
+    --argjson rerunsDropped "$(printf '%s\n' \
+      "${stream_reruns_dropped[@]}" | jq -R 'select(length > 0)' \
+      | jq -s -c .)" \
+    --argjson confirmsReaped "$(printf '%s\n' \
+      "${stream_confirms_reaped[@]}" | jq -R 'select(length > 0)' \
+      | jq -s -c .)" \
+    --argjson roundDue "${stream_round_due}" \
     --slurpfile attempts "${attempts}" \
     '{schemaVersion: 1, kind: "EXPLORATION", stop: $stop, detail: $detail,
       rounds: $rounds, steps: $steps, generations: $generations,
       answered: $answered,
       witnessAttempts: ($attempts | sort_by(.attempt)), cancelled: $cancelled,
-      reaped: $reaped, afterWitness: $afterWitness}' \
+      reaped: $reaped, rerunsDropped: $rerunsDropped,
+      confirmsReaped: $confirmsReaped, roundDue: $roundDue,
+      afterWitness: $afterWitness}' \
     >"${iteration_dir}/exploration.json"
+}
+
+# THE ONE PLACE an end of the exploration is judged a cut, at EMIT, off
+# exploration.json and the claim the final stages reached (owner 2026-10-04,
+# only SAT or UNSAT: an UNSAT over a corpus missing arms says nothing about
+# them).  It owed work where queued obligations were cancelled, unlanded
+# jobs or confirmations reaped, GROW re-runs dropped with the exposing
+# round's obligations, a round was due when the budget stopped it, or the
+# planner could not hold the corpus (PLANNER_HEAP_EXCEEDED); WITNESSED
+# owes the same, and a witness that stands (the claim a SAT_CANDIDATE,
+# which CONFIRM validates) owes nothing -- one refuted, followed by a claim
+# composed again over the trimmed corpus with no new EXPLORE
+# (campaign_next_claim), owes it all.  FIXED_POINT and the declared nesting
+# bound REGION_PATH_WAVE_BUDGET_REACHED, which defines the explored space,
+# owe nothing.  An exploration that owed work under a claim that is no
+# SAT_CANDIDATE is one BLOCKING EXPLORATION_CUT row naming the stop and the
+# counts, so EMIT publishes no UNSAT over it (RUN_DEFECT); under a
+# SAT_CANDIDATE the row is DIAGNOSTIC.
+campaign_exploration_cut() {
+  local iteration_dir=$1 claim
+  [[ -s "${iteration_dir}/exploration.json" ]] || return 0
+  claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
+  jq -c --arg claim "${claim}" --arg epoch "$(basename "${iteration_dir}")" '
+    (.cancelled // [] | length) as $c | (.reaped // [] | length) as $r
+    | (.confirmsReaped // [] | length) as $k
+    | (.rerunsDropped // [] | length) as $g | (.roundDue == true) as $due
+    | select(.stop == "PLANNER_HEAP_EXCEEDED"
+        or ((.stop == "CAMPAIGN_BUDGET_REACHED" or .stop == "WITNESSED")
+            and ($c + $r + $k + $g > 0 or $due)))
+    | {schemaVersion: 1, sessionId: "", stage: "EXPLORE",
+       kind: "ADMISSION_GAP",
+       cls: (if $claim == "SAT_CANDIDATE" then "DIAGNOSTIC" else "BLOCKING"
+             end),
+       subject: "EXPLORATION_CUT", topologyEpoch: $epoch,
+       detail: ("the exploration ended \(.stop) owing work: \($c) queued "
+         + "obligation(s) cancelled, \($r) unlanded job(s) and \($k) "
+         + "confirmation(s) reaped, \($g) GROW re-run(s) dropped, a round "
+         + "due: \($due); the claim is \($claim), so "
+         + (if $claim == "SAT_CANDIDATE" then "the witness stands as "
+            + "CONFIRM decides it"
+            else "no UNSAT closes over a corpus missing those arms" end))}' \
+    "${iteration_dir}/exploration.json" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
 # Gap rows this iteration's stages wrote outside a session live in one file,
@@ -5645,12 +5713,14 @@ campaign_decide() {
 # witness was confirmed as it was accepted (campaign_stream_attempt): the
 # same model, composed again over the same corpus, is not replayed twice.
 campaign_confirm() {
-  local iteration_dir=$1 claim
+  local iteration_dir=$1 claim refused
   claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
   if [[ "${claim}" != SAT_CANDIDATE ]]; then
     campaign_log "claim=${claim}: nothing to confirm"
     return 0
   fi
+  refused=$(campaign_refused_reason "${iteration_dir}" \
+    "$(campaign_claim_model "${campaign_final}/claim.json")")
   if [[ -s "${campaign_witness_attempt}/confirm.json" ]] \
       && [[ "$(campaign_claim_model "${campaign_final}/claim.json")" \
         == "$(campaign_claim_model "${campaign_witness_attempt}/claim.json")" ]]
@@ -5659,6 +5729,11 @@ campaign_confirm() {
       "${campaign_final}/confirm.json"
     campaign_log "the model is the exploration's witness, confirmed in \
 ${campaign_witness_attempt}"
+  elif [[ -n "${refused}" ]]; then
+    campaign_confirm_verdict false "an earlier confirmation of this model \
+gave no verdict (refused_models.jsonl): ${refused}" "" false \
+      >"${campaign_final}/confirm.json"
+    campaign_log "the model got no verdict earlier: not confirmed again"
   else
     campaign_confirm_claim "${iteration_dir}" "${campaign_final}" \
       "${campaign_final}/confirm"
@@ -5692,13 +5767,15 @@ campaign_confirm_claim() {
 # The claim <claims>/claim.json states, beside its
 # candidate_composition_manifest.json, planned: ConfirmMain's task into
 # <dir>/worker, its log <dir>/confirm.log.  A verdict known now is written
-# to <claims>/confirm.json: a refusal ConfirmMain names (the claim's own: no
-# run can realize it), any other exit of it (which says nothing about the
-# model), or the selected session itself the run (realized.json: every edge
-# the model chose is its own, with the moved roots at the model's values, and
-# it observed the fatal -- a replay of its world would test only whether a
-# race the order does not hold goes the same way twice).  Otherwise the
-# replay is owed.
+# to <claims>/confirm.json: a claim ConfirmMain refutes by name ("CONFIRM
+# refutes:", the run as recorded: no run of it is a counterfactual), a
+# refusal it names ("CONFIRM refused:", rows that state no runnable model --
+# a defect of the run, which refutes nothing) or any other exit of it (which
+# says nothing about the model), or the selected session itself the run
+# (realized.json: every edge the model chose is its own, with the moved roots
+# at the model's values, and it observed the fatal -- a replay of its world
+# would test only whether a race the order does not hold goes the same way
+# twice).  Otherwise the replay is owed.
 campaign_confirm_plan() {
   local iteration_dir=$1 claims=$2 dir=$3 worker status=0 reason
   [[ ! -e "${dir}" ]] \
@@ -5712,12 +5789,12 @@ campaign_confirm_plan() {
     --manifest "${claims}/candidate_composition_manifest.json" \
     --output "${worker}" >"${dir}/confirm.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
-    reason=$(grep -m 1 'CONFIRM refused:' "${dir}/confirm.log" \
+    reason=$(grep -m 1 -E 'CONFIRM (refutes|refused):' "${dir}/confirm.log" \
       || grep -v -E '^[[:space:]]+at ' "${dir}/confirm.log" \
         | tail -n 1)
     campaign_confirm_verdict false \
       "${reason:-ConfirmMain exited ${status}}" "" \
-      "$([[ "${reason}" == *'CONFIRM refused:'* ]] && echo true \
+      "$([[ "${reason}" == *'CONFIRM refutes:'* ]] && echo true \
         || echo false)" >"${claims}/confirm.json"
   elif [[ -s "${worker}/realized.json" ]]; then
     jq -c '.' "${worker}/realized.json" >"${claims}/confirm.json"
@@ -5760,12 +5837,47 @@ confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
 
 # A verdict written: the claim refuted (campaign_refute) only when the
 # verdict refutes it -- the replay ran the model and disagreed, or ConfirmMain
-# refused it by name.
+# refuted it by name (the run as recorded); a confirmation that neither
+# confirmed nor refuted it (a refusal, a run that did not run the model, a
+# replay that published no verdict) is a refused model (campaign_refuse).
 campaign_confirm_settle() {
   local iteration_dir=$1 claims=$2
   require_nonempty "confirmation" "${claims}/confirm.json"
-  [[ "$(jq -r '.refutes' "${claims}/confirm.json")" != true ]] \
-    || campaign_refute "${iteration_dir}" "${claims}"
+  if [[ "$(jq -r '.refutes' "${claims}/confirm.json")" == true ]]; then
+    campaign_refute "${iteration_dir}" "${claims}"
+  elif [[ "$(jq -r '.confirmed' "${claims}/confirm.json")" != true ]]; then
+    campaign_refuse "${iteration_dir}" "${claims}"
+  fi
+}
+
+# A model CONFIRM gave no verdict on, once: one row of
+# <iteration>/refused_models.jsonl, its model and the reason.  No
+# refutation -- the formula still holds it -- but no witness attempt of this
+# campaign confirms it again (campaign_stream_attempt), the final CONFIRM
+# takes its row (campaign_confirm), and a campaign that ends with one and no
+# confirmed SAT publishes no claim (EMIT: RUN_DEFECT, CONFIRM_REFUSED).
+campaign_refuse() {
+  local iteration_dir=$1 claims=$2 model
+  model=$(campaign_claim_model "${claims}/claim.json")
+  [[ -z "$(campaign_refused_reason "${iteration_dir}" "${model}")" ]] \
+    || return 0
+  jq -n -c --argjson model "${model}" --arg claimed "${claims}" \
+    --slurpfile confirmation "${claims}/confirm.json" \
+    '{schemaVersion: 1, kind: "REFUSED_MODEL", model: $model,
+      claimed: $claimed, reason: $confirmation[0].reason}' \
+    >>"${iteration_dir}/refused_models.jsonl"
+  campaign_log "refused, no verdict: $(jq -r '.reason' \
+"${claims}/confirm.json")"
+}
+
+# The reason CONFIRM gave no verdict on this model (campaign_refuse), or
+# nothing.
+campaign_refused_reason() {
+  local iteration_dir=$1 model=$2
+  [[ -n "${model}" && -s "${iteration_dir}/refused_models.jsonl" ]] \
+    || return 0
+  jq -r -c --argjson model "${model}" 'select(.model == $model) | .reason' \
+    "${iteration_dir}/refused_models.jsonl" | head -n 1
 }
 
 # A claim's model, one line: its finding kind, the path it selected, the arms
@@ -5903,7 +6015,7 @@ campaign_reproduce() {
     --static-scope-map "${causynth_static_scope_map}" \
     --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
-    reason="no native run: $(sed -n 's/^CONFIRM refused: //p' \
+    reason="no native run: $(sed -n -E 's/^CONFIRM (refused|refutes): //p' \
       "${dir}/plant.log" | head -n 1)"
   elif [[ ! "${campaign_recorded_workload_rss_mb}" =~ ^[0-9]+$ ]]; then
     reason="no native run: the recording measured no peak resident memory \
@@ -6192,6 +6304,7 @@ campaign_emit() {
   # Every gap row states its own kind and class, wherever it was raised, and
   # a row that states no class is blocking: a gap added to some stage
   # withholds the claim until its producer states why it cannot break a chain.
+  campaign_exploration_cut "${iteration_dir}"
   campaign_write_gaps \
     "${composition_manifest}" \
     "${iteration_dir}" \
@@ -6230,6 +6343,10 @@ campaign_emit() {
   # positives (tools/adhoc/triage.py), whatever the claim published.
   local refuted="${iteration_dir}/refuted_claims.jsonl"
   [[ -s "${refuted}" ]] || refuted=/dev/null
+  # Every model CONFIRM gave no verdict on (campaign_refuse): with no
+  # confirmed SAT, no claim stands (RUN_DEFECT, CONFIRM_REFUSED).
+  local refused="${iteration_dir}/refused_models.jsonl"
+  [[ -s "${refused}" ]] || refused=/dev/null
   # What the last EXPLORE round found decided on no symbol (ExploreMain's
   # concreteAnchors): information beside the verdict, never a gap.
   local explored=/dev/null round
@@ -6249,6 +6366,7 @@ campaign_emit() {
     --arg formula "${formula_path}" \
     --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
+    --slurpfile refusedModels "${refused}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile exploreDocuments "${explored}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
@@ -6267,10 +6385,13 @@ campaign_emit() {
     # only where no stage named a defect.  Every defect is in defects[].
     ($confirmation != null and $confirmation.confirmed != true
      and $confirmation.refutes != true) as $noVerdict |
-    (if $decided.claim == "SAT_CANDIDATE"
-     then (if $confirmation.confirmed == true then "SAT_CANDIDATE"
-           elif $noVerdict then "RUN_DEFECT"
-           else "SAT_UNCONFIRMED" end)
+    ($decided.claim == "SAT_CANDIDATE"
+     and $confirmation.confirmed == true) as $confirmedSat |
+    (($refusedModels | length) > 0 and ($confirmedSat | not)) as $refused |
+    (if $confirmedSat then "SAT_CANDIDATE"
+     elif $decided.claim == "SAT_CANDIDATE" and $noVerdict then "RUN_DEFECT"
+     elif $refused then "RUN_DEFECT"
+     elif $decided.claim == "SAT_CANDIDATE" then "SAT_UNCONFIRMED"
      elif $gapCount > 0 then "RUN_DEFECT"
      else $decided.claim end) as $claim |
     {schemaVersion: 1,
@@ -6283,6 +6404,10 @@ campaign_emit() {
        elif $noVerdict
        then "the confirmation of the formula'"'"'s witness published no verdict: "
             + $confirmation.reason
+       elif $refused
+       then "CONFIRM gave no verdict on \($refusedModels | length) model(s) "
+            + "of this campaign (refusedModels) and none confirmed, so no "
+            + "claim stands: " + $refusedModels[0].reason
        elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
        then "the formula decided " + $decided.claim + ", and the run named "
             + ($gapCount | tostring) + " defect(s) that leave no verdict"
@@ -6301,6 +6426,8 @@ campaign_emit() {
        then "SAT_UNCONFIRMED: " + $confirmation.reason
        elif $noVerdict
        then "RUN_DEFECT: CONFIRM published no verdict: " + $confirmation.reason
+       elif $refused
+       then "RUN_DEFECT: CONFIRM_REFUSED: " + $refusedModels[0].reason
        elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
        then "RUN_DEFECT: the run named " + ($gapCount | tostring)
             + " defect(s): " + ([$gaps.gaps[] | .code] | unique | join(", "))
@@ -6309,6 +6436,16 @@ campaign_emit() {
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
      refutedClaims: $refutedClaims,
+     # The models CONFIRM gave no verdict on (campaign_refuse): no
+     # refutation, but with none confirmed no claim stands.
+     refusedModels: $refusedModels,
+     # The refuted claims an UNSAT rests on: the refuted_claim__ labels its
+     # unsat core names (ComposeMain#campaignClaim), each the model it
+     # excludes -- a region the verdict rests on beside the corpus.
+     restsOnRefutations: ($decided.restsOnRefutations // []),
+     # The admitted paths COMPOSE refused by name, each with its first
+     # refusal: no disjunct of the formula, never silent.
+     refusedPaths: ($decided.refusedPaths // []),
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it
@@ -6360,6 +6497,12 @@ campaign_emit() {
           then [{stage: "CONFIRM", code: "CONFIRM_NO_VERDICT",
                  subject: ($confirmation.sessionId // ""),
                  detail: $confirmation.reason}]
+          else [] end)
+       + (if $refused and ($noVerdict | not)
+          then [{stage: "CONFIRM", code: "CONFIRM_REFUSED",
+                 subject: ($refusedModels[0].model.pathId // ""),
+                 detail: ("\($refusedModels | length) model(s) got no "
+                   + "verdict: " + $refusedModels[0].reason)}]
           else [] end)),
      # What the decision rested on concretely: each anchor every admitted
      # path decided on no symbol (EXPLORE), and each value COMPOSE stated

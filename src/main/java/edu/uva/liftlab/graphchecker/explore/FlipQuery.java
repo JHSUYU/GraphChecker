@@ -430,7 +430,22 @@ final class FlipQuery {
             // arm is the recording's (UNSAT would be a false "no world", SAT
             // the seed replay); a variable a prefix decision binds is no
             // reason to ask it.
-            if (!flipMoves()) {
+            Set<String> cone = flipCone();
+            if (!moves(cone) && !framed(cone).isEmpty()) {
+                // A leaf a frame's write was freed to (its writer computed
+                // on an arrival it refused, SmtLowering.RefusalFrame): no
+                // plant reaches it, so no replay can take the flip.
+                return refuse(GapKind.UNPRODUCIBLE_ANSWER,
+                        GapClass.DIAGNOSTIC, ExploreCodec.EXPLORATION,
+                        flipped.siteId() + "#" + flipped.ordinal(),
+                        "the flipped predicate rests only on values a "
+                                + "frame wrote on an arrival it refused "
+                                + framed(cone) + ": free in the formula, "
+                                + "reached by no plant, so no replay can "
+                                + "take this flip",
+                        flipped);
+            }
+            if (!moves(cone)) {
                 return refuse(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         ExploreCodec.EXPLORATION,
                         flipped.siteId() + "#" + flipped.ordinal(),
@@ -1547,17 +1562,36 @@ final class FlipQuery {
          * declarations its text reaches, {@link
          * FlipQueryText#statedDeclarations}).
          */
-        private boolean flipMoves() {
+        private Set<String> flipCone() {
             Set<String> cone = new LinkedHashSet<String>(
                     SmtNames.names(flippedText));
             for (String declaration : FlipQueryText.statedDeclarations(corpus,
                     lowered, this, Collections.singletonList(flippedText))) {
                 cone.addAll(SmtNames.names(declaration));
             }
+            return cone;
+        }
+
+        /** Whether a variable of this query is in the cone. */
+        private boolean moves(Set<String> cone) {
             for (String name : cone) {
                 if (sorts.containsKey(name)) return true;
             }
             return false;
+        }
+
+        /** The framed leaves ({@link SmtLowering#framedLeaves}) in the
+         *  cone. */
+        private Set<String> framed(Set<String> cone) {
+            Set<String> found = new LinkedHashSet<String>();
+            for (String sessionId : lowered) {
+                SmtLowering lowering = corpus.lowering(sessionId);
+                if (lowering == null) continue;
+                for (String leaf : lowering.framedLeaves()) {
+                    if (cone.contains(leaf)) found.add(leaf);
+                }
+            }
+            return found;
         }
 
         /** Every text this query ASSERTS (assertions, root facts, stated

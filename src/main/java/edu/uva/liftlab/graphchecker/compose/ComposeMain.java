@@ -229,6 +229,7 @@ public final class ComposeMain {
         int blockers = refusals.size();
         String kind;
         String reason;
+        JsonArray restsOnRefutations = new JsonArray();
         if (blockers > 0) {
             kind = "RUN_DEFECT";
             reason = "the composition named " + blockers
@@ -245,10 +246,36 @@ public final class ComposeMain {
                     : "");
         } else if (decision.formula() != null
                 && decision.formula().unsat()) {
+            // WHAT UNSAT_CLOSED MEANS, exactly: no world of the explored
+            // corpus reaches the fatal -- each composed path under the
+            // marker valuation its own run ran (Composer#valuationOf), every
+            // declared root free over its domain, every clock over its
+            // window, every value COMPOSE could not bind free where its
+            // stated producer moves and held at its recorded value where no
+            // row states it (concrete[], SmtLowering#unbound) -- and nothing
+            // about a path the exploration did not admit, or an admitted one
+            // COMPOSE refused, each named (refusedPaths).
             kind = "UNSAT_CLOSED";
-            reason = "the composed formula, every root free over its domain,"
-                    + " is unsat: no world of the paths this corpus admits"
-                    + " reaches the fatal arm";
+            reason = "the composed formula is unsat: no world of the explored"
+                    + " corpus reaches the fatal arm, given the marker"
+                    + " valuations each path ran and the values concrete[]"
+                    + " holds"
+                    + (composition.refusedPaths().isEmpty() ? ""
+                    : "; " + composition.refusedPaths().size() + " admitted"
+                    + " path(s) were refused by name and are no part of it"
+                    + " (refusedPaths)");
+            // A refuted claim the formula excludes is a region the UNSAT
+            // rests on beside the corpus, named where its core names it.
+            JsonArray rests = new JsonArray();
+            for (JsonObject refuted : composition.restsOn(
+                    decision.formula().core())) {
+                rests.add(refuted);
+            }
+            restsOnRefutations = rests;
+            if (rests.size() > 0) {
+                reason += ", and on " + rests.size() + " refuted claim(s)"
+                        + " it excludes (restsOnRefutations)";
+            }
         } else {
             // No claim and no unsat: never a refutation.
             kind = "RUN_DEFECT";
@@ -260,6 +287,10 @@ public final class ComposeMain {
         JsonObject row = new JsonObject();
         row.addProperty("claim", kind);
         row.addProperty("claimReason", reason);
+        row.add("restsOnRefutations", restsOnRefutations);
+        JsonArray refused = new JsonArray();
+        for (JsonObject path : composition.refusedPaths()) refused.add(path);
+        row.add("refusedPaths", refused);
         row.addProperty("findingKind", claim.kind().name());
         row.addProperty("valuationOrdinal", claim.valuationOrdinal());
         row.addProperty("polarityDecides", claim.polarityDecides());
