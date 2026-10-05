@@ -6053,8 +6053,9 @@ has no room for another claim"
     [[ ! -e "${campaign_final}/${name}" ]] \
       || mv -- "${campaign_final}/${name}" "${dir}/"
   done
-  campaign_log "the claim was $(jq -r 'if .refutes then "refuted" else \
-"given no verdict" end' "${dir}/confirm.json") (${dir}): composing the next one"
+  campaign_log "the claim was $(jq -r \
+    'if .refutes then "refuted" else "given no verdict" end' \
+    "${dir}/confirm.json") (${dir}): composing the next one"
 }
 
 # REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again

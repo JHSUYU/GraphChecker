@@ -4246,9 +4246,13 @@ next_claim true refuted_claims
 next_index=0
 for file in refuted_claims refused_models; do
   next_claim false "${file}"
-  campaign_next_claim "${next_iteration}" >/dev/null \
+  next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
     || fail "a claim recorded in ${file} with room in the budget was not \
 followed"
+  [[ "${next_out}" == *"was $([[ ${file} == refuted_claims ]] && echo refuted \
+      || echo 'given no verdict') ("* ]] \
+    || fail "the next claim after one recorded in ${file} did not say why: \
+${next_out}"
   [[ -s "${campaign_final}/refuted/000${next_index}/claim.json" \
       && -d "${campaign_final}/refuted/000${next_index}/confirm" \
       && ! -e "${campaign_final}/candidate.smt2" ]] \
