@@ -163,6 +163,37 @@ recommendation.
   `lift06`–`lift15`, `lift11` included as a worker; no lift above 70 % memory (the host ledger enforces it;
   stop or move work past it); kill orphan z3 processes. Details in [OPERATIONS.md](OPERATIONS.md).
 
+**Code health: delete redundancy, refactor ugly code** (owner, goal of 2026-10-04 night: "代码可能现在有点臃肿。在你跑通hdfs
+的同时，你也要删除冗余，不用的代码。并重构非常ugly的代码"; and "每次这些你就要把旧代码，不用的代码，都删掉。我们也不需要保留fallback",
+"对不用的旧代码，旧产物，文件都清理了"). This is part of every goal, not a separate phase:
+1. **Every change deletes what it replaces and what it leaves unused**, in the same commit: no fallback, no flag that
+   keeps an old path, no compatibility shim, no "kept just in case"; the tests of a removed mechanism go with it. The
+   commit message (or the agent's report) lists what was deleted.
+2. **Dead code is found with evidence, never guessed**: bytecode reachability from the real entry points (the Java
+   mains `run_engine.sh` and `tools/` launch, the hook methods `CausynthPipeline` weaves by name, the system trees'
+   calls into `MessageDoors` and the shim, reflection, VM natives), then a grep over `src/`, `run_engine.sh`, `tools/`,
+   `experiments/` and every system tree (`/bigtemp/vnr3ne/wt/hadoop-*`, `lucene-solr-*`, `zookeeper-*`,
+   `hbase-unified`); config keys and environment variables no launcher sets; shell functions nothing calls; scripts no
+   tool or doc names. The 2026-10-05 audit's tables: `/bigtemp/vnr3ne/analysis/study-2026-10-04/cleanup-audit/`.
+3. **One mechanism per concept**: two implementations of one idea (a second "does this move" walk, two pairing rules,
+   nine "property else environment" lookups, JSON helpers beside `smt/JsonFields`, a forwarding layer that only
+   re-calls the next one) become one.
+4. **Very ugly code is refactored**: a method of more than ~150-200 lines or ~50 branches becomes named steps over one
+   context object; parallel switch ladders become one table; a file that mixes responsibilities is split by them
+   (`SmtLowering` -> `VmTermLowering` + `SmtSymbolTable`; `CausynthTraceRecorder`'s offline aggregation into its own
+   class; `CausynthPipeline`'s weaves apart from the analysis orchestration). Comments state what the code does, at
+   its points; history belongs in git.
+5. **A refactor or deletion changes no result**: gated by `tools/regress/offline-ab.sh` with byte-identical outputs of
+   every stage it touches (COMPOSE's `candidate.smt2`/`claim.json`/manifest, SEED.static), only named run-to-run noise
+   excluded (`solverRuns`, `unsatCore`), plus `mvn -q -o package` and the shell test on every commit.
+6. **No conflicts with live work**: clean up files no in-flight branch touches (a busy-file list from
+   `git diff --name-only system/<sys>...<branch>` of each open branch), the rest after the merges.
+7. **Artifacts too**: merged branches and their worktrees, stale snapshots (`tools/rounds/snapshot-gc.sh`), finished
+   agents' outputs, outdated documents are deleted; evidence still needed is named in STATE.
+Progress and what is still owed: STATE.md §2 (deleted so far: the WIRE-CODEC runtime, 6131 lines; dead symbols,
+unused config and duplicate helpers, 664 lines; the COMPOSE refactor steps 1-4 on `hdfs-refactor-compose`), TODO.md
+HDFS §1 and §8.
+
 **Acceptance**
 - **What a real PASS is:** the claim, polarityDecides, the mechanism's roots in
   `claim.movedRoots`, confirmed, cone gate — a PASS line or a finding kind alone is not acceptance.
