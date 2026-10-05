@@ -1146,7 +1146,7 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   an attach no session attests the producer of (or with no producer named) has a producer no row
   states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
   the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
-  body holds it, `""` on the path's own); one whose producer is attested and no export of
+  body holds it, none on the path's own); one whose producer is attested and no export of
   it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
   it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it

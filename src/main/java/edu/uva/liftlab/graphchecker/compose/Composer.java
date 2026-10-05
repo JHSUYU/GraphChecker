@@ -2083,8 +2083,8 @@ public final class Composer {
         public final List<String> movesWith;
         /** The path it was composed on ({@link #on}). */
         public final String pathId;
-        /** The arm whose body it is in, "" for the path's own ({@link
-         *  SmtLowering.Unbound#arm}). */
+        /** The arm whose body it is in, null for the path's own ({@link
+         *  SmtLowering.Unbound#arm}): a path's row states no arm. */
         public final String arm;
 
         Concrete(String kind, String subject, String value, String reason,
@@ -2101,7 +2101,7 @@ public final class Composer {
             this.reason = reason;
             this.movesWith = Collections.unmodifiableList(movesWith);
             this.pathId = pathId;
-            this.arm = arm;
+            this.arm = arm == null || arm.isEmpty() ? null : arm;
         }
 
         /** The same row, on this path. */
