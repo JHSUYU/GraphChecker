@@ -366,6 +366,8 @@ Scale and robustness:
     gain container read sites; their logs start at the first observed access instead of the first
     symbolic operation. Check them live when their system's turn comes (owner 2026-10-04: system by
     system).
+49. A response with no causynth header ends no request in hand: the HDFS trees' hook
+    (`Client#installCausynthResponse`) returns before the shim's `inbound`, so no receipt clears it.
 13. VM: every expression is kept until the session closes, under one global mutex.
 32. COMPOSE lowers and states a message family once per path that binds it
     (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
