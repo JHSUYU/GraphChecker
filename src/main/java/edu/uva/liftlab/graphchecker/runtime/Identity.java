@@ -479,7 +479,7 @@ public final class Identity {
                     }
                     // Counted before the window opened: count again.
                     if (filed.window != RecordingWindow.index()) {
-                        filed = new Counters(hop);
+                        filed = filed.reopened();
                         filedHops.set(index, filed);
                     }
                     return filed.events;
@@ -504,6 +504,26 @@ public final class Identity {
 
         private Counters(long rootToken) {
             this.rootToken = rootToken;
+        }
+
+        /**
+         * These counts, counted again from the window's opening: a site this
+         * level reached before it starts at 1.  Its entries then all stand at
+         * 0 ({@link Level#addressed}), one of them perhaps still running, as
+         * a call the window opened in does, so the window's first entry is
+         * its second; restarted at 0 it took the standing one's address
+         * (round SL1, hdfs-adhoc-39: a DataNode's blockReport handler queued
+         * two storage reports through {@code runBlockOp}, the first entered
+         * before the window, both lambdas at {@code runBlockOp@0}).  A level
+         * the window opened before, or after, the same call names its
+         * entries alike.
+         */
+        private Counters reopened() {
+            Counters counted = new Counters(rootToken);
+            for (Map.Entry<String, Integer> site : events.entrySet()) {
+                if (site.getValue() > 0) counted.events.put(site.getKey(), 1);
+            }
+            return counted;
         }
     }
 

@@ -198,7 +198,12 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   before the hop.
 - **Window rule** (`runtime/RecordingWindow`): the workload opens the window
   (`MessageDoors.startRecording`) and may close it (`stopRecording`); every count restarts at the
-  window, and a frame entered before it stands at `k = 0` in any address. Neither the trace nor the
+  window, and a frame entered before it stands at `k = 0` in any address. A site its level reached
+  before the window restarts at 1 (`Counters#reopened`): those entries all stand at 0, one perhaps
+  still running, so the window's first entry is the second, and a call the window opens in names its
+  entries as one it opened before or after does (round SL1, hdfs-adhoc-39: two storage reports a
+  blockReport handler queued through `runBlockOp`, the first before the window, both at
+  `runBlockOp@0`, one address for two activations). Neither the trace nor the
   schedule states anything before the window opens. The system's cluster adapter opens it once the
   cluster is up, or, for a case that declares `recording_window=startup` (an opt-in, owner-approved
   for bugs whose guard runs or whose fatal value is set while the cluster starts: a DataNode's
