@@ -731,7 +731,7 @@ public class ExploreTest {
         // so a session an earlier wave focused still states its world.
         Map<String, JsonObject> asked = new LinkedHashMap<String, JsonObject>();
         for (ObligationDir found : ObligationDir.workersIn(iteration)) {
-            for (JsonObject row : RowCodec.readJsonl(found.focusedTask())) {
+            for (JsonObject row : found.focus()) {
                 if (!asked.containsKey(found.sessionId())) {
                     asked.put(found.sessionId(), row);
                 }

@@ -10,6 +10,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
  * CONTRACT-SPEC §3: one obligation worker's directory
@@ -42,27 +46,64 @@ public final class ObligationDir {
 
     private final Path dir;
     private final String sessionId;
+    private final List<JsonObject> results;
+    private final List<JsonObject> focus;
 
-    private ObligationDir(Path dir, String sessionId) {
+    private ObligationDir(Path dir, List<JsonObject> results,
+                          List<JsonObject> focus) {
         this.dir = dir;
-        this.sessionId = sessionId;
+        this.results = results;
+        this.focus = focus;
+        this.sessionId = sessionOf(results);
     }
 
+    /** How many workers' rows are read at once: each is two small files,
+     *  and on NFS a read is its latency (HR1 hdfs-adhoc-07: 1897 workers
+     *  read one after another took two of COMPOSE's minutes). */
+    private static final int PARALLEL_READS = 8;
+
     /**
-     * Every obligation worker of one iteration, in wave and name order; a
-     * directory with no result row published no session and is skipped.
+     * Every obligation worker of one iteration, in wave and name order, its
+     * answer and focus rows read; a directory with no result row published
+     * no session and is skipped.
      */
     public static List<ObligationDir> workersIn(Path iteration)
             throws IOException {
-        List<ObligationDir> workers = new ArrayList<ObligationDir>();
+        List<Path> dirs = new ArrayList<Path>();
         for (Path wave : SessionDir.directories(iteration, WAVES)) {
-            for (Path worker : SessionDir.directories(wave, "*")) {
-                String session = sessionOf(worker);
-                if (session.isEmpty()) continue;
-                workers.add(new ObligationDir(worker, session));
-            }
+            dirs.addAll(SessionDir.directories(wave, "*"));
         }
-        return workers;
+        List<ObligationDir> workers = new ArrayList<ObligationDir>();
+        if (dirs.isEmpty()) return workers;
+        ExecutorService readers = Executors.newFixedThreadPool(
+                Math.min(PARALLEL_READS, dirs.size()));
+        try {
+            List<Future<ObligationDir>> reading =
+                    new ArrayList<Future<ObligationDir>>();
+            for (Path dir : dirs) {
+                reading.add(readers.submit(() -> new ObligationDir(dir,
+                        RowCodec.readJsonl(dir.resolve(RESULT)),
+                        RowCodec.readJsonl(dir.resolve(FOCUSED_TASK)))));
+            }
+            for (Future<ObligationDir> worker : reading) {
+                ObligationDir read = worker.get();
+                if (!read.sessionId.isEmpty()) workers.add(read);
+            }
+            return workers;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while reading the workers of "
+                    + iteration, interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof IOException) throw (IOException) cause;
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new IOException(cause);
+        } finally {
+            readers.shutdownNow();
+        }
     }
 
     /** One settled question's answer: the obligation that asked it, and
@@ -113,9 +154,9 @@ public final class ObligationDir {
     }
 
     /** The session this worker's replay published, off its result row. */
-    private static String sessionOf(Path worker) throws IOException {
+    private static String sessionOf(List<JsonObject> results) {
         String session = "";
-        for (JsonObject row : RowCodec.readJsonl(worker.resolve(RESULT))) {
+        for (JsonObject row : results) {
             if (row.has("sessionId")
                     && row.get("sessionId").isJsonPrimitive()) {
                 session = row.get("sessionId").getAsString();
@@ -133,13 +174,17 @@ public final class ObligationDir {
         return sessionId;
     }
 
-    /** The answer the worker published. */
-    public Path result() {
-        return dir.resolve(RESULT);
+    /** The answers the worker published. */
+    public List<ObligationResult> results() {
+        List<ObligationResult> read = new ArrayList<ObligationResult>();
+        for (JsonObject row : results) {
+            read.add(RowCodec.readObligationResult(row));
+        }
+        return read;
     }
 
-    /** The focus row the replay was driven by. */
-    public Path focusedTask() {
-        return dir.resolve(FOCUSED_TASK);
+    /** The focus rows the replay was driven by: its ask first. */
+    public List<JsonObject> focus() {
+        return focus;
     }
 }

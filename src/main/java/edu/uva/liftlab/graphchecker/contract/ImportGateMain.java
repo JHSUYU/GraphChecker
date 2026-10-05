@@ -107,7 +107,7 @@ public final class ImportGateMain {
             if (!gatedIds.contains(worker.sessionId())) continue;
             focus.computeIfAbsent(worker.sessionId(),
                     key -> new ArrayList<JsonObject>())
-                    .addAll(RowCodec.readJsonl(worker.focusedTask()));
+                    .addAll(worker.focus());
         }
         List<GapRow> gaps = RowInvariants.check(admitted, gated, focus);
 
