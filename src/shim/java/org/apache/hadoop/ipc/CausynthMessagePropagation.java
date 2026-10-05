@@ -84,6 +84,23 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * One IPC request starting on the caller's thread, at its RPC engine's
+   * invoke point before the client's call ({@link
+   * MessageDoors#requestStarting}): named by the operation it asks for
+   * ({@link #verb}), {@code attempt} the retry count its call carries.
+   *
+   * @return what {@link #requestEnded} takes, in the invoke's finally
+   */
+  public static long requestStarting(Object request, int attempt) {
+    return MessageDoors.requestStarting(IPC, verb(request), attempt);
+  }
+
+  /** The request {@link #requestStarting} began is over. */
+  public static void requestEnded(long request) {
+    MessageDoors.requestEnded(request);
+  }
+
+  /**
    * The operation a protobuf RPC request asks for, as {@code
    * <protocol>.<method>} with the protocol's simple name: the name Hadoop
    * gives the request itself ({@code RpcProtobufRequest#toString}, from its
