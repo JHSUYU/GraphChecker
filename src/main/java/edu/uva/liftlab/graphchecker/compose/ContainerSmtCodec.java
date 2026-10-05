@@ -13,6 +13,7 @@ import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -398,319 +399,420 @@ public final class ContainerSmtCodec {
         return stated.booleanValue();
     }
 
+    /**
+     * One relation node lowered by its rule ({@link #RULES}): the rule of
+     * its (shape, operation), else of its operation on any shape, where its
+     * argument count is the rule's.  With no rule there, the operation is
+     * refused by name -- a list's or map's after its receiver state is
+     * lowered, so a receiver that does not lower is the refusal named.
+     */
     private static Term relation(JsonObject expression, Host host) {
-        // The view states whose bijection this call already stated.
-        Map<JsonElement, ViewOrder> views =
-                new IdentityHashMap<JsonElement, ViewOrder>();
-        String shape = optionalString(expression, "shape");
-        String operation = optionalString(expression, "operation");
-        String javaType = optionalString(expression, "_java_type");
-        if ("UNKNOWN".equals(operation)) {
-            // What a callback the run never ran would have stored.
-            return host.unknown(expression);
+        Call call = new Call(expression, host);
+        Rule rule = RULES.get(call.shape + " " + call.operation);
+        if (rule == null) rule = RULES.get(ANY_SHAPE + " " + call.operation);
+        if (rule != null && (rule.arity == ANY_ARITY
+                || rule.arity == call.arguments.size())) {
+            return rule.lowering.lower(call);
         }
-        if ("STATE".equals(operation)) {
-            Sort stateSort = "INDEXED".equals(shape)
-                    ? Sort.INDEXED : Sort.ASSOCIATIVE;
-            Term state = host.state(expression.get("receiver"), stateSort);
-            JsonArray arguments = array(expression, "arguments");
-            if (state == null || stateSort != Sort.INDEXED
-                    || arguments.size() == 0) {
-                return state;
-            }
-            if (arguments.size() != 1) {
-                return unmodeled("INDEXED", operation, arguments, host);
-            }
-            Term size = integer(arguments.get(0), host);
-            return size == null ? null : new Term(
-                    "(mkIndexedState " + size.text
-                            + " (indexed_elements " + state.text + "))",
-                    Sort.INDEXED, IntegralWidth.NONE, literal(size.text));
+        if (("INDEXED".equals(call.shape)
+                || "ASSOCIATIVE".equals(call.shape))
+                && call.receiver() == null) {
+            return null;
         }
-        if ("KEY".equals(operation) || "VALUE".equals(operation)) {
-            Entry entry = entry(expression.get("receiver"));
-            if (entry == null) {
-                host.unsupported("ContainerRelation:malformed-entry:"
-                        + operation);
-                return null;
-            }
-            Term value = associativeEntryValue(entry,
-                    "KEY".equals(operation) ? "KEY_VIEW" : "VALUE_VIEW",
-                    javaType, host, views);
-            return value == null ? null : host.unbox(value, javaType);
-        }
-        if ("INDEXED".equals(shape) && "NEXT".equals(operation)) {
-            JsonArray positions = array(expression, "arguments");
-            if (positions.size() != 1) {
-                return unmodeled(shape, operation, positions, host);
-            }
-            // The element a traversal reads: an indexed ITERATOR is the
-            // identity on its state.
-            Term index = integer(positions.get(0), host);
-            Term cursor = host.operand(expression.get("receiver"),
-                    Sort.INDEXED);
-            if (cursor != null && index != null) {
-                requireIndexedMember(cursor, index, host);
-            }
-            return cursor == null || index == null ? null
-                    : host.unbox(new Term("(indexed_read " + cursor.text
-                    + " " + index.text + ")", Sort.VALUE), javaType);
-        }
-        if ("ASSOCIATIVE".equals(shape) && "NEXT".equals(operation)) {
-            View view = view(expression.get("receiver"));
-            JsonArray positions = array(expression, "arguments");
-            if (view == null || positions.size() != 1
-                    || "ENTRY_VIEW".equals(view.kind)) {
-                host.unsupported(
-                        "ContainerRelation:ASSOCIATIVE:NEXT:view");
-                return null;
-            }
-            Term value = associativeEntryValue(new Entry(
-                    view.stateExpression, positions.get(0)), view.kind,
-                    javaType, host, views);
-            return value == null ? null : host.unbox(value, javaType);
-        }
-        if ("HAS_NEXT".equals(operation)) {
-            Sort stateSort = "INDEXED".equals(shape)
-                    ? Sort.INDEXED : Sort.ASSOCIATIVE;
-            JsonArray positions = array(expression, "arguments");
-            Term position = positions.size() == 1
-                    ? integer(positions.get(0), host) : null;
-            Term state = stateSort == Sort.ASSOCIATIVE
-                    ? associativeState(expression.get("receiver"), host)
-                    : host.operand(expression.get("receiver"), stateSort);
-            Term size = state == null ? null
-                    : stateSort == Sort.ASSOCIATIVE
-                    ? associativeSize(state, host)
-                    : indexedSize(expression.get("receiver"), state, host);
-            if (position == null || size == null) {
-                host.unsupported("ContainerRelation:" + shape
-                        + ":HAS_NEXT");
-                return null;
-            }
-            return new Term("(and (<= 0 " + position.text + ") (< "
-                    + position.text + " " + size.text + "))", Sort.BOOL);
-        }
-        JsonArray arguments = array(expression, "arguments");
-        if (emptiesState(operation)) {
-            if (arguments.size() != 0) {
-                return unmodeled(shape, operation, arguments, host);
-            }
-            if ("INDEXED".equals(shape)) {
-                return new Term("(mkIndexedState 0"
-                        + " ((as const (Array Int Value))"
-                        + " " + NULL_CELL + "))", Sort.INDEXED,
-                        IntegralWidth.NONE, 0L);
-            }
-            if ("ASSOCIATIVE".equals(shape)) {
-                return new Term("(mkAssocState 0"
-                        + " ((as const (Array Value Bool)) false)"
-                        + " ((as const (Array Value Value))"
-                        + " " + NULL_CELL + ")"
-                        + " ((as const (Array Int Value))"
-                        + " " + NULL_CELL + ")"
-                        + " ((as const (Array Value Int)) (- 1)))",
-                        Sort.ASSOCIATIVE);
-            }
-        }
-        if ("INDEXED".equals(shape)) {
-            return indexed(expression, operation, arguments, javaType, host);
-        }
-        if ("ASSOCIATIVE".equals(shape)) {
-            return associative(expression, operation, arguments, javaType,
-                    host, views);
-        }
-        return unmodeled(shape, operation, arguments, host);
+        return unmodeled(call.shape, call.operation, call.arguments, host);
     }
 
-    /** One operation on a list, array or queue state. */
-    private static Term indexed(JsonObject expression, String operation,
-                                JsonArray arguments, String javaType,
-                                Host host) {
-        JsonElement receiverIr = expression.get("receiver");
-        boolean preserveReceiver = evidencedContainerIdentity(receiverIr);
-        if ("READ".equals(operation) && arguments.size() == 1
-                && !preserveReceiver) {
-            JsonElement stored = storedIndexedWrite(receiverIr,
-                    arguments.get(0), javaType);
-            if (stored != null) {
-                return host.unbox(host.box(stored), javaType);
-            }
+    /** One relation node being lowered, with what its rule reads of it. */
+    private static final class Call {
+        final JsonObject expression;
+        final Host host;
+        final String shape;
+        final String operation;
+        final String javaType;
+        final JsonArray arguments;
+        /** The view states whose bijection this call already stated. */
+        final Map<JsonElement, ViewOrder> views =
+                new IdentityHashMap<JsonElement, ViewOrder>();
+
+        Call(JsonObject expression, Host host) {
+            this.expression = expression;
+            this.host = host;
+            this.shape = optionalString(expression, "shape");
+            this.operation = optionalString(expression, "operation");
+            this.javaType = optionalString(expression, "_java_type");
+            this.arguments = array(expression, "arguments");
         }
-        Term receiver = shared(host.operand(receiverIr, Sort.INDEXED),
-                host);
-        if (receiver == null) return null;
-        if ("ITERATOR".equals(operation)) return receiver;
-        if ("SIZE".equals(operation)) {
-            return indexedSize(receiverIr, receiver, host);
+
+        JsonElement receiverIr() {
+            return expression.get("receiver");
         }
-        if ("READ".equals(operation) && arguments.size() == 1) {
-            Term index = integer(arguments.get(0), host);
-            if (index != null) {
-                requireIndexedMember(receiver, index, host);
-            }
-            return index == null ? null
-                    : host.unbox(new Term("(indexed_read "
-                    + receiver.text + " " + index.text + ")",
-                    Sort.VALUE), javaType);
+
+        /** The state the operation is on: a list's, shared, or a map's. */
+        Term receiver() {
+            return "INDEXED".equals(shape)
+                    ? shared(host.operand(receiverIr(), Sort.INDEXED), host)
+                    : associativeState(receiverIr(), host);
         }
-        if ("WRITE".equals(operation) && arguments.size() == 2) {
-            Term index = integer(arguments.get(0), host);
-            Term value = host.box(arguments.get(1));
+
+        JsonElement argument(int index) {
+            return arguments.get(index);
+        }
+
+        Term unboxed(Term value) {
+            return value == null ? null : host.unbox(value, javaType);
+        }
+    }
+
+    /** How one relation lowers ({@link #RULES}). */
+    private interface Lowering {
+        Term lower(Call call);
+    }
+
+    /** One operation on its receiver state, lowered once it is. */
+    private interface OnState {
+        Term lower(Call call, Term receiver);
+    }
+
+    /** A rule's lowering of a relation on its receiver state: none where
+     *  the receiver does not lower. */
+    private static Lowering onState(OnState lowering) {
+        return call -> {
+            Term receiver = call.receiver();
+            return receiver == null ? null : lowering.lower(call, receiver);
+        };
+    }
+
+    /** The argument count of a rule that takes any. */
+    private static final int ANY_ARITY = -1;
+    /** The shape of a rule for an operation on any shape. */
+    private static final String ANY_SHAPE = "*";
+
+    private static final class Rule {
+        final int arity;
+        final Lowering lowering;
+
+        Rule(int arity, Lowering lowering) {
+            this.arity = arity;
+            this.lowering = lowering;
+        }
+    }
+
+    /**
+     * Every relation's lowering, keyed {@code "<shape> <operation>"} (shape
+     * {@link #ANY_SHAPE}: any), with the argument count it takes.
+     */
+    private static final Map<String, Rule> RULES =
+            new HashMap<String, Rule>();
+
+    private static void rule(String shape, String operation, int arity,
+                             Lowering lowering) {
+        RULES.put(shape + " " + operation, new Rule(arity, lowering));
+    }
+
+    static {
+        // What a callback the run never ran would have stored.
+        rule(ANY_SHAPE, "UNKNOWN", ANY_ARITY,
+                call -> call.host.unknown(call.expression));
+        rule(ANY_SHAPE, "STATE", ANY_ARITY, ContainerSmtCodec::stateRoot);
+        rule(ANY_SHAPE, "KEY", ANY_ARITY, ContainerSmtCodec::entryPart);
+        rule(ANY_SHAPE, "VALUE", ANY_ARITY, ContainerSmtCodec::entryPart);
+        rule(ANY_SHAPE, "HAS_NEXT", ANY_ARITY, ContainerSmtCodec::hasNext);
+        rule(ANY_SHAPE, "CLEAR", ANY_ARITY, ContainerSmtCodec::emptied);
+        rule(ANY_SHAPE, "SNAPSHOT_BASE", ANY_ARITY,
+                ContainerSmtCodec::emptied);
+
+        // A list, array or queue state.
+        rule("INDEXED", "NEXT", ANY_ARITY, ContainerSmtCodec::indexedNext);
+        rule("INDEXED", "READ", 1, ContainerSmtCodec::indexedRead);
+        rule("INDEXED", "ITERATOR", ANY_ARITY,
+                onState((call, receiver) -> receiver));
+        rule("INDEXED", "SIZE", ANY_ARITY, onState((call, receiver) ->
+                indexedSize(call.receiverIr(), receiver, call.host)));
+        rule("INDEXED", "WRITE", 2, onState((call, receiver) -> {
+            Term index = integer(call.argument(0), call.host);
+            Term value = call.host.box(call.argument(1));
             if (index == null || value == null) return null;
             // A set() or an array store throws outside its receiver, as a
             // get() does.  In place: the size is the receiver's (dropped,
             // Lucene's deleteCommits compaction left its REMOVE no size to
             // shift by).
-            requireIndexedMember(receiver, index, host);
+            requireIndexedMember(receiver, index, call.host);
             return new Term("(indexed_write " + receiver.text + " "
                     + index.text + " " + value.text + ")",
                     Sort.INDEXED, IntegralWidth.NONE, receiver.indexedSize);
-        }
-        if ("APPEND".equals(operation) && arguments.size() == 1) {
-            Term value = host.box(arguments.get(0));
+        }));
+        rule("INDEXED", "APPEND", 1, onState((call, receiver) -> {
+            Term value = call.host.box(call.argument(0));
             return value == null ? null
                     : new Term("(indexed_append " + receiver.text + " "
                     + value.text + ")", Sort.INDEXED,
                     IntegralWidth.NONE, grown(receiver, 1L));
-        }
-        if ("APPEND_IF".equals(operation) && arguments.size() == 1) {
-            // A stream's member under the decisions that let it through.
-            Term value = host.box(arguments.get(0));
-            Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+        }));
+        // A stream's member under the decisions that let it through.
+        rule("INDEXED", "APPEND_IF", 1, onState((call, receiver) -> {
+            Term value = call.host.box(call.argument(0));
+            Term guard = call.host.operand(call.expression.get("guard"),
+                    Sort.BOOL);
             return value == null || guard == null ? null
                     : new Term("(indexed_append_if " + receiver.text + " "
                     + value.text + " " + guard.text + ")", Sort.INDEXED);
-        }
-        if ("PIN".equals(operation) && arguments.size() == 0) {
-            return pinned(receiver, expression, host);
-        }
-        if ("CONTAINS".equals(operation) && arguments.size() == 1) {
-            return indexedContains(receiverIr, receiver, arguments.get(0),
-                    host);
-        }
-        if ("INSERT".equals(operation) && arguments.size() == 2) {
-            Term index = integer(arguments.get(0), host);
-            Term value = host.box(arguments.get(1));
+        }));
+        rule("INDEXED", "PIN", 0, onState((call, receiver) ->
+                pinned(receiver, call.expression, call.host)));
+        rule("INDEXED", "CONTAINS", 1, onState((call, receiver) ->
+                indexedContains(call.receiverIr(), receiver,
+                        call.argument(0), call.host)));
+        rule("INDEXED", "INSERT", 2, onState((call, receiver) -> {
+            Term index = integer(call.argument(0), call.host);
+            Term value = call.host.box(call.argument(1));
             if (index == null || value == null) return null;
-            return shift(receiver, index, value, host);
-        }
-        if ("REMOVE".equals(operation) && arguments.size() == 1) {
-            Term index = integer(arguments.get(0), host);
-            if (index == null) return null;
-            return shift(receiver, index, null, host);
-        }
-        if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-            return new Term("(= (indexed_size " + receiver.text + ") 0)",
-                    Sort.BOOL);
-        }
-        if ("PEEK".equals(operation) && arguments.size() == 0) {
-            // A queue's head, or null where it is empty: no member required.
+            return shift(receiver, index, value, call.host);
+        }));
+        rule("INDEXED", "REMOVE", 1, onState((call, receiver) -> {
+            Term index = integer(call.argument(0), call.host);
+            return index == null ? null
+                    : shift(receiver, index, null, call.host);
+        }));
+        rule("INDEXED", "IS_EMPTY", 0, onState((call, receiver) ->
+                new Term("(= (indexed_size " + receiver.text + ") 0)",
+                        Sort.BOOL)));
+        // A queue's head, or null where it is empty: no member required.
+        rule("INDEXED", "PEEK", 0, onState((call, receiver) -> {
             long size = receiver.indexedSize;
             String head = "(indexed_read " + receiver.text + " 0)";
-            return host.unbox(new Term(size == 0L ? NULL_CELL
+            return call.unboxed(new Term(size == 0L ? NULL_CELL
                     : size > 0L ? head
                     : "(ite (= (indexed_size " + receiver.text + ") 0) "
-                    + NULL_CELL + " " + head + ")", Sort.VALUE), javaType);
-        }
-        if ("POLL".equals(operation) && arguments.size() == 0) {
-            // Without its head where it has one: whether it does is the
-            // op's own test, which a stated size decides; with none, as a
-            // removal, it is refused by name.
+                    + NULL_CELL + " " + head + ")", Sort.VALUE));
+        }));
+        // Without its head where it has one: whether it does is the op's
+        // own test, which a stated size decides; with none, as a removal,
+        // it is refused by name.
+        rule("INDEXED", "POLL", 0, onState((call, receiver) -> {
             if (receiver.indexedSize == 0L) return receiver;
             if (receiver.indexedSize < 0L) {
-                host.unsupported("ContainerRelation:INDEXED:POLL:"
+                call.host.unsupported("ContainerRelation:INDEXED:POLL:"
                         + "unstated-size");
                 return null;
             }
-            return shift(receiver, new Term("0", Sort.INT), null, host);
-        }
-        return unmodeled("INDEXED", operation, arguments, host);
-    }
+            return shift(receiver, new Term("0", Sort.INT), null,
+                    call.host);
+        }));
 
-    /** One operation on a map or set state. */
-    private static Term associative(JsonObject expression, String operation,
-                                    JsonArray arguments, String javaType,
-                                    Host host,
-                                    Map<JsonElement, ViewOrder> views) {
-        JsonElement receiverIr = associativeStateExpression(
-                expression.get("receiver"));
-        if (("READ".equals(operation) || "CONTAINS".equals(operation))
-                && arguments.size() == 1
-                || ("READ_OR_DEFAULT".equals(operation)
-                || "MATCHES".equals(operation)) && arguments.size() == 2) {
-            return associativeLookup(receiverIr, operation, arguments,
-                    javaType, host);
+        // A map or set state.
+        rule("ASSOCIATIVE", "NEXT", ANY_ARITY,
+                ContainerSmtCodec::associativeNext);
+        rule("ASSOCIATIVE", "READ", 1, ContainerSmtCodec::lookup);
+        rule("ASSOCIATIVE", "CONTAINS", 1, ContainerSmtCodec::lookup);
+        rule("ASSOCIATIVE", "READ_OR_DEFAULT", 2, ContainerSmtCodec::lookup);
+        rule("ASSOCIATIVE", "MATCHES", 2, ContainerSmtCodec::lookup);
+        rule("ASSOCIATIVE", "SIZE", ANY_ARITY, onState((call, receiver) ->
+                associativeSize(receiver, call.host)));
+        rule("ASSOCIATIVE", "IS_EMPTY", 0, onState((call, receiver) ->
+                new Term("(= " + associativeSize(receiver, call.host).text
+                        + " 0)", Sort.BOOL)));
+        for (String view : new String[]{"ITERATOR", "ENTRY_VIEW",
+                "KEY_VIEW", "VALUE_VIEW"}) {
+            rule("ASSOCIATIVE", view, ANY_ARITY,
+                    onState((call, receiver) -> receiver));
         }
-        Term receiver = associativeState(expression.get("receiver"),
-                host);
-        if (receiver == null) return null;
-        if ("SIZE".equals(operation)) {
-            return associativeSize(receiver, host);
-        }
-        if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-            return new Term("(= " + associativeSize(receiver, host).text
-                    + " 0)", Sort.BOOL);
-        }
-        if ("ITERATOR".equals(operation)
-                || "ENTRY_VIEW".equals(operation)
-                || "KEY_VIEW".equals(operation)
-                || "VALUE_VIEW".equals(operation)) return receiver;
-        if ("PUT".equals(operation) && arguments.size() == 2) {
-            Term key = host.box(arguments.get(0));
-            Term value = host.box(arguments.get(1));
+        rule("ASSOCIATIVE", "PUT", 2, onState((call, receiver) -> {
+            Term key = call.host.box(call.argument(0));
+            Term value = call.host.box(call.argument(1));
             return key == null || value == null ? null
                     : new Term("(assoc_put " + receiver.text + " "
                     + key.text + " " + value.text + ")",
                     Sort.ASSOCIATIVE);
-        }
-        if ("REMOVE_AT".equals(operation)
-                && arguments.size() == 1) {
-            Term index = integer(arguments.get(0), host);
+        }));
+        // Removing AT a position is a walk of the same view: which key the
+        // position names is the bijection's to say.
+        rule("ASSOCIATIVE", "REMOVE_AT", 1, onState((call, receiver) -> {
+            Term index = integer(call.argument(0), call.host);
             if (index == null) return null;
-            // Removing AT a position is a walk of the same view: which
-            // key the position names is the bijection's to say.
-            ViewOrder order = requireAssociativeViewBijection(receiverIr,
-                    receiver, host, views);
+            ViewOrder order = requireAssociativeViewBijection(
+                    associativeStateExpression(call.receiverIr()), receiver,
+                    call.host, call.views);
             if (order == null) return null;
-            requireAssociativeMember(receiver, index, order, host);
+            requireAssociativeMember(receiver, index, order, call.host);
             return new Term("(let ((s " + receiver.text
                     + ")) (assoc_remove s (" + order.keyAt + " s "
                     + index.text + ")))", Sort.ASSOCIATIVE);
-        }
-        if ("REMOVE".equals(operation) && arguments.size() == 1) {
-            Term key = host.box(arguments.get(0));
+        }));
+        rule("ASSOCIATIVE", "REMOVE", 1, onState((call, receiver) -> {
+            Term key = call.host.box(call.argument(0));
             return key == null ? null
                     : new Term("(assoc_remove " + receiver.text + " "
                     + key.text + ")", Sort.ASSOCIATIVE);
-        }
-        if ("PUT_ALL".equals(operation) && arguments.size() == 1) {
-            return putAll(receiver, arguments.get(0), host);
-        }
-        if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
-            // Drops the key when the guard holds; read/has short-circuit
-            // this via the mutation walk, this handles a nested receiver.
-            Term key = host.box(arguments.get(0));
-            Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+        }));
+        rule("ASSOCIATIVE", "PUT_ALL", 1, onState((call, receiver) ->
+                putAll(receiver, call.argument(0), call.host)));
+        // Drops the key when the guard holds; read/has short-circuit this
+        // via the mutation walk, this handles a nested receiver.
+        rule("ASSOCIATIVE", "REMOVE_IF", 1, onState((call, receiver) -> {
+            Term key = call.host.box(call.argument(0));
+            Term guard = call.host.operand(call.expression.get("guard"),
+                    Sort.BOOL);
             return key == null || guard == null ? null
                     : new Term("(assoc_remove_if " + receiver.text + " "
                     + key.text + " " + guard.text + ")",
                     Sort.ASSOCIATIVE);
-        }
-        if ("PUT_IF".equals(operation) && arguments.size() == 2) {
-            // A stream's member collected to a set where the guard holds.
-            Term key = host.box(arguments.get(0));
-            Term value = host.box(arguments.get(1));
-            Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+        }));
+        // A stream's member collected to a set where the guard holds.
+        rule("ASSOCIATIVE", "PUT_IF", 2, onState((call, receiver) -> {
+            Term key = call.host.box(call.argument(0));
+            Term value = call.host.box(call.argument(1));
+            Term guard = call.host.operand(call.expression.get("guard"),
+                    Sort.BOOL);
             return key == null || value == null || guard == null ? null
                     : new Term("(assoc_put_if " + receiver.text + " "
                     + key.text + " " + value.text + " " + guard.text + ")",
                     Sort.ASSOCIATIVE);
+        }));
+        rule("ASSOCIATIVE", "PIN", 0, onState((call, receiver) ->
+                pinned(receiver, call.expression, call.host)));
+    }
+
+    /** A STATE root, of a list sized by its one argument where it states
+     *  one. */
+    private static Term stateRoot(Call call) {
+        Sort stateSort = "INDEXED".equals(call.shape)
+                ? Sort.INDEXED : Sort.ASSOCIATIVE;
+        Term state = call.host.state(call.receiverIr(), stateSort);
+        if (state == null || stateSort != Sort.INDEXED
+                || call.arguments.size() == 0) {
+            return state;
         }
-        if ("PIN".equals(operation) && arguments.size() == 0) {
-            return pinned(receiver, expression, host);
+        if (call.arguments.size() != 1) {
+            return unmodeled("INDEXED", call.operation, call.arguments,
+                    call.host);
         }
-        return unmodeled("ASSOCIATIVE", operation, arguments, host);
+        Term size = integer(call.argument(0), call.host);
+        return size == null ? null : new Term(
+                "(mkIndexedState " + size.text
+                        + " (indexed_elements " + state.text + "))",
+                Sort.INDEXED, IntegralWidth.NONE, literal(size.text));
+    }
+
+    /** A map entry's key or value, by its view's position. */
+    private static Term entryPart(Call call) {
+        Entry entry = entry(call.receiverIr());
+        if (entry == null) {
+            call.host.unsupported("ContainerRelation:malformed-entry:"
+                    + call.operation);
+            return null;
+        }
+        return call.unboxed(associativeEntryValue(entry,
+                "KEY".equals(call.operation) ? "KEY_VIEW" : "VALUE_VIEW",
+                call.javaType, call.host, call.views));
+    }
+
+    /** Whether a traversal's position is below its state's size. */
+    private static Term hasNext(Call call) {
+        Sort stateSort = "INDEXED".equals(call.shape)
+                ? Sort.INDEXED : Sort.ASSOCIATIVE;
+        Term position = call.arguments.size() == 1
+                ? integer(call.argument(0), call.host) : null;
+        Term state = stateSort == Sort.ASSOCIATIVE
+                ? associativeState(call.receiverIr(), call.host)
+                : call.host.operand(call.receiverIr(), stateSort);
+        Term size = state == null ? null
+                : stateSort == Sort.ASSOCIATIVE
+                ? associativeSize(state, call.host)
+                : indexedSize(call.receiverIr(), state, call.host);
+        if (position == null || size == null) {
+            call.host.unsupported("ContainerRelation:" + call.shape
+                    + ":HAS_NEXT");
+            return null;
+        }
+        return new Term("(and (<= 0 " + position.text + ") (< "
+                + position.text + " " + size.text + "))", Sort.BOOL);
+    }
+
+    /** A state emptied: a program {@code CLEAR} or a snapshot's base. */
+    private static Term emptied(Call call) {
+        if (call.arguments.size() != 0) {
+            return unmodeled(call.shape, call.operation, call.arguments,
+                    call.host);
+        }
+        if ("INDEXED".equals(call.shape)) {
+            return new Term("(mkIndexedState 0"
+                    + " ((as const (Array Int Value))"
+                    + " " + NULL_CELL + "))", Sort.INDEXED,
+                    IntegralWidth.NONE, 0L);
+        }
+        if ("ASSOCIATIVE".equals(call.shape)) {
+            return new Term("(mkAssocState 0"
+                    + " ((as const (Array Value Bool)) false)"
+                    + " ((as const (Array Value Value))"
+                    + " " + NULL_CELL + ")"
+                    + " ((as const (Array Int Value))"
+                    + " " + NULL_CELL + ")"
+                    + " ((as const (Array Value Int)) (- 1)))",
+                    Sort.ASSOCIATIVE);
+        }
+        return unmodeled(call.shape, call.operation, call.arguments,
+                call.host);
+    }
+
+    /** The element a list traversal reads: an indexed ITERATOR is the
+     *  identity on its state. */
+    private static Term indexedNext(Call call) {
+        if (call.arguments.size() != 1) {
+            return unmodeled(call.shape, call.operation, call.arguments,
+                    call.host);
+        }
+        Term index = integer(call.argument(0), call.host);
+        Term cursor = call.host.operand(call.receiverIr(), Sort.INDEXED);
+        if (cursor != null && index != null) {
+            requireIndexedMember(cursor, index, call.host);
+        }
+        return cursor == null || index == null ? null
+                : call.unboxed(new Term("(indexed_read " + cursor.text
+                + " " + index.text + ")", Sort.VALUE));
+    }
+
+    /** The key or value a map view's traversal reads at its position. */
+    private static Term associativeNext(Call call) {
+        View view = view(call.receiverIr());
+        if (view == null || call.arguments.size() != 1
+                || "ENTRY_VIEW".equals(view.kind)) {
+            call.host.unsupported("ContainerRelation:ASSOCIATIVE:NEXT:view");
+            return null;
+        }
+        return call.unboxed(associativeEntryValue(new Entry(
+                view.stateExpression, call.argument(0)), view.kind,
+                call.javaType, call.host, call.views));
+    }
+
+    /**
+     * A list's element: the value stored by the write it reads where the
+     * receiver's chain names it and no evidenced identity must be kept,
+     * else the element at its index of the receiver state.
+     */
+    private static Term indexedRead(Call call) {
+        if (!evidencedContainerIdentity(call.receiverIr())) {
+            JsonElement stored = storedIndexedWrite(call.receiverIr(),
+                    call.argument(0), call.javaType);
+            if (stored != null) {
+                return call.host.unbox(call.host.box(stored), call.javaType);
+            }
+        }
+        Term receiver = call.receiver();
+        if (receiver == null) return null;
+        Term index = integer(call.argument(0), call.host);
+        if (index != null) {
+            requireIndexedMember(receiver, index, call.host);
+        }
+        return index == null ? null
+                : call.unboxed(new Term("(indexed_read " + receiver.text
+                + " " + index.text + ")", Sort.VALUE));
+    }
+
+    /** A map lookup: read, contains, read-or-default or a key match. */
+    private static Term lookup(Call call) {
+        return associativeLookup(associativeStateExpression(
+                call.receiverIr()), call.operation, call.arguments,
+                call.javaType, call.host);
     }
 
     /**
