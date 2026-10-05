@@ -1499,10 +1499,10 @@ public class ComposerTest {
         }
 
         // AND THE OTHER HALF OF THE ONE RULE.  The same two sessions with
-        // no rows for the producer at all: nothing attests what it
-        // delivered, so what it rests on is unknown and the arrival is free
-        // in each path, named FREE with its producer beside the verdict (a
-        // witness over it is CONFIRM's to judge).
+        // no rows for the producer at all: no row states the producer, so
+        // each path holds its arrival at what its own row states it
+        // received, named HELD (producer unstated) beside the verdict --
+        // never free by default, never a silent pin.
         Path unstated = folder.newFolder("arrivals-unstated").toPath();
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
@@ -1516,12 +1516,18 @@ public class ComposerTest {
         Composer.Composition freed = compose(unstated, 4);
         assertEquals("each path composes: " + freed.gaps(),
                 2, freed.disjuncts().size());
-        assertFalse("its arrival held at no value: " + freed.body(),
+        assertTrue("each arrival held at its own value: " + freed.body(),
                 freed.body().contains("(= vh 10)")
-                        || freed.body().contains("(= vh 20)"));
-        assertEquals("and named free", Collections.singletonList(
-                "FREE vh= [unattested producer " + producer.id() + "]"),
-                concrete(freed));
+                        && freed.body().contains("(= vh 20)"));
+        List<String> held = new ArrayList<String>();
+        for (Composer.Concrete row : freed.concrete()) {
+            held.add(row.kind + " " + row.subject + "=" + row.value + " "
+                    + row.reason);
+        }
+        String why = SmtLowering.Unbound.PRODUCER_UNSTATED + ": no export "
+                + "row of this corpus attests its producer " + producer.id();
+        assertEquals("and named, per path", Arrays.asList(
+                "HELD vh=10 " + why, "HELD vh=20 " + why), held);
 
         // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
         // where the SEED instrumented the producer and the focused replay
@@ -1545,32 +1551,61 @@ public class ComposerTest {
                 across.body().contains("(= vh true)"));
 
         // A REFUSAL IS ITS FRAME'S.  The first corpus again, where s1's run
-        // refused an attach at the anchor itself, which then computed on
-        // the arrival as a constant, and s0's run refused one in an
-        // occurrence no closure here reaches: both paths compose with the
-        // constants their rows state, s1's naming the frame it rested on.
-        Path framed = folder.newFolder("framed").toPath();
-        for (String[] each : new String[][]{{"s0", "10", "false"},
-                {"s1", "20", "true"}}) {
-            Session session = new Session(framed, each[0],
-                    "true".equals(each[2]));
-            session.activation(PRODUCER);
-            session.marker("false");
-            session.expression("EXPR.v1.id", integer("I",
-                    Long.parseLong(each[1])));
-            session.export(producer, "EXPR.v1.id", 1L, each[1]);
-            session.attach(consumer, "vh", "I", each[1], producer);
-            session.target("true", false, true);
-            session.refusedAttach("s1".equals(each[0]) ? ANCHOR : UPSTREAM);
-            session.write();
+        // refused an attach (VM handle 7) at the anchor itself, which then
+        // computed on the arrival as a constant, and s0's run refused one in
+        // an occurrence no closure here reaches: both paths compose, and
+        // s1's frame is named by THE ONE RULE.  Its producer is the export
+        // of handle 7: FREE where that export rests on a root (moving), held
+        // where it rests on nothing that moves (constant), held as its
+        // producer unstated where no export states the handle (unstated).
+        // The refused arrival's producer: another port of the producer.
+        Endpoint refusedFrom = Endpoint.of(PRODUCER, "PORT.refused",
+                at("export#2", 0), 0);
+        for (String variant : new String[]{"moving", "constant",
+                "unstated"}) {
+            Path framed = folder.newFolder("framed-" + variant).toPath();
+            for (String[] each : new String[][]{{"s0", "10", "false"},
+                    {"s1", "20", "true"}}) {
+                Session session = new Session(framed, each[0],
+                        "true".equals(each[2]));
+                session.activation(PRODUCER);
+                session.marker("false");
+                session.expression("EXPR.v1.id", integer("I",
+                        Long.parseLong(each[1])));
+                session.export(producer, "EXPR.v1.id", 1L, each[1]);
+                session.attach(consumer, "vh", "I", each[1], producer);
+                if ("moving".equals(variant)) {
+                    session.root(PRODUCER, "ROOT.ID", "M_I_id",
+                            RootKind.INTEGRAL, each[1]);
+                    session.expression("EXPR.0000000000000a07",
+                            symbol("M_I_id", "I"));
+                    session.export(refusedFrom, "EXPR.0000000000000a07",
+                            7L, each[1]);
+                } else if ("constant".equals(variant)) {
+                    session.export(refusedFrom, "EXPR.v1.id", 7L, each[1]);
+                }
+                session.target("true", false, true);
+                session.refusedAttach("s1".equals(each[0]) ? ANCHOR
+                        : UPSTREAM);
+                session.write();
+            }
+            Composer.Composition frame = compose(framed, 4);
+            assertEquals(variant + ", both paths: " + frame.gaps(), 2,
+                    frame.disjuncts().size());
+            List<String> frames = new ArrayList<String>();
+            for (Composer.Concrete row : frame.concrete()) {
+                if (!row.subject.equals(ANCHOR.id())) continue;
+                frames.add(row.kind + " " + row.movesWith + " "
+                        + row.pathId.isEmpty() + " " + row.reason.startsWith(
+                        SmtLowering.Unbound.PRODUCER_UNSTATED));
+            }
+            assertEquals(variant + ": s1's anchor rested on a frame: "
+                    + concrete(frame), Collections.singletonList(
+                    "moving".equals(variant) ? "FREE [M_I_id] false false"
+                            : "constant".equals(variant)
+                            ? "HELD [] false false"
+                            : "HELD [] false true"), frames);
         }
-        Composer.Composition frame = compose(framed, 4);
-        assertEquals("both paths: " + frame.gaps(), 2,
-                frame.disjuncts().size());
-        List<String> frames = new ArrayList<String>();
-        for (Composer.Concrete row : frame.concrete()) frames.add(row.kind);
-        assertEquals("s1's anchor rested on a frame's constant: "
-                + concrete(frame), Collections.singletonList("FRAME"), frames);
     }
 
     // ------------------------------------------------------------------

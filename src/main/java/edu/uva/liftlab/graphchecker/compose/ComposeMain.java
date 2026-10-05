@@ -245,10 +245,19 @@ public final class ComposeMain {
                     : "");
         } else if (decision.formula() != null
                 && decision.formula().unsat()) {
+            // WHAT UNSAT_CLOSED MEANS, exactly: no world of the explored
+            // corpus reaches the fatal -- each admitted path under the
+            // marker valuation its own run ran (Composer#valuationOf), every
+            // declared root free over its domain, every clock over its
+            // window, every value COMPOSE could not bind free where its
+            // stated producer moves and held at its recorded value where no
+            // row states it (concrete[], SmtLowering#unbound) -- and nothing
+            // about a path the exploration did not admit.
             kind = "UNSAT_CLOSED";
-            reason = "the composed formula, every root free over its domain,"
-                    + " is unsat: no world of the paths this corpus admits"
-                    + " reaches the fatal arm";
+            reason = "the composed formula is unsat: no world of the explored"
+                    + " corpus reaches the fatal arm, given the marker"
+                    + " valuations each path ran and the values concrete[]"
+                    + " holds";
         } else {
             // No claim and no unsat: never a refutation.
             kind = "RUN_DEFECT";

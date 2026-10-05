@@ -1505,7 +1505,7 @@ public final class ConcolicRegionRuntime {
      * reached it (VM.md §4: a stream pipeline it could not state), each a
      * DIAGNOSTIC gap named by the model's reason and the call's site, so a
      * chain missing there is diagnosable.  Its subject is no occurrence
-     * address, so it refuses nothing (Corpus#refusedIn).
+     * address, so it is no frame (SmtLowering#frames).
      */
     private static void modelGaps(ActiveRegion active, JsonObject summary) {
         for (JsonElement gap : JsonFields.array(summary, "modelGaps")) {

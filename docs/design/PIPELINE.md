@@ -1054,10 +1054,13 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
   including earlier versions of every reached write's location; a refusal is its frame's
-  (`frames`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
-  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) is a value its run computed on as a
-  constant, which its rows state, so the path or arm composes with those constants and names the
-  frame (`Composer.Concrete` FRAME, `concrete[]`);
+  (`frames`, `SmtLowering.RefusalFrame`, `SessionJoin#frame`): an `UNSTATED_VALUE` row the session
+  filed on a reached occurrence (a VM-refused attach, an attach that minted no `v_H`) is an arrival
+  its run computed on as a constant; its producer is the export the refused attach's VM handle
+  names in the session (`ExportRow#handle`), and by the one rule below every write of the frame a
+  read joins is FREE over what that export rests on that moves (named FREE in `concrete[]` with
+  those roots), else the frame's constants hold, named HELD (its producer unstated where no export
+  states the handle);
 - constraint independence (`compose.Independence.of`), by what MOVES: a root of the session, what a
   family binds (an anchor handoff's symbol, a location a STATE family may re-pair), a read whose value
   (its observed write's, walked, and the construction guards of its referent) rests on one. A
@@ -1089,19 +1092,25 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   session neither minted nor read refuses the path only when the path's terms name it;
 - anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
-  an attach no session attests the producer of (or with no producer named) rests on what no row
-  states, so it is FREE, named as a `Composer.Concrete` FREE with its producer (a witness over it is
-  CONFIRM's to judge: completeness first);
+  an attach no session attests the producer of (or with no producer named) has a producer no row
+  states: HELD at the value its row states it received, conjoined with the path and named
+  (`Composer.Concrete` HELD, "producer unstated"); a row stating no value the lowering places
+  refuses the path by name;
+- THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
+  rests on, where its stated producer rests on what can move; HELD at its recorded value, named
+  "producer unstated", where no row states its producer; never free by default, never a silent
+  pin. Every `concrete[]` row names the path it was composed on (`pathId`) and why (`reason`);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else -- where what the refused write rests on can move (a root, a
   clock cell, a handoff, an anchor location a STATE family may re-pair: `SmtLowering#movers`, the one
   walk every pin asks, a method return's and a container answer's too, and EXPLORE's flip query
   alike, where a read of any location with write rows moves, `SmtLowering#forSession`) -- FREE, the
-  read unconstrained and named with what it rests on (`SmtLowering#frees`, a `Composer.Concrete` FREE
-  in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value the
-  row states, else REFUSE (`UNSTATED_VALUE`); dropped, the join raises nothing (no refusal, side
-  condition or gap); what a read
+  read unconstrained and named with what it rests on (`SmtLowering#unbound`, a `Composer.Concrete`
+  FREE in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value
+  the row states (a version no write row states: HELD, named "producer unstated"), else REFUSE
+  (`UNSTATED_VALUE`); a write of a frame whose producer moves is FREE before any join; dropped, the
+  join raises nothing (no refusal, side condition or gap); what a read
   row's binding required
   (container membership and cell tags, recorded readings) is stated with its join, so only where
   the conjunction asks about the read (`Composer#statedJoins`, `SmtLowering#ownConditions`); an
@@ -1574,7 +1583,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ComposeMain.campaignClaim` maps it: the formula decides, SAT or UNSAT, and a blocking gap is a
 defect of the run or the engine that leaves no verdict: any BLOCKING claim gap → `RUN_DEFECT`; else a
 kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's own answer unsat →
-`UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). EMIT publishes
+`UNSAT_CLOSED`; else `RUN_DEFECT` (no claim and no unsat is never a refutation). `UNSAT_CLOSED` means
+exactly: no world of the explored corpus reaches the fatal -- each admitted path under the marker
+valuation its own run ran (`valuationOf`), every declared root free over its domain, every clock
+over its window, and the values `concrete[]` holds (HELD, producer unstated) -- and nothing about a
+path the exploration did not admit. EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
 when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
