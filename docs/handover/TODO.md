@@ -233,7 +233,8 @@ client's node-map lookup to the cleanup's delete, the election-offer mechanism.
 
 ## Cross-cutting (engine), when a system needs it
 
-**WIRE-CODEC (`wire-codec-p1`).** It needs an 11741 canary verdict and a chain check, then its
+**WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** It needs an 11741 canary
+verdict and a chain check, then its
 round. The Solr `wire.jsonl` (P3) comes after `solr-bug-reindex`. P4 retires the WIRE_FLOW
 machinery.
 

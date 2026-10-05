@@ -55,9 +55,6 @@ import java.util.regex.Pattern;
  *       witness may move a root inside an unattested arm.</li>
  *   <li><b>Nested handoffs</b> — slots an expression mentions are closed
  *       transitively.</li>
- *   <li><b>Holes (WIRE-CODEC §6.3)</b> — a codec hole's arm is the export
- *       of the attach's own message and hole ({@link #sameMessage}); a
- *       relay's operand is the upstream hole's symbol, a nested handoff.</li>
  *   <li><b>STATE eligibility (IDENTITY §4)</b> — see {@link #stateArms}.</li>
  * </ul>
  */
@@ -263,15 +260,6 @@ public final class Arms {
             return attach;
         }
 
-        /**
-         * Whether this arm delivers a codec's hole (WIRE-CODEC §6.3): its
-         * value is bound by {@code VmTermLowering#holeArm}, from the
-         * producer's operand to the decoded leaf's sort.
-         */
-        public boolean hole() {
-            return attach != null && attach.hole() != null;
-        }
-
         @Override
         public String toString() {
             return (attested ? "arm " : "unattested arm ") + slotId + " of "
@@ -334,7 +322,6 @@ public final class Arms {
             String session = paired.sessionId();
             for (ExportRow export : rows.exportsOf(slot.producer())) {
                 if (!export.sessionId().equals(session)) continue;
-                if (!sameMessage(paired, export)) continue;
                 Arm arm = arm(slot.id(), symbol, session,
                         slot.producer().occurrence(), export.expressionRef(),
                         export.seq(), null, export, paired);
@@ -342,19 +329,6 @@ public final class Arms {
             }
         }
         return arms;
-    }
-
-    /**
-     * Whether an export is the delivery of this attach's message: a codec's
-     * hole is paired by the message key and the hole the envelope carried
-     * (WIRE-CODEC §6.3), so an export of another message or another hole at
-     * the same endpoint is no arm of it.  A declared port's attach takes
-     * every export its run made at the endpoint, as before.
-     */
-    private static boolean sameMessage(AttachRow attach, ExportRow export) {
-        if (attach.hole() == null) return true;
-        return attach.hole().equals(export.hole())
-                && attach.correlationId().equals(export.messageKey());
     }
 
     /**

@@ -7,16 +7,13 @@ package edu.uva.liftlab.graphchecker.contract;
  * unpaired (IDENTITY §4).  {@code javaType} must equal every arm's
  * {@code e_q} descriptor in the family.  {@code pairedBy} names which key
  * paired it (not equal evidence, IDENTITY §4); null means unstated,
- * not unpaired.  A codec's attach states the {@link Hole} it minted, and
- * its {@code correlationId} is the message's key.
+ * not unpaired.
  */
 public final class AttachRow extends Value {
     /** Paired by the VM handle the export staged. */
     public static final String HANDLE = "HANDLE";
     /** Paired by the message's correlation id and the port. */
     public static final String CORRELATION_PORT = "CORRELATION_PORT";
-    /** Paired by the producer endpoint the message's envelope carried. */
-    public static final String ENVELOPE = "ENVELOPE";
 
     private final String sessionId;
     private final long seq;
@@ -29,12 +26,11 @@ public final class AttachRow extends Value {
     private final Endpoint producer;
     private final String correlationId;
     private final String pairedBy;
-    private final Hole hole;
 
     private AttachRow(String sessionId, long seq, Endpoint endpoint,
                       String symbol, String javaType, String arrival,
                       boolean answered, String answeredValue, Endpoint producer,
-                      String correlationId, String pairedBy, Hole hole) {
+                      String correlationId, String pairedBy) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -46,7 +42,6 @@ public final class AttachRow extends Value {
         this.producer = producer;
         this.correlationId = correlationId;
         this.pairedBy = pairedBy;
-        this.hole = hole;
     }
 
     public static AttachRow of(String sessionId, long seq, Endpoint endpoint,
@@ -54,17 +49,6 @@ public final class AttachRow extends Value {
                                boolean answered, String answeredValue,
                                Endpoint producer, String correlationId,
                                String pairedBy) {
-        return of(sessionId, seq, endpoint, symbol, javaType, arrival,
-                answered, answeredValue, producer, correlationId, pairedBy,
-                null);
-    }
-
-    /** The same attach of a codec's hole. */
-    public static AttachRow of(String sessionId, long seq, Endpoint endpoint,
-                               String symbol, String javaType, String arrival,
-                               boolean answered, String answeredValue,
-                               Endpoint producer, String correlationId,
-                               String pairedBy, Hole hole) {
         return new AttachRow(Fields.text(sessionId, "sessionId"),
                 Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
@@ -73,7 +57,7 @@ public final class AttachRow extends Value {
                 Fields.required(arrival, "arrival"), answered,
                 Fields.optional(answeredValue), producer,
                 Fields.required(correlationId, "correlationId"),
-                Fields.optional(pairedBy), hole);
+                Fields.optional(pairedBy));
     }
 
     public String sessionId() {
@@ -118,25 +102,15 @@ public final class AttachRow extends Value {
         return producer;
     }
 
-    /**
-     * The exchange correlation id: the within-run pairing evidence.  For a
-     * hole, the message's key, as its export's {@link ExportRow#messageKey}.
-     */
+    /** The exchange correlation id: the within-run pairing evidence. */
     public String correlationId() {
         return correlationId;
     }
 
-    /**
-     * {@link #HANDLE}, {@link #CORRELATION_PORT}, {@link #ENVELOPE}, or
-     * {@code null} (unstated).
-     */
+    /** {@link #HANDLE}, {@link #CORRELATION_PORT}, or {@code null}
+     *  (unstated). */
     public String pairedBy() {
         return pairedBy;
-    }
-
-    /** The codec's hole this attach minted, or null for a declared port. */
-    public Hole hole() {
-        return hole;
     }
 
     /** The WIRE interaction this attach is the consumer half of, or null. */
@@ -149,13 +123,12 @@ public final class AttachRow extends Value {
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, symbol, javaType,
                 arrival, answered, answeredValue, producer, correlationId,
-                pairedBy, hole};
+                pairedBy};
     }
 
     @Override
     public String toString() {
         return "AttachRow{" + sessionId + "#" + seq + " " + endpoint + " "
-                + (hole == null ? "" : hole + " of " + correlationId + " ")
                 + symbol + ":" + javaType
                 + (producer == null ? " unpaired}" : " <- " + producer + "}");
     }

@@ -19,7 +19,6 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
-import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -1614,69 +1613,6 @@ public class ExploreTest {
                     && gap.subject().contains("XCH.req.key-id");
         }
         assertTrue("the obligation announces the control it invented", named);
-    }
-
-    // ---- (3b) a codec's String hole is answered with a delivered String --
-
-    /**
-     * WIRE-CODEC §6.4: a flip that needs another String at a decode is
-     * answered with one a run's producer delivered in that same message,
-     * spelled as its JSON string literal, which the replay plants verbatim.
-     * An export of another message at the producer's endpoint is no
-     * delivery of it: asking for that String is UNSAT.
-     */
-    @Test
-    public void aStringHoleIsAnsweredWithAStringItsMessageDelivered()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
-        Hole hole = Hole.of("SOLR_JSON", Arrays.<Object>asList("c", "state"),
-                0);
-        String message = "SOLR_ZK /collections/c/state.json@5";
-        Endpoint exported = at(PRODUCER, "kv:state", "hole#5ac1");
-        Endpoint attached = at(TARGET, "kv:state", "hole#5ac1");
-        String[][] asks = {{"down", "\"down\""}, {"gone", ""}};
-        for (String[] ask : asks) {
-            Path iteration = tree.newFolder("hole-" + ask[0]).toPath();
-            Session seed = new Session(iteration, "s-seed");
-            seed.activation(TARGET, false);
-            seed.activation(PRODUCER, false);
-            seed.expression("e.active", VmExpressionIr.stringConstant(
-                    "active"));
-            seed.hole(exported, attached, "e.active", "active", hole,
-                    message);
-            seed.decision(TARGET, "Lookup#u8", 1, false,
-                    "(= M_HOFF_STATE \"" + ask[0] + "\")");
-            seed.flush();
-            Session other = new Session(iteration, "s-down");
-            other.activation(PRODUCER, true);
-            other.answered(ObligationResult.of("OBL.s-down",
-                    Verdict.ADMITTED, "s-down", "the prefix reproduced"));
-            other.activation(TARGET, false);
-            other.expression("e.gone", VmExpressionIr.stringConstant("gone"));
-            other.expression("e.down", VmExpressionIr.stringConstant("down"));
-            // Another version of the store, at the same endpoint.
-            other.exports.add(ExportRow.of("s-down", ++other.seq, exported,
-                    "e.gone", "Ljava/lang/String;", 0L, "\"gone\"", hole,
-                    "SOLR_ZK /collections/c/state.json@4"));
-            other.hole(exported, attached, "e.down", "down", hole, message);
-            other.flush();
-            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
-                    "Lookup#u8"));
-            Path out = tree.newFolder("hole-" + ask[0] + "-out").toPath();
-            Path wave0 = out.resolve("obligations-0000");
-            plan(iteration, TARGET_SELECTOR, null,
-                    out.resolve("results.jsonl"), wave0, 0);
-            Worker worker = solve(iteration, wave0,
-                    named(obligations(wave0), "Lookup#u8"), out, "w0");
-            if (ask[1].isEmpty()) {
-                assertEquals(ask[0] + ": no run delivered it in this message",
-                        Verdict.UNSAT, worker.verdict);
-                continue;
-            }
-            assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
-            assertEquals("the delivered String, as its JSON string literal",
-                    ask[1], worker.obligation.answers().get(attached.id()));
-        }
     }
 
     // ---- (4) a root with no domain is pinned, here as in the composer --
@@ -4954,18 +4890,6 @@ public class ExploreTest {
                     arrival, false, null, producer,
                     "corr-" + endpoint.siteIndex().hash(),
                     producer == null ? "" : "HANDLE"));
-        }
-
-        /** A codec's String hole: the producer's export of it and this
-         *  run's decode, paired by the envelope of one message. */
-        private void hole(Endpoint producer, Endpoint consumer, String ref,
-                          String text, Hole hole, String message) {
-            String literal = "\"" + text + "\"";
-            exports.add(ExportRow.of(sessionId, ++seq, producer, ref,
-                    "Ljava/lang/String;", 0L, literal, hole, message));
-            attaches.add(AttachRow.of(sessionId, ++seq, consumer,
-                    "M_HOFF_STATE", "Ljava/lang/String;", literal, false, null,
-                    producer, message, AttachRow.ENVELOPE, hole));
         }
 
         private void write(Endpoint endpoint, LocationId location,

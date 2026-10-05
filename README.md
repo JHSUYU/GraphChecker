@@ -203,8 +203,7 @@ src/main/java/edu/uva/liftlab/graphchecker/
                ConfirmMain
   compose/     Composer, families, SMT lowering, container codec, string identities, ClaimPolicy,
                ComposeMain
-  contract/    row kinds, holes, wire declarations, identity types, gap registry, session layout,
-               IMPORT gate, row pool
+  contract/    row kinds, identity types, gap registry, session layout, IMPORT gate, row pool
   smt/         expression IR, arms and families, z3 driver
   annotation/  Debug.makeSymbolicBoolean; @CausynthExceptionTarget (the trees' compile ABI only)
 src/shim/java/                    the Hadoop shim (org.apache.hadoop.ipc.*) the HDFS trees call
