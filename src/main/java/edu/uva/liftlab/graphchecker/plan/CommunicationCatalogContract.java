@@ -59,15 +59,6 @@ public final class CommunicationCatalogContract {
      * demanded and not their values.
      */
     public static final String CODEC_PORT = "CODEC_PORT";
-    public static final String PORT_SPACE = "space";
-    public static final String PORT_KEY = "key";
-    public static final String PORT_PRESENCE = "presence";
-    public static final String PORT_CALLEE = "callee";
-    /** How a producer site states the key and the value: its KEY row's
-     *  role, or its setter's. */
-    public static final String PORT_ROLE = "role";
-    public static final String PORT_KEY_ARGUMENT = "keyArg";
-    public static final String PORT_VALUE_ARGUMENT = "valueArg";
 
     // Discovery never guesses: what it cannot resolve becomes a gap row.
 

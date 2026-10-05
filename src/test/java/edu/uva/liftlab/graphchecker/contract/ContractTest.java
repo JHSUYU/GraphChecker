@@ -1122,12 +1122,6 @@ public class ContractTest {
                     + "{'shards':'getSlicesMap()'}}",
             "{'kind':'CODEC_VIEW','codec':'*','type':'o.NamedList',"
                     + "'pairs':'nvPairs'}",
-            "{'kind':'KEY','space':'kv','role':'PUT','method':"
-                    + "'<o.Params: o.Params set(java.lang.String,"
-                    + "java.lang.String[])>','key':0,'value':'1[]'}",
-            "{'kind':'KEY','space':'kv','role':'PUT_PAIRS','method':"
-                    + "'<o.Utils: java.util.Map makeMap(java.lang.Object[])>',"
-                    + "'pairs':0}",
             "{'kind':'TRANSPORT','transport':'SOLR_HTTP',"
                     + "'response':'SOLR_JSON'}",
             "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true}",
@@ -1143,9 +1137,6 @@ public class ContractTest {
                 declared.views().get(0).form());
         assertEquals("getSlicesMap()",
                 declared.views().get(0).put().get("shards"));
-        assertEquals(1, declared.keys().get(0).valueArgument());
-        assertTrue(declared.keys().get(0).valueArray());
-        assertEquals(0, declared.keys().get(1).pairsArgument());
         assertTrue(declared.transports().get(1).store());
         // A request/response transport's header is bounded unless it says
         // otherwise; a store's versions travel in no header.
@@ -1158,7 +1149,7 @@ public class ContractTest {
         Object[][] bent = {
             {0, "{'schemaVersion':2,'kind':'EXCHANGE'}", "schemaVersion"},
             {0, "{'kind':'WIRE_FLOW'}", "is none of"},
-            {8, "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true,"
+            {6, "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true,"
                     + "'bnd':1}", "has no member bnd"},
             {0, "{'kind':'CODEC','codec':'PROTOBUF','shape':'PROTOBUF',"
                     + "'space':'pb'}", "states its decoders"},
@@ -1191,17 +1182,11 @@ public class ContractTest {
                     "beside a map view"},
             {4, "{'kind':'CODEC_VIEW','codec':'HDFS_SASL_NAME','type':"
                     + "'o.NamedList','pairs':'nvPairs'}", "no TREE codec"},
-            {6, "{'kind':'KEY','space':'kv','role':'GET','method':"
-                    + "'<o.P: o.P get(java.lang.String)>','key':0,"
-                    + "'value':1}", "nothing else"},
-            {5, "{'kind':'KEY','space':'kv','role':'PUT','method':"
-                    + "'<o.P: o.P set(java.lang.String)>','key':0,"
-                    + "'value':'1x'}", "argument index"},
-            {8, "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true,"
+            {6, "{'kind':'TRANSPORT','transport':'SOLR_ZK','store':true,"
                     + "'response':'SOLR_JSON'}", "one of the two"},
-            {7, "{'kind':'TRANSPORT','transport':'SOLR_HTTP',"
+            {5, "{'kind':'TRANSPORT','transport':'SOLR_HTTP',"
                     + "'response':'SOLR_JAVABIN'}", "no CODEC row"},
-            {9, "{'kind':'EXCHANGE','transport':'HDFS_SASL','method':"
+            {7, "{'kind':'EXCHANGE','transport':'HDFS_SASL','method':"
                     + "'<o.C: void sasl()>'}", "no TRANSPORT row"},
             {valid.length, valid[1], "declared again; first at wire.jsonl:2"}};
         for (Object[] row : bent) {

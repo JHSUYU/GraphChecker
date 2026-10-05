@@ -1933,6 +1933,3 @@ comparison.
   the replay never makes; as many as the prefix: it came late). The `{mark, at}` rows of both files
   say where each occurrence opened; a SEND's `endpoint` joins the recording's `EXCHANGE_SEND` rows
   in `runtime/runtime_trace.jsonl`.
-- `CAUSYNTH_WORKLOAD_JAVA_OPTS=-Dcausynth.debug.producers=true` (read by `experiments/lib/execute.sh`
-  for every workload JVM) prints each send's producer endpoint (`CAUSYNTH-PRODUCER` lines on stderr),
-  to diff against the recording's when anchors drift.

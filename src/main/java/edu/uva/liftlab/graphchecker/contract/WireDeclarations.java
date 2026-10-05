@@ -18,7 +18,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -26,8 +25,7 @@ import java.util.regex.Pattern;
  * as declared.  One schema for the engine's library catalog and a system's
  * {@code wire.jsonl}, read together: {@code CODEC} (a serialization format,
  * its encoders and decoders), {@code CODEC_VIEW} (how a TREE codec sees an
- * application object), {@code KEY} (a static accessor of a key space),
- * {@code TRANSPORT} (the codecs a door walks its payload with) and
+ * application object), {@code TRANSPORT} (the codecs a door walks its payload with) and
  * {@code EXCHANGE} (a bracket that owns the encodes inside it).  A malformed
  * row, a member its kind does not have, a declaration stated twice and a
  * name no row declares are refused, never skipped: a skipped declaration
@@ -37,7 +35,6 @@ public final class WireDeclarations {
     public static final int SCHEMA_VERSION = 1;
     public static final String CODEC = "CODEC";
     public static final String CODEC_VIEW = "CODEC_VIEW";
-    public static final String KEY = "KEY";
     public static final String TRANSPORT = "TRANSPORT";
     public static final String EXCHANGE = "EXCHANGE";
     /** A view's codec that names every TREE codec. */
@@ -46,9 +43,6 @@ public final class WireDeclarations {
     /** What a codec's walker walks: containers, generated messages, or
      *  the graph as one leaf. */
     public enum Shape { TREE, PROTOBUF, LEAF }
-
-    /** How a KEY method states the key and its value. */
-    public enum KeyRole { GET, PRESENCE, PUT, PUT_PAIRS }
 
     /** What an object's view is: its map, one leaf, or a flat name/value
      *  list. */
@@ -66,8 +60,6 @@ public final class WireDeclarations {
                 "decoders"));
         MEMBERS.put(CODEC_VIEW, names("codec", "type", "map", "leaf", "pairs",
                 "put"));
-        MEMBERS.put(KEY, names("space", "role", "method", "key", "value",
-                "pairs"));
         MEMBERS.put(TRANSPORT, names("transport", "request", "response",
                 "store", "envelopeBytes"));
         MEMBERS.put(EXCHANGE, names("transport", "method"));
@@ -87,23 +79,18 @@ public final class WireDeclarations {
     /** A view's accessor: a no-argument method or a field. */
     private static final Pattern ACCESSOR =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(\\(\\))?");
-    /** A PUT's value argument, {@code [N]} when it is a varargs array. */
-    private static final Pattern VALUE_ARGUMENT =
-            Pattern.compile("(0|[1-9][0-9]*)(\\[\\])?");
     private static final Pattern INDEX = Pattern.compile("0|[1-9][0-9]*");
 
     private final List<Codec> codecs;
     private final List<View> views;
-    private final List<Key> keys;
     private final List<Transport> transports;
     private final List<Exchange> exchanges;
 
     private WireDeclarations(List<Codec> codecs, List<View> views,
-                             List<Key> keys, List<Transport> transports,
+                             List<Transport> transports,
                              List<Exchange> exchanges) {
         this.codecs = Collections.unmodifiableList(codecs);
         this.views = Collections.unmodifiableList(views);
-        this.keys = Collections.unmodifiableList(keys);
         this.transports = Collections.unmodifiableList(transports);
         this.exchanges = Collections.unmodifiableList(exchanges);
     }
@@ -116,7 +103,6 @@ public final class WireDeclarations {
     public static WireDeclarations of(Map<String, JsonObject> rows) {
         List<Codec> codecs = new ArrayList<>();
         List<View> views = new ArrayList<>();
-        List<Key> keys = new ArrayList<>();
         List<Transport> transports = new ArrayList<>();
         List<Exchange> exchanges = new ArrayList<>();
         Map<String, String> declaredAt = new LinkedHashMap<>();
@@ -139,13 +125,6 @@ public final class WireDeclarations {
                         declared = view;
                         identity = CODEC_VIEW + " " + view.codec() + " "
                                 + view.type();
-                        break;
-                    case KEY:
-                        Key key = key(row);
-                        keys.add(key);
-                        declared = key;
-                        identity = KEY + " " + key.space() + " "
-                                + key.method();
                         break;
                     case TRANSPORT:
                         Transport transport = transport(row);
@@ -174,7 +153,7 @@ public final class WireDeclarations {
                         malformed);
             }
         }
-        WireDeclarations read = new WireDeclarations(codecs, views, keys,
+        WireDeclarations read = new WireDeclarations(codecs, views,
                 transports, exchanges);
         read.resolve(located);
         return read;
@@ -184,7 +163,7 @@ public final class WireDeclarations {
      * The declarations of one file, one JSON row per line, keyed
      * {@code file:line}.  A {@code DOOR} row is the door weave's
      * ({@code causynth.DoorWeave}) and is passed over; any other row is one of
-     * the five kinds or refused.
+     * the four kinds or refused.
      */
     public static WireDeclarations read(Path file) throws IOException {
         Map<String, JsonObject> rows = new LinkedHashMap<>();
@@ -245,8 +224,7 @@ public final class WireDeclarations {
     /** No declaration at all. */
     public static final WireDeclarations NONE = new WireDeclarations(
             new ArrayList<Codec>(), new ArrayList<View>(),
-            new ArrayList<Key>(), new ArrayList<Transport>(),
-            new ArrayList<Exchange>());
+            new ArrayList<Transport>(), new ArrayList<Exchange>());
 
     /** Every name a row uses is declared, by a row of the right kind. */
     private void resolve(Map<Value, String> located) {
@@ -296,10 +274,6 @@ public final class WireDeclarations {
 
     public List<View> views() {
         return views;
-    }
-
-    public List<Key> keys() {
-        return keys;
     }
 
     public List<Transport> transports() {
@@ -435,37 +409,6 @@ public final class WireDeclarations {
             }
         }
         return new View(codec, type, form, accessor, put);
-    }
-
-    private static Key key(JsonObject row) {
-        KeyRole role = constant(KeyRole.class, text(row, "role"), "role");
-        int key = index(row, "key");
-        int pairs = index(row, "pairs");
-        JsonElement value = row.get("value");
-        boolean paired = role == KeyRole.PUT_PAIRS;
-        if (paired == (key >= 0) || paired != (pairs >= 0)
-                || (role == KeyRole.PUT) != (value != null)) {
-            throw new IllegalArgumentException("a " + role + " row states "
-                    + (paired ? "pairs" : role == KeyRole.PUT
-                    ? "key and value" : "key")
-                    + " and nothing else of key, value and pairs");
-        }
-        int valueArgument = -1;
-        boolean varargs = false;
-        if (value != null) {
-            boolean number = value.isJsonPrimitive()
-                    && value.getAsJsonPrimitive().isNumber();
-            Matcher stated = VALUE_ARGUMENT.matcher(number
-                    ? value.getAsString() : string(value, "value"));
-            if (!stated.matches()) {
-                throw new IllegalArgumentException("value is an argument "
-                        + "index, N or \"N[]\"; got " + value);
-            }
-            valueArgument = Integer.parseInt(stated.group(1));
-            varargs = stated.group(2) != null;
-        }
-        return new Key(space(row), role, signature(text(row, "method"),
-                false), key, valueArgument, varargs, pairs);
     }
 
     private static Transport transport(JsonObject row) {
@@ -775,73 +718,6 @@ public final class WireDeclarations {
         @Override
         public String toString() {
             return CODEC_VIEW + " " + codec + " " + type;
-        }
-    }
-
-    /**
-     * One static accessor of a key space: the argument holding the key
-     * (GET, PRESENCE, PUT), the one holding the value (PUT, a varargs array
-     * when {@link #valueArray}) or the one holding a key/value array
-     * (PUT_PAIRS); -1 where the role has none.
-     */
-    public static final class Key extends Value {
-        private final String space;
-        private final KeyRole role;
-        private final String method;
-        private final int keyArgument;
-        private final int valueArgument;
-        private final boolean valueArray;
-        private final int pairsArgument;
-
-        private Key(String space, KeyRole role, String method,
-                    int keyArgument, int valueArgument, boolean valueArray,
-                    int pairsArgument) {
-            this.space = space;
-            this.role = role;
-            this.method = method;
-            this.keyArgument = keyArgument;
-            this.valueArgument = valueArgument;
-            this.valueArray = valueArray;
-            this.pairsArgument = pairsArgument;
-        }
-
-        public String space() {
-            return space;
-        }
-
-        public KeyRole role() {
-            return role;
-        }
-
-        public String method() {
-            return method;
-        }
-
-        public int keyArgument() {
-            return keyArgument;
-        }
-
-        public int valueArgument() {
-            return valueArgument;
-        }
-
-        public boolean valueArray() {
-            return valueArray;
-        }
-
-        public int pairsArgument() {
-            return pairsArgument;
-        }
-
-        @Override
-        Object[] parts() {
-            return new Object[] {space, role, method, keyArgument,
-                    valueArgument, valueArray, pairsArgument};
-        }
-
-        @Override
-        public String toString() {
-            return KEY + " " + space + " " + role + " " + method;
         }
     }
 

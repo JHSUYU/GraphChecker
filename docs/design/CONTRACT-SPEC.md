@@ -359,22 +359,20 @@ a run demands only the ports its `causynth.codec.ports` file names, and the `WIR
 ### 6.1 Declarations (`WireDeclarations`)
 
 One schema for the engine's library catalog and a system's `wire.jsonl`, read together:
-`WireDeclarations.of(rows)` takes every row of the five kinds, each keyed by where it was read
+`WireDeclarations.of(rows)` takes every row of the four kinds, each keyed by where it was read
 (`file:line`); the caller routes rows of other kinds away first (the library catalog's `DOOR` and
 `CONFIG_SOURCE` rows are `causynth/LibraryCatalog`'s, SYMBOL-SCOPE §4.2). `WireDeclarations.read`
 reads one file, a JSON row per line, passing over its `DOOR` rows;
 `WireDeclarations.configured` reads the file the system property `causynth.wire.declarations`
 (else the environment variable `CAUSYNTH_WIRE_DECLARATIONS`) names, and none when neither does.
 Every row states `schemaVersion 1` and its `kind`. A malformed row, a member its kind does not have, a declaration
-stated twice (same codec name, codec and type, space and method, transport name, or exchange
-method) and a name no row declares are refused, naming the row, never skipped.
+stated twice (same codec name, codec and type, transport name, or exchange method) and a name no row declares are refused, naming the row, never skipped.
 
 | kind | members | meaning |
 | --- | --- | --- |
 | `CODEC` | `codec, shape, space, encoders?, decoders` | one serialization format. `codec` `[A-Z][A-Z0-9_]*`; `shape` `TREE` (maps, lists, arrays and views), `PROTOBUF` (fields of generated messages) or `LEAF` (the graph is one leaf); `space` `[a-z][a-z0-9_]*`, the key space its ports are named in. At least one decoder |
 | encoder, decoder | `method` or `call`, `graph`, `encoded?`, `bind?` (encoders only) | `method` is a Soot signature whose body is hooked; `call` is a callee pattern (`*` = any run of characters) whose call sites in woven code are hooked. `graph` and `encoded` are `this`, `return` or `argN`, never the same; a decoder whose graph is an argument is hooked at entry. An encoder is bound to its `encoded` object (which it then states), or with `bind: EXCHANGE` to the innermost open exchange bracket |
 | `CODEC_VIEW` | `codec, type, map \| leaf \| pairs, put?` | how a TREE codec (`codec`, or `*` for every one) sees an application class: its map, one leaf, or a flat name/value list, through an accessor `name()` (a method) or `name` (a field); `put` = the extra keys a map view writes, key to accessor |
-| `KEY` | `space, role, method, key?, value?, pairs?` | a static accessor of a key space: `role` `GET`, `PRESENCE` (the key argument `key`), `PUT` (`key` and `value`, `"N[]"` for a varargs array) or `PUT_PAIRS` (`pairs`, the argument holding a key/value array) |
 | `TRANSPORT` | `transport, request?, response?, store?, envelopeBytes?` | the codec a door of the transport walks its request or response payload with (a missing half has none in hand), or `store: true` (its doors write and read stored versions), one of the two; `envelopeBytes` (beside a request or response, 4096 when unstated: half of Jetty's 8 KB request-header default) bounds a message's whole symbolic header, both its schemes' segments; what does not fit is named `BOUND_INSUFFICIENT` |
 | `EXCHANGE` | `transport, method` | a woven bracket owning the encodes inside it; its transport has a `TRANSPORT` row |
 
