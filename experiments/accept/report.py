@@ -533,11 +533,15 @@ if blocking:
     out.append("")
 
 concrete = result.get("concrete") or []
+# A long composition rests on many of these (hdfs-17899-bug2: a FREE arrival
+# on every one of its paths); the report lists the first CONCRETE_SHOWN and
+# states the count, so it stays readable without hiding how many there were.
+CONCRETE_SHOWN = 20
 if concrete:
     out += ["## Concrete", "",
-            "What the decision rested on concretely (result.json concrete[]):"
-            " information, never a gap.", ""]
-    for row in concrete:
+            "What the decision rested on concretely (result.json concrete[],"
+            " %d row(s)): information, never a gap." % len(concrete), ""]
+    for row in concrete[:CONCRETE_SHOWN]:
         if row.get("kind") == "ANCHOR":
             out.append("* anchor `%s` decided on no symbol: %d of %d path(s)"
                        " decided it, %d read(s) of %s demanded, %d off the"
@@ -552,6 +556,8 @@ if concrete:
                 row.get("value", ""),
                 (" (moves with %s)" % ", ".join(row["movesWith"]))
                 if row.get("movesWith") else ""))
+    if len(concrete) > CONCRETE_SHOWN:
+        out.append("* ... and %d more" % (len(concrete) - CONCRETE_SHOWN))
     out.append("")
 
 if findings:
