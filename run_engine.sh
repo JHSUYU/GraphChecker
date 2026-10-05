@@ -146,9 +146,11 @@ workflow_config_keys=(
   # nearest the throw first; 0 keeps the declared scope as it is.
   "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
   # How many times REPRODUCE runs a confirmed witness natively, and each
-  # run's wall clock: this factor times the recording's own workload.
+  # run's wall clock: this factor times the recording's own workload, at
+  # least reproduce_min_s (campaign_reproduce_bound).
   "reproduce_runs CAUSYNTH_REPRODUCE_RUNS krp 10"
   "reproduce_time_factor CAUSYNTH_REPRODUCE_TIME_FACTOR krp 3"
+  "reproduce_min_s CAUSYNTH_REPRODUCE_MIN_S krp 300"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -696,7 +698,8 @@ validate_config() {
   for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
       recording_max_trace_mb schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound reproduce_runs \
-      reproduce_time_factor campaign_budget_s campaign_reserve_s \
+      reproduce_time_factor reproduce_min_s campaign_budget_s \
+      campaign_reserve_s \
       campaign_max_claims; do
     require_positive_integer "${key}"
   done
@@ -1016,12 +1019,13 @@ do_compose() {
 }
 
 # run_configured_workload <trace-dir> [seconds] [plant] [charged_mb]
-# [max_trace_mb]: the
+# [max_trace_mb] [order_timeout_ms]: the
 # workload in the recording weave (analysis_classes_dir, as SEED's static
 # pass wove it), its trace into <trace-dir> and no more than <max_trace_mb>
 # of it (the recording's, campaign_watch_workload), under a wall-clock bound of
 # <seconds> when one is given (run_under_wall_clock_bound), with a native
-# reproduction's plant (runtime.RecordingPlant) when one is named, and held
+# reproduction's plant (runtime.RecordingPlant) when one is named, its ORDER
+# rows each held at most <order_timeout_ms> (runtime.Confirmation), and held
 # to what its host was charged for it when it was (campaign_watch_workload).
 run_configured_workload() {
   local trace_dir=$1
@@ -1034,6 +1038,7 @@ run_configured_workload() {
     "CAUSYNTH_PLANT=${3:-}"
     "CAUSYNTH_CHARGED_MB=${4:-}"
     "CAUSYNTH_RECORDING_MAX_TRACE_MB=${5:-0}"
+    "CAUSYNTH_ORDER_TIMEOUT_MS=${6:-}"
   )
   [[ -z "${2:-}" ]] || bound=(run_under_wall_clock_bound "$2")
   (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
@@ -5973,8 +5978,8 @@ campaign_claim_room() {
 # attempts; the last planner round, which reads the same corpus, stands for
 # a COMPOSE none has run yet -- CONFIRM as long as the longest CONFIRM --
 # the seed's REPLAY stands for a CONFIRM replay none has run yet -- and
-# REPRODUCE its own bound, reproduce_time_factor times the recording's
-# workload (its native runs go out at once); never less than
+# REPRODUCE its own bound (campaign_reproduce_bound; its native runs go out
+# at once); never less than
 # campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
 # the case timeout when the reserve owed COMPOSE and CONFIRM alone; HR1:
 # hdfs-adhoc-07's first COMPOSE, over 556 sessions after planner rounds of 4
@@ -5992,9 +5997,20 @@ campaign_reserve() {
         $1 == "PLANNER" { p = $2; next }
         { if ($2 > r) r = $2 }
         END { printf "%d\n", (2 * (c > 0 ? c : p) + r) / 1000 }')
-  measured=$(( measured + reproduce_time_factor \
-    * ${campaign_recorded_workload_s:-0} ))
+  measured=$(( measured + $(campaign_reproduce_bound) ))
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
+}
+
+# How long one native run of REPRODUCE may take, in seconds:
+# reproduce_time_factor times the recording's workload, at least
+# reproduce_min_s.  A short recording's own time says little of how long ten
+# native runs at once on a busy cluster take (hdfs-17960: an 8 s recording,
+# NP1's ten runs all cut at 24 s before their window opened, NP2's 11-16 s;
+# hdfs-17897 NP7: a 9 s recording, its ten runs 119-187 s, every one at the
+# anchor).
+campaign_reproduce_bound() {
+  local bound=$(( reproduce_time_factor * ${campaign_recorded_workload_s:-0} ))
+  echo $(( bound > reproduce_min_s ? bound : reproduce_min_s ))
 }
 
 # "PLANNER <ms>": the wall of the last round the planner finished, from
@@ -6059,24 +6075,29 @@ has no room for another claim"
 }
 
 # REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again
-# natively -- the recording weave on the stock JDK, planting the fault
-# markers the confirmation's world plants and watching the target's guards
-# for their fatal arm at the claim's anchor (explore.ConfirmMain --plant, the
-# code that wrote CONFIRM's world; runtime.RecordingPlant).  reproduce_runs
-# runs, all at once, each a head step charged the recording's measured peak
-# resident memory wherever there is room (campaign_reproduce_one) and
-# bounded by reproduce_time_factor times the recording's own workload; a run
-# ends as soon as the planted world takes the fatal arm at the anchor, its
-# one question answered.  Each run states its answer itself
+# natively -- the recording weave on the stock JDK, planting what the
+# confirmation's world plants and holds (its fault markers, its trees' hook
+# roots, its ORDER rows) and watching the target's guards for their fatal
+# arm at the claim's anchor (explore.ConfirmMain --plant, the code that wrote
+# CONFIRM's world; runtime.RecordingPlant).  reproduce_runs runs, all at
+# once, each a head step charged the recording's measured peak resident
+# memory wherever there is room (campaign_reproduce_one) and bounded by
+# campaign_reproduce_bound; a run ends as
+# soon as the planted world takes the fatal arm at the anchor, its one
+# question answered.  Each run states its answer itself
 # (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
-# many planted a marker, took the target's fatal arm, took it at the claim's
-# own anchor -- and names the runs that stated none.  A native run holds no
-# schedule, so the planted occurrence may not recur: the rate ranks a finding
-# (tools/adhoc/findings.py) and never refutes it, and nothing here moves the
-# claim, CONFIRM's decision or what EMIT published.  A world a native run
-# cannot plant (a clock, an attach's answer, any root but a marker), or a
-# recording that measured no peak memory, is a reproduce.json with no run and
-# the reason.  Only a confirmed SAT_CANDIDATE is reproduced.
+# many applied every row of the plant, took the target's fatal arm, took it
+# at the claim's own anchor, reproduced (at the anchor with every ROOT row
+# applied: what tools/adhoc/findings.py rates), could not hold an ORDER in
+# time, and still held one when the run ended -- and names the runs that
+# stated none.  A native run holds no recorded order,
+# only the model's, so the planted occurrence may not recur: the rate ranks
+# a finding (tools/adhoc/findings.py) and never refutes it, and nothing here
+# moves the claim, CONFIRM's decision or what EMIT published.  A world a
+# native run cannot plant (a clock, an attach's answer, a configuration, a
+# world that plants nothing), or a recording that measured no peak memory,
+# is a reproduce.json with no run and the reason.  Only a confirmed
+# SAT_CANDIDATE is reproduced.
 campaign_reproduce() {
   local iteration_dir=$1
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
@@ -6093,6 +6114,7 @@ campaign_reproduce() {
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.explore.ConfirmMain \
     --iteration "${iteration_dir}" --claim "${campaign_final}/claim.json" \
+    --manifest "${composition_manifest}" \
     --static-scope-map "${causynth_static_scope_map}" \
     --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
@@ -6104,16 +6126,17 @@ campaign_reproduce() {
   fi
   if [[ -n "${reason}" ]]; then
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
-      runs: 0, planted: 0, fatal: 0, atAnchor: 0, reason: $reason}' \
+      runs: 0, planted: 0, fatal: 0, atAnchor: 0, reproduced: 0, unheld: 0,
+      holding: 0, reason: $reason}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
     return 0
   fi
-  bound=$(( reproduce_time_factor * campaign_recorded_workload_s ))
+  bound=$(campaign_reproduce_bound)
   campaign_log "reproduce: ${reproduce_runs} native run(s) at once, each \
 charged ${campaign_recorded_workload_rss_mb} MB and bounded by ${bound}s \
 (reproduce_time_factor=${reproduce_time_factor} x the recording's \
-${campaign_recorded_workload_s}s)"
+${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
   for ((run = 0; run < reproduce_runs; run++)); do
     campaign_reproduce_one "${dir}/run-$((run + 1))" "${bound}" \
       "${dir}/plant.jsonl" &
@@ -6129,10 +6152,13 @@ ${campaign_recorded_workload_s}s)"
        planted: map(select(.planted)) | length,
        fatal: map(select(.fatal)) | length,
        atAnchor: map(select(.atAnchor)) | length,
+       reproduced: map(select(.reproduced)) | length,
+       unheld: map(select(any(.unapplied[]; .why == "UNHELD"))) | length,
+       holding: map(select(any(.unapplied[]; .why == "HOLDING"))) | length,
        reason: (if length < $runs
          then "\($runs - length) of \($runs) run(s) stated no answer"
          else "" end)}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced at the anchor in \(.atAnchor) of \(.runs) native run(s) (\(.planted) planted, \(.fatal) fatal)"' \
+  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld, \(.holding) an order still holding)"' \
     "${campaign_final}/reproduce.json"
 }
 
@@ -6160,22 +6186,48 @@ logs are in ${run}"
 # the workload's exit -- a planted fault may well fail the test, and a run
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
-# planted, fatal, atAnchor}.
+# rows, applied, unapplied, planted, rootsPlanted, fatal, atAnchor,
+# reproduced} -- the plant's rows to apply (ROOT and ORDER), how many the
+# run applied, each one it did not with why (UNHELD: an ORDER's wait timed
+# out; HOLDING: still waiting when the run ended; UNWRITTEN: a HOOK row's
+# field write failed; NOT_REACHED), whether it applied every row and every
+# ROOT row, whether it took the target's fatal arm and at the anchor, and
+# whether it reproduced: the fatal arm at the anchor with every ROOT row
+# applied -- a run that did not plant the model's roots and reaches the
+# fatal anyway is the program's own race, no reproduction.  An ORDER is held
+# at most half the run's bound (causynth.confirm.order.timeout.ms), so an
+# unrealizable order is stated UNHELD before the bound ends the run.
 campaign_reproduce_run() {
   local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 charged=$5 status=0
   local trace="${run}/runtime_trace.jsonl"
   hostname -s >"${run}/host.txt"
   run_capturing_status run_configured_workload "${run}" "${bound}" "${plant}" \
-    "${charged}" >"${run}/stdout.log" 2>"${run}/stderr.log"
+    "${charged}" "" "$(( bound * 500 ))" \
+    >"${run}/stdout.log" 2>"${run}/stderr.log"
   [[ -s "${trace}" ]] || trace=/dev/null
-  jq -n -c -R --argjson exit "${status}" '
-    reduce (inputs | select(contains("\"event\":\"PLANT_")) | fromjson?)
-        as $row ({exit: $exit, planted: false, fatal: false,
-                  atAnchor: false};
-      if $row.event == "PLANT_APPLIED" then .planted = true
-      elif $row.event == "PLANT_FATAL"
-      then .fatal = true | .atAnchor = (.atAnchor or $row.atAnchor)
-      else . end)' "${trace}" >"${run}/answer.json.part"
+  jq -n -c -R --argjson exit "${status}" --slurpfile plant "${plant}" '
+    [inputs | select(contains("\"event\":\"PLANT_")) | fromjson?] as $rows
+    | [$plant[] | select(.kind != "TARGET")] as $planted
+    | def stated($event): [$rows[] | select(.event == $event) | .row];
+      def why($row):
+        if any(stated("PLANT_UNHELD")[]; . == $row) then "UNHELD"
+        elif any(stated("PLANT_UNWRITTEN")[]; . == $row) then "UNWRITTEN"
+        elif any(stated("PLANT_HOLDING")[]; . == $row) then "HOLDING"
+        else "NOT_REACHED" end;
+      stated("PLANT_APPLIED") as $applied
+    | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
+        | {row, kind, planted: (.rootId // "\(.before) -> \(.after)"),
+           why: why($p.row)}] as $unapplied
+    | ($planted | length) as $count
+    | any($rows[]; .event == "PLANT_FATAL" and .atAnchor) as $atAnchor
+    | (all($unapplied[]; .kind != "ROOT")) as $roots
+    | {exit: $exit, rows: $count, applied: ($count - ($unapplied | length)),
+       unapplied: $unapplied,
+       planted: ($count > 0 and ($unapplied | length) == 0),
+       rootsPlanted: $roots,
+       fatal: any($rows[]; .event == "PLANT_FATAL"),
+       atAnchor: $atAnchor, reproduced: ($atAnchor and $roots)}' \
+    "${trace}" >"${run}/answer.json.part"
   mv -f -- "${run}/answer.json.part" "${run}/answer.json"
 }
 

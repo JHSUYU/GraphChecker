@@ -65,9 +65,8 @@ accept-PS{1,2,3}-11741`. Done when the key id is bound by its message family in 
 the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the key id across the wire).
 
 ### 5. The other open checks
-- **32**: `BlockPoolManager.get` reads `bpByBlockPoolId` (a map state) from a writer no row names, stating neither
-  version nor value; the path is refused. Diagnose like 11741's (`/bigtemp/vnr3ne/gc-out/diag-11741` is the method):
-  which mutation of the map ran outside every region, or why the map has no log at the read.
+- **32 swapped for 05** (owner 2026-10-05, "32直接换成05吧"): 32's map removal runs in the actor thread's exit, unnamed
+  work started before the window; an identity rule for a thread's exit as a lineage hop would bring it back.
 - **07/08/09** (QJM, deep closures): rerun each ALONE on the whole cluster with a longer budget (`CASE_TIMEOUT_SECONDS`
   10800, `launch-run.sh`), after `hdfs-compose-cost`; they must reach FIXED_POINT and COMPOSE. Then measure EXPLORE's
   re-asked arms (07: 203 arms asked ~7.8 times under different dependence digests; 47 of 189 changed verdict) and its
