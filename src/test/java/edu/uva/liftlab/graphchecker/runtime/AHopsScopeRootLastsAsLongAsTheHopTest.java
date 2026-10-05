@@ -5,6 +5,12 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
@@ -19,10 +25,67 @@ public class AHopsScopeRootLastsAsLongAsTheHopTest {
     private static final SourceRef NN =
             new SourceRef("CLUSTER_NODE", "NAMENODE", "t/nn0", 0L);
 
+    private static final SourceRef DN =
+            new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
+    private static final String LOOP = "<a.Actor: void offerService()>#u3";
+    private static final String SEND = "<a.Actor: void sendHeartBeat()>#u5";
+    private static final String SITE = "HADOOP_IPC#REQUEST";
+
     @Before
     public void reset() {
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
+        Lineage.resetForTests();
+        ScheduleLog.resetForTests();
+    }
+
+    /**
+     * An occurrence's events count under the root hop it was opened under,
+     * whatever root hop opens inside it: a daemon's region entered under a
+     * request (a startup window) runs every turn inside one occurrence, whose
+     * address names no turn, so each turn's send has an index of its own
+     * (round HG5A, hdfs-adhoc-21: three heartbeats at one producer
+     * endpoint).  Where no occurrence runs, each turn counts afresh: its
+     * context, the turn's root, tells its sends apart.
+     */
+    @Test
+    public void aTurnInsideAnOccurrenceRestartsNoCount() {
+        Object[][] table = {
+            {true, Arrays.asList(LOOP + "@0/" + SEND + "@0/" + SITE + "@0",
+                    LOOP + "@0/" + SEND + "@1/" + SITE + "@0",
+                    LOOP + "@0/" + SEND + "@2/" + SITE + "@0")},
+            {false, Arrays.asList(SEND + "@0/" + SITE + "@0",
+                    SEND + "@0/" + SITE + "@0", SEND + "@0/" + SITE + "@0")},
+        };
+        for (Object[] row : table) {
+            reset();
+            boolean running = (Boolean) row[0];
+            Object actor = new Object();
+            RuntimeTraceContext.registerSource(actor, DN);
+            long request = RuntimeTraceContext.beginRequest(actor, "test");
+            long run = Identity.enterFrame("<a.Actor: void run()>#u1", null);
+            if (running) Identity.occurrence(DN.key(), "REGION.run", true);
+            long loop = Identity.enterFrame(LOOP, null);
+            List<String> indexes = new ArrayList<String>();
+            Set<String> producers = new LinkedHashSet<String>();
+            for (int turn = 0; turn < 3; turn++) {
+                long tick = RuntimeTraceContext.beginTick(actor, "ACTOR");
+                long send = Identity.enterFrame(SEND, null);
+                Endpoint sent = Identity.endpointAt(
+                        Identity.currentOccurrence(DN.key()), SITE, 0);
+                indexes.add(sent.siteIndex().render());
+                producers.add(sent.id());
+                Identity.exitFrame(send);
+                RuntimeTraceContext.endTick(tick);
+            }
+            assertEquals("occurrence running=" + running, row[1], indexes);
+            assertEquals("one producer per turn, running=" + running + ": "
+                    + producers, 3, producers.size());
+            Identity.exitFrame(loop);
+            if (running) Identity.regionExit();
+            Identity.exitFrame(run);
+            RuntimeTraceContext.endRequest(request);
+        }
     }
 
     @Test

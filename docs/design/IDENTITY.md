@@ -137,8 +137,14 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
 
 - **Frames.** Every application-scope method opens a level at entry and closes it at every exit,
   in both passes (`Identity#enterFrame`, `#exitFrame`). A frame's `k` is the k-th event at that
-  site in the enclosing level under the current root hop (`State#nextSiteEvent`, keyed by level,
-  root-hop token and site). It is not a loop-iteration count.
+  site in the enclosing level under the root hop that owns the count (`State#nextSiteEvent`, keyed
+  by level, root-hop token and site): the one the occurrence running on the thread was opened or
+  named under (`State#countingRoot`, `Region#root`), else the current root hop. It is not a
+  loop-iteration count. An occurrence's address is its frame path within it and names no root hop
+  opened inside it, so such a hop restarts none of its counts: in round HG5A's hdfs-adhoc-21 a
+  DataNode actor's `run()` occurrence, entered in the startup window under the test's request,
+  sent every turn's heartbeat at `offerService@0/sendHeartBeat@0`, one producer endpoint for three
+  turns, and the NameNode served all three under one anchor at one address.
 - **Start frames.** `Identity#startWork` files, per `Thread.start` or submission, the starter's
   index from its scope base followed by a frame (site, k-th start at that site) with the carrier.
   That `k` counts starts at the site in the top level under the hop that gives the context -- the

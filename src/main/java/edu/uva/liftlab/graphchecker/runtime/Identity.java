@@ -352,9 +352,10 @@ public final class Identity {
 
         /**
          * THE counter: the k of one event at {@code site} in the top level
-         * under the current root hop.  Sends, region entries, work starts
-         * and frame entries count here; VM-logged reads and writes by the
-         * same rule at read-out ({@code LoggedEventSites#siteIndex}).
+         * under the root hop that owns the count ({@link #countingRoot}).
+         * Sends, region entries, work starts and frame entries count here;
+         * VM-logged reads and writes by the same rule at read-out ({@code
+         * LoggedEventSites#siteIndex}).
          *
          * <p>Keyed by (level, root hop, site) only.  Trap: keying also by
          * the live causal context moves the key whenever the thread's anchor
@@ -363,7 +364,24 @@ public final class Identity {
          * levels.</p>
          */
         private int nextSiteEvent(String site) {
-            return next(top().events(Lineage.rootToken()), site);
+            return next(top().events(countingRoot()), site);
+        }
+
+        /**
+         * The root hop an event's count is kept under: the one the
+         * occurrence running here was opened or named under ({@link
+         * Region#root}), else the current root hop.  An occurrence's address
+         * is its frame path within it, and names no root hop opened inside
+         * it: one restarting the counts would give two of its events one
+         * index (round HG5A, hdfs-adhoc-21: a DataNode actor's {@code run()}
+         * occurrence, entered in the startup window under the test's
+         * request, sent each turn's heartbeat at {@code
+         * offerService@0/sendHeartBeat@0}, one producer endpoint for three
+         * turns, so the NameNode served all three under one anchor).
+         */
+        private long countingRoot() {
+            Region running = activeRegion();
+            return running != null ? running.root : Lineage.rootToken();
         }
 
         /**
@@ -403,8 +421,8 @@ public final class Identity {
          * outermost hop first.
          *
          * <p>Counts live for the level's lifetime within one root hop, so
-         * the thread base level restarts k at each new root (IDENTITY
-         * §3).  One map per hop, not one cleared map: a hop opened inside
+         * the thread base level restarts k at each new root where no
+         * occurrence runs (IDENTITY §3, {@link State#countingRoot}).  One map per hop, not one cleared map: a hop opened inside
          * this level (a daemon tick inside a request) must hand the
          * enclosing hop's counts back untouched.  Trap: keying by scope
          * token instead restarts counts at every request sent.</p>
@@ -1259,6 +1277,7 @@ public final class Identity {
             Region entered = state.region();
             if (entered != null) {
                 entered.occurrence = address;
+                entered.root = Lineage.rootToken();
                 entered.of(region, state.top().receiver);
             }
             // Where a prefix focusing this occurrence is cut.
@@ -1639,6 +1658,12 @@ public final class Identity {
         private Region before;
         /** The lineage token of the hop naming it. */
         private long namedBy;
+        /**
+         * The root hop this entry's occurrence was opened or named under:
+         * its events count under it, whatever root hop opens inside it
+         * ({@link State#countingRoot}).
+         */
+        private long root;
 
         private Region(int base) {
             this.base = base;
@@ -1658,12 +1683,14 @@ public final class Identity {
             was.unnamed = unnamed;
             was.branchOrdinals = branchOrdinals;
             was.window = window;
+            was.root = root;
             before = was;
             namedBy = hop;
             occurrence = address;
             unnamed = false;
             branchOrdinals = new HashMap<String, Integer>();
             window = RecordingWindow.index();
+            root = Lineage.rootToken();
         }
 
         /** The hop ended: the entry is what it was before it. */
@@ -1672,6 +1699,7 @@ public final class Identity {
             unnamed = before.unnamed;
             branchOrdinals = before.branchOrdinals;
             window = before.window;
+            root = before.root;
             before = null;
             namedBy = 0L;
         }
