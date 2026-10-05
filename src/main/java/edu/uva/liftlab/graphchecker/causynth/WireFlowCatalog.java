@@ -49,9 +49,9 @@ public final class WireFlowCatalog {
         for (Row row : rows()) {
             if (!applies(row.json, methods)) {
                 System.err.println("causynth: communication mapping "
-                        + string(row.json, "id") + " (" + row.at + ") names no"
-                        + " method this program holds: not this program's"
-                        + " flow");
+                        + string(row.json, "id") + " (" + row.at + ") names a"
+                        + " method this program does not hold: not this"
+                        + " program's flow");
                 continue;
             }
             try {
@@ -66,11 +66,12 @@ public final class WireFlowCatalog {
 
     /**
      * Whether a declared flow is this program's: a system's mapping file
-     * declares its protocol's flows once for every case, and a program that
-     * holds none of a row's methods (producer, consumer, frame methods)
-     * carries none of its values.  A row holding some of them and not others
-     * is a broken declaration, refused by {@link #parse} by name: a skipped
-     * flow would read as "never sent".
+     * declares its protocol's flows once for every case, and a flow joins a
+     * producer and a consumer, so a program that does not hold every method
+     * a row names (producer, consumer, frame methods; concrete) carries
+     * none of its values end to end.  Such a row is skipped by name in the
+     * static pass's log; a row the program holds whole is parsed, and
+     * refused by name if it is malformed.
      */
     static boolean applies(JsonObject row, Map<String, SootMethod> methods) {
         List<String> named = new ArrayList<>();
@@ -82,9 +83,11 @@ public final class WireFlowCatalog {
             named.add(string(row, side + "FrameMethod"));
         }
         for (String method : named) {
-            if (!method.isEmpty() && methods.containsKey(method)) return true;
+            if (method.isEmpty()) continue;
+            SootMethod held = methods.get(method);
+            if (held == null || !held.isConcrete()) return false;
         }
-        return false;
+        return true;
     }
 
     private static final class Row {
