@@ -451,6 +451,12 @@ final class RootMint {
             String sourceId, Object owner, String fieldSignature) {
         // No owner on this entry is not a gap.
         if (owner == null) return false;
+        // A native reproduction writes the value its plant assigns; no
+        // engine runs there.
+        if (RecordingPlant.planting()) {
+            RecordingPlant.hook(safe(sourceId), owner, safe(fieldSignature));
+            return false;
+        }
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (mintConfiguredSource(active, safe(sourceId), owner,
                 safe(fieldSignature))) {

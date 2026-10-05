@@ -37,6 +37,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -1140,6 +1141,102 @@ public class ConfirmMainTest {
             } catch (ConfirmMain.Refused refused) {
                 assertEquals(clock[0] + ": " + refused.getMessage(), null,
                         clock[2]);
+            }
+        }
+    }
+
+    /**
+     * A native run's plant is CONFIRM's world: a ROOT per root it assigns
+     * (here a tree hook's, at the occurrence the recording mints it at), the
+     * ORDER rows CONFIRM holds, TARGET rows at the anchor, each numbered.  A
+     * world the recording weave cannot plant is refused by name: a clock
+     * skew, a root of no plantable category, or nothing at all.
+     */
+    @Test
+    public void aNativePlantIsConfirmsWorld() throws Exception {
+        Path iteration = iteration();
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        Files.write(iteration.resolve("execution_task_plan.jsonl"),
+                new byte[0]);
+        Path scopeMap = folder.newFile("static_scope_map.jsonl").toPath();
+        JsonObject site = new JsonObject();
+        site.addProperty("schemaVersion", 1);
+        site.addProperty("kind", StaticScopeMap.SITE_KIND);
+        site.addProperty("role", StaticScopeMap.TARGET_SITE);
+        site.addProperty("regionId", anchor.regionId());
+        site.addProperty("siteId", "<a.Handler: void handle()>#u8");
+        JsonArray guards = new JsonArray();
+        guards.add("<a.Handler: void handle()>#u5");
+        site.add("guards", guards);
+        JsonArray arms = new JsonArray();
+        arms.add(false);
+        site.add("guardOutcomes", arms);
+        Files.write(scopeMap, Collections.singletonList(site.toString()),
+                StandardCharsets.UTF_8);
+        // The world, then the claim's moved root; null: refused.
+        Object[][] worlds = {
+                {"{}", "HDFS.SERIAL", "ROOT HOOK HDFS.SERIAL " + mint.id()
+                        + " 119981"},
+                {"{\"CLOCK.gone\":\"7000\"}", "HDFS.SERIAL", null},
+                // A marker no plan input calls: no site to answer at.
+                {"{}", "M_Z_fault", null},
+        };
+        for (Object[] row : worlds) {
+            JsonObject planted = world.deepCopy();
+            planted.add("rootAssignments", new JsonObject());
+            planted.add("rootMints", new JsonObject());
+            planted.add("clockDeltas", JsonParser.parseString(
+                    (String) row[0]).getAsJsonObject());
+            RowCodec.writeJsonl(focus, Collections.singletonList(planted));
+            Path claim = claim((String) row[1], "119981");
+            Path plant = folder.newFile().toPath();
+            try {
+                ConfirmMain.writePlant(iteration, claim, manifest(), scopeMap,
+                        plant);
+                if (row[2] == null) fail("planted " + Arrays.toString(row));
+            } catch (ConfirmMain.Refused refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .startsWith("NATIVE_PLANT_UNSUPPORTED"));
+                assertEquals(refused.getMessage(), null, row[2]);
+                continue;
+            }
+            List<JsonObject> rows = RowCodec.readJsonl(plant);
+            JsonObject root = rows.get(0);
+            assertEquals(row[2], root.get("kind").getAsString() + " "
+                    + root.get("category").getAsString() + " "
+                    + root.get("rootId").getAsString() + " "
+                    + root.get("occurrence").getAsString() + " "
+                    + root.get("value").getAsString());
+            // CONFIRM's own ORDER rows, as its replay is held to them.
+            Path out = folder.newFolder().toPath();
+            ConfirmMain.write(iteration, claim, manifest(), out);
+            List<JsonObject> orders = new ArrayList<JsonObject>();
+            for (JsonObject edge : RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE))) {
+                if ("ORDER".equals(edge.get("kind").getAsString())) {
+                    orders.add(edge);
+                }
+            }
+            assertFalse("the closure orders nothing", orders.isEmpty());
+            List<JsonObject> held = new ArrayList<JsonObject>();
+            for (JsonObject planted2 : rows) {
+                if (!"ORDER".equals(planted2.get("kind").getAsString())) {
+                    continue;
+                }
+                JsonObject order = planted2.deepCopy();
+                order.remove("row");
+                held.add(order);
+            }
+            assertEquals(orders, held);
+            JsonObject target = rows.get(rows.size() - 1);
+            assertEquals("TARGET " + anchor.id() + " false",
+                    target.get("kind").getAsString() + " "
+                            + target.get("occurrence").getAsString() + " "
+                            + target.get("value").getAsBoolean());
+            for (int index = 0; index < rows.size(); index++) {
+                assertEquals(index, rows.get(index).get("row").getAsInt());
             }
         }
     }
