@@ -52,7 +52,7 @@ public final class RegionViewRemovalSmoke {
         require(removed.contains("\"operation\":\"SNAPSHOT_BASE\""), removed);
         // One REMOVE version per expired entry, on the map's location -- not
         // on a location of the iterator's own.
-        require(count(removed, "\"versionKind\":\"STATE_REMOVE\"") == 1,
+        require(count(removed, "\"versionKind\":\"STATE_REMOVE\",") == 1,
                 "the view removal did not reach the map's chain: " + removed);
         require(removed.contains("\"operation\":\"REMOVE\""), removed);
         // The later get of the removed key resolved over the log.

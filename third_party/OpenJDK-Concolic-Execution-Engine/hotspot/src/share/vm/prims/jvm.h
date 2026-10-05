@@ -172,7 +172,7 @@ JVM_ObserveField(JNIEnv *env, jclass ignored, jobject owner,
 
 JNIEXPORT jint JNICALL
 JVM_ObserveContainer(JNIEnv *env, jclass ignored, jobject value,
-                     jboolean mutation);
+                     jboolean after_mutation);
 
 JNIEXPORT void JNICALL
 JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src_pos,

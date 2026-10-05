@@ -854,16 +854,17 @@ public final class System {
      * wrapper of one, which stands for its container -- with the content it
      * holds now, so a later mutation is versioned even when everything it
      * stores is concrete, and a query names the version it read.  It adds no
-     * symbolic input.  Outside every region it starts nothing; there a
-     * {@code mutation} marks a log that stands as no longer naming every
-     * writer.
+     * symbolic input.  Called {@code afterMutation} -- just after a mutation
+     * of the container ran -- it starts nothing; outside every region it
+     * then marks a log that stands as no longer naming every writer, the
+     * mutation having run as bytecode no model saw.
      *
      * @return 0 when the log stands (started here or before); -1 without a
      *         concolic context on this thread; -2 for a null argument; -12
      *         when the value is no modeled container nor stands for one
      */
     public static native int observeContainer(Object container,
-                                              boolean mutation);
+                                              boolean afterMutation);
 
     /**
      * Copies an array from the specified source array, beginning at the

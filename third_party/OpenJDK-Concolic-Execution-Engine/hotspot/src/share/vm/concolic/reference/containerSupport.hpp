@@ -259,19 +259,19 @@ bool read_concrete_members(oop container, std::vector<oop> *keys,
                            bool *over_bound);
 
 /**
- * Installs a SNAPSHOT_BASE chain stating what `container` holds right now,
- * and reports how many members it stated.
+ * Builds, in `*chain`, a SNAPSHOT_BASE chain stating what `container` holds
+ * right now, and reports how many members it stated; the caller whose
+ * INITIAL starts the log installs it (start_log).
  *
- * Same node shape the Java-driven offer used to install, so nothing
- * downstream changes: a bare SNAPSHOT_BASE for an empty container, one
- * PUT/APPEND per member on top of it.  Returns -1 and sets
- * `*unsupported_class` when the class cannot be walked, and -2 when the
- * member count is over the engine's snapshot bound -- both of which are
+ * A bare SNAPSHOT_BASE for an empty container, one PUT/APPEND per member on
+ * top of it.  Returns -1 and sets `*unsupported_class` when the class
+ * cannot be walked, or when another thread mutated the container during the
+ * walk (`SNAPSHOT_RACED`: its modCount, baseCount or head/tail moved), and
+ * -2 when the member count is over the engine's snapshot bound -- each
  * published as a stated refusal rather than as an empty container.
  */
-int install_receiver_snapshot(oop container, const char *shape,
-                              bool *truncated,
-                              const char **unsupported_class);
+int receiver_snapshot(oop container, const char *shape, bool *truncated,
+                      const char **unsupported_class, Expression **chain);
 
 /**
  * Fills `out` with what `container` holds, for the INITIAL version that
@@ -286,7 +286,19 @@ int install_receiver_snapshot(oop container, const char *shape,
  */
 void snapshot_for_receiver(oop container,
                            SharedFieldVersions::InitialSnapshot *out,
-                           bool receiver_is_base);
+                           bool receiver_is_base, Expression **chain);
+
+/**
+ * Starts `container`'s log at `location` with an INITIAL of `base` and
+ * `snapshot`, unless one stands; the one start every log of a container
+ * makes.  A HashSet's map becomes the set (an iterator of the set walks
+ * it), and the winner alone installs the snapshot `chain` it walked as the
+ * container's state.  Returns the INITIAL's version id, 0 when a log stood.
+ */
+jlong start_log(oop container, const SharedFieldVersions::Location &location,
+                Expression *base,
+                const SharedFieldVersions::InitialSnapshot &snapshot,
+                Expression *chain);
 
 /**
  * Starts `container`'s log with the contents it holds right now, from a
@@ -377,8 +389,11 @@ bool guarded_mutation(const std::string &callee);
  * An iterator or a view the program built before the log began is no alias
  * the model knows: run as bytecode, its remove() would leave the chain of a
  * tracked state stale, with no trace (BlockTokenSecretManager
- * .removeExpiredKeys walks allKeys.entrySet().iterator()).  A query through
- * such an object stays bytecode: its positions began before the log did.
+ * .removeExpiredKeys walks allKeys.entrySet().iterator()); a list's, a
+ * deque's and a HashSet's iterators reach theirs through BACKING_FIELDS and
+ * the set's map alias (start_log).  A query through such an object stays
+ * bytecode: its positions began before the log did.  A container a model
+ * abandoned (no state, an incomplete log) is not taken again.
  */
 bool admits(MethodSymbolizerHandle &handle, bool callback);
 // Whether a modeled container call changes what its container holds (the
@@ -414,8 +429,9 @@ bool mark_state_gap(oop container, const char *reason);
 // element (D7).
 void publish_attached_state(oop destination, Expression *attached);
 // An operation the model cannot follow reached a container: its writer set is
-// marked incomplete (mark_state_gap) and its modeled state is dropped, so it
-// runs concretely until a modeled operation roots it again.  The thread's
+// marked incomplete (mark_state_gap) and its modeled state is dropped -- the
+// backing container's, for an iterator or view no model aliased -- so it
+// runs concretely until a symbolic operation roots it again.  The thread's
 // symbolic execution goes on: only this container left the model.  Aborting
 // the thread instead lost every other value it carried (SOLR-18413: the
 // update whose expiry clock decides the rule, at replicas.removeIf).

@@ -485,13 +485,18 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
   record.read_event_id = plan->read_event_id;
   record.reader = plan->reader;
   record.observed_version_id = version.version_id;
+  record.observed_version_kind = version_label(version);
   record.observed_exact = plan->observed_exact;
   record.writer_set_complete = plan->writer_set_complete;
   record.unnamed_writer = plan->unnamed_writer;
   record.java_type = loaded.stated() ? type2char(loaded.type) : 0;
-  slot->reads.push_back(record);
-  if (slot->reads.size() > MAX_READS_PER_LOCATION) {
-    slot->reads.erase(slot->reads.begin());
+  // A ring: past the bound the newest replaces the oldest in place, so a
+  // hot location's every read costs one slot, never a shift of the log.
+  if (slot->reads.size() < MAX_READS_PER_LOCATION) {
+    slot->reads.push_back(record);
+  } else {
+    slot->reads[slot->read_head] = record;
+    slot->read_head = (slot->read_head + 1) % MAX_READS_PER_LOCATION;
     slot->read_log_complete = false;
   }
   return true;
@@ -1238,7 +1243,9 @@ bool SharedFieldVersions::write_versions_envelope(
       serialization_truncated = true;
       break;
     }
-    const ReadRecord &read = slot.reads[index];
+    // Oldest first: a full ring starts at its head.
+    const ReadRecord &read =
+        slot.reads[(slot.read_head + index) % slot.reads.size()];
     writer.StartObject();
     writer.Key("readEventId");
     writer.Int64(read.read_event_id);
@@ -1251,9 +1258,15 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.Key("regionEnterEventId");
     writer.Int64(read.reader.region_enter_event_id);
     write_site(writer, read.reader.site);
-    // What the plan chose, under the read-from node's names.
+    // What the plan chose, under the read-from node's names and in its
+    // shape (the node adds the version's expression).
     writer.Key("observedVersion");
+    writer.StartObject();
+    writer.Key("fieldVersionId");
     writer.Int64(read.observed_version_id);
+    writer.Key("versionKind");
+    writer.String(read.observed_version_kind.c_str());
+    writer.EndObject();
     writer.Key("observedExact");
     writer.Bool(read.observed_exact);
     writer.Key("writerSetComplete");

@@ -672,13 +672,15 @@ public:
    * One resolved read, kept so that a consumer can audit the decision: what
    * its plan chose, as its read-from node states it, so a read whose value
    * reached no published expression (a reference compared with a constant)
-   * is still a read of its version.  `java_type` is the loaded word's type
+   * is still a read of its version.  `observed_version_kind` is that
+   * version's label (version_label).  `java_type` is the loaded word's type
    * letter, 0 where the read loaded no word (a container's state).
    */
   struct ReadRecord {
     jlong read_event_id;
     Attribution reader;
     jlong observed_version_id;
+    std::string observed_version_kind;
     bool observed_exact;
     bool writer_set_complete;
     bool unnamed_writer;
@@ -691,14 +693,17 @@ public:
   /** One location's retained history; guarded by its stripe. */
   struct Slot {
     VersionList versions;
+    // A ring of at most MAX_READS_PER_LOCATION; `read_head` is its oldest
+    // once full (0 before).
     std::vector<ReadRecord> reads;
+    size_t read_head;
     bool writer_set_complete;
     bool read_log_complete;
     // Every reason, first first; see the retention note above.
     std::vector<std::string> incomplete_reasons;
     bool unnamed_writer;
     Slot()
-        : writer_set_complete(true), read_log_complete(true),
+        : read_head(0), writer_set_complete(true), read_log_complete(true),
           unnamed_writer(false) {}
   };
 
