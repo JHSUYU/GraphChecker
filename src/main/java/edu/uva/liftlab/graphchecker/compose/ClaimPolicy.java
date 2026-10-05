@@ -212,7 +212,8 @@ public final class ClaimPolicy {
      * like any other (over-approximate, confirm strictly); an enumerated
      * witness that is the run as recorded is skipped ({@link #asRecorded}),
      * and a corpus a BLOCKING gap already withholds a verdict from names no
-     * witness.  A sat model that
+     * witness; the witness is refined as a named claim's is ({@link
+     * #leastClocks}, {@link #withMargin}).  A sat model that
      * selects no disjunct is a defect, and so is a formula satisfiable only
      * by moving a configuration whose plant leaves reads of its key at the
      * recording's value ({@link #unplanted}): a world no replay can plant
@@ -291,9 +292,15 @@ public final class ClaimPolicy {
                             + "are planted"));
             return new Decision(claimWith(claim, gaps), outcomes, formula);
         }
+        // Published as a named claim is: under every clock pin it can keep,
+        // each jump it still makes moved with room.
+        Outcome refined = withMargin(composition, asks, leastClocks(
+                composition, asks, witness, composition.clockCells(), false,
+                gaps), gaps);
+        outcomes.set(outcomes.indexOf(witness), refined);
         return new Decision(Claim.of(ClaimKind.FORMULA_SAT,
-                witness.valuation().ordinal(),
-                movedRoots(composition, witness), claim.polarityDecides(),
+                refined.valuation().ordinal(),
+                movedRoots(composition, refined), claim.polarityDecides(),
                 gaps), outcomes, formula);
     }
 
@@ -1143,15 +1150,9 @@ public final class ClaimPolicy {
                                        List<String> cells) {
         List<String> pinned = new ArrayList<String>();
         for (String cell : cells) {
-            String before = composition.clockBefore().get(cell);
-            String reading = integralLiteral(Long.toString(
-                    composition.clockReadings().get(cell)));
-            String runs = before == null
-                    ? "(= " + cell + " " + reading + ")"
-                    : "(= (- " + cell + " " + reading + ") (- " + before + " "
-                    + integralLiteral(Long.toString(composition
-                    .clockReadings().get(before))) + "))";
-            pinned.add("(assert (! " + runs + " :named clock_runs_on__"
+            pinned.add("(assert (! " + Composer.clockStep(cell,
+                    composition.clockReadings(), composition.clockBefore(),
+                    0) + " :named clock_runs_on__"
                     + ArtifactIO.digest(cell, 10) + "))");
         }
         return pinned;

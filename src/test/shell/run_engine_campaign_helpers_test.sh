@@ -851,7 +851,9 @@ done
 # campaign and the pre-screen: every campaign slices and records its own.
 # 53: `recording_max_trace_mb` joined it: the most trace a recording may
 # write before SEED ends it, RECORDING_BOUND.
-[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
+# 54: `campaign_max_claims` joined it: how many times the final stages decide
+# a claim again after CONFIRM refuted one.
+[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -3582,6 +3584,16 @@ campaign_reserve_s=120
 [[ -s "${campaign_final}/claim.json" \
     && ! -e "${campaign_final}/refuted/0001" ]] \
   || fail "a claim that ends the campaign left final/"
+# Re-decision has a named bound: past campaign_max_claims claims decided
+# again, the refuted claim is published, budget or not.
+campaign_reserve_s=20
+campaign_max_claims=1
+next_claim false
+next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
+  && fail "a claim past campaign_max_claims was decided again"
+[[ "${next_out}" == *'campaign_max_claims=1'* \
+    && ! -e "${campaign_final}/refuted/0001" ]] \
+  || fail "the re-decision bound was not named: ${next_out}"
 unset -f next_claim
 reset_config
 

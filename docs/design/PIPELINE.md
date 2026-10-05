@@ -1505,8 +1505,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      valuation. Unsat: `NO_SUPPORTED_WITNESS` (UNSAT_CLOSED). Undecided within the budget: BLOCKING
      (a defect, never a refutation). Sat: `FORMULA_SAT` at the first enumerated witness a replay can
      plant, else at the formula's own model (`Composition#modelValuation`: each declared root at the
-     model's value), composer imprecision until CONFIRM says otherwise, planted and judged like any
-     claim, a refutation excluded before the claim is decided again; an enumerated witness that is
+     model's value), refined as a named claim is (`leastClocks`, `withMargin`), composer
+     imprecision until CONFIRM says otherwise, planted and judged like any claim, a refutation
+     excluded before the claim is decided again; an enumerated witness that is
      the run as recorded (the seed's path, no root moved, no clock jumped, no arm re-paired) is
      skipped, and a corpus a BLOCKING gap already withholds a verdict from names no witness; a sat
      model selecting no path,
@@ -1669,13 +1670,19 @@ confirmation's `reason`. Every later composition of the iteration excludes each
 (`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` asserts that the path's
 selector, those arms (an arm's selector is `<kind>__<path ordinal>__<digest>`, taken at the path's
 ordinal in this query), the valuation's non-clock roots (named as the valuations name them,
-`Corpus#anyRoot`) and the moved clock cells at their instants are not all true at once, a
+`Corpus#anyRoot`) and the claim's clock region are not all true at once -- a region, not an
+instant: each clock cell the claim moved jumped the way it did, by any amount, and every other
+cell of the query runs on from the cell before it (`Composer#clockStep`, the spelling of a
+witness's run-on pins too); an instant alone excluded one point, and the next model sat a tick
+beside it --, a
 DIAGNOSTIC `CLAIM_REFUTED` gap names it, and a model whose path or arm the query no longer composes
 is not stated. During EXPLORE a refuted witness attempt lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a refuted
 `SAT_CANDIDATE` whose model is refuted once (recorded, and not one the composition was told was
-refuted already) and the campaign's budget has room for its reserve (`campaign_claim_room`), its
-artifacts move to `final/refuted/NNNN/` and COMPOSE, SOLVE, DECIDE and CONFIRM run again. The
+refuted already), the campaign's budget has room for its reserve (`campaign_claim_room`) and
+fewer than `campaign_max_claims` (8) claims were decided again (past it the refuted claim is
+published, the bound named in the log), its artifacts move to `final/refuted/NNNN/` and COMPOSE,
+SOLVE, DECIDE and CONFIRM run again. The
 final CONFIRM of the model the exploration's witness attempt confirmed (the same model,
 `campaign_claim_model`: kind, path, arms, valuation and moved roots) takes that attempt's
 `confirm.json` and runs no replay. EMIT publishes every refuted claim (`result.json`

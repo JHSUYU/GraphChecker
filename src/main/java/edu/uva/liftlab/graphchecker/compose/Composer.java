@@ -1021,7 +1021,7 @@ public final class Composer {
         Map<String, String> clockBefore = new LinkedHashMap<String, String>();
         clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
-        refutations(disjuncts);
+        refutations(disjuncts, clockCells, clockReadings, clockBefore);
         lowering.assertIdentitiesDistinct();
         // A manifest that predates readings (schema 1) states none: a root
         // such a session read and minted none guards none of its arms.
@@ -3062,15 +3062,22 @@ public final class Composer {
     }
 
     /**
-     * Every model CONFIRM refuted ({@link Refutations}), excluded: its path,
-     * the arms it chose there, its valuation and the clock cells it moved,
-     * at the model's instants, are, together, no model of this formula, so a
-     * claim over it is another model or none.  A model whose path or arm
-     * this corpus no longer composes cannot recur and is not stated; a root
-     * or cell this query does not name constrains nothing.  Roots are named
-     * as the valuations name them ({@link Corpus#anyRoot}).
+     * Every claim CONFIRM refuted ({@link Refutations}), excluded: its path,
+     * the arms it chose there, its valuation and its clocks' region are,
+     * together, no model of this formula, so a claim over it is another
+     * model or none.  A clock is the claim's region, not its instant: each
+     * cell the claim moved jumped the way it did, by any amount, and every
+     * other cell runs on from the cell before it, as the claim's replay ran
+     * it ({@link #clockStep}) -- an instant alone excluded one point, and
+     * the next model sat a tick beside it.  A model whose path or arm this
+     * corpus no longer composes cannot recur and is not stated; a root or
+     * cell this query does not name constrains nothing.  Roots are named as
+     * the valuations name them ({@link Corpus#anyRoot}).
      */
-    private void refutations(List<Disjunct> disjuncts) {
+    private void refutations(List<Disjunct> disjuncts,
+                             List<String> clockCells,
+                             Map<String, Long> clockReadings,
+                             Map<String, String> clockBefore) {
         List<Refutations.Refuted> refuted;
         try {
             refuted = Refutations.read(corpus.iteration());
@@ -3108,12 +3115,6 @@ public final class Composer {
                 pinned.put(row.symbol(), smtLiteral(root.getValue(),
                         sortOf(row)));
             }
-            // A moved clock is named by its cell's symbol.
-            for (Map.Entry<String, String> cell : model.moved.entrySet()) {
-                if (corpus.anyRoot(cell.getKey()) != null) continue;
-                pinned.put(cell.getKey(), smtLiteral(cell.getValue(),
-                        Sort.INT));
-            }
             for (Map.Entry<String, String> pin : pinned.entrySet()) {
                 if (pin.getValue().isEmpty()
                         || !lowering.declared(pin.getKey())) {
@@ -3121,6 +3122,33 @@ public final class Composer {
                 }
                 conjuncts.add("(= " + pin.getKey() + " " + pin.getValue()
                         + ")");
+            }
+            // A moved clock is named by its cell's symbol, at the model's
+            // instant: its skew, and each unmoved cell's that of the cell
+            // before it, give every cell's step.
+            Map<String, Long> skews = new LinkedHashMap<String, Long>();
+            for (String cell : clockCells) {
+                String before = clockBefore.get(cell);
+                Long previous = before == null ? Long.valueOf(0L)
+                        : skews.get(before);
+                Long skew = previous;
+                String instant = model.moved.get(cell);
+                if (instant != null) {
+                    try {
+                        skew = Long.parseLong(Composition.modelValue(instant))
+                                - clockReadings.get(cell);
+                    } catch (NumberFormatException notAnInstant) {
+                        skew = null;
+                    }
+                }
+                skews.put(cell, skew);
+                if (skew == null || previous == null
+                        || !lowering.declared(cell) || (before != null
+                        && !lowering.declared(before))) {
+                    continue;
+                }
+                conjuncts.add(clockStep(cell, clockReadings, clockBefore,
+                        Long.signum(skew - previous)));
             }
             lowering.assertNamed("refuted_claim__" + ordinal++,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
@@ -3131,6 +3159,27 @@ public final class Composer {
                             : " moving " + model.moved)
                             + ", so it is excluded: " + model.reason);
         }
+    }
+
+    /**
+     * One clock cell's step against the cell before it on its node's clock
+     * ({@code before}): its skew off its reading less that cell's -- {@code
+     * sign} 0 equal (the cell runs on), 1 larger (it jumped later), -1
+     * smaller (earlier) -- or the cell against its reading where none is
+     * before it.  The one spelling of a clock's step, for a witness's pins
+     * ({@code ClaimPolicy#runsOn}) and a refuted claim's region ({@link
+     * #refutations}).
+     */
+    static String clockStep(String cell, Map<String, Long> readings,
+                            Map<String, String> before, int sign) {
+        String relation = sign == 0 ? "=" : sign > 0 ? ">" : "<";
+        String reading = integralLiteral(Long.toString(readings.get(cell)));
+        String previous = before.get(cell);
+        return previous == null
+                ? "(" + relation + " " + cell + " " + reading + ")"
+                : "(" + relation + " (- " + cell + " " + reading + ") (- "
+                + previous + " " + integralLiteral(Long.toString(
+                readings.get(previous))) + "))";
     }
 
     /** The case's declaration where there is one, the mint's otherwise. */

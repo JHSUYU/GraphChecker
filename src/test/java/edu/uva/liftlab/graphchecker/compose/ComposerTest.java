@@ -808,6 +808,51 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A refuted claim excludes its clocks' REGION, not their instants: the
+     * jump it made, by any amount the same way, with every other cell
+     * running on.  An instant alone excluded one point, and the next model
+     * sat a tick beside it.
+     */
+    @Test
+    public void aRefutedClockClaimExcludesItsJumpNotItsInstant()
+            throws Exception {
+        Path iteration = folder.newFolder("refuted-clock").toPath();
+        Session skewed = new Session(iteration, "s0", false);
+        skewed.clock("700");
+        skewed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        skewed.target("(> " + CLOCK + " 1000)", false, true);
+        skewed.write();
+        ClaimPolicy.Decision first = ClaimPolicy.decide(
+                compose(iteration, 4), solver());
+        assertEquals(ClaimKind.CLOCK_SKEW, first.claim().kind());
+        ClaimPolicy.Outcome claimed = first.outcomes().get(
+                first.claim().valuationOrdinal());
+        JsonObject model = new JsonObject();
+        model.addProperty("pathId", claimed.selected().path().pathId);
+        JsonArray arms = new JsonArray();
+        for (String arm : claimed.selectedArms().keySet()) arms.add(arm);
+        model.add("arms", arms);
+        JsonObject moved = new JsonObject();
+        for (Map.Entry<String, String> cell
+                : first.claim().movedRoots().entrySet()) {
+            moved.addProperty(cell.getKey(), cell.getValue());
+        }
+        model.add("moved", moved);
+        JsonObject row = new JsonObject();
+        row.add("model", model);
+        row.addProperty("reason", "the run took the healthy arm");
+        RowCodec.writeJsonl(iteration.resolve("refuted_claims.jsonl"),
+                Collections.singletonList(row));
+        Composer.Composition next = compose(iteration, 4);
+        assertTrue(next.body(), next.body().contains("refuted_claim__0"));
+        ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
+        assertEquals("every later instant is the jump CONFIRM refuted",
+                "unsat", again.formula().status());
+        assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
+    }
+
     // ------------------------------------------------------------------
     // 2. Two producers on one port are two interactions, two families.
     // ------------------------------------------------------------------

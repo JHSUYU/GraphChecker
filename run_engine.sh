@@ -204,6 +204,11 @@ workflow_config_keys=(
   # seconds: one COMPOSE and one CONFIRM, before the campaign has measured
   # either (campaign_reserve).
   "campaign_reserve_s CAUSYNTH_CAMPAIGN_RESERVE_S krp 600"
+  # How many times the final stages decide a claim again after CONFIRM
+  # refuted one (campaign_next_claim): each refutation excludes that claim's
+  # region (compose.Refutations), and past this many the last refuted claim
+  # is published as it stands, by name, however much budget is left.
+  "campaign_max_claims CAUSYNTH_CAMPAIGN_MAX_CLAIMS krp 8"
   # The wall clock the SEED replay may take, as a multiple of how long the
   # recording's workload ran (SEED times it), and never less than one
   # focused replay's replay_timeout_s.  Unbounded, a seed replay that
@@ -660,7 +665,8 @@ validate_config() {
       recording_max_trace_mb schedule_max_jobs region_path_max_waves \
       compose_max_valuations causynth_loop_default_bound \
       obligation_memory_mb reproduce_runs \
-      reproduce_time_factor campaign_budget_s campaign_reserve_s; do
+      reproduce_time_factor campaign_budget_s campaign_reserve_s \
+      campaign_max_claims; do
     require_positive_integer "${key}"
   done
   # A budget its reserve takes whole ends the exploration before it begins.
@@ -5436,10 +5442,11 @@ campaign_reserve() {
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE
 # the program refuted, its model is refuted once -- recorded, so the next
 # composition excludes it, and not a model it was told was refuted already
-# -- and the budget has room.  The refuted claim's artifacts move to
+# -- the budget has room, and fewer than campaign_max_claims claims were
+# decided again.  The refuted claim's artifacts move to
 # final/refuted/NNNN/ first, so final/ holds the claim EMIT publishes.
 campaign_next_claim() {
-  local iteration_dir=$1 dir name model seen=0
+  local iteration_dir=$1 dir name model seen=0 decided
   [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       == SAT_CANDIDATE && -s "${campaign_final}/confirm.json" \
     && "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true ]] \
@@ -5458,9 +5465,14 @@ not once: the next composition could repeat it, so there is no next claim"
 has no room for another claim"
     return 1
   fi
-  dir=$(printf '%s/refuted/%04d' "${campaign_final}" \
-    "$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 2>/dev/null \
-      | grep -c '' || true)")
+  decided=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
+    2>/dev/null | grep -c '' || true)
+  if (( decided >= campaign_max_claims )); then
+    campaign_log "the claim was decided again ${decided} time(s), the bound \
+(campaign_max_claims=${campaign_max_claims}): the refuted claim is published"
+    return 1
+  fi
+  dir=$(printf '%s/refuted/%04d' "${campaign_final}" "${decided}")
   mkdir -p "${dir}"
   for name in candidate.smt2 candidate_composition_manifest.json claim.json \
       compose.log confirm confirm.json; do
