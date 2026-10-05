@@ -34,8 +34,10 @@ public final class VmRows {
      * incomplete set without that verification leaves the version one
      * candidate among writers nobody stated (SOLR-18406: a list read at its
      * CLEAR version, refilled since by an unmodeled call, was iterated for
-     * three names); such a read states no version, a scalar is pinned to
-     * what it returned and a container state is refused.  One lost version
+     * three names); such a read states no version: its producer is
+     * unstated, so a scalar is held at what it returned and a container
+     * state at an opaque base its queries' answers pin ({@code
+     * compose.SmtLowering#bind}).  One lost version
      * used to leave every later read of its location unjoined, though each
      * returned exactly what it named (unobs/: 1316 reads after one
      * UNOBSERVED).  An unnamed writer gates alternative writers

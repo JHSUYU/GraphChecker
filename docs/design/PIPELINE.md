@@ -1108,7 +1108,9 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   alike, where a read of any location with write rows moves, `SmtLowering#forSession`) -- FREE, the
   read unconstrained and named with what it rests on (`SmtLowering#unbound`, a `Composer.Concrete`
   FREE in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value
-  the row states (a version no write row states: HELD, named "producer unstated"), else REFUSE
+  the row states (a version no write row states: HELD, named "producer unstated"; a whole container's
+  state, `MAP_STATE`, states no word, so it is held as an opaque base whose queries each answer what
+  their call returned, `SmtLowering#answered`, hdfs-adhoc-32's `bpByBlockPoolId`), else REFUSE
   (`UNSTATED_VALUE`); a write of a frame whose producer moves is FREE before any join; dropped, the
   join raises nothing (no refusal, side condition or gap); what a read
   row's binding required

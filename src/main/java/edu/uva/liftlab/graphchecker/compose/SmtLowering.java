@@ -193,6 +193,10 @@ public final class SmtLowering {
         }
     }
 
+    /** The location kind of a whole container's state, which a read of
+     *  states no word ({@code runtime.SharedStateCapture}). */
+    private static final String CONTAINER_STATE = "MAP_STATE";
+
     /** How a refused attach's row names the VM handle it refused
      *  ({@code runtime.WireExport#refused}). */
     private static final Pattern REFUSED_HANDLE =
@@ -1826,7 +1830,10 @@ public final class SmtLowering {
      * joined, so a STATE family that binds the symbol moves it; else the
      * value, never a pinned symbol (the projection that lowered is what the
      * read returned).  Refused, the MINT; then the symbol its row was
-     * pinned to; then the value the node states it returned.
+     * pinned to; then the value the node states it returned -- for a whole
+     * container's state ({@code MAP_STATE}), which states no word, an
+     * opaque base: each query over it answers what its call returned
+     * ({@link #answered}), so the state is held at what the run saw of it.
      */
     private Term guardedReadTerm(JsonObject expression, Sort expected,
                                  String origin) {
@@ -1866,9 +1873,22 @@ public final class SmtLowering {
             @Override
             public Term pinned() {
                 String pinned = pinnedSymbol(key, version);
-                return pinned != null
-                        ? symbolTerm(symbolNode(pinned, javaType), expected)
-                        : statedValue(returned(), javaType);
+                if (pinned != null) {
+                    return symbolTerm(symbolNode(pinned, javaType), expected);
+                }
+                Term stated = statedValue(returned(), javaType);
+                return stated != null || !wholeUnwrittenState()
+                        ? stated : leaf(expected, javaType);
+            }
+
+            /** Whether the read is of a whole container's state (not a
+             *  cell of it) at a version no write row states. */
+            private boolean wholeUnwrittenState() {
+                Sort read = JavaSmtSorts.sortOfJava(javaType);
+                return CONTAINER_STATE.equals(primitiveString(location,
+                        "locationKind"))
+                        && (read == Sort.REF || read.containerState())
+                        && join.writeExpression(key, version) == null;
             }
 
             @Override
