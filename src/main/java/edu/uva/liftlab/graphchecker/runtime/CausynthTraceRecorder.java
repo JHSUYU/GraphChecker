@@ -1526,13 +1526,14 @@ public final class CausynthTraceRecorder {
         // Parsed once: planner reads DECLARED_SITE, finalizer WRITE_SITE.
         StaticScopeMap scopeMap = readScopeMap(target.scopeMap);
         List<Map<String, Object>> graph = MapFields.readRows(target.graph);
+        Map<String, String> fieldCalls =
+                RuntimeSelectedRegionFinalizer.fieldAccessingCalls(graph,
+                        scopeMap);
         RuntimeRegionPlanner.Result activationGraph =
                 RuntimeRegionPlanner.planSkeletonGraph(
                         skeletons, trace.methods,
                         trace.execution, trace.fields, trace.protocol,
-                        declaredSites(scopeMap),
-                        RuntimeSelectedRegionFinalizer.fieldAccessingCalls(
-                                graph, scopeMap));
+                        declaredSites(scopeMap), fieldCalls);
         Set<String> observedMethods = new LinkedHashSet<>();
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
             observedMethods.add(event.method);
@@ -1547,7 +1548,11 @@ public final class CausynthTraceRecorder {
                         String.valueOf(selectedSkeletons),
                         observedMethods, activationGraph.runtimeInstances,
                         branchObservations(trace.execution, trace.methods),
-                        scopeMap, declaredOccurrence, trace.schedule);
+                        scopeMap, declaredOccurrence, trace.schedule,
+                        RuntimeRegionPlanner.recordedAccesses(trace.fields,
+                                trace.execution,
+                                RuntimeSelectedRegionFinalizer.storingCalls(
+                                        scopeMap), fieldCalls));
         // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
         planGaps.addAll(trace.lineageGaps);

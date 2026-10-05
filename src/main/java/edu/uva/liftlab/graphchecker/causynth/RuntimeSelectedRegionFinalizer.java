@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -106,6 +107,23 @@ public final class RuntimeSelectedRegionFinalizer {
      * location each, all writers of the field the target read).
      */
     public static final String FIELD_REFERENTS = "fieldReferents";
+    /**
+     * Activation member, in memory only: a digest of what a flip query of
+     * the occurrence reads -- its events in recorded order, every input it
+     * decided on with them ({@code RuntimeRegionPlanner#stampSignatures}).
+     */
+    public static final String SIGNATURE = "signature";
+    /** Activation member, in memory only: the seq of its first event. */
+    public static final String FIRST_SEQ = "firstSeq";
+    /** Activation member, in memory only: the seq of its last event. */
+    public static final String LAST_SEQ = "lastSeq";
+    /**
+     * Activation and plan-row member of an occurrence planned for a class of
+     * equivalent deciders ({@link DemandWalk#classDeciders}): {@code
+     * members}, the class's size, and its {@code first} (this occurrence)
+     * and {@code last} addresses.
+     */
+    public static final String DECIDER_CLASS = "deciderClass";
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
 
@@ -179,6 +197,7 @@ public final class RuntimeSelectedRegionFinalizer {
      *     RuntimeWorkflowDiscovery#FIRST})
      * @param recordedSchedule the recording's schedule: who sent and who took
      *     in each message ({@link RecordedMessages})
+     * @param accesses every field access the recording states
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
@@ -187,7 +206,8 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> branchObservations,
             StaticScopeMap scopeMap, String declaredOccurrence,
-            Collection<ScheduleEvent> recordedSchedule)
+            Collection<ScheduleEvent> recordedSchedule,
+            RecordedAccesses accesses)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
         if (observedMethods != null) {
@@ -286,7 +306,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 branchOrder);
         applyClosure(program, failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap, cutPorts, declaredOccurrence,
-                new RecordedMessages(recordedSchedule)));
+                new RecordedMessages(recordedSchedule), accesses));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -478,6 +498,22 @@ public final class RuntimeSelectedRegionFinalizer {
             for (StaticScopeMap.Site store : stores) {
                 if (!store.declaredCallee.isEmpty()
                         && !store.cell.equals(store.carrier)) {
+                    sites.put(store.siteId, store.cell);
+                }
+            }
+        }
+        return sites;
+    }
+
+    /** The call sites whose call stores a cell the scope map names: a
+     *  WRITE_SITE that stores through a call ({@code declaredCallee}: a
+     *  container's or an atomic's mutator), each with its cell. */
+    public static Map<String, String> storingCalls(StaticScopeMap scopeMap) {
+        Map<String, String> sites = new HashMap<>();
+        for (List<StaticScopeMap.Site> stores
+                : scopeMap.writeSitesByCell().values()) {
+            for (StaticScopeMap.Site store : stores) {
+                if (!store.declaredCallee.isEmpty()) {
                     sites.put(store.siteId, store.cell);
                 }
             }
@@ -768,7 +804,8 @@ public final class RuntimeSelectedRegionFinalizer {
     private static Set<String> failureDirectedClosure(
             StaticProgram program, RegionDemandIndex demands, String source,
             StaticScopeMap scopeMap, Map<String, List<CutPort>> cutPorts,
-            String declaredOccurrence, RecordedMessages messages)
+            String declaredOccurrence, RecordedMessages messages,
+            RecordedAccesses accesses)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -887,6 +924,8 @@ public final class RuntimeSelectedRegionFinalizer {
         admitRelevantRoots(program, walk, scopeMap, messages);
         walk.stateUnpairedWires(program.planGaps);
         walk.stateFixedDeciders(program.planGaps);
+        walk.classDeciders(accesses, context -> shapes.computeIfAbsent(
+                context, messages::shape));
         // Restated after the walk, so an occurrence the walk reached twice
         // publishes the shortest chain that reached it.
         for (String occurrence : walk.reached) {
@@ -1175,6 +1214,7 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static final class DemandWalk {
         private final StaticProgram program;
+        private final StaticScopeMap scopeMap;
         private final RegionDemandIndex demands;
         private final Map<String, List<StaticScopeMap.Site>> writeSites;
         private final Set<String> wireConsumers = new HashSet<>();
@@ -1223,12 +1263,19 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Occurrences that left a demanded store at guards no source
          *  reaches in them ({@link #movable}), so no writer was planned. */
         private final Set<String> fixedDeciders = new LinkedHashSet<>();
+        /** Occurrences reached as writers of a demanded store: they ran
+         *  its method or left it at a guard. */
+        private final Set<String> storeWriters = new HashSet<>();
+        /** Occurrences reached in any other role: a target, a wire
+         *  producer, a root's or a control producer's admission. */
+        private final Set<String> heldApart = new HashSet<>();
 
         private DemandWalk(StaticProgram program, RegionDemandIndex demands,
                            StaticScopeMap scopeMap,
                            Map<String, List<CutPort>> cutPorts,
                            Set<String> excluded) {
             this.program = program;
+            this.scopeMap = scopeMap;
             this.demands = demands;
             this.cutPorts = cutPorts;
             this.excluded = excluded;
@@ -1291,6 +1338,7 @@ public final class RuntimeSelectedRegionFinalizer {
 
         private void admit(String occurrence, int depth) {
             reached.add(occurrence);
+            heldApart.add(occurrence);
             recordDepth(occurrence, depth);
         }
 
@@ -1396,6 +1444,7 @@ public final class RuntimeSelectedRegionFinalizer {
                             fixedDeciders.add(writerOccurrence);
                             continue;
                         }
+                        storeWriters.add(writerOccurrence);
                         reach(writerOccurrence, depth(occurrenceId) + 1,
                                 SHARED_LOCATION_DEMAND_ADMISSION);
                         // Whether it stores: its guards, demanded once per
@@ -1548,6 +1597,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 paired = true;
+                heldApart.add(producer);
                 reach(producer, depth(occurrence) + 1,
                         WIRE_PRODUCER_ADMISSION);
                 for (String handed : exportCells.getOrDefault(attach.port,
@@ -1579,6 +1629,137 @@ public final class RuntimeSelectedRegionFinalizer {
                 work.addAll(demands.incomingCells(occurrence, cell));
             }
             return false;
+        }
+
+        /**
+         * Plans one occurrence per class of equivalent deciders: occurrences
+         * the walk reached only as writers of a demanded store ({@link
+         * #storeWriters}) that stored no cell demanded on their node in the
+         * recording -- each left every such store at a guard, or ran its
+         * method on another arm --, on one node, in one region, under one
+         * context shape and call path, that did the same on the same state
+         * ({@link #SIGNATURE}: their decisions in order with every input
+         * they decided on, each field read's version and value, each
+         * argument and return), with no access of a demanded cell by anyone
+         * else between the first and the last ({@link RecordedAccesses}).  A
+         * flip query is a function of what its occurrence read and decided,
+         * so the members ask one query; the store a flip enables lands where
+         * its member ran, and with nothing else touching a demanded cell
+         * between them every reader and writer meets it in the same order,
+         * so COMPOSE pairs any member's store as it pairs another's.  The
+         * first member is planned and states the class ({@link
+         * #DECIDER_CLASS}); the others are not.  Never merged: a recorded
+         * store of a demanded cell (its write is a version a reader may have
+         * read), an occurrence reached in any other role ({@link
+         * #heldApart}), one that minted a root ({@link #mintsRoot}: a clock
+         * read included), or attached or exported a message value: its
+         * inputs are its own.  hdfs-adhoc-16:
+         * 1218 to 1520 polling turns of the block scrubber, each leaving
+         * removeBlock's store at its guard and running {@code run()}, the
+         * method of the iterator's store, past it, planned one job each and
+         * cut at PLAN.
+         */
+        private void classDeciders(RecordedAccesses accesses,
+                Function<CausalContext, List<String>> shapes) {
+            Map<String, List<String>> groups = new LinkedHashMap<>();
+            for (String occurrence : reached) {
+                Map<String, Object> activation = program.activations.get(
+                        occurrence);
+                String signature = text(activation.get(SIGNATURE));
+                if (!storeWriters.contains(occurrence)
+                        || heldApart.contains(occurrence)
+                        || signature.isEmpty()
+                        || mintsRoot(activation)
+                        || !rows(activation.get(
+                                OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()
+                        || accesses.stored(demandedOn(occurrence),
+                                seq(occurrence, FIRST_SEQ),
+                                seq(occurrence, LAST_SEQ),
+                                callsOf(occurrence))) {
+                    continue;
+                }
+                OccurrenceAddress address = OccurrenceAddress.parse(
+                        occurrence);
+                List<String> path = new ArrayList<>();
+                for (Frame frame : address.index().frames()) {
+                    path.add(frame.callSite());
+                }
+                groups.computeIfAbsent(nodes.get(occurrence) + "\n"
+                        + address.regionId() + "\n"
+                        + shapes.apply(address.context()) + "\n" + path
+                        + "\n" + signature, ignored -> new ArrayList<>())
+                        .add(occurrence);
+            }
+            for (List<String> group : groups.values()) {
+                if (group.size() < 2) continue;
+                group.sort(Comparator.comparingLong(occurrence -> seq(
+                        occurrence, FIRST_SEQ)));
+                Set<String> cells = demandedOn(group.get(0));
+                List<String> members = new ArrayList<>();
+                for (String occurrence : group) {
+                    if (!members.isEmpty()) {
+                        String previous = members.get(members.size() - 1);
+                        Set<Long> own = callsOf(previous);
+                        own.addAll(callsOf(occurrence));
+                        if (accesses.touched(cells, seq(previous, FIRST_SEQ),
+                                seq(occurrence, LAST_SEQ), own)) {
+                            planOnce(members);
+                            members = new ArrayList<>();
+                        }
+                    }
+                    members.add(occurrence);
+                }
+                planOnce(members);
+            }
+        }
+
+        /** Whether an occurrence captured a DECLARED_SITE that mints a root
+         *  in a replay: a clock's, a fault marker's, a configuration
+         *  getter's or a READ placeholder's ({@code inputKind}). */
+        private boolean mintsRoot(Map<String, Object> activation) {
+            for (Map<String, Object> capture
+                    : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
+                for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
+                        text(capture.get(SiteId.MEMBER)),
+                        text(capture.get(
+                                DeclaredSiteCapture.DECLARED_CALLEE)))) {
+                    if (!site.declared.inputKind.isEmpty()) return true;
+                }
+            }
+            return false;
+        }
+
+        /** The cells the walk demanded on an occurrence's node. */
+        private Set<String> demandedOn(String occurrence) {
+            return carriers.getOrDefault(nodes.get(occurrence),
+                    Collections.<String, Demanded>emptyMap()).keySet();
+        }
+
+        private Set<Long> callsOf(String occurrence) {
+            return new HashSet<>(MapFields.longValues(program.activations
+                    .get(occurrence).get("callIds")));
+        }
+
+        private long seq(String occurrence, String member) {
+            return longNumber(program.activations.get(occurrence).get(member),
+                    -1L);
+        }
+
+        /** Keeps the first of one class planned, at the class's shortest
+         *  chain, and the rest out. */
+        private void planOnce(List<String> members) {
+            if (members.size() < 2) return;
+            String first = members.get(0);
+            for (String member : members.subList(1, members.size())) {
+                recordDepth(first, depth(member));
+                reached.remove(member);
+                program.activations.get(member).remove(ADMISSION_BASIS);
+            }
+            Map<String, Object> deciderClass = new LinkedHashMap<>();
+            deciderClass.put("members", members.size());
+            deciderClass.put("first", first);
+            deciderClass.put("last", members.get(members.size() - 1));
+            program.activations.get(first).put(DECIDER_CLASS, deciderClass);
         }
 
         /** One DIAGNOSTIC row per region whose occurrences left a demanded
