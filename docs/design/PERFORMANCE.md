@@ -14,8 +14,8 @@ on the cluster is faster):
 
 | stage | what costs | typical | what made it slow before |
 | --- | --- | --- | --- |
-| SEED | 2-7 Soot static passes (a fresh JVM each: again when the demanded doors grow, again after each scope growth), the recording on stock JDK 8, the trace aggregation | 3-9 min | Soot's per-directory class lookups on NFS: one pass makes ~232K file syscalls, ~197K of them failed `stat`s on the classpath directories; a burst of 20 heads starting together tripled pass times (HG5A first wave: passes 60-308 s against 13-90 s later). Fix designed: index each classpath directory once per JVM (TODO) |
-| INSTRUMENT | weaving (Soot) and the JVM verifier | 1-2 min | same NFS lookups |
+| SEED | 2-7 Soot static passes (a fresh JVM each: again when the demanded doors grow, again after each scope growth), the recording on stock JDK 8, the trace aggregation | 3-9 min | Soot's per-directory class lookups on NFS: one pass made ~232K file syscalls, ~197K of them failed `stat`s on the classpath directories; a burst of 20 heads starting together tripled pass times (HG5A first wave: passes 60-308 s against 13-90 s later). `IndexedSourceLocator` lists each looked-up folder once per JVM and the pass's JVM runs on the jar alone: hdfs-adhoc-19 ~41K file syscalls per pass, ~7K failed stats; a warm pass is unchanged (43-62 s, lookups were 3-25 % of it, now 0-4 %); the first wave's cold cost is not measured again |
+| INSTRUMENT | weaving (Soot) and the JVM verifier | 1-2 min | same NFS lookups (fixed with SEED's) |
 | REPLAY (seed) | one concolic replay of the workload on the Zero VM, held to the recorded schedule | 2-8 min; every schedule give-up costs the 15 s watchdog | replays that depart from the recording's order (the start-up/clock family: 30-170 give-ups); the budget's reserve then owes twice the seed replay's time (§3) |
 | EXPLORE | planner rounds (one JVM each), obligation SOLVEs (z3 on a host's warm solver), obligation REPLAYs (~1-4 min each), GROW re-runs | 5-60 min | queue waits on an over-charged ledger (§3); closures of many equivalent occurrences; re-asked arms |
 | COMPOSE | the corpus read, one formula over every admitted session, z3 per valuation | seconds to minutes (hdfs-adhoc-07's 556 sessions: 2-3 min offline, most of it the read) | the self-check searched the 26 MB body per command and path: 07 did not finish in 17 min (HR1) |
@@ -72,7 +72,7 @@ running out of memory, and a single case alone takes the whole cluster.
 | 19's EXPLORE 776 s, 12 min of it waiting, though all 8 obligations were refused at their query (HG5A) | a solve that never replays waited for a replay charge | SOLVE / REPLAY split |
 | seed and CONFIRM replays charged 8-11 GB for 0.5-2 GB peaks | recording x7 for every replay | x7 only before anything is measured; CONFIRM on the measured need |
 | lifts 11-22 GB charged against 3-7 GB real use | the static charges above plus an idle 8 GB head reserve per lift | measured head need; remaining gap (~1.6x) is step charges at their start heap (kept: a refused growth would end a planner) |
-| SEED 192 -> 542 s, INSTRUMENT 49 -> 129 s in a sweep's first wave | Soot class lookups on NFS (197K failed stats per pass), 20 heads starting together | designed: an indexed class provider (TODO); meanwhile a sweep's first wave is slower than later ones |
+| SEED 192 -> 542 s, INSTRUMENT 49 -> 129 s in a sweep's first wave | Soot class lookups on NFS (197K failed stats per pass), 20 heads starting together | `IndexedSourceLocator` (a lookup's folder listed once per JVM, a listed name Soot's own lookup) and the pass's JVM on the jar alone: ~7K failed stats per pass; outputs byte-identical over 12 HDFS cases; on a loaded cluster with warm NFS caches the walls did not move |
 | a seed replay with 80-170 give-ups (start-up family) | DataNode actor turns decide by `monotonicNow` and the replay runs slower than the recording | the time model (TODO); a case at 80+ give-ups in a sweep is stopped, not waited out |
 | 17 and 24 "UNSAT" with 151 / 3 obligations owed (HG5A) | the budget's reserve owes twice the longest COMPOSE + max(CONFIRM, seed REPLAY); a 22-min seed replay reserved 44 min and left EXPLORE none | EXPLORATION_CUT: such an end leaves no UNSAT; the real fix is the seed replay's speed |
 | 16: PLAN_CLOSURE_CUT, 1542 occurrences over `schedule_max_jobs` | 1520 polling turns of `MarkedDeleteBlockScrubber` each planned as a task once control flow counted | E1: equivalent deciders planned once per class (1406 turns -> 55 classes) |
@@ -111,12 +111,10 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 
 ## 5. Open performance items (also in TODO.md)
 
-1. SEED: the indexed class provider (design approved; branch `hdfs-seed-speed`, nothing coded) and dropping
-   `project_classpath` from the static pass's own `-cp`.
-2. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it; the 1 GB
+1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it; the 1 GB
    `slots.jsonl` (07: 314,758 slots) is rewritten by EXPLORE every round and is most of COMPOSE's remaining read;
    `Corpus#index` re-reads each session's schedule on one thread.
-3. The seed replay's give-ups: the time model (the start-up/clock family) -- also the biggest correctness item.
-4. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
-5. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused
+2. The seed replay's give-ups: the time model (the start-up/clock family) -- also the biggest correctness item.
+3. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
+4. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused
    growth.

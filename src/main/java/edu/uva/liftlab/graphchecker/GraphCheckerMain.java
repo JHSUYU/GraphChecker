@@ -38,6 +38,7 @@ public class GraphCheckerMain {
     }
 
     public void initialize() {
+        IndexedSourceLocator.install();
         Transform phase = new Transform(GraphCheckerTransformer.PHASE_NAME,
                 new GraphCheckerTransformer(options));
         phase.setDeclaredOptions("enabled");
