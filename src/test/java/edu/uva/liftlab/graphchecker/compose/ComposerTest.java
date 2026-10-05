@@ -1112,6 +1112,42 @@ public class ComposerTest {
         assertTrue("the upstream delivery carries the root",
                 composition.body().contains(MARKER));
 
+        // ONE ARRIVAL RULE AT EVERY DEPTH (PIPELINE §8).  The same chain,
+        // and the upstream node ran concretely: no session attests the
+        // producer of what the middle node was handed.  The arm is not
+        // refused for it (hdfs-11741 PS1-PS3: the SASL sender's arms read
+        // the expiry dates of a refresh no session instrumented, and their
+        // refusal took the key id's binding with them): the handed value is
+        // HELD inside the arm at what its row received, named with the arm.
+        Path concrete = folder.newFolder("nested-concrete").toPath();
+        Session ran = new Session(concrete, "s0", false);
+        ran.activation(PRODUCER);
+        ran.activation(UPSTREAM, "thread#up", false, false);
+        ran.marker("false");
+        ran.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        ran.expression("EXPR.v1.forward", symbol("vh_up", "Z"));
+        ran.export(upstream, "EXPR.v1.marker", 1L, "false");
+        ran.attach(forwarded, "vh_up", "false", upstream);
+        ran.decision(PRODUCER, "nn#u1", "(or vh_up (not vh_up))");
+        ran.export(producer, "EXPR.v1.forward", 2L, "false");
+        ran.attach(consumer, "vh", "false", producer);
+        ran.target("vh", false, true);
+        ran.write();
+        Composer.Composition held = compose(concrete, 4);
+        assertEquals("the path stands: " + held.gaps(), 1,
+                held.disjuncts().size());
+        assertEquals("on the anchor's family alone", 1,
+                held.families().size());
+        assertTrue("the handed value is held inside the arm",
+                held.body().contains("(= vh_up false)"));
+        boolean named = false;
+        for (Composer.Concrete row : held.concrete()) {
+            named |= "HELD".equals(row.kind) && "vh_up".equals(row.subject)
+                    && row.reason.contains("(in arm message_arm__");
+        }
+        assertTrue("and named HELD with its arm: " + held.concrete(),
+                named);
+
         // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (PIPELINE §8).  The
         // producer exports at TWO ports and the anchor attaches both; one
         // run delivered (true, false) there and the other (false, true).

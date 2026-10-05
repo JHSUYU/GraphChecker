@@ -3471,7 +3471,7 @@ public final class SmtLowering {
     /**
      * Each value COMPOSE could not bind to the expression that made it, in
      * the order met, by THE ONE RULE ({@link #bind}, {@link #methodReturn},
-     * {@code Composer#handoffRead}): FREE where the producer the rows state
+     * {@code Composer#arrival}): FREE where the producer the rows state
      * rests on what can move -- the formula over-approximates it, and a
      * witness resting on it is CONFIRM's to refute -- else HELD at its
      * recorded value where no row states its producer.  Never free by
@@ -3513,7 +3513,7 @@ public final class SmtLowering {
 
     /** An arrival nothing binds or pins, left FREE ({@link #unbound}):
      *  its producer attested and no export of it lowered, or its row's
-     *  value no term ({@code Composer#handoffRead}). */
+     *  value no term ({@code Composer#arrival}). */
     public void freedArrival(String symbol, String why) {
         freed(symbol, why, Collections.<String>emptySet());
     }

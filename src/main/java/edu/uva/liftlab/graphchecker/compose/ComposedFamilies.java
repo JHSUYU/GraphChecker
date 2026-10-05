@@ -558,15 +558,6 @@ final class ComposedFamilies {
                 new LinkedHashMap<String, List<AttachRow>>();
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : attaches) {
-            if (attach.interaction() == null) {
-                // No producer, so no family: a free constant, refused.
-                refusals.add(GapRow.of(owner, GapKind.UNATTESTED_ARM,
-                        GapClass.DIAGNOSTIC, attach.symbol(), "a delivery "
-                                + "this rests on was handed a value its "
-                                + "attach pairs with no producer, so "
-                                + "nothing binds it"));
-                return false;
-            }
             if (!seen.add(attach.endpoint().id())) continue;
             String correlation = attach.correlationId();
             add(byMessage, correlation == null || correlation.isEmpty()
@@ -1037,9 +1028,12 @@ final class ComposedFamilies {
             asks.addAll(composer.statedJoins(joins,
                     Collections.<String>emptySet(), conjuncts,
                     Collections.<String>emptyList()));
-            stated = closeMessages(ordinal, selector, session,
-                    handedOn(session, outs, asks, local), reachedSlots,
-                    nested, local, depth + 1);
+            List<String> holds = new ArrayList<String>();
+            List<AttachRow> handed = handedOn(session, selector, outs, asks,
+                    holds, local);
+            conjuncts.addAll(holds);
+            stated = closeMessages(ordinal, selector, session, handed,
+                    reachedSlots, nested, local, depth + 1);
         }
         List<String> reachTexts = new ArrayList<String>(conjuncts);
         reachTexts.addAll(nested);
@@ -1137,12 +1131,15 @@ final class ComposedFamilies {
      * but the leaves it binds -- its delivered expressions'
      * ({@link Arms.Arm#nested}) and those its closure's conditions and
      * joins read (hdfs-11741 r8: the balancer's block-key expiry, joined in
-     * a move task's closure) -- resolved in the delivering session.  Unbound,
-     * each would be a free constant inside the arm; one that session
-     * minted no attach for has no family there, and refuses the arm.
+     * a move task's closure) -- in the delivering session, by the path's
+     * own rule ({@code Composer#reachedHandoffs}): an attested arrival is a
+     * nested family (returned), any other FREE or HELD inside the arm
+     * ({@code holds}), named; one that session minted no attach for refuses
+     * the arm.
      */
-    private List<AttachRow> handedOn(String session, List<Out> outs,
-                                     List<String> asks,
+    private List<AttachRow> handedOn(String session, String selector,
+                                     List<Out> outs, List<String> asks,
+                                     List<String> holds,
                                      List<GapRow> refused) {
         Set<String> names = new LinkedHashSet<String>();
         Set<String> leaves = new LinkedHashSet<String>();
@@ -1151,20 +1148,9 @@ final class ComposedFamilies {
             leaves.addAll(out.symbols);
         }
         names.addAll(lowering.reachedSymbols(asks));
-        names.removeAll(leaves);
         List<AttachRow> attaches = new ArrayList<AttachRow>();
-        for (String name : names) {
-            AttachRow attach = corpus.attach(session, name);
-            if (attach != null) {
-                attaches.add(attach);
-            } else if (corpus.handoffSymbol(name)) {
-                refused.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, name, "an arm names a handoff "
-                                + "variable no attach row of its session "
-                                + "minted, so no family of that run binds "
-                                + "it"));
-            }
-        }
+        composer.reachedHandoffs(session, names, leaves, holds, attaches,
+                refused, selector);
         return attaches;
     }
 

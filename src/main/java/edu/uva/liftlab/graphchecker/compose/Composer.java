@@ -949,9 +949,6 @@ public final class Composer {
      *  ({@link Concrete}), kept once the path is a disjunct. */
     private final Map<String, Concrete> pathConcrete =
             new LinkedHashMap<String, Concrete>();
-    /** The arrivals the path being composed holds at their recorded value
-     *  ({@link #handoffRead}), conjoined with its terms. */
-    private final List<String> pathHolds = new ArrayList<String>();
     /** What the composed paths rest on concretely, by subject. */
     private final Map<String, Concrete> concrete =
             new LinkedHashMap<String, Concrete>();
@@ -1316,7 +1313,6 @@ public final class Composer {
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
         pathConcrete.clear();
-        pathHolds.clear();
         int unboundBefore = lowering.unbound().size();
         frames(session, reached.keySet());
 
@@ -1353,12 +1349,13 @@ public final class Composer {
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
 
-        // (2) Each anchor handoff, answered or not: nothing here (its family
-        //     binds it; collected in `bound`).  Never a literal.
-        Set<String> interactionIds = new LinkedHashSet<String>();
+        // (2) Each anchor handoff, answered or not: its family binds it
+        //     (collected in `bound`), never a literal; one no producer this
+        //     corpus attests is held in `holds`.
         Set<String> handoffs = new LinkedHashSet<String>();
+        List<String> holds = new ArrayList<String>();
         List<AttachRow> bound = new ArrayList<AttachRow>();
-        handoffReads(session, interactionIds, handoffs, refusals, bound);
+        handoffReads(session, handoffs, holds, bound);
 
         // (3) State joins, read := observed write's expression, kept by
         //     symbol: a read with family alternatives must not also be
@@ -1449,9 +1446,13 @@ public final class Composer {
         //      phi), by the same rule as (2).
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
-        reachedHandoffs(session, reaching, interactionIds, handoffs,
-                refusals, bound);
-        terms.addAll(pathHolds);
+        reachedHandoffs(session, lowering.reachedSymbols(reaching), handoffs,
+                holds, bound, refusals, "");
+        terms.addAll(holds);
+        Set<String> interactionIds = new LinkedHashSet<String>();
+        for (AttachRow attach : bound) {
+            interactionIds.add(attach.interaction().id());
+        }
 
         // Read BEFORE end() forgets them: any refusal drops the whole path
         // (it would otherwise rest on a free constant).
@@ -1800,38 +1801,43 @@ public final class Composer {
     }
 
     /**
-     * Each of the anchor's handoffs, by {@link #handoffRead}: bound by its
-     * FAMILY alone, or the path is refused by name.
+     * Each of the anchor's handoffs, by {@link #arrival}.
      */
-    private void handoffReads(String session, Set<String> interactionIds,
-                              Set<String> handoffs, List<GapRow> refusals,
-                              List<AttachRow> bound) {
+    private void handoffReads(String session, Set<String> handoffs,
+                              List<String> holds, List<AttachRow> bound) {
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
-            handoffRead(session, attach, interactionIds, handoffs, refusals,
-                    bound);
+            if (handoffs.add(attach.symbol())) {
+                arrival(session, attach, holds, bound, "");
+            }
         }
     }
 
     /**
-     * Every OTHER handoff this path's conjunction reaches (e.g. a delivered
-     * value a joined write put into a container), by the same rule.
-     * Unbound, each would be a free constant: a handoff variable this
+     * Every OTHER handoff a conjunction names, by {@link #arrival}: a
+     * path's (e.g. a delivered value a joined write put into a container)
+     * and an arm's alike ({@link ComposedFamilies}: those its delivery and
+     * its closure's conditions and joins read).  {@code handoffs} holds the
+     * symbols the conjunction states already.  A handoff variable the
      * session minted no attach for (the corpus states it of another run)
-     * has no family here, and refuses the path by name.
+     * has no family there, and refuses the conjunction by name.
+     *
+     * @param arm the arm selector whose conjunction names them, "" for the
+     *            path's own
      */
-    private void reachedHandoffs(String session, List<String> terms,
-                                 Set<String> interactionIds,
-                                 Set<String> handoffs, List<GapRow> refusals,
-                                 List<AttachRow> bound) {
-        for (String name : lowering.reachedSymbols(terms)) {
+    void reachedHandoffs(String session, Collection<String> names,
+                         Set<String> handoffs, List<String> holds,
+                         List<AttachRow> bound, List<GapRow> refusals,
+                         String arm) {
+        for (String name : names) {
             if (handoffs.contains(name)) continue;
             AttachRow attach = corpus.attach(session, name);
             if (attach != null) {
-                handoffRead(session, attach, interactionIds, handoffs,
-                        refusals, bound);
+                handoffs.add(name);
+                arrival(session, attach, holds, bound, arm);
             } else if (corpus.handoffSymbol(name) && handoffs.add(name)) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, name, "this path names a "
+                        GapClass.DIAGNOSTIC, name, (arm.isEmpty()
+                                ? "this path" : "arm " + arm) + " names a "
                                 + "handoff variable no attach row of its "
                                 + "session minted, so no family of this "
                                 + "run binds what it read"));
@@ -1840,30 +1846,35 @@ public final class Composer {
     }
 
     /**
-     * One attach, stated once per symbol ({@code handoffs} holds the
-     * symbols already bound): an ATTESTED producer delivered it, and its
-     * FAMILY alone binds it (PIPELINE §8); nothing is conjoined here, and
-     * it takes just its sort from the delivery ({@link #attestedArrival}).
-     * Answered or not: an obligation's answer is what its replay planted at
-     * the consumer, and a witness rests only on a value a run compatible
-     * with its path delivered (hdfs-17967-pathC rb1: a flip answered the
-     * DataNode's key id with 119532 while the moved serial had its producer
-     * deliver 119533, and the answer, pinned as a literal, let the solver
-     * move the serial past it).  An arrival no producer this corpus attests
-     * delivered has a producer no row states (THE ONE RULE, {@link
-     * SmtLowering#unbound}): it is HELD at the value its row states it
-     * received, conjoined with the path's terms and named (a {@link
-     * Concrete} HELD, "producer unstated"); never free by default, never a
-     * silent pin.  A row stating no value this lowering places leaves the
-     * path resting on what no row states: refused by name.
+     * THE ONE RULE for one arrival a conjunction names, a path's and an
+     * arm's alike (PIPELINE §8), stated once per conjunction.  An ATTESTED
+     * producer delivered it: its FAMILY alone binds it (it joins {@code
+     * bound}); nothing is conjoined here, and it takes just its sort from
+     * the delivery ({@link #attestedArrival}).  Answered or not: an
+     * obligation's answer is what its replay planted at the consumer, and a
+     * witness rests only on a value a run compatible with its path
+     * delivered (hdfs-17967-pathC rb1: a flip answered the DataNode's key
+     * id with 119532 while the moved serial had its producer deliver
+     * 119533, and the answer, pinned as a literal, let the solver move the
+     * serial past it).  Its producer attested and no export of it lowers:
+     * what it delivered is unknown and nothing pins it, FREE, named.  No
+     * producer this corpus attests (or none named): HELD at the value its
+     * row states it received ({@code holds} receives the conjunct, stated
+     * under the caller's selector), named "producer unstated" ({@link
+     * SmtLowering#unbound}); a value the lowering places nowhere pins
+     * nothing, FREE, named.  Never free by default, never a silent pin, and
+     * never a refused conjunction (hdfs-11741 PS1-PS3: the SASL sender's
+     * arms were refused for the expiry dates its closure read from a
+     * refresh whose NameNode handler no session instrumented, and the key
+     * id they would have bound was left HELD).
+     *
+     * @param arm the arm selector whose conjunction names it, "" for the
+     *            path's own
      */
-    private void handoffRead(String session, AttachRow attach,
-                             Set<String> interactionIds,
-                             Set<String> handoffs, List<GapRow> refusals,
-                             List<AttachRow> bound) {
-        if (!handoffs.add(attach.symbol())) return;
-        Interaction interaction = attach.interaction();
-        if (interaction == null) {
+    private void arrival(String session, AttachRow attach,
+                         List<String> holds, List<AttachRow> bound,
+                         String arm) {
+        if (attach.interaction() == null) {
             // No known source, so no family: named, and held below.
             composedFamilies.unpaired(session, attach);
         }
@@ -1871,24 +1882,18 @@ public final class Composer {
                 ? Collections.<ExportRow>emptyList()
                 : arms.attestedExports(attach.producer());
         if (attestedArrival(attach, attested)) {
-            // An attested arrival has a producer, so its interaction.
-            interactionIds.add(interaction.id());
             bound.add(attach);
             return;
         }
+        String in = arm.isEmpty() ? "" : " (in arm " + arm + ")";
         Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
         if (!attested.isEmpty()) {
-            // Its producer is attested and no export of it lowers: what it
-            // delivered is unknown, nothing pins it -- FREE, named.
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "attested producer "
                     + attach.producer().id() + ", whose "
-                    + attested.size() + " export(s) did not lower");
+                    + attested.size() + " export(s) did not lower" + in);
             return;
         }
-        // No producer this corpus attests (or none named): held at what its
-        // row states it received, named; a value the lowering places
-        // nowhere pins nothing, FREE, named -- never a dropped path.
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
         Term value = lowering.statedValue(received, attach.javaType());
@@ -1896,15 +1901,15 @@ public final class Composer {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "no producer is attested "
                     + "and its row states the value \"" + received
-                    + "\", which this lowering places nowhere");
+                    + "\", which this lowering places nowhere" + in);
             return;
         }
         lowering.declareStated(attach.symbol(), value.sort);
-        pathHolds.add("(= " + attach.symbol() + " " + value.text + ")");
-        lowering.held(attach.symbol(), received, attach.producer() == null
+        holds.add("(= " + attach.symbol() + " " + value.text + ")");
+        lowering.held(attach.symbol(), received, (attach.producer() == null
                 ? "the attach names no producer"
                 : "no export row of this corpus attests its producer "
-                + attach.producer().id());
+                + attach.producer().id()) + in);
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
