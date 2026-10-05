@@ -45,8 +45,8 @@ apart by `declared_target_occurrence`, exactly as HDFS-17899's three bugs are.
 
 ## What these cases declare
 
-`workflow.properties`, `root-domains.jsonl`,
-`communication-mappings.jsonl` and `loop-bounds.jsonl` are shared by all three; `case.sh`
+`workflow.properties`, `root-domains.jsonl` and `loop-bounds.jsonl` are shared by all three (the
+wire flows are every HDFS case's `../communication-mappings.jsonl`); `case.sh`
 carries what is per case, including the per-case analysis scope.
 
 | Declaration | Where | What it says |
