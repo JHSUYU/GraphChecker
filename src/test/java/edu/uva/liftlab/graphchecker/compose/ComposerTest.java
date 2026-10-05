@@ -2128,6 +2128,33 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * The run as recorded is no counterfactual (owner 2026-10-04: a claim
+     * moving no root is never a finding).  A seed replay that observed the
+     * fatal at the declared occurrence -- hdfs-adhoc-32 in HG4, published
+     * SAT at valuation 0 with nothing moved -- leaves no claim: BLOCKING
+     * SEED_OBSERVED_FATAL, and no witness is named although the formula is
+     * sat, so the campaign has no verdict (RUN_DEFECT).
+     */
+    @Test
+    public void aSeedThatObservedTheFatalIsNoClaim() throws Exception {
+        Path iteration = folder.newFolder("seed-fatal").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertTrue("named: " + decision.claim().gaps(),
+                named(decision.claim().gaps(), GapKind.SEED_OBSERVED_FATAL));
+        assertTrue(decision.claim().blocked());
+        assertEquals("no witness is named on it",
+                ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+        assertEquals("the formula's answer is still stated", "sat",
+                decision.formula().status());
+    }
+
     @Test
     public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
         Path iteration = folder.newFolder("polarity").toPath();
@@ -2147,6 +2174,9 @@ public class ComposerTest {
         assertEquals("the flip is satisfiable and explains nothing: the "
                         + "formula's claim alone, CONFIRM's to judge",
                 ClaimKind.FORMULA_SAT, decision.claim().kind());
+        assertEquals("at the flip: the run as recorded is no witness while "
+                        + "another moves something", 1,
+                decision.claim().valuationOrdinal());
         assertTrue("and the alarm says why",
                 named(decision.claim().gaps(),
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
@@ -2271,7 +2301,9 @@ public class ComposerTest {
      * took (SOLR-18413 r9: {@code targetColl == null} on a reference the
      * lookup returned concretely).  {@code true} rests the fatal on the path
      * condition that reached the anchor -- here the clock compare before
-     * it, so the witness moves the clock; {@code false} is the constant
+     * it; on the seed, which then observed the fatal, that is no claim at
+     * all (SEED_OBSERVED_FATAL: the run as recorded is no counterfactual);
+     * {@code false} is the constant
      * healthy decision, a disjunct no valuation satisfies (the claim closes
      * negative, no gap); a row stating none is no path, as the composer
      * never invents phi.  {phi, observedFatal, disjuncts}.
@@ -2315,11 +2347,10 @@ public class ComposerTest {
             assertTrue("the fatal rests on the compare before the anchor: "
                             + fatalArm(composition),
                     fatalArm(composition).contains("(> " + CLOCK + " 1000)"));
-            assertEquals(ClaimKind.CLOCK_SKEW, decision.claim().kind());
-            assertTrue("the clock moved past the compare: "
-                            + decision.claim().movedRoots(),
-                    Long.parseLong(decision.claim().movedRoots().get(CLOCK)
-                            .trim()) > 1000L);
+            assertTrue("and the seed that observed it is no claim: "
+                            + decision.claim().gaps(),
+                    decision.claim().blocked() && named(decision.claim()
+                            .gaps(), GapKind.SEED_OBSERVED_FATAL));
         }
     }
 

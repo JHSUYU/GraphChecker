@@ -1478,7 +1478,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    (`Disjunction#ownRuns`). A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is named DIAGNOSTIC `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
-4. The claim, first match. A witness moving configuration only (`Composition#configurationOnly`:
+4. The claim, first match. First of all, a seed replay that observed the fatal at the declared
+   occurrence leaves no claim (BLOCKING `SEED_OBSERVED_FATAL`): the run as recorded is no
+   counterfactual (owner 2026-10-04: a claim moving no root is never a finding); beside PLAN's
+   `TARGET_FATAL_IN_RECORDING` (the recording took the fatal arm there, `RuntimeSelectedRegionFinalizer`)
+   it is a declaration defect, else the replay diverged. A witness moving configuration only (`Composition#configurationOnly`:
    every moved root `CONFIG`) ranks after every other, so the first rule takes the others, then the
    second, and only then the first rule takes a configuration-only one. A witness moving a
    configuration whose plant leaves reads of its key at the recording's value (the scope map's
@@ -1493,9 +1497,6 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      second gap);
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
-   - ordinal 0 sat on the seed's path that observed the fatal, every moved valuation decided unsat:
-     its mechanism, with `polarityDecides` true unless that is `RECORDED_FAILURE_EXPLAINED` or
-     `NO_SUPPORTED_WITNESS`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
      every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
@@ -1505,13 +1506,15 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      (a defect, never a refutation). Sat: `FORMULA_SAT` at the first enumerated witness a replay can
      plant, else at the formula's own model (`Composition#modelValuation`: each declared root at the
      model's value), composer imprecision until CONFIRM says otherwise, planted and judged like any
-     claim, a refutation excluded before the claim is decided again; a sat model selecting no path,
+     claim, a refutation excluded before the claim is decided again; an enumerated witness that is
+     the run as recorded (the seed's path, no root moved, no clock jumped, no arm re-paired) is
+     skipped, and a corpus a BLOCKING gap already withholds a verdict from names no witness; a sat
+     model selecting no path,
      or one only a configuration whose plant leaves reads at the recording's value satisfies
      (`UNPRODUCIBLE_ANSWER`), is BLOCKING.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
    `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →
-   `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`; the seed's path at ordinal 0
-   with the flips refuted → `RECORDED_FAILURE_EXPLAINED`.
+   `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`.
 6. In the moved-root rule without `recordingDecides` and in the no-root-moved rule, the witness is
    re-asked with each clock jump a margin (one minute in its ticks) further the same way (`withMargin`:
    all at once, else each in seq order, kept where still sat). `movedRoots` = the valuation's moved
@@ -1528,7 +1531,6 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 | `CLOCK_SKEW` | no declared root moved; the fatal arm is reached only with clock cells off their readings (the cells where a clock jumped are `movedRoots`) |
 | `STATE_PAIRING_FLIPPED` | the roots stay; the path's anchor reads must take another writer than the run's |
 | `MESSAGE_PAIRING_FLIPPED` | the roots stay; the anchor's attaches must receive another delivery than the run's |
-| `RECORDED_FAILURE_EXPLAINED` | the seed itself observed the fatal and every moved valuation is refuted |
 | `FORMULA_SAT` | a valuation satisfies the formula and none of the above names why: the formula's own claim, which CONFIRM plants (its arms and valuation) and judges |
 | `NO_SUPPORTED_WITNESS` | the composed formula, every root free, is unsat; an answer, not an error |
 
@@ -1555,6 +1557,10 @@ Only a `SAT_CANDIDATE` is confirmed. ConfirmMain reads `claim.json` and the mani
 valuation, its selected path and session, and the selected arms of that path; the selected session
 must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
 
+- **The run as recorded**: a claim whose selected session is the seed's, that moves no root and no
+  clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
+  is refused by name (`refutes`): it is no counterfactual, whatever a run of it observes (owner
+  2026-10-04: a claim moving no root is never a finding), and the campaign excludes it.
 - **Realized**: when the session's world planted no pairing (a pairing is a moved choice its own
   run took under the order its replay held, which CONFIRM makes again in its own replay, strict),
   that target row observed the fatal, every selected arm is the session's own
@@ -1750,9 +1756,8 @@ hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 
 - `claim` is `SAT_CANDIDATE` (so CONFIRM agreed) and `confirmation.confirmed` is true, `finalStatus`
   is `FINAL_READY`, `accepted` is true, and `gaps.json` names no BLOCKING gap;
-- `findingKind` is one of the five mechanisms and is the case's entry in `EXPECTED_MECHANISM` (a case
-  the table does not name cannot pass); `polarityDecides` is true unless
-  `RECORDED_FAILURE_EXPLAINED`;
+- `findingKind` is one of the four mechanisms and is the case's entry in `EXPECTED_MECHANISM` (a case
+  the table does not name cannot pass); `polarityDecides` is true;
 - `movedRoots` is non-empty and `valuationOrdinal ≥ 1` unless `CLOCK_SKEW`; an expected `root`/`value`
   must be moved to that value; for the RPC-failure entries (`fault: org.apache.hadoop.ipc.Client`,
   `clocks: False`) a MARKER moved to true whose declared site (the plan's `EXPLICIT_SYMBOLIC_FAULT`

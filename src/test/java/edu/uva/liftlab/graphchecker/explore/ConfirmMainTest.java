@@ -5,7 +5,9 @@ import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -745,6 +747,34 @@ public class ConfirmMainTest {
                 manifest(), other);
         assertTrue(!Files.exists(other.resolve(ConfirmMain.REALIZED))
                 && Files.exists(other.resolve(ObligationDir.FOCUSED_TASK)));
+    }
+
+    /**
+     * The run as recorded is no counterfactual (owner 2026-10-04): a claim
+     * on the seed's own path that moves no root and takes only the seed's
+     * own deliveries is refused by name before anything is planted or
+     * replayed -- hdfs-adhoc-32 (HG4) was confirmed by its seed replay,
+     * which had diverged from its recording into the fatal.
+     */
+    @Test
+    public void theRunAsRecordedIsRefusedByName() throws Exception {
+        Path iteration = iteration();
+        Path claim = claim("FAULT:IPC", "true");
+        JsonObject recorded = ExploreCodec.readObject(claim);
+        recorded.addProperty("seedSessionId", "sel");
+        recorded.getAsJsonObject("claim").add("movedRoots", new JsonObject());
+        Files.write(claim, recorded.toString().getBytes(
+                StandardCharsets.UTF_8));
+        Path out = folder.newFolder("as-recorded").toPath();
+        try {
+            ConfirmMain.write(iteration, claim, manifest(), out);
+            fail("the run as recorded was handed to a confirmation");
+        } catch (ConfirmMain.Refused refused) {
+            assertTrue(refused.getMessage(), refused.getMessage().startsWith(
+                    "the claim moves nothing: its witness is the run as "
+                            + "recorded"));
+        }
+        assertFalse(Files.exists(out.resolve(ConfirmMain.REALIZED)));
     }
 
     /**

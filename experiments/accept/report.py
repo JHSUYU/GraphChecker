@@ -38,10 +38,7 @@ BLOCKING.  A second implementation of one rule is the disagreement an
 acceptance harness is least able to survive, so this reads the composer's
 answer instead of forming its own.
 
-RECORDED_FAILURE_EXPLAINED is exempt from the polarity condition because
-ClaimPolicy constructs that kind with polarityDecides=false by definition: the
-seed run itself observed the fatal arm, so there is no other polarity to
-refute.  NO_SUPPORTED_WITNESS fails, naming the claimReason the policy gave.
+NO_SUPPORTED_WITNESS fails, naming the claimReason the policy gave.
 
 The probe's plain/buggy/other columns are printed when probe.tsv exists,
 as a reported signal.  Nothing gates on them.
@@ -257,8 +254,7 @@ findings = result.get("witnessFindings") or []
 # other ClaimKinds and deliberately not among them: a named case that reaches
 # one has not passed.
 ACCEPTED_FINDINGS = {"MARKER_FLIPPED", "CLOCK_SKEW",
-                     "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED",
-                     "RECORDED_FAILURE_EXPLAINED"}
+                     "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED"}
 # What a pairing kind moves is a pairing, not a root: ClaimPolicy names it
 # only where pinning the path's observed reads (or arrivals) refutes the
 # witness, and the claimed valuation names the arms it re-paired
@@ -300,11 +296,10 @@ if finding_kind == "NO_SUPPORTED_WITNESS":
                    % result.get("claimReason", "no reason published"))
 elif finding_kind not in ACCEPTED_FINDINGS:
     reasons.append("findingKind=%s" % finding_kind)
-elif not polarity_decides and finding_kind != "RECORDED_FAILURE_EXPLAINED":
+elif not polarity_decides:
     # The recording does not decide the mechanism, so the mechanism explains
     # nothing about the difference between the run that failed and the run
-    # that did not.  RECORDED_FAILURE_EXPLAINED is the one kind for which
-    # ClaimPolicy sets this false by construction.
+    # that did not.
     reasons.append("polarityDecides=false: the formula is satisfiable at the"
                    " recorded valuation, so %s explains nothing"
                    % finding_kind)

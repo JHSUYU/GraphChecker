@@ -252,8 +252,20 @@ public final class ConfirmMain {
         JsonObject world = obligationWorld(iteration, sessionId);
         Moved moved = Moved.of(decided, session,
                 SessionReader.read(iteration, seedSessionId), manifest);
+        boolean sawChosen = closure.ran(chosen);
+        // The run as recorded is no counterfactual (owner 2026-10-04: a
+        // claim moving no root is never a finding), whatever a replay of it
+        // observes: refused by name, so the campaign excludes it.
+        if (sessionId.equals(seedSessionId)
+                && object(decided, "movedRoots").size() == 0
+                && ownDeliveries(sessionId, arms) && sawChosen) {
+            throw new Refused("the claim moves nothing: its witness is the "
+                    + "run as recorded -- the seed's own path, every root "
+                    + "and clock as recorded, every arm its own delivery -- "
+                    + "so no run of it is a counterfactual");
+        }
         String realized = realizedBy(moved, world, sessionId, arms, session,
-                target, closure.ran(chosen));
+                target, sawChosen);
         if (!realized.isEmpty()) {
             RowCodec.writeJsonl(out.resolve(REALIZED),
                     Collections.singletonList(
@@ -767,9 +779,7 @@ public final class ConfirmMain {
                 || !moved.refusal.isEmpty()) {
             return "";
         }
-        for (JsonObject arm : arms) {
-            if (!sessionId.equals(optionalString(arm, "sessionId"))) return "";
-        }
+        if (!ownDeliveries(sessionId, arms)) return "";
         Map<String, String> ran = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
             ran.put(row.rootId(), row.recordedValue());
@@ -791,6 +801,17 @@ public final class ConfirmMain {
                 + (count == 0 ? "no moved root"
                 : "every moved root at the model's value")
                 + ", and observed the fatal at the anchor";
+    }
+
+    /** Whether every arm the model chose is a delivery of this session. */
+    private static boolean ownDeliveries(String sessionId,
+                                         List<JsonObject> arms) {
+        for (JsonObject arm : arms) {
+            if (!sessionId.equals(optionalString(arm, "sessionId"))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The focus row of the obligation whose replay is {@code sessionId}; empty

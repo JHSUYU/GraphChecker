@@ -58,8 +58,7 @@ when all of these hold:
   yet; a commit reservation that has run out);
 * `polarityDecides` is true — the formula is unsatisfiable at the recorded
   valuation, so the mechanism explains the difference between the run that
-  failed and the run that did not (only `RECORDED_FAILURE_EXPLAINED` is
-  exempt, by construction);
+  failed and the run that did not;
 * `valuationOrdinal` >= 1 and `movedRoots` is non-empty — a finding at the
   recorded valuation that moves nothing is the recording restated. A
   `CLOCK_SKEW` finding (11741) is exempt from the ordinal alone: a clock has a
