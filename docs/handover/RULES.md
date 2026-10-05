@@ -82,7 +82,10 @@ recommendation.
   ("只有sat我们要经过validation"): CONFIRM plus a native reproduction. A witness moving no root is never SAT. A real run
   failure (the occurrence never ran, a self-contradictory path, a solver timeout, CONFIRM without a verdict) is a
   named RUN_DEFECT: a bug to fix, not a verdict.
-- **A reasonable exploration bound, rarely touched** (owner 2026-10-05: "当然，我允许给一个合理的exploration的bound。如果过这个bound我们合理停下。但你不能大量的case都是触碰到这个bound"): exploration may stop at a declared, deterministic bound (a nesting depth, an obligation cap) and then publishes its formula with the bound named (a bounded verdict, visibly marked); reaching it must be rare. Every round counts the cases that touched it; more than a few is a defect (closure size, redundant obligations, slowness) fixed by a general rule, never by raising the bound per case. Running out of the time budget is not that bound: it is a run too slow (EXPLORATION_CUT, a named defect).
+- **A large closure converges; a bound is only a last-resort valve** (owner 2026-10-05: "当然，我允许给一个合理的exploration的bound。如果过这个bound我们合理停下。但你不能大量的case都是触碰到这个bound"; "有些case的 exploration过深。是真的因为闭包region很多而要很久。理论上我们当然希望所有闭包可以收敛，这种情况你也不能因为bound就把人家限死…毕竟我们单独跑这个case的时候有很多的集群资源，并行可以降低时间的"):
+  - a closure deep because it is genuinely large must converge: give it resources (run it alone on the whole cluster, many obligations in parallel, a longer case budget), never a cut; depth from redundant work (equivalent occurrences, re-asked arms) is an engine defect, fixed by a general rule;
+  - the sweep's case time limit is a convenience of a shared cluster, not a verdict: a case cut there (EXPLORATION_CUT) is rerun alone to its fixed point;
+  - a generous declared bound (a nesting depth, an obligation cap) may stop exploration as a last resort; such a stop is named in result.json, rare, counted every round, and each one is investigated (large or redundant).
 - **A check is done when its `.smt` is right** ("如果我们确实正确的跑出了.smt。包含必要的因果链，符号变量，符号传播。没有新bug也是
   可以理解的"): the causal chain, the symbols and their propagation read against the system's code; no new bug is then
   an acceptable outcome.
