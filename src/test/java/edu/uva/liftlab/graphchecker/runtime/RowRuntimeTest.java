@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -409,6 +410,119 @@ public class RowRuntimeTest {
                 Endpoint.messageSite("HADOOP_IPC", "REQUEST", ""));
     }
 
+    /**
+     * A request is its verb's k-th (IDENTITY §3): it opens a level of its
+     * own at its message site when it starts at its RPC engine's invoke
+     * point ({@code MessageDoors#requestStarting}), counted per verb, so a
+     * request of another verb inserted before it renames none
+     * (hdfs-adhoc-52 SL1-3: one extra RPC renamed every later one); the
+     * client's call inside it, and any frame after it, stay plain; a retry
+     * is its original's k at a site naming its attempt, and one whose
+     * original this level did not count is counted there.  Starting, it
+     * ends a RESPONSE its thread received, so it stands in the thread's own
+     * context; a REQUEST the thread serves stands.
+     */
+    @Test
+    public void aRequestIsItsVerbsKthInItsThreadsOwnContext()
+            throws Exception {
+        String call = "<org.apache.hadoop.ipc.Client: org.apache.hadoop.io."
+                + "Writable call(org.apache.hadoop.ipc.Client$Call)>";
+        String list = "ClientProtocol.getListing";
+        String stat = "ClientProtocol.getFileInfo";
+        String site = "HADOOP_IPC#REQUEST:";
+        // Each run's requests (verb, attempt); the expected level of each,
+        // "" for one inserted that the others need not match.
+        Object[][][] runs = {
+            {{list, 0, site + list + "@0"}, {stat, 0, site + stat + "@0"},
+                {list, 0, site + list + "@1"}},
+            {{list, 0, site + list + "@0"},
+                {"ClientProtocol.renewLease", 0, ""},
+                {stat, 0, site + stat + "@0"}, {list, 0, site + list + "@1"}},
+            {{list, 0, site + list + "@0"},
+                {list, 1, site + list + "#retry1@0"},
+                {stat, 0, site + stat + "@0"}, {list, 0, site + list + "@1"}},
+        };
+        SourceRef client = new SourceRef("EXTERNAL_APP", "DFS_CLIENT",
+                "t/client0", 0L);
+        for (Object[][] run : runs) {
+            reset();
+            Identity.resetForTests();
+            Object owner = new Object();
+            RuntimeTraceContext.registerSource(owner, client);
+            RecordingWindow.open();
+            long test = RuntimeTraceContext.beginRequest(client, "test");
+            String own = Identity.contextHere().render();
+            int ordinal = 0;
+            for (Object[] request : run) {
+                String verb = (String) request[0];
+                // The response to the request before it, received here.
+                String header = CausynthTraceRecorder.outboundExchange(
+                        "HADOOP_IPC", "corr-" + ordinal, "0", "RESPONSE",
+                        owner, null, "");
+                MessageDoors.inbound(header, "", "HADOOP_IPC",
+                        "corr-" + ordinal++, "0", "RESPONSE", owner, false);
+                long started = CausynthMessagePropagation.requestStarting(
+                        new RpcProtobufRequest("org.apache.hadoop.hdfs."
+                                + "protocol." + verb), (Integer) request[1]);
+                assertEquals(verb + ": the request is the thread's own",
+                        own, Identity.contextHere().render());
+                long entered = Identity.enterFrame(call, null);
+                List<Frame> frames = Identity.atScope().frames();
+                Identity.exitFrame(entered);
+                CausynthMessagePropagation.requestEnded(started);
+                assertEquals("the client's call in it is plain", call + "@0",
+                        frames.get(frames.size() - 1).render());
+                if (!((String) request[2]).isEmpty()) {
+                    assertEquals(Arrays.toString(request), request[2],
+                            frames.get(frames.size() - 2).render());
+                }
+            }
+            long after = Identity.enterFrame(call, null);
+            List<Frame> later = Identity.atScope().frames();
+            Identity.exitFrame(after);
+            assertEquals("a frame after the requests is plain", call + "@0",
+                    later.get(later.size() - 1).render());
+            RuntimeTraceContext.endRequest(test);
+            RecordingWindow.reset();
+        }
+
+        // A retry whose original another thread made (an asynchronous
+        // retry): counted at its retry site, two of them two levels.
+        List<String> retries = new ArrayList<>();
+        for (int retry = 0; retry < 2; retry++) {
+            long started = CausynthMessagePropagation.requestStarting(
+                    new RpcProtobufRequest("org.apache.hadoop.hdfs.protocol."
+                            + list), 1);
+            List<Frame> frames = Identity.atScope().frames();
+            retries.add(frames.get(frames.size() - 1).render());
+            CausynthMessagePropagation.requestEnded(started);
+        }
+        assertEquals(Arrays.asList(site + list + "#retry1@0",
+                site + list + "#retry1@1"), retries);
+
+        // A handler's nested call: the REQUEST it serves stands.
+        reset();
+        Identity.resetForTests();
+        Object handler = new Object();
+        RuntimeTraceContext.registerSource(handler, client);
+        RecordingWindow.open();
+        long test = RuntimeTraceContext.beginRequest(client, "test");
+        String header = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                "corr-served", "0", "REQUEST", handler, null, list);
+        MessageDoors.inbound(header, "", "HADOOP_IPC", "corr-served", "0",
+                "REQUEST", handler, false);
+        String serving = Identity.contextHere().render();
+        assertTrue(serving, serving.startsWith("Anchor:"));
+        long nested = CausynthMessagePropagation.requestStarting(
+                new RpcProtobufRequest("org.apache.hadoop.hdfs.protocol."
+                        + stat), 0);
+        assertEquals("a served request stands under its nested call",
+                serving, Identity.contextHere().render());
+        CausynthMessagePropagation.requestEnded(nested);
+        RuntimeTraceContext.endRequest(test);
+        RecordingWindow.reset();
+    }
+
     /** Named as Hadoop's protobuf RPC request is, which names itself by
      *  its header's protocol and method. */
     static final class RpcProtobufRequest {
@@ -549,11 +663,14 @@ public class RowRuntimeTest {
     }
 
     /**
-     * Counts start at the window.  hdfs-11741's balancer opens its request
-     * before the window and sends a varying number of set-up RPCs under it;
-     * the first send inside the window must be the same endpoint whatever
-     * the set-up sent, or its anchor -- and every context downstream of it
-     * -- differs between the recording and the replay.
+     * Counts start again at the window.  hdfs-11741's balancer opens its
+     * request before the window and sends a varying number of set-up RPCs
+     * under it; the first send inside the window must be the same endpoint
+     * whatever the set-up sent, or its anchor -- and every context
+     * downstream of it -- differs between the recording and the replay.  A
+     * site reached before the window starts again at 1 (its entries there
+     * all stand at 0), so a call the window opened in names its entries as
+     * one it opened before does (hdfs-adhoc-39).
      *
      * <p>Frames too: an iteration counted before the window stands at 0 in
      * an address made inside it.  hdfs-17899-bug1's DataXceiver threads
@@ -591,7 +708,7 @@ public class RowRuntimeTest {
         assertEquals(firstInWindow.get(0).id(), firstInWindow.get(1).id());
         assertTrue(firstInWindow.get(0).siteIndex().render(),
                 firstInWindow.get(0).siteIndex().render()
-                        .endsWith("HADOOP_IPC#REQUEST@0"));
+                        .endsWith("HADOOP_IPC#REQUEST@1"));
 
         Identity.resetForTests();
         long first = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
@@ -606,11 +723,14 @@ public class RowRuntimeTest {
                 Identity.siteIndex().render());
         Identity.exitFrame(second);
         long third = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
+        assertEquals("the window's first entry is the one after those that "
+                        + "stand at 0", "Cluster.startDataNodes()#u1@1",
+                Identity.siteIndex().render());
         Identity.exitFrame(third);
         long fourth = Identity.enterFrame("Cluster.startDataNodes()#u1",
                 null);
-        assertEquals("inside the window the count stands",
-                "Cluster.startDataNodes()#u1@1",
+        assertEquals("inside the window the count goes on",
+                "Cluster.startDataNodes()#u1@2",
                 Identity.siteIndex().render());
         Identity.exitFrame(fourth);
     }

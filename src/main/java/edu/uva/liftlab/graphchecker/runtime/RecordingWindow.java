@@ -11,7 +11,9 @@ package edu.uva.liftlab.graphchecker.runtime;
  * made of restarts here: a root hop's k ({@link Lineage}), site counts and
  * frame iterations ({@link Identity}), branch ordinals.  Counts before the
  * window are set-up history neither run controls.  A count files the index
- * it was taken in and is dropped when it counts in a later one.</p>
+ * it was taken in; counted in a later one, a site it reached starts again at
+ * 1, its earlier entries standing at 0 ({@code Identity.Counters#reopened}),
+ * and every other count is dropped.</p>
  *
  * <p>Where the workload opens it is its system's adapter's: once its cluster
  * is up, or -- for a case that declares it ({@link #atStartup}), whose fatal

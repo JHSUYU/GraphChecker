@@ -364,7 +364,35 @@ public final class Identity {
          * levels.</p>
          */
         private int nextSiteEvent(String site) {
-            return next(top().events(countingRoot()), site);
+            return nextSiteEvent(site, RecordingWindow.index());
+        }
+
+        /** {@link #nextSiteEvent} in {@code window}: an entry reads the
+         *  window once, for its count and its level alike. */
+        private int nextSiteEvent(String site, int window) {
+            return next(top().events(countingRoot(), window), site);
+        }
+
+        /**
+         * THE request's level (IDENTITY §3): the k-th request at its message
+         * site (which names its verb) in the enclosing level under the root
+         * hop that owns the count ({@link #nextSiteEvent}), as a start made
+         * with a request in hand is counted per verb: a request of another
+         * verb -- a heartbeat a replay inserted, a call a fault added --
+         * renames no later one (hdfs-adhoc-52 SL1-3: the test's every
+         * {@code Client.call@k} counted all its RPCs).  A retry (attempt
+         * {@code a}) is its original's k at {@code <site>#retry<a>}; one
+         * whose original this level did not count (a retry on another
+         * thread) is counted at that site, never a silent 0.
+         */
+        private Frame requestFrame(String site, int attempt, int window) {
+            if (attempt <= 0) {
+                return Frame.of(site, nextSiteEvent(site, window));
+            }
+            String retry = site + "#retry" + attempt;
+            Integer made = top().events(countingRoot(), window).get(site);
+            return made == null ? Frame.of(retry, nextSiteEvent(retry, window))
+                    : Frame.of(retry, made - 1);
         }
 
         /**
@@ -392,8 +420,9 @@ public final class Identity {
          * (hdfs-adhoc-35: @317 recorded, @404 replayed).  No two works can
          * share an address by it: each carries that hop's context.
          */
-        private int nextStartEvent(String site) {
-            return next(top().startEvents(Lineage.contextToken()), site);
+        private int nextStartEvent(String site, int window) {
+            return next(top().startEvents(Lineage.contextToken(), window),
+                    site);
         }
 
         private static int next(Map<String, Integer> events, String site) {
@@ -459,17 +488,17 @@ public final class Identity {
          * of closed hops are dropped here (hop tokens are never reused), so
          * a long-lived pool level holds no map per past task.
          */
-        private Map<String, Integer> events(long rootToken) {
-            return counts(counters, rootToken);
+        private Map<String, Integer> events(long rootToken, int window) {
+            return counts(counters, rootToken, window);
         }
 
         /** This level's start counts under the context hop {@code hop}. */
-        private Map<String, Integer> startEvents(long hop) {
-            return counts(startCounters, hop);
+        private Map<String, Integer> startEvents(long hop, int window) {
+            return counts(startCounters, hop, window);
         }
 
         private static Map<String, Integer> counts(List<Counters> filedHops,
-                                                   long hop) {
+                                                   long hop, int window) {
             for (int index = filedHops.size() - 1; index >= 0; index--) {
                 Counters filed = filedHops.get(index);
                 if (filed.rootToken == hop) {
@@ -478,8 +507,8 @@ public final class Identity {
                         filedHops.remove(filedHops.size() - 1);
                     }
                     // Counted before the window opened: count again.
-                    if (filed.window != RecordingWindow.index()) {
-                        filed = new Counters(hop);
+                    if (filed.window != window) {
+                        filed = filed.reopened(window);
                         filedHops.set(index, filed);
                     }
                     return filed.events;
@@ -488,7 +517,7 @@ public final class Identity {
                 if (Lineage.isOpen(filed.rootToken)) break;
                 filedHops.remove(index);
             }
-            Counters opened = new Counters(hop);
+            Counters opened = new Counters(hop, window);
             filedHops.add(opened);
             return opened.events;
         }
@@ -498,12 +527,36 @@ public final class Identity {
     private static final class Counters {
         private final long rootToken;
         /** The window these counts were taken in ({@link RecordingWindow}). */
-        private final int window = RecordingWindow.index();
+        private final int window;
         private final Map<String, Integer> events =
                 new HashMap<String, Integer>();
 
-        private Counters(long rootToken) {
+        private Counters(long rootToken, int window) {
             this.rootToken = rootToken;
+            this.window = window;
+        }
+
+        /**
+         * These counts, counted again from the opening of {@code window}: a
+         * site this level reached before it starts at 1.  Its m entries then
+         * all stand at 0 ({@link Level#addressed}), one perhaps still
+         * running, so the window's first entry is the next one: with m
+         * entries before the window, in-window entry j is {@code @(j + [m >
+         * 0])}.  Restarted at 0 it took the standing entry's address (round
+         * SL1, hdfs-adhoc-39: the NameNode's blockReport handler serving a
+         * DataNode's report queued two storage reports through {@code
+         * runBlockOp}, the first entered before the window, both lambdas at
+         * {@code runBlockOp@0}).  Two passes agree where their m are equal,
+         * or 0 and 1 (the window opened before, or during, one call); not 1
+         * and 2, nor 0 and m >= 1 where the earlier entries are set-up
+         * noise (IDENTITY §3).
+         */
+        private Counters reopened(int window) {
+            Counters counted = new Counters(rootToken, window);
+            for (String site : events.keySet()) {
+                counted.events.put(site, 1);
+            }
+            return counted;
         }
     }
 
@@ -525,7 +578,7 @@ public final class Identity {
      */
     private static final class Start {
         private static final Start UNNAMED = new Start(
-                Collections.<Frame>emptyList(), null, "", null, null, 0);
+                Collections.<Frame>emptyList(), null, "", null, null, 0, 0);
         /** The starter's frames from its scope root, then the start's. */
         private final List<Frame> frames;
         private final Attribution.Reference starter;
@@ -536,7 +589,7 @@ public final class Identity {
          */
         private final String key;
         /** The window the start was counted in ({@link Level#window}). */
-        private final int window = RecordingWindow.index();
+        private final int window;
         /**
          * The thread that made the start, and its innermost level then,
          * held weakly: a level holds its activation's receiver, which may be
@@ -549,13 +602,15 @@ public final class Identity {
         private final int depth;
 
         private Start(List<Frame> frames, Attribution.Reference starter,
-                      String key, Thread thread, Level level, int depth) {
+                      String key, Thread thread, Level level, int depth,
+                      int window) {
             this.frames = frames;
             this.starter = starter;
             this.key = key;
             this.thread = new WeakReference<Thread>(thread);
             this.level = new WeakReference<Level>(level);
             this.depth = depth;
+            this.window = window;
         }
 
         /** The start's own frame: its site and k. */
@@ -709,7 +764,9 @@ public final class Identity {
         // that operation's, its k counted per verb (IDENTITY §3).
         String site = state.requestVerb.isEmpty() ? stable
                 : stable + ":" + state.requestVerb;
-        int iteration = state.nextStartEvent(site);
+        // One reading of the window, for the count and the filed start.
+        int window = RecordingWindow.index();
+        int iteration = state.nextStartEvent(site, window);
         List<Frame> frames = new ArrayList<Frame>(
                 Arrays.asList(state.snapshot(state.scopeBase)));
         frames.add(Frame.of(site, iteration));
@@ -720,7 +777,8 @@ public final class Identity {
                         RuntimeTraceContext.nodeHere() + "|"
                                 + contextHere().render() + "|"
                                 + ExecutionIndex.of(frames).render(),
-                        Thread.currentThread(), state.top(), state.depth()));
+                        Thread.currentThread(), state.top(), state.depth(),
+                        window));
         ScheduleLog.observe(ScheduleEvent.Kind.START, site);
     }
 
@@ -737,6 +795,37 @@ public final class Identity {
     static void requestInHand(String verb) {
         // Not state(): a door is no identity event, and claims no start.
         CURRENT.get().requestVerb = Endpoint.verb(verb);
+    }
+
+    /**
+     * A request of {@code verb} starts on this thread, attempt {@code
+     * attempt} of it ({@code MessageDoors#requestStarting}): it is in hand
+     * from here ({@link #requestInHand}) and opens a level of its own at
+     * {@code site}, its message site ({@link State#requestFrame}), whatever
+     * of the client the case's scope frames.  A request naming no verb is
+     * only in hand.
+     *
+     * @return the token {@link #requestEnded} closes its level by, or 0
+     */
+    static long requestStarting(String site, String verb, int attempt) {
+        requestInHand(verb);
+        if (CURRENT.get().requestVerb.isEmpty()) return 0L;
+        State state = state();
+        int window = RecordingWindow.index();
+        return enter(state, state.requestFrame(JvmNames.stable(site),
+                attempt, window), null, window);
+    }
+
+    /**
+     * The request {@link #requestStarting} opened is over, answered or
+     * failed: its level closes and it is in hand no more, so a call that
+     * failed before its send (a connection refused) names no later start
+     * (the hdfs-17899-bug2 class, {@link #doorFaulted}).
+     */
+    static void requestEnded(long token) {
+        if (token <= 0L) return;
+        exitFrame(token);
+        requestInHand("");
     }
 
     /**
@@ -902,10 +991,20 @@ public final class Identity {
     public static long enterFrame(String callSiteId, Object receiver) {
         State state = state();
         String site = JvmNames.stable(Text.safe(callSiteId));
-        int iteration = state.nextSiteEvent(site);
+        // One reading of the window, for the count and the level alike: an
+        // entry racing the window's opening counted under one and filed
+        // under the other would keep a set-up count inside the window.
+        int window = RecordingWindow.index();
+        return enter(state, Frame.of(site, state.nextSiteEvent(site,
+                window)), receiver, window);
+    }
+
+    /** Opens one level at {@code frame}, counted in {@code window},
+     *  journalled and, under CONFIRM's order gate, entered. */
+    private static long enter(State state, Frame frame, Object receiver,
+                              int window) {
         long token = TOKENS.getAndIncrement();
-        state.levels.add(new Level(Frame.of(site, iteration), token,
-                receiver));
+        state.levels.add(new Level(frame, token, receiver, window));
         state.journal();
         if (Confirmation.ordering()) {
             String activation = activation(state, state.depth());
