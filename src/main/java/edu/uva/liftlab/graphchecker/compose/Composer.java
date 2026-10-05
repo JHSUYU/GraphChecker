@@ -360,9 +360,10 @@ public final class Composer {
         /**
          * One path's question with its fatal arm left out ({@link
          * #pathQuery}, its {@code path_fatal__} command replaced by the
-         * same implication without phi): what its own run satisfied, every
-         * root free.  Unsat, the composition contradicts the run itself
-         * (ClaimPolicy's self-check).
+         * same implication without phi) and no refuted claim asserted (a
+         * model CONFIRM refuted is no part of the run itself): what its own
+         * run satisfied, every root free.  Unsat, the composition
+         * contradicts the run itself (ClaimPolicy's self-check).
          */
         public ArtifactIO.Body withoutFatalArm(String selector) {
             Disjunct disjunct = bySelector(selector);
@@ -373,7 +374,7 @@ public final class Composer {
                 int start = 0;
                 for (int index = 0; index < commandEnds.length; index++) {
                     int end = commandEnds[index];
-                    if (!kept(index, selector)) {
+                    if (!kept(index, selector) || refutation(start, end)) {
                         start = end;
                         continue;
                     }
@@ -387,6 +388,14 @@ public final class Composer {
                 }
                 output.write("\n(assert " + selector + ")\n");
             };
+        }
+
+        /** Whether the command between these offsets asserts a refuted
+         *  claim ({@link Composer#refutations}): its name closes it. */
+        private boolean refutation(int start, int end) {
+            int at = body.indexOf(":named refuted_claim__",
+                    Math.max(start, end - 64));
+            return at >= 0 && at < end;
         }
 
         private boolean kept(int command, String selector) {
@@ -738,6 +747,14 @@ public final class Composer {
          *  only an unsat core shows. */
         public boolean assertsRefutations() {
             return !refutations.isEmpty();
+        }
+
+        /** Whether a refuted claim this formula excludes is on this path. */
+        public boolean refuted(String pathId) {
+            for (Refutations.Refuted model : refutations.values()) {
+                if (model.pathId.equals(pathId)) return true;
+            }
+            return false;
         }
 
         /**
@@ -1969,8 +1986,9 @@ public final class Composer {
     }
 
     /**
-     * A REFUSAL IS ITS FRAME'S ({@link SmtLowering.RefusalFrame}): an occurrence
-     * whose run refused an arrival computed on it as a constant, so a path
+     * A REFUSAL IS ITS FRAME'S ({@link SmtLowering.RefusalFrame}): an
+     * occurrence whose run refused an arrival computed on it as a constant,
+     * so a path
      * or an arm whose closure reaches it rests on that arrival's producer,
      * by THE ONE RULE ({@link SmtLowering#unbound}): where the producer the
      * refused attach's handle names rests on what can move, every write of

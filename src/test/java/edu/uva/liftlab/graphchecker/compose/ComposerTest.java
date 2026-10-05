@@ -802,9 +802,16 @@ public class ComposerTest {
                     next.body().contains("refuted_claim__0"));
             assertEquals(path, refuted,
                     named(next.gaps(), GapKind.CLAIM_REFUTED));
+            ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
             assertEquals(path, refuted ? ClaimKind.NO_SUPPORTED_WITNESS
                             : ClaimKind.MARKER_FLIPPED,
-                    ClaimPolicy.decide(next, solver()).claim().kind());
+                    again.claim().kind());
+            // A refuted model is no part of the run itself: a path it
+            // excludes does not contradict its own run, and the UNSAT names
+            // what it rests on.
+            assertFalse(path + ": " + again.claim().gaps(),
+                    named(again.claim().gaps(),
+                            GapKind.PATH_SELF_CONTRADICTORY));
         }
     }
 

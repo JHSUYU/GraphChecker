@@ -726,7 +726,9 @@ public final class ClaimPolicy {
      * observed the fatal arm, contradicts its run: DIAGNOSTIC per path, and
      * BLOCKING for the composition, since an UNSAT resting on it is about
      * the formula built and not about the recording.  A path refuted by its
-     * fatal arm alone is the claim's own answer.
+     * fatal arm alone is the claim's own answer, and so is one a refuted
+     * claim names: CONFIRM ran that model and disagreed, and the UNSAT
+     * names the refutation it rests on ({@code restsOnRefutations}).
      */
     private static void contradictions(Composer.Composition composition,
                                        Disjunction asks,
@@ -736,7 +738,10 @@ public final class ClaimPolicy {
         for (int i = 0; i < withoutFatalArms.size(); i++) {
             Composer.Disjunct disjunct = composition.disjuncts().get(i);
             Z3.Answer answer = withoutFatalArms.get(i);
-            if (answer.sat() && !disjunct.fatalObserved()) continue;
+            if (answer.sat() && (!disjunct.fatalObserved()
+                    || composition.refuted(disjunct.path().pathId))) {
+                continue;
+            }
             contradictory++;
             gaps.add(GapRow.of(disjunct.path().sessionId,
                     GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,

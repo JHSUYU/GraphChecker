@@ -1637,8 +1637,8 @@ public final class SmtLowering {
      * move it; free, it over-approximates and CONFIRM filters -- named with
      * what it rests on ({@link #unbound}); else, resting on nothing that
      * moves, the PIN.  Dropped, the join raised nothing.  A write its
-     * occurrence made on an arrival it refused (a {@link RefusalFrame}) was
-     * computed on that arrival as a constant: where the producer the
+     * occurrence made on an arrival it refused (a {@link RefusalFrame})
+     * was computed on that arrival as a constant: where the producer the
      * refused attach's handle names rests on what can move, the read is
      * FREE over it, as any value whose stated producer moves.  A PIN of a
      * version no write row states holds a value whose producer no row
@@ -1703,8 +1703,12 @@ public final class SmtLowering {
         if (pinned != null) {
             if (joined != null) top().dropped.add(joined.value().text);
             if (unwritten) {
-                held(key + "@" + version, binder.returned(),
-                        "no write row states this version");
+                String returned = binder.returned();
+                held(key + "@" + version, returned, returned.isEmpty()
+                        ? "no write row states this version, and the read "
+                        + "states no word: an opaque base, each query over "
+                        + "it held at what its call returned"
+                        : "no write row states this version");
             }
             return pinned;
         }
