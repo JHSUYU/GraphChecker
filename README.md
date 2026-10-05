@@ -325,9 +325,8 @@ asking** (priorities, which agent takes what, resuming parked work, merge order:
 recommendation.
 
 **The 2026-10-02 goal's rulings** (§0.1 has them verbatim)
-- **Symbolic scope first**, bug-driven and moderate: when a high-quality coordination bug is out of reach
-  only because a value is not symbolic or a read is not re-pairable, widen the scope generally for it;
-  small per-case adjustments (a case's declarations) are allowed.
+- **Symbolic scope first** (sharpened 2026-10-04, below): widen the scope generally so more checks are flippable;
+  per-system fine-tuning only, never per case.
 - **Checks are real bugs**, each verified in the system's source, marked in its tree with
   `@CausynthExceptionTarget`, one campaign each; a self-written cluster test may be the workload of a truly
   high-quality bug; a low-quality bug is skipped.
@@ -347,6 +346,53 @@ recommendation.
   cluster is up.
 - **Second-tier bugs are not a TODO** (owner 2026-10-03).
 
+**The 2026-10-04 goal's rulings** (owner, long-term; each one quoted)
+- **The checks are the study's points.** `study.txt` (branch `study`) lists the ad hoc coordination points with
+  their cluster tests; checks are those points, fine-tuned only, plus bug_study bugs that are real (hard to
+  recover, verified in the system's code), ad hoc coordination, and checkable: the whole causal path and its
+  symbolic propagation reach the `.smt` (an IO step that breaks propagation disqualifies a bug). A truly
+  high-quality bug without a cluster test may get a self-written one. One GraphChecker branch per system
+  (`system/<sys>`, the same body, small per-system adaptations). Order: HDFS, Solr, HBase, ZooKeeper.
+- **The narrowed selection** ("这些地方优先选择和control plane有交互的", "可能check的case多于我们的点位…这是好事"):
+  HDFS 38 points / 36 checked, Solr 21 / 13, HBase 30 / 17, ZooKeeper 13 / 10; points that interact with the control
+  plane, that GraphChecker covers, with a high-quality cluster test; every known bug stays a check; one point may
+  carry several checks. The lists are `selection.txt` on branch `study`; HDFS's are `experiments/hadoop/hdfs-adhoc/
+  checks.tsv` (46 HDFS cases with the 10 named ones).
+- **Swap the too-challenging** ("要是哪几个case实在是过于challenging。就从备选里挑一个质量也不错的。容易搞定的换上来"): a
+  check still a RUN_DEFECT after a reasonable fix round is replaced by a good, easier alternate, counts kept (HDFS:
+  05, 06, then 04, then 38/45); each swap updates `checks.tsv` and `selection.txt` with the reason.
+- **System by system** ("hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统", "下一个系统跑的时候就不要再管别的系统的事了"):
+  one system's whole group runs until it has no regression; nothing of another system is touched meanwhile.
+- **Symbolic scope is the top priority** ("你必须要合理扩大符号范围。让更多的都可翻转"): the selection stays automatic and
+  general; widen it so more checks are flippable. **Control flow counts as much as data flow**
+  ("if(obj.fieldA){xxx} xxx有data flow在，那obj.fieldA理应也作为符号的一部分被纳入"): a branch deciding whether slice code
+  runs makes its operands symbols, inside a method, along the call chain and at callers. **IO only on the traced
+  flow** ("io肯定也是要能在我们data flow整个流程上的才考虑（包括rpc, 或者别的）。别的io肯定不考虑"): an IO operation is a
+  counterfactual site only where its result or failure flows into what we trace.
+- **Only SAT or UNSAT** ("unsat就是unsat。我们不是symbolic propagaiton+merge吗。拼出.smt。结果肯定不是sat就是Unsat啊。你符号化的
+  就符号化，具体值的就具体值"): the composed `.smt` decides. The exported `candidate.smt2` is the full formula (the admitted
+  paths' disjunction, roots free over their domains, the fatal arm asserted) and UNSAT is z3's unsat on exactly
+  that file ("unsat这些至少都得是我们导出来了.smt吧"). A concrete value is a constant; a value that moves with a root is a
+  free leaf, never a pin; a claim is never refused because a value is concrete. **Only SAT is validated**
+  ("只有sat我们要经过validation"): CONFIRM plus a native reproduction. A witness moving no root is never SAT. A real run
+  failure (the occurrence never ran, a self-contradictory path, a solver timeout, CONFIRM without a verdict) is a
+  named RUN_DEFECT: a bug to fix, not a verdict.
+- **A check is done when its `.smt` is right** ("如果我们确实正确的跑出了.smt。包含必要的因果链，符号变量，符号传播。没有新bug也是
+  可以理解的"): the causal chain, the symbols and their propagation read against the system's code; no new bug is then
+  an acceptable outcome.
+- **Every change deletes what it replaces** ("每次这些你就要把旧代码，不用的代码，都删掉。我们也不需要保留fallback"): no
+  fallback, no flag keeping an old path, no compatibility shim; old artifacts, snapshots and outputs are cleaned up
+  too ("对不用的旧代码，旧产物，文件都清理了").
+- **Workarounds, with measure** ("如果一个workaroud能解决一个巨大的工程改动，就是可以的…我们在做research artifcact。你也不能充斥着
+  workaround。能general还是general", "不仅是符号选择。我们整个系统设计都要这样的"): across the whole design, a small manual
+  change in the system's code is allowed when it replaces a huge engine change, at one general point, listed in STATUS
+  "Per-system surface" with the checks it serves; never to force an expected mechanism; general engine rules first.
+- **Every case should be fast** ("整体我们跑通每个case都会比较快。如果有的case特别久，那可能就是有问题了。你要去看一下，不要傻等",
+  "如果你发现时间显著变慢，就要多看几眼了"): a case far slower than its peers or its history is investigated at once.
+  Slowness from ten busy lifts is understood; the final acceptance runs each case alone on the whole cluster
+  ("最终我们每个case挨个跑，每个case独占集群，那才是最终实现").
+- **Agents** ("具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"): see §2.
+
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
   dead code, no fallback paths, no flags to keep an old path. Per-system code is allowed only as a
@@ -359,6 +405,8 @@ recommendation.
   with it (this lead's wrong guesses cost hours: a VM image blamed for a hang that ran on stock HotSpot, a
   memory charge misread).
 - **Refactor bloat along the way** in the same commits as the goal work that touches it.
+- **Big strides, then debug** (owner 2026-09-23): for a large redesign, write the whole main body first (compile and
+  unit-test only), then run campaigns and debug; do not interleave many small live rounds with half a design.
 - **JVM-level relation preservation:** symbolic propagation is at the JVM level (shadows on slots,
   fields, objects), not KLEE's byte level. Every value moved outside interpreted bytecode is
   HOOKED, MODELED, or DETECTED-AND-PINNED by name — never lost silently. Shadows never belong to
@@ -442,7 +490,7 @@ a budget: "合理分配多agent", "减轻一些fan out的规模".
   reviewing a short diff.
 
 **How many and how**
-- **3–4 coding agents at once** (the owner's budget: "不要无限制地让子agent fan out"; seven at once burned the weekly
+- **At most 4 coding agents at once** (owner 2026-10-04: "具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"; read-only investigators and reviewers may be a few more, reviews only at key, complex places; refill a slot only with the current round's critical path) (the owner's budget: "不要无限制地让子agent fan out"; seven at once burned the weekly
   usage limit in two hours on 2026-10-02) plus short read-only reviewers; no agent spawns sub-agents; ask for short reports (≤ 15–20 lines);
   no idle polling loops (use a background command that exits on the condition, or a monitor).
 - Every coding agent gets its **own git worktree** (`isolation: worktree`) and branch, a disjoint
