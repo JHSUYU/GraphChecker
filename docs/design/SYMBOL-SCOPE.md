@@ -987,7 +987,9 @@ id (`plan/CommunicationCatalogContract#portId`).
 
 `communication-mappings.jsonl` (`-Dcausynth.communication.mappings`, from
 `causynth_communication_mappings`; one per system where the rows are the system's protocol, HDFS's
-`experiments/hadoop/communication-mappings.jsonl` for every HDFS case) holds WIRE_FLOW rows; a
+`experiments/hadoop/communication-mappings.jsonl` for every HDFS case) holds WIRE_FLOW rows; a row
+naming no method the analysed program holds is not that program's flow and is skipped by name
+(`WireFlowCatalog#applies`), one naming some of them and not others is refused; a
 row of any other kind (a DOOR row: doors are the library catalog's, §4.2) is refused:
 
 ```json

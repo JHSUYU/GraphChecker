@@ -47,6 +47,13 @@ public final class WireFlowCatalog {
             Map<String, SootMethod> methods) throws IOException {
         List<WireFlow> flows = new ArrayList<>();
         for (Row row : rows()) {
+            if (!applies(row.json, methods)) {
+                System.err.println("causynth: communication mapping "
+                        + string(row.json, "id") + " (" + row.at + ") names no"
+                        + " method this program holds: not this program's"
+                        + " flow");
+                continue;
+            }
             try {
                 flows.add(parse(row.json, methods));
             } catch (RuntimeException invalid) {
@@ -55,6 +62,29 @@ public final class WireFlowCatalog {
             }
         }
         return new WireFlowCatalog(flows);
+    }
+
+    /**
+     * Whether a declared flow is this program's: a system's mapping file
+     * declares its protocol's flows once for every case, and a program that
+     * holds none of a row's methods (producer, consumer, frame methods)
+     * carries none of its values.  A row holding some of them and not others
+     * is a broken declaration, refused by {@link #parse} by name: a skipped
+     * flow would read as "never sent".
+     */
+    static boolean applies(JsonObject row, Map<String, SootMethod> methods) {
+        List<String> named = new ArrayList<>();
+        for (String side : new String[] {"producer", "consumer"}) {
+            JsonElement capture = row.get(side);
+            if (capture != null && capture.isJsonObject()) {
+                named.add(string(capture.getAsJsonObject(), "method"));
+            }
+            named.add(string(row, side + "FrameMethod"));
+        }
+        for (String method : named) {
+            if (!method.isEmpty() && methods.containsKey(method)) return true;
+        }
+        return false;
     }
 
     private static final class Row {
