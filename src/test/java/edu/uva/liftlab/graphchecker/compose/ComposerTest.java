@@ -7693,4 +7693,38 @@ public class ComposerTest {
         session.target(symbol, observedFatal, true);
         session.write();
     }
+
+    /**
+     * An object the VM named is a reference identity whatever its kind: an
+     * instance's M_L'class'_rid and an array's A<type>_<rid>-<version>, one
+     * identity at every version (hdfs-adhoc-50, round HG5A: a read of a
+     * field holding an array stated "AL_42-0" and every path pinning it was
+     * refused as placed nowhere).
+     */
+    @Test
+    public void anArrayTheVmNamedIsOneReferenceIdentity() {
+        Object[][] rows = {
+                {"M_L'java/lang/Object'_17", 17L, "M_L'java/lang/Object'_17"},
+                {"AL_42-0", 42L, "AL_42"},
+                {"AL_42-3", 42L, "AL_42"},
+                {"A[_7-0", 7L, "A[_7"},
+                {"AL_x-0", -1L, "AL_x-0"},
+                {"ALPHA_1-2", -1L, "ALPHA_1-2"},
+                {"P_L'java/lang/Object'_", -1L, "P_L'java/lang/Object'_"},
+        };
+        for (Object[] row : rows) {
+            String symbol = (String) row[0];
+            assertEquals(symbol, row[1], VmRows.referencedObjectRid(symbol));
+            assertEquals(symbol, row[2], VmRows.objectIdentity(symbol));
+        }
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        VmTermLowering.Term first = lowering.statedValue("AL_42-0", "L");
+        VmTermLowering.Term later = lowering.statedValue("AL_42-3", "L");
+        lowering.end();
+        assertNotNull("an array identity is placed", first);
+        assertEquals(VmTermLowering.Sort.REF, first.sort);
+        assertEquals("one array, one identity", first.text, later.text);
+    }
 }

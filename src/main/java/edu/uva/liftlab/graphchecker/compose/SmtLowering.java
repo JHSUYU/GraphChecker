@@ -2698,8 +2698,11 @@ public final class SmtLowering {
      * unnamed, made the recording's own path reach the NoNode throw).
      */
     private String opaque(String raw, Sort sort) {
+        // As a reference, an array is one object at every version its
+        // spelling states (A<type>_<rid>-<version>); as a state it is not.
         String name = symbols.mint("identity__",
-                scope + SEPARATOR + sort + SEPARATOR + raw, 10);
+                scope + SEPARATOR + sort + SEPARATOR + (sort == Sort.REF
+                        ? VmRows.objectIdentity(raw) : raw), 10);
         declare(name, sort);
         boolean minted = opaqueIdentities.put(name, raw) == null;
         long rid = VmRows.referencedObjectRid(raw);

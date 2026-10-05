@@ -3,6 +3,9 @@ package edu.uva.liftlab.graphchecker.smt;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -93,6 +96,9 @@ public final class VmRows {
     public static final String CONTAINER_BASE_UNSTATED =
             "CONTAINER_BASE_UNSTATED";
 
+    /** An array the VM named: {@code A<type char>_<rid>-<version>}. */
+    private static final Pattern ARRAY_IDENTITY =
+            Pattern.compile("A[A-Z\\[]_(\\d+)-\\d+");
     private static final String TRUNCATED_EXPRESSION_TYPE =
             "TruncatedExpression";
     private static final String TRUNCATION_AUTHORITY =
@@ -109,9 +115,30 @@ public final class VmRows {
                 && symbol.endsWith("'_");
     }
 
-    /** The rid one {@code M_L'class'_rid} reference symbol names, or -1. */
+    /**
+     * What one object the VM named is called at every version: an array's
+     * spelling without its version ({@code A<type>_<rid>}), any other
+     * symbol itself.
+     */
+    public static String objectIdentity(String symbol) {
+        if (symbol == null) return "";
+        Matcher array = ARRAY_IDENTITY.matcher(symbol);
+        return array.matches()
+                ? symbol.substring(0, symbol.lastIndexOf('-')) : symbol;
+    }
+
+    /**
+     * The rid one object the VM named states, or -1: an instance's {@code
+     * M_L'class'_rid}, or an array's {@code A<type>_<rid>-<version>}
+     * ({@code ArraySymbolExp}, what a reference cell holding an array states
+     * it returned, VM.md §5.2; one array at any version is one object).
+     * hdfs-adhoc-50 (round HG5A): a read of a field holding an array stated
+     * {@code "AL_42-0"}, and every path pinning it was refused.
+     */
     public static long referencedObjectRid(String symbol) {
         if (symbol == null) return -1L;
+        Matcher array = ARRAY_IDENTITY.matcher(symbol);
+        if (array.matches()) return Long.parseLong(array.group(1));
         int quoted = symbol.lastIndexOf("'_");
         if (!symbol.startsWith("M_L'") || quoted < 0) return -1L;
         String digits = symbol.substring(quoted + 2);
