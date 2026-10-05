@@ -264,7 +264,11 @@ joined the recording did at once (17's first heartbeats fell in the millisecond 
 registration; run at host speed toward the opening instead, round TM1's replay set them half a second
 late and no turn #1 found its heartbeat due); nothing past the line, after the window closes, or with
 no order. A thread that waited (a timed wait, `TimedWaits`) reads at least one tick past where time stood
-when its wait began (`Clocks#waited`): a real clock moves across a sleep and code divides by it (Hadoop's
+when its wait began, and its deadline if the wait ran its time out, never past the cap (`Clocks#waited`):
+a wait that ran out saw its time pass (round TM7: DataNodes' waits for their next heartbeat ran out on the
+host while the order stood 0.6 s before them, and each turn #1 found its heartbeat not due), while a wait
+the recording ended by a signal before its timeout still finds its deadline past what the order reached;
+and a real clock moves across a sleep and code divides by it (Hadoop's
 `GcTimeMonitor` died in every replay of rounds TM1/TM2 on a run span of zero), and per thread, from
 where time stood, no polling loop pushes it on (time creeping on for every reader instead ran
 hdfs-adhoc-17's start-up 29 ms past its first registration, round TM5). So a slower replay waits at the cap where its
