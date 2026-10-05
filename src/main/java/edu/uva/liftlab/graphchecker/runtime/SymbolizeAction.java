@@ -72,6 +72,9 @@ final class SymbolizeAction {
     final String configSource;
     final String configDomainMin;
     final String configDomainMax;
+    /** A fault marker's name ({@code FAULT:<TRANSPORT>:..}); "" for any
+     *  other input. */
+    final String marker;
     /** The static site the plan observed this read at, or "". */
     final String siteId;
     /** The recorded event this read was observed at, or -1. */
@@ -141,6 +144,8 @@ final class SymbolizeAction {
                 InputActionCatalog.DECLARED_DOMAIN_MIN);
         this.configDomainMax = optionalString(json,
                 InputActionCatalog.DECLARED_DOMAIN_MAX);
+        this.marker = optionalString(json,
+                InputActionCatalog.DECLARED_FAULT_MARKER);
         this.siteId = optionalString(json, "siteId");
         this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
         this.recordedPrimitiveValue = optionalBool(json, "observed", false)

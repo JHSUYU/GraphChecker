@@ -350,10 +350,26 @@ public final class LibraryCatalog {
     /** Whether a marker name is a demanded door's ({@code
      *  FAULT:<TRANSPORT>:..} of a transport whose doors are demanded). */
     public static boolean demandedMarker(String name) {
+        return doorMarker(name, true);
+    }
+
+    /** Whether a marker name is a message door's ({@code
+     *  FAULT:<TRANSPORT>:..} of a transport whose doors are not demanded):
+     *  its fault ends an exchange, a local file operation's ends none. */
+    public static boolean exchangeMarker(String name) {
+        return doorMarker(name, false);
+    }
+
+    /** Whether a marker name is a door's of a transport whose doors are
+     *  {@code demanded}, or are not. */
+    private static boolean doorMarker(String name, boolean demanded) {
         String[] parts = name == null ? new String[0] : name.split(":", -1);
         if (parts.length < 2 || !"FAULT".equals(parts[0])) return false;
         for (Door door : doors()) {
-            if (door.demanded && door.transport.equals(parts[1])) return true;
+            if (door.demanded == demanded
+                    && door.transport.equals(parts[1])) {
+                return true;
+            }
         }
         return false;
     }

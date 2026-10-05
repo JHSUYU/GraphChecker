@@ -268,7 +268,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 |---|---|---|
 | `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`), then the guards of the calls into its method, three calls up, never into an execution context's entry (a thread's or task's `run`, a `call`, a `main`: its starter runs it) (`StaticScopeMap#targetChain`, `Guards#callsInto`): the decisions its occurrence takes on the way to the throw. The static planner roots a region at the target's method itself (`FAILURE_TARGET_ENTRY`), but its callers' region is the occurrence it folds into at run time |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
-| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `demandDistance` (the root demand's distance to this read, §4.6) |
+| `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `marker` (a fault marker's name, §4.2), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
@@ -437,8 +437,11 @@ catalog reads, whose every field is configuration (Solr's `NodeConfig`, `CloudCo
 
 A `FAULT:` marker is a `DECLARED_SITE` (`inputKind: FAULT`) iff its transport is a catalog door's
 (`StaticScopeMap#declaredFault`, `LibraryCatalog#transports`); a marker whose name does not start
-with `FAULT:` is the workload's own and always declared. The recorded polarity is `false`. How
-fault decisions become flip sites is IDENTITY.md §7.
+with `FAULT:` is the workload's own and always declared. The recorded polarity is `false`. The
+row states the marker's name (`marker`), and so does the input it plans (`DECLARED_FAULT_MARKER`): a
+replay that answers a message door's marker `true` ends the thread's request in hand by it, as a
+native plant does (IDENTITY.md §3, `Identity#doorFaulted`). How fault decisions become flip sites
+is IDENTITY.md §7.
 
 ### 4.3 Configuration and configured sources
 

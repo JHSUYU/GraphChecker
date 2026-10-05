@@ -44,9 +44,16 @@ row cut never hides the witness path's rows.
 an IPC door fault the request gets no receipt and stays "in hand". Every later thread start on that
 thread then appends `:NamenodeProtocol.getBlockKeys` to its name, so the SPS daemon's occurrence,
 which sends the key id, gets an address no plan instrumented.
-- Fix: a fault marker that comes out true clears the request in hand. In replays this is
-  `RootMint#materializePrimitive`; in a native run, `RecordingPlant#marker`.
-- This is an identity change: send a short design to a review agent, then a live bug2 run.
+- Fix, on branch `hdfs-request-in-hand` (worktree `/bigtemp/vnr3ne/wt/gc-hdfs-request-in-hand`): a
+  message door's marker that comes out true clears the request in hand (`Identity#doorFaulted`),
+  called by a replay's mint (`RootMint`, which learns the marker's name from the scope map's FAULT
+  input, `marker`) and by a native plant (`RecordingPlant#marker`); a LOCAL_IO door's does not.
+- Live, snapshot `~/gc-run/rih1` (`99e8512d9`), image `vm-hg5`, `/bigtemp/vnr3ne/gc-out/hdfs-request-in-hand/
+  accept-RIH1-17899-bug{1,2,3}`: all three PASS, MARKER_FLIPPED by the target DataNode heartbeat's IPC
+  response door, confirmed, reproduced natively 10/10; cone.py without the FREE exemption (`0219d06b8`)
+  finds the moved root in the cone and 0 unbound boundary variables. bug2's one fatal boundary variable,
+  `data-encryption-key-id` at the DataNode's SASL server, is bound by its message family to the SPS's
+  producer; no session names a start by a faulted request's verb. Next: merge.
 - Done when bug2's witness binds the key id across the wire and `cone.py` passes without the
   exemption.
 

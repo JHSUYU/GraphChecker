@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -108,9 +109,10 @@ public final class Identity {
         private Object work;
         /**
          * The verb of the request this thread has in hand: its last outbound
-         * named it and no receipt came since ({@link #requestInHand}); a
-         * start it makes meanwhile hands that request off ({@link
-         * #startWork}).  Its own: a child thread starts with none.
+         * named it and neither a receipt nor a message door's fault came
+         * since ({@link #requestInHand}, {@link #doorFaulted}); a start it
+         * makes meanwhile hands that request off ({@link #startWork}).  Its
+         * own: a child thread starts with none.
          */
         private String requestVerb = "";
 
@@ -707,7 +709,8 @@ public final class Identity {
     /**
      * Sets the request this thread has in hand: every outbound states its
      * verb ({@code ""} for a message whose door names none, and for a
-     * response), every receipt clears it.  The Hadoop IPC caller sends its
+     * response), every receipt and every message door's fault clears it
+     * ({@link #doorFaulted}).  The Hadoop IPC caller sends its
      * request, hands it to the connection's sender (a queue offer, the
      * start {@link #startWork} names), waits and receives the response: a
      * DataNode turn's heartbeat hand-off no longer takes its block report's
@@ -716,6 +719,23 @@ public final class Identity {
     static void requestInHand(String verb) {
         // Not state(): a door is no identity event, and claims no start.
         CURRENT.get().requestVerb = Endpoint.verb(verb);
+    }
+
+    /**
+     * A fault marker answered true on this thread, where a run decides one
+     * (a replay's mint, {@link RootMint}; a native reproduction's plant,
+     * {@link RecordingPlant#marker}): a message door's fault ends the
+     * exchange the thread had in hand, in failure, as a receipt ends it, so
+     * no later start hands that request off.  Left in hand, it named every
+     * later start of the thread (hdfs-17899-bug2: once the SPS key
+     * manager's {@code getBlockKeys} request faulted, the test thread
+     * started the SPS daemon as {@code
+     * Daemon.start()#u5:NamenodeProtocol.getBlockKeys}, an address no plan
+     * instrumented, and the key id's producer went unattested).  A demanded
+     * door's fault (a local file operation) ends no exchange.
+     */
+    static void doorFaulted(String marker) {
+        if (LibraryCatalog.exchangeMarker(marker)) requestInHand("");
     }
 
     /**
