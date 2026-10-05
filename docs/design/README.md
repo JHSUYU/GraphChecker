@@ -108,7 +108,7 @@ declared target `(r,c)`: the occurrences that store, or decide against, what the
   `PLAN_CLOSURE_CUT` (BLOCKING).
 
 **4. INSTRUMENT** weaves region hooks, doors (FAULT markers on both directions), the demanded
-LOCAL_IO doors, loop bounds, random draws and timed waits into the case's classes. The result is
+LOCAL_IO doors, loop bounds, random draws, directory listings (sorted) and timed waits into the case's classes. The result is
 checked by the JVM verifier.
 
 **5. REPLAY** runs on the concolic VM ([VM.md](VM.md)).

@@ -22,7 +22,9 @@ import java.util.stream.Stream;
  * WorkStartSites#draws}: the weave keys each draw by its site, so a replay
  * draws what its recording drew wherever the class sits; HDFS's
  * NetworkTopology, which places a pipeline's DataNodes by ThreadLocalRandom,
- * neither hands off work nor is analysed).
+ * neither hands off work nor is analysed), or lists a directory ({@link
+ * WorkStartSites#lists}: the weave sorts the listing, so every run walks a
+ * directory in one order whatever file system it runs on).
  * A lineage hole puts everything after it under
  * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
  * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
@@ -119,6 +121,8 @@ public final class LineageScan {
                                         .length)
                                 || WorkStartSites.mayWait(callee)
                                 || WorkStartSites.draws(owner, callee,
+                                        calleeDescriptor)
+                                || WorkStartSites.lists(owner, callee,
                                         calleeDescriptor)) {
                             found[0] = true;
                         }
