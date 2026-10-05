@@ -58,7 +58,7 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  * <p>The run as recorded is no counterfactual (owner 2026-10-04: a claim
  * moving no root is never a finding): a seed replay that observed the fatal
  * at the declared occurrence leaves no claim on the corpus, SEED_OBSERVED_FATAL
- * BLOCKING ({@link #read}), and a witness that is the run as recorded is
+ * BLOCKING ({@link #unasked}), and a witness that is the run as recorded is
  * never FORMULA_SAT's while another moves something ({@link #asRecorded}).</p>
  *
  * <p>Two names ride on top: a formula sat as the run happened (recorded
@@ -342,21 +342,38 @@ public final class ClaimPolicy {
                 claim.movedRoots(), claim.polarityDecides(), gaps);
     }
 
+    /**
+     * The claim the solved valuations support: first every answer the claim
+     * is read off ({@link Reading#of}), then the claim, narrowest evidence
+     * first -- a moved root (1), no moved root but the clocks or a pairing
+     * (2), a moved configuration only, ranked after both, and another
+     * session's path that observed the fatal at the recorded roots (3) --
+     * else no supported witness.
+     */
     private static Decision read(Composer.Composition composition,
                                  Disjunction asks) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
-        List<Outcome> outcomes = new ArrayList<Outcome>();
-        if (composition.disjuncts().isEmpty()) {
-            // An occurrence no session reached is a claim about the corpus.
-            return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS, 0,
-                    Collections.<String, String>emptyMap(), false, gaps),
-                    outcomes);
-        }
-        // The seed replay observed the fatal at the declared occurrence: the
-        // run as recorded is no counterfactual, so nothing composed over
-        // this corpus is a claim.  The recording itself threw there, PLAN's
-        // TARGET_FATAL_IN_RECORDING (a declaration defect), or the replay
-        // diverged from it.
+        Decision unasked = unasked(composition, gaps);
+        if (unasked != null) return unasked;
+        Reading reading = Reading.of(composition, asks, gaps);
+        Decision claimed = reading.movedRoot(false);
+        if (claimed == null) claimed = reading.clockOrPairing();
+        if (claimed == null) claimed = reading.movedRoot(true);
+        if (claimed == null) claimed = reading.observedElsewhere();
+        return claimed != null ? claimed : reading.noWitness();
+    }
+
+    /**
+     * The claim of a corpus no valuation is asked of, or null: none where no
+     * session reached the occurrence, and none where the seed replay
+     * observed the fatal at the declared occurrence -- the run as recorded
+     * is no counterfactual, so nothing composed over this corpus is a claim
+     * (the recording itself threw there, PLAN's TARGET_FATAL_IN_RECORDING,
+     * a declaration defect, or the replay diverged from it).
+     */
+    private static Decision unasked(Composer.Composition composition,
+                                    List<GapRow> gaps) {
+        if (composition.disjuncts().isEmpty()) return none(gaps);
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             if (!disjunct.fatalObserved() || !disjunct.path().sessionId
                     .equals(composition.seedSessionId())) {
@@ -372,24 +389,116 @@ public final class ClaimPolicy {
                             + "from its recording, or, where PLAN names "
                             + "TARGET_FATAL_IN_RECORDING, the case declares "
                             + "an occurrence that throws as recorded"));
-            return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS, 0,
-                    Collections.<String, String>emptyMap(), false, gaps),
-                    outcomes);
+            return none(gaps);
         }
-        // Each disjunct asked alone with every root free: unsat there is a
-        // self-contradictory path, not a statement about the roots.  Asked
-        // first: such a path is refuted for every question after it.
-        selfContradictory(composition, asks, gaps);
-        outcomes.addAll(inParallel(composition.valuations(),
-                valuation -> outcome(composition, asks, valuation,
-                        Collections.<String>emptyList(),
-                        valuation.ordinal() == 0)));
-        Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
+        return null;
+    }
 
-        // An undecided valuation is named: no witness there.  The verdict
-        // is the formula's own answer ({@link #closed}).
-        for (Outcome outcome : outcomes) {
-            if (outcome.answer().decided()) continue;
+    private static Decision none(List<GapRow> gaps) {
+        return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS, 0,
+                Collections.<String, String>emptyMap(), false, gaps),
+                new ArrayList<Outcome>());
+    }
+
+    /**
+     * Every answer one composition's claim is read off, asked once in this
+     * order: each path alone with every root free (a self-contradictory
+     * path is refuted for every question after it), each valuation, then the
+     * run as it happened -- every clock pinned to its reading and every path
+     * to its own pairing ({@code Composition#recordedPairings}), which no
+     * valuation pins -- and, where that refutes a free witness, the clocks
+     * alone, which tells whether they decide it (CLOCK_SKEW).
+     */
+    private static final class Reading {
+        private final Composer.Composition composition;
+        private final Disjunction asks;
+        private final List<GapRow> gaps;
+        private final List<Outcome> outcomes;
+        private final List<String> cells;
+        /** Every clock at its reading and every path at its own pairing. */
+        private final List<String> asHappened;
+        /** The free witness of the recorded valuation, asked as happened. */
+        private final Outcome asRecorded;
+        /** The run as it happened refutes the recorded valuation's
+         *  witness: a moved root must reach the fatal arm held so. */
+        private final boolean recordingDecides;
+        /** The clock pins alone refute it. */
+        private final boolean clockDriven;
+        /** The recorded valuation's refutation names a valuation pin; else
+         *  the path refuted itself under every valuation. */
+        private final boolean polarityDecides;
+        private Outcome recorded;
+        /** Configuration roots a witness's plant cannot reach, named. */
+        private final Set<String> partial = new LinkedHashSet<String>();
+
+        private Reading(Composer.Composition composition, Disjunction asks,
+                        List<GapRow> gaps, List<Outcome> outcomes,
+                        List<String> asHappened, Outcome asRecorded,
+                        boolean recordingDecides, boolean clockDriven) {
+            this.composition = composition;
+            this.asks = asks;
+            this.gaps = gaps;
+            this.outcomes = outcomes;
+            this.cells = composition.clockCells();
+            this.asHappened = asHappened;
+            this.asRecorded = asRecorded;
+            this.recordingDecides = recordingDecides;
+            this.clockDriven = clockDriven;
+            this.recorded = outcomes.isEmpty() ? null : outcomes.get(0);
+            if (clockDriven) {
+                recorded = leastClocks(composition, asks, recorded, cells,
+                        true, gaps);
+                outcomes.set(0, recorded);
+            }
+            if (recorded != null && recorded.witness()
+                    && !recorded.selected().fatalObserved()
+                    && !recordingDecides) {
+                gaps.add(GapRow.of(recorded.selected().path().sessionId,
+                        GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
+                        GapClass.DIAGNOSTIC,
+                        recorded.selected().path().pathId,
+                        "this disjunct is satisfiable with every declared "
+                                + "root at its recorded value, and its own "
+                                + "recording took the healthy arm"));
+            }
+            this.polarityDecides = recorded != null
+                    && recorded.answer().unsat()
+                    && namesAValuation(recorded.answer().core());
+        }
+
+        static Reading of(Composer.Composition composition,
+                          Disjunction asks, List<GapRow> gaps) {
+            selfContradictory(composition, asks, gaps);
+            List<Outcome> outcomes = new ArrayList<Outcome>(inParallel(
+                    composition.valuations(), valuation -> outcome(
+                            composition, asks, valuation,
+                            Collections.<String>emptyList(),
+                            valuation.ordinal() == 0)));
+            for (Outcome outcome : outcomes) {
+                if (!outcome.answer().decided()) undecided(outcome, gaps);
+            }
+            Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
+            List<String> cells = composition.clockCells();
+            List<String> asHappened = new ArrayList<String>(pins(composition,
+                    cells));
+            asHappened.addAll(composition.recordedPairings());
+            Outcome asRecorded = recorded != null && recorded.witness()
+                    && !asHappened.isEmpty()
+                    ? outcome(composition, asks, recorded.valuation(),
+                            asHappened, false) : null;
+            boolean recordingDecides = asRecorded != null
+                    && asRecorded.answer().unsat();
+            boolean clockDriven = recordingDecides && !cells.isEmpty()
+                    && outcome(composition, asks, recorded.valuation(),
+                            pins(composition, cells), false).answer()
+                            .unsat();
+            return new Reading(composition, asks, gaps, outcomes, asHappened,
+                    asRecorded, recordingDecides, clockDriven);
+        }
+
+        /** An undecided valuation is named: no witness there.  The verdict
+         *  is the formula's own answer ({@link #closed}). */
+        private static void undecided(Outcome outcome, List<GapRow> gaps) {
             String reason = outcome.answer().reason();
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
@@ -404,195 +513,148 @@ public final class ClaimPolicy {
                             ? "it stated no reason" : reason)));
         }
 
-        // The run as it happened pins every clock to its reading and every
-        // path to its own pairing (Composition#recordedPairings), not just
-        // the roots: no valuation pins either.  Asked ONCE here; the answer
-        // is read by the alarm, loop 1, branch 2 and #mechanism.  Unsat while
-        // the free valuation is sat means a clock or a pairing reaches the
-        // fatal arm; asking the clocks alone tells which (CLOCK_SKEW).
-        List<String> cells = composition.clockCells();
-        List<String> asHappened = new ArrayList<String>(pins(composition,
-                cells));
-        asHappened.addAll(composition.recordedPairings());
-        boolean freeSat = recorded != null && recorded.witness();
-        Outcome asRecorded = freeSat && !asHappened.isEmpty()
-                ? outcome(composition, asks, recorded.valuation(),
-                        asHappened, false) : null;
-        boolean recordingDecides = asRecorded != null
-                && asRecorded.answer().unsat();
-        boolean clockDriven = recordingDecides && !cells.isEmpty()
-                && outcome(composition, asks, recorded.valuation(),
-                        pins(composition, cells), false).answer().unsat();
-        if (clockDriven) {
-            recorded = leastClocks(composition, asks, recorded, cells, true,
-                    gaps);
-            outcomes.set(0, recorded);
-        }
-        if (recorded != null && recorded.witness()
-                && !recorded.selected().fatalObserved()
-                && !recordingDecides) {
-            gaps.add(GapRow.of(recorded.selected().path().sessionId,
-                    GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
-                    GapClass.DIAGNOSTIC,
-                    recorded.selected().path().pathId,
-                    "this disjunct is satisfiable with every declared root "
-                            + "at its recorded value, and its own recording "
-                            + "took the healthy arm"));
+        /**
+         * 1. A declared root moved inside its domain, of this pass's rank: a
+         * witness moving configuration only ranks after every other, the
+         * clocks and pairings of 2 included ({@code
+         * Composer#configurationOnly}).  Polarity (ordinal 0 unsat) is a
+         * CONDITION on the claim; when the recording decides the arm, a
+         * moved root must reach the fatal arm with clocks and pairings held
+         * as recorded, so neither is part of the witness.
+         */
+        Decision movedRoot(boolean configuration) {
+            return recordingDecides ? movedAsHappened(configuration)
+                    : movedFree(configuration);
         }
 
-        // Polarity decides only when the unsat core names a valuation pin;
-        // otherwise the path refuted itself under every valuation.
-        boolean polarityDecides = recorded != null
-                && recorded.answer().unsat()
-                && namesAValuation(recorded.answer().core());
-
-        // 1. A declared root moved inside its domain; polarity (ordinal 0
-        // unsat) is a CONDITION on the claim.  When the recording decides
-        // the arm, a moved root must reach the fatal arm with clocks and
-        // pairings held as recorded, so neither is part of the witness.
-        // A witness moving configuration only ranks after every other, the
-        // clocks and pairings of 2 included (Composer#configurationOnly):
-        // it is asked last.
-        Set<String> partial = new LinkedHashSet<String>();
-        for (boolean configuration : new boolean[]{false, true}) {
-            if (configuration) {
-                Decision timed = clockOrPairing(composition, asks, outcomes,
-                        recorded, recordingDecides, polarityDecides,
-                        clockDriven, gaps);
-                if (timed != null) return timed;
-            }
-            if (recordingDecides) {
-                List<String> held = asHappened;
-                for (int index = 0; index < outcomes.size(); index++) {
-                    Outcome free = outcomes.get(index);
-                    if (free.valuation().ordinal() == 0 || !free.witness()
-                            || !ranked(composition, free, configuration)
-                            || unplanted(composition, free, partial, gaps)) {
-                        continue;
-                    }
-                    Outcome asked = outcome(composition, asks,
-                            free.valuation(), held, false);
-                    if (!asked.witness()
-                            || unattested(composition, asked, gaps)) {
-                        continue;
-                    }
-                    outcomes.set(index, asked);
-                    outcomes.set(0, asRecorded);
-                    return new Decision(Claim.of(mechanism(composition,
-                            asks, asked, clockDriven),
-                            asked.valuation().ordinal(),
-                            movedRoots(composition, asked), true, gaps),
-                            outcomes);
+        private Decision movedAsHappened(boolean configuration) {
+            for (int index = 0; index < outcomes.size(); index++) {
+                Outcome free = outcomes.get(index);
+                if (!movedWitness(free, configuration)) continue;
+                Outcome asked = outcome(composition, asks, free.valuation(),
+                        asHappened, false);
+                if (!asked.witness()
+                        || unattested(composition, asked, gaps)) {
+                    continue;
                 }
+                outcomes.set(index, asked);
+                outcomes.set(0, asRecorded);
+                return claimed(mechanism(composition, asks, asked,
+                        clockDriven), asked);
             }
-            if (!recordingDecides) {
-                for (Outcome found : new ArrayList<Outcome>(outcomes)) {
-                    if (found.valuation().ordinal() == 0 || !found.witness()
-                            || !ranked(composition, found, configuration)
-                            || unplanted(composition, found, partial,
-                            gaps)) {
-                        continue;
-                    }
-                    // Unpublishable, so not refined: each clock pinned back
-                    // is a round of path asks (hdfs-11741 L1: hours of
-                    // leastClocks over a witness its polarity then refused).
-                    if (!polarityDecides) {
-                        undecidedPolarity(gaps, recorded, "a witness moving "
-                                + found.valuation().moved().keySet());
-                        break;
-                    }
-                    // Publish the witness under every clock pin it can keep,
-                    // and each clock it still moves moved with room.
-                    Outcome outcome = withMargin(composition, asks,
-                            leastClocks(composition, asks, found, cells,
-                                    false, gaps),
-                            gaps);
-                    outcomes.set(outcomes.indexOf(found), outcome);
-                    if (unattested(composition, outcome, gaps)) continue;
-                    // A moved root: #mechanism answers MARKER_FLIPPED or a
-                    // narrower replaced slot, never NO_SUPPORTED_WITNESS.
-                    ClaimKind moved = mechanism(composition, asks, outcome,
-                            clockDriven);
-                    return new Decision(Claim.of(moved,
-                            outcome.valuation().ordinal(),
-                            movedRoots(composition, outcome), true, gaps),
-                            outcomes);
-                }
-            }
+            return null;
         }
 
-        // 3. The recorded valuation reaches the fatal arm on another
-        // session's path that OBSERVED it (the seed's own is no claim, above).
-        if (recorded != null && recorded.witness()
-                && recorded.selected().fatalObserved()) {
-            String session = recorded.selected().path().sessionId;
-            if (attestedArms(composition, recorded)
-                    && seedDisjunctUnsat(composition, asks)) {
-                // Which mechanism differs is #mechanism's pin tests; if
-                // none fires, nothing has been established.
-                ClaimKind kind = mechanism(composition, asks, recorded,
+        private Decision movedFree(boolean configuration) {
+            for (Outcome found : new ArrayList<Outcome>(outcomes)) {
+                if (!movedWitness(found, configuration)) continue;
+                // Unpublishable, so not refined: each clock pinned back is a
+                // round of path asks (hdfs-11741 L1: hours of leastClocks
+                // over a witness its polarity then refused).
+                if (!polarityDecides) {
+                    undecidedPolarity(gaps, recorded, "a witness moving "
+                            + found.valuation().moved().keySet());
+                    return null;
+                }
+                // Published under every clock pin it can keep, and each
+                // clock it still moves moved with room.
+                Outcome outcome = withMargin(composition, asks,
+                        leastClocks(composition, asks, found, cells, false,
+                                gaps), gaps);
+                outcomes.set(outcomes.indexOf(found), outcome);
+                if (unattested(composition, outcome, gaps)) continue;
+                // #mechanism answers MARKER_FLIPPED or a narrower replaced
+                // slot, never NO_SUPPORTED_WITNESS.
+                return claimed(mechanism(composition, asks, outcome,
+                        clockDriven), outcome);
+            }
+            return null;
+        }
+
+        /** A witness of a moved valuation of this rank a replay can plant. */
+        private boolean movedWitness(Outcome outcome, boolean configuration) {
+            return outcome.valuation().ordinal() != 0 && outcome.witness()
+                    && ranked(composition, outcome, configuration)
+                    && !unplanted(composition, outcome, partial, gaps);
+        }
+
+        /**
+         * 2. No root moves, and the clocks are necessary -- with the same
+         * polarity condition, for the same reason -- or a pairing is: the
+         * claim, or null.
+         */
+        Decision clockOrPairing() {
+            for (Outcome outcome : outcomes) {
+                if (!outcome.witness()
+                        || !outcome.valuation().moved().isEmpty()) {
+                    continue;
+                }
+                ClaimKind still = mechanism(composition, asks, outcome,
                         clockDriven);
-                if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
-                    return new Decision(Claim.of(kind, 0,
-                            movedRoots(composition, recorded), true,
-                            gaps), outcomes);
+                if (still != ClaimKind.CLOCK_SKEW
+                        && still != ClaimKind.STATE_PAIRING_FLIPPED
+                        && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
+                    continue;
                 }
-                gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, recorded.selected()
-                                .path().pathId,
-                        "this path of an explored session reaches the "
-                                + "fatal arm at the recorded roots and the "
-                                + "seed's own disjunct does not, and no "
-                                + "state slot, no wire slot, no moved root "
-                                + "and no clock of this composition is "
-                                + "what makes the difference: there is no "
-                                + "mechanism to name"));
+                // A clock or pairing the recording decides carries its own
+                // polarity (recordingDecides); recorded.answer().unsat()
+                // asks with them free and so could never publish CLOCK_SKEW.
+                if (!recordingDecides && !polarityDecides) {
+                    undecidedPolarity(gaps, recorded, still.name());
+                    return null;
+                }
+                Outcome roomy = withMargin(composition, asks, outcome, gaps);
+                outcomes.set(outcomes.indexOf(outcome), roomy);
+                return claimed(still, roomy);
             }
+            return null;
         }
 
-        return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
-                recorded == null ? 0 : recorded.valuation().ordinal(),
-                Collections.<String, String>emptyMap(), polarityDecides,
-                gaps), outcomes);
-    }
-
-    /**
-     * 2. No root moves, and the clocks are necessary -- with the same
-     * polarity condition, for the same reason -- or a pairing is: the claim,
-     * or null.
-     */
-    private static Decision clockOrPairing(
-            Composer.Composition composition, Disjunction asks,
-            List<Outcome> outcomes, Outcome recorded,
-            boolean recordingDecides, boolean polarityDecides,
-            boolean clockDriven, List<GapRow> gaps) {
-        for (Outcome outcome : outcomes) {
-            if (!outcome.witness()
-                    || !outcome.valuation().moved().isEmpty()) {
-                continue;
-            }
-            ClaimKind still = mechanism(composition, asks, outcome,
-                    clockDriven);
-            if (still != ClaimKind.CLOCK_SKEW
-                    && still != ClaimKind.STATE_PAIRING_FLIPPED
-                    && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
-                continue;
-            }
-            // A clock or pairing the recording decides carries its own
-            // polarity (recordingDecides); recorded.answer().unsat() asks
-            // with them free and so could never publish CLOCK_SKEW.
-            if (!recordingDecides && !polarityDecides) {
-                undecidedPolarity(gaps, recorded, still.name());
+        /**
+         * 3. The recorded valuation reaches the fatal arm on another
+         * session's path that OBSERVED it (the seed's own is no claim,
+         * {@link #unasked}), through attested arms, while the seed's own
+         * disjunct does not: the mechanism #mechanism's pin tests name, or
+         * null, named, where none fires.
+         */
+        Decision observedElsewhere() {
+            if (recorded == null || !recorded.witness()
+                    || !recorded.selected().fatalObserved()
+                    || !attestedArms(composition, recorded)
+                    || !seedDisjunctUnsat(composition, asks)) {
                 return null;
             }
-            Outcome roomy = withMargin(composition, asks, outcome, gaps);
-            outcomes.set(outcomes.indexOf(outcome), roomy);
-            return new Decision(Claim.of(still,
-                    roomy.valuation().ordinal(),
-                    movedRoots(composition, roomy), true,
+            ClaimKind kind = mechanism(composition, asks, recorded,
+                    clockDriven);
+            if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
+                return new Decision(Claim.of(kind, 0,
+                        movedRoots(composition, recorded), true, gaps),
+                        outcomes);
+            }
+            gaps.add(GapRow.of(recorded.selected().path().sessionId,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    recorded.selected().path().pathId,
+                    "this path of an explored session reaches the fatal arm "
+                            + "at the recorded roots and the seed's own "
+                            + "disjunct does not, and no state slot, no wire "
+                            + "slot, no moved root and no clock of this "
+                            + "composition is what makes the difference: "
+                            + "there is no mechanism to name"));
+            return null;
+        }
+
+        /** No claim stands: the recorded valuation's answer, read. */
+        Decision noWitness() {
+            return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
+                    recorded == null ? 0 : recorded.valuation().ordinal(),
+                    Collections.<String, String>emptyMap(), polarityDecides,
                     gaps), outcomes);
         }
-        return null;
+
+        private Decision claimed(ClaimKind kind, Outcome witness) {
+            return new Decision(Claim.of(kind, witness.valuation().ordinal(),
+                    movedRoots(composition, witness), true, gaps), outcomes);
+        }
     }
 
     /** Whether a moved-root witness is of this pass's rank: configuration
@@ -775,7 +837,7 @@ public final class ClaimPolicy {
      * as FORMULA_SAT_AT_RECORDED_VALUATION, not published: the run reached
      * the fatal arm at the recorded valuation too, or its refutation names no
      * valuation pin.  An UNDECIDED recorded valuation is named already
-     * ({@link #read}) and is no such statement (hdfs-11741 L1: valuation 0
+     * ({@link Reading#undecided}) and is no such statement (hdfs-11741 L1: valuation 0
      * "unknown" was published as satisfiable).
      */
     private static void undecidedPolarity(List<GapRow> gaps,
@@ -811,7 +873,7 @@ public final class ClaimPolicy {
      *       the interleaving).</li>
      *   <li>MARKER_FLIPPED -- the valuation moved a declared root.</li>
      *   <li>CLOCK_SKEW -- nothing moved and the clocks are necessary
-     *       ({@code clockDriven}, asked once in {@code read}).</li>
+     *       ({@code clockDriven}, asked once in {@link Reading#of}).</li>
      *   <li>NO_SUPPORTED_WITNESS -- none of them; never a default.</li>
      * </ul>
      */
@@ -832,7 +894,8 @@ public final class ClaimPolicy {
         if (!outcome.valuation().moved().isEmpty()) {
             return ClaimKind.MARKER_FLIPPED;
         }
-        // Nothing moved: whether the clocks are necessary was asked in #read.
+        // Nothing moved: whether the clocks are necessary was asked in
+        // Reading#of.
         if (clockDriven) return ClaimKind.CLOCK_SKEW;
         return ClaimKind.NO_SUPPORTED_WITNESS;
     }
