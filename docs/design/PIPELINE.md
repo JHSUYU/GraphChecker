@@ -1608,7 +1608,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      it is its own run's pairing, `Composition#repaired`, and the session ran the model's world --
      its moved roots at the model's values, its clocks the model's jumps, no planted pairing,
      `Composition#ranModel`, `explore.Moved#ranBy`, the very test CONFIRM's `realizedBy` confirms
-     such a claim by), asked aside so that a corpus with none is decided as without it; then the
+     such a claim by), judged aside so that a corpus with none is decided as without it -- a
+     candidate is first one whose moved roots its session ran (`Composition#ranRoots`), and each
+     valuation is asked as happened or refined (`leastClocks`, margins) once for both passes; then the
      rest in the valuations' order, which says nothing of what a run already reached (hdfs-adhoc-10
      SL1: a fault first in the root order was claimed through a writer arm re-paired from another
      session, an order the program forbids, while the SYNC fault its own session had run waited
@@ -1809,7 +1811,9 @@ its client waits for). A refused model is excluded from every later composition 
 is (below), so the next claim follows; no witness attempt confirms it again, and the final CONFIRM
 of a composition that repeated it takes its row instead of a replay (both matched as the
 composition matches a model, `campaign_model_key`). A final claim of its own left with no verdict
-is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`).
+is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`); one CONFIRM refuted is `SAT_UNCONFIRMED`, not accepted, the
+models refused before it published as `refusedModels` -- each excluded, none a verdict -- and an
+UNSAT that follows them stands only where it rests on none (above).
 
 **A claim CONFIRM did not confirm is followed by the next.** A refuted claim (`campaign_refute`)
 is one row of `<iteration>/refuted_claims.jsonl`, a refused model one of `refused_models.jsonl`:
@@ -1832,7 +1836,11 @@ asserted, the free-formula ask and the self-check ask for the unsat core (a path
 core names one does not contradict its run, `Disjunction#refutedBySelfCheck`); an `UNSAT_CLOSED`
 whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (its path, moved
 roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`),
-and an UNSAT whose core names a `refused_claim__k` is `RUN_DEFECT`: no run decided that model.
+and an UNSAT whose core names a `refused_claim__k`, or whose core is unknown while it excludes one, is
+`RUN_DEFECT` (`unsatBesideRefused`, EMIT's defect `UNSAT_BESIDE_REFUSED`): no run decided that model.
+A core is known only where its own run said unsat (`Z3.Answer#coreKnown`; a core run that timed out,
+found no room or answered unknown names none, which is not the empty core), a disjunction's only
+where every path's is, and a path's refutation answers a core-wanting ask only with a known one.
 During EXPLORE a witness attempt CONFIRM did not confirm lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a
 `SAT_CANDIDATE` CONFIRM did not confirm whose model is recorded once in the two files together

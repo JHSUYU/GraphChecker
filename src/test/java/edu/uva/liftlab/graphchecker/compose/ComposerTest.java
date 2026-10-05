@@ -836,7 +836,31 @@ public class ComposerTest {
             assertEquals(detail, name, claim.getAsJsonArray(
                     "restsOnRefutations").get(0).getAsJsonObject()
                     .get("name").getAsString());
+            if (!refused) continue;
+            // And where no core run says what the UNSAT rests on, it may
+            // rest on the refused model: no verdict either.
+            Composer.Composition coreless = compose(iteration, 8);
+            JsonObject unknown = ComposeMain.campaignClaim(coreless,
+                    ClaimPolicy.decide(coreless, corelessSolver()));
+            assertEquals(detail + ": " + unknown, "RUN_DEFECT",
+                    unknown.get("claim").getAsString());
         }
+    }
+
+    /** A z3 whose every core run answers unknown, and every other run as
+     *  z3 does. */
+    private Z3 corelessSolver() throws IOException {
+        Path script = folder.newFile("z3-coreless.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case \"$input\" in",
+                "  *get-unsat-core*) echo unknown ;;",
+                "  *) printf '%s' \"$input\" | exec " + z3() + " \"$@\" ;;",
+                "esac"));
+        assertTrue("the fixture solver is executable",
+                script.toFile().setExecutable(true));
+        solver();
+        return new Z3(script, 30000L);
     }
 
     /**

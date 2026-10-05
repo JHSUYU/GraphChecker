@@ -523,11 +523,37 @@ public final class ClaimPolicy {
         }
 
         /**
+         * Each valuation asked or refined for this rank once ({@link
+         * #movedRoot}'s two passes): its outcome, and the gaps doing so
+         * named, which join the claim's only once the pass that claims or
+         * reaches it keeps them.
+         */
+        private final Map<Integer, Outcome> settled =
+                new LinkedHashMap<Integer, Outcome>();
+        private final Map<Integer, List<GapRow>> settledGaps =
+                new LinkedHashMap<Integer, List<GapRow>>();
+
+        /** {@code found} asked as happened, or refined (leastClocks,
+         *  margins), once. */
+        private Outcome settle(int index, Outcome found) {
+            Outcome done = settled.get(index);
+            if (done != null) return done;
+            List<GapRow> named = new ArrayList<GapRow>();
+            done = recordingDecides
+                    ? outcome(composition, asks, found.valuation(),
+                    asHappened, false)
+                    : withMargin(composition, asks, leastClocks(composition,
+                    asks, found, cells, false, named), named);
+            settled.put(index, done);
+            settledGaps.put(index, named);
+            return done;
+        }
+
+        /**
          * The witness of this rank to claim, or null: with {@code own}, the
-         * first that is its session's own run, asked aside -- nothing it
-         * names or refines is kept unless it is claimed, so a corpus with
-         * no such witness is decided as without this pass -- else the
-         * first.
+         * first that is its session's own run, judged aside -- nothing it
+         * names is kept unless it is claimed, so a corpus with no such
+         * witness is decided as without this pass -- else the first.
          */
         private Decision movedAsHappened(boolean configuration,
                                          boolean own) {
@@ -537,8 +563,7 @@ public final class ClaimPolicy {
                         : !movedWitness(free, configuration)) {
                     continue;
                 }
-                Outcome asked = outcome(composition, asks, free.valuation(),
-                        asHappened, false);
+                Outcome asked = settle(index, free);
                 List<GapRow> named = own ? new ArrayList<GapRow>() : gaps;
                 if (!asked.witness() || (own && !ownRun(asked))
                         || unattested(composition, asked, named)) {
@@ -559,7 +584,8 @@ public final class ClaimPolicy {
             // witness its polarity then refused).  Named once, by the pass
             // in the valuations' order.
             if (own && !polarityDecides) return null;
-            for (Outcome found : new ArrayList<Outcome>(outcomes)) {
+            for (int index = 0; index < outcomes.size(); index++) {
+                Outcome found = outcomes.get(index);
                 if (own ? !ownCandidate(found, configuration)
                         : !movedWitness(found, configuration)) {
                     continue;
@@ -571,15 +597,15 @@ public final class ClaimPolicy {
                 }
                 // Published under every clock pin it can keep, and each
                 // clock it still moves moved with room.
-                List<GapRow> named = own ? new ArrayList<GapRow>() : gaps;
-                Outcome outcome = withMargin(composition, asks,
-                        leastClocks(composition, asks, found, cells, false,
-                                named), named);
+                Outcome outcome = settle(index, found);
+                List<GapRow> named = own ? new ArrayList<GapRow>(
+                        settledGaps.get(index)) : gaps;
                 if (own && (!ownRun(outcome)
                         || unattested(composition, outcome, named))) {
                     continue;
                 }
-                outcomes.set(outcomes.indexOf(found), outcome);
+                if (!own) gaps.addAll(settledGaps.get(index));
+                outcomes.set(index, outcome);
                 if (!own && unattested(composition, outcome, gaps)) continue;
                 if (own) gaps.addAll(named);
                 // #mechanism answers MARKER_FLIPPED or a narrower replaced
@@ -591,15 +617,18 @@ public final class ClaimPolicy {
         }
 
         /** A moved witness of this rank that may be its session's own run,
-         *  asked of nothing and naming nothing ({@link #movedWitness}'s
+         *  asked of nothing and naming nothing: {@link #movedWitness}'s
          *  conditions without its gaps, and {@link #ownRun}'s that need no
-         *  model refined). */
+         *  model refined -- its own pairings, its moved roots run at their
+         *  values ({@code Composition#ranRoots}). */
         private boolean ownCandidate(Outcome outcome, boolean configuration) {
             return outcome.valuation().ordinal() != 0 && outcome.witness()
                     && ranked(composition, outcome, configuration)
                     && composition.unplanted(outcome.valuation().moved()
                     .keySet()).isEmpty()
-                    && ownPairings(outcome);
+                    && ownPairings(outcome)
+                    && composition.ranRoots(outcome.selected(),
+                    outcome.valuation().moved());
         }
 
         /**

@@ -241,6 +241,8 @@ public final class ComposeMain {
         String kind;
         String reason;
         JsonArray restsOnRefutations = new JsonArray();
+        // An UNSAT left no verdict by a model CONFIRM gave none on.
+        boolean besideRefused = false;
         if (blockers > 0) {
             kind = "RUN_DEFECT";
             reason = "the composition named " + blockers
@@ -278,7 +280,8 @@ public final class ComposeMain {
             // A model the formula excludes is a region the UNSAT rests on
             // beside the corpus, named where its core names it.  One CONFIRM
             // gave no verdict on (refused_claim__) was never run: an UNSAT
-            // resting on it is no verdict.
+            // resting on it -- or one whose core is unknown while it
+            // excludes one -- is no verdict.
             JsonArray rests = new JsonArray();
             int refused = 0;
             for (JsonObject excluded : composition.restsOn(
@@ -292,9 +295,18 @@ public final class ComposeMain {
             restsOnRefutations = rests;
             if (refused > 0) {
                 kind = "RUN_DEFECT";
+                besideRefused = true;
                 reason = "the composed formula is unsat only beside " + refused
                         + " model(s) CONFIRM gave no verdict on, which no run"
                         + " decided (restsOnRefutations): no verdict";
+            } else if (composition.excludesRefused()
+                    && !decision.formula().coreKnown()) {
+                kind = "RUN_DEFECT";
+                besideRefused = true;
+                reason = "the composed formula is unsat, it excludes models"
+                        + " CONFIRM gave no verdict on, and its unsat core is"
+                        + " unknown (the core run did not say unsat), so"
+                        + " nothing shows it does not rest on one: no verdict";
             } else if (rests.size() > 0) {
                 reason += ", and on " + rests.size() + " refuted claim(s)"
                         + " it excludes (restsOnRefutations)";
@@ -311,6 +323,8 @@ public final class ComposeMain {
         row.addProperty("claim", kind);
         row.addProperty("claimReason", reason);
         row.add("restsOnRefutations", restsOnRefutations);
+        // Named only where it holds: EMIT lists it as a defect.
+        if (besideRefused) row.addProperty("unsatBesideRefused", true);
         JsonArray refused = new JsonArray();
         for (JsonObject path : composition.refusedPaths()) refused.add(path);
         row.add("refusedPaths", refused);

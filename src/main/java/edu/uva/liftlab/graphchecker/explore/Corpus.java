@@ -394,11 +394,13 @@ public final class Corpus implements Arms.Rows {
      *  from it drops skews). A planted assignment is stated by the ask alone
      *  ({@code ConcolicRegionRuntime#applyFocusedRootAssignment}). */
     private void indexWorlds(Path iteration) throws IOException {
-        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            for (JsonObject row : worker.focus()) {
-                worlds.put(worker.sessionId(),
-                        ExploreCodec.readWorld(row));
-            }
+        List<ObligationDir> workers = ObligationDir.workersIn(iteration);
+        for (Map.Entry<String, JsonObject> world
+                : ObligationDir.worlds(workers).entrySet()) {
+            worlds.put(world.getKey(), ExploreCodec.readWorld(
+                    world.getValue()));
+        }
+        for (ObligationDir worker : workers) {
             for (ObligationResult result : worker.results()) {
                 waveVerdicts.put(result.obligationId(), result);
             }

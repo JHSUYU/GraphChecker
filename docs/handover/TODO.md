@@ -202,3 +202,12 @@ codec hole (a value carried inside an opaque payload); then rebase it onto the b
 
 **VM performance.** The VM sends each expression node once per channel (STATUS open item 41). A plan budget should
 be derived from the seed's measured cost.
+
+**CONFIRM: a session "itself the run" may have planted more than the model moved** (claim-loop review, 2026-10-05).
+`explore.Moved#ranBy` -- `ConfirmMain#realizedBy` and COMPOSE's own-run rank both judge by it -- checks the model's
+moved roots at their values, its clocks and that the world planted no pairing, but not roots the session's world
+planted beyond the model's moved set (`rootAssignments` outside `movedRoots`): such a session ran another world, yet
+confirms the claim without a replay. The realized sessions seen so far plant exactly the moved root (SL1-4 hdfs-adhoc-10
+`2aa5e579a4a739bf-95b10301`, CL1 `b0e2952cbf454340-ca8612dd`: one assignment each). Strict: a planted root outside the
+model's moved set at a value other than its recorded one is no realization (a replay decides). Strictness of CONFIRM:
+a review agent reads the change.

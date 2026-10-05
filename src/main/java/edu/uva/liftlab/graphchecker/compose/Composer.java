@@ -779,12 +779,25 @@ public final class Composer {
          */
         public boolean ranModel(Disjunct selected,
                                 Map<String, String> movedRoots) {
+            return ran(selected, movedRoots, true);
+        }
+
+        /** {@link #ranModel} but its clocks ({@link Moved#ranRootsBy}). */
+        public boolean ranRoots(Disjunct selected,
+                                Map<String, String> movedRoots) {
+            return ran(selected, movedRoots, false);
+        }
+
+        private boolean ran(Disjunct selected, Map<String, String> movedRoots,
+                            boolean clocks) {
             String session = selected.path().sessionId;
             SessionReader rows = corpus.session(session);
             SessionReader seed = corpus.session(seedSessionId);
-            return rows != null && seed != null && Moved.of(movedRoots,
-                    clockRootReadings, rows, seed)
-                    .ranBy(corpus.world(session), rows);
+            if (rows == null || seed == null) return false;
+            Moved moved = Moved.of(movedRoots, clockRootReadings, rows, seed);
+            Corpus.World world = corpus.world(session);
+            return clocks ? moved.ranBy(world, rows)
+                    : moved.ranRootsBy(world, rows);
         }
 
         /** The admitted paths the composition refused by name, each with
@@ -799,6 +812,14 @@ public final class Composer {
          *  rest on one, which only an unsat core shows. */
         public boolean assertsRefutations() {
             return !refutations.isEmpty();
+        }
+
+        /** Whether it excludes a model CONFIRM gave no verdict on. */
+        public boolean excludesRefused() {
+            for (String name : refutations.keySet()) {
+                if (name.startsWith(REFUSED_CLAIM)) return true;
+            }
+            return false;
         }
 
         /**

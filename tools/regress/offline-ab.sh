@@ -193,7 +193,7 @@ ab_ok() { [[ "$(sed -n 's/^exit=\([^ ]*\).*/\1/p' "${ab_case_dir}/$1/status" 2>/
 # over the recorded one.  full: every session and obligation round linked
 # (but the one named, which the stage writes), the iteration's files
 # copied, the models CONFIRM refuted or gave no verdict on among them (the
-# final COMPOSE excludes them).  wave0: the sessions round 0 was planned over -- the seed alone,
+# final COMPOSE excluded them) but the last claim's own.  wave0: the sessions round 0 was planned over -- the seed alone,
 # the one session whose manifest states SEED -- the recorded schedule, and
 # this side's PLAN as the iteration plan; no round, no slot table.  A
 # round's output goes inside, where the planner reads the round before it.
@@ -219,9 +219,21 @@ ab_iteration() {
     [[ -d "${wave}" && "$(basename "${wave}")" != "${extra}" ]] || continue
     ln -s "${wave}" "${dst}/$(basename "${wave}")"
   done
-  for file in execution_task_plan.jsonl slots.jsonl obligation_results.jsonl \
-      refuted_claims.jsonl refused_models.jsonl; do
+  for file in execution_task_plan.jsonl slots.jsonl obligation_results.jsonl; do
     [[ -f "${ab_acc_it}/${file}" ]] && cp "${ab_acc_it}/${file}" "${dst}/"
+  done
+  # The models CONFIRM refuted or gave no verdict on, which the last COMPOSE
+  # excluded: all but the last claim's own row, written after that COMPOSE.
+  local last="" final
+  final=$(dirname "${ab_acc_it}")/final
+  [[ ! -s "${final}/claim.json" ]] \
+    || last=$(campaign_claim_model "${final}/claim.json")
+  for file in refuted_claims.jsonl refused_models.jsonl; do
+    [[ -f "${ab_acc_it}/${file}" ]] || continue
+    jq -c --argjson last "${last:-null}" "${campaign_model_key}"'
+      select(((.claimed // "") | endswith("/final")) and $last != null
+        and (.model | key) == ($last | key) | not)' \
+      "${ab_acc_it}/${file}" >"${dst}/${file}"
   done
   touch "${dst}/obligation_results.jsonl"
 }

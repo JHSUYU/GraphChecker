@@ -764,11 +764,9 @@ public final class ConfirmMain {
      *  for the recording. */
     static JsonObject obligationWorld(Path iteration, String sessionId)
             throws IOException {
-        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            if (!sessionId.equals(worker.sessionId())) continue;
-            if (!worker.focus().isEmpty()) return worker.focus().get(0);
-        }
-        return new JsonObject();
+        JsonObject world = ObligationDir.worlds(
+                ObligationDir.workersIn(iteration)).get(sessionId);
+        return world == null ? new JsonObject() : world;
     }
 
     /** One MARKER edge per planted marker root the manifest names. */

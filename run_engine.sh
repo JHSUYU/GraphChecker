@@ -6572,6 +6572,12 @@ campaign_emit() {
           then [{stage: "CONFIRM", code: "CONFIRM_NO_VERDICT",
                  subject: ($confirmation.sessionId // ""),
                  detail: $confirmation.reason}]
+          else [] end)
+       # An UNSAT that rests on a model CONFIRM gave no verdict on, or whose
+       # core is unknown beside one (ComposeMain#campaignClaim).
+       + (if ($decided.unsatBesideRefused // false)
+          then [{stage: "COMPOSE", code: "UNSAT_BESIDE_REFUSED",
+                 subject: "", detail: $decided.claimReason}]
           else [] end)),
      # What the decision rested on concretely: each anchor every admitted
      # path decided on no symbol (EXPLORE), and each value COMPOSE stated

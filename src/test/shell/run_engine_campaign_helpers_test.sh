@@ -530,6 +530,19 @@ jq -e '.claim == "UNSAT_CLOSED" and .accepted == true
   "${campaign_final}/result.json" >/dev/null \
   || fail "an UNSAT not resting on a refused model was withheld: \
 $(jq -c '{claim, defects, refusedModels}' "${campaign_final}/result.json")"
+# ... and one COMPOSE found resting on one, or beside one with no core, is
+# the defect it named.
+jq '.solver.campaignClaim.claim = "RUN_DEFECT"
+  | .solver.campaignClaim.claimReason = "unsat beside a refused model"
+  | .solver.campaignClaim.unsatBesideRefused = true' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+run_emit
+jq -e '.claim == "RUN_DEFECT" and .accepted == false
+  and ([.defects[].code] | index("UNSAT_BESIDE_REFUSED")) != null' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an UNSAT beside a refused model was not named a defect: \
+$(jq -c '{claim, defects}' "${campaign_final}/result.json")"
 rm -f -- "${emit_iteration}/refused_models.jsonl"
 
 # A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any

@@ -128,6 +128,12 @@ public final class Moved {
      * ({@code compose.ClaimPolicy}).
      */
     public boolean ranBy(Corpus.World world, SessionReader session) {
+        return ranRootsBy(world, session) && clocksOf(world.clockDeltas);
+    }
+
+    /** {@link #ranBy} but its clocks: what a model that is not yet refined
+     *  (its clocks not yet pinned back) can already be judged by. */
+    public boolean ranRootsBy(Corpus.World world, SessionReader session) {
         if (!refusal.isEmpty() || !world.pairings.isEmpty()) return false;
         Map<String, String> ran = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
@@ -140,7 +146,7 @@ public final class Moved {
                 return false;
             }
         }
-        return clocksOf(world.clockDeltas);
+        return true;
     }
 
     /** How many roots and clocks the model moves. */

@@ -82,8 +82,8 @@ final class Disjunction implements AutoCloseable {
     private static final class Refutation {
         final Set<String> under;
         final Z3.Answer answer;
-        /** Whether it was asked with a core: only a real core names what it
-         *  rests on (the body's named assertions too, a refuted claim's). */
+        /** Whether its core is known: only a real core names what it rests
+         *  on (the body's named assertions too, an excluded model's). */
         final boolean coreComplete;
 
         Refutation(Set<String> under, Z3.Answer answer,
@@ -128,7 +128,7 @@ final class Disjunction implements AutoCloseable {
             selfChecked.put(selector, answers.get(at));
             if (answers.get(at).unsat()) {
                 remember(selector, new HashSet<String>(), answers.get(at),
-                        true);
+                        answers.get(at).coreKnown());
             }
         }
         return answers;
@@ -139,7 +139,7 @@ final class Disjunction implements AutoCloseable {
      *  or gave no verdict on excludes it, no contradiction of its run. */
     boolean refutedBySelfCheck(String selector) {
         Z3.Answer answer = selfChecked.get(selector);
-        if (answer == null || !answer.unsat() || answer.core() == null) {
+        if (answer == null || !answer.unsat() || !answer.coreKnown()) {
             return false;
         }
         for (String label : answer.core()) {
@@ -218,7 +218,8 @@ final class Disjunction implements AutoCloseable {
                 if (answer == null) {
                     answer = get(pending.get(at));
                     if (answer.unsat()) {
-                        remember(selectors.get(at), under, answer, wantCore);
+                        remember(selectors.get(at), under, answer,
+                                wantCore && answer.coreKnown());
                     }
                 }
                 if (answer.sat()) return answer;
@@ -282,7 +283,9 @@ final class Disjunction implements AutoCloseable {
         if (known != null) return known;
         Z3.Answer answer = pathAsk(selector, assertions, asked, wantCore,
                 budgetMillis);
-        if (answer.unsat()) remember(selector, under, answer, wantCore);
+        if (answer.unsat()) {
+            remember(selector, under, answer, wantCore && answer.coreKnown());
+        }
         return answer;
     }
 
