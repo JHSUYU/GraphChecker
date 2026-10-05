@@ -25,8 +25,9 @@ import java.util.Map;
  * schedule. A source run cut at its witness hands its mark on with the rest
  * ({@code ScheduleEvent#WITNESS}): its order ends there; so does a run of one
  * invocation of a parameterized test its invocation's ({@code
- * ScheduleEvent#INVOCATION}), and every run its startup marks ({@code
- * ScheduleEvent#STARTUP}).
+ * ScheduleEvent#INVOCATION}), and every run its timeline's marks ({@code
+ * ScheduleEvent#ORIGIN}, {@code #STARTUP}, {@code #OPEN}; the events carry
+ * their own instants).
  */
 final class SchedulePrefix {
     /** The file the replay reads, beside its focus row. */
@@ -123,9 +124,11 @@ final class SchedulePrefix {
         JsonObject invocation =
                 SessionReader.readScheduleInvocation(session.schedule());
         if (invocation != null) rest.add(invocation);
-        // The order its nodes passed their startup steps, for the replay to
-        // hold them to it (runtime.StartupOrder).
-        rest.addAll(SessionReader.readScheduleStartup(session.schedule()));
+        // Its timeline: the order its nodes passed their startup steps, for
+        // the replay to hold them to it (runtime.StartupOrder), and where
+        // its clocks started and its window opened, for the replay's clocks
+        // to follow (runtime.Clocks).
+        rest.addAll(SessionReader.readScheduleTimeline(session.schedule()));
         RowCodec.writeJsonl(out.resolve(FILE), rows);
         RowCodec.writeJsonl(out.resolve(REST_FILE), rest);
         return new Cut(sessionId, cut, events.size(), found,

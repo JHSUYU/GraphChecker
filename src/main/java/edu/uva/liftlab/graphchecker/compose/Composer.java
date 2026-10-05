@@ -3069,11 +3069,11 @@ public final class Composer {
     }
 
     /**
-     * A clock row's host reading, or null (named) when it states no
+     * A clock row's base reading, or null (named) when it states no
      * instant.
      */
     private Long instant(RootMintRow row) {
-        Long reading = number(row.hostReading());
+        Long reading = number(row.baseReading());
         if (reading == null) {
             gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     row.rootId(), "the mint of this clock cell states no "
@@ -3084,9 +3084,9 @@ public final class Composer {
     }
 
     /**
-     * How far each session's host clock read a clock cell later than the
+     * How far each session's base clock read a clock cell later than the
      * recording read it (session -> cell symbol -> milliseconds or ticks of
-     * that clock; {@link SmtLowering#clockBases}): its host reading less the
+     * that clock; {@link SmtLowering#clockBases}): its base reading less the
      * recording's, at the cell itself where the recording read it, else at
      * the nearest cell (by seq) of the same clock of the same node that both
      * read -- the same anchor {@link #placed} puts a cell on the recording's
@@ -3116,9 +3116,9 @@ public final class Composer {
                     new LinkedHashMap<RootMintRow, Long>();
             for (RootMintRow row : session.getValue()) {
                 RootMintRow recorded = corpus.rootOf(seed, row.rootId());
-                Long host = number(row.hostReading());
+                Long host = number(row.baseReading());
                 Long reading = recorded == null ? null
-                        : number(recorded.hostReading());
+                        : number(recorded.baseReading());
                 if (host != null && reading != null) {
                     anchored.put(row, host - reading);
                 }
@@ -3163,7 +3163,7 @@ public final class Composer {
     private Long placed(List<RootMintRow> rows, List<RootMintRow> read,
                         Map<String, Long> readings) {
         for (RootMintRow cell : rows) {
-            Long host = number(cell.hostReading());
+            Long host = number(cell.baseReading());
             if (cell.kind() != RootKind.CLOCK || host == null) continue;
             RootMintRow nearest = null;
             long from = 0L;
@@ -3171,7 +3171,7 @@ public final class Composer {
                 RootMintRow same = corpus.rootOf(cell.sessionId(),
                         anchor.rootId());
                 Long sameHost = same == null ? null
-                        : number(same.hostReading());
+                        : number(same.baseReading());
                 if (sameHost == null || !anchor.occurrence().node().equals(
                         cell.occurrence().node())
                         || !cell.clock().same(same.clock())) {

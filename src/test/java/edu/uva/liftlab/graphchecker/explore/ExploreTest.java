@@ -1792,6 +1792,23 @@ public class ExploreTest {
                 applied <= Long.MAX_VALUE - 700L);
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
                 applied > 300L);
+        // And it is off the BASE reading: a replay whose clock ran on a jump
+        // states the instant it ran at and the jump; the next model is owed
+        // its difference from what the clock read before the jump, and the
+        // plant of that skew states the same base again.
+        RootMintRow ranOn = RootMintRow.of("s-flip", 3L,
+                OccurrenceAddress.parse("hdfs/nn0#epoch1/region/R.1"
+                        + "/ctx:Root:CLIENT#1/idx:"), "CASE.NOW", "M_NOW",
+                RootKind.CLOCK, RootCategory.CLOCK, "3600700", null, null,
+                true, Clock.of(1_000_000L, Clock.WALL), 3_600_000L);
+        String owed = ObligationFactory.skew("1300", ranOn.baseReading());
+        assertEquals("600", owed);
+        RootMintRow replanted = RootMintRow.of("s-next", 3L,
+                OccurrenceAddress.parse("hdfs/nn0#epoch1/region/R.1"
+                        + "/ctx:Root:CLIENT#1/idx:"), "CASE.NOW", "M_NOW",
+                RootKind.CLOCK, RootCategory.CLOCK, "1300", null, null, true,
+                Clock.of(1_000_000L, Clock.WALL), Long.parseLong(owed));
+        assertEquals("700", replanted.baseReading());
         String tickedQuery = new String(Files.readAllBytes(ticked.directory
                 .resolve("obligation_query.smt2")), "UTF-8");
         assertTrue("because the query ceilings the clock a window above the"

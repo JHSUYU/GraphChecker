@@ -22,7 +22,10 @@ import java.util.stream.Stream;
  * WorkStartSites#draws}: the weave keys each draw by its site, so a replay
  * draws what its recording drew wherever the class sits; HDFS's
  * NetworkTopology, which places a pipeline's DataNodes by ThreadLocalRandom,
- * neither hands off work nor is analysed).
+ * neither hands off work nor is analysed), or reads a JVM clock ({@link
+ * WorkStartSites#readsClock}: the weave makes it the application's clock,
+ * which a replay holds to its order's timeline; Hadoop's {@code Time}, which
+ * every Hadoop clock reads through, is no analysed class).
  * A lineage hole puts everything after it under
  * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
  * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
@@ -71,8 +74,8 @@ public final class LineageScan {
             }
         }
         System.out.println("lineage scope: " + kept + " of " + scanned
-                + " class(es) start, hand off, run, wait, signal or draw"
-                + " outside the analysis scope");
+                + " class(es) start, hand off, run, wait, signal, draw or"
+                + " read a clock outside the analysis scope");
     }
 
     private static List<Path> classFiles(Path root) throws IOException {
@@ -119,6 +122,8 @@ public final class LineageScan {
                                         .length)
                                 || WorkStartSites.mayWait(callee)
                                 || WorkStartSites.draws(owner, callee,
+                                        calleeDescriptor)
+                                || WorkStartSites.readsClock(owner, callee,
                                         calleeDescriptor)) {
                             found[0] = true;
                         }

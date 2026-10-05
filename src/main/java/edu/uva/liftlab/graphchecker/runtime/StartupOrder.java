@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -78,6 +79,9 @@ public final class StartupOrder {
                 if (left <= 0L) {
                     before.removeAll(passed);
                     passed.addAll(before);
+                    for (String missing : before) {
+                        Clocks.passed(named, missing);
+                    }
                     ScheduleLog.diverged("startup#" + named, pass + " took "
                             + named + " after waiting "
                             + ScheduleLog.timeoutMillis() + " ms for " + before
@@ -100,16 +104,19 @@ public final class StartupOrder {
         }
     }
 
-    /** The pass {@link #begin} returned completed: marked, and the takers
-     *  held behind it go on. */
+    /** The pass {@link #begin} returned completed: marked, stamped with
+     *  the application's clocks (which reach the order's mark of it), and
+     *  the takers held behind it go on. */
     static void done(String[] pass) {
         if (pass == null) return;
         synchronized (LOCK) {
             passedLocked(pass[0]).add(pass[1]);
             LOCK.notifyAll();
         }
+        Clocks.passed(pass[0], pass[1]);
         String who = pass[1].substring(0, pass[1].lastIndexOf('#'));
-        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who));
+        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who,
+                Clocks.stampNanos(), Clocks.stampMillis()));
     }
 
     private static Set<String> passedLocked(String step) {
@@ -120,7 +127,11 @@ public final class StartupOrder {
         if (marked == null) {
             marked = new HashMap<String, List<String>>();
             Map<String, Integer> passes = new HashMap<String, Integer>();
-            for (JsonObject mark : ScheduleLog.startupMarks()) {
+            for (JsonObject mark : ScheduleLog.timelineMarks()) {
+                if (!ScheduleEvent.STARTUP.equals(
+                        mark.get("mark").getAsString())) {
+                    continue;
+                }
                 String step = mark.get("step").getAsString();
                 String who = mark.get("who").getAsString();
                 int n = passes.merge(step + "\n" + who, 1, Integer::sum) - 1;

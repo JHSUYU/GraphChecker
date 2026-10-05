@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
+import edu.uva.liftlab.graphchecker.contract.Clock;
+
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -96,6 +98,18 @@ public final class WorkStartSites {
         return (owner.startsWith("java/") || owner.startsWith("javax/"))
                 && descriptor.substring(0, descriptor.indexOf(')'))
                         .contains("Ljava/util/Random;");
+    }
+
+    /**
+     * Whether a call (JVM owner, name, descriptor) reads one of the JVM's
+     * clocks ({@code System.nanoTime()}, {@code System.currentTimeMillis()}):
+     * the weave makes it the application's ({@code runtime.Clocks}), and the
+     * lineage scan keeps a class making one ({@link LineageScan}).
+     */
+    public static boolean readsClock(String owner, String name,
+                                     String descriptor) {
+        return "java/lang/System".equals(owner) && "()J".equals(descriptor)
+                && (Clock.WALL.equals(name) || Clock.MONOTONIC.equals(name));
     }
 
     /** Whether a type is, or inherits, the named one. */

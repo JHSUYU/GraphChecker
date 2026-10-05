@@ -490,7 +490,7 @@ final class ActiveRegion {
      * <p>Stated even when the replay planted here.  Trap: suppressing it
      * leaves the moved root with no {@code recordedValue}, which IMPORT
      * refuses (invariant 8).  A declared clock also states {@code
-     * clockSkew}, how far its node's clock ran off the host's reading there
+     * clockSkew}, how far its node's clock ran off the base reading there
      * ({@code NodeClocks}; 0 is not written).</p>
      */
     synchronized void recordManualSymbolization(

@@ -238,6 +238,28 @@ the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its
 `TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
 occurrence ran).
 
+**The application's clocks** (`runtime.Clocks`). The weave makes every `System.nanoTime()` and
+`System.currentTimeMillis()` of a woven class `Clocks.nanos()` / `Clocks.millis()` in both passes
+(`CausynthPipeline#replaceClock`; the lineage scan keeps every class that reads one, so Hadoop's `Time`,
+and everything that reads through it -- `Timer`, `StopWatch`, `BPServiceActor.Scheduler`,
+`SocketIOWithTimeout` -- reads the application's clock). The JDK's own reads, a library jar's, an unwoven
+test class's direct read and the engine's (the watchdog, a timed wait's deadline, `StartupOrder`'s hold)
+stay the host's. A recording reads the host and stamps every schedule row with what the application's
+clocks read there (`ns`, `ms`): its first read (`ORIGIN`), each event, each startup pass, the window's
+opening (`OPEN`). A replay reads its order's timeline, moved to start at its own first read:
+`v = max(last, min(hi, lo + host time since lo moved))`. `lo` is the stamp of the furthest point the
+replay has reached -- its origin, each startup pass it completed (`StartupOrder#done`), its window's
+opening (`ScheduleLog#windowOpened`), each slot settled at or before the order's frontier
+(`ScheduleLog#publishTimeLocked`) -- and `hi` that of the next it has not: before the window the next
+startup pass its order marks, else the opening; inside, the frontier's slot while the line stands
+(IDENTITY.md §8); nothing past the line, after the window closes, or with no order. So a slower replay
+waits at the cap where its recording's heartbeat was not yet due, a turn its slot released early reads
+at least its slot's instant, and no read goes back. No read is keyed or written. A read never blocks;
+a cap standing a schedule timeout is lifted by name (`SCHEDULE_DIVERGED`): before the window by the
+clock itself (`clock#<mark>`), until the next mark; inside it only when no thread waits on the order
+(`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier. The
+replay log's exit line `Causynth clocks: ...` counts the reads that stood at a cap and the lifts.
+
 A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put
 first by `JUnitMethodRunner`; four pairs of exponent 65537 per size of 1024-4096 bits, in the jar's
 `replay-rsa-keys.txt`, one after another per size): the concolic VM has none of HotSpot's
@@ -607,14 +629,14 @@ its flipped decision (`Arms.conjunct`/`Arms.pathCondition` apply the recorded po
 lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets one rule:
 
 - ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
-  `[host reading, host reading + 30 days]` in its own ticks (`RootMintRow#hostReading`: the mint's
+  `[base reading, base reading + 30 days]` in its own ticks (`RootMintRow#baseReading`: the mint's
   instant less the skew its node's clock ran at there; `JavaPrimitiveSmtSemantics.clockDomain`/
   `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here), and its
   nearest world is the instant the session ran it at; within one session, a cell is no earlier
   than the cell before it (by seq) on the same clock of the same node, giving way where the session
   read the two the other way round (`FlipQuery#clockOrder`, COMPOSE's `clock_order__`), so no model
   jumps a clock forward and back, which a replay would plant as asked and no composed world is
-  (hdfs-11741 L1: `be888ea2` +10 h, the next cell at the host's reading); any other root takes its domain from
+  (hdfs-11741 L1: `be888ea2` +10 h, the next cell at the base reading); any other root takes its domain from
   `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
 - HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
   `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
@@ -685,7 +707,7 @@ the text streams (the later one would win); the query is never copied per engine
 of magnitude with the engine: SOLR-18413 r9's composed query ran past 30 minutes under 2 and is
 sat in a second under 6. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
-read back by root id, the flipped path's clocks as skews (`model − host reading`; one outside a Java
+read back by root id, the flipped path's clocks as skews (`model − base reading`; one outside a Java
 long refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
 control as its JSON string literal, which the replay plants verbatim; one whose model value is no
 string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
@@ -726,17 +748,17 @@ prefix is followed only up to the first event the pairings reorder) goes to
 `replay_timeout_s`. The replay runs the workload to its end, its witness or its deciding refusal
 (below); the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
-(`runtime.FocusedReplay`). A clock skew is planted at its mint (the host's reading plus the skew)
+(`runtime.FocusedReplay`). A clock skew is planted at its mint (the base reading -- the application's clock, §5 -- plus the skew)
 and is a jump of that node's clock (`runtime.NodeClocks`): a declared clock reading no skew is asked
-of reads the host plus the skew of the jump on its clock latest at or before it in the RECORDING's
+of reads the base plus the skew of the jump on its clock latest at or before it in the RECORDING's
 order (its place is the event the recording read it at, `SymbolizeAction#eventSeq`, the seq its mint
 row states), never this replay's order, so two threads that plant either way round run one clock.
 One clock is one node, one JVM clock and one tick (`contract.Clock#same`, COMPOSE's rule too: the
 source is the plan's `clockSource`, read off the wrapper's body, never a reading's value; a node's
 wall clock and monotonic clock are two, and a clock stating no source is on no order). A value carrying an expression is
 computed from a reading and is never moved again; an unattributed mint is on no node's clock and
-reads the host (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
-`clockSkew`, how far its clock ran off the host there; skews stay relative to the host's reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
+reads the base (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
+`clockSkew`, how far its clock ran off the base there; skews stay relative to the base reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
 `obligations.jsonl` and states the same rows to the worker's `replay_verdict.jsonl`. The worker is
 the one writer of the obligation's answer, `obligation_result.jsonl`, and writes it once the
 replay's process group is gone (`run_under_wall_clock_bound` ends it: whatever of it outlives the
@@ -1464,10 +1486,12 @@ same clock (`contract.Clock#same`: the JVM clock its row states and the same tic
 none is on no order, DIAGNOSTIC) (`clock_order__`); where the recording read the two the other way round, the link gives way by that
 much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
 order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
-Every session's instants are on that one timeline too: a replay runs on its own host's clock, started
-later (a plant is a skew off that host, `runtime.NodeClocks`), so an instant it computed outside every
-clock root -- a key's expiry from a startup reading -- is a constant on its own clock. A session's
-base at a cell is how far its host read the cell later than the recording (at the cell where the
+Every session's instants are on that one timeline too: a replay's application clock runs on its
+order's timeline started at its own first read (§5, `runtime.Clocks`), so later than the
+recording's by that start (a plant is a skew off that base reading, `runtime.NodeClocks`), and an
+instant it computed outside every clock root -- a key's expiry from a startup reading -- is a constant
+on its own clock. A session's base at a cell is how far its base clock read the cell later than the
+recording (at the cell where the
 recording read it, else at the nearest cell both read, as a placement anchors; `Composer#clockBases`),
 and an integral constant compared with an instant of that cell (the cell, or the cell plus or minus a
 constant span) in that session's terms is lowered that much earlier (`SmtLowering#clockBases`,

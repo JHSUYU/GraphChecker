@@ -8,13 +8,14 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The clocks of the nodes one replay runs.  A declared clock reading reads
- * its node's clock: the host's reading moved by the skew of the jump before
+ * its node's clock: the base reading (the application's clock, {@link
+ * Clocks}) moved by the skew of the jump before
  * it.  A plant is a jump: the planted reading reads its plant, and its clock
  * runs on from there, so a later reading nothing asks a skew of reads the
- * host plus that skew.  Read off the host alone it fell back behind the
+ * base plus that skew.  Read off the base alone it fell back behind the
  * plant, and no clock runs so (SOLR-18406 wave 0: a commit's delete() of G
  * read the hour it was skewed by, its delete() of the older commit a moment
- * later the host's clock, and COMPOSE's clock order refuted the path).
+ * later the base clock, and COMPOSE's clock order refuted the path).
  *
  * <p>"Before" is the RECORDING's order.  A reading's place is the event the
  * recording observed it at ({@code SymbolizeAction#eventSeq}, the seq its

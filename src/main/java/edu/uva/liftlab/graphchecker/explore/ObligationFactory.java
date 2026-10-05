@@ -548,14 +548,14 @@ public final class ObligationFactory {
             if (value != null) planted.roots.put(variable.getValue(), value);
         }
         // A clock's model is an instant of the recording's window; the replay
-        // is owed the difference from the host's reading there (a skew, as
-        // the replay plants it: RootMintRow#hostReading).
+        // is owed the difference from the base reading there (a skew, as
+        // the replay plants it: RootMintRow#baseReading).
         for (Map.Entry<String, String> variable
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
             RootMintRow read = corpus.rootOf(candidate.path.sessionId,
                     rootId);
-            String recorded = read == null ? "" : read.hostReading();
+            String recorded = read == null ? "" : read.baseReading();
             String delta = skew(values.get(variable.getKey()), recorded);
             if (delta.isEmpty()) {
                 gaps.add(GapRow.of(candidate.path.sessionId,
