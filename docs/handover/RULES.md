@@ -82,6 +82,7 @@ recommendation.
   ("只有sat我们要经过validation"): CONFIRM plus a native reproduction. A witness moving no root is never SAT. A real run
   failure (the occurrence never ran, a self-contradictory path, a solver timeout, CONFIRM without a verdict) is a
   named RUN_DEFECT: a bug to fix, not a verdict.
+- **A reasonable exploration bound, rarely touched** (owner 2026-10-05: "当然，我允许给一个合理的exploration的bound。如果过这个bound我们合理停下。但你不能大量的case都是触碰到这个bound"): exploration may stop at a declared, deterministic bound (a nesting depth, an obligation cap) and then publishes its formula with the bound named (a bounded verdict, visibly marked); reaching it must be rare. Every round counts the cases that touched it; more than a few is a defect (closure size, redundant obligations, slowness) fixed by a general rule, never by raising the bound per case. Running out of the time budget is not that bound: it is a run too slow (EXPLORATION_CUT, a named defect).
 - **A check is done when its `.smt` is right** ("如果我们确实正确的跑出了.smt。包含必要的因果链，符号变量，符号传播。没有新bug也是
   可以理解的"): the causal chain, the symbols and their propagation read against the system's code; no new bug is then
   an acceptable outcome.
