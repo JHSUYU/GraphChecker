@@ -1,4 +1,4 @@
-# State at the handover of 2026-10-04 night
+# State at the handover of 2026-10-04 night (updated 2026-10-05 04:00: §2 branches, §4 round HG5A)
 
 The owner stopped the lead and every agent ("请你停止所有的agent。停下当前的活…我的目标是别的coding agent读了你这个文档可以快速接手").
 Nothing runs on any lift: HG5 was stopped about 25 minutes after its launch, and both coding agents
@@ -29,10 +29,13 @@ In short:
 
 | branch | head | worktree | what | remote |
 | --- | --- | --- | --- | --- |
-| `system/hdfs` | this handover's docs commit, on the `hg5` integration | `/bigtemp/vnr3ne/wt/gc-hdfs` | **The HDFS GraphChecker branch, and the newest engine body.** It is built, unit-tested (342) and shell-tested. Its last complete live round was HG4, on `hg4` = `2680e7f63`. HG5 (this body) was stopped before any verdict. It contains `hg4` (seed-stalls, campaign-schedule, observed-arm, explore-planning, decisive-verdicts at `25e548b54`), scope batch 1 (`hdfs-scope-slice`, `-container`, `-rows`, `-iofault`), the VM sources of image `vm-hg5` (`hdfs-vm-hg5`), the remote-CONFIRM wait and reserve fixes (`71df98a00`), and the case declarations on the r3 tree. | pushed with this handover |
+| `system/hdfs` | `c289f7044` (2026-10-05 03:20) | `/bigtemp/vnr3ne/wt/gc-hdfs` | **The HDFS GraphChecker branch, and the newest engine body.** Built, unit- and shell-tested. Since the 2026-10-04 handover it adds: `hdfs-request-in-hand` (a transport door's fault ends the request in hand: bug2's key id bound again, RIH1 bug1/2/3 PASS, cone.py unexempted), `hdfs-measured-charges` (replays charged the campaign's measured need; an obligation is a SOLVE plus, only when SAT, a REPLAY; a sweep shares one pool; `obligation_memory_mb` deleted), and lead fixes: FREEZE's checkout digest tolerates a vanished file (`d8d26347e`), an array the VM named is a reference identity (`d027740d2`), README's method sentence. Last complete live round: HG5A on its predecessor e76f6b4a8 (§4). | local (not pushed since 43ba5d565) |
 | `hg5` | = `system/hdfs` | `/bigtemp/vnr3ne/wt/gc-hg4b` | the integration branch the HDFS work was built on (worktree name from HG4); `system/hdfs` was fast-forwarded to it at this handover. Use one of the two for the next integration and delete the other | local |
-| `hdfs-decisive-verdicts` | `66c22f440` (WIP, **not built**); `c76be91a7` is the last built and tested commit | `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` | The second review's FIX FIRST list for "only SAT/UNSAT" (brief `/bigtemp/vnr3ne/analysis/study-2026-10-04/brief-decisive-fix2.md`). Done: item 1 first half (cone.py exemption reverted, `0219d06b8`) and item 6 (`AMBIGUOUS_FATAL_ARM` is a BLOCKING gap, `c76be91a7`). Partly done in the WIP: items 3 and 4. Not done: 2, 5, 7. | local |
-| `hdfs-draw-sites` | `3a27177b3` | `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites` | **HG6**: site-keyed random draws and "pre" startup marks (`fd3d97403`), the T1 hold (`7de198e7d`), a node startup ends the exchange its thread served (`3950fe768`, engine side of the R3 fix), C1 removed (`3a27177b3`). 333 tests and the shell test pass. Based on `d916851fa` (seed-stalls before campaign-schedule): it runs CONFIRM inline, so merging it into `system/hdfs` needs care in `run_engine.sh`. Not merge-ready: canaries, V25 gate and review pending. | local |
+| `hdfs-decisive-verdicts` | `85cbb19b5`, **merged** into system/hdfs (2026-10-05) | `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` | Only SAT or UNSAT: CONFIRM refutes only a replay that ran the model (a refused one is a RUN_DEFECT; refused models excluded), one rule for values COMPOSE cannot bind (FREE / HELD named), item g, EXPLORATION_CUT judged once at EMIT, restsOnRefutations; the review's 4 blockers fixed. Offline gate V25 10/10, HG4 46/46 same claims. Delete the worktree at cleanup. | local |
+| `hdfs-closure` | (planned, from hdfs-decisive-verdicts) | | E1: equivalent deciders of one store site form one planned class (hdfs-adhoc-16: 1218-1520 polling turns -> 27-87 classes). Design approved; brief `brief-closure-e1-e2.md`. | local |
+| `hdfs-address-shared` | `47d7adc2f` | `/bigtemp/vnr3ne/wt/gc-hdfs-address-shared` | On HG6. Identity: counts inside an occurrence are the occurrence's (rule B: hdfs-adhoc-21's ticks inside one run() occurrence minted one endpoint); next: every planned occurrence answered by shape (hdfs-11741's witness: the DN's addKeys ran as an unplanned occurrence outside every region), then the putter's frames out of an anchored index (hdfs-adhoc-14). Briefs `brief-address-shared.md`, `brief-planned-shape.md`. | local |
+| `hdfs-cleanup-1` | in progress | `/bigtemp/vnr3ne/wt/gc-hdfs-cleanup-1` | Cleanup batch 1 (`brief-cleanup-1.md`, audit tables `cleanup-audit/`): phase 1 = dead symbols, unused config, duplicate helpers, timeline.py in files no branch touches; phase 2 after the merges = the WIRE-CODEC runtime (unreachable on every case; it lives on `wire-codec-p1`) and the busy files. | local |
+| `hdfs-draw-sites2` | `ea5a9ae51` | `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites` | **HG6**: four commits on `system/hdfs` `4bfe1a6e1` (merged in): site-keyed draws and 'pre' startup marks, the T1 hold, a node startup and a daemon's turn first end the exchange their thread served (`MessageDoors#beginNodeStartup`, `#beginTick`). 347 tests and the shell test pass. Canaries and probes: TODO §2. Review agent before the merge. | local |
 | `hdfs-clock-replay` | `22520bf02` | none | C1 (keyed clock replay), parked. Its commit message has the findings of rounds DS2–DS7 and the start-up time model a correct version needs. | local |
 | `main` | `fe3a5f1a0` | `~/GraphChecker` | the 2026-10-03 handover body (V25 14/14) | pushed |
 | `system/solr`, `system/hbase`, `system/zookeeper` | `fe3a5f1a0` (= main) | `/bigtemp/vnr3ne/wt/gc-{solr,hbase,zookeeper}` | created for the 2026-10-04 goal; nothing on them yet (their systems' turn comes after HDFS) | local |
@@ -105,7 +108,7 @@ Real but not admitted:
 - HDFS-2 #09 reencrypt-negative-sleep: the chain ends in a JDK-internal negative-sleep exception; dropped after HG1.
 - ZooKeeper #32: a contrib GUI tool, too low in quality.
 
-## 4. HDFS rounds of 2026-10-04 and the state of each check
+## 4. HDFS rounds of 2026-10-04/05 and the state of each check
 
 Rounds (sweeps of the HDFS group). Outputs are `/bigtemp/vnr3ne/gc-out/hdfs-study/accept-<round>-<n>/`; the
 case lists and reviews are in `rounds/`.
@@ -116,18 +119,18 @@ case lists and reviews are in `rounds/`.
 | HG3 | `~/gc-run/hg3` | first full run of the 46; review `rounds/HG3-review.md` |
 | HG4 | `~/gc-run/hg4` = `2680e7f63`, tree r3, image `vm-size-source` | named: 8 PASS (17897, bug1, bug3, 17960, pathA/B/C, slowdisk), bug2 FAIL, 11741 timeout. Study: 23 UNSAT, 3 SAT (10 and 12 confirmed witnesses, neither a new bug; 32 fatal in the recording), 10 without a verdict. Review `rounds/HG4-review.md` |
 | HG5 | `~/gc-run/hg5` = `e76f6b4a8`, tree r3, image `vm-hg5` | launched 22:30, **stopped by the owner** after ~25 min: no verdicts |
+| HG5A | the same snapshot, 2026-10-04 23:40 - 10-05 02:40, 2 heads/host | the HG5 body's baseline. Named: 9 PASS (17897, bug1, bug2*, bug3, 17960, pathA/B/C, slowdisk); 11741 UNSAT_CLOSED = **regression** (its witness replay observed the fatal, COMPOSE refused it: below). Study: see the table. *bug2 passed the cone.py that still had the FREE exemption; RIH1 later passed it unexempted. |
 
-Per check (HG4 unless noted):
+Per check (HG5A, the system/hdfs body before the 2026-10-05 merges):
 
 | state | checks |
 | --- | --- |
-| UNSAT with exported `.smt` (provisional: the decisive-verdicts fix list still touches the formula's FREE/pinned values) | 07 08 09 11 14 15 16 19 20 26 27 28 29 30 31 33 37 39 40 48 49 50 52 |
-| SAT, confirmed | 10 (QJM, the designed tolerance), 12 (the 17899/17967 root cause at study point 12) |
-| SAT with no root moved: the target threw in the recording | 32 (HG6 removes that throw: its deleteBlockPool #3 no longer throws) |
-| no verdict, start-up family | 21 22 23 24 25 34 35. Cause: the T1 hold placement plus R3's single anchor, made worse by the keyed clock replay C1 (the DN heartbeat schedule is set from the live clock during start-up). On HG6 without C1, 22 and 34 reach their targets. |
-| no verdict, clock/draw class | 01 17 43 (HG6 probes: 17 still 52 give-ups, 43 1, 01 not rerun) |
-| no verdict, other | 11741 (fixed, see above) |
-| efficiency items | QJM 07/08/09 ~82 min and 15 ~61 min. EXPLORE is dominated by obligations refused at planning (ADMISSION_GAP). 16: after the refutation, the re-compose hit a z3 timeout. 07: self-contradictory paths. |
+| UNSAT_CLOSED at a real fixed point, `.smt` exported | 11 15 19 20 27 28 29 30 31 39 40 48 49 52 (provisional until the decisive-verdicts merge re-decides them) |
+| SAT, confirmed (no new bug) | 10 (QJM, the designed tolerance), 12 (the 17899/17967 root cause) |
+| UNSAT but the exploration was cut by the budget (EXPLORATION_CUT under decisive-verdicts item h: a RUN_DEFECT) | 08 09 17 24 26 37. Cause: seed replays slowed by schedule give-ups reserve twice their time; ledger overcharge (fixed by measured charges: 07 now reaches its fixed point) |
+| RUN_DEFECT, cause found | 07 (57/68 paths self-contradictory: every getSegmentInfo export shares one producer endpoint, identity), 14 (OCCURRENCE_ADDRESS_SHARED, fixed by HG6's beginTick; and a seed-only occurrence whose index varies: the putter's frames, identity E2), 16 (PATH_SELF_CONTRADICTORY, fixed by item g; then PLAN_CLOSURE_CUT from 1520 polling turns: E1), 21 (counts restart per tick inside one run() occurrence: rule B), 32 (an allKeys-like map read the VM marked incomplete: admission), 50 (an array identity AL_42-0 placed nowhere: fixed d027740d2), 33 (FREEZE digest raced a vanished file: fixed d8d26347e) |
+| no verdict, stopped by the lead (HG6's start-up and clock/draw classes) | 01 22 23 25 34 35 43 |
+| hdfs-11741 regression | its witness obligation (HG4's) observed the fatal again, but the DN's allKeys read was writerSetComplete=false in 169/170 focused sessions: dn1's addKeys ran as an UNPLANNED occurrence (the KeyUpdateCommand rides a heartbeat the NN's clock picks) outside every region, and vm-hg5 rightly marks that. Fix: every planned occurrence answered by shape (identity agent). |
 
 New HDFS bugs found: none so far. Per the owner, a right `.smt` with no new bug is an acceptable outcome.
 

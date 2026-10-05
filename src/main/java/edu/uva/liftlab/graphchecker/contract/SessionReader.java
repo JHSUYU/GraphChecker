@@ -260,18 +260,12 @@ public final class SessionReader {
         });
     }
 
-    /** Every session of one iteration, in the layout's own order, sharing
-     *  one pool: the sessions of a corpus spell the same call sites. */
-    public static List<SessionReader> readAll(Path iteration)
-            throws IOException {
-        return readAll(iteration, Collections.<SessionReader>emptyList());
-    }
-
     /**
-     * The same, each session {@code held} already read from the same
-     * directory taken as it is: a landed session's rows never change (it
-     * lands whole, in one rename), and reading them is what a corpus read
-     * costs.
+     * Every session of one iteration, in the layout's own order, sharing one
+     * pool (the sessions of a corpus spell the same call sites), each session
+     * {@code held} already read from the same directory taken as it is: a
+     * landed session's rows never change (it lands whole, in one rename),
+     * and reading them is what a corpus read costs.
      */
     public static List<SessionReader> readAll(Path iteration,
                                               List<SessionReader> held)

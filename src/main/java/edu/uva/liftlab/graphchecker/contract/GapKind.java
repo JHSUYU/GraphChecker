@@ -31,6 +31,12 @@ public enum GapKind {
      */
     TARGET_FATAL_IN_RECORDING,
     /**
+     * A guard of the declared target reaches it on both arms, so the scope
+     * map states no fatal arm at the declared occurrence (PLAN, BLOCKING):
+     * the declaration names no question.
+     */
+    AMBIGUOUS_FATAL_ARM,
+    /**
      * The seed replay observed the fatal at the declared occurrence: the run
      * as recorded is no counterfactual, so no claim stands on the corpus
      * (COMPOSE, BLOCKING).  Beside {@link #TARGET_FATAL_IN_RECORDING} it is

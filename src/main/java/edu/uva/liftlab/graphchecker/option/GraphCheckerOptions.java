@@ -1,29 +1,83 @@
 package edu.uva.liftlab.graphchecker.option;
 
+import edu.uva.liftlab.graphchecker.GraphCheckerMain;
+
+import java.io.File;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * The static pass's options, as run_engine.sh ({@code do_analyze}) and the
+ * offline gate ({@code tools/regress/offline-ab.sh}) pass them: {@code -i
+ * <classes directory>} (one or more), {@code -x <classpath>} and {@code -o
+ * <output directory>}, each flag followed by its value.  Anything else is
+ * refused by name.
+ */
 public final class GraphCheckerOptions {
-    boolean help;
-    boolean outputJar;
+    private final List<String> inputList;
+    private final String classPath;
+    private final String outputDir;
 
-    String classPath;
-    List<String> inputList = Collections.emptyList();
-    String outputDir;
-    String[] args = new String[0];
-
-    GraphCheckerOptions() {
+    private GraphCheckerOptions(List<String> inputList, String classPath,
+                                String outputDir) {
+        this.inputList = Collections.unmodifiableList(inputList);
+        this.classPath = classPath;
+        this.outputDir = outputDir;
     }
 
-    public boolean isHelp() { return help; }
-
-    public boolean isOutputJar() { return outputJar; }
+    public static GraphCheckerOptions parse(String[] args) {
+        List<String> inputs = new ArrayList<>();
+        List<String> extra = new ArrayList<>();
+        String output = null;
+        for (int index = 0; index < args.length; index += 2) {
+            String flag = args[index];
+            if (index + 1 >= args.length) {
+                throw new IllegalArgumentException(flag + " takes a value");
+            }
+            String value = args[index + 1];
+            switch (flag) {
+                case "-i":
+                    if (!new File(value).isDirectory()) {
+                        throw new IllegalArgumentException("-i " + value
+                                + ": not a directory");
+                    }
+                    inputs.add(value);
+                    break;
+                case "-x":
+                    extra.add(value);
+                    break;
+                case "-o":
+                    output = value;
+                    break;
+                default:
+                    throw new IllegalArgumentException("unknown option "
+                            + flag + "; GraphCheckerMain takes -i <classes "
+                            + "directory>, -x <classpath> and -o <output "
+                            + "directory>");
+            }
+        }
+        if (inputs.isEmpty()) {
+            throw new IllegalArgumentException("GraphCheckerMain states no "
+                    + "-i <classes directory>");
+        }
+        List<String> entries = new ArrayList<>();
+        entries.add(GraphCheckerMain.class.getProtectionDomain()
+                .getCodeSource().getLocation().getPath());
+        entries.addAll(extra);
+        entries.addAll(inputs);
+        String javaClassPath = System.getProperty("java.class.path");
+        if (javaClassPath != null && !javaClassPath.isEmpty()) {
+            entries.add(javaClassPath);
+        }
+        return new GraphCheckerOptions(inputs,
+                String.join(File.pathSeparator, entries), output);
+    }
 
     public String getClassPath() { return classPath; }
 
     public List<String> getInputList() { return inputList; }
 
+    /** The output directory, or null when none was given. */
     public String getOutputDir() { return outputDir; }
-
-    public String[] getArgs() { return args; }
 }

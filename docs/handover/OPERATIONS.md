@@ -75,15 +75,21 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   cases, so no host heads two before every host heads one; `lift11` heads nothing. A head only drives its campaign: every
   engine JVM, the seed and CONFIRM replays and REPRODUCE's runs go wherever there is room, its own
   host first (PIPELINE §7.7).
-- A round's cases explore uncapped (`stream_max_in_flight=0`): each keeps as many obligations in
+- Every replay after a campaign's seed replay (obligations, GROW re-runs, CONFIRM) is charged the
+  campaign's measured need (`run_engine.sh` `campaign_replay_need_mb`): the largest resident peak
+  its replays stated so far (`workload_rss_mb` in each worker directory; the seed replay's first)
+  times 1.5, at least 512 MB; the seed replay is charged seven times the recording's peak; every
+  replay at most half a host's ceiling at its start, growing past it while the host has real room.
+  The replay logs say it: "the workload JVM's resident memory peaked at X MB; its host was charged Y
+  MB", and the head's log "a replay peaked at X MB (...): every replay from now on needs N MB".
+- A round's cases share nothing (`stream_shared_pool=false`): each keeps as many obligations in
   flight as the hosts admit, so one case alone may take the whole cluster. A sweep ("Run the bug
-  checks") caps them so the cases it runs at once share it: `sweep.sh` gives every case
-  `CAUSYNTH_STREAM_MAX_IN_FLIGHT` = the lifts' obligation slots for its `obligation_memory_mb`
-  (`run_engine.sh` `campaign_pool_slots`: on each lift as many replays as fit under the 70 %
-  ceiling at their charge, at most its cores; the ten lifts hold 30 of 6000 MB), and each capped
-  exploration keeps its share in flight: those slots over the capped explorations running now
-  (their entries in `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
-  (`campaign_stream_has_slot`). Ten exploring cases keep 3 each; one left alone keeps all 30.
+  checks") gives every case `CAUSYNTH_STREAM_SHARED_POOL=true`, so the cases it runs at once share
+  the lifts: each exploration keeps its share in flight, the slots of its hosts at its measured
+  replay charge (`campaign_pool_slots`: on each lift as many replays as fit under the 70 % ceiling
+  at that charge, at most its cores) over the sharing explorations running now (their entries in
+  `$CAUSYNTH_HOST_LEDGER/explorations/`), at least one, read again at every start
+  (`campaign_stream_has_slot`).
   A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host, what
   its planner or composer starts at (`tools/lib/heads.sh` `case_head_reserve_mb`, 8 GB), not
   its engine heap: a40's Solr heads asked for 16 GB and waited while one case's 27-32 replays

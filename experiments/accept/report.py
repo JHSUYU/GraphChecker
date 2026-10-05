@@ -11,8 +11,7 @@ rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it, the formula carries the
 causality the witness names (cone.py: every moved root in the causal cone of
-the selected path, no boundary variable a fatal names left neither bound by a
-family nor stated FREE), AND the mechanism it
+the selected path, no unbound boundary variable), AND the mechanism it
 concluded is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
 the CONFIRM replay (confirmation.confirmed=true), no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
@@ -533,15 +532,32 @@ if blocking:
     out.append("")
 
 concrete = result.get("concrete") or []
-# A long composition rests on many of these (hdfs-17899-bug2: a FREE arrival
-# on every one of its paths); the report lists the first CONCRETE_SHOWN and
-# states the count, so it stays readable without hiding how many there were.
+# The witness path's rows come first and are never cut (a reader checking
+# the witness's chain needs every value it rests on); then the rows that
+# name no path (EXPLORE's concrete anchors); the rest are cut at
+# CONCRETE_SHOWN, their count stated (hdfs-17899-bug2: a held arrival on every
+# one of its paths).
 CONCRETE_SHOWN = 20
+WORDS = {"FREE": "free (over-approximated)",
+         "HELD": "held at its recorded value"}
+witness_path = next((row.get("selectedPathId") or ""
+                     for row in result.get("valuations") or []
+                     if row.get("ordinal") == valuation_ordinal), "")
+on_witness = [r for r in concrete
+              if witness_path and r.get("pathId") == witness_path]
+pathless = [r for r in concrete if not r.get("pathId")]
+others = [r for r in concrete if r.get("pathId")
+          and r.get("pathId") != witness_path]
 if concrete:
     out += ["## Concrete", "",
-            "What the decision rested on concretely (result.json concrete[],"
-            " %d row(s)): information, never a gap." % len(concrete), ""]
-    for row in concrete[:CONCRETE_SHOWN]:
+            "What the decision rested on (result.json concrete[], %d row(s)):"
+            " a FREE value is free (over-approximated), a HELD one held at"
+            " its recorded value because no row states its producer;"
+            " information, never a gap.%s" % (len(concrete),
+            " The witness path's %d row(s) first." % len(on_witness)
+            if on_witness else ""), ""]
+    shown = on_witness + pathless + others[:CONCRETE_SHOWN]
+    for row in shown:
         if row.get("kind") == "ANCHOR":
             out.append("* anchor `%s` decided on no symbol: %d of %d path(s)"
                        " decided it, %d read(s) of %s demanded, %d off the"
@@ -551,13 +567,31 @@ if concrete:
                                   ", ".join(row.get("locations") or [])
                                   or "no location", row.get("offCone", 0)))
         else:
-            out.append("* %s `%s` = `%s`%s" % (
-                row.get("kind", "?"), row.get("subject", ""),
-                row.get("value", ""),
+            out.append("* %s `%s`%s%s%s%s" % (
+                WORDS.get(row.get("kind"), row.get("kind", "?")),
+                row.get("subject", ""),
+                " = `%s`" % row["value"] if row.get("value") else "",
                 (" (moves with %s)" % ", ".join(row["movesWith"]))
-                if row.get("movesWith") else ""))
-    if len(concrete) > CONCRETE_SHOWN:
-        out.append("* ... and %d more" % (len(concrete) - CONCRETE_SHOWN))
+                if row.get("movesWith") else "",
+                " -- %s" % row["reason"] if row.get("reason") else "",
+                "" if row.get("pathId") in ("", None, witness_path)
+                else " [path %s]" % row["pathId"]))
+    if len(others) > CONCRETE_SHOWN:
+        out.append("* ... and %d more" % (len(others) - CONCRETE_SHOWN))
+    out.append("")
+
+rests = result.get("restsOnRefutations") or []
+if rests:
+    out += ["## Rests on refutations", "",
+            "The unsat core names refuted claims the formula excludes: the"
+            " UNSAT rests on them beside the corpus (result.json"
+            " restsOnRefutations).", ""]
+    for row in rests:
+        out.append("* `%s` on path `%s`, moving %s -- %s" % (
+            row.get("name", "?"), row.get("pathId", "?"),
+            ", ".join("`%s` = `%s`" % (r, v) for r, v
+                      in sorted((row.get("moved") or {}).items()))
+            or "nothing", row.get("reason", "")))
     out.append("")
 
 if findings:

@@ -493,11 +493,15 @@ grep -q 'no accepted verdict: claim=RUN_DEFECT (the formula UNSAT_CLOSED)' \
   "${emit_root}/emit.log" \
   || fail "EMIT did not name the defect run: $(<"${emit_root}/emit.log")"
 # The same formula with no defect is the verdict, concrete anchor and all,
-# and what COMPOSE pinned beside it (Composer.Concrete) travels too.
+# and what COMPOSE held beside it (Composer.Concrete) travels too, with the
+# refuted claims its unsat core names (restsOnRefutations).
 emit_unsat_fixture
-jq '.concrete = [{kind: "FREE", subject: "vh", value: "",
-      movesWith: ["unattested producer P"]}]' "${composition_manifest}" \
-  >"${composition_manifest}.tmp"
+jq '.concrete = [{kind: "HELD", subject: "vh", value: "7",
+      reason: "producer unstated: the attach names no producer",
+      movesWith: [], pathId: "P1"}]
+  | .solver.campaignClaim.restsOnRefutations = [{name: "refuted_claim__0",
+      pathId: "P1", moved: {"ROOT.M": "true"}, reason: "WIRE e1"}]' \
+  "${composition_manifest}" >"${composition_manifest}.tmp"
 mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
@@ -505,12 +509,28 @@ run_emit
 jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
     "${campaign_final}/candidate.smt2")" \
   '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
-  and [.concrete[].kind] == ["ANCHOR", "FREE"]
+  and [.concrete[].kind] == ["ANCHOR", "HELD"]
+  and .concrete[1].pathId == "P1"
+  and [.restsOnRefutations[].name] == ["refuted_claim__0"]
   and .formula.path == $formula and ($formula | startswith("/") | not)
   and (.formula.sha256 | length) == 64' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
+
+# A campaign whose CONFIRM gave no verdict on some model (refused_models)
+# and confirmed none publishes no claim, the same UNSAT included: RUN_DEFECT,
+# CONFIRM_REFUSED, the models named.
+emit_unsat_fixture
+printf '%s\n' '{"schemaVersion":1,"kind":"REFUSED_MODEL","model":{"pathId":"P1"},"claimed":"x","reason":"the replay was NOT_ADMITTED"}' \
+  >"${emit_iteration}/refused_models.jsonl"
+run_emit
+jq -e '.claim == "RUN_DEFECT" and .formulaClaim == "UNSAT_CLOSED"
+  and (.refusedModels | length) == 1
+  and ([.defects[].code] | index("CONFIRM_REFUSED")) != null' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an UNSAT beside a refused model was published: \
+$(jq -c '{claim, defects, refusedModels}' "${campaign_final}/result.json")"
 
 # A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
 # other: published as CONFIRM left it.
@@ -543,7 +563,8 @@ triage_case() {
   printf '%s\n' "$3" >"${dir}/result.json"
 }
 triage_case 1 case-unsat '{"claim": "UNSAT_CLOSED", "concrete": [{"kind":
-  "ANCHOR", "decided": 1, "paths": 1, "reads": 2}]}'
+  "ANCHOR", "decided": 1, "paths": 1, "reads": 2}],
+  "restsOnRefutations": [{"name": "refuted_claim__0", "pathId": "P1"}]}'
 triage_case 2 case-defect '{"claim": "RUN_DEFECT", "defects": [{"code":
   "ADMISSION_GAP", "detail": "no session reached the declared occurrence"}]}'
 triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
@@ -555,7 +576,7 @@ triage_case 5 case-noverdict '{"claim": "SAT_UNCONFIRMED",
     "reason": "the confirmation replay published no verdict"}}'
 triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
   2>/dev/null | tr -d '\r' | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $NF}')
-[[ "${triage_rows}" == "case-unsat=UNSAT|the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
+[[ "${triage_rows}" == "case-unsat=UNSAT|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
 case-defect=RUN_DEFECT|ADMISSION_GAP no session reached the declared occurrence
 case-sat=CONFIRMED|
 case-refuted=REFUTED|WIRE e1
@@ -588,6 +609,26 @@ grep -q '^## Defects' "${report_work}/report.md" \
     "${report_work}/report.md" \
   || fail "report.md did not name the defects and the concrete anchor: \
 $(<"${report_work}/report.md")"
+# The witness path's rows come first and are never cut; a FREE row is free
+# (over-approximated), a HELD one held at its recorded value; the other
+# paths' rows are cut at 20, their count stated.
+jq -n '{claim: "SAT_CANDIDATE", valuationOrdinal: 1,
+  valuations: [{ordinal: 1, selectedPathId: "P.w"}],
+  concrete: ([range(25) | {kind: "HELD", subject: "r\(.)", value: "0",
+      reason: "producer unstated: x", movesWith: [], pathId: "P.o"}]
+    + [{kind: "FREE", subject: "w", value: "", reason: "moves",
+      movesWith: ["ROOT.M"], pathId: "P.w"}])}' \
+  >"${report_case}/schedule/final/result.json"
+python3 "${repo}/experiments/accept/report.py" case-x "${report_case}" \
+  "${report_work}" >/dev/null
+awk '/^## Concrete/ {on = 1; next} on && /^\* / {print; exit}' \
+    "${report_work}/report.md" \
+  | grep -q '^\* free (over-approximated) `w` (moves with ROOT.M)' \
+  && grep -q '^\* held at its recorded value `r0` = `0`' \
+    "${report_work}/report.md" \
+  && grep -q '^\* \.\.\. and 5 more' "${report_work}/report.md" \
+  || fail "report.md did not put the witness path's rows first, or cut \
+the others: $(<"${report_work}/report.md")"
 
 # The claim has one home. A solved manifest without the policy's decision is
 # a manifest EMIT may not publish a result from.
@@ -855,7 +896,11 @@ done
 # write before SEED ends it, RECORDING_BOUND.
 # 54: `campaign_max_claims` joined it: how many times the final stages decide
 # a claim again after CONFIRM refuted one.
-[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
+# 53: `obligation_memory_mb` left: every replay after the seed's is charged
+# the campaign's measured need (campaign_replay_need_mb); and
+# `stream_max_in_flight` became `stream_shared_pool`: a sweep asks for a
+# shared pool, and each exploration sizes its share from its measured need.
+[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1045,7 +1090,6 @@ stop_after_config() {
   schedule_max_jobs=1
   region_path_max_waves=1
   compose_max_valuations=1
-  obligation_memory_mb=2500
   region_path_max_paths_per_region=""
   region_path_max_flips_per_path=""
   region_path_max_tasks=""
@@ -1491,10 +1535,14 @@ known_config_key seed_replay_time_factor \
 seed_bound() (
   replay_timeout_s=$1 seed_replay_time_factor=$2
   campaign_recorded_workload_s=$3
+  campaign_recorded_workload_rss_mb=100
   campaign_task_ids() { echo TASK.SEED; }
+  campaign_log() { :; }
   campaign_replay() {
     printf '%s|%s\n' "${campaign_adapter_timeout_s}" \
       "${campaign_adapter_timeout_rule}"
+    mkdir -p "$6"
+    echo 300 >"$6/workload_rss_mb"
   }
   campaign_session_replay "${bound_dir}/seed-iteration"
 )
@@ -1515,40 +1563,98 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
   "${bound_dir}/validate.err" \
   || fail "validate accepted seed_replay_time_factor=0"
 
-# REPLAY-NEED: the seed replay (and CONFIRM's) is charged the recording's
-# measured peak times campaign_replay_memory_factor (7) when that is above
-# one obligation's replay, else that (campaign_replay_need_mb); it is charged
-# that need, never more than half a host's ceiling (cap:
-# CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal, halved;
-# campaign_replay_charge_mb), its replay JVM is held to that charge
-# (CAUSYNTH_CHARGED_MB) and sized by the whole need (CAUSYNTH_HEAP_BASIS_MB,
-# campaign_replay_heap_basis_mb).  Per row: obligation_memory_mb, the
-# recording's peak (- none), the charge, the need.
+# REPLAY-NEED: the seed replay, before any replay of the campaign was
+# measured, needs the recording's measured peak times
+# campaign_replay_memory_factor (7); it is charged that need, never more
+# than half a host's ceiling (cap: CAUSYNTH_HOST_MAX_USED_PCT of this host's
+# MemTotal, halved; campaign_replay_charge_mb), its replay JVM is held to
+# that charge (CAUSYNTH_CHARGED_MB) and sized by the whole need
+# (CAUSYNTH_HEAP_BASIS_MB, campaign_replay_heap_basis_mb), and its own peak
+# is the campaign's first measured need (campaign_replay_need_mb).  A
+# recording that measured no peak, or a seed replay that states none, fails
+# REPLAY by name: there is no static charge to fall back to.  Per row: the
+# recording's peak and the seed replay's (- none), the charge, the need, and
+# the measured need after it (- refused).
 need_cap=$(( $(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo) \
   * campaign_host_max_used_pct / 200 ))
-while read -r need_obligation need_rss need_expected need_whole; do
+while read -r need_rss need_peak need_expected need_whole need_after; do
   [[ "${need_rss}" != - ]] || need_rss=""
   [[ "${need_expected}" != cap ]] || need_expected=${need_cap}
   need_said=$(
-    obligation_memory_mb=${need_obligation}
     campaign_recorded_workload_rss_mb=${need_rss}
+    campaign_replay_peak_mb=0
     replay_timeout_s=2400 seed_replay_time_factor=40
     campaign_recorded_workload_s=10
     campaign_task_ids() { echo TASK.SEED; }
+    campaign_log() { :; }
     campaign_head_charged() { printf 'charged=%s ' "$1"; shift; "$@"; }
     campaign_replay() {
-      printf 'jvm=%s heap=%s' "$7" "${campaign_replay_heap_basis_mb}"; }
-    campaign_session_replay "${bound_dir}/seed-iteration"
-  )
-  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected} heap=${need_whole}" ]] \
-    || fail "a seed replay with ${need_obligation} MB per obligation and a \
-'${need_rss}' MB recording is ${need_said}, not ${need_expected} MB sized by \
-${need_whole} MB"
+      printf 'jvm=%s heap=%s' "$7" "${campaign_replay_heap_basis_mb}"
+      mkdir -p "$6"
+      rm -f -- "$6/workload_rss_mb"
+      [[ "${need_peak}" == - ]] || echo "${need_peak}" >"$6/workload_rss_mb"
+    }
+    campaign_session_replay "${bound_dir}/seed-iteration" \
+      2>"${bound_dir}/need.err"
+    printf ' need=%s' "$(campaign_replay_need_mb)"
+  ) || true
+  if [[ "${need_after}" == - ]]; then
+    grep -q "stage=REPLAY" "${bound_dir}/need.err" \
+      && grep -q "reason=the \(recording\|seed replay\).* no peak" \
+        "${bound_dir}/need.err" && [[ "${need_said}" != *need=* ]] \
+      || fail "a seed replay with a '${need_rss}' MB recording and a \
+'${need_peak}' MB peak was not refused by name: ${need_said} \
+$(cat "${bound_dir}/need.err")"
+    continue
+  fi
+  [[ "${need_said}" == "charged=${need_expected} jvm=${need_expected} \
+heap=${need_whole} need=${need_after}" ]] \
+    || fail "a seed replay of a '${need_rss}' MB recording peaking at \
+${need_peak} MB is ${need_said}, not ${need_expected} MB sized by \
+${need_whole} MB, then ${need_after} MB"
 done <<'EOF'
-2500 300 2500 2500
-2500 442 3094 3094
-2500 - 2500 2500
-2500 99999 cap 699993
+300 400 2100 2100 640
+442 674 3094 3094 1024
+300 100 2100 2100 512
+99999 2003 cap 699993 3072
+- 400 - - -
+300 - 2100 2100 -
+EOF
+
+# MEASURED-NEED: every replay that returns -- an obligation's, a GROW
+# re-run's, a CONFIRM's -- states its peak in its worker directory
+# (workload_rss_mb, experiments/lib/execute.sh), and the campaign's need is
+# the largest so far times 1.5, rounded up to 128 MB, at least 512 MB: it
+# never falls, a worker that states none (its solver answered) leaves it,
+# and it is said when it is first measured and whenever it moves.  Per row:
+# the peaks in turn (- a worker that states none), the need after each, and
+# how many times it was said.
+measured_dir="${test_tmp}/measured"
+while IFS='|' read -r measured_peaks measured_needs measured_said; do
+  rm -rf -- "${measured_dir}"
+  mkdir -p "${measured_dir}"
+  measured_got=$(
+    campaign_replay_peak_mb=0
+    measured_n=0
+    for measured_peak in ${measured_peaks}; do
+      measured_n=$((measured_n + 1))
+      mkdir -p "${measured_dir}/${measured_n}"
+      [[ "${measured_peak}" == - ]] \
+        || echo "${measured_peak}" >"${measured_dir}/${measured_n}/workload_rss_mb"
+      campaign_replay_measured "${measured_dir}/${measured_n}" \
+        >>"${measured_dir}/said"
+      printf '%s ' "$(campaign_replay_need_mb)"
+    done
+  )
+  [[ "${measured_got% }" == "${measured_needs}" \
+     && "$(grep -c 'every replay from now on needs' "${measured_dir}/said")" \
+       == "${measured_said}" ]] \
+    || fail "peaks ${measured_peaks} gave the needs ${measured_got}, not \
+${measured_needs}, said: $(cat "${measured_dir}/said")"
+done <<'EOF'
+674 662 715 2003 500|1024 1024 1152 3072 3072|3
+171 - 300 400|512 512 512 640|2
+- 238|512 512|1
 EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
@@ -1766,7 +1872,7 @@ $(live_charges "${solver_test}/hosts")"
 # -- never a bare NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations
 # "answered" by an OutOfMemoryError).  Neither settles its question.
 # A question whose host had no room for its solver (3) is answered at once in
-# a solver JVM of its own, under the obligation's charge (`now`).
+# a solver JVM of its own, under the obligation's charge.
 retry_test=${test_tmp}/solver-retry
 for alone in answers fails noroom; do
   mkdir -p "${retry_test}/${alone}"
@@ -1779,15 +1885,15 @@ for alone in answers fails noroom; do
       return 1
     }
     campaign_solve_obligation_alone() {
-      [[ "${alone}" != noroom || "${5:-}" == now ]] \
+      [[ "${alone}" != noroom || "${5:-}" == 1024 ]] \
         || { echo "not asked at once" >&2; return 1; }
       [[ "${alone}" != fails ]] || { echo "the second one died" >&2; return 1; }
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
         >"$4/obligation_result.jsonl"
       printf '(assert false)\n' >"$4/obligation_query.smt2"
     }
-    campaign_obligation_worker OB.1 obligations classes \
-      "${retry_test}/${alone}" sessions plan
+    campaign_obligation_worker OB.1 obligations sessions \
+      "${retry_test}/${alone}" 1024
   ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
@@ -1810,8 +1916,18 @@ done
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
 # failed -- one obligation's own answer, never the wave's death -- naming the
-# bound it exceeded.  The worker must also RETURN, which is the whole point:
-# the wave barrier waited on the hung one forever.
+# bound it exceeded.  The REPLAY must also RETURN, which is the whole point:
+# the wave barrier waited on the hung one forever.  Each replay below runs
+# as the pool's REPLAY start does (campaign_stream_start), on what its
+# solver left in its worker (bound_solved): the SAT_MODEL_READY row, the
+# focus row and the query.
+bound_solved() {
+  jq -n -c --arg id "$2" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+    obligationId: $id, verdict: "SAT_MODEL_READY", sessionId: "",
+    detail: ""}' >"$1/obligation_result.jsonl"
+  printf '{"taskId":"TASK.1"}\n' >"$1/focused_task.jsonl"
+  printf '(assert true)\n' >"$1/obligation_query.smt2"
+}
 worker_dir="${bound_dir}/obligation"
 mkdir -p "${worker_dir}" "${bound_dir}/sessions" "${bound_dir}/classes"
 printf '{"taskId":"TASK.1"}\n' >"${bound_dir}/seed_plan.jsonl"
@@ -1824,21 +1940,20 @@ z3_bin=z3
 solver_timeout_ms=1000
 schedule_max_jobs=1
 trace_test=T
+bound_solved "${worker_dir}" OB.1
+bound_inode=$(stat -c %i "${worker_dir}/obligation_result.jsonl")
 (
-  # The solver settled it: a model is ready and the replay is what decides.
-  campaign_solve_obligation() {
-    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
-      detail: ""}' >"${worker_dir}/obligation_result.jsonl"
-    printf '{"taskId":"TASK.1"}\n' >"${worker_dir}/focused_task.jsonl"
-    printf '(assert true)\n' >"${worker_dir}/obligation_query.smt2"
-  }
-  campaign_obligation_worker OB.1 "${bound_dir}/obligations.jsonl" \
-    "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
-    "${bound_dir}/seed_plan.jsonl"
+  campaign_obligation_replay OB.1 "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
 $(cat "${worker_dir}/worker.log")"
+# The answer replaces the solver's row as a new inode, never in place: the
+# REPLAY runs on another host than the solve, whose NFS client may hold the
+# old row (campaign_write_whole).
+[[ "$(stat -c %i "${worker_dir}/obligation_result.jsonl")" != "${bound_inode}" \
+   && ! -e "${worker_dir}/obligation_result.jsonl.part" ]] \
+  || fail "the replay's answer was written over the solver's row in place"
 [[ "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
     == NOT_ADMITTED ]] \
   || fail "a replay killed on its bound did not record NOT_ADMITTED: \
@@ -1865,17 +1980,10 @@ worker_dir="${bound_dir}/killed"
 mkdir -p "${worker_dir}"
 replay_timeout_s=60
 concolic_replay_command='kill -KILL $$'
+bound_solved "${worker_dir}" OB.2
 (
-  campaign_solve_obligation() {
-    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-      obligationId: "OB.2", verdict: "SAT_MODEL_READY", sessionId: "",
-      detail: ""}' >"${worker_dir}/obligation_result.jsonl"
-    printf '{"taskId":"TASK.1"}\n' >"${worker_dir}/focused_task.jsonl"
-    printf '(assert true)\n' >"${worker_dir}/obligation_query.smt2"
-  }
-  campaign_obligation_worker OB.2 "${bound_dir}/obligations.jsonl" \
-    "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
-    "${bound_dir}/seed_plan.jsonl"
+  campaign_obligation_replay OB.2 "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay was killed: \
 $(cat "${worker_dir}/worker.log")"
@@ -1924,17 +2032,11 @@ chmod +x "${withdraw_dir}/replay.sh"
 # it starts as a login shell (an NFS quota check alone can take a second).
 replay_timeout_s=5
 concolic_replay_command="${withdraw_dir}/replay.sh"
+bound_solved "${withdraw_worker}" OB.1
 (
-  campaign_solve_obligation() {
-    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
-      detail: ""}' >"${withdraw_worker}/obligation_result.jsonl"
-    printf '{"taskId":"TASK.1"}\n' >"${withdraw_worker}/focused_task.jsonl"
-    printf '(assert true)\n' >"${withdraw_worker}/obligation_query.smt2"
-  }
-  campaign_obligation_worker OB.1 "${withdraw_dir}/obligations.jsonl" \
-    "${withdraw_dir}/classes" "${withdraw_worker}" "${withdraw_sessions}" \
-    "${withdraw_dir}/seed_plan.jsonl"
+  campaign_obligation_replay OB.1 "${withdraw_dir}/classes" \
+    "${withdraw_worker}" "${withdraw_worker}/sessions" \
+    "${withdraw_dir}/seed_plan.jsonl" 1024 1024
 ) >"${withdraw_worker}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
 $(cat "${withdraw_worker}/worker.log")"
@@ -2147,7 +2249,6 @@ stream_fixture() {
   campaign_root="${test_tmp}/$1"
   campaign_host_gate_root="${test_tmp}/$1/hosts"
   campaign_worker_hosts=""
-  obligation_memory_mb=1
   engine_memory_mb=1
   causynth_static_scope_map=""
   causynth_root_domains=""
@@ -2618,8 +2719,10 @@ region_path_max_waves=1
 jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
   | .detail | test("region_path_max_waves=1") and test("1 obligation")' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
-  || fail "the wave budget is not stated as a gap row: \
-$(cat "${stream_dir}/campaign_gaps.jsonl")"
+  && jq -e -s 'map(select(.cls == "BLOCKING")) | length == 0' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the wave budget is not stated as a gap row, or the declared \
+nesting bound cut the exploration: $(cat "${stream_dir}/campaign_gaps.jsonl")"
 jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "what ran when the budget stopped the exploration did not land"
@@ -2634,7 +2737,12 @@ it left unasked"
 # STREAM-3c: THE CAMPAIGN BUDGET.  Between two steps, once the campaign's
 # budget has no room for the stages after the exploration (its reserve,
 # campaign_reserve), the exploration ends as at a witness: the queue
-# cancelled, what runs reaped, and the stop a DIAGNOSTIC row.
+# cancelled, what runs reaped, the stop a DIAGNOSTIC row, and
+# exploration.json states what it left owed.  It still owed an arm (SLOW,
+# reaped), so EMIT's one judge (campaign_exploration_cut) makes it one
+# BLOCKING EXPLORATION_CUT row under an UNSAT claim, a DIAGNOSTIC one under
+# a SAT_CANDIDATE, which CONFIRM validates.  The declared wave bound
+# (STREAM-3) cuts nothing.
 stream_fixture stream-3c
 (
   stream_stubs
@@ -2655,16 +2763,51 @@ jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .reaped == ["SLOW"]' \
   "${stream_dir}/exploration.json" >/dev/null \
   || fail "the campaign budget did not end the exploration: \
 $(cat "${stream_dir}/exploration.json")"
-jq -e 'select(.subject == "CAMPAIGN_BUDGET_REACHED" and .cls == "DIAGNOSTIC")
-  | .detail | test("campaign_budget_s")' \
+jq -e -s 'map(select(.cls == "BLOCKING")) | length == 0' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
-  || fail "the budget stop is not a DIAGNOSTIC row: \
+  && jq -e 'select(.subject == "CAMPAIGN_BUDGET_REACHED"
+    and .cls == "DIAGNOSTIC") | .detail | test("campaign_budget_s")' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the budget stop is not one DIAGNOSTIC row: \
 $(cat "${stream_dir}/campaign_gaps.jsonl")"
+cp "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/explore-gaps.jsonl"
+for claim in UNSAT_CLOSED SAT_CANDIDATE; do
+  cp "${stream_dir}/explore-gaps.jsonl" "${stream_dir}/campaign_gaps.jsonl"
+  jq -n --arg claim "${claim}" '{solver: {campaignClaim: {claim: $claim}}}' \
+    >"${stream_dir}/cut-manifest.json"
+  ( composition_manifest="${stream_dir}/cut-manifest.json"
+    campaign_exploration_cut "${stream_dir}" )
+  cls=$([[ "${claim}" == UNSAT_CLOSED ]] && echo BLOCKING || echo DIAGNOSTIC)
+  jq -e -s --arg cls "${cls}" 'map(select(.subject == "EXPLORATION_CUT"))
+    | length == 1 and .[0].cls == $cls
+    and (.[0].detail | test("ended CAMPAIGN_BUDGET_REACHED")
+         and test("1 unlanded job"))' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+    || fail "under ${claim}, a budget stop that owed arms is not one ${cls} \
+EXPLORATION_CUT row: $(cat "${stream_dir}/campaign_gaps.jsonl")"
+done
+# A WITNESSED end owes what it dropped (a refuted witness's next claim is
+# composed over the trimmed corpus); FIXED_POINT owes nothing.
+for end in '{"stop": "WITNESSED", "cancelled": ["A"]}' \
+    '{"stop": "FIXED_POINT", "cancelled": ["A"]}'; do
+  printf '%s\n' "${end}" >"${stream_dir}/exploration.json"
+  : >"${stream_dir}/campaign_gaps.jsonl"
+  jq -n '{solver: {campaignClaim: {claim: "UNSAT_CLOSED"}}}' \
+    >"${stream_dir}/cut-manifest.json"
+  ( composition_manifest="${stream_dir}/cut-manifest.json"
+    campaign_exploration_cut "${stream_dir}" )
+  want=$([[ "${end}" == *WITNESSED* ]] && echo 1 || echo 0)
+  [[ "$(grep -c EXPLORATION_CUT "${stream_dir}/campaign_gaps.jsonl")" \
+      == "${want}" ]] \
+    || fail "${end} under an UNSAT is not ${want} cut row(s): \
+$(cat "${stream_dir}/campaign_gaps.jsonl")"
+done
 
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
 # heap a head JVM is given (exit 3) is not planned: its directory goes, what
 # runs lands, the exploration ends on the rounds before it, and the stop is
-# a BLOCKING row naming the planner's error (sweep a40h2, DataStreamer-638).
+# a row naming the planner's error (sweep a40h2, DataStreamer-638) -- rounds
+# were owed, so EMIT's judge cuts any UNSAT over it.
 stream_fixture stream-3b
 (
   stream_stubs
@@ -2687,9 +2830,16 @@ stream_fixture stream-3b
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "a planner out of heap failed the exploration: \
 $(cat "${stream_dir}/explore.log")"
-jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED" and .cls == "BLOCKING")
+jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
   | .detail | test("obligations-0001 ran out") and test("OutOfMemoryError")' \
   "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
+  && jq -n '{solver: {campaignClaim: {claim: "UNSAT_CLOSED"}}}' \
+    >"${stream_dir}/cut-manifest.json" \
+  && ( composition_manifest="${stream_dir}/cut-manifest.json"
+    campaign_exploration_cut "${stream_dir}" ) \
+  && jq -e 'select(.subject == "EXPLORATION_CUT" and .cls == "BLOCKING")
+    | .detail | test("ended PLANNER_HEAP_EXCEEDED")' \
+    "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
   && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1' \
     "${stream_dir}/exploration.json" >/dev/null \
   && jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
@@ -2823,18 +2973,25 @@ jq -e '.stop == "FIXED_POINT" and .answered == 3' \
 $(cat "${stream_dir}/exploration.json")"
 reset_config
 
-# STREAM-CAP: an exploration under stream_max_in_flight runs no more starts
-# at once than its share of it -- the cap over the capped explorations whose
-# ledger entry is fresh, its own among them, at least one -- says so once
-# for the share it waits at, and takes its entry with it when it ends; with
-# no cap it keeps no entry and waits for nothing but room (a40: one Solr
-# case's pool held 27-32 replays on all ten lifts while the sweep's other
-# cases waited).  Per row: the cap, the fresh and the stale entries of other
-# explorations, the most of three one-second obligations that ran at once,
-# and how many explorations the wait names (- for none).
-while read -r cap_max cap_fresh cap_stale cap_peak cap_sharers; do
-  stream_fixture "stream-cap-${cap_max}-${cap_fresh}-${cap_stale}"
-  stream_max_in_flight=${cap_max}
+# STREAM-CAP: an exploration in a shared pool runs no more starts at once
+# than its share -- the slots its hosts hold at its measured replay charge
+# (campaign_pool_slots: here one host of 30000 MB at 70 %, 8 cores) over the
+# sharing explorations whose ledger entry is fresh, its own among them, at
+# least one -- a solve charged what a solver starts at; it says so once for
+# each share it waits at, and takes its entry with it when it ends; outside
+# a shared pool it keeps no entry and waits for nothing but room (a40: one
+# Solr case's pool held 27-32 replays on all ten lifts while the sweep's
+# other cases waited).  Per row: the campaign's measured peak (- outside a
+# shared pool), the fresh and the stale entries of other explorations, the
+# most of three one-second solves that ran at once, and how many
+# explorations the wait names (- for none).
+while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
+  stream_fixture "stream-cap-${cap_peak}-${cap_fresh}-${cap_stale}"
+  campaign_replay_peak_mb=0
+  if [[ "${cap_peak}" != - ]]; then
+    stream_shared_pool=true
+    campaign_replay_peak_mb=${cap_peak}
+  fi
   cap_entries="${campaign_host_gate_root}/explorations"
   mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
   printf '8\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
@@ -2850,6 +3007,7 @@ while read -r cap_max cap_fresh cap_stale cap_peak cap_sharers; do
     campaign_obligation_worker() {
       local id=$1 worker=$4
       date +%s.%N >"${worker}/started-at"
+      printf '%s\n' "$5" >"${worker}/charged"
       sleep 1
       date +%s.%N >"${worker}/ended-at"
       stream_answer "${worker}" "${id}" UNSAT
@@ -2865,57 +3023,198 @@ $(cat "${stream_dir}/explore.log")"
               for (j = 1; j <= NR; j++) if (s[j] <= s[i] && s[i] < e[j]) n++
               if (n > peak) peak = n }
             print peak }')
-  [[ "${cap_ran}" == "${cap_peak}" ]] \
-    || fail "cap ${cap_max} with ${cap_fresh} other exploration(s) ran \
-${cap_ran} obligation(s) at once, not ${cap_peak}"
+  [[ "${cap_ran}" == "${cap_ran_most}" ]] \
+    || fail "a pool at a ${cap_peak} MB peak with ${cap_fresh} other \
+exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
+  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged \
+      | sort -u)" == "${campaign_solver_start_mb}" ]] \
+    || fail "the pool's solves were charged $(cat \
+      "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
+not what a solver starts at, ${campaign_solver_start_mb} MB"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
   if [[ "${cap_sharers}" == - ]]; then
     [[ "${cap_said}" -eq 0 && ! -e "${cap_entries}" ]] \
-      || fail "an exploration with no cap waited for a slot or kept an entry"
+      || fail "an exploration outside a shared pool waited for a slot or \
+kept an entry"
   else
-    [[ "${cap_said}" -eq 1 ]] && grep -q "shared by ${cap_sharers} capped" \
-      "${stream_dir}/explore.log" \
-      || fail "the wait for a slot was not said once, naming \
-${cap_sharers} exploration(s): $(grep 'slot' "${stream_dir}/explore.log")"
+    [[ "${cap_said}" -ge 1 && "${cap_said}" -eq "$(grep -o \
+        "waiting for a slot.*share [0-9]*" "${stream_dir}/explore.log" \
+        | sort -u | wc -l)" ]] && grep -q "shared by ${cap_sharers} \
+exploration" "${stream_dir}/explore.log" \
+      || fail "the wait for a slot was not said once for each share, \
+naming ${cap_sharers} exploration(s): $(grep 'slot' \
+        "${stream_dir}/explore.log")"
     [[ "$(ls "${cap_entries}" | wc -l)" -eq $((cap_fresh + cap_stale)) ]] \
       || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
   fi
 done <<'EOF'
-0 0 0 3 -
-2 0 1 2 1
-2 1 0 1 2
-1 2 0 1 3
+- 0 0 3 -
+5000 0 1 2 1
+5000 1 0 1 2
+8000 2 0 1 3
 EOF
+campaign_replay_peak_mb=0
 reset_config
-# The cap is a declared workflow key, overridden only through the table, 0
-# by default, and a non-negative integer or refused by name.
-[[ "$(grep -c 'CAUSYNTH_STREAM_MAX_IN_FLIGHT' "${repo}/run_engine.sh")" \
-    -eq 1 && "${stream_max_in_flight}" == 0 ]] && known_config_key \
-    stream_max_in_flight \
-  || fail "stream_max_in_flight is not a declared key defaulting to 0"
-CAUSYNTH_STREAM_MAX_IN_FLIGHT=30 apply_environment_overrides
-[[ "${stream_max_in_flight}" == 30 ]] \
-  || fail "CAUSYNTH_STREAM_MAX_IN_FLIGHT does not override the key"
+# Sharing is a declared workflow key, overridden only through the table,
+# false by default, and true or false or refused by name.
+[[ "$(grep -c 'CAUSYNTH_STREAM_SHARED_POOL' "${repo}/run_engine.sh")" \
+    -eq 1 && "${stream_shared_pool}" == false ]] && known_config_key \
+    stream_shared_pool \
+  || fail "stream_shared_pool is not a declared key defaulting to false"
+CAUSYNTH_STREAM_SHARED_POOL=true apply_environment_overrides
+[[ "${stream_shared_pool}" == true ]] \
+  || fail "CAUSYNTH_STREAM_SHARED_POOL does not override the key"
 reset_config
 cap_validate() (
   stop_after_config ""
-  stream_max_in_flight=$1
+  stream_shared_pool=$1
   validate_config
 )
-for cap_value in "" -1 x 08 0 30; do
+for cap_value in "" 0 1 30 TRUE true false; do
   run_capturing_status cap_validate "${cap_value}" >/dev/null \
     2>"${test_tmp}/cap-validate.err"
   case "${cap_value}" in
-    0|30) [[ "${status}" -eq 0 ]] \
-      || fail "validate refused stream_max_in_flight='${cap_value}'" ;;
-    *) [[ "${status}" -ne 0 ]] && grep -q 'stream_max_in_flight must be' \
+    true|false) [[ "${status}" -eq 0 ]] \
+      || fail "validate refused stream_shared_pool='${cap_value}'" ;;
+    *) [[ "${status}" -ne 0 ]] && grep -q 'stream_shared_pool must be' \
         "${test_tmp}/cap-validate.err" \
-      || fail "validate did not refuse stream_max_in_flight='${cap_value}' \
+      || fail "validate did not refuse stream_shared_pool='${cap_value}' \
 by name" ;;
   esac
 done
 reset_config
+
+# STREAM-SPLIT: an obligation's solve and its replay are two starts.  The
+# solve is charged what a solver starts at; one its solver answers
+# SAT_MODEL_READY queues its REPLAY first, at once, charged the measured
+# replay need then -- C's replay, after A's stated its peak, from that peak
+# -- on the class tree and plan its solve started on.  Until its REPLAY
+# lands the obligation is in flight: round 1, planned when B's session
+# landed while A replayed, is handed A and C (C still solving), and round 2
+# C.  Only the replays' answers land (no SAT_MODEL_READY row), each where
+# its replay staged it.
+stream_fixture stream-split
+(
+  stream_stubs
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    printf '%s\n' "$5" >"${worker}/solve-charged"
+    case "${id}" in
+      A) sleep 1; stream_answer "${worker}" A SAT_MODEL_READY ;;
+      B) sleep 2; stream_answer "${worker}" B ADMITTED SESSION.B ;;
+      C) sleep 6; stream_answer "${worker}" C SAT_MODEL_READY ;;
+    esac
+  }
+  campaign_obligation_replay() {
+    local id=$1 classes=$2 worker=$3 plan=$5 charged=$6
+    printf '%s %s %s\n' "${charged}" "${classes#"${stream_dir}"/}" \
+      "${plan#"${stream_dir}"/}" >"${worker}/replay-args"
+    if [[ "${id}" == A ]]; then
+      sleep 3
+      echo 3000 >"${worker}/workload_rss_mb"
+    fi
+    stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id}"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a split exploration did not finish: $(cat "${stream_dir}/explore.log")"
+split_round0="${stream_dir}/obligations-0000"
+[[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -u)" \
+    == "${campaign_solver_start_mb}" ]] \
+  || fail "a solve was not charged what a solver starts at: $(cat \
+    "${split_round0}"/{A,B,C}/solve-charged | paste -sd ' ' -)"
+split_plan="instrumented-classes generations/g0/execution_task_plan.jsonl"
+[[ "$(cat "${split_round0}/A/replay-args")" \
+    == "$(campaign_stream_charge_mb REPLAY) ${split_plan}" \
+   && "$(cat "${split_round0}/C/replay-args")" \
+    == "$(campaign_replay_peak_mb=3000 campaign_stream_charge_mb REPLAY) \
+${split_plan}" && ! -e "${split_round0}/B/replay-args" ]] \
+  || fail "the REPLAYs were not charged the measured need on their solve's \
+tree: A $(cat "${split_round0}/A/replay-args"), C $(cat \
+    "${split_round0}/C/replay-args")"
+[[ "$(cat "${stream_dir}/obligations-0001/in-flight.txt")" == "A C" \
+   && "$(cat "${stream_dir}/obligations-0002/in-flight.txt")" == C ]] \
+  || fail "an obligation whose REPLAY had not landed was not in flight: \
+round 1 $(cat "${stream_dir}/obligations-0001/in-flight.txt"), round 2 \
+$(cat "${stream_dir}/obligations-0002/in-flight.txt")"
+jq -e -s 'length == 3 and all(.[]; .verdict == "ADMITTED")' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  && [[ -d "${stream_dir}/sessions/SESSION.A" \
+     && -d "${stream_dir}/sessions/SESSION.C" \
+     && -s "${split_round0}/A/replay-host.txt" \
+     && -e "${split_round0}/A/replay-stderr.log" \
+     && -e "${split_round0}/A/stderr.log" \
+     && ! -e "${split_round0}/B/replay-host.txt" ]] \
+  && grep -q 'obligation A: solved on .*, its replay queued' \
+    "${stream_dir}/explore.log" \
+  || fail "the replays' answers did not land as the obligations' own: \
+$(cat "${stream_dir}/obligation_results.jsonl")"
+reset_config
+
+# STREAM-SPLIT-QUEUE: what a solve's return does to the queue.  An answer
+# SAT_MODEL_READY of a solve that finished puts its REPLAY first, carrying
+# the class tree and plan the solve started on even when a GROW wove a newer
+# generation since (g1 here), and the REPLAY starts on them, charged the
+# replay's charge; any other answer, or a solve that did not finish, waits
+# to land.  Per row: the solve's verdict, its exit, the queue's first entry
+# after it, and what waits to land (- nothing).
+split_dir="${test_tmp}/split-queue"
+while IFS='|' read -r split_verdict split_status split_first split_pending; do
+  rm -rf -- "${split_dir}"
+  mkdir -p "${split_dir}/it/obligations-0000/A"
+  : >"${split_dir}/jobs"
+  split_said=$(
+    iteration_dir="${split_dir}/it"
+    sessions="${split_dir}/it/sessions"
+    stream_classes=g0/classes
+    stream_plan=g0/plan.jsonl
+    stream_admitted_mb=${campaign_solver_start_mb}
+    declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
+      stream_job_tree=() stream_host_jobs=() stream_solver_seen=()
+    stream_queue=("OBLIGATION obligations-0000 B")
+    stream_pending=()
+    stream_ticker=""
+    stream_step_pid=""
+    campaign_host_release() { :; }
+    campaign_log() { :; }
+    campaign_stream_job() {
+      printf '%s\n' "$*" >>"${split_dir}/jobs"
+      [[ "$1" != OBLIGATION ]] || jq -n -c --arg v "${split_verdict}" \
+        '{verdict: $v}' >"$5/obligation_result.jsonl"
+      return "${split_status}"
+    }
+    campaign_stream_start "OBLIGATION obligations-0000 A" lift12
+    split_pid=$!
+    split_rc=0
+    wait "${split_pid}" || split_rc=$?
+    stream_classes=g1/classes
+    stream_plan=g1/plan.jsonl
+    campaign_stream_ended "${split_pid}" "${split_rc}"
+    if [[ "${stream_queue[0]}" == REPLAY\ * ]]; then
+      stream_admitted_mb=2048
+      campaign_stream_start "${stream_queue[0]}" lift13
+      wait "$!" || true
+    fi
+    printf '%s|%s' "${stream_queue[0]}" "${stream_pending[*]:--}"
+  )
+  [[ "${split_said% }" == "${split_first}|${split_pending}" ]] \
+    || fail "a ${split_verdict} solve that exited ${split_status} left \
+${split_said}, not ${split_first}|${split_pending}"
+  if [[ "${split_first}" == REPLAY\ * ]]; then
+    grep -q "^REPLAY lift13 .* A ${split_dir}/it/obligations-0000/A A \
+g0/classes ${split_dir}/it/obligations-0000/A \
+${split_dir}/it/obligations-0000/A/sessions g0/plan.jsonl 2048 " \
+      "${split_dir}/jobs" \
+      || fail "the REPLAY did not start on its solve's tree in its worker: \
+$(cat "${split_dir}/jobs")"
+  fi
+done <<'EOF'
+SAT_MODEL_READY|0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
+UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
+SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
+EOF
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
 # exactly like `replay_timeout_s`.
@@ -3080,10 +3379,99 @@ stream_two_hosts stream-room
 $(cut -f1 "${stream_dir}/ssh-calls.txt")"
 reset_config
 
-# The pool's choice over three hosts that all admit: a re-run goes
-# round-robin; an obligation goes to a host where its campaign's solver
-# still serves (one started there within the solver's idle time), else
-# round-robin.  {kind, the host warm (- none), the hosts chosen in turn}.
+# STREAM-SPLIT-REMOTE: both starts of an obligation on peers (the remote
+# CONFIRM of HG4 lost every result and no test ran it).  A's solve runs on
+# lift12 as --run-obligation, charged what a solver starts at; its
+# SAT_MODEL_READY comes back through the shared home, and its REPLAY runs as
+# a placed step on lift13 -- not its solve's host -- in A's worker, where it
+# must find the model its solve left (the focus row), on the solve's tree,
+# charged the replay's need; the session it staged lands from there.  B's
+# solve answers UNSAT and replays nothing.  The stub stands where the
+# network stands, as in HOSTS-4: it reads the generated script's arguments
+# as a peer's shell would.
+stream_fixture stream-split-remote
+campaign_worker_hosts="lift12 lift13"
+campaign_local_host_names=" localhost this-machine "
+graphchecker_jar=${default_graphchecker_jar}
+replay_timeout_s=2400
+solver_timeout_ms=1800000
+campaign_init_local_scratch_root
+for split_host in lift12 lift13; do
+  mkdir -p "${campaign_host_gate_root}/${split_host}"
+  printf '48\n' >"${campaign_host_gate_root}/${split_host}/cores"
+done
+(
+  stream_stubs
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B; }
+  ssh() {
+    local host="" script="" line at
+    local -a words=() cmd=()
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--" ]] && { shift; break; }
+      shift
+    done
+    host=${1:-}
+    script=${2:-}
+    script=${script#exec /bin/bash }
+    script=${script%\'}
+    script=${script#\'}
+    [[ -s "${script}" ]] && bash -n "${script}" || return 91
+    line=$(awk '$1 == "--"' "${script}")
+    eval "words=(${line% \\})"
+    if grep -q -- '--run-obligation' "${script}"; then
+      # -- id obligations sessions worker charged
+      printf '%s SOLVE %s %s\n' "${host}" "${words[1]}" "${words[5]}" \
+        >>"${stream_dir}/ssh-calls.txt"
+      if [[ "${words[1]}" == A ]]; then
+        printf '{"taskId":"TASK.A"}\n' >"${words[4]}/focused_task.jsonl"
+        stream_answer "${words[4]}" A SAT_MODEL_READY
+      else
+        stream_answer "${words[4]}" "${words[1]}" UNSAT
+      fi
+      return 0
+    fi
+    grep -q -- '--run-placed' "${script}" || return 93
+    # -- <workdir> <assignments...> -- <command...>
+    for ((at = 1; at < ${#words[@]}; at++)); do
+      [[ "${words[${at}]}" != -- ]] || break
+    done
+    cmd=("${words[@]:$((at + 1))}")
+    [[ "${cmd[0]}" == campaign_obligation_replay ]] || return 94
+    # id classes worker sessions plan charged need
+    [[ -s "${cmd[3]}/focused_task.jsonl" \
+       && "${cmd[4]}" == "${cmd[3]}/sessions" ]] || return 96
+    printf '%s REPLAY %s %s %s %s\n' "${host}" "${cmd[1]}" "${cmd[6]}" \
+      "${cmd[2]#"${stream_dir}"/}" "${cmd[5]#"${stream_dir}"/}" \
+      >>"${stream_dir}/ssh-calls.txt"
+    stream_answer "${cmd[3]}" "${cmd[1]}" ADMITTED "SESSION.${cmd[1]}"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a remote split exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
+[[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
+${campaign_solver_start_mb}
+lift12 SOLVE B ${campaign_solver_start_mb}
+lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
+generations/g0/execution_task_plan.jsonl" ]] \
+  || fail "the remote solves and REPLAY did not run where and as they \
+should: $(cat "${stream_dir}/ssh-calls.txt")"
+jq -e -s 'length == 2 and (map({(.obligationId): .verdict}) | add)
+    == {"A": "ADMITTED", "B": "UNSAT"}' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  && [[ -f "${stream_dir}/sessions/SESSION.A/manifest.json" \
+     && "$(cat "${stream_dir}/obligations-0000/A/host.txt")" == lift12 \
+     && "$(cat "${stream_dir}/obligations-0000/A/replay-host.txt")" \
+       == lift13 ]] \
+  || fail "the remote REPLAY's answer did not land as A's: \
+$(cat "${stream_dir}/obligation_results.jsonl")"
+reset_config
+
+# The pool's choice over three hosts that all admit: a replay (a REPLAY, a
+# re-run) goes round-robin; an obligation's solve goes to a host where its
+# campaign's solver still serves (one started there within the solver's idle
+# time), else round-robin.  {kind, the host warm (- none), the hosts chosen
+# in turn}.
 while IFS='|' read -r admit_kind admit_warm admit_want; do
   (
     stream_hosts=(a b c)
@@ -3105,20 +3493,22 @@ not ${admit_want}"
   ) || fail "the pool admitted nothing for ${admit_kind}"
 done <<'EOF'
 RERUN|b|a b c
+REPLAY|b|a b c
 OBLIGATION|-|a b c
 OBLIGATION|b|b b b
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
-# obligation's worker, or a GROW re-run's or a CONFIRM's replay, which a
-# peer runs as a placed step -- and gives its ledger row back as soon as its
-# work returned, before the head waits to see what a peer wrote, in the
-# directory the job staged its sessions to (a CONFIRM's beside its worker:
-# HG4 lost hdfs-11741's confirmed witness waiting under the worker).  Per
-# row: the kind, the host, and what ran, each with the rows the ledger still
-# held for it then.
+# obligation's solve, or an obligation's REPLAY, a GROW re-run's or a
+# CONFIRM's replay, which a peer runs as a placed step -- and gives its
+# ledger row back as soon as its work returned, before the head waits to see
+# what a peer wrote, in the directory the job staged its sessions to (a
+# CONFIRM's beside its worker: HG4 lost hdfs-11741's confirmed witness
+# waiting under the worker); a REPLAY's logs go beside its solve's, never
+# over them.  Per row: the kind, the host, what ran, each with the rows the
+# ledger still held for it then, and the job's logs in its worker.
 job_dir="${test_tmp}/pool-job"
-while IFS='|' read -r job_kind job_host job_ran; do
+while IFS='|' read -r job_kind job_host job_ran job_logs; do
   rm -rf -- "${job_dir}"
   mkdir -p "${job_dir}/worker"
   : >"${job_dir}/ran"
@@ -3146,12 +3536,17 @@ while IFS='|' read -r job_kind job_host job_ran; do
   ) || fail "a ${job_kind} on ${job_host} failed"
   [[ "$(cat "${job_dir}/ran")" == "${job_ran} " ]] \
     || fail "a ${job_kind} on ${job_host} ran $(cat "${job_dir}/ran")"
+  [[ "$(ls "${job_dir}/worker" | grep 'stdout\|stderr' | paste -sd ' ' -)" \
+      == "${job_logs}" ]] \
+    || fail "a ${job_kind} on ${job_host} logged into $(ls "${job_dir}/worker")"
 done <<'EOF'
-OBLIGATION|localhost|worker:OB.1(1)
-OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1:worker/sessions(0)
-RERUN|localhost|replay:OB.1:f(1)
-RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)
-CONFIRM|lift12|lift12:campaign_confirm_replay:OB.1:f(1) await:OB.1:OB.1/sessions(0)
+OBLIGATION|localhost|worker:OB.1(1)|stderr.log stdout.log
+OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1:worker/sessions(0)|
+REPLAY|localhost|replay:OB.1:f(1)|replay-stderr.log replay-stdout.log
+REPLAY|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)|replay-stderr.log replay-stdout.log
+RERUN|localhost|replay:OB.1:f(1)|stderr.log stdout.log
+RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)|stderr.log stdout.log
+CONFIRM|lift12|lift12:campaign_confirm_replay:OB.1:f(1) await:OB.1:OB.1/sessions(0)|stderr.log stdout.log
 EOF
 
 # HOSTS-5: a remote worker whose head is gone kills its own process group.
@@ -3539,9 +3934,12 @@ confirm_stub_gaps=""
 confirm_stub_fatal=true
 confirm_stub_target_iteration=0
 confirm_stub_task_status=0
+confirm_stub_task_line="CONFIRM refused: the claim moves a cell nobody minted"
 confirm_stub_realized=false
-# The recording's measured peak resident memory, in MB (none: unmeasured).
-confirm_recorded_rss=""
+# The campaign's largest measured replay peak, in MB (none: unmeasured).
+confirm_peak=""
+# The value the replay minted the moved root ROOT.M at ("": no root row).
+confirm_stub_planted=true
 confirm_anchor='hdfs/dn0#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#1/idx:<a.Handler: void handle()>@0'
 # The decision's JVM, on the built jar: reset_config clears java_bin and
 # graphchecker_jar, which are workflow keys.
@@ -3555,7 +3953,7 @@ confirm_stub_main() {
     esac
   done
   if [[ "${confirm_stub_task_status}" -ne 0 ]]; then
-    echo "CONFIRM refused: the claim moves a cell nobody minted" >&2
+    echo "${confirm_stub_task_line}" >&2
     return "${confirm_stub_task_status}"
   fi
   if [[ "${confirm_stub_realized}" == true ]]; then
@@ -3589,10 +3987,21 @@ confirm_stub_replay() {
           iteration: $iteration}]},
       anchorSiteId: "T#u1#1", phiTerm: "EXPR.phi", observedFatal: $fatal,
       reachedAnchor: true}' >"${sessions}/CONFIRM-1/targets.jsonl"
+  # The moved root as the run minted it: the model's plant, or not.
+  [[ -z "${confirm_stub_planted}" ]] \
+    || jq -n -c --arg v "${confirm_stub_planted}" '{sessionId: "CONFIRM-1",
+      seq: 3, occurrence: {node: "hdfs/dn0#epoch0", regionId: "REGION.m",
+        context: {form: "ROOT", role: "XCEIVER", windowIndex: 1}, index: []},
+      rootId: "ROOT.M", symbol: "M_Z_m", kind: "MARKER", category: "FAULT",
+      recordedValue: $v, declared: true}' \
+      >"${sessions}/CONFIRM-1/roots.jsonl"
 }
 run_confirm() {
   local claim=$1
   rm -rf -- "${campaign_final}/confirm" "${campaign_final}/confirm.json"
+  # Each run asks afresh, unless the test keeps what an earlier one refused.
+  [[ -n "${confirm_keep_refused:-}" ]] \
+    || rm -f -- "${confirm_iteration}/refused_models.jsonl"
   jq -n --arg claim "${claim}" \
     '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
   jq -n --arg anchor "${confirm_anchor}" '{anchor: $anchor,
@@ -3611,8 +4020,7 @@ run_confirm() {
       esac
     }
     campaign_obligation_replay() { confirm_stub_replay "$@"; }
-    obligation_memory_mb=2500
-    campaign_recorded_workload_rss_mb=${confirm_recorded_rss}
+    campaign_replay_peak_mb=${confirm_peak:-0}
     campaign_confirm "${confirm_iteration}"
   ) >"${confirm_root}/confirm-stage.log" 2>&1 \
     || fail "the CONFIRM stage failed the campaign on claim=${claim}: \
@@ -3632,17 +4040,16 @@ run_confirm RUN_DEFECT
   || fail "a claim that is not SAT_CANDIDATE was confirmed"
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
-# The rule, both conditions holding.  The replay is charged as the seed's:
-# the recording's measured peak times the replay factor, above one
-# obligation's replay and under half a host's ceiling here.
-confirm_recorded_rss=1000
+# The rule, both conditions holding.  The replay is charged the campaign's
+# measured replay need: its largest replay peak so far, 1000 MB, times 1.5.
+confirm_peak=1000
 run_confirm SAT_CANDIDATE
 confirm_says true "the claim's anchor observed the fatal" \
   "a clean replay was not confirmed"
-[[ "$(cat "${confirm_root}/replay-ran")" == 7000 ]] \
+[[ "$(cat "${confirm_root}/replay-ran")" == 1536 ]] \
   || fail "the CONFIRM replay was charged $(cat "${confirm_root}/replay-ran") \
-MB, not seven times the recording's 1000 MB peak"
-confirm_recorded_rss=""
+MB, not 1.5 times the campaign's 1000 MB peak"
+confirm_peak=""
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
   || fail "the confirmation does not name the session that answered"
 [[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
@@ -3659,25 +4066,53 @@ confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DI
 {"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule-rest#2","detail":"the rest gave up"}'
 run_confirm SAT_CANDIDATE
 confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
-# (a) An edge the model chose that the run did not take.
+# (a) An edge the model chose that the run did not take: that run did not
+# run the model, so it refutes nothing -- a refused model, named, which no
+# witness attempt confirms again.
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
 rm -f -- "${confirm_iteration}/refuted_claims.jsonl"
 run_confirm SAT_CANDIDATE
 confirm_says false "the model chose producer p1, the run paired p2" \
   "a mismatched edge was confirmed"
-# A claim the replay ran and disagreed with is refuted: its model -- the
-# finding kind, the path, the arms, the valuation, the moved roots -- and
-# the reason, one row every later composition of the iteration excludes
-# (compose.Refutations).
+[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
+    && ! -e "${confirm_iteration}/refuted_claims.jsonl" ]] \
+  && jq -e -s 'length == 1 and (.[0] | .kind == "REFUSED_MODEL"
+    and .model.pathId == "P.sel"
+    and (.reason | contains("did not run the model")))' \
+    "${confirm_iteration}/refused_models.jsonl" >/dev/null \
+  || fail "a mismatched run refuted the model, or its model is not refused: \
+$(cat "${campaign_final}/confirm.json" \
+  "${confirm_iteration}/refused_models.jsonl" 2>&1)"
+confirm_stub_gaps=""
+# (b) The fatal not observed at the anchor, by a run that minted the moved
+# root at the model's value: it ran the model and disagreed, so the claim is
+# refuted -- its model (the finding kind, the path, the arms, the
+# valuation, the moved roots) and the reason, one row every later
+# composition of the iteration excludes (compose.Refutations).
+confirm_stub_fatal=false
+run_confirm SAT_CANDIDATE
+confirm_says false "observed the fatal" "a healthy anchor was confirmed"
 jq -e -s 'length == 1 and (.[0] | .kind == "REFUTED_CLAIM"
   and .model.pathId == "P.sel" and .model.arms == ["message_arm__1__a1",
     "message_arm__1__b2"] and .model.assignment == {"ROOT.M": "true"}
   and .model.moved == {"ROOT.M": "true"}
-  and (.reason | contains("the run paired p2")))' \
+  and (.reason | contains("observed the fatal")))' \
   "${confirm_iteration}/refuted_claims.jsonl" >/dev/null \
   || fail "the refuted claim's model is not its row: \
 $(cat "${confirm_iteration}/refuted_claims.jsonl" 2>&1)"
-confirm_stub_gaps=""
+# ... and by a run that minted it at another value, or minted none, it did
+# not run the model: no refutation.
+for planted in false ""; do
+  confirm_stub_planted=${planted}
+  run_confirm SAT_CANDIDATE
+  confirm_says false "so it did not run the model" \
+    "an unplanted healthy run (planted '${planted}') was a verdict"
+  [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
+      && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" -eq 1 ]] \
+    || fail "an unplanted run (planted '${planted}') refuted the model"
+done
+confirm_stub_planted=true
+confirm_stub_fatal=true
 # A session that published no gap file answers nothing about the edges --
 # nor about the model, which is not refuted.
 unset confirm_stub_gaps
@@ -3687,11 +4122,6 @@ confirm_says false "published no readable" \
 [[ "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" -eq 1 ]] \
   || fail "a confirmation that ran nothing refuted the model"
 confirm_stub_gaps=""
-# (b) The fatal not observed at the anchor.
-confirm_stub_fatal=false
-run_confirm SAT_CANDIDATE
-confirm_says false "observed the fatal" "a healthy anchor was confirmed"
-confirm_stub_fatal=true
 # ... and observed at another occurrence of the target site is not the
 # claim's anchor observing it.
 confirm_stub_target_iteration=1
@@ -3699,6 +4129,19 @@ run_confirm SAT_CANDIDATE
 confirm_says false "1 row(s) at other occurrences did" \
   "a fatal at another occurrence of the site confirmed the claim's anchor"
 confirm_stub_target_iteration=0
+# A model an earlier confirmation gave no verdict on is not confirmed
+# again: the final CONFIRM takes that row, and nothing is replayed.
+confirm_stub_verdict=NOT_ADMITTED
+run_confirm SAT_CANDIDATE
+confirm_stub_verdict=ADMITTED
+rm -f -- "${confirm_root}/replay-ran"
+confirm_keep_refused=1
+run_confirm SAT_CANDIDATE
+confirm_keep_refused=
+confirm_says false "an earlier confirmation of this model gave no verdict" \
+  "a refused model was confirmed again"
+[[ ! -e "${confirm_root}/replay-ran" ]] \
+  || fail "a refused model was replayed again"
 # A replay whose roots were not planted, or whose prefix was abandoned,
 # states NOT_ADMITTED, and that is the reason.
 confirm_stub_verdict=NOT_ADMITTED
@@ -3717,13 +4160,33 @@ confirm_says true "is itself the run" "a realized claim was not confirmed"
 [[ ! -e "${confirm_root}/replay-ran" ]] \
   || fail "a claim the selected session already realized was replayed"
 confirm_stub_realized=false
-# A confirmation nothing can run is refused by name, and the claim is
-# unconfirmed for that reason -- the campaign goes on to EMIT.
+# A confirmation nothing can run is refused by name: a defect of the rows,
+# which refutes nothing -- the claim is unconfirmed for that reason, its
+# model stays open, and the campaign goes on to EMIT.  Only a claim
+# ConfirmMain refutes by name (the run as recorded) is refuted without a
+# replay.
 confirm_stub_task_status=1
+refuted_before=$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")
 run_confirm SAT_CANDIDATE
 confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
   "a refused confirmation task did not name its reason"
+[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
+    && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" \
+      -eq "${refuted_before}" ]] \
+  || fail "a refused confirmation refuted the model: \
+$(cat "${campaign_final}/confirm.json")"
+confirm_stub_task_line="CONFIRM refutes: the claim moves nothing: its \
+witness is the run as recorded"
+run_confirm SAT_CANDIDATE
+confirm_says false "CONFIRM refutes: the claim moves nothing" \
+  "a refuted confirmation task did not name its reason"
+[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true \
+    && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" \
+      -eq $((refuted_before + 1)) ]] \
+  || fail "the run as recorded was not refuted: \
+$(cat "${campaign_final}/confirm.json")"
 confirm_stub_task_status=0
+confirm_stub_task_line="CONFIRM refused: the claim moves a cell nobody minted"
 # The exploration's witness was confirmed as it was accepted: the same model,
 # composed again, takes that confirmation and is not replayed.
 campaign_witness_attempt="${confirm_root}/witness-attempt"
@@ -3894,33 +4357,8 @@ jq -e '.claim == "RUN_DEFECT" and .confirmation == null' \
   || fail "a claim that was never confirmed does not carry null: \
 $(jq -c '{claim, confirmation}' "${campaign_final}/result.json")"
 
-# MEMORY-1: `obligation_memory_mb` is a declared workflow key, and a
-# campaign that states none -- or a nonsense one -- is refused by name.
-[[ "$(grep -c 'CAUSYNTH_OBLIGATION_MEMORY_MB' "${repo}/run_engine.sh")" \
-    -eq 1 ]] \
-  || fail "CAUSYNTH_OBLIGATION_MEMORY_MB is not declared once, in the table"
-known_config_key obligation_memory_mb \
-  || fail "obligation_memory_mb is not loadable from a workflow file"
 memory_dir="${test_tmp}/memory"
 mkdir -p "${memory_dir}"
-memory_validate() (
-  stop_after_config ""
-  obligation_memory_mb=$1
-  validate_config
-)
-for bad in "" "0" "2g" "-1"; do
-  run_capturing_status memory_validate "${bad}" \
-    >/dev/null 2>"${memory_dir}/validate.err"
-  [[ "${status}" -ne 0 ]] \
-    || fail "validate accepted obligation_memory_mb='${bad}'"
-  grep -q 'obligation_memory_mb must be' "${memory_dir}/validate.err" \
-    || fail "the refusal does not name obligation_memory_mb: \
-$(cat "${memory_dir}/validate.err")"
-done
-for case_config in "${repo}"/experiments/hadoop/hdfs-*/workflow.properties; do
-  grep -q '^obligation_memory_mb=[1-9][0-9]*$' "${case_config}" \
-    || fail "${case_config} states no obligation_memory_mb"
-done
 
 # MEMORY-2: the gate's decision.  A start goes only where both the host's
 # live charges and its real use, each with the start, stay within the
@@ -3937,7 +4375,6 @@ campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
 memory_available=30000
 campaign_host_available_mb() { echo "${memory_available}"; }
-obligation_memory_mb=6000
 campaign_host_total_mb() { echo 31744; }
 campaign_host_max_used_pct=70
 campaign_host_poll_s=0
@@ -4402,23 +4839,19 @@ $(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
 EOF
 )
 
-# SWEEP-1: sweep.sh launches every case with its head's room as its need
-# and the lifts' obligation slots for its obligation_memory_mb as its cap,
-# and a measurement sweep's stop stage and pruning on the job's command line
-# (ssh carries no environment); a case whose configuration states no
-# obligation_memory_mb launches no case.
+# SWEEP-1: sweep.sh launches every case with its head's room as its need,
+# in the shared pool, and a measurement sweep's stop stage and pruning on the
+# job's command line (ssh carries no environment); a case id that names no
+# case launches no case.
 sweep_dir="${test_tmp}/sweep"
 mkdir -p "${sweep_dir}/snap/experiments/x/c" "${sweep_dir}/snap/experiments/lib" \
-  "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" \
-  "${sweep_dir}/ledger/$(hostname -s)"
+  "${sweep_dir}/snap/tools/rounds" "${sweep_dir}/out" "${sweep_dir}/ledger"
 : >"${sweep_dir}/snap/experiments/x/c/case.sh"
 printf '%s\n' '[[ "$3" == config ]] || exit 2' \
-  'printf "obligation_memory_mb=6000\nengine_memory_mb=1\n"' \
+  'printf "engine_memory_mb=1\n"' \
   >"${sweep_dir}/snap/experiments/lib/run.sh"
-printf 'echo "$2 ${CAUSYNTH_STREAM_MAX_IN_FLIGHT} ${CAUSYNTH_CAMPAIGN_STOP_AFTER-}" >%s/launched\n' \
+printf 'echo "$2 ${CAUSYNTH_STREAM_SHARED_POOL} ${CAUSYNTH_CAMPAIGN_STOP_AFTER-}" >%s/launched\n' \
   "${sweep_dir}" >"${sweep_dir}/snap/tools/rounds/launch-run.sh"
-echo 31583 >"${sweep_dir}/ledger/$(hostname -s)/total"
-echo 48 >"${sweep_dir}/ledger/$(hostname -s)/cores"
 echo c-one >"${sweep_dir}/cases"
 sweep_run() {
   LIFTS=localhost GC_OUT="${sweep_dir}/out" VM_IMAGE=vm \
@@ -4428,14 +4861,14 @@ sweep_run() {
     "${sweep_dir}/cases" >"${sweep_dir}/$1.out" 2>&1
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
-[[ "$(cat "${sweep_dir}/launched")" == "c-one 3 SEED" ]] \
-  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_MAX_IN_FLIGHT=3 .*\
+[[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
+  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
-  || fail "the sweep's case did not launch with its head's room and the \
-lifts' slots: $(cat "${sweep_dir}/launched" \
+  || fail "the sweep's case did not launch with its head's room in the \
+shared pool: $(cat "${sweep_dir}/launched" \
     "${sweep_dir}/out/sweep-s1-jobs.txt")"
 echo nothing-here >"${sweep_dir}/cases"
-! sweep_run s2 && grep -q 'nothing-here states no obligation_memory_mb' \
+! sweep_run s2 && grep -q 'nothing-here names no case' \
     "${sweep_dir}/s2.out" && [[ ! -s "${sweep_dir}/out/sweep-s2-jobs.txt" ]] \
   || fail "a case with no configuration was launched or not named: \
 $(cat "${sweep_dir}/s2.out")"

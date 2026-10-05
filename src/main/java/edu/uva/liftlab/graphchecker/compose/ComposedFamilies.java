@@ -1348,7 +1348,14 @@ final class ComposedFamilies {
      * the run took -- the one writer every read observed, or, where the run
      * is no one writer's arm (the reads saw several writes, or a version no
      * row wrote), the OBSERVED ARM holding each read to its own join or pin:
-     * the pairing a witness re-pairs if it needs another.  The writer arms
+     * the pairing a witness re-pairs if it needs another.  THE RUN AS
+     * RECORDED IS A WORLD of the formula: a writer's selector binds every
+     * location its arm states here (a block), so it is the run's arm at one
+     * only where the run took it at every one of them; where the run read
+     * another of them from another writer (hdfs-adhoc-16 HG5A: a Block
+     * constructor wrote blockId, genStamp and numBytes, and the run read the
+     * last two from later writers), each location whose reads saw it gets
+     * the observed arm too.  The writer arms
      * stay beside it, each binding every read.  At a location the session's
      * world {@code planted} a
      * pairing on (location -> planted writer, {@code Composer#repairing}) the
@@ -1390,6 +1397,9 @@ final class ComposedFamilies {
                 new LinkedHashMap<String, List<String>>();
         // Otherwise the one writer every read of it observed.
         Map<String, String> runWriters = new LinkedHashMap<String, String>();
+        // Each writer's locations with a family here: what its block binds.
+        Map<String, Set<String>> blockOf =
+                new LinkedHashMap<String, Set<String>>();
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
@@ -1480,12 +1490,7 @@ final class ComposedFamilies {
                 continue;
             }
             if (asHappened) {
-                List<String> observedPin = new ArrayList<String>();
-                for (String symbol : symbols) {
-                    String pin = pins.get(symbol);
-                    if (!observedPin.contains(pin)) observedPin.add(pin);
-                }
-                observedPins.put(entry.getKey(), observedPin);
+                observedPins.put(entry.getKey(), observedPin(symbols, pins));
             } else {
                 runWriters.put(entry.getKey(), seen);
             }
@@ -1494,8 +1499,31 @@ final class ComposedFamilies {
                 String writer = writer(arm.write());
                 if (!writers.contains(writer)) writers.add(writer);
                 add(outsOfWriter, writer, new Out(arm, symbols));
+                blockOf.computeIfAbsent(writer,
+                        key -> new LinkedHashSet<String>())
+                        .add(entry.getKey());
             }
             writersOf.put(entry.getKey(), writers);
+        }
+        // The run as recorded is a world: a writer is the run's arm only
+        // where the run took it at every location of its block; the others
+        // the run read from it are held by their observed arm.  One pass is
+        // the fixed point: moving a location off its writer changes no other
+        // writer's block.
+        for (Map.Entry<String, String> run
+                : new ArrayList<Map.Entry<String, String>>(
+                runWriters.entrySet())) {
+            for (String other : blockOf.getOrDefault(run.getValue(),
+                    Collections.<String>emptySet())) {
+                if (run.getValue().equals(runWriters.get(other))) continue;
+                List<String> symbols = new ArrayList<String>();
+                for (ReadRow read : byLocation.get(run.getKey())) {
+                    symbols.add(read.symbol());
+                }
+                observedPins.put(run.getKey(), observedPin(symbols, pins));
+                runWriters.remove(run.getKey());
+                break;
+            }
         }
         // One selector per writer occurrence, its body stated once.
         Map<String, String> selectorOf = new LinkedHashMap<String, String>();
@@ -1635,6 +1663,17 @@ final class ComposedFamilies {
                     "(=> " + selector + " " + formula + ")");
         }
         return chosen;
+    }
+
+    /** The observed arm's body: each read held to its own join or pin. */
+    private static List<String> observedPin(List<String> symbols,
+                                            Map<String, String> pins) {
+        List<String> observedPin = new ArrayList<String>();
+        for (String symbol : symbols) {
+            String pin = pins.get(symbol);
+            if (!observedPin.contains(pin)) observedPin.add(pin);
+        }
+        return observedPin;
     }
 
     /** Whether a read of each of these versions could have seen this

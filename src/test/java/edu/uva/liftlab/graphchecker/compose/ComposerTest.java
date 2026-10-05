@@ -802,9 +802,16 @@ public class ComposerTest {
                     next.body().contains("refuted_claim__0"));
             assertEquals(path, refuted,
                     named(next.gaps(), GapKind.CLAIM_REFUTED));
+            ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
             assertEquals(path, refuted ? ClaimKind.NO_SUPPORTED_WITNESS
                             : ClaimKind.MARKER_FLIPPED,
-                    ClaimPolicy.decide(next, solver()).claim().kind());
+                    again.claim().kind());
+            // A refuted model is no part of the run itself: a path it
+            // excludes does not contradict its own run, and the UNSAT names
+            // what it rests on.
+            assertFalse(path + ": " + again.claim().gaps(),
+                    named(again.claim().gaps(),
+                            GapKind.PATH_SELF_CONTRADICTORY));
         }
     }
 
@@ -851,6 +858,14 @@ public class ComposerTest {
         assertEquals("every later instant is the jump CONFIRM refuted",
                 "unsat", again.formula().status());
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
+        // That UNSAT rests on the refutation: the formula's core names it
+        // (asked for whenever a refutation is asserted), restsOnRefutations.
+        List<JsonObject> rests = next.restsOn(again.formula().core());
+        assertEquals(again.formula().core().toString(), 1, rests.size());
+        assertEquals("refuted_claim__0", rests.get(0).get("name")
+                .getAsString());
+        assertEquals(claimed.selected().path().pathId, rests.get(0)
+                .get("pathId").getAsString());
     }
 
     // ------------------------------------------------------------------
@@ -1445,6 +1460,45 @@ public class ComposerTest {
                         Set<com.google.gson.JsonElement>>()));
     }
 
+    /**
+     * An arrival nothing binds and nothing pins is FREE, named -- never a
+     * dropped path: its producer attested by an export of it that does not
+     * lower (attested), or no producer and a received value the lowering
+     * places nowhere (unplaceable).
+     */
+    @Test
+    public void anArrivalNothingBindsIsFreeAndNamedNeverADroppedPath()
+            throws Exception {
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
+        for (String variant : new String[]{"attested", "unplaceable"}) {
+            Path iteration = folder.newFolder("free-" + variant).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.marker("false");
+            if ("attested".equals(variant)) {
+                session.activation(PRODUCER);
+                session.export(producer, "EXPR.v1.gone", 1L, "10");
+                session.attach(consumer, "vh", "I", "10", producer);
+            } else {
+                session.attach(consumer, "vh", "I", "ten", null);
+            }
+            session.target("(> vh 5)", false, true);
+            session.write();
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals(variant + ": the path stands: " + composition.gaps(),
+                    1, composition.disjuncts().size());
+            assertTrue(variant, composition.refusedPaths().isEmpty());
+            List<String> free = new ArrayList<String>();
+            for (Composer.Concrete row : composition.concrete()) {
+                if ("vh".equals(row.subject)) free.add(row.kind);
+            }
+            assertEquals(variant + ": " + concrete(composition),
+                    Collections.singletonList("FREE"), free);
+        }
+    }
+
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
@@ -1499,10 +1553,10 @@ public class ComposerTest {
         }
 
         // AND THE OTHER HALF OF THE ONE RULE.  The same two sessions with
-        // no rows for the producer at all: nothing attests what it
-        // delivered, so what it rests on is unknown and the arrival is free
-        // in each path, named FREE with its producer beside the verdict (a
-        // witness over it is CONFIRM's to judge).
+        // no rows for the producer at all: no row states the producer, so
+        // each path holds its arrival at what its own row states it
+        // received, named HELD (producer unstated) beside the verdict --
+        // never free by default, never a silent pin.
         Path unstated = folder.newFolder("arrivals-unstated").toPath();
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
@@ -1516,12 +1570,18 @@ public class ComposerTest {
         Composer.Composition freed = compose(unstated, 4);
         assertEquals("each path composes: " + freed.gaps(),
                 2, freed.disjuncts().size());
-        assertFalse("its arrival held at no value: " + freed.body(),
+        assertTrue("each arrival held at its own value: " + freed.body(),
                 freed.body().contains("(= vh 10)")
-                        || freed.body().contains("(= vh 20)"));
-        assertEquals("and named free", Collections.singletonList(
-                "FREE vh= [unattested producer " + producer.id() + "]"),
-                concrete(freed));
+                        && freed.body().contains("(= vh 20)"));
+        List<String> held = new ArrayList<String>();
+        for (Composer.Concrete row : freed.concrete()) {
+            held.add(row.kind + " " + row.subject + "=" + row.value + " "
+                    + row.reason);
+        }
+        String why = SmtLowering.Unbound.PRODUCER_UNSTATED + ": no export "
+                + "row of this corpus attests its producer " + producer.id();
+        assertEquals("and named, per path", Arrays.asList(
+                "HELD vh=10 " + why, "HELD vh=20 " + why), held);
 
         // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
         // where the SEED instrumented the producer and the focused replay
@@ -1545,32 +1605,77 @@ public class ComposerTest {
                 across.body().contains("(= vh true)"));
 
         // A REFUSAL IS ITS FRAME'S.  The first corpus again, where s1's run
-        // refused an attach at the anchor itself, which then computed on
-        // the arrival as a constant, and s0's run refused one in an
-        // occurrence no closure here reaches: both paths compose with the
-        // constants their rows state, s1's naming the frame it rested on.
-        Path framed = folder.newFolder("framed").toPath();
-        for (String[] each : new String[][]{{"s0", "10", "false"},
-                {"s1", "20", "true"}}) {
-            Session session = new Session(framed, each[0],
-                    "true".equals(each[2]));
-            session.activation(PRODUCER);
-            session.marker("false");
-            session.expression("EXPR.v1.id", integer("I",
-                    Long.parseLong(each[1])));
-            session.export(producer, "EXPR.v1.id", 1L, each[1]);
-            session.attach(consumer, "vh", "I", each[1], producer);
-            session.target("true", false, true);
-            session.refusedAttach("s1".equals(each[0]) ? ANCHOR : UPSTREAM);
-            session.write();
+        // refused an attach (VM handle 7) at the anchor itself, which then
+        // computed on the arrival as a constant, and s0's run refused one in
+        // an occurrence no closure here reaches: both paths compose, and
+        // s1's frame is named by THE ONE RULE.  Its producer is the export
+        // of handle 7: FREE where that export rests on a root (moving), or
+        // reads a version a write of the root made (guarded: the NameNode's
+        // currentKey.keyId, stored from the serial), held where it rests on
+        // nothing that moves (constant), held as its producer unstated where
+        // no export states the handle (unstated).
+        // The refused arrival's producer: another port of the producer.
+        Endpoint refusedFrom = Endpoint.of(PRODUCER, "PORT.refused",
+                at("export#2", 0), 0);
+        LocationId keyId = LocationId.of(LocationKind.INSTANCE, "77", "24");
+        for (String variant : new String[]{"moving", "guarded", "constant",
+                "unstated"}) {
+            Path framed = folder.newFolder("framed-" + variant).toPath();
+            for (String[] each : new String[][]{{"s0", "10", "false"},
+                    {"s1", "20", "true"}}) {
+                Session session = new Session(framed, each[0],
+                        "true".equals(each[2]));
+                session.activation(PRODUCER);
+                session.marker("false");
+                session.expression("EXPR.v1.id", integer("I",
+                        Long.parseLong(each[1])));
+                session.export(producer, "EXPR.v1.id", 1L, each[1]);
+                session.attach(consumer, "vh", "I", each[1], producer);
+                if ("moving".equals(variant)) {
+                    session.root(PRODUCER, "ROOT.ID", "M_I_id",
+                            RootKind.INTEGRAL, each[1]);
+                    session.expression("EXPR.0000000000000a07",
+                            symbol("M_I_id", "I"));
+                    session.export(refusedFrom, "EXPR.0000000000000a07",
+                            7L, each[1]);
+                } else if ("guarded".equals(variant)) {
+                    session.root(PRODUCER, "ROOT.ID", "M_I_id",
+                            RootKind.INTEGRAL, each[1]);
+                    session.expression("EXPR.0000000000000a08",
+                            symbol("M_I_id", "I"));
+                    session.write(Endpoint.of(PRODUCER, "Key#set#2:WRITE",
+                            at("w#1", 0), 0), keyId, 3L,
+                            "EXPR.0000000000000a08");
+                    session.expression("EXPR.0000000000000a09",
+                            read("INSTANCE_FIELD", 77L, 24L, 3L, "I"));
+                    session.export(refusedFrom, "EXPR.0000000000000a09",
+                            7L, each[1]);
+                } else if ("constant".equals(variant)) {
+                    session.export(refusedFrom, "EXPR.v1.id", 7L, each[1]);
+                }
+                session.target("true", false, true);
+                session.refusedAttach("s1".equals(each[0]) ? ANCHOR
+                        : UPSTREAM);
+                session.write();
+            }
+            Composer.Composition frame = compose(framed, 4);
+            assertEquals(variant + ", both paths: " + frame.gaps(), 2,
+                    frame.disjuncts().size());
+            List<String> frames = new ArrayList<String>();
+            for (Composer.Concrete row : frame.concrete()) {
+                if (!row.subject.equals(ANCHOR.id())) continue;
+                frames.add(row.kind + " " + row.movesWith + " "
+                        + row.pathId.isEmpty() + " " + row.reason.startsWith(
+                        SmtLowering.Unbound.PRODUCER_UNSTATED));
+            }
+            assertEquals(variant + ": s1's anchor rested on a frame: "
+                    + concrete(frame), Collections.singletonList(
+                    "moving".equals(variant) || "guarded".equals(variant)
+                            ? "FREE [M_I_id] false false"
+                            : "constant".equals(variant)
+                            ? "HELD [] false false"
+                            : "HELD [] false true"), frames);
         }
-        Composer.Composition frame = compose(framed, 4);
-        assertEquals("both paths: " + frame.gaps(), 2,
-                frame.disjuncts().size());
-        List<String> frames = new ArrayList<String>();
-        for (Composer.Concrete row : frame.concrete()) frames.add(row.kind);
-        assertEquals("s1's anchor rested on a frame's constant: "
-                + concrete(frame), Collections.singletonList("FRAME"), frames);
     }
 
     // ------------------------------------------------------------------
@@ -4259,12 +4364,15 @@ public class ComposerTest {
      * of one location saw two writes, which no writer arm is (each binds
      * both reads), and (p) a second read saw a version no row wrote: the
      * pins' arm, holding each read to its own join or pin, is the run,
-     * whichever read came first.  (c) The one writer read has no arm: its
-     * block, stretched to its write of another location, rests on a
-     * decision nothing states.
+     * whichever read came first.  (c) The one writer read has a block
+     * stretched to its write of another location the run read from
+     * another writer (and its body rests on a decision nothing states):
+     * its selector would force that location's value too, so it is no arm
+     * of the run, which is held by the pins' arm -- the run as recorded is
+     * a world of the formula (hdfs-adhoc-16 HG5A).
      */
     @Test
-    public void theRecordedArmIsTheWriteReadOrABlockingGap()
+    public void theRecordedArmIsTheWriteReadOrThePinsArm()
             throws Exception {
         OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
                 CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
@@ -4337,30 +4445,17 @@ public class ComposerTest {
                     solver());
             assertEquals(shape + ": both runs are paths", 2,
                     composition.disjuncts().size());
-            boolean stated = !"c".equals(shape);
-            assertEquals(shape + ": a recorded pairing iff one arm is it",
-                    stated, !composition.recordedPairings().isEmpty());
+            assertFalse(shape + ": an arm is the recorded pairing",
+                    composition.recordedPairings().isEmpty());
             assertEquals(shape + ": the pins' arm iff no writer's arm is "
-                            + "the run", "b".equals(shape)
-                            || "p".equals(shape),
+                            + "the run", !"a".equals(shape),
                     composition.body().contains("observed_arm__"));
-            boolean named = false;
-            for (GapRow gap : decision.claim().gaps()) {
-                named |= gap.kind() == GapKind.UNSTATED_VALUE
-                        && gap.blocking()
-                        && gap.subject().equals(SmtLowering.locationKey(keys));
-            }
-            assertEquals(shape + ": else the location is named", !stated,
-                    named);
-            assertEquals(shape + ": and the claim is blocked " + decision
-                    .claim().gaps(), !stated, decision.claim().blocked());
-            if (stated) {
-                assertEquals(shape + ": the run as it happened is healthy",
-                        "unsat", decision.outcomes().get(0).answer()
-                                .status());
-                assertEquals(shape, ClaimKind.STATE_PAIRING_FLIPPED,
-                        decision.claim().kind());
-            }
+            assertFalse(shape + ": nothing blocks the claim " + decision
+                    .claim().gaps(), decision.claim().blocked());
+            assertEquals(shape + ": the run as it happened is healthy",
+                    "unsat", decision.outcomes().get(0).answer().status());
+            assertEquals(shape, ClaimKind.STATE_PAIRING_FLIPPED,
+                    decision.claim().kind());
         }
     }
 
@@ -6004,7 +6099,7 @@ public class ComposerTest {
      * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
      * node alike: JOIN, MINT, FREE or PIN, REFUSE; a refused join gives way
      * to the mint, else, where what it rests on can move, the read is FREE
-     * and named with what it rests on ({@code SmtLowering#frees}, a {@code
+     * and named with what it rests on ({@code SmtLowering#unbound}, a {@code
      * Composer.Concrete} FREE), else the pin.  One case per row:
      * <ul>
      *   <li>pin: the write refuses over nothing that moves, and the row

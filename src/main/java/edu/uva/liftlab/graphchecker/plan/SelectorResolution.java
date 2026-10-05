@@ -6,12 +6,8 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
-import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Selector;
-import edu.uva.liftlab.graphchecker.contract.SessionDir;
 
-import java.io.IOException;
-import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Predicate;
@@ -60,14 +56,6 @@ public final class SelectorResolution {
     public static boolean names(Selector selector,
                                 OccurrenceAddress occurrence) {
         return selector.matches(occurrence, apiOf(selector, occurrence));
-    }
-
-    public static OccurrenceAddress resolve(String declared, Path iteration,
-                                            String seedSession)
-            throws IOException {
-        SessionDir dir = SessionDir.of(iteration, seedSession);
-        return resolve(declared, RowCodec.readAll(dir.activations(),
-                RowCodec::readActivation));
     }
 
     /** Whether {@code occurrence} is one nothing in the seed matched. */

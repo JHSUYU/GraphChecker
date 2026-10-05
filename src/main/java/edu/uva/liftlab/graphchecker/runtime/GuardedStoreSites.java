@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * SEED's control-dependence answer ({@code static_scope_map.jsonl},
  * SYMBOL-SCOPE §3) installed as the VM's session table: a concrete store
@@ -59,7 +61,7 @@ final class GuardedStoreSites {
      * @return "" once installed, else the diagnostic the session fails with
      */
     static String install(ConcolicVmBroker api) {
-        String declared = value(System.getenv(PATH_ENVIRONMENT));
+        String declared = trimmed(System.getenv(PATH_ENVIRONMENT));
         if (declared.isEmpty()) {
             return "GUARDED_STORE_SITES_UNDECLARED: $" + PATH_ENVIRONMENT
                     + " does not name this epoch's " + StaticScopeMap.FILE;
@@ -194,7 +196,7 @@ final class GuardedStoreSites {
 
     /** One store method as the VM asks for it: owner in internal form. */
     private static String internalMethod(String vmSite, String siteId) {
-        String stated = value(vmSite);
+        String stated = trimmed(vmSite);
         int owner = stated.indexOf('#');
         if (owner <= 0 || owner == stated.length() - 1) {
             throw new IllegalStateException("static scope map states a "
@@ -209,7 +211,7 @@ final class GuardedStoreSites {
         JsonElement stated = row == null ? null : row.get("guards");
         if (stated != null && stated.isJsonArray()) {
             for (JsonElement guard : stated.getAsJsonArray()) {
-                String site = value(guard.getAsString());
+                String site = trimmed(guard.getAsString());
                 if (!site.isEmpty()) guards.add(site);
             }
         }
@@ -219,11 +221,7 @@ final class GuardedStoreSites {
     private static String member(JsonObject row, String name) {
         JsonElement value = row == null ? null : row.get(name);
         return value == null || value.isJsonNull()
-                ? "" : value(value.getAsString());
-    }
-
-    private static String value(String text) {
-        return text == null ? "" : text.trim();
+                ? "" : trimmed(value.getAsString());
     }
 
     private static void log(String detail) {

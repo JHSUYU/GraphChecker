@@ -21,6 +21,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 
 /**
@@ -165,6 +166,17 @@ public final class ArtifactIO {
         String full = sha256(value);
         return length <= 0 || length >= full.length()
                 ? full : full.substring(0, length);
+    }
+
+    /** Every class file under {@code root}, in path order. */
+    public static List<Path> classFiles(Path root) throws IOException {
+        List<Path> files = new ArrayList<>();
+        try (Stream<Path> walk = Files.walk(root)) {
+            walk.filter(path -> Files.isRegularFile(path)
+                            && path.getFileName().toString().endsWith(".class"))
+                    .sorted().forEach(files::add);
+        }
+        return files;
     }
 
     public static Path sibling(Path path, String name) {

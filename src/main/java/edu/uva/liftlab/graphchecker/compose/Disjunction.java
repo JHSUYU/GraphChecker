@@ -44,9 +44,10 @@ import java.util.function.Function;
  *       constraints: a path unsat under some assertions is unsat under every
  *       set that contains them, so it is not asked again there; its
  *       refutation answers for it, core and all.  A path unsat with no
- *       assertion at all ({@link #selfCheck}) refutes itself under every
- *       valuation, and its core names no pin.  A refutation asked without a
- *       core answers only asks that want none.  hdfs-11741 i1: 155 of 157
+ *       assertion at all ({@link #selfCheck}, asked with its core) refutes
+ *       itself under every valuation; its core names no pin, only what the
+ *       body asserts by name (a refuted claim).  A refutation asked without
+ *       a core answers only asks that want none.  hdfs-11741 i1: 155 of 157
  *       paths refute themselves, so every pinned re-ask of the witness
  *       (as it happened, clocks pinned, the least clocks, the margins)
  *       asks two paths, not 157.</li>
@@ -81,8 +82,8 @@ final class Disjunction implements AutoCloseable {
     private static final class Refutation {
         final Set<String> under;
         final Z3.Answer answer;
-        /** Whether its core names every pin it rests on: it was asked for
-         *  one, or under no pin at all. */
+        /** Whether it was asked with a core: only a real core names what it
+         *  rests on (the body's named assertions too, a refuted claim's). */
         final boolean coreComplete;
 
         Refutation(Set<String> under, Z3.Answer answer,
@@ -98,6 +99,9 @@ final class Disjunction implements AutoCloseable {
     private final ExecutorService pool;
     private final Map<String, List<Refutation>> refuted =
             new ConcurrentHashMap<String, List<Refutation>>();
+    /** Each path's self-check answer, by selector ({@link #selfCheck}). */
+    private final Map<String, Z3.Answer> selfChecked =
+            new ConcurrentHashMap<String, Z3.Answer>();
     /** Set once a whole ask ran past its budget. */
     private volatile boolean pathByPath;
 
@@ -109,21 +113,41 @@ final class Disjunction implements AutoCloseable {
 
     /**
      * Every path alone with no assertion, within
-     * {@link #SELF_CHECK_BUDGET_MS}: an unsat one contradicts itself, and is
-     * remembered as refuted under every set of assertions.  The answers, in
-     * the disjuncts' order.
+     * {@link #SELF_CHECK_BUDGET_MS}, asked with its core: an unsat one
+     * contradicts itself -- or a refuted claim the formula asserts excludes
+     * it, which its core names -- and is remembered as refuted under every
+     * set of assertions, its core reused by every answer that rests on it
+     * ({@link #refutation}).  The answers, in the disjuncts' order.
      */
     List<Z3.Answer> selfCheck() {
         List<String> none = Collections.emptyList();
         List<Z3.Answer> answers = alone(
-                selector -> composition.pathQuery(selector, none));
+                selector -> composition.pathQuery(selector, none), true);
         for (int at = 0; at < answers.size(); at++) {
+            String selector = composition.disjuncts().get(at).selector();
+            selfChecked.put(selector, answers.get(at));
             if (answers.get(at).unsat()) {
-                remember(composition.disjuncts().get(at).selector(),
-                        new HashSet<String>(), answers.get(at), true);
+                remember(selector, new HashSet<String>(), answers.get(at),
+                        true);
             }
         }
         return answers;
+    }
+
+    /** Whether this path's own self-check ({@link #selfCheck}) is unsat
+     *  with a core naming a refuted claim the formula asserts: a model
+     *  CONFIRM refuted excludes it, no contradiction of its run. */
+    boolean refutedBySelfCheck(String selector) {
+        Z3.Answer answer = selfChecked.get(selector);
+        if (answer == null || !answer.unsat() || answer.core() == null) {
+            return false;
+        }
+        for (String label : answer.core()) {
+            if (label != null && label.startsWith(Composer.REFUTED_CLAIM)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -133,19 +157,20 @@ final class Disjunction implements AutoCloseable {
      * is a contradiction the composition built.  In the disjuncts' order.
      */
     List<Z3.Answer> withoutFatalArms() {
-        return alone(composition::withoutFatalArm);
+        return alone(composition::withoutFatalArm, false);
     }
 
     /** One question per path, asked {@link #PATH_ASKS} at a time with no
-     *  assertion and no core, read back in the disjuncts' order. */
+     *  assertion, a core where {@code wantCore}, read back in the
+     *  disjuncts' order. */
     private List<Z3.Answer> alone(
-            Function<String, ArtifactIO.Body> question) {
+            Function<String, ArtifactIO.Body> question, boolean wantCore) {
         List<String> none = Collections.emptyList();
         List<Future<Z3.Answer>> pending = new ArrayList<Future<Z3.Answer>>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             String selector = disjunct.selector();
             pending.add(pool.submit(() -> solver.ask(question.apply(selector),
-                    none, false, SELF_CHECK_BUDGET_MS)));
+                    none, wantCore, SELF_CHECK_BUDGET_MS)));
         }
         List<Z3.Answer> answers = new ArrayList<Z3.Answer>();
         for (Future<Z3.Answer> each : pending) answers.add(get(each));
@@ -319,8 +344,7 @@ final class Disjunction implements AutoCloseable {
                           Z3.Answer answer, boolean coreComplete) {
         refuted.computeIfAbsent(selector,
                 key -> new CopyOnWriteArrayList<Refutation>())
-                .add(new Refutation(under, answer,
-                        coreComplete || under.isEmpty()));
+                .add(new Refutation(under, answer, coreComplete));
     }
 
     private static Z3.Answer get(Future<Z3.Answer> pending) {

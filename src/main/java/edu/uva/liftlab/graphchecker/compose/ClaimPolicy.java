@@ -228,9 +228,13 @@ public final class ClaimPolicy {
         }
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
+        // An unsat may rest on a refuted claim the formula excludes: the
+        // core names it (restsOnRefutations), so it is asked for whenever
+        // one is asserted.
         Outcome free = outcome(composition, asks,
                 composition.free(outcomes.size()),
-                Collections.<String>emptyList(), false);
+                Collections.<String>emptyList(),
+                composition.assertsRefutations());
         Z3.Answer formula = free.answer();
         if (formula.unsat()) {
             contradictions(composition, asks, gaps);
@@ -722,7 +726,11 @@ public final class ClaimPolicy {
      * observed the fatal arm, contradicts its run: DIAGNOSTIC per path, and
      * BLOCKING for the composition, since an UNSAT resting on it is about
      * the formula built and not about the recording.  A path refuted by its
-     * fatal arm alone is the claim's own answer.
+     * fatal arm alone is the claim's own answer, and so is one whose own
+     * self-check core names a refuted claim the formula asserts ({@link
+     * Disjunction#refutedBySelfCheck}): CONFIRM ran that model and
+     * disagreed, and the UNSAT names the refutation it rests on ({@code
+     * restsOnRefutations}).
      */
     private static void contradictions(Composer.Composition composition,
                                        Disjunction asks,
@@ -732,7 +740,10 @@ public final class ClaimPolicy {
         for (int i = 0; i < withoutFatalArms.size(); i++) {
             Composer.Disjunct disjunct = composition.disjuncts().get(i);
             Z3.Answer answer = withoutFatalArms.get(i);
-            if (answer.sat() && !disjunct.fatalObserved()) continue;
+            if (answer.sat() && (!disjunct.fatalObserved()
+                    || asks.refutedBySelfCheck(disjunct.selector()))) {
+                continue;
+            }
             contradictory++;
             gaps.add(GapRow.of(disjunct.path().sessionId,
                     GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,

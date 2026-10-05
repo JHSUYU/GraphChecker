@@ -13,32 +13,34 @@ in [STATE.md](STATE.md); commands are in [OPERATIONS.md](OPERATIONS.md).
 
 ## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3`, image `vm-hg5`)
 
+**Status 2026-10-05 04:00 (lead).** Done and merged into `system/hdfs`: §1e (bug2, `hdfs-request-in-hand`), measured replay charges (`hdfs-measured-charges`), the FREEZE digest and array-identity fixes. HG5A ran the HG5 body (STATE §4). In flight, one agent each: §1 decisive-verdicts (fixing its review's 4 blockers, then merge), §2 HG6 = `hdfs-draw-sites2` (probes), identity (`hdfs-address-shared`: rule B done; next the planned-shape rule for hdfs-11741's regression, then the putter's frames for 14; 07's shared getSegmentInfo endpoint), closure E1 for 16 (`hdfs-closure`, after §1), cleanup batch 1 (`hdfs-cleanup-1`). Merge order: decisive, HG6, address-shared, closure, cleanup phase 2. Then the next round of the 46 (§3) on the merged body. Parked: the QJM obligation snowball (dependence-key granularity), the 8 GB head reserve (heads peak at median 0.7 GB, p99 7.8), SEED's Soot passes being IO-bound on NFS during a sweep's first wave.
+
 ### 1. Finish `hdfs-decisive-verdicts` (one coding agent)
 
 The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` and the brief is
 `/bigtemp/vnr3ne/analysis/study-2026-10-04/brief-decisive-fix2.md`. The lead's decisions are in that
 brief and bind.
 
-**a. Build the WIP and settle refusals.** Build `66c22f440`. In `run_engine.sh`
-`campaign_confirm_claim`, set `refutes=true` only when the reason says "CONFIRM refutes:". Every
-other refusal ("CONFIRM refused:") is a RUN_DEFECT. Update the shell test and `ConfirmMainTest`.
-
-**b. Item 2: one rule for values COMPOSE cannot bind.** Apply
-`/bigtemp/vnr3ne/ab/hdfs-decisive-verdicts/fix2/frame-wip.patch`, then:
-- An arrival with no attested producer is held at its recorded value and named "producer
-  unstated" in `concrete[]`.
-- So is a read whose writer no row states.
-- A FRAME finds its producer through the refused attach's handle and the export row; its
-  `movesWith` is that producer's roots. It is FREE when those roots move.
-- State exactly what UNSAT_CLOSED means, in STATUS.md and in `ComposeMain`: no world of the
-  explored corpus reaches the fatal, given the marker valuations each path ran and the held
-  `concrete[]` values.
-
-**c. Item 5.** An UNSAT whose unsat core names a `refuted_claim__` publishes `restsOnRefutations`.
-The free-formula ask and the self-check must request the core whenever refutations were asserted.
-
-**d. Item 7.** Fix the stale docs. `report.py` calls FREE rows "free (over-approximated)", and its
-row cut never hides the witness path's rows.
+**a-d, g, h: done on the branch** (lead review pending, then the merge into `system/hdfs`):
+- a. CONFIRM: `refutes` only for "CONFIRM refutes:" (the run as recorded); every "CONFIRM refused:"
+  is a RUN_DEFECT; a way-guard witness is planted and judged by the fatal, its closure cut at the
+  manifest's `cutoff` (37723587e).
+- b. One rule for values COMPOSE cannot bind (`SmtLowering#unbound`): FREE where the stated
+  producer moves, HELD "producer unstated" where no row states it (unattested arrivals, reads of
+  versions no write states, frames found through the refused attach's VM handle); `concrete[]`
+  rows state `pathId` and `reason`; UNSAT_CLOSED's meaning stated (7f19e2eba). A read of a
+  container state the VM marked incomplete keeps being refused (honest: an unhooked mutation ran
+  between its version and the read; the hold tried in 9119bde4a was reverted, 0105a1b4a); the fix is
+  admission of that unplanned occurrence, owned by the identity agent (11741 `allKeys`,
+  hdfs-adhoc-32).
+- c, d. `restsOnRefutations`; report.py FREE/HELD wording, witness rows first (ce7df0152); a refuted
+  model is no part of the run's own world (e44a4a632).
+- g. The run as recorded is a world: a writer whose block the run broke gets the observed arm
+  (a6681529b; hdfs-adhoc-16 decides). QJM 07's 57 contradictions have another cause: an identity
+  defect (every `Journal#getSegmentInfo` export of `SegmentStateProto.EndTxId` in a session states
+  one producer endpoint, so each arm binds both arrivals at `acceptRecovery` to one value).
+- h. EXPLORATION_CUT: a forced end that still owed arms is one BLOCKING row, so no UNSAT closes
+  over that corpus (0f0d331f7).
 
 **e. bug2's lost key-id binding.** The cause is found: `Identity#requestInHand` (ffa0cb4d3). After
 an IPC door fault the request gets no receipt and stays "in hand". Every later thread start on that
@@ -57,41 +59,44 @@ which sends the key id, gets an address no plan instrumented.
 - Done when bug2's witness binds the key id across the wire and `cone.py` passes without the
   exemption.
 
-**f. Gate.** Run the offline gate on V25 and on the HG4 corpora (none has run on these changes).
-Then a review agent re-reads the soundness batch before the merge into `system/hdfs`.
+**f. Gate.** Offline gate on V25, HG4's 46 and HG5A's 07/08/09/16/17/24/32:
+`/bigtemp/vnr3ne/ab/hdfs-decisive-verdicts/finish/` (`gate-head.sh`, `table.py`). Then a review agent
+re-reads the soundness batch before the merge into `system/hdfs`.
 
-### 2. Finish HG6 = `hdfs-draw-sites` (one coding agent)
+### 2. Finish HG6 = `hdfs-draw-sites2` (one coding agent)
 
-The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites`; probe snapshot `~/gc-run/hds8`.
+Worktree `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites`, branch `hdfs-draw-sites2`; runs in
+`/bigtemp/vnr3ne/gc-out/hdfs-draw-sites/accept-DW*` (one line each in `hg6/runs.txt`), snapshots `~/gc-run/hds11`
+(the branch before the merge of `4bfe1a6e1`) and `hds12` (the same without the turn rule).
 
-**a. Canaries.** Rerun the 11741 and 17897 canaries to a verdict. On 11741, check whether the 3
-BLOCKING `TOPOLOGY_DIVERGENCE` gaps (seen with C1) survive without C1.
+**a. Canaries.** 17897 PASS, MARKER_FLIPPED (DW1). 11741 (DW2, stopped after 63 min): its exposure
+`f9fb3c4ff841e29b` composes UNSAT_CLOSED NO_SUPPORTED_WITNESS (the witness path rests on an
+UNSTATED_VALUE map read), as on HG5A-36; no BLOCKING `TOPOLOGY_DIVERGENCE` (41 DIAGNOSTIC ones).
 
-**b. Gate and probes.** Run the V25 gate with `AB_HEAP_MB=4096`. Finish 17, 21, 43, 23, 25 and 35 to
-a verdict, plus 01, which was not rerun. Their give-ups at the stop, on `3a27177b3`:
+**b. Probes** (seed replay, stopped after IMPORT). The give-ups listed at the stop on `3a27177b3` were
+counts of replays killed early (43 had taken 151 of 8074 slots), so the base is HG5A (system/hdfs):
 
-| case | give-ups |
-| --- | --- |
-| 16 | 3, and finished |
-| 22 | 10 |
-| 23 | 19 |
-| 24 | 2 |
-| 25 | 17 |
-| 32 | 19 |
-| 34 | 2 |
-| 35 | 18 |
-| 17 | 52 |
-| 21 | 17 |
-| 43 | 1 |
+| case | HG5A: lines / slots given up / taken of order | DW3 (branch) | DW4 (branch without the turn rule) |
+| --- | --- | --- | --- |
+| 17 | 97 / 1578 / 2022 of 2268 | 89 / 170 / 1897 of 2062 | |
+| 21 | 47 / 89 / 2322 of 2651 | 108 / 230 / 1894 of 2037 | 158 / 291 / 1502 of 1656 |
+| 43 | 39 / 213 / 3707 of 7883, target not reached | 59 / 310 / 4021 of 7937, not reached | |
+| 23 | 144 / 408 / 6293 of 13056 | 234 / 386 / 5018 of 10852 | |
 
-17's 52 give-ups need a look of their own: with C1 and no hold it had 18 and finished.
+22, 25, 34, 35 (the same `testVersions` workload as 23) and 01 were not probed on the branch. The
+large counts are the clock class: a DataNode actor's turn decides by `monotonicNow` (heartbeat and
+block report due, `BPServiceActor.Scheduler`) and by state event-less threads set (the NameNode's
+block-report leases, at most 6 pending for 17's 9 DataNodes; a block's IBR), and the VM replay runs
+slower than the recording: 43's dn2 turn #2 sent a heartbeat its recorded turn did not (seq 105) and
+its IBR came after its slot was given up; 17's turn-#1 block reports were not made; 23's IPC handlers
+and `CacheReplicationMonitor` time out where the recording's never did. 21's
+`OCCURRENCE_ADDRESS_SHARED` remains (one heartbeat endpoint for every turn of the DataNode actor run
+occurrence opened under the test's request): `hdfs-address-shared`'s package.
 
 **c. Review and merge.**
 - A review agent reads the batch (schedule/identity: high risk).
-- Then merge into `system/hdfs`. The branch is based on `d916851fa`, before campaign-schedule, and
-  runs CONFIRM inline: keep `system/hdfs`'s CONFIRM-as-pool-job and its remote-wait fix
-  (`71df98a00`).
-- Delete `hds8` and `/bigtemp/vnr3ne/wt/gc-hdfs-seed-stalls` afterwards.
+- Then merge into `system/hdfs` (the branch already holds `4bfe1a6e1`).
+- Delete `hdfs-draw-sites`, `hds8`-`hds12` and `/bigtemp/vnr3ne/wt/gc-hdfs-seed-stalls` afterwards.
 
 ### 3. The next live round of the 46
 
