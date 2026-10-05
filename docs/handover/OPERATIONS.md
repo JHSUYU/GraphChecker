@@ -193,6 +193,8 @@ AB_ACCEPT_ROOT=/bigtemp/vnr3ne/gc-out AB_OUT=/bigtemp/vnr3ne/ab/<name> [AB_STAGE
 
 Re-runs every stage that is a pure function of a recorded round (SEED.static, SEED.trace, PLAN,
 EXPLORE.0, SOLVE.0, IMPORT, EXPLORE.N, COMPOSE, CONFIRM planning) with both jars and compares.
+`AB_STAGES=EXPLORE.drift` replays the landing order to count re-keyed arms (a change to an arm's
+key: `ObligationFactory#dependence`, `Corpus#inputShape`).
 No replay: it cannot see VM, runtime or identity changes — those need a live round. Read the
 header for `AB_HEAP_MB`, `AB_BASELINE_REPO` (when declarations differ between sides), `AB_HOSTS`.
 Keep jars in `/bigtemp/vnr3ne/ab/jars/`.

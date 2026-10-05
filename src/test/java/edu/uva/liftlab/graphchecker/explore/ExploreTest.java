@@ -1185,6 +1185,33 @@ public class ExploreTest {
                 seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
         assertFalse("and so is one more write to the state it reads",
                 seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
+        List<OccurrenceAddress> reversed =
+                new ArrayList<OccurrenceAddress>(task.factor());
+        Collections.reverse(reversed);
+        Set<String> qopKey = Collections.singleton(
+                SmtLowering.locationKey(qop));
+        assertEquals("the factor is a set: the order the corpus lists it in "
+                        + "moves as sessions land",
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey));
+        // A session that runs a feeder no earlier session ran: the seed never
+        // ran it, so what the seed's guard depends on is unmoved.
+        Session late = new Session(iteration, "s-late");
+        OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
+                "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
+                        3), "o.a.h.h.s.d.DataXceiver#run#57");
+        late.activation(lateWriter, false);
+        late.symbolic("e.late", "M_A");
+        late.write(at(lateWriter, Endpoint.stateSite("BlockTokenSecretManager",
+                "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
+                ALL_KEYS, 9L, "e.late");
+        late.flush();
+        Corpus grown = Corpus.read(iteration, null);
+        Task later = ClosurePlanner.taskOf(grown, task.taskId());
+        assertTrue("the corpus found a feeder: " + later.factor(),
+                later.factor().contains(lateWriter));
+        assertEquals("one the seed never ran re-keys none of its arms", seed,
+                dependence(grown, later, "s-seed", "Guard#u8"));
         // The wave names an obligation once: a solver reading the corpus
         // mid-wave (a larger factor, another dependence) keeps that id.
         ObligationFactory.Candidate located = ObligationFactory.locate(corpus,

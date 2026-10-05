@@ -27,7 +27,12 @@
 #
 # The chain SEED.static is SEED's static pass alone: what a slice change
 # costs (wall, edges, methods, scope rows, chosen keys) on cases whose
-# recording no later stage of this checkout reads.
+# recording no later stage of this checkout reads.  The chain
+# EXPLORE.drift replays the run's landing order (ab_stage_drift): every
+# recorded round planned again over the sessions landed before it, with no
+# answer, so every flip it offers is keyed; a flip offered under two ids is
+# an arm the run asks again.  What a change to an arm's key does to the
+# re-asks -- the run's own answers are keyed by the jar that recorded it.
 #
 # The recorded runs are the rounds named (--round, at least one; the first
 # holding a case wins): a TAG is ${AB_ACCEPT_ROOT}/accept-<TAG>-<case without
@@ -96,7 +101,7 @@ AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
 AB_CHAINS=(SEED IMPORT EXPLORE.N COMPOSE)
 # Chains AB_STAGES may name beside the default ones.
-AB_EXTRA_CHAINS=(SEED.static)
+AB_EXTRA_CHAINS=(SEED.static EXPLORE.drift)
 AB_SIDES=(baseline candidate)
 
 ab_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -468,6 +473,52 @@ ab_stage_exploren() {
     --output-dir "${dir}/iteration-0000/${last}" "${ab_explore[@]}"
 }
 
+# The landing order replayed (EXPLORE.drift): each recorded round planned
+# again over the sessions landed before its planner started (a session lands
+# by a rename, so its directory's ctime is its landing; the round's
+# in_flight.jsonl is copied as its planner starts), the waves before it (the
+# focus rows that state each session's world) and the plan generation then
+# current, with no answer and nothing in flight; the rounds one after
+# another, each over the slot table the one before wrote.
+ab_stage_drift() {
+  local dir wave round start name it plan prev="" code=0 wall=0
+  dir=$(ab_stage_dir EXPLORE.drift)
+  ab_explore_args
+  for wave in "${ab_acc_it}"/obligations-*; do
+    round=$(basename "${wave}")
+    start=$(stat -c %Y "${wave}/in_flight.jsonl" 2>/dev/null) \
+      || start=$(stat -c %Y "${wave}/obligations.jsonl") || continue
+    it=${dir}/${round}/iteration-0000
+    mkdir -p "${it}/sessions"
+    for name in "${ab_acc_it}"/sessions/*; do
+      (( $(stat -c %Z "${name}") < start )) && ln -s "${name}" "${it}/sessions/"
+    done
+    for name in "${ab_acc_it}"/obligations-*; do
+      [[ "${name}" < "${wave}" ]] && ln -s "${name}" "${it}/"
+    done
+    plan=${ab_acc_it}/execution_task_plan.jsonl
+    for name in "${ab_acc_it}"/generations/g*/execution_task_plan.jsonl; do
+      [[ -f "${name}" ]] && (( $(stat -c %Y "${name}") < start )) && plan=${name}
+    done
+    cp "${plan}" "${it}/execution_task_plan.jsonl"
+    [[ ! -f "${ab_acc_it}/recorded_schedule.jsonl" ]] \
+      || cp "${ab_acc_it}/recorded_schedule.jsonl" "${it}/"
+    [[ -z "${prev}" || ! -f "${prev}/slots.jsonl" ]] || cp "${prev}/slots.jsonl" "${it}/"
+    : >"${it}/obligation_results.jsonl"
+    ab_java "${dir}/${round}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
+      edu.uva.liftlab.graphchecker.explore.ExploreMain \
+      --sessions "${it}/sessions" --results "${it}/obligation_results.jsonl" \
+      --static-scope-map "${ab_acc}/static_scope_map.jsonl" \
+      --topology-epoch iteration-0000 --round "$((10#${round#obligations-}))" \
+      --output-dir "${it}/${round}" "${ab_explore[@]}" || code=$?
+    wall=$(awk -v a="${wall}" -v b="$(sed -n 's/.*wall_s=\([^ ]*\).*/\1/p' "${dir}/${round}/status")" 'BEGIN{print a+b}')
+    (( code == 0 )) || break
+    prev=${it}
+  done
+  printf 'exit=%s wall_s=%s rss_mb=- host=%s\n' "${code}" "${wall}" "$(hostname -s)" >"${dir}/status"
+  return "${code}"
+}
+
 ab_stage_compose() {
   local dir
   local -a selection=(--anchor "${ab_declared}")
@@ -600,6 +651,7 @@ ab_task() {
         case "${chain}" in
           IMPORT) ab_stage_import ;;
           EXPLORE.N) ab_stage_exploren ;;
+          EXPLORE.drift) ab_stage_drift ;;
           COMPOSE)
             if ab_stage_compose; then ab_stage_confirm
             else ab_skip "${ab_case_dir}/CONFIRM" "COMPOSE failed or did not run"

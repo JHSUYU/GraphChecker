@@ -327,9 +327,9 @@ public final class ObligationFactory {
      * ({@link #flip}), then a digest of everything its answer rests on --
      * the query as its solver is asked it (or the refusal that leaves
      * none), and all its replay is given: the world it plants (its path's,
-     * inherited whole), the focused occurrence, the factor and the seed
-     * session (the focus row, whose factor grows as sessions land and no
-     * query reads), and {@code given} (the declared occurrence and the plan
+     * inherited whole), the focused occurrence, the factor (a set) and the
+     * seed session (the focus row, whose factor grows as sessions land and
+     * no query reads), and {@code given} (the declared occurrence and the plan
      * generation its class tree is woven from, which GROW moves); the
      * schedule cut is the path's session cut at the focus and factor.  An
      * obligation's id drifts as sessions land; its question does not while
@@ -356,9 +356,12 @@ public final class ObligationFactory {
         }
         text.append("\nfocused ").append(candidate.task.focused().id())
                 .append("\nseed ").append(candidate.task.seedSessionId());
+        // A set: the order the corpus lists it in moves as sessions land.
+        Set<String> factor = new TreeSet<String>();
         for (OccurrenceAddress member : candidate.task.factor()) {
-            text.append("\nfactor ").append(member.id());
+            factor.add(member.id());
         }
+        for (String member : factor) text.append("\nfactor ").append(member);
         text.append('\n').append(given);
         return flip(candidate) + ":" + ArtifactIO.digest(text.toString(), 16);
     }

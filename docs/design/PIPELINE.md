@@ -516,9 +516,12 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
 outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
 share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
-(`Corpus.inputShape`): whether the task's occurrence and each factor member that writes state it reads
-ran, their handoff sites and producers, and those members' write counts at the locations the guard
-reads — never delivered values. Never the session. An arm is
+(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and, for
+each factor member that writes state it reads and that this session ran, the same and its write
+counts at the locations the guard reads — never delivered values, and a function of the session
+alone: the members as a set, and none the session never ran (the corpus finds feeders as sessions
+land, and such a member's line, the same in every session that did not run it, re-keyed every arm of
+the session). Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
@@ -533,7 +536,7 @@ byte-identical queries). Its **question** (`ObligationFactory#question`) does no
 answer rests on reads the same: `<flip>:<content>`, the flip (`#flip`: task, path, site, ordinal,
 flipped outcome), then a digest of the query as its solver is asked it (or the refusal that leaves
 none) and all its replay is given -- the world it plants (the path's world: roots, clock skews,
-answers, inherited flips), the focused occurrence, the factor and the seed session of the focus row
+answers, inherited flips), the focused occurrence, the factor (a set) and the seed session of the focus row
 (the schedule cut is the path's session cut at the focus and factor), the declared occurrence, and
 the plan generation (a digest of the iteration's task plan, which GROW appends to and re-weaves
 from). The solver builds it and looks it up in the questions this iteration's workers settled
@@ -1948,7 +1951,13 @@ and CONFIRM's planning — over private iterations that link the recorded sessio
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
 2 when one could not be checked; the static pass's summary is the slice's size (edges, the methods
 they lie in, scope rows, READ_SITEs, CONFIG_KEYs, chosen/all root-demand boundaries, skeletons,
-grown classes), and `AB_STAGES=SEED.static` runs that pass alone. The trace chain (aggregation,
+grown classes), and `AB_STAGES=SEED.static` runs that pass alone. `AB_STAGES=EXPLORE.drift`
+replays a run's landing order: each recorded round planned again over the sessions landed before
+its planner started (a session's directory ctime is its landing), the waves before it and the plan
+generation then current, with no answer, so every flip it offers is keyed; the summary counts the
+flips offered under more than one id (an arm the run asks again on the same path) and the ids per
+arm -- what a change to an arm's key does to re-asks, which the run's own answers, keyed by the
+recording jar, cannot show. The trace chain (aggregation,
 PLAN, EXPLORE round 0) of both sides reads one set of static artifacts, the recording's own;
 `AB_FRESH_SLICE=1` gives each side its own fresh static pass, to see what a slice change does to
 the region plan and the closure. It runs beside live rounds, so each of its engine JVMs is placed
