@@ -24,10 +24,9 @@ witness's selected session.  Everything read is kept by PRUNE.
 Weight, per witness (a signature takes its best):
     finding kind x (1 + native reproduction rate) - extra roots
   finding kind     STATE_/MESSAGE_PAIRING_FLIPPED 5, MARKER_FLIPPED with a
-                   fault door root 4, other MARKER_FLIPPED 3,
-                   RECORDED_FAILURE_EXPLAINED 3, CLOCK_SKEW 2 when every
-                   clock moved at most a minute (else 1: a clock-sync
-                   assumption)
+                   fault door root 4, other MARKER_FLIPPED 3, CLOCK_SKEW
+                   2 when every clock moved at most a minute (else 1: a
+                   clock-sync assumption)
   reproduction     reproduce.json beside result.json (run_engine.sh
                    REPRODUCE, after EMIT): the share of its native runs that
                    took the fatal arm at the claim's anchor; 0 when it ran
@@ -62,8 +61,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "lib"))
 import annotated  # noqa: E402
 
-KIND_WEIGHT = {"STATE_PAIRING_FLIPPED": 5, "MESSAGE_PAIRING_FLIPPED": 5,
-               "RECORDED_FAILURE_EXPLAINED": 3}
+KIND_WEIGHT = {"STATE_PAIRING_FLIPPED": 5, "MESSAGE_PAIRING_FLIPPED": 5}
 BUCKETS = ((1e9, "<=1s"), (60e9, "<=1min"), (3600e9, "<=1h"))
 
 

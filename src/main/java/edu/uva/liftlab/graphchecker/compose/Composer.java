@@ -180,6 +180,9 @@ public final class Composer {
     public static final class Composition {
         /** What the composed paths rest on concretely ({@link Concrete}). */
         private final List<Concrete> concrete;
+        /** The declared roots a valuation assigns, and their recordings. */
+        private final Map<String, RootMintRow> declaredRoots;
+        private final Map<String, String> recordedValues;
         private final OccurrenceAddress anchor;
         private final String body;
         private final List<Disjunct> disjuncts;
@@ -264,6 +267,16 @@ public final class Composer {
             this.armChoices = composed.composedFamilies.armChoices();
             this.concrete = Collections.unmodifiableList(
                     new ArrayList<Concrete>(composed.concrete.values()));
+            this.declaredRoots = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, RootMintRow>(
+                            composed.declaredRoots));
+            Map<String, String> recordedValues =
+                    new LinkedHashMap<String, String>();
+            for (String rootId : declaredRoots.keySet()) {
+                recordedValues.put(rootId,
+                        composed.roots.get(rootId).recordedValue());
+            }
+            this.recordedValues = Collections.unmodifiableMap(recordedValues);
             this.ownArms = composed.composedFamilies.ownArms();
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
@@ -515,6 +528,68 @@ public final class Composer {
             return clockCells;
         }
 
+        /** The symbol of every declared root a valuation assigns, as a
+         *  query spells it: what a model of the formula is read back for. */
+        public List<String> rootSymbols() {
+            List<String> symbols = new ArrayList<String>();
+            for (RootMintRow row : declaredRoots.values()) {
+                symbols.add(SmtNames.legalSymbols(row.symbol()));
+            }
+            return symbols;
+        }
+
+        /**
+         * THE FORMULA ITSELF: no root held, each free over its domain, as
+         * the body states it -- the question whose answer is the verdict
+         * ({@code ClaimPolicy#closed}), asked under this valuation of no
+         * pin, numbered {@code ordinal}.
+         */
+        public Valuation free(int ordinal) {
+            return new Valuation(ordinal, recordedValues,
+                    Collections.<String, String>emptyMap(),
+                    Collections.<String>emptyList());
+        }
+
+        /**
+         * The valuation a model of the formula assigns (symbol -> value,
+         * {@link #rootSymbols}), numbered {@code ordinal}: each declared
+         * root at the model's value, moved where that is not its
+         * recording's, pinned there as an enumerated valuation is.
+         */
+        public Valuation modelValuation(int ordinal,
+                                        Map<String, String> model) {
+            Map<String, String> assignment =
+                    new LinkedHashMap<String, String>();
+            Map<String, String> moved = new LinkedHashMap<String, String>();
+            List<String> assertions = new ArrayList<String>();
+            for (Map.Entry<String, RootMintRow> root
+                    : declaredRoots.entrySet()) {
+                String recorded = recordedValues.get(root.getKey());
+                String value = modelValue(model.get(
+                        SmtNames.legalSymbols(root.getValue().symbol())));
+                if (value.isEmpty()) value = recorded;
+                assignment.put(root.getKey(), value);
+                if (!value.equals(recorded)) moved.put(root.getKey(), value);
+                String literal = smtLiteral(value, sortOf(root.getValue()));
+                if (literal.isEmpty()) continue;
+                assertions.add("(assert (! (= " + root.getValue().symbol()
+                        + " " + literal + ") :named valuation__"
+                        + smtName(root.getValue().symbol()) + "))");
+            }
+            return new Valuation(ordinal, assignment, moved, assertions);
+        }
+
+        /** A model's value as a recording spells it: {@code (- 5)} is -5;
+         *  "" for none. */
+        private static String modelValue(String model) {
+            if (model == null) return "";
+            String text = model.trim();
+            if (text.startsWith("(-") && text.endsWith(")")) {
+                return "-" + text.substring(2, text.length() - 1).trim();
+            }
+            return text;
+        }
+
         /** Clock cell -> its instant on the recording's timeline: the
          *  seed's reading, or where a session that read it places it
          *  ({@code Composer#clocks}). */
@@ -751,6 +826,10 @@ public final class Composer {
     private final Map<String, Family> families =
             new LinkedHashMap<String, Family>();
     /** Root id -> the domain the case and the recording give it. */
+    /** The declared roots the enumeration moves (rootId -> its row), set
+     *  by {@link #valuations}: what a model of the formula assigns. */
+    private final Map<String, RootMintRow> declaredRoots =
+            new LinkedHashMap<String, RootMintRow>();
     private final Map<String, RootDomain> roots =
             new LinkedHashMap<String, RootDomain>();
     /** The one family-arm rule, shared with the flip solver. */
@@ -782,10 +861,8 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
-    /** The path being composed: the arrivals it pins to the value its run
-     *  received ({@link #handoffRead}), and what it rests on concretely
+    /** What the path being composed rests on concretely or leaves free
      *  ({@link Concrete}), kept once the path is a disjunct. */
-    private final List<String> pinnedArrivals = new ArrayList<String>();
     private final Map<String, Concrete> pathConcrete =
             new LinkedHashMap<String, Concrete>();
     /** What the composed paths rest on concretely, by subject. */
@@ -944,7 +1021,7 @@ public final class Composer {
         Map<String, String> clockBefore = new LinkedHashMap<String, String>();
         clocks(clockCells, clockReadings, clockNanos, clockBefore);
         domains();
-        refutations(disjuncts);
+        refutations(disjuncts, clockCells, clockReadings, clockBefore);
         lowering.assertIdentitiesDistinct();
         // A manifest that predates readings (schema 1) states none: a root
         // such a session read and minted none guards none of its arms.
@@ -1103,16 +1180,29 @@ public final class Composer {
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
         lowering.path();
+        // Where the path decided: at the target row, or, where it never
+        // reached the anchor, at the guard it left the way to the throw at
+        // (a row that did not reach the anchor stands at no point of it).
+        DecisionRow way = target.reachedAnchor() ? null
+                : wayGuard(path.decisions);
+        boolean symbolicWay = way != null
+                && !corpus.termSymbols(session, way.term()).isEmpty();
+        long cutoff = target.reachedAnchor() ? target.seq()
+                : way == null ? Long.MAX_VALUE : way.seq();
+        // What the fatal arm is: phi; a symbolic way guard's other arm, the
+        // way to the throw; else (a concrete one) the constant false.
+        String fatalTerm = target.reachedAnchor() ? target.phiTerm()
+                : symbolicWay ? Arms.conjunct(way.term(), !way.outcome())
+                : "false";
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
-        Map<String, Long> reached = closure(session, anchor, target.seq(),
-                null);
+        Map<String, Long> reached = closure(session, anchor, cutoff, null);
         // What a family may move is no constant anywhere in this path: not
         // a pin after a refused join, not a variable independence leaves
         // out.  ONE entry point: the anchor's reads and the world's planted
         // ones, less a location a reader mutated a container through.
-        Repairing repairing = repairing(session, reached, target.seq());
+        Repairing repairing = repairing(session, reached, cutoff);
         Set<String> pinned = repairing.pinned;
         Set<String> moved = repairing.keys;
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
@@ -1127,17 +1217,16 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
-        pinnedArrivals.clear();
         pathConcrete.clear();
-        int pinsBefore = lowering.pins().size();
+        int freesBefore = lowering.frees().size();
         frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
-        List<DecisionRow> conditions = before(path.decisions, target.seq());
+        List<DecisionRow> conditions = before(path.decisions, cutoff);
         conditions.addAll(reachedConditions(session, reached));
         Independence relevant = independence(session,
-                Collections.singletonList(target.phiTerm()),
+                Collections.singletonList(fatalTerm),
                 familyBound(session, repairing.reads), reached,
                 conditions);
         //       What the fatal itself rests on ({@link #fatalRests}) and
@@ -1145,7 +1234,7 @@ public final class Composer {
         //       reaches holds the formula's alternatives, not the witness (a
         //       confirming run is held to these only).
         Set<String> restsOn = independence(session,
-                fatalRests(target, path.decisions),
+                fatalRests(fatalTerm, path.decisions, cutoff),
                 Collections.<String>emptySet(), reached, conditions)
                 .locations();
 
@@ -1192,7 +1281,7 @@ public final class Composer {
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
         //     contradict phi on every healthy path.
-        terms.addAll(prefix(path.decisions, target.seq(), "decision ",
+        terms.addAll(prefix(path.decisions, cutoff, "decision ",
                 relevant, refusals));
 
         // (4b) P3: the prefix of every OTHER occurrence the joins reach,
@@ -1209,27 +1298,35 @@ public final class Composer {
         //     arm (invariant 9): `true` rests the fatal on pi_p, the path
         //     condition that reached the anchor; `false` is the constant
         //     healthy decision, a disjunct no valuation of this formula
-        //     satisfies (what was concrete is EXPLORE's concreteAnchors);
-        //     a path that left the way to the throw at a guard takes the
-        //     healthy arm there, the same constant, the guard named in
-        //     concrete[] (WAY); none stated is no phi.
+        //     satisfies (what was concrete is EXPLORE's concreteAnchors).
+        //     A path that left the way to the throw at a guard: at a
+        //     SYMBOLIC one, its fatal arm is that guard's other arm, the way
+        //     to the throw (a witness turns it, CONFIRM judges the rest);
+        //     at a concrete one, the constant false; the guard named in
+        //     concrete[] (WAY) with what its term rests on.  None stated is
+        //     no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
         if (!target.reachedAnchor()) {
-            fatalArm = terms.size();
-            terms.add("false");
-            DecisionRow way = wayGuard(path.decisions);
             pathConcrete.put("way:" + session, new Concrete("WAY",
                     way == null ? anchor.render() : way.siteId() + "#"
                             + way.ordinal(), way == null ? ""
-                    : Boolean.toString(way.outcome()),
-                    Collections.<String>emptyList()));
-            // An unreached target row stands at no point of the path (its
-            // seq states none): the path is its decisions up to the guard it
-            // left the way at (all of them where it left at none named).
+                    : way.outcome() + (way.term().isEmpty() ? ""
+                    : " " + way.term()), way == null
+                    ? Collections.<String>emptyList()
+                    : new ArrayList<String>(corpus.termSymbols(session,
+                    way.term()))));
+            String fatal = symbolicWay ? lowering.statedTerm(fatalTerm,
+                    "way:" + subject) : fatalTerm;
+            if (!fatal.isEmpty() && !unknown(fatal, refusals, subject)) {
+                fatalArm = terms.size();
+                terms.add(fatal);
+            }
+            // The decisions up to the guard (all of them where it left at
+            // none named); the guard itself is the fatal arm when symbolic.
             terms.addAll(healthyDecisions(session, ordinal, path.decisions,
-                    way == null ? Long.MAX_VALUE : way.seq(), relevant));
+                    symbolicWay ? cutoff - 1 : cutoff, relevant));
         } else if (published.isEmpty()) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, subject, "the target row states "
@@ -1259,7 +1356,6 @@ public final class Composer {
         // (it would otherwise rest on a free constant).
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
-        terms.addAll(pinnedArrivals);
         terms.addAll(lowering.end());
 
         // (1b) Refuse the path only if its own terms name a declared root
@@ -1312,10 +1408,10 @@ public final class Composer {
         lowering.assertNamed(fatal,
                 "(=> " + selector + " " + conjunction + ")");
         observedReads.put(path.pathId, observed);
-        for (SmtLowering.Pin pin : lowering.pins().subList(pinsBefore,
-                lowering.pins().size())) {
-            pathConcrete.put(pin.subject, new Concrete("PIN", pin.subject,
-                    pin.value, pin.movesWith));
+        for (SmtLowering.Free free : lowering.frees().subList(freesBefore,
+                lowering.frees().size())) {
+            pathConcrete.put(free.subject, new Concrete("FREE", free.subject,
+                    "", free.movesWith));
         }
         concrete.putAll(pathConcrete);
         observedArrivals.put(path.pathId,
@@ -1332,13 +1428,13 @@ public final class Composer {
      * nothing, and that fatal rests on the path condition that reached the
      * anchor, the decisions before the target (CONTRACT-SPEC §2.2).
      */
-    private static List<String> fatalRests(TargetRow target,
-                                           List<DecisionRow> decisions) {
-        String phi = target.phiTerm().trim();
-        return !target.reachedAnchor() || "true".equals(phi)
-                || "false".equals(phi)
-                ? Arms.pathCondition(decisions, target.seq())
-                : Collections.singletonList(target.phiTerm());
+    private static List<String> fatalRests(String fatalTerm,
+                                           List<DecisionRow> decisions,
+                                           long cutoff) {
+        String phi = fatalTerm.trim();
+        return "true".equals(phi) || "false".equals(phi)
+                ? Arms.pathCondition(decisions, cutoff)
+                : Collections.singletonList(fatalTerm);
     }
 
     /**
@@ -1640,9 +1736,9 @@ public final class Composer {
      * DataNode's key id with 119532 while the moved serial had its producer
      * deliver 119533, and the answer, pinned as a literal, let the solver
      * move the serial past it).  An arrival no producer this corpus attests
-     * delivered is pinned to the value its run received instead, which no
-     * moved root follows (a {@link Concrete} PIN): a witness over it is
-     * CONFIRM's to refute.  A row stating no value is refused by name.
+     * delivered rests on what no row states, so it is FREE (a {@link
+     * Concrete} FREE naming the producer): a witness over it is CONFIRM's
+     * to refute.
      */
     private void handoffRead(String session, AttachRow attach,
                              Set<String> interactionIds,
@@ -1661,28 +1757,14 @@ public final class Composer {
             return;
         }
         // No producer this corpus attests (or none named): what it delivered
-        // is stated and why is not, so the arrival is a constant -- the value
-        // the run received (an answered one, the answer) -- whatever the
-        // producer might have delivered under a moved root; a witness over it
-        // is CONFIRM's to refute (hdfs-17967-pathC rb1).  A row stating no
-        // value refuses the path by name.
-        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
-        String literal = smtLiteral(JsonFields.firstNonBlank(
-                attach.answeredValue(), attach.arrival()), sort);
-        if (literal.isEmpty()) {
-            refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
-                    GapClass.DIAGNOSTIC, attach.symbol(),
-                    "no session of this corpus states the rows of the "
-                            + "producer occurrence this delivery came from, "
-                            + "and its row states no value it "
-                            + (attach.answered() ? "was answered with"
-                            : "received")));
-            return;
-        }
-        lowering.declareStated(attach.symbol(), sort);
-        pinnedArrivals.add("(= " + attach.symbol() + " " + literal + ")");
-        pathConcrete.put(attach.symbol(), new Concrete("PIN",
-                attach.symbol(), literal, Collections.singletonList(
+        // is stated and why is not, so what it rests on is unknown and a pin
+        // would hold it while a witness moves that (hdfs-17967-pathC rb1):
+        // the arrival is FREE, an over-approximation CONFIRM filters, named
+        // with the producer it came from.
+        lowering.declareStated(attach.symbol(),
+                JavaSmtSorts.sortOfJava(attach.javaType()));
+        pathConcrete.put(attach.symbol(), new Concrete("FREE",
+                attach.symbol(), "", Collections.singletonList(
                 attach.producer() == null ? "no producer named"
                         : "unattested producer " + attach.producer().id())));
     }
@@ -1830,11 +1912,13 @@ public final class Composer {
     }
 
     /**
-     * One thing a composed path rests on concretely: an arrival or a read
-     * pinned to the value its row states though what it rests on can move
-     * (PIN, {@link SmtLowering#pins}), or an occurrence whose run computed
-     * on a value as a constant (FRAME).  Information beside the verdict
-     * (result.json {@code concrete[]}), never a gap.
+     * One thing a composed path rests on concretely or leaves free: a read,
+     * a call's return or an arrival left FREE because what it rests on can
+     * move ({@link SmtLowering#frees}, {@link #handoffRead}), an occurrence
+     * whose run computed on a value as a constant (FRAME), the guard a path
+     * left the way at (WAY), a decision stated as a proposition (DECISION).
+     * Information beside the verdict (result.json {@code concrete[]}), never
+     * a gap.
      */
     public static final class Concrete {
         public final String kind;
@@ -2544,6 +2628,15 @@ public final class Composer {
                 }
 
                 @Override
+                public Boolean free() {
+                    // Unbound: what it rests on can move, so no pin holds
+                    // it ({@link SmtLowering#bind}).
+                    lowering.declareStated(read.symbol(),
+                            JavaSmtSorts.sortOfJava(read.javaType()));
+                    return true;
+                }
+
+                @Override
                 public Boolean refused(Term value, String subject,
                                        String detail) {
                     refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
@@ -2969,15 +3062,22 @@ public final class Composer {
     }
 
     /**
-     * Every model CONFIRM refuted ({@link Refutations}), excluded: its path,
-     * the arms it chose there, its valuation and the clock cells it moved,
-     * at the model's instants, are, together, no model of this formula, so a
-     * claim over it is another model or none.  A model whose path or arm
-     * this corpus no longer composes cannot recur and is not stated; a root
-     * or cell this query does not name constrains nothing.  Roots are named
-     * as the valuations name them ({@link Corpus#anyRoot}).
+     * Every claim CONFIRM refuted ({@link Refutations}), excluded: its path,
+     * the arms it chose there, its valuation and its clocks' region are,
+     * together, no model of this formula, so a claim over it is another
+     * model or none.  A clock is the claim's region, not its instant: each
+     * cell the claim moved jumped the way it did, by any amount, and every
+     * other cell runs on from the cell before it, as the claim's replay ran
+     * it ({@link #clockStep}) -- an instant alone excluded one point, and
+     * the next model sat a tick beside it.  A model whose path or arm this
+     * corpus no longer composes cannot recur and is not stated; a root or
+     * cell this query does not name constrains nothing.  Roots are named as
+     * the valuations name them ({@link Corpus#anyRoot}).
      */
-    private void refutations(List<Disjunct> disjuncts) {
+    private void refutations(List<Disjunct> disjuncts,
+                             List<String> clockCells,
+                             Map<String, Long> clockReadings,
+                             Map<String, String> clockBefore) {
         List<Refutations.Refuted> refuted;
         try {
             refuted = Refutations.read(corpus.iteration());
@@ -3015,12 +3115,6 @@ public final class Composer {
                 pinned.put(row.symbol(), smtLiteral(root.getValue(),
                         sortOf(row)));
             }
-            // A moved clock is named by its cell's symbol.
-            for (Map.Entry<String, String> cell : model.moved.entrySet()) {
-                if (corpus.anyRoot(cell.getKey()) != null) continue;
-                pinned.put(cell.getKey(), smtLiteral(cell.getValue(),
-                        Sort.INT));
-            }
             for (Map.Entry<String, String> pin : pinned.entrySet()) {
                 if (pin.getValue().isEmpty()
                         || !lowering.declared(pin.getKey())) {
@@ -3028,6 +3122,33 @@ public final class Composer {
                 }
                 conjuncts.add("(= " + pin.getKey() + " " + pin.getValue()
                         + ")");
+            }
+            // A moved clock is named by its cell's symbol, at the model's
+            // instant: its skew, and each unmoved cell's that of the cell
+            // before it, give every cell's step.
+            Map<String, Long> skews = new LinkedHashMap<String, Long>();
+            for (String cell : clockCells) {
+                String before = clockBefore.get(cell);
+                Long previous = before == null ? Long.valueOf(0L)
+                        : skews.get(before);
+                Long skew = previous;
+                String instant = model.moved.get(cell);
+                if (instant != null) {
+                    try {
+                        skew = Long.parseLong(Composition.modelValue(instant))
+                                - clockReadings.get(cell);
+                    } catch (NumberFormatException notAnInstant) {
+                        skew = null;
+                    }
+                }
+                skews.put(cell, skew);
+                if (skew == null || previous == null
+                        || !lowering.declared(cell) || (before != null
+                        && !lowering.declared(before))) {
+                    continue;
+                }
+                conjuncts.add(clockStep(cell, clockReadings, clockBefore,
+                        Long.signum(skew - previous)));
             }
             lowering.assertNamed("refuted_claim__" + ordinal++,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
@@ -3038,6 +3159,27 @@ public final class Composer {
                             : " moving " + model.moved)
                             + ", so it is excluded: " + model.reason);
         }
+    }
+
+    /**
+     * One clock cell's step against the cell before it on its node's clock
+     * ({@code before}): its skew off its reading less that cell's -- {@code
+     * sign} 0 equal (the cell runs on), 1 larger (it jumped later), -1
+     * smaller (earlier) -- or the cell against its reading where none is
+     * before it.  The one spelling of a clock's step, for a witness's pins
+     * ({@code ClaimPolicy#runsOn}) and a refuted claim's region ({@link
+     * #refutations}).
+     */
+    static String clockStep(String cell, Map<String, Long> readings,
+                            Map<String, String> before, int sign) {
+        String relation = sign == 0 ? "=" : sign > 0 ? ">" : "<";
+        String reading = integralLiteral(Long.toString(readings.get(cell)));
+        String previous = before.get(cell);
+        return previous == null
+                ? "(" + relation + " " + cell + " " + reading + ")"
+                : "(" + relation + " (- " + cell + " " + reading + ") (- "
+                + previous + " " + integralLiteral(Long.toString(
+                readings.get(previous))) + "))";
     }
 
     /** The case's declaration where there is one, the mint's otherwise. */
@@ -3087,6 +3229,7 @@ public final class Composer {
                 continue;
             }
             declared.add(entry.getKey());
+            declaredRoots.put(entry.getKey(), row);
             alternatives.put(entry.getKey(), values);
         }
         List<Valuation> valuations = new ArrayList<Valuation>();

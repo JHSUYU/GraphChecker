@@ -225,11 +225,40 @@ public class RegionFoldPlanTest {
     /** The fixture's finalized closure over those activations. */
     private RuntimeSelectedRegionFinalizer.Result closure(
             RuntimeRegionPlanner.Result activations) throws IOException {
+        return closure(activations, false);
+    }
+
+    /** The same, the recording taking the fatal arm at the guard or not. */
+    private RuntimeSelectedRegionFinalizer.Result closure(
+            RuntimeRegionPlanner.Result activations, boolean threw)
+            throws IOException {
         return RuntimeSelectedRegionFinalizer.finalizeRegions(cutGraph(),
                 cutSkeletons(), "test", Arrays.asList(HANDLER, LEAF),
-                activations.runtimeInstances, cutObservations(),
+                activations.runtimeInstances, cutObservations(threw),
                 cutScopeMap(), RuntimeWorkflowDiscovery.FIRST,
                 Collections.<ScheduleEvent>emptyList());
+    }
+
+    /**
+     * A DECLARED OCCURRENCE THE RECORDING THREW AT ASKS NOTHING: the run as
+     * recorded is the failure, and a claim moving no root is never a
+     * finding (owner 2026-10-04), so PLAN names the declaration, BLOCKING.
+     */
+    @Test
+    public void aRecordingThatThrewThereIsADeclarationDefect()
+            throws Exception {
+        RuntimeRegionPlanner.Result activations = activations(cutEvents(
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, true,
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, DN1));
+        for (boolean threw : new boolean[]{false, true}) {
+            List<Map<String, Object>> gaps = closure(activations, threw).gaps;
+            boolean named = false;
+            for (Map<String, Object> gap : gaps) {
+                named |= "TARGET_FATAL_IN_RECORDING".equals(gap.get("kind"))
+                        && "BLOCKING".equals(gap.get("cls"));
+            }
+            assertEquals(threw + ": " + gaps, threw, named);
+        }
     }
 
     /**
@@ -341,11 +370,12 @@ public class RegionFoldPlanTest {
                 entry(20L, LEAF, 10L, "", true, leafStamp, false));
     }
 
-    /** The fatal guard the leaf decided, and the hook site it executed. */
+    /** The fatal guard the leaf decided -- healthy, as a declared
+     *  occurrence's recording must -- and the hook site it executed. */
     private static List<RuntimeRegionPlanner.RuntimeEvent> cutRuntime() {
         return Arrays.asList(
                 new RuntimeRegionPlanner.RuntimeEvent(5L, "BRANCH", LEAF,
-                        20L, 0L, GUARD_SITE, "", -1, "", 0, "", Boolean.TRUE,
+                        20L, 0L, GUARD_SITE, "", -1, "", 0, "", Boolean.FALSE,
                         null, "IF", ""),
                 new RuntimeRegionPlanner.RuntimeEvent(7L, "CALL_SITE_ENTER",
                         LEAF, 20L, 1L, PHASE_SITE, "<o.a.h.Key: int id()>",
@@ -393,15 +423,17 @@ public class RegionFoldPlanTest {
         return new ArrayList<>(Collections.singletonList(guard));
     }
 
-    /** The recording's own statement that the fatal guard was decided. */
-    private static List<Map<String, Object>> cutObservations() {
+    /** The recording's own statement that the fatal guard was decided, on
+     *  its fatal arm where it threw (a declaration that asks nothing:
+     *  TARGET_FATAL_IN_RECORDING). */
+    private static List<Map<String, Object>> cutObservations(boolean threw) {
         Map<String, Object> branch = new LinkedHashMap<>();
         branch.put("kind", "BRANCH");
         branch.put("eventSeq", 5L);
         branch.put("method", LEAF);
         branch.put("callId", 20L);
         branch.put("siteId", GUARD_SITE);
-        branch.put("outcome", Boolean.TRUE);
+        branch.put("outcome", threw);
         return Collections.singletonList(branch);
     }
 

@@ -847,6 +847,17 @@ public final class RuntimeSelectedRegionFinalizer {
                 messages.shape(question.context()));
         instances.get(declared).put(QUESTION_RECORDED,
                 recordedBeside(instances.keySet(), question));
+        // An occurrence the recording threw at asks nothing: the run as
+        // recorded is the failure, and a claim that moves no root is never a
+        // finding (owner 2026-10-04).
+        if (demands.recordedFatal(instances.get(declared), scopeMap)) {
+            planGap(program.planGaps, GapKind.TARGET_FATAL_IN_RECORDING,
+                    GapClass.BLOCKING, declared, "the recording took the "
+                            + "fatal arm at the declared occurrence: the "
+                            + "case declares an occurrence that throws as "
+                            + "recorded, so no counterfactual is asked of "
+                            + "it; declare one the recording ran healthy");
+        }
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
                 cutPorts, otherTargets);
         List<Demand> seeds = new ArrayList<>();
@@ -1980,6 +1991,27 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             return evidenceBySite;
+        }
+
+        /**
+         * Whether this activation took the fatal arm in the recording: an
+         * outcome it observed at an explicit failure-target site is the arm
+         * the scope map says reaches the throw ({@link
+         * StaticScopeMap#fatalArm}).
+         */
+        private boolean recordedFatal(Map<String, Object> instance,
+                                      StaticScopeMap scopeMap) {
+            for (Map.Entry<String, List<Map<String, Object>>> site
+                    : observedFatalEvidence(instance).entrySet()) {
+                Boolean arm = scopeMap.fatalArm(site.getKey());
+                if (arm == null) continue;
+                for (Map<String, Object> evidence : site.getValue()) {
+                    if (arm.equals(evidence.get("observedOutcome"))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         /**

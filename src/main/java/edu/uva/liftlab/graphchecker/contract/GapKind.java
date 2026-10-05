@@ -24,6 +24,19 @@ public enum GapKind {
     UNPRODUCIBLE_ANSWER,
     /** The composed formula is satisfied at the recorded valuation. */
     FORMULA_SAT_AT_RECORDED_VALUATION,
+    /**
+     * The declared occurrence took the fatal arm in the recording: the case
+     * declares an occurrence that throws as recorded, so no counterfactual
+     * is asked of it (PLAN, BLOCKING).
+     */
+    TARGET_FATAL_IN_RECORDING,
+    /**
+     * The seed replay observed the fatal at the declared occurrence: the run
+     * as recorded is no counterfactual, so no claim stands on the corpus
+     * (COMPOSE, BLOCKING).  Beside {@link #TARGET_FATAL_IN_RECORDING} it is
+     * the declaration's; without it the replay diverged from its recording.
+     */
+    SEED_OBSERVED_FATAL,
     /** A root or a port the case never declared. */
     DECLARATION_MISSING,
     /**

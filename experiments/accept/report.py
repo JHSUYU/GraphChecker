@@ -11,7 +11,8 @@ rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it, the formula carries the
 causality the witness names (cone.py: every moved root in the causal cone of
-the selected path, no unbound boundary variable), AND the mechanism it
+the selected path, no boundary variable a fatal names left neither bound by a
+family nor stated FREE), AND the mechanism it
 concluded is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
 the CONFIRM replay (confirmation.confirmed=true), no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
@@ -38,10 +39,7 @@ BLOCKING.  A second implementation of one rule is the disagreement an
 acceptance harness is least able to survive, so this reads the composer's
 answer instead of forming its own.
 
-RECORDED_FAILURE_EXPLAINED is exempt from the polarity condition because
-ClaimPolicy constructs that kind with polarityDecides=false by definition: the
-seed run itself observed the fatal arm, so there is no other polarity to
-refute.  NO_SUPPORTED_WITNESS fails, naming the claimReason the policy gave.
+NO_SUPPORTED_WITNESS fails, naming the claimReason the policy gave.
 
 The probe's plain/buggy/other columns are printed when probe.tsv exists,
 as a reported signal.  Nothing gates on them.
@@ -219,8 +217,9 @@ gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
 withheld = result.get("accepted") is not True
 # CONFIRM (PIPELINE §10): SAT says the model satisfies the formula, the
 # confirmation replay says whether the program agrees.  EMIT copies
-# confirm.json into result.json and downgrades an unconfirmed claim to
-# SAT_UNCONFIRMED; a result with no confirmation at all is not confirmed.
+# confirm.json into result.json: a refuted claim is SAT_UNCONFIRMED, one
+# whose confirmation published no verdict RUN_DEFECT; a result with no
+# confirmation at all is not confirmed.
 confirmation = result.get("confirmation") or {}
 confirmed = confirmation.get("confirmed") is True
 # WHICH mechanism the composition concluded, and the condition it rests on.
@@ -256,8 +255,7 @@ findings = result.get("witnessFindings") or []
 # other ClaimKinds and deliberately not among them: a named case that reaches
 # one has not passed.
 ACCEPTED_FINDINGS = {"MARKER_FLIPPED", "CLOCK_SKEW",
-                     "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED",
-                     "RECORDED_FAILURE_EXPLAINED"}
+                     "MESSAGE_PAIRING_FLIPPED", "STATE_PAIRING_FLIPPED"}
 # What a pairing kind moves is a pairing, not a root: ClaimPolicy names it
 # only where pinning the path's observed reads (or arrivals) refutes the
 # witness, and the claimed valuation names the arms it re-paired
@@ -299,11 +297,10 @@ if finding_kind == "NO_SUPPORTED_WITNESS":
                    % result.get("claimReason", "no reason published"))
 elif finding_kind not in ACCEPTED_FINDINGS:
     reasons.append("findingKind=%s" % finding_kind)
-elif not polarity_decides and finding_kind != "RECORDED_FAILURE_EXPLAINED":
+elif not polarity_decides:
     # The recording does not decide the mechanism, so the mechanism explains
     # nothing about the difference between the run that failed and the run
-    # that did not.  RECORDED_FAILURE_EXPLAINED is the one kind for which
-    # ClaimPolicy sets this false by construction.
+    # that did not.
     reasons.append("polarityDecides=false: the formula is satisfiable at the"
                    " recorded valuation, so %s explains nothing"
                    % finding_kind)
@@ -536,11 +533,15 @@ if blocking:
     out.append("")
 
 concrete = result.get("concrete") or []
+# A long composition rests on many of these (hdfs-17899-bug2: a FREE arrival
+# on every one of its paths); the report lists the first CONCRETE_SHOWN and
+# states the count, so it stays readable without hiding how many there were.
+CONCRETE_SHOWN = 20
 if concrete:
     out += ["## Concrete", "",
-            "What the decision rested on concretely (result.json concrete[]):"
-            " information, never a gap.", ""]
-    for row in concrete:
+            "What the decision rested on concretely (result.json concrete[],"
+            " %d row(s)): information, never a gap." % len(concrete), ""]
+    for row in concrete[:CONCRETE_SHOWN]:
         if row.get("kind") == "ANCHOR":
             out.append("* anchor `%s` decided on no symbol: %d of %d path(s)"
                        " decided it, %d read(s) of %s demanded, %d off the"
@@ -555,6 +556,8 @@ if concrete:
                 row.get("value", ""),
                 (" (moves with %s)" % ", ".join(row["movesWith"]))
                 if row.get("movesWith") else ""))
+    if len(concrete) > CONCRETE_SHOWN:
+        out.append("* ... and %d more" % (len(concrete) - CONCRETE_SHOWN))
     out.append("")
 
 if findings:

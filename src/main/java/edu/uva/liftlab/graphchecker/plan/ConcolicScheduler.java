@@ -247,24 +247,6 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /** The arm of one branch site that reaches the declared target, from the
-     *  TARGET_SITE guards ({@code causynth.SiteControlDependence}). {@code
-     *  null}: no arm stated, which the caller refuses (never a default). */
-    static Boolean fatalArm(StaticScopeMap map, String guardSiteId) {
-        Boolean found = null;
-        for (StaticScopeMap.Site target : map.targetSites()) {
-            Boolean arm = target.outcomeOf(guardSiteId);
-            if (arm == null) continue;
-            if (found != null && !found.equals(arm)) {
-                throw new IllegalArgumentException(
-                        "AMBIGUOUS_FATAL_ARM: " + guardSiteId + " reaches "
-                                + "the declared target on both arms");
-            }
-            found = arm;
-        }
-        return found;
-    }
-
     /**
      * Every test of the guard {@code site} belongs to, as its TARGET_SITE row
      * states it, when there are several: a replay may reach the throw
@@ -283,7 +265,7 @@ public final class ConcolicScheduler {
             }
             for (String guard : target.guards) {
                 guards.add(new StaticScopeMap.Guard(guard,
-                        fatalArm(map, guard)));
+                        map.fatalArm(guard)));
             }
             return guards;
         }
@@ -526,7 +508,7 @@ public final class ConcolicScheduler {
         List<StaticScopeMap.Guard> guards = targetGuards(scopeMap, site);
         result.add(new Candidate(goal, branches, site,
                 optionalInteger(fatal, "selectedOccurrence", 1),
-                fatalArm(scopeMap, site).booleanValue(),
+                scopeMap.fatalArm(site).booleanValue(),
                 guards.isEmpty() ? fatalDecider(scopeMap, site) : null,
                 guards, inputActions));
     }
@@ -557,7 +539,7 @@ public final class ConcolicScheduler {
             JsonObject branch = element.getAsJsonObject();
             if (!optionalBool(branch, "observed", false)) continue;
             String siteId = optionalString(branch, "siteId");
-            reached |= fatalArm(scopeMap, siteId) != null;
+            reached |= scopeMap.fatalArm(siteId) != null;
             left |= chain.contains(siteId);
         }
         boolean unreached = !reached && left;
@@ -569,7 +551,7 @@ public final class ConcolicScheduler {
             String siteId = optionalString(branch, "siteId");
             if (!optionalBool(branch, "failureTarget", false)
                     || !(unreached || optionalBool(branch, "observed", false))
-                    || fatalArm(scopeMap, siteId) == null) {
+                    || scopeMap.fatalArm(siteId) == null) {
                 continue;
             }
             for (JsonElement cell : array(branch,

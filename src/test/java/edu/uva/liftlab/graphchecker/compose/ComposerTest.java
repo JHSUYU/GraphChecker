@@ -808,6 +808,51 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A refuted claim excludes its clocks' REGION, not their instants: the
+     * jump it made, by any amount the same way, with every other cell
+     * running on.  An instant alone excluded one point, and the next model
+     * sat a tick beside it.
+     */
+    @Test
+    public void aRefutedClockClaimExcludesItsJumpNotItsInstant()
+            throws Exception {
+        Path iteration = folder.newFolder("refuted-clock").toPath();
+        Session skewed = new Session(iteration, "s0", false);
+        skewed.clock("700");
+        skewed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        skewed.target("(> " + CLOCK + " 1000)", false, true);
+        skewed.write();
+        ClaimPolicy.Decision first = ClaimPolicy.decide(
+                compose(iteration, 4), solver());
+        assertEquals(ClaimKind.CLOCK_SKEW, first.claim().kind());
+        ClaimPolicy.Outcome claimed = first.outcomes().get(
+                first.claim().valuationOrdinal());
+        JsonObject model = new JsonObject();
+        model.addProperty("pathId", claimed.selected().path().pathId);
+        JsonArray arms = new JsonArray();
+        for (String arm : claimed.selectedArms().keySet()) arms.add(arm);
+        model.add("arms", arms);
+        JsonObject moved = new JsonObject();
+        for (Map.Entry<String, String> cell
+                : first.claim().movedRoots().entrySet()) {
+            moved.addProperty(cell.getKey(), cell.getValue());
+        }
+        model.add("moved", moved);
+        JsonObject row = new JsonObject();
+        row.add("model", model);
+        row.addProperty("reason", "the run took the healthy arm");
+        RowCodec.writeJsonl(iteration.resolve("refuted_claims.jsonl"),
+                Collections.singletonList(row));
+        Composer.Composition next = compose(iteration, 4);
+        assertTrue(next.body(), next.body().contains("refuted_claim__0"));
+        ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
+        assertEquals("every later instant is the jump CONFIRM refuted",
+                "unsat", again.formula().status());
+        assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
+    }
+
     // ------------------------------------------------------------------
     // 2. Two producers on one port are two interactions, two families.
     // ------------------------------------------------------------------
@@ -1455,10 +1500,9 @@ public class ComposerTest {
 
         // AND THE OTHER HALF OF THE ONE RULE.  The same two sessions with
         // no rows for the producer at all: nothing attests what it
-        // delivered, so each path holds the arrival at the value its own
-        // session received -- a constant no moved root follows, named as a
-        // PIN beside the verdict (a witness over it is CONFIRM's to
-        // refute).
+        // delivered, so what it rests on is unknown and the arrival is free
+        // in each path, named FREE with its producer beside the verdict (a
+        // witness over it is CONFIRM's to judge).
         Path unstated = folder.newFolder("arrivals-unstated").toPath();
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
@@ -1469,15 +1513,15 @@ public class ComposerTest {
             session.target("true", false, true);
             session.write();
         }
-        Composer.Composition pinned = compose(unstated, 4);
-        assertEquals("each path rests on its own arrival: " + pinned.gaps(),
-                2, pinned.disjuncts().size());
-        assertTrue("held at the value its session received: "
-                + pinned.body(), pinned.body().contains("(= vh 10)")
-                && pinned.body().contains("(= vh 20)"));
-        assertEquals("and named as a pin", Collections.singletonList(
-                "PIN vh=20 [unattested producer " + producer.id() + "]"),
-                concrete(pinned));
+        Composer.Composition freed = compose(unstated, 4);
+        assertEquals("each path composes: " + freed.gaps(),
+                2, freed.disjuncts().size());
+        assertFalse("its arrival held at no value: " + freed.body(),
+                freed.body().contains("(= vh 10)")
+                        || freed.body().contains("(= vh 20)"));
+        assertEquals("and named free", Collections.singletonList(
+                "FREE vh= [unattested producer " + producer.id() + "]"),
+                concrete(freed));
 
         // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
         // where the SEED instrumented the producer and the focused replay
@@ -1604,6 +1648,54 @@ public class ComposerTest {
                 left.body().matches("(?s).*\\(and \\(and \\(not "
                         + "decided__0__\\w+\\) decided__0__\\w+ "
                         + "decided__0__\\w+\\) false\\).*"));
+
+        // LEFT AT A SYMBOLIC GUARD.  The same path, left at a guard on the
+        // way to the throw whose term names the marker: its fatal arm is
+        // that guard's other arm, so the formula is satisfiable where the
+        // marker turns it -- a witness CONFIRM judges -- and the WAY entry
+        // names what the guard rests on; at a concrete guard, the constant.
+        for (boolean symbolic : new boolean[]{true, false}) {
+            Path way = folder.newFolder("way-" + symbolic).toPath();
+            Session at = new Session(way, "s0", false);
+            at.marker("false");
+            at.decision(ANCHOR, "way#u3", false, symbolic ? MARKER
+                    : "(< 3 2)");
+            at.target("", false, false);
+            at.write();
+            Path map = way.resolve(StaticScopeMap.FILE);
+            JsonObject site = new JsonObject();
+            site.addProperty("schemaVersion", 1);
+            site.addProperty("kind", StaticScopeMap.SITE_KIND);
+            site.addProperty("role", StaticScopeMap.TARGET_SITE);
+            site.addProperty("regionId", ANCHOR.regionId());
+            site.addProperty("siteId", "Throw#u30");
+            JsonArray guards = new JsonArray();
+            guards.add("way#u3");
+            site.add("guards", guards);
+            Files.write(map, Collections.singletonList(site.toString()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            Composer.Composition atWay = compose(way, ANCHOR, 4,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decided = ClaimPolicy.decide(atWay,
+                    solver());
+            if (symbolic) {
+                assertEquals("the marker turns the guard: "
+                                + decided.claim().gaps(),
+                        ClaimKind.MARKER_FLIPPED, decided.claim().kind());
+            } else {
+                assertEquals("the constant: " + decided.claim().gaps(),
+                        "unsat", decided.formula().status());
+            }
+            List<String> ways = new ArrayList<String>();
+            for (Composer.Concrete row : atWay.concrete()) {
+                if ("WAY".equals(row.kind)) {
+                    ways.add(row.subject + " " + row.movesWith);
+                }
+            }
+            assertEquals(Collections.singletonList("way#u3#1 "
+                    + (symbolic ? Collections.singletonList(MARKER)
+                    : Collections.emptyList())), ways);
+        }
 
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its
@@ -2029,6 +2121,85 @@ public class ComposerTest {
     // 8. A mechanism the recording does not decide is not a finding.
     // ------------------------------------------------------------------
 
+    /**
+     * THE FORMULA DECIDES.  Three markers must all flip to reach the fatal
+     * arm: no single or pair move does, and the formula itself, every root
+     * free, is satisfiable -- so the claim is FORMULA_SAT at the formula's
+     * own model (all three moved), never a refutation over the moves the
+     * enumeration tried; the exported file is that formula with no
+     * valuation pinned, and the same corpus with a fourth, unflippable
+     * conjunct is unsat, closed by the formula's own answer.
+     */
+    @Test
+    public void theComposedFormulaDecidesNotTheEnumeration()
+            throws Exception {
+        for (boolean reachable : new boolean[]{true, false}) {
+            Path iteration = folder.newFolder("formula-" + reachable)
+                    .toPath();
+            Session session = new Session(iteration, "s0", false);
+            for (String marker : new String[]{"M_ONE", "M_TWO", "M_THREE"}) {
+                session.root(PRODUCER, "ROOT." + marker, marker,
+                        RootKind.MARKER, "false");
+            }
+            session.target(reachable ? "(and M_ONE M_TWO M_THREE)"
+                    : "(and M_ONE M_TWO M_THREE (not M_ONE))", false, true);
+            session.write();
+            Composer.Composition composition = compose(iteration, 8);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                if (outcome.valuation().moved().size() < 3) {
+                    assertTrue(reachable + ": no single or pair move "
+                            + outcome, outcome.answer().unsat());
+                }
+            }
+            String candidate = text(ComposeMain.candidate(composition,
+                    decision));
+            assertFalse("the file pins no valuation: " + candidate,
+                    candidate.contains(":named valuation__"));
+            assertEquals(reachable ? "sat" : "unsat",
+                    solver().ask(candidate.replace("(check-sat)\n", ""),
+                            Collections.<String>emptyList(), false)
+                            .status());
+            assertEquals(reachable ? "sat" : "unsat",
+                    decision.formula().status());
+            assertEquals(reachable ? ClaimKind.FORMULA_SAT
+                    : ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+            if (reachable) {
+                assertEquals("all three moved", 3,
+                        decision.claim().movedRoots().size());
+            }
+            assertFalse(decision.claim().blocked());
+        }
+    }
+
+    /**
+     * The run as recorded is no counterfactual (owner 2026-10-04: a claim
+     * moving no root is never a finding).  A seed replay that observed the
+     * fatal at the declared occurrence -- hdfs-adhoc-32 in HG4, published
+     * SAT at valuation 0 with nothing moved -- leaves no claim: BLOCKING
+     * SEED_OBSERVED_FATAL, and no witness is named although the formula is
+     * sat, so the campaign has no verdict (RUN_DEFECT).
+     */
+    @Test
+    public void aSeedThatObservedTheFatalIsNoClaim() throws Exception {
+        Path iteration = folder.newFolder("seed-fatal").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertTrue("named: " + decision.claim().gaps(),
+                named(decision.claim().gaps(), GapKind.SEED_OBSERVED_FATAL));
+        assertTrue(decision.claim().blocked());
+        assertEquals("no witness is named on it",
+                ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+        assertEquals("the formula's answer is still stated", "sat",
+                decision.formula().status());
+    }
+
     @Test
     public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
         Path iteration = folder.newFolder("polarity").toPath();
@@ -2048,6 +2219,9 @@ public class ComposerTest {
         assertEquals("the flip is satisfiable and explains nothing: the "
                         + "formula's claim alone, CONFIRM's to judge",
                 ClaimKind.FORMULA_SAT, decision.claim().kind());
+        assertEquals("at the flip: the run as recorded is no witness while "
+                        + "another moves something", 1,
+                decision.claim().valuationOrdinal());
         assertTrue("and the alarm says why",
                 named(decision.claim().gaps(),
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
@@ -2172,7 +2346,9 @@ public class ComposerTest {
      * took (SOLR-18413 r9: {@code targetColl == null} on a reference the
      * lookup returned concretely).  {@code true} rests the fatal on the path
      * condition that reached the anchor -- here the clock compare before
-     * it, so the witness moves the clock; {@code false} is the constant
+     * it; on the seed, which then observed the fatal, that is no claim at
+     * all (SEED_OBSERVED_FATAL: the run as recorded is no counterfactual);
+     * {@code false} is the constant
      * healthy decision, a disjunct no valuation satisfies (the claim closes
      * negative, no gap); a row stating none is no path, as the composer
      * never invents phi.  {phi, observedFatal, disjuncts}.
@@ -2216,11 +2392,10 @@ public class ComposerTest {
             assertTrue("the fatal rests on the compare before the anchor: "
                             + fatalArm(composition),
                     fatalArm(composition).contains("(> " + CLOCK + " 1000)"));
-            assertEquals(ClaimKind.CLOCK_SKEW, decision.claim().kind());
-            assertTrue("the clock moved past the compare: "
-                            + decision.claim().movedRoots(),
-                    Long.parseLong(decision.claim().movedRoots().get(CLOCK)
-                            .trim()) > 1000L);
+            assertTrue("and the seed that observed it is no claim: "
+                            + decision.claim().gaps(),
+                    decision.claim().blocked() && named(decision.claim()
+                            .gaps(), GapKind.SEED_OBSERVED_FATAL));
         }
     }
 
@@ -5827,10 +6002,10 @@ public class ComposerTest {
 
     /**
      * THE ONE BINDING RULE ({@code SmtLowering#bind}), at the row and at the
-     * node alike: JOIN, MINT, PIN, REFUSE; a refused join gives way to the
-     * mint or the pin, and where what it rests on can move the pin cuts it
-     * and says so ({@code SmtLowering#pins}, a {@code Composer.Concrete}
-     * PIN).  One case per row:
+     * node alike: JOIN, MINT, FREE or PIN, REFUSE; a refused join gives way
+     * to the mint, else, where what it rests on can move, the read is FREE
+     * and named with what it rests on ({@code SmtLowering#frees}, a {@code
+     * Composer.Concrete} FREE), else the pin.  One case per row:
      * <ul>
      *   <li>pin: the write refuses over nothing that moves, and the row
      *       states its value: the pin binds the read, and what the dropped
@@ -5839,14 +6014,14 @@ public class ComposerTest {
      *       the join's refusal beside the read's;</li>
      *   <li>H1: the write is a call no lowering models over R, a declared
      *       root (the review's {@code parseInt(valueOf(R))} is R now,
-     *       {@link #aMethodReturnIsItsCall}): pinned to the run's 3, phi
-     *       {@code x != R} moves R past a constant, a witness CONFIRM is to
-     *       refute, and the pin names R as what it cut;</li>
+     *       {@link #aMethodReturnIsItsCall}): the read is free, named with
+     *       R, so phi {@code x != R} is satisfiable, a witness CONFIRM is to
+     *       refute;</li>
      *   <li>H2a: the node's own projection lowers where the write refused:
      *       phi reads the projection, never the pinned constant;</li>
      *   <li>H2b: the write joins and a STATE family may re-pair the read,
-     *       while the node's projection refuses: the read is pinned to the
-     *       value it returned, the pin naming the re-paired read it cut;</li>
+     *       while the node's projection refuses: the read is free, named
+     *       with the re-paired read it rests on;</li>
      *   <li>bound: the write refuses over a read of a field the reader
      *       alone writes, one of whose versions no row wrote (the VM's
      *       version bound dropped it): no read of it has another writer,
@@ -6006,18 +6181,18 @@ public class ComposerTest {
                                     + "UndeclaredFreeSymbol:" + NO_ROW));
                     break;
                 case "H1":
-                    assertEquals(name + ": the run's value is pinned", 1,
+                    assertEquals(name + ": the read is free", 1,
                             composition.disjuncts().size());
-                    assertEquals(name + ": and the pin names the root it "
-                                    + "cut: " + concrete(composition),
-                            Collections.singletonList("PIN " + key
-                                    + "@2=3 " + Collections.singletonList(
+                    assertEquals(name + ": named with the root it rests "
+                                    + "on: " + concrete(composition),
+                            Collections.singletonList("FREE " + key
+                                    + "@2= " + Collections.singletonList(
                                     SERIAL)), concrete(composition));
-                    assertEquals(name + ": a witness moving the root past "
-                                    + "the pin, CONFIRM's to refute",
-                            ClaimKind.MARKER_FLIPPED,
+                    assertTrue(name + ": so the formula is satisfiable, a "
+                                    + "witness CONFIRM is to judge",
                             ClaimPolicy.decide(composition, solver())
-                                    .claim().kind());
+                                    .claim().kind()
+                                    != ClaimKind.NO_SUPPORTED_WITNESS);
                     break;
                 case "H2a":
                     assertEquals(name + ": the projection binds the node",
@@ -6048,12 +6223,12 @@ public class ComposerTest {
                                     "observed_arm__"));
                     break;
                 default:
-                    assertEquals(name + ": the read is pinned", 1,
+                    assertEquals(name + ": the read is free", 1,
                             composition.disjuncts().size());
-                    assertEquals(name + ": the pin names the re-paired read "
-                                    + "it cut: " + concrete(composition),
-                            Collections.singletonList("PIN " + key
-                                    + "@2=2 [read " + key + "@2]"),
+                    assertEquals(name + ": named with the re-paired read "
+                                    + "it rests on: " + concrete(composition),
+                            Collections.singletonList("FREE " + key
+                                    + "@2= [read " + key + "@2]"),
                             concrete(composition));
             }
         }
@@ -6082,9 +6257,8 @@ public class ComposerTest {
      *       (the pin C1 made gave one);</li>
      *   <li>pinned: a callee the lowering does not know, over nothing that
      *       moves, is pinned by a NAMED assertion an unsat core shows;</li>
-     *   <li>moving: the same over R is pinned too, carrying a moved R
-     *       through the call as a constant: the pin names R as what it
-     *       cut;</li>
+     *   <li>moving: the same over R is a free value, named with R: a pin
+     *       would carry a moved R through the call as a constant;</li>
      *   <li>no-call: a node stating no call (a VM before f14) refuses.</li>
      * </ul>
      */
@@ -6155,9 +6329,9 @@ public class ComposerTest {
                                 + RETURNED));
             }
             if ("moving".equals(name)) {
-                assertEquals(name + ": the pin names the root it cut",
-                        Collections.singletonList("PIN call:" + RETURNED
-                                + "=2 " + Collections.singletonList(
+                assertEquals(name + ": free, named with the root it rests on",
+                        Collections.singletonList("FREE call:" + RETURNED
+                                + "= " + Collections.singletonList(
                                 SERIAL)), concrete(composition));
             }
             if ("no-call".equals(name)) {

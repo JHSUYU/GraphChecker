@@ -16,13 +16,12 @@ public enum ClaimKind {
      * the seed disjunct must be unsat at the recorded valuation.
      */
     STATE_PAIRING_FLIPPED,
-    /** The seed run itself observed the fatal arm. */
-    RECORDED_FAILURE_EXPLAINED,
     /**
      * The formula is satisfiable and no mechanism the recording decides
-     * names why (a formula sat as the run happened on a healthy run, a
-     * polarity the recording does not decide, a root moved inside an
-     * unattested arm): composer imprecision until CONFIRM says otherwise,
+     * names why (a polarity the recording does not decide, a root moved
+     * inside an unattested arm, a model of the formula that is the run as
+     * recorded on its healthy run, which CONFIRM refuses by name):
+     * composer imprecision until CONFIRM says otherwise,
      * so it is confirmed like any claim, its model's arms and valuation
      * planted, and a refutation excluded before the claim is decided again.
      */

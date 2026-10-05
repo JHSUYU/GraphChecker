@@ -1609,6 +1609,24 @@ public final class StaticScopeMap {
         return ofRole(TARGET_SITE, site -> true);
     }
 
+    /** The arm of one branch site that reaches the declared target, from the
+     *  TARGET_SITE guards ({@code causynth.SiteControlDependence}). {@code
+     *  null}: no arm stated, which the caller refuses (never a default). */
+    public Boolean fatalArm(String guardSiteId) {
+        Boolean found = null;
+        for (Site target : targetSites()) {
+            Boolean arm = target.outcomeOf(guardSiteId);
+            if (arm == null) continue;
+            if (found != null && !found.equals(arm)) {
+                throw new IllegalArgumentException(
+                        "AMBIGUOUS_FATAL_ARM: " + guardSiteId + " reaches "
+                                + "the declared target on both arms");
+            }
+            found = arm;
+        }
+        return found;
+    }
+
     /** A site's method as the VM spells it, {@code
      *  class#name(paramDescriptors)returnDescriptor}: the whole join between a
      *  static site and a recorded endpoint (bci and unit index do not compare).

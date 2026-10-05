@@ -882,9 +882,9 @@ public final class SmtLowering {
         /** method-return symbol -> the value its node states. */
         private final Map<String, String> pinnedReturns =
                 new LinkedHashMap<String, String>();
-        /** What was pinned to the value its row states though what it
-         *  rests on can move ({@link #pins}). */
-        private final List<Pin> pins = new ArrayList<Pin>();
+        /** What was left free because what it rests on can move
+         *  ({@link #frees}). */
+        private final List<Free> frees = new ArrayList<Free>();
         /** A named DIAGNOSTIC that refuses nothing -> why
          *  ({@link #diagnostics}). */
         private final Map<String, String> diagnostics =
@@ -914,7 +914,7 @@ public final class SmtLowering {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
             pinnedReturns.putAll(other.pinnedReturns);
-            pins.addAll(other.pins);
+            frees.addAll(other.frees);
             diagnostics.putAll(other.diagnostics);
         }
     }
@@ -1256,6 +1256,10 @@ public final class SmtLowering {
                 "call:" + raw);
         if (related != null) return related;
         Set<String> moving = movers(call, true);
+        if (!moving.isEmpty()) {
+            freed("call:" + raw, moving);
+            return leaf(sort, javaType);
+        }
         String returned = ReadRow.returned(expression);
         Term value = statedValue(returned, javaType);
         if (value == null) {
@@ -1277,7 +1281,6 @@ public final class SmtLowering {
             }
         }
         top().pinnedReturns.put(raw, returned);
-        pinnedOver("call:" + raw, returned, moving);
         return value.sort == Sort.STRING ? Term.nonNullString(name, "true")
                 : Term.of(name, value.sort, value.integralWidth);
     }
@@ -1475,6 +1478,10 @@ public final class SmtLowering {
         /** PIN: what the recording states the read returned, else null. */
         T pinned();
 
+        /** FREE: the read unconstrained, since what it rests on can move
+         *  and a pin would hold it while a witness moves that. */
+        T free();
+
         /**
          * REFUSE, by name.  {@code joined} is the refused join's value (its
          * refused constructs fresh names), already committed, or null.
@@ -1491,15 +1498,14 @@ public final class SmtLowering {
      * REFUSE.  Never enumerate retained versions for the solver to pick
      * from.
      *
-     * <p>A join that refused gives way to the mint or the pin: what is
-     * symbolic stays symbolic, what the recording states concretely is a
-     * constant.  Where what the refused write rests on can move ({@link
-     * #movers}: a root, a clock, a handoff or a read a family re-pairs), the
-     * pin cuts that dependence -- the value stands as the run's while a
-     * witness moves them (C1 review H1: {@code parseInt(valueOf(R))}) --
-     * and says so ({@link #pins}: the subject, the value and what it rests
-     * on), so a witness over it is CONFIRM's to refute.  Dropped, the join
-     * raised nothing.</p>
+     * <p>A join that refused gives way to the mint; else, where what the
+     * refused write rests on can move ({@link #movers}: a root, a clock, a
+     * handoff or a read a family re-pairs), the read is FREE -- a pin would
+     * hold the run's value while a witness moves what it rests on (C1
+     * review H1: {@code parseInt(valueOf(R))}), losing the witnesses that
+     * move it; free, it over-approximates and CONFIRM filters -- named with
+     * what it rests on ({@link #frees}); else, resting on nothing that
+     * moves, the PIN.  Dropped, the join raised nothing.</p>
      *
      * <p>{@code projected} is the node's own {@code observedVersion}
      * expression, the projection the read performed (e.g.
@@ -1538,14 +1544,17 @@ public final class SmtLowering {
             }
             if (!minted.isEmpty()) {
                 if (joined != null) top().dropped.add(joined.value().text);
-                pinnedOver(key + "@" + version, minted, cut);
                 return binder.minted(minted);
             }
+        }
+        if (!cut.isEmpty()) {
+            top().dropped.add(joined.value().text);
+            freed(key + "@" + version, cut);
+            return binder.free();
         }
         T pinned = binder.pinned();
         if (pinned != null) {
             if (joined != null) top().dropped.add(joined.value().text);
-            pinnedOver(key + "@" + version, statedReadValue(key, event), cut);
             return pinned;
         }
         return binder.refused(joined == null ? null : commit(joined),
@@ -1558,21 +1567,9 @@ public final class SmtLowering {
                         + "returned");
     }
 
-    /** Records a pin that cuts a moving dependence ({@link #pins}). */
-    private void pinnedOver(String subject, String value, Set<String> cut) {
-        if (cut.isEmpty()) return;
-        top().pins.add(new Pin(subject, value, new ArrayList<String>(cut)));
-    }
-
-    /** What the read row of this event states it returned, or "". */
-    private String statedReadValue(String key, long event) {
-        for (ReadRow read : join.reads(key)) {
-            if (read.seq() == event) {
-                return read.concreteValue() == null ? ""
-                        : read.concreteValue();
-            }
-        }
-        return "";
+    /** Records a value left free over what it rests on ({@link #frees}). */
+    private void freed(String subject, Set<String> movesWith) {
+        top().frees.add(new Free(subject, new ArrayList<String>(movesWith)));
     }
 
     /**
@@ -1723,6 +1720,11 @@ public final class SmtLowering {
                 return pinned != null
                         ? symbolTerm(symbolNode(pinned, javaType), expected)
                         : statedValue(ReadRow.returned(expression), javaType);
+            }
+
+            @Override
+            public Term free() {
+                return leaf(expected, javaType);
             }
 
             @Override
@@ -3266,26 +3268,24 @@ public final class SmtLowering {
     }
 
     /**
-     * Each value pinned to what its row states though what it rests on can
-     * move ({@link #bind}, {@link #methodReturn}), in the order pinned: the
-     * formula holds it at the run's value, so a witness moving what it rests
-     * on is CONFIRM's to refute.  Information, never a gap; a composer keeps
-     * those its admitted paths made ({@code Composer#concrete}).
+     * Each value left free because what it rests on can move ({@link
+     * #bind}, {@link #methodReturn}), in the order freed: the formula
+     * over-approximates it, so a witness resting on it is CONFIRM's to
+     * refute.  Information, never a gap; a composer keeps those its
+     * admitted paths made ({@code Composer#concrete}).
      */
-    public List<Pin> pins() {
-        return Collections.unmodifiableList(root.pins);
+    public List<Free> frees() {
+        return Collections.unmodifiableList(root.frees);
     }
 
-    /** One pin over a moving dependence: what was pinned, to what, and
-     *  what it rests on that can move. */
-    public static final class Pin {
+    /** One value left free: what it is, and what it rests on that can
+     *  move. */
+    public static final class Free {
         public final String subject;
-        public final String value;
         public final List<String> movesWith;
 
-        Pin(String subject, String value, List<String> movesWith) {
+        Free(String subject, List<String> movesWith) {
             this.subject = subject;
-            this.value = value;
             this.movesWith = Collections.unmodifiableList(movesWith);
         }
     }

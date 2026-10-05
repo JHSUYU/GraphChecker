@@ -146,7 +146,9 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `SCHEDULE_DIVERGED` | a focused replay left its schedule prefix (stated with both events; DIAGNOSTIC) |
 | `UNSTATED_VALUE` | a value no row states: a read joining no version and pinning no value, a lowering refusal, a malformed row; a STATE location at the anchor whose reads' recorded pairing no family arm states (BLOCKING, [PIPELINE.md §8](PIPELINE.md)); filed by a replay on an occurrence (its subject the address), the frame's own refusal, which COMPOSE applies to the paths and arms whose closure reaches it; a VM model's statement it could not make, a region's `modelGaps` (DIAGNOSTIC, its subject the model's name, e.g. `STREAM_PINNED:LIMIT_EXHAUSTED`, [VM.md §8](VM.md)), which refuses nothing |
 | `UNPRODUCIBLE_ANSWER` | an attach answered or needed with a value no producer arm can produce |
-| `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path (DIAGNOSTIC: the claim is then `FORMULA_SAT`, CONFIRM's to judge) |
+| `FORMULA_SAT_AT_RECORDED_VALUATION` | the composed formula reaches the fatal arm at the recorded valuation on a healthy path (DIAGNOSTIC: the claim is then `FORMULA_SAT`, CONFIRM's to judge; a witness that is the run as recorded CONFIRM refuses by name) |
+| `TARGET_FATAL_IN_RECORDING` | the declared occurrence took the fatal arm in the recording (`RuntimeSelectedRegionFinalizer`, PLAN, BLOCKING): a declaration of an occurrence that throws as recorded, so no counterfactual is asked of it |
+| `SEED_OBSERVED_FATAL` | the seed replay observed the fatal at the declared occurrence (`ClaimPolicy`, COMPOSE, BLOCKING): the run as recorded is no counterfactual, so no claim stands on the corpus; beside `TARGET_FATAL_IN_RECORDING` the declaration's, else the replay diverged from its recording |
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
 | `HOOK_UNDECLARED` | a tree hook that ran in a case whose plan declares its source nowhere (`ActiveRegion#observeConfiguredSourceEntry`): no root of the case, nothing minted, its value concrete (DIAGNOSTIC; an `UNSAT_CLOSED` result counts them, `undeclaredHookCount`) |
 | `LINEAGE_LOST` | an address degraded by an unattributable hop; an unpaired attach; a missing site index |
@@ -272,7 +274,7 @@ field=<f> <subject>`.
   bounds, which are absolute (a configuration's `domainMin` `-2` is minus two), with the mint's
   kind and recorded value.
 - `ClaimKind`: `MARKER_FLIPPED`, `CLOCK_SKEW`, `MESSAGE_PAIRING_FLIPPED`, `STATE_PAIRING_FLIPPED`,
-  `RECORDED_FAILURE_EXPLAINED`, `FORMULA_SAT`, `NO_SUPPORTED_WITNESS` ([PIPELINE.md §9](PIPELINE.md)).
+  `FORMULA_SAT`, `NO_SUPPORTED_WITNESS` ([PIPELINE.md §9](PIPELINE.md)).
 - `Claim(kind, valuationOrdinal, movedRoots, polarityDecides, gaps)`: `valuationOrdinal` 0 is the
   recorded valuation; `movedRoots` maps a moved root's id, or a moved clock cell's symbol, to its
   value in the witness; `polarityDecides` = the recorded valuation's disjunct is unsat with a
@@ -298,15 +300,15 @@ field=<f> <subject>`.
   `UNSTATED_VALUE` (`compose.SmtLowering.bind`, the one rule of a read row in
   `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
   or the value; where what it rests on can move -- a root or clock cell, a handoff, a read a STATE
-  family may re-pair, through every read's own write -- the pin cuts it and says so
-  (`SmtLowering#pins`, `concrete[]`). A flip
+  family may re-pair, through every read's own write -- the read is free instead, named with what it
+  rests on (`SmtLowering#frees`, `concrete[]`). A flip
   query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
 - A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
   `holder`, `name`, `arguments`), as a `MethodExpression` node is the call it names (`_name`
   `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` (radix 10) of a String
   and `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee's
   return is pinned to the node's `concreteValue` by a named assertion; where its arguments rest on
-  what can move, the pin cuts it and says so (`SmtLowering#pins`). A method-return node stating no
+  what can move, the return is free instead, named (`SmtLowering#frees`). A method-return node stating no
   call is refused.
 - A decimal or boolean rendering is compared, parsed and split as the value it renders
   (WIRE-CODEC §6.2, `compose.StringIdentities`), read on the expression IR before any text and
