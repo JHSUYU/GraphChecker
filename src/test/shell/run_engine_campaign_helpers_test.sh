@@ -4408,4 +4408,39 @@ echo nothing-here >"${sweep_dir}/cases"
   || fail "a case with no configuration was launched or not named: \
 $(cat "${sweep_dir}/s2.out")"
 
+# AB-FRESH: the offline gate's SEED chain (tools/regress/offline-ab.sh
+# ab_seed) feeds both sides' trace chains the recording's static artifacts,
+# and with AB_FRESH_SLICE=1 each side its own fresh slice.
+ab_dir="${test_tmp}/offline-ab"
+mkdir -p "${ab_dir}"
+ab_reads() {
+  : >"${ab_dir}/read"
+  (
+    # shellcheck source=../../../tools/regress/offline-ab.sh
+    source "${repo}/tools/regress/offline-ab.sh"
+    ab_side_env() {
+      ab_acc=/recorded
+      ab_case_dir="$1/$2/$3"
+      ab_side_now=$2
+      mkdir -p "${ab_case_dir}"
+    }
+    ab_stage_seed_static() { :; }
+    ab_stage_seed_trace() {
+      echo "${ab_side_now} ${ab_static}" >>"${ab_dir}/read"
+      mkdir -p "${ab_case_dir}/SEED.trace"
+      echo exit=0 >"${ab_case_dir}/SEED.trace/status"
+    }
+    ab_trace_rest() { :; }
+    AB_FRESH_SLICE=$1 ab_seed "${ab_dir}" c
+  )
+  sort "${ab_dir}/read" | tr '\n' ';'
+}
+[[ "$(ab_reads 0)" == "baseline /recorded;candidate /recorded;" ]] \
+  || fail "the gate's trace chains do not share the recording's slice: \
+$(ab_reads 0)"
+[[ "$(ab_reads 1)" == "baseline ${ab_dir}/baseline/c/SEED.static/out;\
+candidate ${ab_dir}/candidate/c/SEED.static/out;" ]] \
+  || fail "AB_FRESH_SLICE=1 does not give each side its own slice: \
+$(ab_reads 1)"
+
 echo "run_engine campaign helper tests passed"

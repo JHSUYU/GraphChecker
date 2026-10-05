@@ -63,7 +63,10 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * whichever occurrence wrote what the anchor reads, beyond the boundary
  * between them: its keys are measured on the whole cone (every edge, no
  * boundary stops it), and the {@value #WIDTH} nearest within {@value
- * #DISTANCE} are the ones minted.  {@value #FILE} beside the scope map lists
+ * #DISTANCE} are the ones minted; and measured again at the guards of the
+ * writers of each chosen tracked read -- whether a writer ran decides what
+ * the read saw -- where {@value #WIDTH} more are minted, so a key near a
+ * writer never displaces one near the anchor.  {@value #FILE} beside the scope map lists
  * every boundary; the scope map's reads state their distance, the mark a
  * concrete anchor's demand keeps its reads by ({@code
  * explore.ClosurePlanner#concrete}).</p>
@@ -101,16 +104,36 @@ final class RootDemand {
         /** Why it is not chosen ({@link #WIDTH_CUT}, {@link
          *  #DISTANCE_CUT}, {@link #NO_SOURCE_CUT}), "" when it is. */
         String cut = "";
+        /** A configuration's: measured from the path guards ({@link
+         *  #PATH}) or from a tracked read's writers' guards ({@link
+         *  #WRITERS}); every other boundary is the path's. */
+        final String measured;
 
         private Boundary(Kind kind, String cell, String siteId,
                          String edgeKind, int distance) {
+            this(kind, cell, siteId, edgeKind, distance, PATH);
+        }
+
+        private Boundary(Kind kind, String cell, String siteId,
+                         String edgeKind, int distance, String measured) {
             this.kind = kind;
             this.cell = cell;
             this.siteId = siteId;
             this.edgeKind = edgeKind;
             this.distance = distance;
+            this.measured = measured;
         }
     }
+
+    /** {@link Boundary#measured}: from the target's path guards. */
+    static final String PATH = "PATH";
+    /** {@link Boundary#measured}: from a chosen tracked read's writers'
+     *  guards. */
+    static final String WRITERS = "WRITERS";
+    /** The demanded reads whose writers' guards a configuration is
+     *  measured at. */
+    private static final Set<Kind> TRACKED = java.util.EnumSet.of(Kind.TRACK,
+            Kind.TRACK_IDENTITY, Kind.TRACK_CONTAINER, Kind.READ);
 
     /** Edges that name which object is read rather than its value. */
     private static final Set<String> RECEIVERS = new LinkedHashSet<>(
@@ -175,7 +198,11 @@ final class RootDemand {
                 carried.add(text(edge.get("invoke")));
                 carried.add(text(edge.get("accessorImplementationMethod")));
             }
-            if ("exception_guard".equals(text(edge.get("kind")))
+            String kind = text(edge.get("kind"));
+            // A path guard's operand: the throw's own guards' and those of
+            // the calls into its method (StaticScopeMap#targetChain).
+            if (("exception_guard".equals(kind)
+                    || "guard_dependency".equals(kind))
                     && pathSites.contains(text(edge.get("siteId")))) {
                 starts.add(text(edge.get("fromCell")));
             }
@@ -189,12 +216,13 @@ final class RootDemand {
         Classifier classes = new Classifier(into, carried, regionMethods,
                 roots, clocks, config, trackedKind, systemClass);
         List<Boundary> found = walk(into, starts, classes);
-        Map<String, Integer> cone = cone(into, starts);
-        Set<String> chosenKeys = configuration(found, cone, config, edges);
         choose(found);
+        Set<String> chosenKeys = configuration(found, cone(into, starts),
+                cone(into, writerGuards(found, into)), config, edges);
         found.sort(Comparator.comparingInt((Boundary b) -> b.distance)
                 .thenComparing(b -> b.kind.name())
-                .thenComparing(b -> b.cell).thenComparing(b -> b.siteId));
+                .thenComparing(b -> b.cell).thenComparing(b -> b.siteId)
+                .thenComparing(b -> b.measured));
         return new RootDemand(found, chosenKeys);
     }
 
@@ -222,6 +250,7 @@ final class RootDemand {
             row.addProperty("edgeKind", boundary.edgeKind);
             row.addProperty("chosen", boundary.chosen);
             row.addProperty("cut", boundary.cut);
+            row.addProperty("measured", boundary.measured);
             rows.add(row);
         }
         return rows;
@@ -307,15 +336,21 @@ final class RootDemand {
         return new ArrayList<>(found.values());
     }
 
-    /** Each cell's distance on the whole cone: every edge, no boundary. */
+    /** Each cell's distance on the whole cone: every edge, no boundary;
+     *  the starts at 0. */
     private static Map<String, Integer> cone(
             Map<String, List<Map<String, Object>>> into, Set<String> starts) {
-        Map<String, Integer> distance = new HashMap<>();
-        Deque<String> queue = new ArrayDeque<>();
-        for (String start : starts) {
-            distance.put(start, 0);
-            queue.add(start);
-        }
+        Map<String, Integer> at = new LinkedHashMap<>();
+        for (String start : starts) at.put(start, 0);
+        return cone(into, at);
+    }
+
+    /** The cone from starts at their own distances. */
+    private static Map<String, Integer> cone(
+            Map<String, List<Map<String, Object>>> into,
+            Map<String, Integer> starts) {
+        Map<String, Integer> distance = new HashMap<>(starts);
+        Deque<String> queue = new ArrayDeque<>(starts.keySet());
         while (!queue.isEmpty()) {
             String cell = queue.removeFirst();
             for (Map<String, Object> edge : into.getOrDefault(cell,
@@ -331,24 +366,88 @@ final class RootDemand {
     }
 
     /**
-     * The configuration boundaries, each source's at its cone distance --
-     * a field's at the field, a getter call's one past the local it lands
-     * in -- in place of the walk's; and the {@value #WIDTH} keys nearest
-     * within {@value #DISTANCE}, the ones chosen.  A configuration the walk
-     * met that no source declares (a {@code String} getter) stays as the
-     * walk found it, unchosen.
+     * The operands of the guards of the writers of each chosen tracked read
+     * (a store's own branches and those of the calls into its method: the
+     * guard rows into the read's cell), each one edge past the read.
+     */
+    private static Map<String, Integer> writerGuards(List<Boundary> found,
+            Map<String, List<Map<String, Object>>> into) {
+        Map<String, Integer> guards = new LinkedHashMap<>();
+        for (Boundary boundary : found) {
+            if (!boundary.chosen || !TRACKED.contains(boundary.kind)) {
+                continue;
+            }
+            for (Map<String, Object> edge : into.getOrDefault(boundary.cell,
+                    Collections.<Map<String, Object>>emptyList())) {
+                if ("guard_dependency".equals(text(edge.get("kind")))) {
+                    guards.putIfAbsent(text(edge.get("fromCell")), 1);
+                }
+            }
+        }
+        return guards;
+    }
+
+    /**
+     * The configuration boundaries, each source's at its distance on the
+     * path guards' cone and on the writers' guards' -- a field's at the
+     * field, a getter call's one past the local it lands in -- in place of
+     * the walk's; and the keys chosen: the {@value #WIDTH} nearest within
+     * {@value #DISTANCE} on the path's cone, and as many more on the
+     * writers'.  A configuration the walk met that no source declares (a
+     * {@code String} getter) stays as the walk found it, unchosen.
      */
     private static Set<String> configuration(
-            List<Boundary> found, Map<String, Integer> cone,
-            ConfigRoots config, List<Map<String, Object>> edges) {
-        Map<String, Boundary> sources = new LinkedHashMap<>();
+            List<Boundary> found, Map<String, Integer> path,
+            Map<String, Integer> writers, ConfigRoots config,
+            List<Map<String, Object>> edges) {
         Map<String, String> keys = new HashMap<>();
+        Map<String, Boundary> onPath = sources(path, PATH, config, edges,
+                keys);
+        Map<String, Boundary> atWriters = sources(writers, WRITERS, config,
+                edges, keys);
+        Set<String> chosen = nearest(onPath, keys,
+                Collections.<String>emptySet());
+        chosen.addAll(nearest(atWriters, keys, chosen));
+        found.removeIf(boundary -> (boundary.kind == Kind.CONFIG_FIELD
+                || boundary.kind == Kind.CONFIG_CALL)
+                && (keys.containsKey(boundary.cell)
+                || keys.containsKey(boundary.siteId)));
+        for (Boundary boundary : found) {
+            if (boundary.kind == Kind.CONFIG_FIELD
+                    || boundary.kind == Kind.CONFIG_CALL) {
+                boundary.cut = NO_SOURCE_CUT;
+            }
+        }
+        for (Map<String, Boundary> measured : Arrays.asList(onPath,
+                atWriters)) {
+            Map<String, Integer> keyDistance = keyDistances(measured, keys);
+            for (Map.Entry<String, Boundary> source : measured.entrySet()) {
+                Boundary boundary = source.getValue();
+                String key = keys.get(source.getKey());
+                boundary.chosen = chosen.contains(key);
+                // A key not minted is named by why: past the bound, or past
+                // the nearest WIDTH within it.
+                boundary.cut = boundary.chosen ? ""
+                        : keyDistance.get(key) > DISTANCE ? DISTANCE_CUT
+                        : WIDTH_CUT;
+                found.add(boundary);
+            }
+        }
+        return chosen;
+    }
+
+    /** Each configuration source on one cone, by its field or its call
+     *  site; its key into {@code keys}. */
+    private static Map<String, Boundary> sources(
+            Map<String, Integer> cone, String measured, ConfigRoots config,
+            List<Map<String, Object>> edges, Map<String, String> keys) {
+        Map<String, Boundary> sources = new LinkedHashMap<>();
         for (Map.Entry<String, ConfigRoots.Source> field
                 : config.fields().entrySet()) {
             Integer at = cone.get(field.getKey());
             if (at == null) continue;
             sources.put(field.getKey(), new Boundary(Kind.CONFIG_FIELD,
-                    field.getKey(), "", "field_read", at));
+                    field.getKey(), "", "field_read", at, measured));
             keys.put(field.getKey(), field.getValue().sourceId);
         }
         for (Map<String, Object> edge : edges) {
@@ -362,42 +461,37 @@ final class RootDemand {
             String siteId = SiteId.render(method, unitIndex);
             sources.put(siteId, new Boundary(Kind.CONFIG_CALL,
                     text(edge.get("fromCell")), siteId, "call_return",
-                    at + 1));
+                    at + 1, measured));
             keys.put(siteId, source.sourceId);
         }
+        return sources;
+    }
+
+    /** Each key's nearest source. */
+    private static Map<String, Integer> keyDistances(
+            Map<String, Boundary> sources, Map<String, String> keys) {
         Map<String, Integer> keyDistance = new TreeMap<>();
         for (Map.Entry<String, Boundary> source : sources.entrySet()) {
             keyDistance.merge(keys.get(source.getKey()),
                     source.getValue().distance, Math::min);
         }
+        return keyDistance;
+    }
+
+    /** The {@value #WIDTH} nearest keys within {@value #DISTANCE} but the
+     *  ones {@code taken}. */
+    private static Set<String> nearest(Map<String, Boundary> sources,
+                                       Map<String, String> keys,
+                                       Set<String> taken) {
+        Map<String, Integer> keyDistance = keyDistances(sources, keys);
         List<String> ordered = new ArrayList<>(keyDistance.keySet());
         ordered.sort(Comparator.comparingInt(keyDistance::get));
         Set<String> chosen = new LinkedHashSet<>();
         for (String key : ordered) {
-            if (chosen.size() < WIDTH && keyDistance.get(key) <= DISTANCE) {
+            if (chosen.size() < WIDTH && keyDistance.get(key) <= DISTANCE
+                    && !taken.contains(key)) {
                 chosen.add(key);
             }
-        }
-        found.removeIf(boundary -> (boundary.kind == Kind.CONFIG_FIELD
-                || boundary.kind == Kind.CONFIG_CALL)
-                && (sources.containsKey(boundary.cell)
-                || sources.containsKey(boundary.siteId)));
-        for (Boundary boundary : found) {
-            if (boundary.kind == Kind.CONFIG_FIELD
-                    || boundary.kind == Kind.CONFIG_CALL) {
-                boundary.cut = NO_SOURCE_CUT;
-            }
-        }
-        for (Map.Entry<String, Boundary> source : sources.entrySet()) {
-            Boundary boundary = source.getValue();
-            String key = keys.get(source.getKey());
-            boundary.chosen = chosen.contains(key);
-            // A key not minted is named by why: past the bound, or past
-            // the nearest WIDTH within it.
-            boundary.cut = boundary.chosen ? ""
-                    : keyDistance.get(key) > DISTANCE ? DISTANCE_CUT
-                    : WIDTH_CUT;
-            found.add(boundary);
         }
         return chosen;
     }

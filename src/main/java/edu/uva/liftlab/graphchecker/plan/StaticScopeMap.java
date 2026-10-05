@@ -143,9 +143,11 @@ public final class StaticScopeMap {
         }
 
         /** The guards of the calls that run {@code method}, and theirs, a
-         *  few calls up: a store runs only where a call into its method
-         *  did. */
-        default List<Guard> callsInto(String method) {
+         *  few calls up, the calls into a method {@code walked} refuses not
+         *  taken: a store runs only where a call into its method did, and
+         *  the throw only where its occurrence called its method. */
+        default List<Guard> callsInto(String method,
+                                      Predicate<String> walked) {
             return Collections.<Guard>emptyList();
         }
 
@@ -223,10 +225,13 @@ public final class StaticScopeMap {
         /**
          * TARGET_SITE: the guards on every path to {@link #guards}, each on
          * its arm toward the throw -- their guards, and theirs, within the
-         * method.  An occurrence that decided one of them is an occurrence the
-         * failure is about whether or not it went on to the throw: an update
-         * that found its routing rule expired never looked the rule's target
-         * up, and the expiry is what a witness moves.
+         * method -- and the guards of the calls into the method, up to its
+         * execution context's entry ({@link #targetChain}).  An occurrence that decided
+         * one of them is an occurrence the failure is about whether or not
+         * it went on to the throw: an update that found its routing rule
+         * expired never looked the rule's target up, and the expiry is what
+         * a witness moves; a block recovery that counted no usable replica
+         * never asked for the active NameNode.
          */
         public final List<Guard> chain;
         /** WRITE_SITE: the methods whose calls run the site's method, a few
@@ -782,8 +787,32 @@ public final class StaticScopeMap {
         return ids;
     }
 
-    /** The artifact's rows: one per site. */
-    public static List<JsonObject> rows(List<Site> sites, Guards guards) {
+    /**
+     * A TARGET_SITE's {@link Site#chain}: the guards of its guards within
+     * its method, then those of the calls into its method, a few calls up,
+     * never into an execution context's {@code entry} (a thread's or a
+     * task's run, a main), which its starter runs: the decisions its
+     * occurrence takes on the way to the throw (a block recovery that
+     * counted no usable replica never asked for the active NameNode).
+     */
+    public static List<Guard> targetChain(Guards guards, String siteId,
+                                          Predicate<String> entry) {
+        List<Guard> chain = new ArrayList<Guard>();
+        Set<String> named = new LinkedHashSet<String>();
+        for (Guard guard : guards.of(siteId)) named.add(guard.siteId());
+        List<Guard> found = new ArrayList<Guard>(guards.chainOf(siteId));
+        found.addAll(guards.callsInto(SiteId.methodOf(siteId),
+                entry.negate()));
+        for (Guard guard : found) {
+            if (named.add(guard.siteId())) chain.add(guard);
+        }
+        return chain;
+    }
+
+    /** The artifact's rows: one per site; {@code entry} names the
+     *  execution contexts' entries a TARGET_SITE's chain stops at. */
+    public static List<JsonObject> rows(List<Site> sites, Guards guards,
+                                        Predicate<String> entry) {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Site site : sites) {
             List<Guard> found = guards == null
@@ -799,7 +828,7 @@ public final class StaticScopeMap {
                 Set<String> named = new LinkedHashSet<String>();
                 for (Guard guard : all) named.add(guard.siteId());
                 for (Guard guard : guards.callsInto(
-                        SiteId.methodOf(site.siteId))) {
+                        SiteId.methodOf(site.siteId), method -> true)) {
                     if (named.add(guard.siteId())) all.add(guard);
                 }
             }
@@ -809,7 +838,8 @@ public final class StaticScopeMap {
                         guards.callersOf(SiteId.methodOf(site.siteId)));
             }
             if (TARGET_SITE.equals(site.role) && guards != null) {
-                guarded = guarded.withChain(guards.chainOf(site.siteId));
+                guarded = guarded.withChain(targetChain(guards, site.siteId,
+                        entry));
             }
             rows.add(row(guarded));
         }

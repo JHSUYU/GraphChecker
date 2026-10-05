@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * The guard set of a site: the branches it is control-dependent on.  The one
@@ -84,11 +85,12 @@ public final class SiteControlDependence {
             }
 
             @Override
-            public List<StaticScopeMap.Guard> callsInto(String method) {
+            public List<StaticScopeMap.Guard> callsInto(
+                    String method, Predicate<String> walked) {
                 List<StaticScopeMap.Guard> found =
                         new ArrayList<StaticScopeMap.Guard>();
                 Set<String> named = new LinkedHashSet<String>();
-                for (String call : callSitesInto(method)) {
+                for (String call : callSitesInto(method, walked)) {
                     String caller = SiteId.methodOf(call);
                     MethodGuards guards = callers.get(caller);
                     if (guards == null) {
@@ -113,15 +115,16 @@ public final class SiteControlDependence {
             @Override
             public List<String> callersOf(String method) {
                 Set<String> found = new LinkedHashSet<String>();
-                for (String call : callSitesInto(method)) {
+                for (String call : callSitesInto(method, caller -> true)) {
                     found.add(SiteId.methodOf(call));
                 }
                 return new ArrayList<String>(found);
             }
 
             /** The call sites that run {@code method}, {@link #CALL_DEPTH}
-             *  calls up. */
-            private List<String> callSitesInto(String method) {
+             *  calls up, but none into a method {@code walked} refuses. */
+            private List<String> callSitesInto(String method,
+                                               Predicate<String> walked) {
                 if (calls == null) calls = CallSites.ofApplication();
                 List<String> found = new ArrayList<String>();
                 Set<String> visited = new LinkedHashSet<String>();
@@ -130,7 +133,9 @@ public final class SiteControlDependence {
                      depth++) {
                     List<String> next = new ArrayList<String>();
                     for (String callee : level) {
-                        if (!visited.add(callee)) continue;
+                        if (!visited.add(callee) || !walked.test(callee)) {
+                            continue;
+                        }
                         for (String call : calls.into(callee)) {
                             found.add(call);
                             next.add(SiteId.methodOf(call));
@@ -151,7 +156,8 @@ public final class SiteControlDependence {
         };
     }
 
-    /** How many calls up a store's calls-into guards reach. */
+    /** How many calls up the calls-into guards reach (the slice's
+     *  SeedBackwardStaticAnalyzer#ACTIVATION_DEPTH). */
     private static final int CALL_DEPTH = 3;
 
     /**

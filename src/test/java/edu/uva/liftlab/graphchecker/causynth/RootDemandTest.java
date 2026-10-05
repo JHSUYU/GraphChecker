@@ -93,10 +93,17 @@ public class RootDemandTest {
                     "CLOCK 2 true <java.lang.System: long currentTimeMillis()>"
                             + ".return",
                     "CONFIG_FIELD 4 true " + field("boolean flag"),
-                    "CUT 16 false " + CHECK + "::$c16"), found},
+                    "CONFIG_FIELD 16 true " + field("int limit"),
+                    "CUT 16 false " + CHECK + "::$c16",
+                    "CONFIG_FIELD 17 true " + field("int limit")), found},
             {"what is not chosen says why", "CUT:DISTANCE", cut},
-            {"the configuration minted", "[CONFIG:k.flag]",
+            {"the configuration minted: the key near the path, and the"
+                    + " one near the guard of the tracked count's writer,"
+                    + " past the bound on the path's cone",
+                    "[CONFIG:k.flag, CONFIG:k.limit]",
                     demand.configSources().toString()},
+            {"each measured where it was", "PATH WRITERS",
+                    measured(demand, field("int limit"))},
             {"the scope growth demands", "{" + field("int old")
                     + "=PRE_WINDOW, <t.Other: int app()>=SCOPE}",
                     demand.frontier().toString()},
@@ -107,13 +114,23 @@ public class RootDemandTest {
         }
     }
 
+    private static String measured(RootDemand demand, String cell) {
+        List<String> found = new ArrayList<>();
+        for (RootDemand.Boundary boundary : demand.boundaries()) {
+            if (cell.equals(boundary.cell)) found.add(boundary.measured);
+        }
+        Collections.sort(found);
+        return String.join(" ", found);
+    }
+
     private static String field(String declared) {
         return "<" + T + ": " + declared + ">";
     }
 
     /**
      * {@code check}'s guard at u9 reads a clock, the fields {@code count}
-     * (stored by {@code run}, under {@code flag}), {@code name} ({@code
+     * (stored by {@code run}, under {@code flag}, and only where a call
+     * decided on {@code limit} 14 copies away let it), {@code name} ({@code
      * run}), {@code old} (stored outside every region), an atomic, a
      * stream, a map, another class of the system and {@code handle}'s
      * formal; and, 17 copies away, another clock.
@@ -158,6 +175,17 @@ public class RootDemandTest {
                         11, "<t.Other: int app()>"),
                 edge("local_def_use", HANDLE + ".param0:int", z0, CHECK, 12,
                         null)));
+        edges.add(edge("guard_dependency", RUN + "::$z2", field("int count"),
+                RUN, 0, null));
+        String guard = RUN + "::$z2";
+        for (int copy = 1; copy <= 14; copy++) {
+            String from = RUN + "::$d" + copy;
+            edges.add(edge("local_def_use", from, guard, RUN, 10 + copy,
+                    null));
+            guard = from;
+        }
+        edges.add(edge("field_read", field("int limit"), guard, RUN, 30,
+                null));
         String to = z0;
         for (int copy = 1; copy <= 17; copy++) {
             String from = CHECK + "::$c" + copy;
@@ -171,7 +199,8 @@ public class RootDemandTest {
         return edges;
     }
 
-    /** {@code t.T}'s constructor stores {@code flag} from a Configuration. */
+    /** {@code t.T}'s constructor stores {@code flag} and {@code limit}
+     *  from a Configuration. */
     private static void scene(Map<String, List<String>> writers) {
         G.reset();
         soot.options.Options.v().set_allow_phantom_refs(true);
@@ -183,11 +212,17 @@ public class RootDemandTest {
                 Arrays.<Type>asList(text, BooleanType.v()), BooleanType.v(),
                 Modifier.PUBLIC | Modifier.NATIVE);
         conf.addMethod(getBoolean);
+        SootMethod getInt = new SootMethod("getInt",
+                Arrays.<Type>asList(text, IntType.v()), IntType.v(),
+                Modifier.PUBLIC | Modifier.NATIVE);
+        conf.addMethod(getInt);
         SootClass type = library(T, object);
         type.setApplicationClass();
         SootField flag = new SootField("flag", BooleanType.v(), 0);
         type.addField(flag);
         type.addField(new SootField("count", IntType.v(), 0));
+        SootField limit = new SootField("limit", IntType.v(), 0);
+        type.addField(limit);
         SootMethod init = new SootMethod("<init>",
                 Collections.<Type>singletonList(conf.getType()),
                 VoidType.v(), Modifier.PUBLIC);
@@ -196,8 +231,9 @@ public class RootDemandTest {
         Local self = J.newLocal("r0", type.getType());
         Local source = J.newLocal("r1", conf.getType());
         Local read = J.newLocal("$z0", BooleanType.v());
+        Local bound = J.newLocal("$i1", IntType.v());
         init.getActiveBody().getLocals().addAll(Arrays.asList(self, source,
-                read));
+                read, bound));
         init.getActiveBody().getUnits().addAll(Arrays.asList(
                 J.newIdentityStmt(self, J.newThisRef(type.getType())),
                 J.newIdentityStmt(source, J.newParameterRef(conf.getType(),
@@ -207,9 +243,16 @@ public class RootDemandTest {
                         IntConstant.v(0))),
                 J.newAssignStmt(J.newInstanceFieldRef(self, flag.makeRef()),
                         read),
+                J.newAssignStmt(bound, J.newVirtualInvokeExpr(source,
+                        getInt.makeRef(), StringConstant.v("k.limit"),
+                        IntConstant.v(0))),
+                J.newAssignStmt(J.newInstanceFieldRef(self, limit.makeRef()),
+                        bound),
                 J.newReturnVoidStmt()));
         writers.put(field("boolean flag"),
                 Collections.singletonList(init.getSignature() + "#u3"));
+        writers.put(field("int limit"),
+                Collections.singletonList(init.getSignature() + "#u5"));
     }
 
     private static SootClass library(String name, SootClass parent) {

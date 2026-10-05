@@ -400,7 +400,8 @@ public class RegionFoldPlanTest {
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false,
                 cell -> false),
                 site -> Collections.singletonList(new StaticScopeMap.Guard(
-                        GUARD_SITE, Boolean.TRUE)))) {
+                        GUARD_SITE, Boolean.TRUE)),
+                method -> false)) {
             text.append(row).append('\n');
         }
         Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);

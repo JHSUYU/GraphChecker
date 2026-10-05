@@ -214,7 +214,8 @@ public class ReferenceCellTest {
                 CausynthStaticFacts::constructionOnly);
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(sites,
-                SiteControlDependence.over(StaticScopeMap.siteIds(sites)))) {
+                SiteControlDependence.over(StaticScopeMap.siteIds(sites)),
+                method -> false)) {
             text.append(row).append('\n');
         }
         Path file = tree.newFolder("map").toPath()

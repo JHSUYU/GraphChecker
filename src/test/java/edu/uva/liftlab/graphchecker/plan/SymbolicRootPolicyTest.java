@@ -237,7 +237,7 @@ public class SymbolicRootPolicyTest {
                 regions, clocks, (m, u, c) -> null, (demandSite, demandCell) -> null, unwoven,
                 cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false,
                 cell -> false),
-                null)) {
+                null, method -> false)) {
             text.append(row.toString()).append('\n');
         }
         Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);

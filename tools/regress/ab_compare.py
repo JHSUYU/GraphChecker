@@ -35,8 +35,11 @@ import sys
 CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
                     "SOLVE.0"],
           "IMPORT": ["IMPORT"], "EXPLORE.N": ["EXPLORE.N"],
-          "COMPOSE": ["COMPOSE", "CONFIRM"]}
-STAGES = [stage for chain in CHAINS.values() for stage in chain]
+          "COMPOSE": ["COMPOSE", "CONFIRM"],
+          # SEED's static pass alone (offline-ab.sh AB_STAGES).
+          "SEED.static": ["SEED.static"]}
+STAGES = list(dict.fromkeys(stage for chain in CHAINS.values()
+                            for stage in chain))
 SIDES = ("baseline", "candidate")
 NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log"}
 # SEED.static's class output is the input scope copied in (classes/), the
@@ -154,6 +157,29 @@ def rows(path):
         return "-"
 
 
+def seed_static(d):
+    """The slice's size: its edges and the methods they lie in, the scope
+    map's rows (READ_SITEs, CONFIG_KEYs among them), the root demand's
+    chosen boundaries, the skeletons, the classes scope growth took."""
+    j = os.path.join
+    edges = jsonl(j(d, "out/candidate_dataflow_edges.jsonl.gz"))
+    scope = jsonl(j(d, "out/static_scope_map.jsonl"))
+    demand = jsonl(j(d, "out/root_demand.jsonl"))
+    try:
+        grown = sum(1 for line in read(j(d, "scope-classes/GROWN"))
+                    .splitlines() if b"\tDOOR\t" not in line)
+    except OSError:
+        grown = 0
+    return ("graph=%d methods=%d scope=%d reads=%d keys=%d demand=%d/%d "
+            "skel=%s grown=%d" % (
+                len(edges), len({e.get("method") for e in edges}),
+                len(scope),
+                sum(1 for r in scope if r.get("role") == "READ_SITE"),
+                sum(1 for r in scope if r.get("kind") == "CONFIG_KEY"),
+                sum(1 for r in demand if r.get("chosen")), len(demand),
+                rows(j(d, "out/region_skeletons.jsonl.gz")), grown))
+
+
 def load(path):
     try:
         return json.loads(read(path))
@@ -191,10 +217,7 @@ def headline(stage, d, status):
         return "skipped: " + status.get("reason", "")
     j = os.path.join
     if stage == "SEED.static":
-        return "graph=%s scope=%s skel=%s" % (
-            rows(j(d, "out/candidate_dataflow_edges.jsonl.gz")),
-            rows(j(d, "out/static_scope_map.jsonl")),
-            rows(j(d, "out/region_skeletons.jsonl.gz")))
+        return seed_static(d)
     if stage == "SEED.trace":
         return "plan=%s skel=%s rows" % (
             rows(j(d, "concolic_region_plan.jsonl")),
@@ -332,7 +355,8 @@ def accepted_pairs(stage, d, acc):
 
 def against_accepted(stage, d, acc, status, case_root):
     """(same / drift:n/m / tree-moved / -, the drifting files)."""
-    if status is None or status.get("exit") == "skipped":
+    if status is None or status.get("exit") == "skipped" \
+            or not os.path.isdir(acc):
         return "-", []
     tokens = []
     for name in STAGES:
