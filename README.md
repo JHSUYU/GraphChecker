@@ -129,7 +129,8 @@ if it runs out; PIPELINE §7.7), REPRODUCE's runs (the recording's peak), an off
 heap) and a `fanout.sh` job (its `NEED_MB`). A sweep's cases share the hosts
 (`stream_shared_pool`): each keeps in flight its share of the slots its hosts hold at its measured
 replay charge (PIPELINE §7.7). A start goes only when both the host's live charges and its real use
-(`MemTotal` less `MemAvailable`), each with the start and a head's held room, stay within
+(`MemTotal` less `MemAvailable`), each with the start and a head's held room (its engine JVMs'
+measured peak times 1.25, the largest idle head's of the host), stay within
 `CAUSYNTH_HOST_MAX_USED_PCT` (70) percent of `MemTotal`; a charge lives by a lease its holder renews
 (`$CAUSYNTH_HOST_LEDGER/<host>/charges/`, 120 s), so a killed run's charges lapse, and is released
 the moment what it ran returns. A running workload JVM that outgrows its

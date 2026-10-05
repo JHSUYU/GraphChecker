@@ -4733,6 +4733,46 @@ $(tail -n 1 "${engine_test}/log")"
 )
 reset_config
 
+# HEAD-NEED: every engine JVM is watched where its step runs
+# (campaign_engine_jvm) and its peak joins the campaign's engine_peak_mb,
+# never lowering it; its status is the JVM's.  The head's held room is that
+# peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
+# heap; before any was measured, what its planner or composer starts at.
+# Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
+# file after them, and the held room (engine heap 12000).
+need_dir=${test_tmp}/head-need
+while IFS='|' read -r need_peaks need_file need_room; do
+  rm -rf -- "${need_dir}"
+  mkdir -p "${need_dir}"
+  need_said=$(
+    campaign_root=${need_dir}
+    engine_memory_mb=12000
+    campaign_watch_interval_s=0.1
+    for need_run in ${need_peaks}; do
+      need_peak=${need_run%:*}
+      need_exit=${need_run#*:}
+      campaign_process_rss_mb() { echo "${need_peak}"; }
+      need_status=0
+      campaign_engine_jvm "${campaign_root}/engine_peak_mb" \
+        bash -c "sleep 0.3; exit ${need_exit}" || need_status=$?
+      [[ "${need_status}" == "${need_exit}" ]] \
+        || fail "an engine JVM's exit ${need_exit} came back as ${need_status}"
+    done
+    printf '%s|%s' "$(cat "${campaign_root}/engine_peak_mb" 2>/dev/null \
+      || echo -)" "$(campaign_head_need_mb)"
+  )
+  [[ "${need_said}" == "${need_file}|${need_room}" ]] \
+    || fail "engine peaks ${need_peaks} left ${need_said}, not \
+${need_file}|${need_room}"
+done <<'EOF'
+|-|8192
+700:0|700|1024
+2949:0 1200:3|2949|3712
+9000:0|9000|11264
+20000:0 300:0|20000|12000
+EOF
+campaign_root=""
+
 # FANOUT-1: fanout.sh charges each job to the same ledger with the need its
 # line states, releases it when the job returns, and a restart over the same
 # log directory skips every job that returned.

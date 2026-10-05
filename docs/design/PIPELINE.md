@@ -905,8 +905,12 @@ shared directories -- the case's scope copy among them (§1) -- so each runs ali
 a head runs uncharged stays on its host: the setup adapter's copy and the recording, whose need is
 what it measures. HEAD ROOM: a head
 runs its engine JVMs on its own host first, between the obligations every campaign keeps starting
-there, so it reserves room for the next one -- what its planner or composer starts at
-(`campaign_head_need_mb`), not the case's engine heap -- (`campaign_head_reserve`,
+there, so it reserves room for the next one -- its measured step need (`campaign_head_need_mb`:
+the largest peak any of its engine JVMs reached, each watched where its step runs and folded into
+`<campaign>/engine_peak_mb` by `campaign_engine_jvm`, times 1.25, at least 1 GB, at most the engine
+heap, read again at every heartbeat; before any was measured, what its planner or composer starts
+at), never the case's engine heap; a step its room does not cover is placed by its own charge, as
+every head step is -- (`campaign_head_reserve`,
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
 reservation of the host as used, a head's own start counts none (heads take turns and never
