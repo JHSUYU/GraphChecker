@@ -96,6 +96,9 @@ occurrence opened under the test's request): `hdfs-address-shared`'s package.
 **c. Review and merge.**
 - A review agent reads the batch (schedule/identity: high risk).
 - Then merge into `system/hdfs` (the branch already holds `4bfe1a6e1`).
+- With the next commit to the r3 tree (not before: every HDFS case reads it): delete
+  `DataXceiver.java:301-302`'s hand `CausynthMessagePropagation.endInbound()` before `beginTick`;
+  `MessageDoors#beginTick` ends the served exchange itself now.
 - Delete `hdfs-draw-sites`, `hds8`-`hds12` and `/bigtemp/vnr3ne/wt/gc-hdfs-seed-stalls` afterwards.
 
 ### 3. The next live round of the 46

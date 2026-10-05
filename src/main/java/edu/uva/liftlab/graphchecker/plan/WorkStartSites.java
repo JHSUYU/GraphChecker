@@ -74,14 +74,26 @@ public final class WorkStartSites {
 
     /**
      * Whether a call (JVM owner, name, descriptor) draws, or hands a Random
-     * to a library method: a class making one is kept in the lineage scope
-     * ({@link LineageScan}), so the weave keys it.
+     * out of the weave ({@link #handsRandomOut}): a class making one is kept
+     * in the lineage scope ({@link LineageScan}), so the weave keys it.
      */
     public static boolean draws(String owner, String name, String descriptor) {
         return RANDOM_RECEIVERS.contains(owner.replace('/', '.'))
                 && drawn(name + descriptor)
                 || STATIC_DRAWS.contains(owner + "." + name + descriptor)
-                || (owner.startsWith("java/") || owner.startsWith("javax/"))
+                || handsRandomOut(owner, descriptor);
+    }
+
+    /**
+     * Whether a call (JVM owner, descriptor) hands a {@code java.util.Random}
+     * to a method no weave reaches, which would draw from its stream: a JDK
+     * method ({@code java/}, {@code javax/}) taking one ({@code
+     * Collections.shuffle(list, random)}).  The weave gives it {@code
+     * Randoms#at(site)} at that call; the lineage scan keeps the caller.  The
+     * one rule both ask: a library outside the JDK is not recognized by it.
+     */
+    public static boolean handsRandomOut(String owner, String descriptor) {
+        return (owner.startsWith("java/") || owner.startsWith("javax/"))
                 && descriptor.substring(0, descriptor.indexOf(')'))
                         .contains("Ljava/util/Random;");
     }

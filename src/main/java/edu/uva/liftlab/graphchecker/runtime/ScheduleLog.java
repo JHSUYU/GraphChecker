@@ -617,52 +617,15 @@ public final class ScheduleLog {
                     TURN.get());
             TURN.set(turn);
             synchronized (LOCK) {
-                loadOrderLocked();
-                if (!awaitDueLocked(turn.event)) {
-                    long self = Thread.currentThread().getId();
-                    if (firstBlocking < order.size()
-                            && !RELEASED.contains(self)) {
-                        ELSEWHERE.add(self);
-                    }
+                long self = Thread.currentThread().getId();
+                if (firstBlocking < order.size()
+                        && !RELEASED.contains(self)) {
+                    ELSEWHERE.add(self);
                 }
             }
             return turn;
         } finally {
             unmute();
-        }
-    }
-
-    /**
-     * Holds a turn the order has a WAKE slot for until that slot is due,
-     * taking nothing: what the turn decides before its first event (a
-     * DataNode actor's heartbeat-due check against a time other threads
-     * set) runs after what came before it in the order, as when its WAKE
-     * was written at its begin (hdfs-adhoc-43, round DS3: dn2's turn #15
-     * decided before the write it followed in the recording and sent no
-     * heartbeat).  Its WAKE is still written and taken at its first event.
-     * A spin of empty turns finds the slot due and runs on.
-     *
-     * @return whether the order has a slot for the turn
-     */
-    private static boolean awaitDueLocked(Pending wake) {
-        if (!holds) return false;
-        Thread self = Thread.currentThread();
-        try {
-            while (true) {
-                int slot = slotOf(wake);
-                if (slot < 0) return false;
-                int at = waitsAtLocked(wake, slot);
-                if (at == GO) return true;
-                waitLocked(self, at);
-                if (passedLocked(wake, at) || watchdogLocked()) continue;
-                LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
-            }
-        } catch (InterruptedException interrupted) {
-            // The workload's interrupt is its own; the turn goes on.
-            Thread.currentThread().interrupt();
-            return true;
-        } finally {
-            if (doneWaitingLocked(self)) LOCK.notifyAll();
         }
     }
 

@@ -15,12 +15,10 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * A replay before its window holds a taker at a startup step to the order its
- * recording completed it in (hdfs-adhoc-01/43: DataNodes added in another
- * order placed every pipeline elsewhere), whatever its own window's state
- * when the recording took it before its window opened; a taker the order
- * does not mark, one whose predecessor never comes, and one the recording
- * took inside its window go on.
+ * A replay holds a taker at a startup step to the order its recording
+ * completed it in (hdfs-adhoc-01/43: DataNodes added in another order placed
+ * every pipeline elsewhere), whatever either run's window; a taker the order
+ * does not mark and one whose predecessor never comes go on.
  */
 public class StartupOrderTest {
     @Before
@@ -37,9 +35,8 @@ public class StartupOrderTest {
     public void aReplayTakesTheStepInItsRecordingsOrder() throws Exception {
         Path order = Files.createTempFile("startup", ".jsonl");
         RowCodec.writeJsonl(order, Arrays.asList(
-                RowCodec.writeScheduleStartup("register", "dn1", true),
-                RowCodec.writeScheduleStartup("register", "dn0", true),
-                RowCodec.writeScheduleStartup("register", "dn2", false)));
+                RowCodec.writeScheduleStartup("register", "dn1"),
+                RowCodec.writeScheduleStartup("register", "dn0")));
         System.setProperty(ScheduleLog.PREFIX_PROPERTY, order.toString());
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final List<String> took =
@@ -67,13 +64,8 @@ public class StartupOrderTest {
         RecordingWindow.open();
         before = System.nanoTime();
         take("dn0", took);
-        assertTrue("a pass the recording took before its window holds"
-                + " inside this replay's window too",
+        assertTrue("a marked pass holds inside this replay's window too",
                 System.nanoTime() - before >= 250_000_000L);
-        before = System.nanoTime();
-        take("dn2", took);
-        assertTrue("one the recording took inside its window is the"
-                + " schedule's", System.nanoTime() - before < 250_000_000L);
         Files.delete(order);
     }
 

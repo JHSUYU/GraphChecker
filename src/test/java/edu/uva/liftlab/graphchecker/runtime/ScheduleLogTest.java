@@ -1130,46 +1130,6 @@ public class ScheduleLogTest {
         assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
     }
 
-    /**
-     * A turn the order has a WAKE slot for begins only when that slot is
-     * due: what it decides before its first event runs after what came
-     * before it (hdfs-adhoc-43: a DataNode actor's heartbeat-due check).
-     */
-    @Test
-    public void aRecordedTurnBeginsWhenItsWakeIsDue() throws Exception {
-        final Object monitor = new Object();
-        Thread turn = daemonTurn(monitor, null);
-        turn.start();
-        turn.join(5000L);
-        List<ScheduleEvent> free = events();
-        RuntimeTraceContext.resetForTests();
-        Identity.resetForTests();
-        restart();
-        openRequest();
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "y"), free.get(0),
-                free.get(1), free.get(2)));
-        final CountDownLatch begun = new CountDownLatch(1);
-        Thread held = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                long tick = RuntimeTraceContext.beginTick(monitor,
-                        "HEARTBEAT_TICK");
-                begun.countDown();
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "beat");
-                RuntimeTraceContext.endTick(tick);
-            }
-        });
-        held.start();
-        assertFalse("the turn waits for y before it begins",
-                begun.await(300L, TimeUnit.MILLISECONDS));
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
-        held.join(5000L);
-        assertEquals(Arrays.asList("y", "tick.HEARTBEAT_TICK", "beat",
-                "tick.HEARTBEAT_TICK"), sites());
-    }
-
     @Test
     public void aWaitAWovenNotifyMarkedKeepsItThroughAnInterrupt()
             throws Exception {
