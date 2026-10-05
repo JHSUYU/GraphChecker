@@ -65,11 +65,19 @@ public class LineageScanTest {
         }
     }
 
-    /** NetworkTopology's shape: a pick by ThreadLocalRandom. */
+    /** DFSNetworkTopology's shape: a pick from one shared static Random. */
     static final class Drawer {
+        private static final java.util.Random RANDOM = new java.util.Random();
+
         int pick(int of) {
-            return java.util.concurrent.ThreadLocalRandom.current()
-                    .nextInt(of);
+            return RANDOM.nextInt(of);
+        }
+    }
+
+    /** NetworkTopology's: a Random handed to the JDK's shuffle. */
+    static final class Shuffler {
+        void order(List<Object> nodes, java.util.Random random) {
+            java.util.Collections.shuffle(nodes, random);
         }
     }
 
@@ -83,6 +91,7 @@ public class LineageScanTest {
         assertTrue(kept(Work.class));
         assertTrue(kept(Waiter.class));
         assertTrue(kept(Drawer.class));
+        assertTrue(kept(Shuffler.class));
         assertFalse(kept(ListWriter.class));
     }
 

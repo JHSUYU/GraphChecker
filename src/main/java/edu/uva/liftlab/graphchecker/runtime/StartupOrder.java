@@ -11,8 +11,8 @@ import java.util.Set;
 
 /**
  * THE order takers pass a startup step an adapter names: a step that builds
- * state a replay reads, taken before the window, where no slot of the
- * schedule holds it (IDENTITY §8).  HDFS's is the NameNode adding a
+ * state a replay reads, which no slot of the schedule orders, before the
+ * window or inside it (IDENTITY §8).  HDFS's is the NameNode adding a
  * DataNode ({@code FSNamesystem#registerDatanode}): its NetworkTopology
  * orders DataNodes as they are added, and block placement picks a pipeline
  * by position in it, so a replay whose DataNodes were added in another
@@ -21,15 +21,18 @@ import java.util.Set;
  *
  * <p>The recording states each completion as a {@code STARTUP} mark of its
  * schedule (step, who), in completion order, handed on with every order
- * ({@code explore.SchedulePrefix}).  Before the window, a replay holds the
- * taker at the step until every pass marked before its own completed it, a
- * taker's n-th pass standing for its n-th mark; at most one schedule
+ * ({@code explore.SchedulePrefix}).  A replay holds every taker until every
+ * pass marked before its own completed it, a taker's n-th pass standing for
+ * its n-th mark, whatever either run's window: the two windows may open at
+ * different points of the start-up (hdfs-adhoc-43, round SS5: two DataNodes
+ * added in the other order, no hold), and inside the window no slot orders
+ * the step either -- the NameNode's handler takes none between its RECV and
+ * the write lock.  Inside its own window the held thread is away from the
+ * schedule's frontier ({@code ScheduleLog#elsewhere}).  At most one schedule
  * timeout, after which the missing ones are given up by name ({@code
- * SCHEDULE_DIVERGED}), and an interrupt ends the hold by name too.  Inside
- * the window the schedule's slots order the step's events, so nothing holds
- * there.  HDFS's taker is the NameNode adding a DataNode, named by the
- * DataNode's UUID, the same in both passes: its draw is seeded
- * ({@code Randoms}).</p>
+ * SCHEDULE_DIVERGED}); an interrupt ends the hold by name too.  HDFS's taker
+ * is the NameNode adding a DataNode, named by the DataNode's UUID, the same
+ * in both passes: its draw is keyed ({@code Randoms}).</p>
  */
 public final class StartupOrder {
     private static final Object LOCK = new Object();
@@ -47,8 +50,8 @@ public final class StartupOrder {
     }
 
     /**
-     * {@code who} is about to take {@code step}: in a replay before the
-     * window, held until the passes marked before its own completed.
+     * {@code who} is about to take {@code step}: in a replay, held until the
+     * passes marked before its own completed.
      *
      * @return what {@link #done} takes, or null when nothing is named
      */
@@ -64,9 +67,13 @@ public final class StartupOrder {
             Set<String> passed = passedLocked(named);
             List<String> before = at <= 0 ? new ArrayList<String>()
                     : new ArrayList<String>(order.subList(0, at));
+            if (RecordingWindow.opened() && !passed.containsAll(before)) {
+                // Held inside this replay's window: away from the frontier.
+                ScheduleLog.elsewhere();
+            }
             long deadline = System.currentTimeMillis()
                     + ScheduleLog.timeoutMillis();
-            while (!RecordingWindow.opened() && !passed.containsAll(before)) {
+            while (!passed.containsAll(before)) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0L) {
                     before.removeAll(passed);

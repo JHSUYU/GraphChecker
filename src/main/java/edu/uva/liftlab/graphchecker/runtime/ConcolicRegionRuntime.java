@@ -486,7 +486,7 @@ public final class ConcolicRegionRuntime {
             }
             active.claimActivation();
             RowRuntime.configure(configuration().resultFile);
-            if (configuration().answeredByQuestion(admitted)) {
+            if (configuration().answeredByShape(admitted)) {
                 RowRuntime.answered(Identity.answer(admitted.address),
                         admitted.address);
             }

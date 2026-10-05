@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
@@ -32,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
@@ -40,6 +42,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** The bounded campaign this JVM executes. */
@@ -70,9 +73,9 @@ final class ConcolicTaskPlan {
      */
     final boolean[] candidateLive;
     final boolean[] occurrenceClaimed;
-    /** Whether a task's live candidate answers it by its question's rule
-     *  ({@link RuntimeTask#answers}), not by its address. */
-    private final boolean[] answeredByQuestion;
+    /** Whether a task's live candidate answers it by its shape ({@link
+     *  RuntimeTask#answers}), not by its address. */
+    private final boolean[] answeredByShape;
     /** Each task's slot in the two arrays above, by task identity. */
     private final Map<RuntimeTask, Integer> slots =
             new IdentityHashMap<RuntimeTask, Integer>();
@@ -106,7 +109,7 @@ final class ConcolicTaskPlan {
         }
         this.candidateLive = new boolean[tasks.size()];
         this.occurrenceClaimed = new boolean[tasks.size()];
-        this.answeredByQuestion = new boolean[tasks.size()];
+        this.answeredByShape = new boolean[tasks.size()];
         for (int index = 0; index < this.tasks.size(); index++) {
             this.slots.put(this.tasks.get(index), index);
         }
@@ -225,13 +228,31 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Whether {@code task}'s live candidate was admitted by its question's
-     * rule, so the occurrence it opened takes the task's address ({@code
+     * Whether {@code task}'s live candidate was admitted by its shape, so
+     * the occurrence it opened takes the task's address ({@code
      * Identity#answer}).
      */
-    synchronized boolean answeredByQuestion(RuntimeTask task) {
+    synchronized boolean answeredByShape(RuntimeTask task) {
         Integer index = slots.get(task);
-        return index != null && answeredByQuestion[index];
+        return index != null && answeredByShape[index];
+    }
+
+    /**
+     * Whether {@code task} comes before {@code other} in the recording:
+     * the earlier root call, a task stating none last.  Of the open tasks
+     * an activation answers by shape, the earliest takes it, so a run's
+     * activations of one shape answer them one to one, in order.
+     */
+    private static boolean earlier(RuntimeTask task, RuntimeTask other) {
+        return task.recordedRootCall >= 0L && (other.recordedRootCall < 0L
+                || task.recordedRootCall < other.recordedRootCall);
+    }
+
+    /** {@link ScheduleLog#shape}, read once per context in one admission. */
+    private static Function<CausalContext, List<String>> shapes() {
+        final Map<CausalContext, List<String>> read =
+                new HashMap<CausalContext, List<String>>();
+        return context -> read.computeIfAbsent(context, ScheduleLog::shape);
     }
 
     /** Marks durable evidence without clearing a newer live candidate. */
@@ -253,9 +274,9 @@ final class ConcolicTaskPlan {
 
     /**
      * What one enclosing method entry of a loop root addressed: the loop
-     * tasks whose bodies it runs, and the declared one among them when it
-     * answers that by its question's rule ({@link #answeredHere}), whose
-     * answer its caller makes at this entry, where the occurrence opened.
+     * tasks whose bodies it runs, and the one among them it answers by shape
+     * ({@link #answeredHere}), whose answer its caller makes at this entry,
+     * where the occurrence opened.
      */
     static final class LoopRootAdmission {
         final Set<String> admitted;
@@ -270,9 +291,9 @@ final class ConcolicTaskPlan {
     /**
      * Counts one real enclosing method entry and freezes which loop task
      * owns all body iterations executed by that invocation: the task whose
-     * address it ran at, else the declared one when it answers that by its
-     * question's rule, as {@link #select} does at a root entry (a loop
-     * body is no root entry, so this is where its occurrence opens).
+     * address it ran at, else the earliest open one it answers by shape, as
+     * {@link #select} does at a root entry (a loop body is no root entry,
+     * so this is where its occurrence opens).
      */
     synchronized LoopRootAdmission addressLoopRootInvocation(
             String loopRootHookGroup, String rootMethod,
@@ -289,6 +310,7 @@ final class ConcolicTaskPlan {
             return new LoopRootAdmission(admitted, null);
         }
         ObservedAddresses observedAddresses = new ObservedAddresses();
+        Function<CausalContext, List<String>> shapes = shapes();
         RuntimeTask answering = null;
         RefusedCandidate answered = null;
         for (RuntimeTask task : tasks) {
@@ -308,7 +330,19 @@ final class ConcolicTaskPlan {
                     task.enclosingRootArgumentSelector, receiver,
                     rootArguments, activationSource, observedAddresses);
             if (refused != null) {
-                if (answering == null && task.answers(refused.observed)) {
+                boolean shaped = task.answers(refused.observed, shapes);
+                // A task bound to another enclosing invocation is that
+                // activation's.
+                if (shaped && task.enclosingInvocationEvent() != 0L) {
+                    task.noteUnaddressedCandidate(secondInvocation(task,
+                            activationSource));
+                    continue;
+                }
+                if (shaped && (answering == null
+                        || earlier(task, answering))) {
+                    if (answering != null) {
+                        answering.noteUnaddressedCandidate(answered);
+                    }
                     answering = task;
                     answered = refused;
                     continue;
@@ -319,12 +353,7 @@ final class ConcolicTaskPlan {
             // One occurrence, one enclosing activation: a later invocation
             // is the next k and belongs to the task addressed there.
             if (!task.claimsEnclosingInvocation(enclosingInvocationEvent)) {
-                task.noteUnaddressedCandidate(RefusedCandidate.stated(
-                        "a second enclosing invocation of this region: "
-                                + "occurrence " + task.occurrenceId
-                                + " already runs the bodies of entry event "
-                                + task.enclosingInvocationEvent()
-                                + ", so this entry is another activation",
+                task.noteUnaddressedCandidate(secondInvocation(task,
                         activationSource));
                 continue;
             }
@@ -338,25 +367,31 @@ final class ConcolicTaskPlan {
             }
             return new LoopRootAdmission(admitted, null);
         }
-        if (!answering.claimsEnclosingInvocation(enclosingInvocationEvent)) {
-            answering.noteUnaddressedCandidate(RefusedCandidate.stated(
-                    "a second enclosing invocation of this region: "
-                            + "occurrence " + answering.occurrenceId
-                            + " already runs the bodies of entry event "
-                            + answering.enclosingInvocationEvent()
-                            + ", so this entry is another activation",
-                    activationSource));
-            return new LoopRootAdmission(admitted, null);
-        }
+        // Unbound when chosen, so this entry binds it.
+        answering.claimsEnclosingInvocation(enclosingInvocationEvent);
         admitted.add(answering.taskId);
         return new LoopRootAdmission(admitted, answering);
     }
 
+    /** Why an enclosing entry is not {@code task}'s occurrence: the task
+     *  runs the bodies of another one. */
+    private static RefusedCandidate secondInvocation(
+            RuntimeTask task, SourceRef activationSource) {
+        return RefusedCandidate.stated("a second enclosing invocation of "
+                + "this region: occurrence " + task.occurrenceId
+                + " already runs the bodies of entry event "
+                + task.enclosingInvocationEvent()
+                + ", so this entry is another activation", activationSource);
+    }
+
     /**
-     * Claims at most one open task for this root invocation: the task whose
-     * address it ran at, else the declared occurrence when it answers that
-     * by its question's rule ({@link RuntimeTask#answers}) and no task plans
-     * the address it ran at.
+     * Claims at most one open task for this root invocation (IDENTITY §9):
+     * the task whose address it ran at; else, of the open tasks whose shape
+     * it answers ({@link RuntimeTask#answers}), the one the recording ran
+     * first ({@link #earlier}), unless the activation is an occurrence the
+     * recording opened, or another invocation in a context a task plans
+     * ({@link #answeredHere}).  A task answered so is done: a later
+     * activation at its own address runs unplanned.
      */
     synchronized RuntimeTask select(String rootHookGroupKey,
                                             String rootMethod,
@@ -368,6 +403,7 @@ final class ConcolicTaskPlan {
         // Outside the recording window there is no candidate.
         if (!RecordingWindow.opened()) return null;
         ObservedAddresses observedAddresses = new ObservedAddresses();
+        Function<CausalContext, List<String>> shapes = shapes();
         int answering = -1;
         RefusedCandidate answered = null;
         for (int index = 0; index < tasks.size(); index++) {
@@ -383,8 +419,14 @@ final class ConcolicTaskPlan {
                             rootArguments, activationSource,
                             observedAddresses);
             if (refused != null) {
-                if (answering < 0 && !candidateLive[index]
-                        && task.answers(refused.observed)) {
+                if (!candidateLive[index]
+                        && task.answers(refused.observed, shapes)
+                        && (answering < 0
+                        || earlier(task, tasks.get(answering)))) {
+                    if (answering >= 0) {
+                        tasks.get(answering).noteUnaddressedCandidate(
+                                answered);
+                    }
                     answering = index;
                     answered = refused;
                     continue;
@@ -394,48 +436,48 @@ final class ConcolicTaskPlan {
             }
             if (candidateLive[index]) continue;
             candidateLive[index] = true;
-            answeredByQuestion[index] = false;
+            answeredByShape[index] = false;
             if (answered != null) {
                 tasks.get(answering).noteUnaddressedCandidate(answered);
             }
             return task;
         }
         if (answering < 0) return null;
-        RuntimeTask declared = tasks.get(answering);
-        if (!answeredHere(declared, answered, rootHookGroupKey,
+        RuntimeTask earliest = tasks.get(answering);
+        if (!answeredHere(earliest, answered, rootHookGroupKey,
                 activationSource)) {
             return null;
         }
         candidateLive[answering] = true;
-        answeredByQuestion[answering] = true;
-        return declared;
+        answeredByShape[answering] = true;
+        return earliest;
     }
 
     /**
-     * THE question rule's last three tests (IDENTITY §9), at a root entry
-     * and at a loop root's enclosing entry alike, for an activation the
-     * declared task's question answers ({@link RuntimeTask#answers}): a
-     * context a task plans an occurrence in is that task's, live, done or
-     * not, its every invocation included; an address the recording opened
-     * is that occurrence; and an entry that opened no occurrence of its own
-     * (a fold, unnamed work) has none to give the declared address.  A
-     * refusal is noted on the declared task.
+     * THE shape rule's last three tests (IDENTITY §9), at a root entry and
+     * at a loop root's enclosing entry alike, for an activation that answers
+     * {@code task} by shape ({@link RuntimeTask#answers}): a context a task
+     * plans an occurrence in is that task's, live, done or not, its every
+     * invocation included; an address the recording opened is that
+     * occurrence; and an entry that opened no occurrence of its own (a fold,
+     * unnamed work) has none to give the planned address.  A refusal is
+     * noted on {@code task}.
      */
-    private boolean answeredHere(RuntimeTask declared,
+    private boolean answeredHere(RuntimeTask task,
                                  RefusedCandidate answered,
                                  String rootHookGroupKey,
                                  SourceRef activationSource) {
-        if (declared.recorded(answered.observed)) {
-            declared.noteUnaddressedCandidate(RefusedCandidate.onAddress(
+        if (task.recorded(answered.observed)) {
+            task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
                     "the recording opened this address itself, so the "
                             + "activation is that occurrence and answers no "
-                            + "question", answered.observed,
+                            + "task by shape", answered.observed,
                     activationSource));
             return false;
         }
         if (occupies(rootHookGroupKey, answered.observed)
                 || Identity.openedNone()) {
-            declared.noteUnaddressedCandidate(answered);
+            task.noteUnaddressedCandidate(answered);
             return false;
         }
         return true;
@@ -468,7 +510,7 @@ final class ConcolicTaskPlan {
                 continue;
             }
             candidateLive[index] = true;
-            answeredByQuestion[index] = false;
+            answeredByShape[index] = false;
             admitted = task;
         }
         return admitted;
@@ -479,9 +521,9 @@ final class ConcolicTaskPlan {
      * address}'s region and node in its very context: {@code address}
      * itself, or another invocation under the same anchor.  That context is
      * the planned occurrence's, and none of its invocations answers another
-     * context's question (hdfs-11741 K2: the second {@code handle()} call of
-     * one balancer handshake, under the anchor of that handshake's planned
-     * first call, answered the declared second handshake, which then ran
+     * task by shape (hdfs-11741 K2: the second {@code handle()} call of one
+     * balancer handshake, under the anchor of that handshake's planned first
+     * call, answered the declared second handshake, which then ran
      * unplanned).
      */
     boolean occupies(String rootHookGroupKey, OccurrenceAddress address) {
@@ -877,18 +919,26 @@ final class ConcolicTaskPlan {
         /** The one address this task plans; every admission compares it. */
         final OccurrenceAddress address;
         /**
-         * The declared occurrence's context shape over the recording's
-         * senders, which a run's occurrence of its question answers it by
-         * ({@link #answers}); empty on every other task.
+         * This occurrence's context shape over the recording's senders,
+         * which a run's activation answers it by where the planned address
+         * does not recur ({@link #answers}); empty where the plan states
+         * none (an occurrence a replay exposed), which is answered by its
+         * address alone.
          */
-        final List<String> questionShape;
+        final List<String> shape;
         /**
-         * The ids of the other occurrences the recording opened in the
-         * declared region on its node: an activation at one of them is that
-         * occurrence and answers no question ({@link #recorded}); empty on
-         * every other task.
+         * The ids of the other occurrences the recording opened in this
+         * region on this node under this shape: an activation at one of them
+         * is that occurrence and answers no task by shape ({@link
+         * #recorded}).
          */
-        final Set<String> questionRecorded;
+        final Set<String> recordedBeside;
+        /**
+         * The recording's root call of this occurrence, or -1: the order a
+         * run's activations answer the tasks of one shape in ({@link
+         * ConcolicTaskPlan#select}).
+         */
+        final long recordedRootCall;
         final String rootMethod;
         final RootContextSelector rootContextSelector;
         /** Argument predicates evaluated at the enclosing method entry. */
@@ -966,16 +1016,18 @@ final class ConcolicTaskPlan {
             this.address = parseAddress(this.occurrenceId);
             List<String> shape = new ArrayList<String>();
             for (JsonElement hop : array(task.json(),
-                    RuntimeSelectedRegionFinalizer.QUESTION_SHAPE)) {
+                    RuntimeSelectedRegionFinalizer.CONTEXT_SHAPE)) {
                 shape.add(hop.getAsString());
             }
-            this.questionShape = Collections.unmodifiableList(shape);
+            this.shape = Collections.unmodifiableList(shape);
             Set<String> recorded = new LinkedHashSet<String>();
             for (JsonElement id : array(task.json(),
-                    RuntimeSelectedRegionFinalizer.QUESTION_RECORDED)) {
+                    RuntimeSelectedRegionFinalizer.RECORDED_BESIDE)) {
                 recorded.add(id.getAsString());
             }
-            this.questionRecorded = Collections.unmodifiableSet(recorded);
+            this.recordedBeside = Collections.unmodifiableSet(recorded);
+            this.recordedRootCall = optionalLongInteger(task.json(),
+                    DeclaredSiteCapture.ROOT_CALL_ID, -1L);
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
             this.enclosingRootArgumentSelector =
@@ -1165,8 +1217,8 @@ final class ConcolicTaskPlan {
          * address, id against id, and nothing else -- an occurrence is its
          * address.  Trap: loosening this (e.g. ignoring an unreproducible
          * anchor digest) admits a sibling DataNode's activation; the one
-         * other answer is the declared occurrence's question ({@link
-         * #answers}), which compares every hop's node.
+         * other answer is by shape ({@link #answers}), which compares every
+         * hop's node.
          */
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
             return address != null && observed != null
@@ -1174,33 +1226,36 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Whether {@code observed}, an address no task plans, is this run's
-         * occurrence of the declared question (IDENTITY §9): the declared
-         * task alone states a question shape, and {@link
-         * ContextShape#answers} decides over this run's senders ({@link
-         * ScheduleLog#shape}).  Which turn of a DataNode's heartbeat carries
-         * a NameNode command is the NameNode's daemons' timing, so a
-         * replay's chain may differ from the recording's in a root's or a
-         * sender's count alone (adhoc a40h: block recovery under heartbeat
-         * #4, recorded under #3).
+         * Whether {@code observed}, an address this task does not plan, is
+         * an activation of this occurrence's shape (IDENTITY §9): {@link
+         * ContextShape#answers} over this run's senders ({@link
+         * ScheduleLog#shape}, read once per context through {@code
+         * shapes}).  Which turn of a DataNode's heartbeat carries a NameNode
+         * command is the NameNode's daemons' timing, so a replay's chain may
+         * differ from the recording's in a root's or a sender's count alone
+         * (adhoc a40h: block recovery under heartbeat #4, recorded under #3;
+         * hdfs-11741 HG5A: the DataNode's key update under another heartbeat
+         * than the seed's, which ran outside every region).
          */
-        boolean answers(OccurrenceAddress observed) {
-            return !questionShape.isEmpty() && address != null
-                    && observed != null
+        boolean answers(OccurrenceAddress observed,
+                        Function<CausalContext, List<String>> shapes) {
+            return !shape.isEmpty() && address != null && observed != null
+                    && observed.regionId().equals(address.regionId())
+                    && observed.node().equals(address.node())
                     && ContextShape.answers(observed, address,
-                    ScheduleLog.shape(observed.context()), questionShape);
+                    shapes.apply(observed.context()), shape);
         }
 
         /**
          * Whether the recording opened {@code observed} itself: a run's
          * activation there is that occurrence, whatever it serves this time,
-         * and answers no other question (a Solr Overseer's first task, the
+         * and answers no task by shape (a Solr Overseer's first task, the
          * collection's CREATE, took the address of the declared second, the
          * REINDEX, whose own entry then ran unplanned: accept-SB2).
          */
         boolean recorded(OccurrenceAddress observed) {
             return observed != null
-                    && questionRecorded.contains(observed.id());
+                    && recordedBeside.contains(observed.id());
         }
 
         /**
