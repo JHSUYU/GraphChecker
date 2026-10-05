@@ -286,7 +286,7 @@ ab_stage_seed_static() {
     ab_props+=("${pass[@]}")
     [[ ! -s "${grown}/GROWN" ]] \
       || ab_props+=("-Dcausynth.process.dirs=${grown}")
-    ab_java "${dir}" "${heap}" "${ab_jar}:${ab_project_cp}" \
+    ab_java "${dir}" "${heap}" "${ab_jar}" \
       edu.uva.liftlab.graphchecker.GraphCheckerMain \
       -i "${classes}" -x "${ab_project_cp}" -o "${out}/instrumented-classes" \
       || break

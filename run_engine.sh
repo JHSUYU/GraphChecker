@@ -849,9 +849,11 @@ do_analyze() {
     )
   fi
   require_file "GraphChecker jar" "${graphchecker_jar}"
+  # The pass's JVM runs on GraphChecker's jar alone: Soot reads the analysed
+  # classpath (-x) itself, and no class of the case is loaded into the JVM.
   run_in_directory "${graphchecker_work_dir}" engine_java \
     "${system_properties[@]}" \
-    -cp "${graphchecker_jar}:${project_classpath}" \
+    -cp "${graphchecker_jar}" \
     edu.uva.liftlab.graphchecker.GraphCheckerMain \
     "${input_flag}" "${project_classes_dir}" \
     -x "${project_classpath}" \
@@ -5960,13 +5962,15 @@ campaign_claim_room() {
 # EMIT, which reads the corpus COMPOSE read, each as long as the longest
 # COMPOSE this campaign measured -- its stage metrics and its witness
 # attempts; the last planner round, which reads the same corpus, stands for
-# a COMPOSE none has run yet -- and CONFIRM and REPRODUCE, whose native runs
-# of the witness take less than one replay of it, each as long as the
-# longest CONFIRM -- the seed's REPLAY stands for a CONFIRM replay none has
-# run yet -- and never less than campaign_reserve_s.  (HG4: hdfs-11741's
-# EMIT, 118 s in HG3, was killed at the case timeout when the reserve owed
-# COMPOSE and CONFIRM alone; HR1: hdfs-adhoc-07's first COMPOSE, over 556
-# sessions after planner rounds of 4 min, had the floor's 10 min.)
+# a COMPOSE none has run yet -- CONFIRM as long as the longest CONFIRM --
+# the seed's REPLAY stands for a CONFIRM replay none has run yet -- and
+# REPRODUCE its own bound, reproduce_time_factor times the recording's
+# workload (its native runs go out at once); never less than
+# campaign_reserve_s.  (HG4: hdfs-11741's EMIT, 118 s in HG3, was killed at
+# the case timeout when the reserve owed COMPOSE and CONFIRM alone; HR1:
+# hdfs-adhoc-07's first COMPOSE, over 556 sessions after planner rounds of 4
+# min, had the floor's 10 min; SL1: hdfs-adhoc-37's 23-min seed replay,
+# standing for REPRODUCE as well as CONFIRM, left its exploration one round.)
 campaign_reserve() {
   local measured
   measured=$( {
@@ -5978,7 +5982,9 @@ campaign_reserve() {
     } | awk '$1 == "COMPOSE" { if ($2 > c) c = $2; next }
         $1 == "PLANNER" { p = $2; next }
         { if ($2 > r) r = $2 }
-        END { printf "%d\n", 2 * ((c > 0 ? c : p) + r) / 1000 }')
+        END { printf "%d\n", (2 * (c > 0 ? c : p) + r) / 1000 }')
+  measured=$(( measured + reproduce_time_factor \
+    * ${campaign_recorded_workload_s:-0} ))
   echo $(( measured > campaign_reserve_s ? measured : campaign_reserve_s ))
 }
 

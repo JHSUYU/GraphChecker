@@ -66,6 +66,29 @@ public final class WorkStartSites {
                     "java/util/Collections.shuffle(Ljava/util/List;)V",
                     "java/util/UUID.randomUUID()Ljava/util/UUID;")));
 
+    /**
+     * java.io.File's directory listings, by name and JVM descriptor: each
+     * becomes the {@code runtime.Listings} stand-in of its name, which
+     * returns the listing sorted by name ({@code
+     * CausynthPipeline#replaceListing}): the JDK leaves a listing's order to
+     * the file system, which differs between the hosts and file systems a
+     * recording and its replays run on.
+     */
+    public static final Set<String> LISTINGS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "list()[Ljava/lang/String;",
+                    "list(Ljava/io/FilenameFilter;)[Ljava/lang/String;",
+                    "listFiles()[Ljava/io/File;",
+                    "listFiles(Ljava/io/FileFilter;)[Ljava/io/File;",
+                    "listFiles(Ljava/io/FilenameFilter;)[Ljava/io/File;")));
+
+    /** Whether a call (JVM owner, name, descriptor) lists a directory: a
+     *  class making one is kept in the lineage scope, so the weave sorts it. */
+    public static boolean lists(String owner, String name, String descriptor) {
+        return "java/io/File".equals(owner)
+                && LISTINGS.contains(name + descriptor);
+    }
+
     /** Whether {@code nameAndDescriptor} is a draw on a Random receiver. */
     public static boolean drawn(String nameAndDescriptor) {
         return RANDOM_DRAWS.contains(nameAndDescriptor)

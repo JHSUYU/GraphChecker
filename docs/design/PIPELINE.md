@@ -121,6 +121,10 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    more of those doors runs again over them, outside the growth budget. While `causynth_scope_growth_budget > 0` and
    `causynth_lineage_roots` is set, `plan.ScopeGrowth` adds classes where the slice stops at the scope
    into `scope-classes/` and the pass runs again, until it adds nothing ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md)).
+   The pass's JVM runs on GraphChecker's jar alone; Soot reads `project_classpath` (`-x`) through
+   `IndexedSourceLocator`, which lists the folder of each name it looks up in a class directory once per JVM
+   and asks Soot's own lookup only for a name the listing holds (one pass of hdfs-adhoc-19: ~197K failed NFS
+   `stat`s before, ~7K after).
    The target spec holds one line, `exception_target: <name> <binary class name> <source line>
    [<thrown type>]`; `causynth.ExceptionTargetLineResolver` finds the one `throw new` javac compiled at
    that line of the class or a class nested in it (a lambda body, an anonymous class), by the
@@ -1025,8 +1029,9 @@ cancelled or reaped, by id):
   `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured
   (its stage metrics and its witness attempts; the last planner round, which reads the same corpus,
   standing for a COMPOSE not yet run: its `in_flight.jsonl`, copied as the planner starts, to its
-  `explore_manifest.json`, `campaign_last_round_millis`), CONFIRM and REPRODUCE each as long as the
-  longest CONFIRM (the seed's REPLAY standing for a CONFIRM not yet run), never less than
+  `explore_manifest.json`, `campaign_last_round_millis`), CONFIRM as long as the longest CONFIRM
+  (the seed's REPLAY standing for a CONFIRM not yet run), REPRODUCE its own bound
+  (`reproduce_time_factor` times the recorded workload; its native runs go out at once), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
