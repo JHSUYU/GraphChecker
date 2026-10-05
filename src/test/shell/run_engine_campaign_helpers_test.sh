@@ -901,7 +901,7 @@ done
 # `stream_max_in_flight` became `stream_shared_pool`: a sweep asks for a
 # shared pool, and each exploration sizes its share from its measured need.
 # 54: `reproduce_min_s` joined it: the least wall clock a native run is
-# given, since a planted world may take a longer way than the recording.
+# given, since a short recording says little of ten runs at once.
 [[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"

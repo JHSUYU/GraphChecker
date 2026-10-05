@@ -1854,9 +1854,9 @@ order (it would repeat the recording) or a scope map that states no fatal arm.
 charged the recording's peak resident memory (`execute.sh` states it as `workload_rss_mb` in the
 trace directory, and holds each run to it as to any charge) wherever there is room until it
 returns, naming the host it ran on (`<run>/host.txt`), and bounded by `reproduce_time_factor` (3)
-times the recording's own workload, at least `reproduce_min_s` (300: a planted world may take a
-longer way to its anchor than the recording took to its end -- hdfs-17960's NameNode restart with
-ordered deletion off ran 94 s natively against an 8 s recording; `campaign_reproduce_bound`). A run (`campaign_reproduce_run`) runs the recording command
+times the recording's own workload, at least `reproduce_min_s` (300: a short recording says
+little of how long ten runs at once on one busy host take -- hdfs-17960's 8 s recording gave 24 s,
+and all ten runs of round NP1 were cut before their window opened; `campaign_reproduce_bound`). A run (`campaign_reproduce_run`) runs the recording command
 with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`), inside the window and at an enclosing
 region occurrence of the row's id (`CausynthTraceRecorder#enclosingOccurrences`):
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value (`RecordingPlant#marker`);

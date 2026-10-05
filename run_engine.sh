@@ -5992,10 +5992,10 @@ campaign_reserve() {
 
 # How long one native run of REPRODUCE may take, in seconds:
 # reproduce_time_factor times the recording's workload, at least
-# reproduce_min_s.  A planted world may take a longer way to its anchor than
-# the recording took to its end (hdfs-17960 NP1: ordered deletion off, its
-# NameNode restart ran 94 s natively against an 8 s recording, and every run
-# was cut at 24 s).
+# reproduce_min_s.  A short recording's own time says little of how long ten
+# native runs at once on one busy host take to reach the window (hdfs-17960:
+# an 8 s recording; NP1's ten runs on lift13 were all cut at 24 s before
+# their window opened, NP2's took 11-16 s on lift09 and lift11).
 campaign_reproduce_bound() {
   local bound=$(( reproduce_time_factor * ${campaign_recorded_workload_s:-0} ))
   echo $(( bound > reproduce_min_s ? bound : reproduce_min_s ))
