@@ -80,6 +80,9 @@ public class RowRuntimeTest {
 
     @After
     public void clear() {
+        // The exchange a test left its thread serving ends here: a later
+        // test's first receipt would end it under a reset context.
+        MessageDoors.endInbound();
         RuntimeTraceContext.resetForTests();
         RowRuntime.resetForTests();
     }
