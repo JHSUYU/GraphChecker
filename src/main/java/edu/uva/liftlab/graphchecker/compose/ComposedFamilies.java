@@ -897,7 +897,7 @@ final class ComposedFamilies {
      * AN ARM IS CLOSED LIKE A PATH (PIPELINE §8), under {@code sel_{P,S}}
      * in S's scope: (i) P's decisions before the LAST delivery this path takes;
      * (ii) P's closure at that cutoff plus the versions the delivered
-     * expressions read ({@link #expressionWrites}); (iii) the prefixes and
+     * expressions read ({@link RestsOn#seedWrites}); (iii) the prefixes and
      * the joins this arm's text reaches, by the path's own routines; (iv)
      * the handoffs it names, by the path's own arrival rule ({@link
      * #handedOn}): its attested arrivals as nested families, any other FREE
@@ -1028,8 +1028,8 @@ final class ComposedFamilies {
             List<String> delivered = new ArrayList<String>();
             for (Out out : outs) {
                 delivered.add(out.arm.expressionRef());
-                for (DecisionRow built : composer.constructionGuards(session,
-                        out.arm.write())) {
+                for (DecisionRow built : composer.restsOn
+                        .constructionGuards(session, out.arm.write())) {
                     delivered.add(Arms.conjunct(built));
                 }
             }
@@ -1041,9 +1041,9 @@ final class ComposedFamilies {
                     }
                 }
             }
-            Independence relevant = composer.independence(session,
+            Independence relevant = composer.restsOn.independence(session,
                     delivered, bound, reached,
-                    composer.reachedConditions(session, reached));
+                    composer.restsOn.reachedConditions(session, reached));
             Set<String> answered = new LinkedHashSet<String>();
             composer.statedReads(session, reached.keySet(), relevant, rows,
                     local, joins, answered);
@@ -1110,7 +1110,7 @@ final class ComposedFamilies {
     /**
      * The closure of every producer occurrence of one group, each from its
      * OWN delivery cutoff (its last delivery) with the versions its
-     * delivered expressions read ({@link #expressionWrites}), merged at the
+     * delivered expressions read ({@link RestsOn#seedWrites}), merged at the
      * widest cutoff.
      */
     private Map<String, Long> producerClosure(String session, List<Out> outs) {
@@ -1122,9 +1122,11 @@ final class ComposedFamilies {
             for (Out out : its) {
                 cutoff = Math.max(cutoff, out.arm.deliveredAt());
             }
-            Map<String, Long> one = composer.closure(session,
+            List<String> delivered = new ArrayList<String>();
+            for (Out out : its) delivered.add(out.arm.expressionRef());
+            Map<String, Long> one = composer.restsOn.closure(session,
                     its.get(0).arm.producer(), cutoff,
-                    expressionWrites(session, its));
+                    composer.restsOn.seedWrites(session, delivered));
             for (Map.Entry<String, Long> at : one.entrySet()) {
                 Long was = reached.get(at.getKey());
                 if (was == null
@@ -1157,7 +1159,7 @@ final class ComposedFamilies {
                                 Map<String, String> joins,
                                 Set<String> answered) {
         Map<String, Long> added = new LinkedHashMap<String, Long>();
-        for (Map.Entry<String, Long> at : composer.closure(session,
+        for (Map.Entry<String, Long> at : composer.restsOn.closure(session,
                 out.arm.producer(), out.arm.deliveredAt(),
                 Collections.singletonList(state.state)).entrySet()) {
             Long was = reached.get(at.getKey());
@@ -1168,9 +1170,10 @@ final class ComposedFamilies {
         if (added.isEmpty()) return "";
         List<GapRow> refused = new ArrayList<GapRow>();
         composer.frames(session, added.keySet());
-        Independence relevant = composer.independence(session,
+        Independence relevant = composer.restsOn.independence(session,
                 Collections.singletonList(state.state.expressionRef()), bound,
-                added, composer.reachedConditions(session, added));
+                added, composer.restsOn.reachedConditions(session,
+                        added));
         composer.statedReads(session, added.keySet(), relevant, rows,
                 refused, joins, answered);
         composer.stateJoins(session, added.keySet(), relevant, rows, refused,
@@ -1230,30 +1233,6 @@ final class ComposedFamilies {
         composer.reachedHandoffs(session, names, leaves, holds, attaches,
                 refused, selector);
         return attaches;
-    }
-
-    /**
-     * The container VERSIONS a delivered expression reads: a projection
-     * names the read, but the closure needs the write the producer had in
-     * hand (latest version at or before the read).  Resolved only by
-     * {@link Corpus#expressionStateReads}, the edge exploration grows by
-     * too (PIPELINE §7.2), so arms and waves agree on what a delivery is made
-     * of.
-     */
-    private List<WriteRow> expressionWrites(String session, List<Out> outs) {
-        List<WriteRow> writes = new ArrayList<WriteRow>();
-        Set<String> seen = new LinkedHashSet<String>();
-        for (Out out : outs) {
-            for (Corpus.StateRead read : corpus.expressionStateReads(
-                    session, out.arm.expressionRef())) {
-                if (!seen.add(read.locationKey() + "#"
-                        + read.write().version())) {
-                    continue;
-                }
-                writes.add(read.write());
-            }
-        }
-        return writes;
     }
 
     /**
