@@ -105,9 +105,9 @@ agents' runs under `/bigtemp/vnr3ne/gc-out/<branch>/`.
 | HG8B | `hg8b` = 50b64875f | 24 26 37 with a 3 h budget (running at this commit) |
 
 Per check: [../checks/README.md](../checks/README.md). Summary (46 HDFS cases, 2026-10-05 day):
-- known bugs: 10/10 PASS by mandate on the current body (HG7N); native reproductions of 17960 (configuration), 11741
-  (clock) and slowdisk-zero (re-pairing) owed (REPRODUCE plants fault markers only: A4); 11741's key-id binding
-  still timing-dependent (A3);
+- known bugs: 10/10 PASS by mandate on the current body (HG7N); on `hdfs-native-plant` 17960 (its configuration hook
+  root) and slowdisk-zero (its re-pairing, held as ORDER rows) reproduce natively 10/10, 11741 (clock) still owed
+  until the time model merges; 11741's key-id binding still timing-dependent (A3);
 - study: 18 right-shaped verdicts (10 12 SAT; 07 08 09 14 15 16 19 20 27 30 33 39 40 48 49 50 UNSAT at the fixed
   point with symbols); 11 28 29 31 UNSAT with no symbol (container reads pinned: D1); 24 26 37 rerunning (HG8B); 52 and
   32 open; 01 17 21 22 23 25 34 35 43 the time-model class (A2);

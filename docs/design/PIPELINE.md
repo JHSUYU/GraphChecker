@@ -1837,18 +1837,28 @@ VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-
 <file>` writes the plant from what CONFIRM itself plants and holds (`ConfirmMain.Witness`, the one
 reading of the claim both make: the selected session's world under the model's moved roots, and
 the edges the model chose), each row numbered (`row`):
-- a `ROOT` per root the world assigns, at the occurrence id it is minted at: a FAULT marker
+- a `ROOT` per root the world assigns, naming the occurrence id it is minted at: a FAULT marker
   `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
-  value}`, a tree hook's root `{category HOOK, rootId, occurrence, value}`;
+  value: true|false}`, a tree hook's root `{category HOOK, rootId, occurrence, value}`;
 - CONFIRM's own `ORDER` rows (`{before, after}`, §10: the join closure's at the locations the fatal
-  rests on, and those holding the pairings the world plants);
+  rests on, and those holding the pairings the world plants), each pair once;
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
   id>, siteId: <guard>, value: <its fatal arm>}`.
 
-A world that skews a clock, answers an attach, or assigns a configuration or an unwoven accessor's
-read is refused (`NATIVE_PLANT_UNSUPPORTED`: the recording weave reads no clock through the model
-and has no configuration-read or getter-call mint), and so is one that plants no root and holds no
-order (it would repeat the recording) or a scope map that states no fatal arm.
+Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reason`):
+- by CONFIRM's own reading of the claim (`CONFIRM refused:`, §10): a valuation that selects no
+  path, an unparseable anchor, a manifest stating no selector, `restsOn` or `cutoff` for the path,
+  a moved root the recording mints nowhere or a moved clock no reading anchors, and the edges'
+  refusals (`STATE_CONFLICT`, `PAIRING_UNSTATED`, a selected arm whose consumer its session states
+  no attach for);
+- `NATIVE_PLANT_UNSUPPORTED`: a world that skews a clock or answers an attach (the recording weave
+  reads no clock through the model and answers no attach); a root of another category than FAULT
+  or HOOK -- a configuration (the recording weave has neither the configuration-read nor the
+  getter-call mint), an unwoven accessor's read, a clock; a FAULT root its plan input calls at no
+  site or at several, or assigned other than true or false; a root with no mint occurrence; a world
+  that plants no root and holds no order (it would repeat the recording); a scope map that states
+  no fatal arm;
+- a recording that measured no peak resident memory to charge a run with.
 
 `reproduce_runs` (10) runs go out at once, each a head step (§7.7, `campaign_reproduce_one`)
 charged the recording's peak resident memory (`execute.sh` states it as `workload_rss_mb` in the
@@ -1856,17 +1866,22 @@ trace directory, and holds each run to it as to any charge) wherever there is ro
 returns, naming the host it ran on (`<run>/host.txt`), and bounded by `reproduce_time_factor` (3)
 times the recording's own workload, at least `reproduce_min_s` (300: a short recording says
 little of how long ten runs at once on one busy host take -- hdfs-17960's 8 s recording gave 24 s,
-and all ten runs of round NP1 were cut before their window opened; `campaign_reproduce_bound`). A run (`campaign_reproduce_run`) runs the recording command
-with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`), inside the window and at an enclosing
-region occurrence of the row's id (`CausynthTraceRecorder#enclosingOccurrences`):
-- `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value (`RecordingPlant#marker`);
+and all ten runs of round NP1 were cut before their window opened; `campaign_reproduce_bound`). A
+run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` (`execute.sh`,
+`CAUSYNTH_PLANT`); inside the window:
+- `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
+  occurrence (`CausynthTraceRecorder#enclosingOccurrences`) has the row's own id
+  (`RecordingPlant#marker`);
 - the tree's `CausynthSymbolicSource.symbolize` of a HOOK row's root writes its value into the field
   the hook names (`RootMint#configuredSource` -> `RecordingPlant#hook`, the replay's own
-  `RootMint#writeModeledField`);
+  `RootMint#writeModeledField`) under any enclosing occurrence the confirmation focuses -- the
+  anchor or the mint occurrence of any root of the plant -- as a replay's mint plants under a focused
+  occurrence (`RootMint#focusedRootValue`); a write that fails is a `PLANT_UNWRITTEN` row;
 - `runtime.Confirmation` holds the ORDER rows at `Identity`'s frame hooks as in a CONFIRM run (it
-  reads the plant in a planted run), each row stating what it came to: held, waited for
-  (`PLANT_HOLDING`), or not held within `causynth.confirm.order.timeout.ms` (`PLANT_UNHELD`) -- what
-  the run states, never a refutation;
+  reads the plant in a planted run), each at most half the run's bound
+  (`causynth.confirm.order.timeout.ms`, `CAUSYNTH_ORDER_TIMEOUT_MS`), each row stating what it came
+  to: held, waited for (`PLANT_HOLDING`, for a before-activation that had not exited), or not held
+  in time (`PLANT_UNHELD`) -- what the run states, never a refutation;
 - every row applied is a `PLANT_APPLIED` trace row naming its number; a recorded branch at a TARGET
   row's guard that takes its fatal arm is a `PLANT_FATAL` row stating whether an enclosing
   occurrence is the anchor's -- at the anchor the run ends (`JUnitMethodRunner.exit`, as a focused
@@ -1875,16 +1890,20 @@ region occurrence of the row's id (`CausynthTraceRecorder#enclosingOccurrences`)
 A planted run is not the recording's world, so the workload's checks of that world are off in it
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
-planted, fatal, atAnchor}`, read off its trace's plant rows against the plant: the rows to apply
-(ROOT and ORDER), how many it applied, each it did not with why (`UNHELD`, `HOLDING` at the run's
-end, `NOT_REACHED`), whether it applied every one, and the fatal arm. `final/reproduce.json`:
-`{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor, unheld, reason}` -- runs that
-applied the whole plant, took the target's fatal arm, took it at the claim's own anchor, could not
-hold an ORDER in time, and the runs that stated no answer as `reason`; `runs` 0 with the refusal as
-`reason` when nothing can be planted or the recording measured no memory. A native run holds the
-model's order, not the recording's, so the planted occurrence may not recur: the rate ranks a
-finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside `result.json`) and never
-refutes it. Then the campaign exits by its verdict (`campaign_exit_verdict`).
+planted, rootsPlanted, fatal, atAnchor, reproduced}`, read off its trace's plant rows against the
+plant: the rows to apply (ROOT and ORDER), how many it applied, each it did not with why
+(`UNHELD`, `UNWRITTEN`, `HOLDING` at the run's end, `NOT_REACHED`), whether it applied every row
+and every ROOT row, whether it took the fatal arm and at the anchor, and whether it **reproduced**:
+the fatal arm at the claim's anchor with every ROOT row applied. A run that did not plant the
+model's roots and reaches the fatal all the same is the program's own race, never a reproduction.
+`final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
+reproduced, unheld, holding, reason}` -- runs that applied the whole plant, took the fatal arm,
+took it at the anchor (planted or not), reproduced, could not hold an ORDER in time, still held one
+when they ended, and the runs that stated no answer as `reason`. A native run holds the model's
+order, not the recording's, so the planted occurrence may not recur: the share of runs that
+reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside
+`result.json`) and never refutes it. Then the campaign exits by its verdict
+(`campaign_exit_verdict`).
 
 ## 11. EMIT
 

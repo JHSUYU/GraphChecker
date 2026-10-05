@@ -1150,14 +1150,14 @@ public final class CausynthTraceRecorder {
         return occurrences;
     }
 
-    /** One root a plant planted ({@link RecordingPlant}): its row, the
-     *  marker or root, where, and the value, as a trace row. */
-    static void plantApplied(int row, String planted, String occurrence,
-                             String value) {
+    /** One root a plant planted, or failed to ({@link RecordingPlant}):
+     *  its row, the marker or root, where, and the value, as a trace row. */
+    static void plantRoot(String event, int row, String planted,
+                          String occurrence, String value) {
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
-                    "event", RecordingPlant.APPLIED,
+                    "event", event,
                     "seq", EVENT_COUNTER.incrementAndGet(),
                     "row", row,
                     "planted", MapFields.safe(planted),

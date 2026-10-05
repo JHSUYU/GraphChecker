@@ -1175,8 +1175,9 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 # reproduce_time_factor times the recording's workload, at least
 # reproduce_min_s, and answering for
 # itself, per row of the plant, off its trace's plant rows; reproduce.json
-# counts the answers (whole plant applied, fatal, at the anchor, an order
-# unheld) and names the runs that stated none.  A plant CONFIRM refuses, or a
+# counts the answers (whole plant applied, fatal, at the anchor, reproduced:
+# at the anchor with every root planted, an order unheld, an order still
+# holding) and names the runs that stated none.  A plant CONFIRM refuses, or a
 # recording that measured no peak memory, is no run and the reason.  Per row:
 # ConfirmMain's exit, the recording's peak MB, and the reproduction.
 repro_dir="${test_tmp}/reproduce"
@@ -1221,23 +1222,29 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
         echo '{"kind":"TARGET","row":2}'
       } >"${plant}"
     }
-    # Run n: 1 every row applied and at the anchor, 2 its order unheld and
-    # fatal elsewhere, 3 every row applied and no fatal, 4 no trace.  Each
-    # states its bound and its charge, and the ledger's row for it.
+    # Run n: 1 every row applied and the fatal at the anchor; 2 its order
+    # unheld and the fatal elsewhere; 3 its root unwritten, its order still
+    # holding, and the fatal at the anchor all the same -- the program's own
+    # race, no reproduction; 4 no trace.  Each states its bound, its order
+    # timeout and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
-      echo "$2 $4 $(ls "${campaign_host_gate_root}/gate-head/charges" \
+      echo "$2 $4 $6 $(ls "${campaign_host_gate_root}/gate-head/charges" \
         | grep -c "^$4\\.")" >>"${repro_dir}/bounds"
       (( n < 4 )) || return 1
       {
         echo '{"event":"BRANCH"}'
-        echo '{"event":"PLANT_APPLIED","row":0}'
-        (( n == 2 )) \
-          && echo '{"event":"PLANT_UNHELD","row":1}' \
-          || echo '{"event":"PLANT_APPLIED","row":1}'
-        (( n > 2 )) \
-          || jq -n -c --argjson at "$(( n == 1 ))" \
-            '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
+        case ${n} in
+          1) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_APPLIED","row":1}' ;;
+          2) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_HOLDING","row":1}'
+             echo '{"event":"PLANT_UNHELD","row":1}' ;;
+          3) echo '{"event":"PLANT_UNWRITTEN","row":0}'
+             echo '{"event":"PLANT_HOLDING","row":1}' ;;
+        esac
+        jq -n -c --argjson at "$(( n != 2 ))" \
+          '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
       } >"${run}/runtime_trace.jsonl"
     }
     campaign_reproduce "${repro_dir}/iteration"
@@ -1248,13 +1255,19 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     || fail "a reproduction (plant ${repro_plant}, ${repro_rss} MB) is \
 $(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
   [[ "${repro_expected}" != *'"runs":4'* \
-      || "$(cut -d' ' -f1,2 "${repro_dir}/bounds" | sort -u)" \
-        == "75 ${repro_rss}" ]] \
+      || "$(cut -d' ' -f1-3 "${repro_dir}/bounds" | sort -u)" \
+        == "75 ${repro_rss} 37500" ]] \
     || fail "a native run was not bounded by reproduce_min_s=75 over 3 x the \
-recording's 20 s and held to its ${repro_rss} MB charge: \
-$(cat "${repro_dir}/bounds")"
+recording's 20 s, its orders held at most half of it, and held to its \
+${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
-      || "$(awk '$3 < 1' "${repro_dir}/bounds")" == "" ]] \
+      || "$(jq -c '[.unapplied[].why]' \
+        "${repro_dir}/final/reproduce/run-3/answer.json")" \
+        == '["UNWRITTEN","HOLDING"]' ]] \
+    || fail "a run does not say why it did not apply a row: \
+$(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
+  [[ "${repro_expected}" != *'"runs":4'* \
+      || "$(awk '$4 < 1' "${repro_dir}/bounds")" == "" ]] \
     || fail "a native run ran uncharged: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
       || "$(cat "${repro_dir}"/final/reproduce/run-*/host.txt | sort -u)" \
@@ -1264,9 +1277,9 @@ $(cat "${repro_dir}/bounds")"
     || fail "a native run's charge outlived it: \
 $(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
-0|2048|{"runs":4,"planted":2,"fatal":2,"atAnchor":1,"unheld":1,"reason":""}
-1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"unheld":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
-0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"unheld":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
+0|2048|{"runs":4,"planted":1,"fatal":3,"atAnchor":2,"reproduced":1,"unheld":1,"holding":1,"reason":""}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
 EOF
 
 # REACHED-1: a replay reached its target when a session published a target

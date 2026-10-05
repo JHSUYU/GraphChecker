@@ -53,14 +53,12 @@ public class RecordingPlantTest {
         Map<String, Map<String, RecordingPlant.Root>> markers =
                 Collections.singletonMap(SITE, Collections.singletonMap(ID,
                         new RecordingPlant.Root(0, "true")));
-        Map<String, Map<String, RecordingPlant.Root>> hooks =
-                Collections.singletonMap("HDFS.X", Collections.singletonMap(
-                        ID, new RecordingPlant.Root(1, "false")));
-        Map<String, Map<String, RecordingPlant.Root>> none =
-                Collections.emptyMap();
+        Map<String, RecordingPlant.Root> hooks = Collections.singletonMap(
+                "HDFS.X", new RecordingPlant.Root(1, "false"));
         Object[][] files = {
                 {marker + hook + order + target, markers, hooks},
-                {order + target, none, none},
+                {order + target, Collections.emptyMap(),
+                        Collections.emptyMap()},
                 // A root of a category no native run plants, a marker
                 // without its call site or with no boolean, a row without
                 // its number, an order naming no activation.
@@ -68,6 +66,9 @@ public class RecordingPlantTest {
                 {marker.replace(SITE, "") + target, null, null},
                 {marker.replace("\"true\"", "\"1\"") + target, null, null},
                 {hook.replace(",\"row\":1", "") + target, null, null},
+                // One root stated twice.
+                {hook + hook.replace("\"row\":1", "\"row\":4") + target,
+                        null, null},
                 {order.replace("\"b|\"", "\"\"") + target, null, null},
                 {"{\"kind\":\"CLOCK\",\"row\":0}\n" + target, null, null},
                 // No target: the run could not tell what it reproduced.
@@ -87,6 +88,9 @@ public class RecordingPlantTest {
                         Collections.singletonMap(GUARD, false),
                         read.fatalArms);
                 assertEquals((String) file[0], ID, read.anchor);
+                // The anchor and every root's mint occurrence are focused.
+                assertEquals((String) file[0],
+                        Collections.singleton(ID), read.focused);
             } catch (IOException refused) {
                 if (file[1] != null) throw refused;
             }
@@ -114,6 +118,24 @@ public class RecordingPlantTest {
         }
         assertEquals(null, RecordingPlant.plantedOccurrence(null,
                 Collections.singletonList(OUTER)));
+    }
+
+    /** A hook plants under an enclosing occurrence the confirmation
+     *  focuses, the innermost one, as a replay's mint does. */
+    @Test
+    public void aHookPlantsUnderAnyFocusedEnclosingOccurrence() {
+        Object[][] calls = {
+                {Arrays.asList(INNER, OUTER), OUTER},
+                {Collections.singletonList(INNER), null},
+                {Collections.<String>emptyList(), null},
+        };
+        for (Object[] call : calls) {
+            @SuppressWarnings("unchecked")
+            List<String> enclosing = (List<String>) call[0];
+            assertEquals(Arrays.toString(call), call[1],
+                    RecordingPlant.focusedOccurrence(
+                            Collections.singleton(ID), enclosing));
+        }
     }
 
     /** A fatal decision is at the anchor when an occurrence enclosing it,

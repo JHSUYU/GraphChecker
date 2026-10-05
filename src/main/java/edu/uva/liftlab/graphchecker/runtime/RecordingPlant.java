@@ -10,8 +10,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -40,8 +42,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *   <li>{@code {"kind":"ROOT","category":"HOOK","rootId","occurrence",
  *   "value"}}: a tree's symbolize hook of that root ({@code
  *   CausynthSymbolicSource.symbolize}) writes the value into the field it
- *   names, under the same enclosing occurrence and window, as a replay's
- *   mint does ({@link RootMint#writeModeledField}).</li>
+ *   names ({@link RootMint#writeModeledField}) wherever a replay's mint
+ *   would plant it ({@code RootMint#focusedRootValue}): under an enclosing
+ *   occurrence the confirmation focuses -- the anchor, or the mint
+ *   occurrence of any root of the plant ({@link Plant#focused}) -- inside
+ *   the window.  A write that fails is an {@link #UNWRITTEN} row.</li>
  *   <li>{@code {"kind":"ORDER","before","after"}}: CONFIRM's own row,
  *   held as a CONFIRM run holds it ({@link Confirmation}, which reads this
  *   file in a planted run): the activation {@code after} enters once those
@@ -65,6 +70,8 @@ public final class RecordingPlant {
     static final String HOLDING = "PLANT_HOLDING";
     /** An ORDER the run did not hold within the order's timeout. */
     static final String UNHELD = "PLANT_UNHELD";
+    /** A HOOK row reached whose field write failed. */
+    static final String UNWRITTEN = "PLANT_UNWRITTEN";
     /** The trace event of one decision of the planted world's fatal arm. */
     static final String FATAL = "PLANT_FATAL";
     /** A root the world assigns, planted where it is minted. */
@@ -132,18 +139,22 @@ public final class RecordingPlant {
     static final class Plant {
         /** FAULT markers: call site, then occurrence id, then the root. */
         final Map<String, Map<String, Root>> markers;
-        /** HOOK roots: root id, then occurrence id, then the root. */
-        final Map<String, Map<String, Root>> hooks;
+        /** HOOK roots, by root id. */
+        final Map<String, Root> hooks;
+        /** The occurrences the confirmation focuses, by id: the anchor and
+         *  every root's mint occurrence ({@code FocusedReplay#focused}). */
+        final Set<String> focused;
         /** Guard site -> its fatal arm. */
         final Map<String, Boolean> fatalArms;
         /** The claim's anchor, by occurrence id. */
         final String anchor;
 
         Plant(Map<String, Map<String, Root>> markers,
-              Map<String, Map<String, Root>> hooks,
+              Map<String, Root> hooks, Set<String> focused,
               Map<String, Boolean> fatalArms, String anchor) {
             this.markers = markers;
             this.hooks = hooks;
+            this.focused = focused;
             this.fatalArms = fatalArms;
             this.anchor = anchor;
         }
@@ -161,26 +172,25 @@ public final class RecordingPlant {
         if (occurrence == null) return false;
         Root root = rows.get(OccurrenceAddress.parse(occurrence).id());
         boolean value = Boolean.parseBoolean(root.value);
-        CausynthTraceRecorder.plantApplied(root.row, name, occurrence,
+        CausynthTraceRecorder.plantRoot(APPLIED, root.row, name, occurrence,
                 String.valueOf(value));
         if (value) Identity.doorFaulted(name);
         return value;
     }
 
     /** A tree's symbolize hook of {@code rootId} on {@code owner}'s field:
-     *  the planted value written there, at the occurrence it is minted at. */
+     *  the planted value written there under a focused occurrence. */
     static void hook(String rootId, Object owner, String fieldSignature) {
         if (!PLANTING || !RecordingWindow.opened()) return;
-        Map<String, Root> rows = plant().hooks.get(rootId);
-        String occurrence = plantedOccurrence(rows,
+        Plant rows = plant();
+        Root root = rows.hooks.get(rootId);
+        if (root == null) return;
+        String occurrence = focusedOccurrence(rows.focused,
                 CausynthTraceRecorder.enclosingOccurrences());
         if (occurrence == null) return;
-        Root root = rows.get(OccurrenceAddress.parse(occurrence).id());
-        if (RootMint.writeModeledField(owner, fieldSignature, "",
-                root.value)) {
-            CausynthTraceRecorder.plantApplied(root.row, rootId, occurrence,
-                    root.value);
-        }
+        CausynthTraceRecorder.plantRoot(RootMint.writeModeledField(owner,
+                fieldSignature, "", root.value) ? APPLIED : UNWRITTEN,
+                root.row, rootId, occurrence, root.value);
     }
 
     /** What one ORDER row of the plant came to ({@link Confirmation}):
@@ -214,6 +224,18 @@ public final class RecordingPlant {
     static String anchorOf(List<String> enclosing, String anchor) {
         for (String occurrence : enclosing) {
             if (OccurrenceAddress.parse(occurrence).id().equals(anchor)) {
+                return occurrence;
+            }
+        }
+        return null;
+    }
+
+    /** Of the occurrences enclosing a call, innermost first, the first
+     *  the confirmation focuses (by id), or null. */
+    static String focusedOccurrence(Set<String> focused,
+                                    List<String> enclosing) {
+        for (String occurrence : enclosing) {
+            if (focused.contains(OccurrenceAddress.parse(occurrence).id())) {
                 return occurrence;
             }
         }
@@ -280,8 +302,8 @@ public final class RecordingPlant {
     static Plant read(Path file) throws IOException {
         Map<String, Map<String, Root>> markers =
                 new LinkedHashMap<String, Map<String, Root>>();
-        Map<String, Map<String, Root>> hooks =
-                new LinkedHashMap<String, Map<String, Root>>();
+        Map<String, Root> hooks = new LinkedHashMap<String, Root>();
+        Set<String> focused = new LinkedHashSet<String>();
         Map<String, Boolean> fatalArms = new LinkedHashMap<String, Boolean>();
         String anchor = null;
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
@@ -293,7 +315,7 @@ public final class RecordingPlant {
             }
             int number = row.get(ROW).getAsInt();
             if (ROOT.equals(kind)) {
-                root(row, number, markers, hooks);
+                focused.add(root(row, number, markers, hooks));
             } else if (TARGET.equals(kind)) {
                 String occurrence = optionalString(row, OCCURRENCE);
                 if (optionalString(row, SITE).isEmpty()
@@ -318,15 +340,18 @@ public final class RecordingPlant {
         if (anchor == null) {
             throw new IOException("the plant names no target: " + file);
         }
+        focused.add(anchor);
         return new Plant(Collections.unmodifiableMap(markers),
                 Collections.unmodifiableMap(hooks),
+                Collections.unmodifiableSet(focused),
                 Collections.unmodifiableMap(fatalArms), anchor);
     }
 
-    /** One ROOT row into the markers or the hooks it plants. */
-    private static void root(JsonObject row, int number,
-                             Map<String, Map<String, Root>> markers,
-                             Map<String, Map<String, Root>> hooks)
+    /** One ROOT row into the markers or the hooks it plants; returns the
+     *  occurrence it is minted at.  A root stated twice is refused. */
+    private static String root(JsonObject row, int number,
+                               Map<String, Map<String, Root>> markers,
+                               Map<String, Root> hooks)
             throws IOException {
         String category = optionalString(row, CATEGORY);
         String rootId = optionalString(row, ROOT_ID);
@@ -340,8 +365,15 @@ public final class RecordingPlant {
                 || "false".equals(value)))) {
             throw new IOException("not a root row: " + row);
         }
-        (fault ? markers : hooks).computeIfAbsent(fault ? site : rootId,
-                key -> new LinkedHashMap<String, Root>())
-                .put(occurrence, new Root(number, value));
+        Root root = new Root(number, value);
+        if (fault) {
+            markers.computeIfAbsent(site,
+                    key -> new LinkedHashMap<String, Root>())
+                    .put(occurrence, root);
+        } else if (hooks.put(rootId, root) != null) {
+            throw new IOException("the plant states root " + rootId
+                    + " twice");
+        }
+        return occurrence;
     }
 }

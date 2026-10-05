@@ -482,17 +482,19 @@ public final class ConfirmMain {
      * A native reproduction's plant ({@code runtime.RecordingPlant}): what
      * CONFIRM's world plants and holds ({@link Witness}), as rows a run of
      * the recording weave on a stock JDK applies, each numbered so the run
-     * can say it applied it -- a ROOT per root the world assigns (a FAULT
-     * marker answered at the call site its plan input action names, a tree
-     * HOOK's field written, each at the occurrence id it is minted at), the
-     * world's ORDER rows as CONFIRM holds them, and one TARGET per guard of
-     * the scope map's TARGET_SITE rows, its fatal arm at the claim's anchor:
-     * the one question a native run answers.  Whatever CONFIRM decided, and
-     * whether or not it replayed.  A world the recording weave cannot plant
-     * is refused by name: a clock skew, an attach's answer, a configuration
-     * or an unwoven accessor's read ({@code NATIVE_PLANT_UNSUPPORTED}); so is
-     * one that plants nothing, which would repeat the recording, and a scope
-     * map that states no fatal arm.
+     * can say it applied it -- a ROOT per root the world assigns, naming
+     * the occurrence id it is minted at (a FAULT marker answered true or
+     * false at the call site its plan input action names, a tree HOOK's
+     * field written), the world's ORDER rows as CONFIRM holds them, each
+     * pair once, and one TARGET per guard of the scope map's TARGET_SITE
+     * rows, its fatal arm at the claim's anchor: the one question a native
+     * run answers.  Whatever CONFIRM decided, and whether or not it
+     * replayed.  A world the recording weave cannot plant is refused by name
+     * ({@code NATIVE_PLANT_UNSUPPORTED}): a clock skew, an attach's answer,
+     * a root of another category (a configuration, an unwoven accessor's
+     * read), a marker of no single site or no boolean value, a root with no
+     * mint; so is one that plants nothing, which would repeat the
+     * recording, and a scope map that states no fatal arm.
      */
     static JsonObject writePlant(Path iteration, Path claimFile,
                                  Path manifestFile, Path scopeMap, Path out)
@@ -519,14 +521,16 @@ public final class ConfirmMain {
                     Collections.<String>emptySet());
             OccurrenceAddress mint = OccurrenceAddress.parse(
                     world.mints.getOrDefault(rootId, ""));
+            String value = assigned.getValue().trim();
             if (mint == null || !(category == RootCategory.HOOK
-                    || category == RootCategory.FAULT && site.size() == 1)) {
+                    || category == RootCategory.FAULT && site.size() == 1
+                    && ("true".equals(value) || "false".equals(value)))) {
                 throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
-                        + " is " + category + ", called at " + site
-                        + ", minted at '" + world.mints.get(rootId) + "'; a "
-                        + "native run plants a fault marker of one call site "
-                        + "or a tree hook's field, at the occurrence it is "
-                        + "minted at");
+                        + " is " + category + " at '" + value + "', called at "
+                        + site + ", minted at '" + world.mints.get(rootId)
+                        + "'; a native run plants a fault marker of one call "
+                        + "site at true or false, or a tree hook's field, at "
+                        + "an occurrence it is minted at");
             }
             JsonObject row = new JsonObject();
             row.addProperty(RecordingPlant.KIND, RecordingPlant.ROOT);
@@ -536,11 +540,18 @@ public final class ConfirmMain {
             if (category == RootCategory.FAULT) {
                 row.addProperty(RecordingPlant.SITE, site.iterator().next());
             }
-            row.addProperty(RecordingPlant.VALUE, assigned.getValue());
+            row.addProperty(RecordingPlant.VALUE, value);
             rows.add(row);
         }
+        // One row per order: CONFIRM's closure and its pairings may state
+        // one twice, and a run holds it once.
+        Set<String> orders = new LinkedHashSet<String>();
         for (JsonObject edge : witness.edges(iteration, world)) {
-            if ("ORDER".equals(optionalString(edge, "kind"))) rows.add(edge);
+            if (RecordingPlant.ORDER.equals(optionalString(edge, "kind"))
+                    && orders.add(optionalString(edge, "before") + "\n"
+                    + optionalString(edge, "after"))) {
+                rows.add(edge);
+            }
         }
         if (rows.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "

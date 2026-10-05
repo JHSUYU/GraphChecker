@@ -363,9 +363,9 @@ public final class Confirmation {
         synchronized (LOCK) {
             Set<String> before = BEFORE.get(activation);
             if (before == null) return;
-            if (!EXITED.containsAll(before)) {
-                planted(RecordingPlant.HOLDING, activation, before);
-            }
+            Set<String> waiting = new LinkedHashSet<String>(before);
+            waiting.removeAll(EXITED);
+            planted(RecordingPlant.HOLDING, activation, waiting);
             long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
                     ORDER_TIMEOUT_MS);
             long deadline = System.currentTimeMillis() + timeout;
