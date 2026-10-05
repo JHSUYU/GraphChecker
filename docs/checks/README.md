@@ -33,6 +33,7 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | check | site (our tree) | guard | workload | window | state (2026-10-05) |
 | --- | --- | --- | --- | --- | --- |
 | hdfs-adhoc-01 | C/DFSInputStream.java:517 | the NN returns no located block for an offset (`newBlocks==null \|\| count==0`) | TestPread#testPreadDFS | up | open: clock-driven seed give-ups (80+ with sorted listings, SL2): time model (A2) |
+| hdfs-adhoc-05 | H/qjournal/client/QuorumOutputStream.java:106 | `bufToSend.getLength()==numReadyBytes` (the double buffer's flush) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG8W); swapped in for 32 (owner 2026-10-05: 32's map removal runs in unnamed pre-window work) |
 | hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | UNSAT at FIXED_POINT (HG8A, 3 h budget, compose-cost merged): 129 obligations, 61 branches pruned by (r,c), 93 symbols |
 | hdfs-adhoc-08 | H/qjournal/server/Journal.java:487 | `reqInfo.epoch < lastPromisedEpoch` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG7D, 3 h budget): 417 obligations, 155 paths, 725 symbols |
 | hdfs-adhoc-09 | H/qjournal/server/Journal.java:504 | `reqInfo.committedTxId >= committedTxnId` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG7D, 3 h budget): 477 obligations, 151 paths, 1068 symbols |
@@ -56,7 +57,6 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | hdfs-adhoc-29 | same file :604 | `bpos==null` in getActiveNamenodeForBP | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT but NO-SYMBOL (HG7R): bpos lookup pinned; writers before the window: to confirm after D1 |
 | hdfs-adhoc-30 | same file :609 | `activeNN==null` | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT at FIXED_POINT (HG7R): 4 roots; scope batch 2 (recoveryId) still owed |
 | hdfs-adhoc-31 | H/server/datanode/DataNode.java:1838 | `bpos==null` in getBPOSForBlock | TestDiskError#testDataTransferWhenBytesPerChecksumIsZero | up | UNSAT but NO-SYMBOL (HG7R): blockPoolManager.get pinned; the in-window addBlockPool unplanned -> container writers (D1) |
-| hdfs-adhoc-32 | H/server/datanode/DataNode.java:3826 | the block pool is still running | TestDeleteBlockPool#testDeleteBlockPool | up | open: bpByBlockPoolId remove runs in unnamed work (a pre-window thread's exit, D1): no witness reachable; VM part or swap |
 | hdfs-adhoc-33 | H/server/datanode/DataStorage.java:259 | `bpStorage != null` (hot swap) | TestDataNodeHotSwapVolumes#testAddOneNewVolume | up | UNSAT at FIXED_POINT (HG7R, SL1) |
 | hdfs-adhoc-34 | same file :741 | namespaceIDs incompatible | TestDFSStartupVersions#testVersions | up | open: time-model class |
 | hdfs-adhoc-35 | same file :750 | clusterIDs incompatible | TestDFSStartupVersions#testVersions | up | open: time-model class |
@@ -69,10 +69,11 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | hdfs-adhoc-50 | same file :198 | duplicate snapshot name | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R, SL1; 141 obligations, 3 paths) |
 | hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | UNSAT at FIXED_POINT (HG8Z): declared at the test thread's first image save (FSImageFormatProtobuf.Saver.save, one snapshot; `first` named a rebuilt cluster's format-time save, 0 snapshots, which made the check vacuous); 68 seed give-ups (clock class) |
 
-Summary (2026-10-05 day, rounds HG7R/HG7N/HG7D/HG8A/SL1/R4A on the current body): 18 right-shaped verdicts (10 12 SAT
-confirmed; 07 08 09 14 15 16 19 20 27 30 33 39 40 48 49 50 UNSAT at the fixed point with symbols), 4 UNSAT without a
-symbol (11 28 29 31: container reads pinned, D1), 3 rerunning with a longer budget (24 26 37), 52 (identity
-amplifier), 32 (unnamed writer), 9 clock-driven or partly (01 17 21 22 23 25 34 35 43: the time model).
+Summary (2026-10-05 evening, rounds HG8E/HG8F/HG8Z/WD3 on the merged body): 37 right-shaped verdicts with symbols (10 12
+SAT confirmed; 05 07 08 09 11 14 15 16 19 20 21 22 23 24 25 26 27 30 33 34 37 39 40 49 50 52 UNSAT at the fixed point;
+21 22 23 provisional until the time model), 4 UNSAT over a chain that is constant in the window, reasons named (28 29 31:
+the block-pool map filled before the window, removed only after the target in unnamed work; 48: a single-thread
+operation under the namesystem lock), 4 clock-driven (01 17 35 43: the time model). 32 swapped out for 05.
 
 ## HDFS named bug checks (10)
 

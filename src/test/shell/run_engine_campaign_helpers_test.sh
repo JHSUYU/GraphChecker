@@ -900,7 +900,9 @@ done
 # the campaign's measured need (campaign_replay_need_mb); and
 # `stream_max_in_flight` became `stream_shared_pool`: a sweep asks for a
 # shared pool, and each exploration sizes its share from its measured need.
-[[ "$(print_normalized_config | wc -l)" -eq 53 ]] \
+# 54: `reproduce_min_s` joined it: the least wall clock a native run is
+# given, since a short recording says little of ten runs at once.
+[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1170,9 +1172,12 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 # step placed where there is room (here: the head's own host, which has it)
 # and charged the recording's peak memory until it returns, naming the host
 # it ran on, bounded by
-# reproduce_time_factor times the recording's workload and answering for
-# itself off its trace's plant rows; reproduce.json counts the answers and
-# names the runs that stated none.  A plant CONFIRM refuses, or a
+# reproduce_time_factor times the recording's workload, at least
+# reproduce_min_s, and answering for
+# itself, per row of the plant, off its trace's plant rows; reproduce.json
+# counts the answers (whole plant applied, fatal, at the anchor, reproduced:
+# at the anchor with every root planted, an order unheld, an order still
+# holding) and names the runs that stated none.  A plant CONFIRM refuses, or a
 # recording that measured no peak memory, is no run and the reason.  Per row:
 # ConfirmMain's exit, the recording's peak MB, and the reproduction.
 repro_dir="${test_tmp}/reproduce"
@@ -1196,25 +1201,50 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     campaign_head_charging=1
     reproduce_runs=4
     reproduce_time_factor=3
+    reproduce_min_s=75
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
+    # ConfirmMain --plant: a root, an order and the target's arm, else
+    # refused.
     run_java_main() {
-      echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
-      return "${repro_plant}"
+      (( repro_plant == 0 )) || {
+        echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
+        return "${repro_plant}"
+      }
+      local plant="" prev="" arg
+      for arg; do
+        [[ "${prev}" != --plant ]] || plant=${arg}
+        prev=${arg}
+      done
+      {
+        echo '{"kind":"ROOT","category":"HOOK","rootId":"R","row":0}'
+        echo '{"kind":"ORDER","before":"b|","after":"a|","row":1}'
+        echo '{"kind":"TARGET","row":2}'
+      } >"${plant}"
     }
-    # Run n: 1 at the anchor, 2 fatal elsewhere, 3 planted only, 4 no trace.
-    # Each states its bound and its charge, and the ledger's row for it.
+    # Run n: 1 every row applied and the fatal at the anchor; 2 its order
+    # unheld and the fatal elsewhere; 3 its root unwritten, its order still
+    # holding, and the fatal at the anchor all the same -- the program's own
+    # race, no reproduction; 4 no trace.  Each states its bound, its order
+    # timeout and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
-      echo "$2 $4 $(ls "${campaign_host_gate_root}/gate-head/charges" \
+      echo "$2 $4 $6 $(ls "${campaign_host_gate_root}/gate-head/charges" \
         | grep -c "^$4\\.")" >>"${repro_dir}/bounds"
       (( n < 4 )) || return 1
       {
         echo '{"event":"BRANCH"}'
-        echo '{"event":"PLANT_APPLIED"}'
-        (( n > 2 )) \
-          || jq -n -c --argjson at "$(( n == 1 ))" \
-            '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
+        case ${n} in
+          1) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_APPLIED","row":1}' ;;
+          2) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_HOLDING","row":1}'
+             echo '{"event":"PLANT_UNHELD","row":1}' ;;
+          3) echo '{"event":"PLANT_UNWRITTEN","row":0}'
+             echo '{"event":"PLANT_HOLDING","row":1}' ;;
+        esac
+        jq -n -c --argjson at "$(( n != 2 ))" \
+          '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
       } >"${run}/runtime_trace.jsonl"
     }
     campaign_reproduce "${repro_dir}/iteration"
@@ -1225,12 +1255,19 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     || fail "a reproduction (plant ${repro_plant}, ${repro_rss} MB) is \
 $(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
   [[ "${repro_expected}" != *'"runs":4'* \
-      || "$(cut -d' ' -f1,2 "${repro_dir}/bounds" | sort -u)" \
-        == "60 ${repro_rss}" ]] \
-    || fail "a native run was not bounded by 3 x the recording's 20 s and \
-held to its ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
+      || "$(cut -d' ' -f1-3 "${repro_dir}/bounds" | sort -u)" \
+        == "75 ${repro_rss} 37500" ]] \
+    || fail "a native run was not bounded by reproduce_min_s=75 over 3 x the \
+recording's 20 s, its orders held at most half of it, and held to its \
+${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
-      || "$(awk '$3 < 1' "${repro_dir}/bounds")" == "" ]] \
+      || "$(jq -c '[.unapplied[].why]' \
+        "${repro_dir}/final/reproduce/run-3/answer.json")" \
+        == '["UNWRITTEN","HOLDING"]' ]] \
+    || fail "a run does not say why it did not apply a row: \
+$(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
+  [[ "${repro_expected}" != *'"runs":4'* \
+      || "$(awk '$4 < 1' "${repro_dir}/bounds")" == "" ]] \
     || fail "a native run ran uncharged: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
       || "$(cat "${repro_dir}"/final/reproduce/run-*/host.txt | sort -u)" \
@@ -1240,9 +1277,9 @@ held to its ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
     || fail "a native run's charge outlived it: \
 $(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
-0|2048|{"runs":4,"planted":3,"fatal":2,"atAnchor":1,"reason":""}
-1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
-0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
+0|2048|{"runs":4,"planted":1,"fatal":3,"atAnchor":2,"reproduced":1,"unheld":1,"holding":1,"reason":""}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
 EOF
 
 # REACHED-1: a replay reached its target when a session published a target
@@ -2748,6 +2785,7 @@ stream_fixture stream-3c
   stream_stubs
   campaign_budget_s=3
   campaign_reserve_s=1
+  reproduce_min_s=1
   campaign_started_s=${SECONDS}
   stream_round_plan() {
     [[ "$1" != 0 ]] || stream_propose "$2" SLOW
@@ -4230,6 +4268,7 @@ next_claim() {
 reset_config
 campaign_budget_s=100
 campaign_reserve_s=20
+reproduce_min_s=1
 campaign_started_s=${SECONDS}
 next_claim true
 ! campaign_next_claim "${next_iteration}" >/dev/null \
@@ -4269,8 +4308,9 @@ reset_config
 # RESERVE-1: the reserve owes COMPOSE and EMIT as long as the longest COMPOSE
 # (the last planner round, which reads the same corpus, standing for one not
 # yet run), CONFIRM as long as the longest CONFIRM (the seed's REPLAY
-# standing for one), REPRODUCE reproduce_time_factor times the recorded
-# workload, never less than campaign_reserve_s.  HG4's hdfs-11741 lost its
+# standing for one), REPRODUCE its bound (reproduce_time_factor times the
+# recorded workload, at least reproduce_min_s), never less than
+# campaign_reserve_s.  HG4's hdfs-11741 lost its
 # EMIT to the case timeout when it owed COMPOSE and CONFIRM alone; HR1's
 # hdfs-adhoc-07 had the floor's 600 s for its first COMPOSE; SL1's
 # hdfs-adhoc-37 owed its 23-min seed replay twice and explored one round.
@@ -4290,7 +4330,7 @@ reserve_case() {
       "${dir}/explore_manifest.json"
   done
   got=$(campaign_reserve_s=$4 campaign_recorded_workload_s=$5 \
-    reproduce_time_factor=3 \
+    reproduce_time_factor=3 reproduce_min_s=30 \
     campaign_stage_metrics="${root}/stage_metrics.tsv" \
     campaign_root="${root}" campaign_reserve)
   [[ "${got}" == "$6" ]] \
@@ -4301,6 +4341,7 @@ reserve_case composed 'COMPOSE\t100000\nREPLAY\t30000\nCONFIRM\t50000\n' \
 reserve_case planned 'REPLAY\t30000\n' '0:5 10:130 140:-' 20 10 300
 reserve_case floor 'REPLAY\t30000\n' '' 100 0 100
 reserve_case slow-seed 'REPLAY\t1409000\n' '0:60' 20 30 1619
+reserve_case native-floor 'REPLAY\t30000\n' '' 20 5 60
 unset -f reserve_case
 
 # BUDGET-1: a budget its reserve takes whole is refused by name.

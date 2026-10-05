@@ -64,8 +64,9 @@ SOLVE/DECIDE  check and print the solver verdict and the claim COMPOSE published
 CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
 EMIT        final/result.json, gaps.json, run-manifest.json
 REPRODUCE   after the verdict: run a confirmed witness natively, N runs at once over
-            the lifts, the recording weave on the stock JDK planting only its fault
-            markers, each ending at the fatal at its anchor (runtime/RecordingPlant)
+            the lifts, the recording weave on the stock JDK planting CONFIRM's world
+            (fault markers, tree hook roots, the model's order), each ending at the
+            fatal at its anchor (runtime/RecordingPlant)
 ```
 
 The stages, their gates and the claim kinds are specified in
@@ -90,7 +91,8 @@ A case directory holds declarations only. `experiments/<system>/<case>/` contain
   derives the spec from the marker (`tools/lib/annotated.py <system dir> <tree> <case id>`, into
   `$CAUSYNTH_OUTPUT_DIR/declared-target.yaml`). A bug check is such a case ("Run the bug
   checks");
-- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows; the fault doors are the engine's
+- optionally `communication-mappings.jsonl` (`WIRE_FLOW` rows, one per system where they are the
+  system's protocol: HDFS's is `experiments/hadoop/communication-mappings.jsonl`, used by every HDFS case; the fault doors are the engine's
   library catalog, `docs/design/SYMBOL-SCOPE.md` §4.2), `root-domains.jsonl` and
   `loop-bounds*.jsonl`.
 
