@@ -1378,66 +1378,122 @@ final class ComposedFamilies {
                               List<String> stated,
                               List<String> recorded,
                               Map<String, String> planted) {
-        String session = path.sessionId;
-        Set<String> chosen = new LinkedHashSet<String>();
+        StateFamilies families = new StateFamilies(path, ordinal, selector,
+                pins, reached, stated);
         // Reads grouped by location: every read of it takes the same arm.
         Map<String, List<ReadRow>> byLocation =
                 new LinkedHashMap<String, List<ReadRow>>();
         for (ReadRow read : joined) {
             add(byLocation, SmtLowering.locationKey(read.location()), read);
         }
-        // Each location's writers, and each writer's outs across locations.
-        Map<String, List<String>> writersOf =
-                new LinkedHashMap<String, List<String>>();
-        Map<String, List<Out>> outsOfWriter =
-                new LinkedHashMap<String, List<Out>>();
-        // A location whose run is no one writer's arm: its reads' joins and
-        // pins, the arm that is the run's own interleaving.
-        Map<String, List<String>> observedPins =
-                new LinkedHashMap<String, List<String>>();
-        // Otherwise the one writer every read of it observed.
-        Map<String, String> runWriters = new LinkedHashMap<String, String>();
-        // Each writer's locations with a family here: what its block binds.
-        Map<String, Set<String>> blockOf =
-                new LinkedHashMap<String, Set<String>>();
-        for (Map.Entry<String, List<ReadRow>> entry
+        for (Map.Entry<String, List<ReadRow>> location
                 : byLocation.entrySet()) {
-            List<ReadRow> reads = entry.getValue();
-            // Alternatives need an owner naming the storage
-            // ({@link Arms#namedOwner}); a class owner aliases every
-            // instance, so such a read keeps its own run's delivery.
-            if (!Arms.namedOwner(reads.get(0).location())) {
-                if (aliasingNamed.add(entry.getKey())) {
-                    composer.gap(GapKind.DECLARATION_MISSING,
-                            GapClass.DIAGNOSTIC,
-                            entry.getKey(), "the owner on this location's "
-                                    + "rows is a class and not the rid of "
-                                    + "one object, so it names every "
-                                    + "instance of that class at once: "
-                                    + "this read is delivered as its own "
-                                    + "run delivered it and gets no "
-                                    + "alternative writers");
-                }
-                continue;
-            }
-            List<String> symbols = new ArrayList<String>();
+            families.classify(location.getKey(), location.getValue());
+        }
+        families.holdBrokenBlocks();
+        families.writerSelectors();
+        families.gateNestedSelectors();
+        return families.locationFamilies(recorded, planted);
+    }
+
+    /** One location's state family: its reads, its writers' selectors and
+     *  the arm the run took there ({@link StateFamilies#classify}). */
+    private static final class StateLocation {
+        final String key;
+        final List<ReadRow> reads;
+        final List<String> symbols;
+        /** Its writers, one selector each where the body lowers. */
+        final List<String> writers = new ArrayList<String>();
+        /** The one writer every read of it observed, where the run is one
+         *  writer's arm. */
+        String runWriter;
+        /** Otherwise each read held to its own join or pin: the run's own
+         *  interleaving, one more arm. */
+        List<String> observedPin;
+
+        StateLocation(String key, List<ReadRow> reads) {
+            this.key = key;
+            this.reads = reads;
+            this.symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
-            // What EVERY read of it observed, not the first's.  The run is
-            // one writer's arm only where every read saw that writer's one
-            // write: a writer arm binds every read to one write.  Reads that
-            // saw several writes (a nested region of the reader's own thread
-            // wrote between two of its reads: hdfs-adhoc-23's layoutVersion),
-            // or a version whose writer ran outside every region, which no
-            // arm states, are no writer's arm: the joins and pins are, as one
-            // more arm holding each read to its own (Composer#stateJoins
-            // joins a read only once its join or pin is stated), the run as
-            // it happened.
+        }
+    }
+
+    /** One path's state families, stated step by step ({@link
+     *  #stateFamilies}). */
+    private final class StateFamilies {
+        private final Corpus.RecordedPath path;
+        private final String session;
+        private final int ordinal;
+        private final String selector;
+        private final Map<String, String> pins;
+        private final Set<String> reached;
+        private final List<String> stated;
+        /** The locations with a family, in reading order. */
+        private final Map<String, StateLocation> locations =
+                new LinkedHashMap<String, StateLocation>();
+        /** Each writer's outs across locations: what its selector binds. */
+        private final Map<String, List<Out>> outsOfWriter =
+                new LinkedHashMap<String, List<Out>>();
+        /** Each writer's locations with a family: what its block binds. */
+        private final Map<String, Set<String>> blockOf =
+                new LinkedHashMap<String, Set<String>>();
+        /** Each writer's selector, where its body lowered. */
+        private final Map<String, String> selectorOf =
+                new LinkedHashMap<String, String>();
+        /** Nested selector -> the arms delivering a store it is a state
+         *  of. */
+        private final Map<String, List<String>> delivering =
+                new LinkedHashMap<String, List<String>>();
+
+        StateFamilies(Corpus.RecordedPath path, int ordinal, String selector,
+                      Map<String, String> pins, Set<String> reached,
+                      List<String> stated) {
+            this.path = path;
+            this.session = path.sessionId;
+            this.ordinal = ordinal;
+            this.selector = selector;
+            this.pins = pins;
+            this.reached = reached;
+            this.stated = stated;
+        }
+
+        /**
+         * One location's writers.  Alternatives need an owner naming the
+         * storage ({@link Arms#namedOwner}): a class owner aliases every
+         * instance, so such a read keeps its own run's delivery, named.
+         * The run is one writer's arm only where every read saw that
+         * writer's one write; reads that saw several writes (a nested region
+         * of the reader's own thread wrote between two of its reads:
+         * hdfs-adhoc-23's layoutVersion), or a version whose writer ran
+         * outside every region, which no arm states, are no writer's arm:
+         * their joins and pins are, as one more arm holding each read to its
+         * own (Composer#stateJoins joins a read only once its join or pin is
+         * stated), the run as it happened.  A family needs an HB-concurrent
+         * writer and two arms: without them the reads keep their own joins,
+         * which are the run.
+         */
+        void classify(String key, List<ReadRow> reads) {
+            if (!Arms.namedOwner(reads.get(0).location())) {
+                if (aliasingNamed.add(key)) {
+                    composer.gap(GapKind.DECLARATION_MISSING,
+                            GapClass.DIAGNOSTIC, key, "the owner on this "
+                                    + "location's rows is a class and not the "
+                                    + "rid of one object, so it names every "
+                                    + "instance of that class at once: this "
+                                    + "read is delivered as its own run "
+                                    + "delivered it and gets no alternative "
+                                    + "writers");
+                }
+                return;
+            }
+            StateLocation location = new StateLocation(key, reads);
             boolean outside = false;
             Set<Long> versions = new LinkedHashSet<Long>();
             String seen = null;
             for (ReadRow read : reads) {
                 versions.add(read.observedVersion());
-                WriteRow write = corpus.writeOf(session, entry.getKey(),
+                WriteRow write = corpus.writeOf(session, key,
                         read.observedVersion());
                 if (write == null) {
                     outside = true;
@@ -1447,39 +1503,8 @@ final class ComposedFamilies {
             }
             boolean asHappened = outside || versions.size() > 1;
             OccurrenceAddress reader = reads.get(0).endpoint().occurrence();
-            List<Arms.Arm> found = new ArrayList<Arms.Arm>();
-            // Every writer named: no read met a writer the log never named.
-            boolean named = true;
-            for (ReadRow read : reads) named &= !read.unnamedWriter();
-            for (Arms.Arm arm : arms.stateArms(reads.get(0).endpoint(),
-                    session, entry.getKey(),
-                    reads.get(0).observedVersion(), named)) {
-                if (replacing.contains(arm.sessionId())) continue;
-                if (arm.producer() == null) continue;
-                // An arm binds every read to its write: where the reads saw
-                // several versions, only a write each of them could have
-                // seen is an alternative ({@link Arms#eligible}; hdfs-adhoc-16:
-                // updatePipeline's earlier read bound to its own later write).
-                if (!seenByAll(reader, session, entry.getKey(), versions,
-                        arm.write())) {
-                    continue;
-                }
-                // The OBSERVED writer is stated even if unattested.
-                if (!arm.attested()) {
-                    noteUnattested(arm, "the arm states what it wrote and "
-                            + "not why, so no witness may move a root "
-                            + "inside it");
-                }
-                // Recorded even without a case split: the unattested-arm
-                // gate reads this set.
-                reached.add(arm.slotId());
-                family(arm.slotId(), Family.of(arm.slotId(),
-                        Collections.singletonList(row(arm))));
-                found.add(arm);
-            }
+            List<Arms.Arm> found = writerArms(location, reader, versions);
             fileRefusals();
-            // A family needs an HB-concurrent writer: without one the reads
-            // keep their own joins, which are the run.
             boolean alternative = false;
             for (Arms.Arm arm : found) {
                 alternative |= arms.concurrent(reader, arm.producer(),
@@ -1487,182 +1512,253 @@ final class ComposedFamilies {
             }
             if (!alternative
                     || found.size() + (asHappened ? 1 : 0) < 2) {
-                continue;
+                return;
             }
             if (asHappened) {
-                observedPins.put(entry.getKey(), observedPin(symbols, pins));
+                location.observedPin = observedPin(location.symbols, pins);
             } else {
-                runWriters.put(entry.getKey(), seen);
+                location.runWriter = seen;
             }
-            List<String> writers = new ArrayList<String>();
             for (Arms.Arm arm : found) {
                 String writer = writer(arm.write());
-                if (!writers.contains(writer)) writers.add(writer);
-                add(outsOfWriter, writer, new Out(arm, symbols));
+                if (!location.writers.contains(writer)) {
+                    location.writers.add(writer);
+                }
+                add(outsOfWriter, writer, new Out(arm, location.symbols));
                 blockOf.computeIfAbsent(writer,
-                        key -> new LinkedHashSet<String>())
-                        .add(entry.getKey());
+                        held -> new LinkedHashSet<String>()).add(key);
             }
-            writersOf.put(entry.getKey(), writers);
+            locations.put(key, location);
         }
-        // The run as recorded is a world: a writer is the run's arm only
-        // where the run took it at every location of its block; the others
-        // the run read from it are held by their observed arm.  One pass is
-        // the fixed point: moving a location off its writer changes no other
-        // writer's block.
-        for (Map.Entry<String, String> run
-                : new ArrayList<Map.Entry<String, String>>(
-                runWriters.entrySet())) {
-            for (String other : blockOf.getOrDefault(run.getValue(),
-                    Collections.<String>emptySet())) {
-                if (run.getValue().equals(runWriters.get(other))) continue;
-                List<String> symbols = new ArrayList<String>();
-                for (ReadRow read : byLocation.get(run.getKey())) {
-                    symbols.add(read.symbol());
+
+        /**
+         * The location's state arms, each a family of its own: an arm binds
+         * every read to its write, so where the reads saw several versions
+         * only a write each of them could have seen is one ({@link
+         * Arms#eligible}; hdfs-adhoc-16: updatePipeline's earlier read bound
+         * to its own later write).  The OBSERVED writer is stated even if
+         * unattested, and its slot recorded as reached, which the
+         * unattested-arm gate reads.
+         */
+        private List<Arms.Arm> writerArms(StateLocation location,
+                                          OccurrenceAddress reader,
+                                          Set<Long> versions) {
+            List<Arms.Arm> found = new ArrayList<Arms.Arm>();
+            ReadRow first = location.reads.get(0);
+            // Every writer named: no read met a writer the log never named.
+            boolean named = true;
+            for (ReadRow read : location.reads) {
+                named &= !read.unnamedWriter();
+            }
+            for (Arms.Arm arm : arms.stateArms(first.endpoint(), session,
+                    location.key, first.observedVersion(), named)) {
+                if (replacing.contains(arm.sessionId())
+                        || arm.producer() == null
+                        || !seenByAll(reader, session, location.key,
+                        versions, arm.write())) {
+                    continue;
                 }
-                observedPins.put(run.getKey(), observedPin(symbols, pins));
-                runWriters.remove(run.getKey());
-                break;
+                if (!arm.attested()) {
+                    noteUnattested(arm, "the arm states what it wrote and "
+                            + "not why, so no witness may move a root "
+                            + "inside it");
+                }
+                reached.add(arm.slotId());
+                family(arm.slotId(), Family.of(arm.slotId(),
+                        Collections.singletonList(row(arm))));
+                found.add(arm);
             }
+            return found;
         }
-        // One selector per writer occurrence, its body stated once.
-        Map<String, String> selectorOf = new LinkedHashMap<String, String>();
-        // Nested selector -> the arms delivering a store it is a state of.
-        Map<String, List<String>> delivering =
-                new LinkedHashMap<String, List<String>>();
-        for (Map.Entry<String, List<Out>> writer
-                : outsOfWriter.entrySet()) {
-            String name = "writer_arm__" + ordinal + "__"
-                    + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
-            lowering.declare(name, VmTermLowering.Sort.BOOL);
-            int[] mark = mark();
-            String body = writer.getKey().startsWith(INITIAL)
-                    ? initialBody(session, writer.getValue())
-                    : producerBody(ordinal, name, writer.getKey(), session,
-                    writer.getValue(), reached, new ArrayList<String>(), 0,
-                    new LinkedHashMap<String, BoundLeaf>());
-            if (body == null) {
-                rollback(mark);
-                continue;
-            }
-            selectorOf.put(writer.getKey(), name);
-            String assertion = "writer_family__" + ordinal + "__"
-                    + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
-            String formula = "(=> " + name + " " + body + ")";
-            stated.add(formula);
-            assertFamily(assertion,
-                    "(=> " + selector + " " + formula + ")");
-            List<SmtLowering.StateChoice> states =
-                    new ArrayList<SmtLowering.StateChoice>();
-            for (Out out : writer.getValue()) {
-                if (out.arm.write() == null) continue;
-                for (String symbol : out.symbols) {
-                    for (SmtLowering.StateChoice state : lowering
-                            .stateChoices(session, symbol, out.arm.write())) {
-                        states.add(state);
-                        add(delivering, state.selector, name);
+
+        /**
+         * The run as recorded is a world: a writer is the run's arm only
+         * where the run took it at every location of its block; the others
+         * the run read from it are held by their observed arm.  One pass is
+         * the fixed point: moving a location off its writer changes no other
+         * writer's block.
+         */
+        void holdBrokenBlocks() {
+            for (StateLocation location : locations.values()) {
+                String writer = location.runWriter;
+                if (writer == null) continue;
+                for (String other : blockOf.getOrDefault(writer,
+                        Collections.<String>emptySet())) {
+                    if (writer.equals(locations.get(other).runWriter)) {
+                        continue;
                     }
+                    location.observedPin = observedPin(location.symbols,
+                            pins);
+                    location.runWriter = null;
+                    break;
                 }
             }
-            choose(name, ArmChoice.of(assertion,
-                    writer.getKey(), Collections.<String>emptyList(),
-                    session, armsOf(writer.getValue()),
-                    Collections.<String, BoundLeaf>emptyMap()).seeing(states));
         }
-        // Every nested selector this path minted holds only under an arm
-        // of it delivering a store its state was seen through: under none
-        // -- the arm of the store the read observed, the pins', no family,
-        // a selector of another session's scope -- the run's own object
-        // answers as the run saw it ({@code SmtLowering#answerOf}).
-        for (String nested : lowering.nestedSelectors()) {
-            List<String> by = delivering.get(nested);
-            String formula = "(=> " + nested + " " + VmTermLowering.or(
-                    by == null ? Collections.<String>emptyList() : by) + ")";
-            stated.add(formula);
-            assertFamily("nest_family__" + ordinal + "__"
-                            + ArtifactIO.digest(nested + "|" + session, 12),
-                    "(=> " + selector + " " + formula + ")");
-        }
-        // And one exactly-one per location, over the writers it has.
-        for (Map.Entry<String, List<String>> location
-                : writersOf.entrySet()) {
-            List<String> selectors = new ArrayList<String>();
-            for (String writer : location.getValue()) {
-                String name = selectorOf.get(writer);
-                if (name != null) selectors.add(name);
-            }
-            List<String> observedPin = observedPins.get(location.getKey());
-            // A refused body can leave one arm, which is no alternative: the
-            // reads keep their own joins, not a selector nothing forces.
-            if (selectors.size() + (observedPin == null ? 0 : 1) < 2) {
-                continue;
-            }
-            // The arm the run took: the pins', else the one writer every
-            // read of it observed.
-            String runWriter = runWriters.get(location.getKey());
-            String taken = runWriter == null ? null
-                    : selectorOf.get(runWriter);
-            String observed = null;
-            if (observedPin != null) {
-                String name = "observed_arm__" + ordinal + "__"
-                        + ArtifactIO.digest(location.getKey() + "|"
-                        + session, 12);
+
+        /** One selector per writer occurrence, its body stated once; a
+         *  writer whose body does not lower has none. */
+        void writerSelectors() {
+            for (Map.Entry<String, List<Out>> writer
+                    : outsOfWriter.entrySet()) {
+                String name = "writer_arm__" + ordinal + "__"
+                        + ArtifactIO.digest(writer.getKey() + "|" + session,
+                        12);
                 lowering.declare(name, VmTermLowering.Sort.BOOL);
-                String assertion = "observed_family__" + ordinal + "__"
-                        + ArtifactIO.digest(location.getKey() + "|"
-                        + session, 12);
-                String formula = "(=> " + name + " "
-                        + VmTermLowering.and(observedPin) + ")";
+                int[] mark = mark();
+                String body = writer.getKey().startsWith(INITIAL)
+                        ? initialBody(session, writer.getValue())
+                        : producerBody(ordinal, name, writer.getKey(),
+                        session, writer.getValue(), reached,
+                        new ArrayList<String>(), 0,
+                        new LinkedHashMap<String, BoundLeaf>());
+                if (body == null) {
+                    rollback(mark);
+                    continue;
+                }
+                selectorOf.put(writer.getKey(), name);
+                String assertion = "writer_family__" + ordinal + "__"
+                        + ArtifactIO.digest(writer.getKey() + "|" + session,
+                        12);
+                String formula = "(=> " + name + " " + body + ")";
                 stated.add(formula);
                 assertFamily(assertion,
                         "(=> " + selector + " " + formula + ")");
+                List<SmtLowering.StateChoice> states =
+                        new ArrayList<SmtLowering.StateChoice>();
+                for (Out out : writer.getValue()) {
+                    if (out.arm.write() == null) continue;
+                    for (String symbol : out.symbols) {
+                        for (SmtLowering.StateChoice state : lowering
+                                .stateChoices(session, symbol,
+                                        out.arm.write())) {
+                            states.add(state);
+                            add(delivering, state.selector, name);
+                        }
+                    }
+                }
                 choose(name, ArmChoice.of(assertion,
-                        "observed:" + location.getKey(),
-                        Collections.<String>emptyList(), session,
-                        Collections.<Arms.Arm>emptyList(),
-                        Collections.<String, BoundLeaf>emptyMap()));
-                selectors.add(name);
-                taken = name;
-                observed = name;
+                        writer.getKey(), Collections.<String>emptyList(),
+                        session, armsOf(writer.getValue()),
+                        Collections.<String, BoundLeaf>emptyMap())
+                        .seeing(states));
             }
-            for (ReadRow read : byLocation.get(location.getKey())) {
-                chosen.add(read.symbol());
-            }
-            if (taken == null) {
-                gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, location.getKey(), "path "
-                                + path.pathId + " observed one write, by "
-                                + runWriter + ", that no arm here states: "
-                                + "no arm is the pairing the run took, so "
-                                + "the run as it happened is no world of "
-                                + "the formula"));
-            } else {
-                // Where the session's world planted the pairing, the arm the
-                // run took is the plant, and so is the observed arm: this
-                // run's reads saw what the plant held them to.  The
-                // recording's pairing is any other arm.
-                List<String> plants = new ArrayList<String>();
-                if (planted.containsKey(location.getKey())) {
-                    String plant = selectorOf.get(
-                            planted.get(location.getKey()));
-                    if (plant != null) plants.add(plant);
-                    if (observed != null) plants.add(observed);
-                }
-                String run = plants.isEmpty() ? taken
-                        : "(not " + VmTermLowering.or(plants) + ")";
-                if (!recorded.contains(run)) recorded.add(run);
-                for (String arm : plants.isEmpty()
-                        ? Collections.<String>emptyList() : selectors) {
-                    if (!plants.contains(arm)) own(recordedAtPlants, arm);
-                }
-            }
-            String formula = Arms.exactlyOne(selectors);
-            stated.add(formula);
-            assertFamily("state_family__" + ordinal + "__"
-                            + ArtifactIO.digest(location.getKey(), 12),
-                    "(=> " + selector + " " + formula + ")");
         }
-        return chosen;
+
+        /**
+         * Every nested selector this path minted holds only under an arm of
+         * it delivering a store its state was seen through: under none --
+         * the arm of the store the read observed, the pins', no family, a
+         * selector of another session's scope -- the run's own object
+         * answers as the run saw it ({@code SmtLowering#answerOf}).
+         */
+        void gateNestedSelectors() {
+            for (String nested : lowering.nestedSelectors()) {
+                List<String> by = delivering.get(nested);
+                String formula = "(=> " + nested + " " + VmTermLowering.or(
+                        by == null ? Collections.<String>emptyList() : by)
+                        + ")";
+                stated.add(formula);
+                assertFamily("nest_family__" + ordinal + "__"
+                                + ArtifactIO.digest(nested + "|" + session,
+                                12),
+                        "(=> " + selector + " " + formula + ")");
+            }
+        }
+
+        /**
+         * One exactly-one per location over the arms it has -- its writers'
+         * selectors and its observed arm -- and the arm the run took there
+         * into {@code recorded}: the observed arm, else the one writer every
+         * read observed; at a location the session's world planted a
+         * pairing on, any arm but the plant and the observed arm (this run's
+         * reads saw what the plant held them to).  A refused body can leave
+         * one arm, which is no alternative: the reads keep their own joins.
+         *
+         * @return the read symbols a family binds
+         */
+        Set<String> locationFamilies(List<String> recorded,
+                                     Map<String, String> planted) {
+            Set<String> chosen = new LinkedHashSet<String>();
+            for (StateLocation location : locations.values()) {
+                List<String> selectors = new ArrayList<String>();
+                for (String writer : location.writers) {
+                    String name = selectorOf.get(writer);
+                    if (name != null) selectors.add(name);
+                }
+                if (selectors.size()
+                        + (location.observedPin == null ? 0 : 1) < 2) {
+                    continue;
+                }
+                String taken = location.runWriter == null ? null
+                        : selectorOf.get(location.runWriter);
+                String observed = null;
+                if (location.observedPin != null) {
+                    observed = observedArm(location);
+                    selectors.add(observed);
+                    taken = observed;
+                }
+                chosen.addAll(location.symbols);
+                if (taken == null) {
+                    gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                            GapClass.BLOCKING, location.key, "path "
+                                    + path.pathId + " observed one write, by "
+                                    + location.runWriter + ", that no arm "
+                                    + "here states: no arm is the pairing "
+                                    + "the run took, so the run as it "
+                                    + "happened is no world of the formula"));
+                } else {
+                    recordRun(location, selectors, taken, observed, recorded,
+                            planted);
+                }
+                String formula = Arms.exactlyOne(selectors);
+                stated.add(formula);
+                assertFamily("state_family__" + ordinal + "__"
+                                + ArtifactIO.digest(location.key, 12),
+                        "(=> " + selector + " " + formula + ")");
+            }
+            return chosen;
+        }
+
+        /** The location's observed arm: each read held to its own join or
+         *  pin, a selector of its own. */
+        private String observedArm(StateLocation location) {
+            String name = "observed_arm__" + ordinal + "__"
+                    + ArtifactIO.digest(location.key + "|" + session, 12);
+            lowering.declare(name, VmTermLowering.Sort.BOOL);
+            String assertion = "observed_family__" + ordinal + "__"
+                    + ArtifactIO.digest(location.key + "|" + session, 12);
+            String formula = "(=> " + name + " "
+                    + VmTermLowering.and(location.observedPin) + ")";
+            stated.add(formula);
+            assertFamily(assertion, "(=> " + selector + " " + formula + ")");
+            choose(name, ArmChoice.of(assertion, "observed:" + location.key,
+                    Collections.<String>emptyList(), session,
+                    Collections.<Arms.Arm>emptyList(),
+                    Collections.<String, BoundLeaf>emptyMap()));
+            return name;
+        }
+
+        /** The arm the run took at one location, into {@code recorded}; at a
+         *  planted location any arm but the plant and the observed arm, each
+         *  of which is owned as the recording's there. */
+        private void recordRun(StateLocation location, List<String> selectors,
+                               String taken, String observed,
+                               List<String> recorded,
+                               Map<String, String> planted) {
+            List<String> plants = new ArrayList<String>();
+            if (planted.containsKey(location.key)) {
+                String plant = selectorOf.get(planted.get(location.key));
+                if (plant != null) plants.add(plant);
+                if (observed != null) plants.add(observed);
+            }
+            String run = plants.isEmpty() ? taken
+                    : "(not " + VmTermLowering.or(plants) + ")";
+            if (!recorded.contains(run)) recorded.add(run);
+            for (String arm : plants.isEmpty()
+                    ? Collections.<String>emptyList() : selectors) {
+                if (!plants.contains(arm)) own(recordedAtPlants, arm);
+            }
+        }
     }
 
     /** The observed arm's body: each read held to its own join or pin. */
