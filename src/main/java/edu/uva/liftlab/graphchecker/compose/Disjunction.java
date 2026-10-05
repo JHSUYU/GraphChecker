@@ -135,17 +135,15 @@ final class Disjunction implements AutoCloseable {
     }
 
     /** Whether this path's own self-check ({@link #selfCheck}) is unsat
-     *  with a core naming a refuted claim the formula asserts: a model
-     *  CONFIRM refuted excludes it, no contradiction of its run. */
+     *  with a core naming a model the formula excludes: one CONFIRM refuted
+     *  or gave no verdict on excludes it, no contradiction of its run. */
     boolean refutedBySelfCheck(String selector) {
         Z3.Answer answer = selfChecked.get(selector);
         if (answer == null || !answer.unsat() || answer.core() == null) {
             return false;
         }
         for (String label : answer.core()) {
-            if (label != null && label.startsWith(Composer.REFUTED_CLAIM)) {
-                return true;
-            }
+            if (Composer.excludesAModel(label)) return true;
         }
         return false;
     }

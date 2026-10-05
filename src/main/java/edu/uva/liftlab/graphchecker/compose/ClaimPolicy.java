@@ -228,9 +228,9 @@ public final class ClaimPolicy {
         }
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
-        // An unsat may rest on a refuted claim the formula excludes: the
-        // core names it (restsOnRefutations), so it is asked for whenever
-        // one is asserted.
+        // An unsat may rest on a model the formula excludes, refuted or
+        // refused: the core names it (restsOnRefutations), so it is asked
+        // for whenever one is asserted.
         Outcome free = outcome(composition, asks,
                 composition.free(outcomes.size()),
                 Collections.<String>emptyList(),
@@ -501,26 +501,50 @@ public final class ClaimPolicy {
          * 1. A declared root moved inside its domain, of this pass's rank: a
          * witness moving configuration only ranks after every other, the
          * clocks and pairings of 2 included ({@code
-         * Composer#configurationOnly}).  Polarity (ordinal 0 unsat) is a
-         * CONDITION on the claim; when the recording decides the arm, a
-         * moved root must reach the fatal arm with clocks and pairings held
-         * as recorded, so neither is part of the witness.
+         * Composer#configurationOnly}).  Within a rank, a witness that is
+         * its selected session's own run ({@link #ownRun}) is claimed
+         * first, then the rest in the valuations' order: the order of the
+         * single moves says nothing of which one a run already reached
+         * (hdfs-adhoc-10 SL1: a fault ranked first in the root order was
+         * claimed through a writer arm re-paired from another session,
+         * which no run can realize, while the SYNC fault its own session
+         * had run waited thirteen valuations behind it).  Polarity (ordinal
+         * 0 unsat) is a CONDITION on the claim; when the recording decides
+         * the arm, a moved root must reach the fatal arm with clocks and
+         * pairings held as recorded, so neither is part of the witness.
          */
         Decision movedRoot(boolean configuration) {
-            return recordingDecides ? movedAsHappened(configuration)
-                    : movedFree(configuration);
+            Decision own = recordingDecides
+                    ? movedAsHappened(configuration, true)
+                    : movedFree(configuration, true);
+            if (own != null) return own;
+            return recordingDecides ? movedAsHappened(configuration, false)
+                    : movedFree(configuration, false);
         }
 
-        private Decision movedAsHappened(boolean configuration) {
+        /**
+         * The witness of this rank to claim, or null: with {@code own}, the
+         * first that is its session's own run, asked aside -- nothing it
+         * names or refines is kept unless it is claimed, so a corpus with
+         * no such witness is decided as without this pass -- else the
+         * first.
+         */
+        private Decision movedAsHappened(boolean configuration,
+                                         boolean own) {
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome free = outcomes.get(index);
-                if (!movedWitness(free, configuration)) continue;
-                Outcome asked = outcome(composition, asks, free.valuation(),
-                        asHappened, false);
-                if (!asked.witness()
-                        || unattested(composition, asked, gaps)) {
+                if (own ? !ownCandidate(free, configuration)
+                        : !movedWitness(free, configuration)) {
                     continue;
                 }
+                Outcome asked = outcome(composition, asks, free.valuation(),
+                        asHappened, false);
+                List<GapRow> named = own ? new ArrayList<GapRow>() : gaps;
+                if (!asked.witness() || (own && !ownRun(asked))
+                        || unattested(composition, asked, named)) {
+                    continue;
+                }
+                if (own) gaps.addAll(named);
                 outcomes.set(index, asked);
                 outcomes.set(0, asRecorded);
                 return claimed(mechanism(composition, asks, asked,
@@ -529,12 +553,17 @@ public final class ClaimPolicy {
             return null;
         }
 
-        private Decision movedFree(boolean configuration) {
+        private Decision movedFree(boolean configuration, boolean own) {
+            // Unpublishable, so not refined: each clock pinned back is a
+            // round of path asks (hdfs-11741 L1: hours of leastClocks over a
+            // witness its polarity then refused).  Named once, by the pass
+            // in the valuations' order.
+            if (own && !polarityDecides) return null;
             for (Outcome found : new ArrayList<Outcome>(outcomes)) {
-                if (!movedWitness(found, configuration)) continue;
-                // Unpublishable, so not refined: each clock pinned back is a
-                // round of path asks (hdfs-11741 L1: hours of leastClocks
-                // over a witness its polarity then refused).
+                if (own ? !ownCandidate(found, configuration)
+                        : !movedWitness(found, configuration)) {
+                    continue;
+                }
                 if (!polarityDecides) {
                     undecidedPolarity(gaps, recorded, "a witness moving "
                             + found.valuation().moved().keySet());
@@ -542,17 +571,55 @@ public final class ClaimPolicy {
                 }
                 // Published under every clock pin it can keep, and each
                 // clock it still moves moved with room.
+                List<GapRow> named = own ? new ArrayList<GapRow>() : gaps;
                 Outcome outcome = withMargin(composition, asks,
                         leastClocks(composition, asks, found, cells, false,
-                                gaps), gaps);
+                                named), named);
+                if (own && (!ownRun(outcome)
+                        || unattested(composition, outcome, named))) {
+                    continue;
+                }
                 outcomes.set(outcomes.indexOf(found), outcome);
-                if (unattested(composition, outcome, gaps)) continue;
+                if (!own && unattested(composition, outcome, gaps)) continue;
+                if (own) gaps.addAll(named);
                 // #mechanism answers MARKER_FLIPPED or a narrower replaced
                 // slot, never NO_SUPPORTED_WITNESS.
                 return claimed(mechanism(composition, asks, outcome,
                         clockDriven), outcome);
             }
             return null;
+        }
+
+        /** A moved witness of this rank that may be its session's own run,
+         *  asked of nothing and naming nothing ({@link #movedWitness}'s
+         *  conditions without its gaps, and {@link #ownRun}'s that need no
+         *  model refined). */
+        private boolean ownCandidate(Outcome outcome, boolean configuration) {
+            return outcome.valuation().ordinal() != 0 && outcome.witness()
+                    && ranked(composition, outcome, configuration)
+                    && composition.unplanted(outcome.valuation().moved()
+                    .keySet()).isEmpty()
+                    && ownPairings(outcome);
+        }
+
+        /**
+         * Whether this witness is its selected session's own run: the
+         * selected path observed the fatal at the anchor, every arm the
+         * model takes on it is its own run's pairing ({@code
+         * Composition#repaired}), and that session ran the model's world --
+         * its moved roots, clocks and no planted pairing ({@code
+         * Composition#ranModel}, the test CONFIRM's realizedBy applies, so
+         * such a claim is confirmed by that very session).
+         */
+        private boolean ownRun(Outcome outcome) {
+            return ownPairings(outcome) && composition.ranModel(
+                    outcome.selected(), movedRoots(composition, outcome));
+        }
+
+        private boolean ownPairings(Outcome outcome) {
+            return outcome.selected().fatalObserved()
+                    && composition.repaired(outcome.selected().selector(),
+                    outcome.selectedArms().keySet()).isEmpty();
         }
 
         /** A witness of a moved valuation of this rank a replay can plant. */

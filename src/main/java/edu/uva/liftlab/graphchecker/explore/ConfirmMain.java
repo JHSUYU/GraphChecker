@@ -37,12 +37,10 @@ import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -277,8 +275,8 @@ public final class ConfirmMain {
         // tests a race twice. A model mixing sessions' deliveries, or choosing
         // a write its reads did not see, needs the replay below.
         JsonObject world = obligationWorld(iteration, sessionId);
-        Moved moved = Moved.of(decided, session,
-                SessionReader.read(iteration, seedSessionId), manifest);
+        Moved moved = moved(decided, manifest, session,
+                SessionReader.read(iteration, seedSessionId));
         boolean sawChosen = closure.ran(chosen);
         // The run as recorded is no counterfactual (owner 2026-10-04: a
         // claim moving no root is never a finding), whatever a replay of it
@@ -404,8 +402,8 @@ public final class ConfirmMain {
                        String seedSessionId) throws IOException {
         World world = new World(obligationWorld(iteration,
                 session.sessionId()));
-        Moved.of(decided, session,
-                SessionReader.read(iteration, seedSessionId), manifest)
+        moved(decided, manifest, session,
+                SessionReader.read(iteration, seedSessionId))
                 .plant(world.assignments, world.clockDeltas, world.mints);
         return world;
     }
@@ -535,137 +533,21 @@ public final class ConfirmMain {
         return sites;
     }
 
-    /**
-     * The MODEL's world, to be planted over the session's (an exploration
-     * plants it so, ObligationFactory): every root the claim moved, by root
-     * id, at the occurrence the recording mints it -- a clock as a skew, any
-     * other root as its value.  Otherwise the replay runs the session again,
-     * not the claim.
-     *
-     * <p>THE CLOCKS ARE THE MODEL'S ALONE.  On every clock cell the
-     * composition anchors (the manifest's {@code roots}) the model's clock
-     * is its jumps -- the claim's moved cells -- and every other cell runs
-     * on from the jump before it; a skew the session planted there would be
-     * a jump the model does not make, carried on by the replay's node clock
-     * ({@code runtime.NodeClocks}).  A jump's skew is off the reading the
-     * composition anchored its cell to: the model's instants are on that
-     * timeline, the recording's; the selected session is a later replay
-     * whose host read its own (SOLR-18406 a37f2: 1168 s later).</p>
-     *
-     * <p>A moved root no row of the session or the recording names, one the
-     * recording mints nowhere (no occurrence of a replay can be focused to
-     * plant it), or a moved clock the composition anchors nowhere is a
-     * refusal, named when the model is planted.</p>
-     */
-    static final class Moved {
-        /** Non-clock root id -> the model's value. */
-        final Map<String, String> values = new LinkedHashMap<String, String>();
-        /** Clock root id -> the model's skew off its anchored reading. */
-        final Map<String, String> skews = new LinkedHashMap<String, String>();
-        /** Root id -> the occurrence the recording mints it at. */
-        final Map<String, String> mints = new LinkedHashMap<String, String>();
-        /** Every clock root id the composition anchors. */
-        final Set<String> anchored = new LinkedHashSet<String>();
-        /** Why a moved root cannot be planted, or "". */
-        String refusal = "";
-
-        static Moved of(JsonObject decided, SessionReader session,
-                        SessionReader recording, JsonObject manifest) {
-            Moved moved = new Moved();
-            Map<String, String> readings = new LinkedHashMap<String, String>();
-            for (JsonElement element : array(manifest, "roots")) {
-                JsonObject root = element.getAsJsonObject();
-                if ("CLOCK".equals(optionalString(root, "kind"))) {
-                    readings.put(optionalString(root, "rootId"),
-                            optionalString(root, "recordedValue"));
-                }
-            }
-            moved.anchored.addAll(readings.keySet());
-            // By root id and by cell symbol; the recording's row first.
-            Map<String, RootMintRow> named =
-                    new LinkedHashMap<String, RootMintRow>();
-            Map<String, RootMintRow> minted =
-                    new LinkedHashMap<String, RootMintRow>();
-            for (SessionReader rows : Arrays.asList(recording, session)) {
-                for (RootMintRow row : rows.roots()) {
-                    named.putIfAbsent(row.rootId(), row);
-                    named.putIfAbsent(row.symbol(), row);
-                    if (rows == recording) minted.putIfAbsent(row.rootId(), row);
-                }
-            }
-            for (Map.Entry<String, JsonElement> entry
-                    : object(decided, "movedRoots").entrySet()) {
-                RootMintRow row = named.get(entry.getKey());
-                RootMintRow mint = row == null ? null
-                        : minted.get(row.rootId());
-                if (mint == null) {
-                    moved.refuse("the claim moves " + entry.getKey()
-                            + ", which the recording mints nowhere, so no "
-                            + "occurrence of a replay can be focused to "
-                            + "plant it");
-                    continue;
-                }
-                String model = entry.getValue().getAsString().trim();
-                if (row.kind() == RootKind.CLOCK) {
-                    String skew = ObligationFactory.skew(model,
-                            readings.get(row.rootId()));
-                    if (skew.isEmpty()) {
-                        moved.refuse("the model moves clock cell "
-                                + entry.getKey() + " to " + model + " and "
-                                + "the composition anchors no reading of "
-                                + "it, so no skew states that instant");
-                        continue;
-                    }
-                    moved.skews.put(row.rootId(), skew);
-                } else {
-                    moved.values.put(row.rootId(), model);
-                }
-                moved.mints.put(row.rootId(), mint.occurrence().render());
-            }
-            return moved;
-        }
-
-        private void refuse(String why) {
-            if (refusal.isEmpty()) refusal = why;
-        }
-
-        /** The model planted over the session's world, or refused. */
-        void plant(Map<String, String> assignments,
-                   Map<String, String> clockDeltas,
-                   Map<String, String> mints) {
-            if (!refusal.isEmpty()) throw new Refused(refusal);
-            clockDeltas.keySet().removeAll(anchored);
-            clockDeltas.putAll(skews);
-            assignments.putAll(values);
-            mints.putAll(this.mints);
-        }
-
-        /** Whether this world's clocks are the model's: on every anchored
-         *  cell, the same skews planted (a skew compares as a number). */
-        boolean clocksOf(Map<String, String> clockDeltas) {
-            Map<String, BigInteger> planted = new LinkedHashMap<String,
-                    BigInteger>();
-            for (Map.Entry<String, String> delta : clockDeltas.entrySet()) {
-                if (!anchored.contains(delta.getKey())) continue;
-                BigInteger skew = number(delta.getValue());
-                if (skew == null) return false;
-                planted.put(delta.getKey(), skew);
-            }
-            Map<String, BigInteger> model = new LinkedHashMap<String,
-                    BigInteger>();
-            for (Map.Entry<String, String> skew : skews.entrySet()) {
-                model.put(skew.getKey(), number(skew.getValue()));
-            }
-            return planted.equals(model);
-        }
-
-        private static BigInteger number(String text) {
-            try {
-                return new BigInteger(text.trim());
-            } catch (NumberFormatException notANumber) {
-                return null;
+    /** The claim's moved roots over the manifest's clock readings (every
+     *  CLOCK root it anchors), as {@link Moved} names them. */
+    private static Moved moved(JsonObject decided, JsonObject manifest,
+                               SessionReader session,
+                               SessionReader recording) {
+        Map<String, String> readings = new LinkedHashMap<String, String>();
+        for (JsonElement element : array(manifest, "roots")) {
+            JsonObject root = element.getAsJsonObject();
+            if ("CLOCK".equals(optionalString(root, "kind"))) {
+                readings.put(optionalString(root, "rootId"),
+                        optionalString(root, "recordedValue"));
             }
         }
+        return Moved.of(ExploreCodec.map(object(decided, "movedRoots")),
+                readings, session, recording);
     }
 
     /**
@@ -838,20 +720,14 @@ public final class ConfirmMain {
         return summary;
     }
 
-    /** Why the selected session is itself the confirming run, or "": its
-     *  world planted no pairing (a pairing is a moved choice its own run
-     *  took under an order the replay held, so CONFIRM makes it again in a
-     *  replay of its own, strict; a planted root, skew or answer is checked
-     *  on the session's rows below), all chosen arms are its own
-     *  deliveries and its reads saw every write the model chose
-     *  ({@code sawChosen}, {@link StateClosure#ran}: another writer, or
-     *  another state of a delivered object, is a run a replay has to make),
-     *  a target row of it at the anchor reached it and observed the fatal
-     *  ({@link #decide}'s rule), and it ran the model's world: every moved
-     *  root at the model's value (its mint row), and its clocks the model's
-     *  jumps and nothing else ({@link Moved#clocksOf}: skews, each off its
-     *  own run's host, so the two timelines compare; an instant of the
-     *  replay is not one of the recording's). */
+    /** Why the selected session is itself the confirming run, or "": all
+     *  chosen arms are its own deliveries and its reads saw every write the
+     *  model chose ({@code sawChosen}, {@link StateClosure#ran}: another
+     *  writer, or another state of a delivered object, is a run a replay
+     *  has to make), a target row of it at the anchor reached it and
+     *  observed the fatal ({@link #decide}'s rule), and it ran the model's
+     *  world ({@link Moved#ranBy}: no pairing planted, every moved root at
+     *  the model's value, its clocks the model's jumps and nothing else). */
     static String realizedBy(Moved moved, JsonObject world, String sessionId,
                              List<JsonObject> arms, SessionReader session,
                              OccurrenceAddress anchor, boolean sawChosen) {
@@ -860,26 +736,11 @@ public final class ConfirmMain {
             fatal |= row.occurrence().id().equals(anchor.id())
                     && row.reachedAnchor() && row.observedFatal();
         }
-        if (!ExploreCodec.map(object(world, "pairings")).isEmpty()
-                || !fatal || !sawChosen || !moved.refusal.isEmpty()) {
+        if (!fatal || !sawChosen || !ownDeliveries(sessionId, arms)
+                || !moved.ranBy(ExploreCodec.readWorld(world), session)) {
             return "";
         }
-        if (!ownDeliveries(sessionId, arms)) return "";
-        Map<String, String> ran = new LinkedHashMap<String, String>();
-        for (RootMintRow row : session.roots()) {
-            ran.put(row.rootId(), row.recordedValue());
-        }
-        for (Map.Entry<String, String> value : moved.values.entrySet()) {
-            String at = ran.get(value.getKey());
-            if (at == null
-                    || !at.trim().equalsIgnoreCase(value.getValue())) {
-                return "";
-            }
-        }
-        if (!moved.clocksOf(ExploreCodec.map(object(world, "clockDeltas")))) {
-            return "";
-        }
-        int count = moved.values.size() + moved.skews.size();
+        int count = moved.count();
         return "the selected session " + sessionId + " is itself the run: "
                 + "it took every edge the model chose (" + arms.size()
                 + " arm(s), all its own deliveries), ran "

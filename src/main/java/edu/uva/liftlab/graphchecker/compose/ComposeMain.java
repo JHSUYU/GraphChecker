@@ -233,7 +233,7 @@ public final class ComposeMain {
      * gap is a defect of the run or the engine that leaves no verdict
      * (RUN_DEFECT), named until it is fixed, never a verdict of its own.
      */
-    private static JsonObject campaignClaim(
+    static JsonObject campaignClaim(
             Composer.Composition composition, ClaimPolicy.Decision decision) {
         Claim claim = decision.claim();
         JsonArray refusals = refusals(claim);
@@ -275,15 +275,27 @@ public final class ComposeMain {
                     : "; " + composition.refusedPaths().size() + " admitted"
                     + " path(s) were refused by name and are no part of it"
                     + " (refusedPaths)");
-            // A refuted claim the formula excludes is a region the UNSAT
-            // rests on beside the corpus, named where its core names it.
+            // A model the formula excludes is a region the UNSAT rests on
+            // beside the corpus, named where its core names it.  One CONFIRM
+            // gave no verdict on (refused_claim__) was never run: an UNSAT
+            // resting on it is no verdict.
             JsonArray rests = new JsonArray();
-            for (JsonObject refuted : composition.restsOn(
+            int refused = 0;
+            for (JsonObject excluded : composition.restsOn(
                     decision.formula().core())) {
-                rests.add(refuted);
+                rests.add(excluded);
+                if (excluded.get("name").getAsString()
+                        .startsWith(Composer.REFUSED_CLAIM)) {
+                    refused++;
+                }
             }
             restsOnRefutations = rests;
-            if (rests.size() > 0) {
+            if (refused > 0) {
+                kind = "RUN_DEFECT";
+                reason = "the composed formula is unsat only beside " + refused
+                        + " model(s) CONFIRM gave no verdict on, which no run"
+                        + " decided (restsOnRefutations): no verdict";
+            } else if (rests.size() > 0) {
                 reason += ", and on " + rests.size() + " refuted claim(s)"
                         + " it excludes (restsOnRefutations)";
             }
