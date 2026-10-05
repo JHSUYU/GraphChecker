@@ -98,6 +98,9 @@ public class ClocksTest {
                 Clocks.nanos() > standing);
 
         openWindow();
+        Thread.sleep(100L);
+        atCap("the opening holds time until the order caps it",
+                first + 300L * MS + TICK, Clocks.nanos());
         ScheduleLog.enforceForTests(Arrays.asList(
                 event("x", 400L), event("y", 2000L)));
         Thread.sleep(150L);

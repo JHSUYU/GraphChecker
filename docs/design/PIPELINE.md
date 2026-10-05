@@ -266,8 +266,10 @@ no order. Past a cap time creeps on at a thousandth of the host's pace (`Clocks#
 still: a real clock moves across a sleep and code divides by it (Hadoop's `GcTimeMonitor` died in every
 replay of rounds TM1/TM2 on a run span of zero). So a slower replay waits at the cap where its
 recording's heartbeat was not yet due, a turn its slot released early reads at least its slot's instant,
-and no read goes back. The window's opening moves `lo` to the order's opening and keeps a cap the order
-already published (another thread may meet the open window first and load the order). No read is keyed or written. A read never blocks;
+and no read goes back. The window's opening moves `lo` to the order's opening and holds time there until
+the order publishes its cap (reading the order takes the concolic VM seconds: round TM3 ran 2-12 s of
+model time free while it did), or keeps a cap the order already published (another thread may meet the
+open window first and load the order). No read is keyed or written. A read never blocks;
 a cap that stood a stall by the watchdog's own test (a schedule timeout with nothing computing, or eight
 whatever runs: `ScheduleLog#stalledLocked`) is lifted by name (`SCHEDULE_DIVERGED`): before the window
 by the clock itself (`clock#<mark>`: time standing at a pass runs on toward the next mark, time at

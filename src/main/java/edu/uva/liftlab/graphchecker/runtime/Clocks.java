@@ -389,16 +389,22 @@ public final class Clocks {
             if (bounds == null) return;
             Mark open = index >= 1 && index <= OPENS.size()
                     ? OPENS.get(index - 1) : null;
-            // The order may have capped time already, from another thread
-            // that met the window open first: its cap stands (round TM2,
-            // hdfs-adhoc-17: overwritten, time ran three seconds free and
-            // stood there for the window's first two).
+            // Until the order caps time, it stands at the opening: reading
+            // the order takes the concolic VM seconds (round TM3: 2-12 s of
+            // hdfs-adhoc-43/52's model time ran free while it did).  The
+            // order may have capped it already, from another thread that met
+            // the open window first: its cap stands (round TM2, 17: time
+            // ran three seconds free, then stood there).
             Bounds now = bounds;
+            boolean capped = now.inWindow && now.cap != null;
             moveLocked(open == null ? Long.MIN_VALUE : open.nanos,
                     open == null ? Long.MIN_VALUE : open.millis,
-                    now.inWindow ? now.hiNanos : Long.MAX_VALUE,
-                    now.inWindow ? now.hiMillis : Long.MAX_VALUE, now.inWindow
-                            ? now.cap : null, true);
+                    capped ? now.hiNanos : open == null ? Long.MAX_VALUE
+                            : open.nanos + TICK_NANOS,
+                    capped ? now.hiMillis : open == null ? Long.MAX_VALUE
+                            : open.millis + 1L,
+                    capped ? now.cap : open == null ? null : open.name,
+                    true);
         }
     }
 
