@@ -15,7 +15,7 @@ Usage:
   ./run_engine.sh --config FILE config|validate
   ./run_engine.sh --config FILE --run-obligation \
       --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
-      ID OBLIGATIONS CLASSES WORKER SESSIONS SEED_PLAN CHARGED_MB NEED_MB
+      ID OBLIGATIONS SESSIONS WORKER CHARGED_MB
   ./run_engine.sh help
 
 Commands:
@@ -29,11 +29,12 @@ Commands:
   help        Print this help message
 
   --run-obligation
-              Execute ONE obligation that some campaign planned,
-              and nothing else.  This is what `campaign_worker_hosts` runs
+              Solve ONE obligation that some campaign planned, and
+              nothing else (its replay is a placed step of its own).
+              This is what `campaign_worker_hosts` runs
               over ssh on a peer; the campaign generates the invocation into
               the obligation's own worker directory, so it is not a command
-              to be typed.  The eight positional arguments are exactly what
+              to be typed.  The five positional arguments are exactly what
               campaign_obligation_worker takes.
   --run-placed
               Execute ONE step of a campaign head on a peer with room
@@ -1436,7 +1437,7 @@ require_command_available() {
 #
 # One variable, read in one place (campaign_run_adapter), set by the two
 # callers that have a bound to impose, around a replay:
-# campaign_obligation_worker (replay_timeout_s) and campaign_session_replay
+# campaign_obligation_replay (replay_timeout_s) and campaign_session_replay
 # (seed_replay_time_factor).  SETUP leaves it empty.
 campaign_adapter_timeout_s=""
 # The rule that bound came from, as its caller spells it: what a replay
@@ -1583,15 +1584,17 @@ campaign_remote_watchdog_interval_s=5
 # The margin over the declared budgets that the remote worker's own outer
 # wall clock allows.
 #
-# The bound the OBLIGATION answers to is still `replay_timeout_s`, applied by
-# campaign_obligation_worker around the replay exactly as it is locally; this
-# outer one is a backstop against a remote side that is wedged somewhere
-# else (a hung ssh channel, an NFS mount that stopped answering) and it is
-# therefore the sum of the two budgets a worker is allowed to spend -- its
-# solver run and its replay -- plus this margin for JVM start-up and the
-# shared home.  It is not a policy about obligations; an obligation that
-# reaches it has hit something no declared budget describes, and it is
-# answered as unfinished, naming the host (campaign_obligation_unfinished).
+# A remote SOLVE (--run-obligation) answers to its solver's
+# `solver_timeout_ms`; its host's solver takes one question at a time, so a
+# question may first wait behind the ones it took, for as long as a replay
+# may run (`replay_timeout_s`, the pool's turnover).  This outer bound is a
+# backstop against a remote side that is wedged somewhere else (a hung ssh
+# channel, an NFS mount that stopped answering): the sum of the two, plus
+# this margin for JVM start-up and the shared home.  It is not a policy
+# about obligations; one that reaches it has hit something no declared
+# budget describes, and it is answered as unfinished, naming the host
+# (campaign_obligation_unfinished).  A REPLAY is a placed step, under
+# `replay_timeout_s` inside it (campaign_obligation_replay).
 campaign_remote_bound_margin_s=300
 
 campaign_remote_worker_bound_s() {
@@ -2347,7 +2350,7 @@ campaign_replay_killed=""
 # $8 says what an all-skipped result means to this caller. A seed replay is
 # the iteration's only source of observed cases, so "required" (the default)
 # makes REPLAY fail closed on one. A flip worker may legitimately replay a
-# model the workload never realized, and campaign_obligation_worker already records
+# model the workload never realized, and campaign_obligation_replay already records
 # that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
 # recorded outcome instead of ending the campaign.
 campaign_replay() {
@@ -2832,8 +2835,8 @@ names it; nothing withdrawn"
 # so no question waits behind a start that waits for memory (round x1: 11
 # cases' solvers, each charged its 8 GB heap at its start, held their hosts'
 # questions 50-75 minutes behind "starting" solvers).  An obligation's own
-# charge (the campaign's measured replay charge, campaign_replay_need_mb) is
-# then its replay's.
+# charge is a solver's start (campaign_solver_start_mb); its replay is a
+# start of its own, charged then (campaign_stream_ended).
 # ---------------------------------------------------------------------------
 
 # How long a host's solver waits for another question before it ends: about
@@ -3028,9 +3031,8 @@ campaign_solver_jvm() {
 # <worker> [charged_mb]: the question in a solver JVM of its own at the
 # case's engine heap, its files straight into <worker>, its status the JVM's.
 # <charged_mb>: at once, under the obligation's own charge of that many MB
-# (its replay's, which comes after), for a question whose host had no room
-# for its solver -- what the JVM grows past that charge is asked of the host
-# as it grows.
+# (a solver's start), for a question whose host had no room for its solver
+# -- what the JVM grows past that charge is asked of the host as it grows.
 # Otherwise once the host has room for the engine heap, charged that while it
 # runs: for a question the host's solver, or a JVM of its own, could not
 # answer (it ran out of heap or died), never the obligation's answer.
@@ -3051,26 +3053,28 @@ campaign_solve_obligation_alone() {
   return "${status}"
 }
 
-# One obligation: solve it, replay it focused, record its verdict.
+# One obligation SOLVED: its question answered into <worker>, the one
+# ObligationResult row that says which verdict it reached.
 #
 # The obligation names ONE focused occurrence, the decision it flips, the root
 # assignments to apply at the mints and the answers to apply at the attaches
-# (CONTRACT-SPEC §3).  The solver reads the corpus <sessions>; the replay
-# stages its session in ${worker}/sessions/, which the head lands in the
-# corpus once it has read this function's output, the one ObligationResult
-# row that says which verdict it reached (campaign_stream_land).
+# (CONTRACT-SPEC §3).  The solver reads the corpus <sessions>.  UNSAT,
+# NOT_ADMITTED and a reused ADMITTED are the obligation's answer, which the
+# head lands (campaign_stream_land); SAT_MODEL_READY leaves the model's focus
+# row in <worker>, and the head queues the obligation's REPLAY
+# (campaign_obligation_replay, a start of its own charged the replay's need,
+# campaign_stream_ended), so no solve holds a replay's charge.
 #
-# A single obligation that could not be solved or replayed is that
-# obligation's own result row, never the campaign's death.  <charged_mb> is
-# what its start charged its host, its replay's, and <need_mb> its replay's
-# measured need (campaign_replay_need_mb).
+# A single obligation that could not be solved is that obligation's own
+# result row, never the campaign's death.  <charged_mb> is what its start
+# charged its host: what a solver JVM starts at (campaign_solver_start_mb),
+# under which its question is answered at once when its host has no room for
+# its solver.
 campaign_obligation_worker() {
-  local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
-  local seed_plan=$6 charged=$7 need=$8
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
   local outcome status=0
-  # Its start charged the host <charged_mb>, its replay's: a local one is a
-  # subshell of the head, and its JVMs are not the head's; the host's solver
-  # charges its own.
+  # Its start charged the host <charged_mb>: a local one is a subshell of the
+  # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
@@ -3109,22 +3113,20 @@ host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
   # are recorded terminal verdicts, not process failures, and the next round
   # reads them so the obligation is not proposed again; so is an ADMITTED
   # the solver reused from the same question a worker settled
-  # (ObligationFactory#solve).
+  # (ObligationFactory#solve).  SAT_MODEL_READY is owed its replay.
   case "${outcome}" in
-    UNSAT|NOT_ADMITTED|ADMITTED) return 0 ;;
+    UNSAT|NOT_ADMITTED|ADMITTED|SAT_MODEL_READY) ;;
+    *) die "the obligation verdict is not solver-backed: ${outcome}" ;;
   esac
-  [[ "${outcome}" == "SAT_MODEL_READY" ]] \
-    || die "the obligation verdict is not solver-backed: ${outcome}"
-  campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \
-    "${worker}/sessions" "${seed_plan}" "${charged}" "${need}"
 }
 
 # The replay half of an obligation: the solver's model, run focused, and the
 # verdict the replay states for it, its session published under <sessions>.
-# The worker calls it once the solver has answered SAT_MODEL_READY; GROW
-# calls it again for an obligation whose replay exposed a region, in a
-# directory of its own beside the worker, under the grown class tree; CONFIRM
-# for the claim's world.  Every argument is the caller's, so it runs on
+# The pool runs it as the REPLAY of an obligation its solver answered
+# SAT_MODEL_READY, in its worker, on the class tree and plan its solve
+# started on; GROW again for an obligation whose replay exposed a region, in
+# a directory of its own beside the worker, under the grown class tree;
+# CONFIRM for the claim's world.  Every argument is the caller's, so it runs on
 # whichever host its start was placed on (--run-placed): <charged_mb> is
 # what that start charged its host for the replay JVM.
 #
@@ -3993,13 +3995,15 @@ ${campaign_host_wait_reason}"
 
 # campaign_stream_job <kind> <host> <charge> <id> <worker> <args...>: one
 # start of the pool, on the host that admitted it and charged it <charge>:
-# an OBLIGATION's worker (campaign_obligation_worker <args...>), a GROW
-# RERUN's replay (campaign_obligation_replay <args...>) or an attempt's
-# CONFIRM replay (campaign_confirm_replay <args...>).  A local one is a
-# subshell under `set -euo pipefail`; a remote one runs through the remote
-# worker script, an obligation as --run-obligation (the script and ssh's own
-# output beside its logs), a replay as a placed step (campaign_run_placed);
-# its stdout and stderr are <worker>'s either way.  Its charge, which the
+# an OBLIGATION's solve (campaign_obligation_worker <args...>), the REPLAY of
+# one its solver answered SAT_MODEL_READY or a GROW RERUN's replay
+# (campaign_obligation_replay <args...>), or an attempt's CONFIRM replay
+# (campaign_confirm_replay <args...>).  A local one is a subshell under
+# `set -euo pipefail`; a remote one runs through the remote worker script, a
+# solve as --run-obligation (the script and ssh's own output beside its
+# logs), a replay as a placed step (campaign_run_placed); its stdout and
+# stderr are <worker>'s either way, a REPLAY's as replay-stdout.log and
+# replay-stderr.log beside its solve's.  Its charge, which the
 # head holds, is released as soon as its work returned, before the head
 # waits to see what a peer wrote (campaign_await_remote_result), and again
 # by the head once the job ended however it did (campaign_stream_ended,
@@ -4010,21 +4014,22 @@ campaign_stream_job() {
   local -a work=(campaign_obligation_worker "$@")
   # Where the job stages its sessions: an obligation's and a re-run's under
   # their worker, a CONFIRM replay's beside it (campaign_confirm_plan).
-  local staged="${worker}/sessions"
+  local staged="${worker}/sessions" logs="${worker}/"
   case "${kind}" in
+    REPLAY) work=(campaign_obligation_replay "$@"); logs="${worker}/replay-" ;;
     RERUN) work=(campaign_obligation_replay "$@") ;;
     CONFIRM) work=(campaign_confirm_replay "$@"); staged="$1/sessions" ;;
   esac
   if campaign_host_is_local "${host}"; then
-    ( set -euo pipefail; "${work[@]}" ) >"${worker}/stdout.log" \
-      2>"${worker}/stderr.log" || status=$?
+    ( set -euo pipefail; "${work[@]}" ) >"${logs}stdout.log" \
+      2>"${logs}stderr.log" || status=$?
   elif [[ "${kind}" == OBLIGATION ]]; then
     campaign_dispatch_remote "${host}" "${worker}" \
       "$(campaign_remote_worker_bound_s)" --run-obligation "$@" \
       || status=$?
   else
-    campaign_run_placed "${host}" "${work[@]}" >"${worker}/stdout.log" \
-      2>"${worker}/stderr.log" || status=$?
+    campaign_run_placed "${host}" "${work[@]}" >"${logs}stdout.log" \
+      2>"${logs}stderr.log" || status=$?
   fi
   campaign_host_release "${host}" "${charge}"
   campaign_host_is_local "${host}" && return "${status}"
@@ -4048,8 +4053,13 @@ campaign_obligation_unfinished() {
   local why failure iteration_dir
   # What the worker said last: an engine failure (die, campaign_fail) names
   # itself on its stderr.
-  failure=$(sed -n -E 's/^(Error: |  reason=)//p' "${worker}/stderr.log" \
-    2>/dev/null | tail -n 1) || failure=""
+  local -a said=()
+  for failure in "${worker}/stderr.log" "${worker}/replay-stderr.log"; do
+    [[ ! -e "${failure}" ]] || said+=("${failure}")
+  done
+  failure=""
+  (( ${#said[@]} == 0 )) || failure=$(sed -n -E \
+    's/^(Error: |  reason=)//p' "${said[@]}" | tail -n 1) || failure=""
   why="its worker on ${host} did not finish (exit ${status}: \
 ${failure:-it failed, or the head could not see what it wrote, as the \
 campaign log says}); its logs are in ${worker}"
@@ -4095,15 +4105,19 @@ campaign log says}); its logs are in ${worker}"
 # and write through bash's dynamic scope:
 #
 #   stream_queue      "<kind> <round> <id> [<session>]" not started yet:
-#                     OBLIGATION; RERUN (GROW re-running the replay that
-#                     exposed a region, its exposing session named); or
-#                     CONFIRM (an attempt's confirmation replay, round "-",
-#                     the attempt's number its id)
+#                     OBLIGATION (its solve); REPLAY (the replay of one its
+#                     solver answered SAT_MODEL_READY, the class tree and
+#                     plan its solve started on in place of a session);
+#                     RERUN (GROW re-running the replay that exposed a
+#                     region, its exposing session named); or CONFIRM (an
+#                     attempt's confirmation replay, round "-", the
+#                     attempt's number its id)
 #   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
 #   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": what
 #                     returned since the last step began, not landed yet
-#   stream_flying     obligation id -> its row, queued, running or not
-#                     landed yet: a round's --in-flight
+#   stream_flying     obligation id -> its row, from its queueing until its
+#                     answer lands -- solving, its REPLAY queued or
+#                     replaying: a round's --in-flight
 #   stream_host_jobs  host -> how many of this campaign's run there
 #   stream_step_pid   the step running, or ""; stream_step_dir its directory
 #                     (steps/NNNN/: what it gates and plans, or attempts)
@@ -4159,7 +4173,7 @@ campaign_explore() {
   local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
   local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
-  local -A stream_flying=()
+  local -A stream_job_tree=() stream_flying=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_solver_seen=() stream_confirming=()
   : >"${results}"
@@ -4681,8 +4695,9 @@ campaign_stream_attempt_row() {
 
 # The queued obligations, cancelled: out of the queue, their worker
 # directories (made at enqueue, holding nothing yet) gone, none of them in
-# flight any more, each named in exploration.json; GROW's queued re-runs and
-# the queued confirmations stay.
+# flight any more, each named in exploration.json; the queued REPLAYs of
+# obligations already solved, GROW's queued re-runs and the queued
+# confirmations stay.
 campaign_stream_drop() {
   local entry kind round id
   local -a kept=()
@@ -4702,7 +4717,8 @@ campaign_stream_drop() {
 # WITNESSED, or CAMPAIGN_BUDGET_REACHED: the queue cancelled, and everything
 # this campaign still runs ended -- its process trees here, its workers on
 # every peer -- and moved out of the iteration with what it staged, as is
-# what returned after the last step began, never landed; a confirmation
+# what returned after the last step began, never landed, and an obligation
+# solved whose REPLAY is still queued; a confirmation
 # queued, running or undecided is its attempt's row, reaped.  At a witness
 # the sessions that landed after its attempt composed (not in its
 # corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
@@ -4724,7 +4740,10 @@ campaign_stream_end() {
   campaign_stream_drop
   for entry in "${stream_queue[@]}"; do
     read -r kind round id _ <<<"${entry}"
-    [[ "${kind}" != CONFIRM ]] || confirms+=("${id}")
+    case "${kind}" in
+      CONFIRM) confirms+=("${id}") ;;
+      REPLAY) dropped+=("${kind} ${round} ${id}") ;;
+    esac
   done
   stream_queue=()
   campaign_stream_reap
@@ -4736,7 +4755,7 @@ campaign_stream_end() {
     fi
     stream_reaped+=("${id}")
     dir="${iteration_dir}/${round}/${id}"
-    [[ "${kind}" == OBLIGATION ]] \
+    [[ "${kind}" != RERUN ]] \
       || dir=$(campaign_stream_rerun_dir "${round}" "${id}")
     mkdir -p "${campaign_root}/explore-reaped/${round}"
     mv -- "${dir}" "${campaign_root}/explore-reaped/${round}/${id}"
@@ -4812,11 +4831,12 @@ campaign_process_tree() {
 
 # Starts what the queue holds, first first, while this exploration runs
 # fewer than its share of the pool (campaign_stream_has_slot)
-# and a host admits it: an obligation, a GROW re-run or a confirmation on
-# the next host of the pool, round-robin, whose memory ledger admits one
-# more start and that runs fewer of this campaign's than it has cores
-# (campaign_stream_admit_host).  While GROW owes re-runs or swaps, no
-# obligation starts: a confirmation reads no corpus.
+# and a host admits it: an obligation's solve, an obligation's REPLAY, a
+# GROW re-run or a confirmation on the next host of the pool, round-robin,
+# whose memory ledger admits one more start and that runs fewer of this
+# campaign's than it has cores (campaign_stream_admit_host).  While GROW
+# owes re-runs or swaps, no obligation's solve starts: a replay and a
+# confirmation read no corpus.
 campaign_stream_dispatch() {
   local entry
   while (( ${#stream_queue[@]} > 0 )); do
@@ -4875,11 +4895,11 @@ campaign_stream_unenroll() {
   campaign_stream_entry=""
 }
 
-# Picks the host for one start of <kind> (OBLIGATION, RERUN or CONFIRM) and
-# charges it there (stream_admitted_host, stream_admitted_mb): the pool from
-# the host after the last one chosen, each start charged the campaign's
-# measured replay charge for as long as it runs (campaign_stream_charge_mb);
-# an OBLIGATION goes first to a host where this
+# Picks the host for one start of <kind> (OBLIGATION, REPLAY, RERUN or
+# CONFIRM) and charges it there (stream_admitted_host, stream_admitted_mb):
+# the pool from the host after the last one chosen, each start charged its
+# need for as long as it runs (campaign_stream_charge_mb); an OBLIGATION
+# goes first to a host where this
 # campaign's solver still serves (campaign_stream_warm: one started there
 # within the solver's idle time), whose question is then answered without a
 # solver of its own to start and its corpus to read.  A host is skipped
@@ -4891,7 +4911,7 @@ campaign_stream_unenroll() {
 campaign_stream_admit_host() {
   local kind=$1 host turn count pass is status=0 mb
   count=${#stream_hosts[@]}
-  mb=$(campaign_stream_charge_mb)
+  mb=$(campaign_stream_charge_mb "${kind}")
   for pass in warm cold; do
     [[ "${pass}" == cold || "${kind}" == OBLIGATION ]] || continue
     for ((turn = 0; turn < count; turn++)); do
@@ -4920,12 +4940,22 @@ campaign_stream_warm() {
   [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
 }
 
-# What one start of the pool is charged now -- an obligation's, a re-run's
-# or a confirmation's replay: the campaign's measured replay need
-# (campaign_replay_need_mb), at most half a host's ceiling
-# (campaign_replay_charge_mb).
+# What one start of <kind> of the pool is charged now: an OBLIGATION's solve
+# what a solver JVM starts at (campaign_solver_start_mb: its question is
+# answered in a JVM of its own, under this charge, when its host has no room
+# for its solver; the host's solver is charged on its own); a replay -- a
+# REPLAY, a RERUN, a CONFIRM, and the pool's slots (campaign_stream_has_slot)
+# -- the campaign's measured replay need (campaign_replay_need_mb), at most
+# half a host's ceiling (campaign_replay_charge_mb).  A solve charged a
+# replay waited for room it never used (HG5A-11, hdfs-adhoc-19: its eight
+# obligations waited 12 of EXPLORE's 13 minutes for room for a 2500 MB
+# replay each, and their solver refused all eight: none replayed).
 campaign_stream_charge_mb() {
-  campaign_replay_charge_mb "$(campaign_replay_need_mb)"
+  if [[ "${1:-}" == OBLIGATION ]]; then
+    printf '%s\n' "${campaign_solver_start_mb}"
+  else
+    campaign_replay_charge_mb "$(campaign_replay_need_mb)"
+  fi
 }
 
 # One host's admission for campaign_stream_admit_host, <turn> places after
@@ -4978,37 +5008,50 @@ could not be read for ${campaign_ssh_patience_s}s"
 
 # Starts one queue entry on <host>, in the background (campaign_stream_job),
 # on the class tree and plan of the generation current now (a later GROW
-# weaves a new one; this start keeps its own); the ledger row
-# campaign_stream_admit_host charged is its own until it returns.
+# weaves a new one; this start keeps its own) -- an obligation's REPLAY on
+# the ones its solve started on, which its entry carries
+# (campaign_stream_ended) -- charged what campaign_stream_admit_host charged
+# (stream_admitted_mb), its own until it returns.  Where it started is
+# stated in its worker: host.txt, a REPLAY's replay-host.txt beside its
+# solve's.
 campaign_stream_start() {
   local entry=$1 host=$2 kind round id session worker need
+  local classes=${stream_classes} plan=${stream_plan} started=host.txt
   local -a work=()
   read -r kind round id session <<<"${entry}"
   need=$(campaign_replay_need_mb)
-  if [[ "${kind}" == OBLIGATION ]]; then
-    worker="${iteration_dir}/${round}/${id}"
-    work=("${id}" "${iteration_dir}/${round}/obligations.jsonl" \
-      "${stream_classes}" "${worker}" "${sessions}" "${stream_plan}" \
-      "${stream_admitted_mb}" "${need}")
-  elif [[ "${kind}" == CONFIRM ]]; then
-    # On the generation current now, as an obligation's replay; the
-    # replay's own worker is the job's, its logs beside it.
-    worker="${campaign_root}/witness-confirm/${id}/worker"
-    date +%s%3N >"$(dirname "${worker}")/started-at"
-    work=("$(dirname "${worker}")" "${stream_classes}" "${stream_plan}" \
-      "${stream_admitted_mb}" "${need}")
-  else
-    worker=$(campaign_stream_rerun_dir "${round}" "${id}")
-    work=("${id}" "${stream_classes}" "${worker}" "${worker}/sessions" \
-      "${stream_plan}" "${stream_admitted_mb}" "${need}")
-  fi
-  printf '%s\n' "${host}" >"${worker}/host.txt"
+  case "${kind}" in
+    OBLIGATION)
+      worker="${iteration_dir}/${round}/${id}"
+      work=("${id}" "${iteration_dir}/${round}/obligations.jsonl" \
+        "${sessions}" "${worker}" "${stream_admitted_mb}") ;;
+    REPLAY)
+      worker="${iteration_dir}/${round}/${id}"
+      read -r classes plan <<<"${session}"
+      session=""
+      started=replay-host.txt
+      work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
+        "${plan}" "${stream_admitted_mb}" "${need}") ;;
+    CONFIRM)
+      # On the generation current now, as an obligation's replay; the
+      # replay's own worker is the job's, its logs beside it.
+      worker="${campaign_root}/witness-confirm/${id}/worker"
+      date +%s%3N >"$(dirname "${worker}")/started-at"
+      work=("$(dirname "${worker}")" "${classes}" "${plan}" \
+        "${stream_admitted_mb}" "${need}") ;;
+    RERUN)
+      worker=$(campaign_stream_rerun_dir "${round}" "${id}")
+      work=("${id}" "${classes}" "${worker}" "${worker}/sessions" \
+        "${plan}" "${stream_admitted_mb}" "${need}") ;;
+  esac
+  printf '%s\n' "${host}" >"${worker}/${started}"
   [[ "${kind}" != OBLIGATION ]] || stream_solver_seen[${host}]=$(date +%s)
   campaign_stream_job "${kind}" "${host}" "${campaign_host_charge_id}" \
     "${id}" "${worker}" "${work[@]}" &
   stream_jobs[$!]="${kind} ${round} ${id} ${host} ${session}"
   stream_job_charge[$!]=${campaign_host_charge_id}
   stream_job_worker[$!]=${worker}
+  stream_job_tree[$!]="${classes} ${plan}"
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
 }
 
@@ -5042,22 +5085,35 @@ campaign_stream_wait() {
 
 # One child the head waited for, ended with <status>: the ticker; the step
 # (campaign_stream_step_done); or a job, whose host has its slot and its
-# charge back (campaign_stream_release), whose replay's peak joins the
-# measured need (campaign_replay_measured), and whose return waits in
+# charge back (campaign_stream_release) and whose replay's peak joins the
+# measured need (campaign_replay_measured).  An obligation its solver
+# answered SAT_MODEL_READY is owed its replay: its REPLAY goes first in the
+# queue at once, never waiting for a step -- still in flight, still within
+# the exploration's share and its host's cores -- on the class tree and plan
+# its solve started on, charged then.  Every other return waits in
 # stream_pending for the next step to land it.
 campaign_stream_ended() {
-  local pid=$1 status=$2 kind round id host session
+  local pid=$1 status=$2 kind round id host session worker
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
     campaign_stream_step_done "${status}"
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
+    worker=${stream_job_worker[${pid}]}
     campaign_stream_release "${pid}"
-    campaign_replay_measured "${stream_job_worker[${pid}]}"
-    unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]'
+    campaign_replay_measured "${worker}"
     stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
-    stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
+    if [[ "${kind}" == OBLIGATION && "${status}" -eq 0 && "$(jq -r \
+        '.verdict // ""' "${worker}/obligation_result.jsonl" 2>/dev/null)" \
+        == SAT_MODEL_READY ]]; then
+      campaign_log "obligation ${id}: solved on ${host}, its replay queued"
+      stream_queue=("REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" \
+        "${stream_queue[@]}")
+    else
+      stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
+    fi
+    unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' 'stream_job_tree[$pid]'
   fi
 }
 
@@ -5095,7 +5151,8 @@ campaign_stream_land() {
 }
 
 # Whether GROW's swaps are due: every re-run it owes has returned, and no
-# obligation runs that started before them.
+# obligation's solve runs that started before them (a solver reads the
+# corpus; a REPLAY reads none).
 campaign_stream_swap_due() {
   local job
   (( ${#stream_swaps[@]} > 0 && ${#stream_swaps[@]} == stream_hold )) \
@@ -5258,7 +5315,8 @@ name obligation ${id}, so it was not withdrawn from the corpus"
     # this generation, and goes aside with its answer.
     for file in replay.log concolic_region_results.jsonl \
         obligation_result.jsonl replay_verdict.jsonl question.txt \
-        question.asked stdout.log stderr.log host.txt; do
+        question.asked stdout.log stderr.log host.txt replay-stdout.log \
+        replay-stderr.log replay-host.txt workload_rss_mb; do
       [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
       [[ ! -e "${rerun}/${file}" ]] || mv -- "${rerun}/${file}" "${worker}/"
     done
@@ -6484,12 +6542,12 @@ head's assignments, -- and a command"
   "$@"
 }
 
-# ONE obligation of somebody else's campaign, on this machine.
+# ONE obligation of somebody else's campaign, solved on this machine.
 do_run_obligation() {
   campaign_peer_enter "$@"
   set -- "${campaign_peer_args[@]}"
-  [[ $# -eq 8 ]] || die "--run-obligation takes eight positional arguments \
-(id obligations classes worker sessions seed-plan charged-mb need-mb), got $#"
+  [[ $# -eq 5 ]] || die "--run-obligation takes five positional arguments \
+(id obligations sessions worker charged-mb), got $#"
   campaign_obligation_worker "$@"
 }
 

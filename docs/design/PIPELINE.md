@@ -595,9 +595,9 @@ come for `campaign_solver_idle_s` (300). Its log is `solver-<host>.log` beside t
 question still waiting when its solver ended starts the next one. A question that waits for its
 solver says so after a minute and every ten minutes after (`campaign_solver_wait_said`). A host
 with no room to start a solver now answers the question in a solver JVM of its own at once
-(`campaign_solve_obligation_alone ... now`, `ObligationSolverMain --obligation-id`), under the
-obligation's own charge (its replay comes after it), what it grows past that asked of the host as
-it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
+(`campaign_solve_obligation_alone ... <charged_mb>`, `ObligationSolverMain --obligation-id`),
+under the solve's own charge (what a solver starts at, §7.7), what it grows past that asked of the
+host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
 ended while answering it) is no answer: it is asked once more of a solver JVM of its own at
 `engine_memory_mb`, once the host has room for it (`campaign_solve_obligation_alone`, the offline
 gate's entry too); neither settles a question (`question.txt`/`question.asked` are removed), and
@@ -783,18 +783,30 @@ CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 
-One pool for the whole exploration. The head starts each queued obligation, and each GROW re-run
-(§7.8), first first, while the exploration runs fewer than its share of a shared pool
-(below), on the next host of `campaign_worker_hosts` (empty: this machine, no ssh), round-robin
-from the host after the last one chosen (`campaign_stream_admit_host`), an obligation first on a
-host where it started one within the solver's idle time (`campaign_stream_warm`: that host's solver
-of its corpus likely still serves, so the question needs no solver started and no corpus read): a
-host is taken while it runs fewer of the campaign's starts than it has cores (read once,
+One pool for the whole exploration. An obligation is two starts: its SOLVE
+(`campaign_obligation_worker`: its question answered by its host's solver, §7.5) and, when the
+solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
+worker directory, on the model's focus row the solve left there), which the head queues first the
+moment the solve returns (`campaign_stream_ended`), not at the next step, on the class tree and
+plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
+since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
+`--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
+replay's verdict lands, and an UNSAT, NOT_ADMITTED or reused ADMITTED answer of the solve lands as
+the obligation's. The head starts each queued solve, REPLAY, GROW re-run (§7.8) and confirmation,
+first first, while the exploration runs fewer than its share of a shared pool (below; a REPLAY
+counts like any start), on the next host of `campaign_worker_hosts` (empty: this machine, no
+ssh), round-robin from the host after the last one chosen (`campaign_stream_admit_host`), a solve
+first on a host where it started one within the solver's idle time (`campaign_stream_warm`: that
+host's solver of its corpus likely still serves, so the question needs no solver started and no
+corpus read), a REPLAY on whichever host admits it (its worker is on the shared home): a host is
+taken while it runs fewer of the campaign's starts than it has cores (read once,
 `campaign_host_cores`) and its memory ledger admits one more start; none admitting, the head waits
 for a return, its step's end or the poll interval (`campaign_host_poll_s`). A start runs locally in
-a background subshell, or remotely through `ssh`: an obligation as `run_engine.sh --run-obligation`
-with the frozen jar and its sha256, a re-run as a placed step (below) (`campaign_stream_job`); each
-takes the class tree and plan of the generation current when it starts (§7.8). The memory gate
+a background subshell, or remotely through `ssh`: a solve as `run_engine.sh --run-obligation`
+with the frozen jar and its sha256, a REPLAY or a re-run as a placed step (below)
+(`campaign_stream_job`; a REPLAY's logs `replay-stdout.log`, `replay-stderr.log` and
+`replay-host.txt` beside its solve's); each other start takes the class tree and plan of the
+generation current when it starts (§7.8). The memory gate
 (`campaign_host_try_start <host> <need>`) is a ledger shared by all campaigns, gates and
 `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/` (`tools/lib/gc-env.sh`, handed to every
 peer with the ceiling): one file per live charge, `charges/<mb>.<id>`, and a start is allowed when
@@ -808,9 +820,12 @@ lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute 
 every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
-leases old is deleted. Every start states its measured need, with no default. An obligation, a
-re-run or a confirmation needs its replay's (its question goes to its host's solver, §7.5): the
-campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
+leases old is deleted. Every start states its measured need, with no default. A solve needs what
+a solver JVM starts at (`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its
+own under that charge when its host has no room for its solver; the host's solver is charged on its
+own, §7.5), never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
+or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
 CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
 times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
@@ -920,8 +935,8 @@ keeps its own inode for whatever runs on it -- and INSTRUMENT weaves it into the
 tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
-re-run has returned and no obligation runs that started before them, no obligation starts and no
-round is planned; then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
+re-run has returned and no obligation's solve runs that started before them, no solve starts and
+no round is planned (a REPLAY reads no corpus and goes on, on its solve's generation); then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
 worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
 worker's, its session lands, and its verdict replaces the obligation's row in
 `obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
@@ -988,7 +1003,8 @@ cancelled or reaped, by id):
   witnesses wait and are attempted again once a verdict lands that does not end the exploration.
   Confirmed, the attempt ends the exploration at once: the queue is cancelled, every running job is
   reaped (its process tree here, its workers on every peer) -- an obligation's worker directory moves
-  to `<campaign>/explore-reaped/`, as does every one that returned after the step began, and a
+  to `<campaign>/explore-reaped/`, as does every one that returned after the step began or whose
+  REPLAY is still queued, and a
   confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
   attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
   (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
@@ -1010,8 +1026,8 @@ cancelled or reaped, by id):
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
   unlanded reaped), and the stop is a DIAGNOSTIC row.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
-  work is not dispatched (its proposals are named cancelled): the queue is cancelled, what runs
-  lands, and the stop is a DIAGNOSTIC row.
+  work is not dispatched (its proposals are named cancelled): the queued solves are cancelled, what
+  runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
 - **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given

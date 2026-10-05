@@ -1851,8 +1851,8 @@ for alone in answers fails noroom; do
         >"$4/obligation_result.jsonl"
       printf '(assert false)\n' >"$4/obligation_query.smt2"
     }
-    campaign_obligation_worker OB.1 obligations classes \
-      "${retry_test}/${alone}" sessions plan 1024 1024
+    campaign_obligation_worker OB.1 obligations sessions \
+      "${retry_test}/${alone}" 1024
   ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
@@ -1875,8 +1875,18 @@ done
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
 # failed -- one obligation's own answer, never the wave's death -- naming the
-# bound it exceeded.  The worker must also RETURN, which is the whole point:
-# the wave barrier waited on the hung one forever.
+# bound it exceeded.  The REPLAY must also RETURN, which is the whole point:
+# the wave barrier waited on the hung one forever.  Each replay below runs
+# as the pool's REPLAY start does (campaign_stream_start), on what its
+# solver left in its worker (bound_solved): the SAT_MODEL_READY row, the
+# focus row and the query.
+bound_solved() {
+  jq -n -c --arg id "$2" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+    obligationId: $id, verdict: "SAT_MODEL_READY", sessionId: "",
+    detail: ""}' >"$1/obligation_result.jsonl"
+  printf '{"taskId":"TASK.1"}\n' >"$1/focused_task.jsonl"
+  printf '(assert true)\n' >"$1/obligation_query.smt2"
+}
 worker_dir="${bound_dir}/obligation"
 mkdir -p "${worker_dir}" "${bound_dir}/sessions" "${bound_dir}/classes"
 printf '{"taskId":"TASK.1"}\n' >"${bound_dir}/seed_plan.jsonl"
@@ -1889,18 +1899,10 @@ z3_bin=z3
 solver_timeout_ms=1000
 schedule_max_jobs=1
 trace_test=T
+bound_solved "${worker_dir}" OB.1
 (
-  # The solver settled it: a model is ready and the replay is what decides.
-  campaign_solve_obligation() {
-    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
-      detail: ""}' >"${worker_dir}/obligation_result.jsonl"
-    printf '{"taskId":"TASK.1"}\n' >"${worker_dir}/focused_task.jsonl"
-    printf '(assert true)\n' >"${worker_dir}/obligation_query.smt2"
-  }
-  campaign_obligation_worker OB.1 "${bound_dir}/obligations.jsonl" \
-    "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
-    "${bound_dir}/seed_plan.jsonl" 1024 1024
+  campaign_obligation_replay OB.1 "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
 $(cat "${worker_dir}/worker.log")"
@@ -1930,17 +1932,10 @@ worker_dir="${bound_dir}/killed"
 mkdir -p "${worker_dir}"
 replay_timeout_s=60
 concolic_replay_command='kill -KILL $$'
+bound_solved "${worker_dir}" OB.2
 (
-  campaign_solve_obligation() {
-    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-      obligationId: "OB.2", verdict: "SAT_MODEL_READY", sessionId: "",
-      detail: ""}' >"${worker_dir}/obligation_result.jsonl"
-    printf '{"taskId":"TASK.1"}\n' >"${worker_dir}/focused_task.jsonl"
-    printf '(assert true)\n' >"${worker_dir}/obligation_query.smt2"
-  }
-  campaign_obligation_worker OB.2 "${bound_dir}/obligations.jsonl" \
-    "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
-    "${bound_dir}/seed_plan.jsonl" 1024 1024
+  campaign_obligation_replay OB.2 "${bound_dir}/classes" "${worker_dir}" \
+    "${worker_dir}/sessions" "${bound_dir}/seed_plan.jsonl" 1024 1024
 ) >"${worker_dir}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay was killed: \
 $(cat "${worker_dir}/worker.log")"
@@ -1989,16 +1984,10 @@ chmod +x "${withdraw_dir}/replay.sh"
 # it starts as a login shell (an NFS quota check alone can take a second).
 replay_timeout_s=5
 concolic_replay_command="${withdraw_dir}/replay.sh"
+bound_solved "${withdraw_worker}" OB.1
 (
-  campaign_solve_obligation() {
-    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
-      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
-      detail: ""}' >"${withdraw_worker}/obligation_result.jsonl"
-    printf '{"taskId":"TASK.1"}\n' >"${withdraw_worker}/focused_task.jsonl"
-    printf '(assert true)\n' >"${withdraw_worker}/obligation_query.smt2"
-  }
-  campaign_obligation_worker OB.1 "${withdraw_dir}/obligations.jsonl" \
-    "${withdraw_dir}/classes" "${withdraw_worker}" "${withdraw_sessions}" \
+  campaign_obligation_replay OB.1 "${withdraw_dir}/classes" \
+    "${withdraw_worker}" "${withdraw_worker}/sessions" \
     "${withdraw_dir}/seed_plan.jsonl" 1024 1024
 ) >"${withdraw_worker}/worker.log" 2>&1 \
   || fail "the worker did not return when its replay outlived the bound: \
@@ -2876,25 +2865,21 @@ reset_config
 # than its share -- the slots its hosts hold at its measured replay charge
 # (campaign_pool_slots: here one host of 30000 MB at 70 %, 8 cores) over the
 # sharing explorations whose ledger entry is fresh, its own among them, at
-# least one -- each start charged that measured charge; it says so once for
-# the share it waits at, follows the need as returning replays raise it,
-# and takes its entry with it when it ends; outside a shared pool it keeps
-# no entry and waits for nothing but room (a40: one Solr case's pool held
-# 27-32 replays on all ten lifts while the sweep's other cases waited).
-# Per row: the campaign's measured peak (- outside a shared pool), the peak
-# each obligation's replay states (- none), the fresh and the stale entries
-# of other explorations, the most of three one-second obligations that ran
-# at once, and how many explorations the wait names (- for none).
-while read -r cap_peak cap_obl_peak cap_fresh cap_stale cap_ran_most \
-    cap_sharers; do
-  stream_fixture "stream-cap-${cap_peak}-${cap_obl_peak}-${cap_fresh}-${cap_stale}"
+# least one -- a solve charged what a solver starts at; it says so once for
+# each share it waits at, and takes its entry with it when it ends; outside
+# a shared pool it keeps no entry and waits for nothing but room (a40: one
+# Solr case's pool held 27-32 replays on all ten lifts while the sweep's
+# other cases waited).  Per row: the campaign's measured peak (- outside a
+# shared pool), the fresh and the stale entries of other explorations, the
+# most of three one-second solves that ran at once, and how many
+# explorations the wait names (- for none).
+while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
+  stream_fixture "stream-cap-${cap_peak}-${cap_fresh}-${cap_stale}"
   campaign_replay_peak_mb=0
   if [[ "${cap_peak}" != - ]]; then
     stream_shared_pool=true
     campaign_replay_peak_mb=${cap_peak}
   fi
-  [[ "${cap_obl_peak}" != - ]] || cap_obl_peak=""
-  cap_first=$(campaign_stream_charge_mb)
   cap_entries="${campaign_host_gate_root}/explorations"
   mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
   printf '8\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
@@ -2910,9 +2895,7 @@ while read -r cap_peak cap_obl_peak cap_fresh cap_stale cap_ran_most \
     campaign_obligation_worker() {
       local id=$1 worker=$4
       date +%s.%N >"${worker}/started-at"
-      printf '%s\n' "$7" >"${worker}/charged"
-      [[ -z "${cap_obl_peak}" ]] \
-        || echo "${cap_obl_peak}" >"${worker}/workload_rss_mb"
+      printf '%s\n' "$5" >"${worker}/charged"
       sleep 1
       date +%s.%N >"${worker}/ended-at"
       stream_answer "${worker}" "${id}" UNSAT
@@ -2931,18 +2914,11 @@ $(cat "${stream_dir}/explore.log")"
   [[ "${cap_ran}" == "${cap_ran_most}" ]] \
     || fail "a pool at a ${cap_peak} MB peak with ${cap_fresh} other \
 exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
-  # The first two started at the seed's measured charge; the last one, after
-  # the first returned, at the charge their peaks measured.
-  cap_last=${cap_first}
-  if [[ -n "${cap_obl_peak}" ]]; then
-    cap_last=$(campaign_replay_peak_mb=${cap_obl_peak} \
-      campaign_stream_charge_mb)
-  fi
   [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged \
-      | paste -sd ' ' -)" == "${cap_first} ${cap_first} ${cap_last}" ]] \
-    || fail "the pool's starts were charged $(cat \
+      | sort -u)" == "${campaign_solver_start_mb}" ]] \
+    || fail "the pool's solves were charged $(cat \
       "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
-not ${cap_first} twice and then ${cap_last}"
+not what a solver starts at, ${campaign_solver_start_mb} MB"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
   if [[ "${cap_sharers}" == - ]]; then
@@ -2961,11 +2937,10 @@ naming ${cap_sharers} exploration(s): $(grep 'slot' \
       || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
   fi
 done <<'EOF'
-- - 0 0 3 -
-5000 - 0 1 2 1
-5000 - 1 0 1 2
-8000 - 2 0 1 3
-5000 8000 0 0 2 1
+- 0 0 3 -
+5000 0 1 2 1
+5000 1 0 1 2
+8000 2 0 1 3
 EOF
 campaign_replay_peak_mb=0
 reset_config
@@ -2997,6 +2972,137 @@ by name" ;;
   esac
 done
 reset_config
+
+# STREAM-SPLIT: an obligation's solve and its replay are two starts.  The
+# solve is charged what a solver starts at; one its solver answers
+# SAT_MODEL_READY queues its REPLAY first, at once, charged the measured
+# replay need then -- C's replay, after A's stated its peak, from that peak
+# -- on the class tree and plan its solve started on.  Until its REPLAY
+# lands the obligation is in flight: round 1, planned when B's session
+# landed while A replayed, is handed A and C (C still solving), and round 2
+# C.  Only the replays' answers land (no SAT_MODEL_READY row), each where
+# its replay staged it.
+stream_fixture stream-split
+(
+  stream_stubs
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B C; }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    printf '%s\n' "$5" >"${worker}/solve-charged"
+    case "${id}" in
+      A) sleep 1; stream_answer "${worker}" A SAT_MODEL_READY ;;
+      B) sleep 2; stream_answer "${worker}" B ADMITTED SESSION.B ;;
+      C) sleep 6; stream_answer "${worker}" C SAT_MODEL_READY ;;
+    esac
+  }
+  campaign_obligation_replay() {
+    local id=$1 classes=$2 worker=$3 plan=$5 charged=$6
+    printf '%s %s %s\n' "${charged}" "${classes#"${stream_dir}"/}" \
+      "${plan#"${stream_dir}"/}" >"${worker}/replay-args"
+    if [[ "${id}" == A ]]; then
+      sleep 3
+      echo 3000 >"${worker}/workload_rss_mb"
+    fi
+    stream_answer "${worker}" "${id}" ADMITTED "SESSION.${id}"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a split exploration did not finish: $(cat "${stream_dir}/explore.log")"
+split_round0="${stream_dir}/obligations-0000"
+[[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -u)" \
+    == "${campaign_solver_start_mb}" ]] \
+  || fail "a solve was not charged what a solver starts at: $(cat \
+    "${split_round0}"/{A,B,C}/solve-charged | paste -sd ' ' -)"
+split_plan="instrumented-classes generations/g0/execution_task_plan.jsonl"
+[[ "$(cat "${split_round0}/A/replay-args")" \
+    == "$(campaign_stream_charge_mb REPLAY) ${split_plan}" \
+   && "$(cat "${split_round0}/C/replay-args")" \
+    == "$(campaign_replay_peak_mb=3000 campaign_stream_charge_mb REPLAY) \
+${split_plan}" && ! -e "${split_round0}/B/replay-args" ]] \
+  || fail "the REPLAYs were not charged the measured need on their solve's \
+tree: A $(cat "${split_round0}/A/replay-args"), C $(cat \
+    "${split_round0}/C/replay-args")"
+[[ "$(cat "${stream_dir}/obligations-0001/in-flight.txt")" == "A C" \
+   && "$(cat "${stream_dir}/obligations-0002/in-flight.txt")" == C ]] \
+  || fail "an obligation whose REPLAY had not landed was not in flight: \
+round 1 $(cat "${stream_dir}/obligations-0001/in-flight.txt"), round 2 \
+$(cat "${stream_dir}/obligations-0002/in-flight.txt")"
+jq -e -s 'length == 3 and all(.[]; .verdict == "ADMITTED")' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  && [[ -d "${stream_dir}/sessions/SESSION.A" \
+     && -d "${stream_dir}/sessions/SESSION.C" \
+     && -s "${split_round0}/A/replay-host.txt" \
+     && -e "${split_round0}/A/replay-stderr.log" \
+     && -e "${split_round0}/A/stderr.log" \
+     && ! -e "${split_round0}/B/replay-host.txt" ]] \
+  && grep -q 'obligation A: solved on .*, its replay queued' \
+    "${stream_dir}/explore.log" \
+  || fail "the replays' answers did not land as the obligations' own: \
+$(cat "${stream_dir}/obligation_results.jsonl")"
+reset_config
+
+# STREAM-SPLIT-QUEUE: what a solve's return does to the queue.  An answer
+# SAT_MODEL_READY of a solve that finished puts its REPLAY first, carrying
+# the class tree and plan the solve started on even when a GROW wove a newer
+# generation since (g1 here), and the REPLAY starts on them, charged the
+# replay's charge; any other answer, or a solve that did not finish, waits
+# to land.  Per row: the solve's verdict, its exit, the queue's first entry
+# after it, and what waits to land (- nothing).
+split_dir="${test_tmp}/split-queue"
+while IFS='|' read -r split_verdict split_status split_first split_pending; do
+  rm -rf -- "${split_dir}"
+  mkdir -p "${split_dir}/it/obligations-0000/A"
+  : >"${split_dir}/jobs"
+  split_said=$(
+    iteration_dir="${split_dir}/it"
+    sessions="${split_dir}/it/sessions"
+    stream_classes=g0/classes
+    stream_plan=g0/plan.jsonl
+    stream_admitted_mb=${campaign_solver_start_mb}
+    declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
+      stream_job_tree=() stream_host_jobs=() stream_solver_seen=()
+    stream_queue=("OBLIGATION obligations-0000 B")
+    stream_pending=()
+    stream_ticker=""
+    stream_step_pid=""
+    campaign_host_release() { :; }
+    campaign_log() { :; }
+    campaign_stream_job() {
+      printf '%s\n' "$*" >>"${split_dir}/jobs"
+      [[ "$1" != OBLIGATION ]] || jq -n -c --arg v "${split_verdict}" \
+        '{verdict: $v}' >"$5/obligation_result.jsonl"
+      return "${split_status}"
+    }
+    campaign_stream_start "OBLIGATION obligations-0000 A" lift12
+    split_pid=$!
+    split_rc=0
+    wait "${split_pid}" || split_rc=$?
+    stream_classes=g1/classes
+    stream_plan=g1/plan.jsonl
+    campaign_stream_ended "${split_pid}" "${split_rc}"
+    if [[ "${stream_queue[0]}" == REPLAY\ * ]]; then
+      stream_admitted_mb=2048
+      campaign_stream_start "${stream_queue[0]}" lift13
+      wait "$!" || true
+    fi
+    printf '%s|%s' "${stream_queue[0]}" "${stream_pending[*]:--}"
+  )
+  [[ "${split_said% }" == "${split_first}|${split_pending}" ]] \
+    || fail "a ${split_verdict} solve that exited ${split_status} left \
+${split_said}, not ${split_first}|${split_pending}"
+  if [[ "${split_first}" == REPLAY\ * ]]; then
+    grep -q "^REPLAY lift13 .* A ${split_dir}/it/obligations-0000/A A \
+g0/classes ${split_dir}/it/obligations-0000/A \
+${split_dir}/it/obligations-0000/A/sessions g0/plan.jsonl 2048 " \
+      "${split_dir}/jobs" \
+      || fail "the REPLAY did not start on its solve's tree in its worker: \
+$(cat "${split_dir}/jobs")"
+  fi
+done <<'EOF'
+SAT_MODEL_READY|0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
+UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
+SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
+EOF
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
 # exactly like `replay_timeout_s`.
@@ -3161,10 +3267,99 @@ stream_two_hosts stream-room
 $(cut -f1 "${stream_dir}/ssh-calls.txt")"
 reset_config
 
-# The pool's choice over three hosts that all admit: a re-run goes
-# round-robin; an obligation goes to a host where its campaign's solver
-# still serves (one started there within the solver's idle time), else
-# round-robin.  {kind, the host warm (- none), the hosts chosen in turn}.
+# STREAM-SPLIT-REMOTE: both starts of an obligation on peers (the remote
+# CONFIRM of HG4 lost every result and no test ran it).  A's solve runs on
+# lift12 as --run-obligation, charged what a solver starts at; its
+# SAT_MODEL_READY comes back through the shared home, and its REPLAY runs as
+# a placed step on lift13 -- not its solve's host -- in A's worker, where it
+# must find the model its solve left (the focus row), on the solve's tree,
+# charged the replay's need; the session it staged lands from there.  B's
+# solve answers UNSAT and replays nothing.  The stub stands where the
+# network stands, as in HOSTS-4: it reads the generated script's arguments
+# as a peer's shell would.
+stream_fixture stream-split-remote
+campaign_worker_hosts="lift12 lift13"
+campaign_local_host_names=" localhost this-machine "
+graphchecker_jar=${default_graphchecker_jar}
+replay_timeout_s=2400
+solver_timeout_ms=1800000
+campaign_init_local_scratch_root
+for split_host in lift12 lift13; do
+  mkdir -p "${campaign_host_gate_root}/${split_host}"
+  printf '48\n' >"${campaign_host_gate_root}/${split_host}/cores"
+done
+(
+  stream_stubs
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A B; }
+  ssh() {
+    local host="" script="" line at
+    local -a words=() cmd=()
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--" ]] && { shift; break; }
+      shift
+    done
+    host=${1:-}
+    script=${2:-}
+    script=${script#exec /bin/bash }
+    script=${script%\'}
+    script=${script#\'}
+    [[ -s "${script}" ]] && bash -n "${script}" || return 91
+    line=$(awk '$1 == "--"' "${script}")
+    eval "words=(${line% \\})"
+    if grep -q -- '--run-obligation' "${script}"; then
+      # -- id obligations sessions worker charged
+      printf '%s SOLVE %s %s\n' "${host}" "${words[1]}" "${words[5]}" \
+        >>"${stream_dir}/ssh-calls.txt"
+      if [[ "${words[1]}" == A ]]; then
+        printf '{"taskId":"TASK.A"}\n' >"${words[4]}/focused_task.jsonl"
+        stream_answer "${words[4]}" A SAT_MODEL_READY
+      else
+        stream_answer "${words[4]}" "${words[1]}" UNSAT
+      fi
+      return 0
+    fi
+    grep -q -- '--run-placed' "${script}" || return 93
+    # -- <workdir> <assignments...> -- <command...>
+    for ((at = 1; at < ${#words[@]}; at++)); do
+      [[ "${words[${at}]}" != -- ]] || break
+    done
+    cmd=("${words[@]:$((at + 1))}")
+    [[ "${cmd[0]}" == campaign_obligation_replay ]] || return 94
+    # id classes worker sessions plan charged need
+    [[ -s "${cmd[3]}/focused_task.jsonl" \
+       && "${cmd[4]}" == "${cmd[3]}/sessions" ]] || return 96
+    printf '%s REPLAY %s %s %s %s\n' "${host}" "${cmd[1]}" "${cmd[6]}" \
+      "${cmd[2]#"${stream_dir}"/}" "${cmd[5]#"${stream_dir}"/}" \
+      >>"${stream_dir}/ssh-calls.txt"
+    stream_answer "${cmd[3]}" "${cmd[1]}" ADMITTED "SESSION.${cmd[1]}"
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "a remote split exploration did not finish: \
+$(cat "${stream_dir}/explore.log")"
+[[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
+${campaign_solver_start_mb}
+lift12 SOLVE B ${campaign_solver_start_mb}
+lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
+generations/g0/execution_task_plan.jsonl" ]] \
+  || fail "the remote solves and REPLAY did not run where and as they \
+should: $(cat "${stream_dir}/ssh-calls.txt")"
+jq -e -s 'length == 2 and (map({(.obligationId): .verdict}) | add)
+    == {"A": "ADMITTED", "B": "UNSAT"}' \
+  "${stream_dir}/obligation_results.jsonl" >/dev/null \
+  && [[ -f "${stream_dir}/sessions/SESSION.A/manifest.json" \
+     && "$(cat "${stream_dir}/obligations-0000/A/host.txt")" == lift12 \
+     && "$(cat "${stream_dir}/obligations-0000/A/replay-host.txt")" \
+       == lift13 ]] \
+  || fail "the remote REPLAY's answer did not land as A's: \
+$(cat "${stream_dir}/obligation_results.jsonl")"
+reset_config
+
+# The pool's choice over three hosts that all admit: a replay (a REPLAY, a
+# re-run) goes round-robin; an obligation's solve goes to a host where its
+# campaign's solver still serves (one started there within the solver's idle
+# time), else round-robin.  {kind, the host warm (- none), the hosts chosen
+# in turn}.
 while IFS='|' read -r admit_kind admit_warm admit_want; do
   (
     stream_hosts=(a b c)
@@ -3186,20 +3381,22 @@ not ${admit_want}"
   ) || fail "the pool admitted nothing for ${admit_kind}"
 done <<'EOF'
 RERUN|b|a b c
+REPLAY|b|a b c
 OBLIGATION|-|a b c
 OBLIGATION|b|b b b
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
-# obligation's worker, or a GROW re-run's or a CONFIRM's replay, which a
-# peer runs as a placed step -- and gives its ledger row back as soon as its
-# work returned, before the head waits to see what a peer wrote, in the
-# directory the job staged its sessions to (a CONFIRM's beside its worker:
-# HG4 lost hdfs-11741's confirmed witness waiting under the worker).  Per
-# row: the kind, the host, and what ran, each with the rows the ledger still
-# held for it then.
+# obligation's solve, or an obligation's REPLAY, a GROW re-run's or a
+# CONFIRM's replay, which a peer runs as a placed step -- and gives its
+# ledger row back as soon as its work returned, before the head waits to see
+# what a peer wrote, in the directory the job staged its sessions to (a
+# CONFIRM's beside its worker: HG4 lost hdfs-11741's confirmed witness
+# waiting under the worker); a REPLAY's logs go beside its solve's, never
+# over them.  Per row: the kind, the host, what ran, each with the rows the
+# ledger still held for it then, and the job's logs in its worker.
 job_dir="${test_tmp}/pool-job"
-while IFS='|' read -r job_kind job_host job_ran; do
+while IFS='|' read -r job_kind job_host job_ran job_logs; do
   rm -rf -- "${job_dir}"
   mkdir -p "${job_dir}/worker"
   : >"${job_dir}/ran"
@@ -3227,12 +3424,17 @@ while IFS='|' read -r job_kind job_host job_ran; do
   ) || fail "a ${job_kind} on ${job_host} failed"
   [[ "$(cat "${job_dir}/ran")" == "${job_ran} " ]] \
     || fail "a ${job_kind} on ${job_host} ran $(cat "${job_dir}/ran")"
+  [[ "$(ls "${job_dir}/worker" | grep 'stdout\|stderr' | paste -sd ' ' -)" \
+      == "${job_logs}" ]] \
+    || fail "a ${job_kind} on ${job_host} logged into $(ls "${job_dir}/worker")"
 done <<'EOF'
-OBLIGATION|localhost|worker:OB.1(1)
-OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1:worker/sessions(0)
-RERUN|localhost|replay:OB.1:f(1)
-RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)
-CONFIRM|lift12|lift12:campaign_confirm_replay:OB.1:f(1) await:OB.1:OB.1/sessions(0)
+OBLIGATION|localhost|worker:OB.1(1)|stderr.log stdout.log
+OBLIGATION|lift12|lift12:--run-obligation:OB.1(1) await:OB.1:worker/sessions(0)|
+REPLAY|localhost|replay:OB.1:f(1)|replay-stderr.log replay-stdout.log
+REPLAY|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)|replay-stderr.log replay-stdout.log
+RERUN|localhost|replay:OB.1:f(1)|stderr.log stdout.log
+RERUN|lift12|lift12:campaign_obligation_replay:OB.1:f(1) await:OB.1:worker/sessions(0)|stderr.log stdout.log
+CONFIRM|lift12|lift12:campaign_confirm_replay:OB.1:f(1) await:OB.1:OB.1/sessions(0)|stderr.log stdout.log
 EOF
 
 # HOSTS-5: a remote worker whose head is gone kills its own process group.
