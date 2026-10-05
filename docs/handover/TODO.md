@@ -13,6 +13,8 @@ in [STATE.md](STATE.md); commands are in [OPERATIONS.md](OPERATIONS.md).
 
 ## HDFS (current system; `system/hdfs`, tree `gc/hdfs-study-r3`, image `vm-hg5`)
 
+**Status 2026-10-05 04:00 (lead).** Done and merged into `system/hdfs`: §1e (bug2, `hdfs-request-in-hand`), measured replay charges (`hdfs-measured-charges`), the FREEZE digest and array-identity fixes. HG5A ran the HG5 body (STATE §4). In flight, one agent each: §1 decisive-verdicts (fixing its review's 4 blockers, then merge), §2 HG6 = `hdfs-draw-sites2` (probes), identity (`hdfs-address-shared`: rule B done; next the planned-shape rule for hdfs-11741's regression, then the putter's frames for 14; 07's shared getSegmentInfo endpoint), closure E1 for 16 (`hdfs-closure`, after §1), cleanup batch 1 (`hdfs-cleanup-1`). Merge order: decisive, HG6, address-shared, closure, cleanup phase 2. Then the next round of the 46 (§3) on the merged body. Parked: the QJM obligation snowball (dependence-key granularity), the 8 GB head reserve (heads peak at median 0.7 GB, p99 7.8), SEED's Soot passes being IO-bound on NFS during a sweep's first wave.
+
 ### 1. Finish `hdfs-decisive-verdicts` (one coding agent)
 
 The worktree is `/bigtemp/vnr3ne/wt/gc-hdfs-decisive-verdicts` and the brief is
