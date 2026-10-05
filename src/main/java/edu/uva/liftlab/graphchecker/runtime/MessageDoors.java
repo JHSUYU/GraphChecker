@@ -613,8 +613,18 @@ public final class MessageDoors {
         CausynthTraceRecorder.exitCarriedScope(token);
     }
 
-    /** Opens one daemon tick as a root of its own: a service-loop turn. */
+    /**
+     * Opens one daemon tick as a root of its own: a service-loop turn.  The
+     * exchange the thread served ends first, as for a node startup: the turn
+     * serves no message it did not take in itself.  Left standing below the
+     * turn, the next message's end of it closed the turn as well (a
+     * DataNode actor built inside the window stands in its registration's
+     * response when its first turn begins; the IPC client ends that exchange
+     * before its heartbeat, so the heartbeat went out in the test's request
+     * and the turn stated no END: hdfs-adhoc-21/22/23/25, round HG5A).
+     */
     public static long beginTick(Object owner, String role) {
+        endInbound();
         return CausynthTraceRecorder.beginDaemonTick(owner, role);
     }
 

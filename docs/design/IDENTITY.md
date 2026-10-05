@@ -109,7 +109,7 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 | opener | hop |
 |---|---|
 | `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call |
-| `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`) |
+| `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`), once the exchange the thread served has ended (§7.1) |
 | `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn (a request, a served message, a node startup are not: a wait inside them is a pause) |
 | `enterInbound` (a received message) | role = the transport, api = the request's `<source>/<api>`; the anchor is `Interactions.sender(transport, correlation, half)`, rpcSite `<TRANSPORT>[.<VIA>]/<api>` |
 | `enterCarriedScope`, `claimCarried` (queued or started work) | the carried lineage restored, plus a nested hop (`EXECUTOR_TASK` for a claimed start) |
@@ -405,7 +405,13 @@ it.
   minted, since nothing answers it through a door.
 - `setAside` / `restore`: a serving thread that runs an exchange of its own as a client.
 - `beginTick` / `vacant` / `endTick`: a daemon turn as a root; a vacant turn is one the recording
-  never made, which a replay held and let go only because the run could go no further.
+  never made, which a replay held and let go only because the run could go no further. A turn, like
+  a node startup (§5) and a request, first ends the exchange its thread served: the turn serves no
+  message it did not take in itself. Left standing below the turn, the next message's end of it
+  closed the turn too (round HG5A, hdfs-adhoc-21/22/23/25: a DataNode actor built inside the window
+  stood in its registration's response when its first turn began; the IPC client ends that exchange
+  before its heartbeat, so the heartbeat went out in the test's request and the turn stated no
+  `END`).
 
 The Hadoop adapter is `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`, shipped
 with GraphChecker: transports `HADOOP_IPC` (IPC correlation), `HDFS_SASL` (a handshake of
@@ -422,8 +428,8 @@ op's correlation and every value the thread exported for the op on the op's trac
 (`DataTransferTraceInfoProto`, in its header's base header, or its own for the two short-circuit
 shared-memory ops; `DataTransferProtoUtil#withCausynth` on `gc/hdfs-unified-dtx`). The DataNode
 takes it in at `Receiver#continueTraceSpan`, after the op's parse and before any of its fields is
-read, inside the op's turn (`DataXceiver` ends the exchange a SASL handshake opened before the turn
-begins, and the op's with the turn). The turn keeps its own `Root:DATA_XCEIVER` address: standing
+read, inside the op's turn (the exchange a SASL handshake opened ends as the turn begins, and the
+op's with the turn). The turn keeps its own `Root:DATA_XCEIVER` address: standing
 on the sender would hand the DataNode's occurrences the sender thread's IPC chain, whose counts a
 replay does not reproduce (b20h FsDatasetImpl-1843: 15 of 16 such tasks unanswered). The op is a
 message for everything else: its header's protobuf leaves pair with the sender's exports by handle,
