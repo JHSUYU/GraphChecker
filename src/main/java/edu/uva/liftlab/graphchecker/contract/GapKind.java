@@ -158,5 +158,11 @@ public enum GapKind {
      * claim is another model or none ({@code compose.Refutations}).
      * DIAGNOSTIC: the exclusion is the composition's own knowledge.
      */
-    CLAIM_REFUTED
+    CLAIM_REFUTED,
+    /**
+     * A model CONFIRM gave no verdict on, excluded as a refuted one is so the
+     * next claim follows; an UNSAT resting on it is no verdict ({@code
+     * compose.ComposeMain#campaignClaim}).  DIAGNOSTIC.
+     */
+    CLAIM_REFUSED
 }

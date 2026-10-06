@@ -233,7 +233,7 @@ public final class ComposeMain {
      * gap is a defect of the run or the engine that leaves no verdict
      * (RUN_DEFECT), named until it is fixed, never a verdict of its own.
      */
-    private static JsonObject campaignClaim(
+    static JsonObject campaignClaim(
             Composer.Composition composition, ClaimPolicy.Decision decision) {
         Claim claim = decision.claim();
         JsonArray refusals = refusals(claim);
@@ -241,6 +241,8 @@ public final class ComposeMain {
         String kind;
         String reason;
         JsonArray restsOnRefutations = new JsonArray();
+        // An UNSAT left no verdict by a model CONFIRM gave none on.
+        boolean besideRefused = false;
         if (blockers > 0) {
             kind = "RUN_DEFECT";
             reason = "the composition named " + blockers
@@ -275,15 +277,37 @@ public final class ComposeMain {
                     : "; " + composition.refusedPaths().size() + " admitted"
                     + " path(s) were refused by name and are no part of it"
                     + " (refusedPaths)");
-            // A refuted claim the formula excludes is a region the UNSAT
-            // rests on beside the corpus, named where its core names it.
+            // A model the formula excludes is a region the UNSAT rests on
+            // beside the corpus, named where its core names it.  One CONFIRM
+            // gave no verdict on (refused_claim__) was never run: an UNSAT
+            // resting on it -- or one whose core is unknown while it
+            // excludes one -- is no verdict.
             JsonArray rests = new JsonArray();
-            for (JsonObject refuted : composition.restsOn(
+            int refused = 0;
+            for (JsonObject excluded : composition.restsOn(
                     decision.formula().core())) {
-                rests.add(refuted);
+                rests.add(excluded);
+                if (excluded.get("name").getAsString()
+                        .startsWith(Composer.REFUSED_CLAIM)) {
+                    refused++;
+                }
             }
             restsOnRefutations = rests;
-            if (rests.size() > 0) {
+            if (refused > 0) {
+                kind = "RUN_DEFECT";
+                besideRefused = true;
+                reason = "the composed formula is unsat only beside " + refused
+                        + " model(s) CONFIRM gave no verdict on, which no run"
+                        + " decided (restsOnRefutations): no verdict";
+            } else if (composition.excludesRefused()
+                    && !decision.formula().coreKnown()) {
+                kind = "RUN_DEFECT";
+                besideRefused = true;
+                reason = "the composed formula is unsat, it excludes models"
+                        + " CONFIRM gave no verdict on, and its unsat core is"
+                        + " unknown (the core run did not say unsat), so"
+                        + " nothing shows it does not rest on one: no verdict";
+            } else if (rests.size() > 0) {
                 reason += ", and on " + rests.size() + " refuted claim(s)"
                         + " it excludes (restsOnRefutations)";
             }
@@ -299,6 +323,8 @@ public final class ComposeMain {
         row.addProperty("claim", kind);
         row.addProperty("claimReason", reason);
         row.add("restsOnRefutations", restsOnRefutations);
+        // Named only where it holds: EMIT lists it as a defect.
+        if (besideRefused) row.addProperty("unsatBesideRefused", true);
         JsonArray refused = new JsonArray();
         for (JsonObject path : composition.refusedPaths()) refused.add(path);
         row.add("refusedPaths", refused);

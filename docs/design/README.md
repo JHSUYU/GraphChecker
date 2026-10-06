@@ -168,16 +168,18 @@ version it observed.
   - **UNSAT_CLOSED**.
   - **RUN_DEFECT** (a solver timeout, CONFIRM with no verdict, a target never reached, an
     exploration cut while it owed arms: EXPLORATION_CUT, judged once at EMIT).
-- A CONFIRM refutation excludes the claim's clock region from every later composition; an UNSAT
-  whose unsat core names a refutation states `restsOnRefutations`.
+- A model CONFIRM refuted or gave no verdict on excludes the claim's region (its clocks' too) from
+  every later composition; an UNSAT whose unsat core names a refutation states `restsOnRefutations`,
+  and one whose core names a refused model is RUN_DEFECT.
 
 **9. CONFIRM** replays the witness world from the recording. It holds the chosen edges (writer
 ORDER, STATE pairings including INITIAL, WIRE deliveries) and checks that the anchor observes the
 fatal. It is strict: every substitution is named. Only a replay that ran the model (every moved
-root planted) and did not reach the fatal refutes; a refused confirmation (CONFIRM_MISMATCH, a
-plant not applied, no verdict) is a RUN_DEFECT and its model is excluded from later attempts
-(`refused_models.jsonl`). In a campaign it is a pool job on any host. The witness is chosen by
-attempt order, not finish time.
+root planted) and did not reach the fatal refutes; a refused confirmation (CONFIRM_MISMATCH, an
+ORDER not held in time, a plant not applied, no verdict) refutes nothing, and its model
+(`refused_models.jsonl`) is excluded from later compositions so the next claim follows; a final
+claim left with none is a RUN_DEFECT. In a campaign it is a pool job on any host. The witness is
+chosen by attempt order, not finish time.
 
 **10. EMIT / REPRODUCE** write `candidate.smt2`, `claim.json`, `confirm.json` and `result.json`
 (with `concrete[]`). Native runs then plant the fault markers. Acceptance is

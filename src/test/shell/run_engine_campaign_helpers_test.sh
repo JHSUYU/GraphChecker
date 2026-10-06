@@ -56,6 +56,8 @@ emit_fixture() {
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${emit_root}/stage_metrics.tsv"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+  # The one declared bound EMIT reads from the configuration (campaign_bounds).
+  campaign_max_claims=8
 
   mkdir -p "${campaign_final}" "${emit_classes}" \
     "${emit_iteration}/seed-result" \
@@ -206,9 +208,44 @@ run_emit
   || fail "the result names a different frozen config"
 jq -e '.evidence.symbolicPropagationComplete == false
   and .gapCount == 0
-  and .telemetryCount >= 2' \
+  and .telemetryCount >= 2
+  and .bounded == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+
+# BOUND-1: every declared bound that cut the search is named in result.json
+# by its configuration key (campaign_bounds), whatever the claim; a round's
+# max-flips-per-path, asked again by the next round, is none, nor is a
+# closure an earlier round truncated and the last planned whole.
+emit_fixture
+mkdir -p "${campaign_final}/refuted/0000" "${campaign_final}/refuted/0001" \
+  "${emit_iteration}/obligations-0000" "${emit_iteration}/obligations-0001"
+campaign_max_claims=2
+jq '.refutes = true' "${campaign_final}/confirm.json" \
+  >"${campaign_final}/confirm.json.tmp"
+mv "${campaign_final}/confirm.json.tmp" "${campaign_final}/confirm.json"
+jq -n '{stop: "REGION_PATH_WAVE_BUDGET_REACHED", detail: "wave 3"}' \
+  >"${emit_iteration}/exploration.json"
+jq -n '{closureCut: {occurrences: 5, keptDepth: 1}}' \
+  >"${emit_iteration}/runtime_workflow_schedule_index.json"
+echo '{"truncated": 4}' \
+  >"${emit_iteration}/obligations-0000/explore_manifest.json"
+echo '{"truncated": 2}' \
+  >"${emit_iteration}/obligations-0001/explore_manifest.json"
+for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
+    'T max-flips-per-path=4'; do
+  jq -n -c --arg subject "${subject}" '{schemaVersion: 1,
+    sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
+    subject: $subject, detail: "cut"}'
+done >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+run_emit
+jq -e '.bounded.by == ["region_path_max_waves",
+    "region_path_max_paths_per_region", "region_path_max_world_depth",
+    "region_path_max_tasks", "schedule_max_jobs", "campaign_max_claims"]
+  and (.bounded.detail | test("wave 3; 1 task round.*without 2 occ"))' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the declared bounds the search touched were not named: \
+$(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"
 # EMIT-1: the artifacts are published at ${campaign_root}/final, which is the
 # one path every later reader and the harness open.
 [[ -s "${campaign_root}/final/result.json" ]] \
@@ -518,19 +555,32 @@ jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
 
-# A campaign whose CONFIRM gave no verdict on some model (refused_models)
-# and confirmed none publishes no claim, the same UNSAT included: RUN_DEFECT,
-# CONFIRM_REFUSED, the models named.
+# A model CONFIRM gave no verdict on (refused_models) is the composition's
+# to judge: excluded from it, an UNSAT resting on it is RUN_DEFECT there
+# (ComposeMain#campaignClaim); one that does not stands, the model named.
 emit_unsat_fixture
 printf '%s\n' '{"schemaVersion":1,"kind":"REFUSED_MODEL","model":{"pathId":"P1"},"claimed":"x","reason":"the replay was NOT_ADMITTED"}' \
   >"${emit_iteration}/refused_models.jsonl"
 run_emit
-jq -e '.claim == "RUN_DEFECT" and .formulaClaim == "UNSAT_CLOSED"
-  and (.refusedModels | length) == 1
-  and ([.defects[].code] | index("CONFIRM_REFUSED")) != null' \
+jq -e '.claim == "UNSAT_CLOSED" and .accepted == true
+  and (.refusedModels | length) == 1 and .defects == []' \
   "${campaign_final}/result.json" >/dev/null \
-  || fail "an UNSAT beside a refused model was published: \
+  || fail "an UNSAT not resting on a refused model was withheld: \
 $(jq -c '{claim, defects, refusedModels}' "${campaign_final}/result.json")"
+# ... and one COMPOSE found resting on one, or beside one with no core, is
+# the defect it named.
+jq '.solver.campaignClaim.claim = "RUN_DEFECT"
+  | .solver.campaignClaim.claimReason = "unsat beside a refused model"
+  | .solver.campaignClaim.unsatBesideRefused = true' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+run_emit
+jq -e '.claim == "RUN_DEFECT" and .accepted == false
+  and ([.defects[].code] | index("UNSAT_BESIDE_REFUSED")) != null' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an UNSAT beside a refused model was not named a defect: \
+$(jq -c '{claim, defects}' "${campaign_final}/result.json")"
+rm -f -- "${emit_iteration}/refused_models.jsonl"
 
 # A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
 # other: published as CONFIRM left it.
@@ -564,7 +614,9 @@ triage_case() {
 }
 triage_case 1 case-unsat '{"claim": "UNSAT_CLOSED", "concrete": [{"kind":
   "ANCHOR", "decided": 1, "paths": 1, "reads": 2}],
-  "restsOnRefutations": [{"name": "refuted_claim__0", "pathId": "P1"}]}'
+  "restsOnRefutations": [{"name": "refuted_claim__0", "pathId": "P1"}],
+  "bounded": {"by": ["region_path_max_waves", "schedule_max_jobs"],
+    "detail": "wave 3"}}'
 triage_case 2 case-defect '{"claim": "RUN_DEFECT", "defects": [{"code":
   "ADMISSION_GAP", "detail": "no session reached the declared occurrence"}]}'
 triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
@@ -575,13 +627,16 @@ triage_case 5 case-noverdict '{"claim": "SAT_UNCONFIRMED",
   "confirmation": {"confirmed": false, "refutes": false,
     "reason": "the confirmation replay published no verdict"}}'
 triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
-  2>/dev/null | tr -d '\r' | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $NF}')
-[[ "${triage_rows}" == "case-unsat=UNSAT|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
-case-defect=RUN_DEFECT|ADMISSION_GAP no session reached the declared occurrence
-case-sat=CONFIRMED|
-case-refuted=REFUTED|WIRE e1
-case-noverdict=RUN_DEFECT|CONFIRM_NO_VERDICT the confirmation replay published no verdict" ]] \
-  || fail "triage did not class the verdicts: ${triage_rows}"
+  2>"${triage_out}/counts" | tr -d '\r' \
+  | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $8 "|" $NF}')
+[[ "${triage_rows}" == "case-unsat=UNSAT|region_path_max_waves,schedule_max_jobs|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
+case-defect=RUN_DEFECT||ADMISSION_GAP no session reached the declared occurrence
+case-sat=CONFIRMED||
+case-refuted=REFUTED||WIRE e1
+case-noverdict=RUN_DEFECT||CONFIRM_NO_VERDICT the confirmation replay published no verdict" ]] \
+  && grep -q ' BOUNDED=1$' "${triage_out}/counts" \
+  || fail "triage did not class the verdicts: ${triage_rows} \
+$(<"${triage_out}/counts")"
 
 # DECISIVE-3: report.py names a defect run's claim and its defects, and the
 # concrete anchor beside an UNSAT, and passes neither.
@@ -591,7 +646,8 @@ mkdir -p "${report_case}/schedule/final" "${report_work}"
 printf '%s\n' '{"claim": "RUN_DEFECT", "finalStatus": "FINAL_READY",
   "findingKind": "NO_SUPPORTED_WITNESS", "accepted": false,
   "concrete": [{"kind": "ANCHOR", "anchor": "REGION.T#1", "paths": 1,
-    "decided": 1, "reads": 2, "locations": ["INSTANCE/1#2"], "offCone": 0}]}' \
+    "decided": 1, "reads": 2, "locations": ["INSTANCE/1#2"], "offCone": 0}],
+  "bounded": {"by": ["region_path_max_waves"], "detail": "wave 3"}}' \
   >"${report_case}/schedule/final/result.json"
 printf '%s\n' '{"gaps": [{"stage": "EXPLORE", "code": "ADMISSION_GAP",
   "class": "BLOCKING", "subject": "REGION.T#1",
@@ -600,11 +656,14 @@ printf '%s\n' '{"gaps": [{"stage": "EXPLORE", "code": "ADMISSION_GAP",
 python3 "${repo}/experiments/accept/report.py" case-x "${report_case}" \
   "${report_work}" >/dev/null
 awk -F'\t' '{exit !($4 == "RUN_DEFECT" && $6 == "1 BLOCKING" &&
-  $11 == "FAIL" && index($12, "claim=RUN_DEFECT") > 0)}' \
+  $11 == "FAIL" && index($12, "claim=RUN_DEFECT") > 0 &&
+  index($13, "BOUNDED by region_path_max_waves") > 0)}' \
   "${report_work}/row.tsv" \
   || fail "report.py did not fail the defect run by name: \
 $(<"${report_work}/row.tsv")"
 grep -q '^## Defects' "${report_work}/report.md" \
+  && grep -q '^\* `region_path_max_waves` -- wave 3$' \
+    "${report_work}/report.md" \
   && grep -q 'anchor `REGION.T#1` decided on no symbol: 1 of 1 path(s)' \
     "${report_work}/report.md" \
   || fail "report.md did not name the defects and the concrete anchor: \
@@ -4042,13 +4101,15 @@ run_confirm() {
     || rm -f -- "${confirm_iteration}/refused_models.jsonl"
   jq -n --arg claim "${claim}" \
     '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
-  jq -n --arg anchor "${confirm_anchor}" '{anchor: $anchor,
+  # The arms at the path ordinal this composition gave the path.
+  jq -n --arg anchor "${confirm_anchor}" --arg at "${confirm_path_ordinal:-1}" \
+    '{anchor: $anchor,
     claim: {kind: "MARKER_FLIPPED", valuationOrdinal: 1,
       movedRoots: {"ROOT.M": "true"}},
     valuations: [{ordinal: 0, selectedPathId: "P.recorded"},
       {ordinal: 1, selectedPathId: "P.sel", selectedSessionId: "S.sel",
-       selectedArms: [{selector: "message_arm__1__b2"},
-         {selector: "message_arm__1__a1"}],
+       selectedArms: [{selector: "message_arm__\($at)__b2"},
+         {selector: "message_arm__\($at)__a1"}],
        assignment: {"ROOT.M": "true"}}]}' >"${campaign_final}/claim.json"
   (
     run_java_main() {
@@ -4168,16 +4229,19 @@ confirm_says false "1 row(s) at other occurrences did" \
   "a fatal at another occurrence of the site confirmed the claim's anchor"
 confirm_stub_target_iteration=0
 # A model an earlier confirmation gave no verdict on is not confirmed
-# again: the final CONFIRM takes that row, and nothing is replayed.
+# again, composed at another path ordinal too (its arms matched by their
+# digests): the final CONFIRM takes that row, and nothing is replayed.
 confirm_stub_verdict=NOT_ADMITTED
 run_confirm SAT_CANDIDATE
 confirm_stub_verdict=ADMITTED
 rm -f -- "${confirm_root}/replay-ran"
 confirm_keep_refused=1
+confirm_path_ordinal=7
 run_confirm SAT_CANDIDATE
 confirm_keep_refused=
+confirm_path_ordinal=
 confirm_says false "an earlier confirmation of this model gave no verdict" \
-  "a refused model was confirmed again"
+  "a refused model, renumbered, was confirmed again"
 [[ ! -e "${confirm_root}/replay-ran" ]] \
   || fail "a refused model was replayed again"
 # A replay whose roots were not planted, or whose prefix was abandoned,
@@ -4242,15 +4306,17 @@ campaign_witness_attempt=""
 unset -f confirm_stub_main confirm_stub_replay run_confirm confirm_says
 unset confirm_anchor confirm_stub_target_iteration confirm_java
 
-# NEXT-CLAIM: a refuted SAT_CANDIDATE does not end the campaign while its
-# budget has room for a composition and a confirmation (two
-# replay_timeout_s): its artifacts move to final/refuted/NNNN/ and the next
-# claim is composed.  Not when the claim was confirmed, not when the
-# composition repeated a model already refuted, not past the budget.
+# NEXT-CLAIM: a SAT_CANDIDATE CONFIRM refuted, or gave no verdict on (a
+# refused model), does not end the campaign while its budget has room: its
+# artifacts move to final/refuted/NNNN/ and the next claim is composed.  Not
+# when the claim was confirmed, not when the composition repeated a model it
+# was told to exclude (matched by its arms' digests, whatever path ordinal
+# a composition spelled them with), not past the budget.
 next_root="${test_tmp}/next-claim"
 next_iteration="${next_root}/iteration-0000"
 campaign_final="${next_root}/final"
 composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+# next_claim <confirmed> <file CONFIRM's verdict recorded the model in>
 next_claim() {
   mkdir -p "${campaign_final}/confirm" "${next_iteration}"
   jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE"}}}' \
@@ -4259,48 +4325,62 @@ next_claim() {
   jq -n '{claim: {valuationOrdinal: 0}, valuations: [{ordinal: 0,
     selectedPathId: "P", selectedArms: [{selector: "m__0__a"}],
     assignment: {}}]}' >"${campaign_final}/claim.json"
-  jq -n --argjson confirmed "$1" '{confirmed: $confirmed,
-    refutes: ($confirmed | not), reason: "r"}' \
+  jq -n --argjson confirmed "$1" --arg file "$2" '{confirmed: $confirmed,
+    refutes: ($file == "refuted_claims"), reason: "r"}' \
     >"${campaign_final}/confirm.json"
+  rm -f -- "${next_iteration}/refuted_claims.jsonl" \
+    "${next_iteration}/refused_models.jsonl"
   campaign_claim_model "${campaign_final}/claim.json" \
-    | jq -c '{model: .}' >"${next_iteration}/refuted_claims.jsonl"
+    | jq -c '{model: .}' >"${next_iteration}/$2.jsonl"
 }
 reset_config
 campaign_budget_s=100
 campaign_reserve_s=20
 reproduce_min_s=1
 campaign_started_s=${SECONDS}
-next_claim true
+next_claim true refuted_claims
 ! campaign_next_claim "${next_iteration}" >/dev/null \
   || fail "a confirmed claim was followed by another"
-next_claim false
-campaign_next_claim "${next_iteration}" >/dev/null \
-  || fail "a refuted claim with room in the budget was not followed"
-[[ -s "${campaign_final}/refuted/0000/claim.json" \
-    && -d "${campaign_final}/refuted/0000/confirm" \
-    && ! -e "${campaign_final}/candidate.smt2" ]] \
-  || fail "the refuted claim's artifacts did not move out of final/"
-next_claim false
-campaign_claim_model "${campaign_final}/claim.json" | jq -c '{model: .}' \
+next_index=0
+for file in refuted_claims refused_models; do
+  next_claim false "${file}"
+  next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
+    || fail "a claim recorded in ${file} with room in the budget was not \
+followed"
+  [[ "${next_out}" == *"was $([[ ${file} == refuted_claims ]] && echo refuted \
+      || echo 'given no verdict') ("* ]] \
+    || fail "the next claim after one recorded in ${file} did not say why: \
+${next_out}"
+  [[ -s "${campaign_final}/refuted/000${next_index}/claim.json" \
+      && -d "${campaign_final}/refuted/000${next_index}/confirm" \
+      && ! -e "${campaign_final}/candidate.smt2" ]] \
+    || fail "the artifacts of a claim recorded in ${file} did not move out \
+of final/"
+  next_index=$((next_index + 1))
+done
+next_claim false refused_models
+campaign_claim_model "${campaign_final}/claim.json" \
+  | jq -c '{model: (.arms = ["m__3__a"])}' \
   >>"${next_iteration}/refuted_claims.jsonl"
 ! campaign_next_claim "${next_iteration}" >/dev/null \
-  || fail "a composition that repeated a refuted model was followed"
-next_claim false
+  || fail "a composition that repeated an excluded model, its arm at another \
+path ordinal, was followed"
+next_claim false refuted_claims
 campaign_reserve_s=120
 ! campaign_next_claim "${next_iteration}" >/dev/null \
   || fail "a claim past the campaign budget was followed"
 [[ -s "${campaign_final}/claim.json" \
-    && ! -e "${campaign_final}/refuted/0001" ]] \
+    && ! -e "${campaign_final}/refuted/0002" ]] \
   || fail "a claim that ends the campaign left final/"
 # Re-decision has a named bound: past campaign_max_claims claims decided
-# again, the refuted claim is published, budget or not.
+# again, the last claim is published, budget or not.
 campaign_reserve_s=20
-campaign_max_claims=1
-next_claim false
+campaign_max_claims=2
+next_claim false refuted_claims
 next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
   && fail "a claim past campaign_max_claims was decided again"
-[[ "${next_out}" == *'campaign_max_claims=1'* \
-    && ! -e "${campaign_final}/refuted/0001" ]] \
+[[ "${next_out}" == *'campaign_max_claims=2'* \
+    && ! -e "${campaign_final}/refuted/0002" ]] \
   || fail "the re-decision bound was not named: ${next_out}"
 unset -f next_claim
 reset_config

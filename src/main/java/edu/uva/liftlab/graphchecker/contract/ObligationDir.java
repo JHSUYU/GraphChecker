@@ -157,4 +157,21 @@ public final class ObligationDir {
     public List<JsonObject> focus() {
         return focus;
     }
+
+    /**
+     * THE WORLD each session ran in, by session id: its worker's focus row,
+     * the last one of these workers in their order (wave and name: a
+     * re-run's after the run it replaced).  The one lookup the corpus
+     * ({@code explore.Corpus#world}) and CONFIRM ({@code
+     * explore.ConfirmMain}) read a world by.
+     */
+    public static Map<String, JsonObject> worlds(List<ObligationDir> workers) {
+        Map<String, JsonObject> worlds = new LinkedHashMap<String, JsonObject>();
+        for (ObligationDir worker : workers) {
+            for (JsonObject row : worker.focus) {
+                worlds.put(worker.sessionId, row);
+            }
+        }
+        return worlds;
+    }
 }
