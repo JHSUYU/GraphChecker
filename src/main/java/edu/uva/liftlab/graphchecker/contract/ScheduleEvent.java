@@ -6,7 +6,10 @@ package edu.uva.liftlab.graphchecker.contract;
  * to its source session's prefix.  {@code c} is node plus rendered
  * {@link CausalContext}, {@code k} the k-th event of {@code (kind, c, site)}:
  * no thread id, no time.  {@code occurrence} (open region id, or {@code ""})
- * is not part of the key; it is where a prefix is cut.
+ * is not part of the key; it is where a prefix is cut.  Each event is
+ * stamped with the application's two clocks as it was written ({@link
+ * #nanos}, {@link #millis}): no part of the key, the timeline a replay's
+ * clocks follow ({@code runtime.Clocks}).
  */
 public final class ScheduleEvent extends Value {
     /**
@@ -33,6 +36,20 @@ public final class ScheduleEvent extends Value {
      * ({@code runtime.StartupOrder}).
      */
     public static final String STARTUP = "STARTUP";
+
+    /**
+     * The mark of the run's first application clock read, stamped with what
+     * it returned ({@code RowCodec#writeScheduleTime}): where a replay's
+     * clocks start ({@code runtime.Clocks}).
+     */
+    public static final String ORIGIN = "ORIGIN";
+
+    /**
+     * The mark of the workload opening its window, stamped with the
+     * application's clocks there ({@code RowCodec#writeScheduleTime}): the
+     * time a replay's clocks reach when its own window opens.
+     */
+    public static final String OPEN = "OPEN";
 
     /** What kind of handoff the event is. */
     public enum Kind {
@@ -75,9 +92,15 @@ public final class ScheduleEvent extends Value {
      * anchor (a DataTransfer op a DataNode's turn received), else "".
      */
     private final String endpoint;
+    /** {@code System.nanoTime()} as the application read it when the event
+     *  was written: the host's in a recording, a replay's model of it. */
+    private final long nanos;
+    /** {@code System.currentTimeMillis()}, likewise. */
+    private final long millis;
 
     private ScheduleEvent(long seq, Kind kind, String context, String site,
-                          int k, String occurrence, String endpoint) {
+                          int k, String occurrence, String endpoint,
+                          long nanos, long millis) {
         this.seq = seq;
         this.kind = kind;
         this.context = context;
@@ -85,6 +108,8 @@ public final class ScheduleEvent extends Value {
         this.k = k;
         this.occurrence = occurrence;
         this.endpoint = endpoint;
+        this.nanos = nanos;
+        this.millis = millis;
     }
 
     public static ScheduleEvent of(long seq, Kind kind, String context,
@@ -105,7 +130,13 @@ public final class ScheduleEvent extends Value {
                 context == null ? "" : context,
                 Fields.text(site, "site"), k,
                 occurrence == null ? "" : occurrence,
-                endpoint == null ? "" : endpoint);
+                endpoint == null ? "" : endpoint, 0L, 0L);
+    }
+
+    /** This event stamped with the application's clocks when written. */
+    public ScheduleEvent stamped(long nanos, long millis) {
+        return new ScheduleEvent(seq, kind, context, site, k, occurrence,
+                endpoint, nanos, millis);
     }
 
     /** What two runs compare an event by: kind, context, site (not k). */
@@ -147,6 +178,14 @@ public final class ScheduleEvent extends Value {
         return endpoint;
     }
 
+    public long nanos() {
+        return nanos;
+    }
+
+    public long millis() {
+        return millis;
+    }
+
     /**
      * The message a RECV took in -- the producer endpoint its context is
      * anchored on, else the one it names -- or "" (any other event).
@@ -174,7 +213,7 @@ public final class ScheduleEvent extends Value {
     @Override
     Object[] parts() {
         return new Object[] {seq, kind, context, site, k, occurrence,
-                endpoint};
+                endpoint, nanos, millis};
     }
 
     @Override

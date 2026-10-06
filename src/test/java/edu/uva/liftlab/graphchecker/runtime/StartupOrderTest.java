@@ -35,8 +35,8 @@ public class StartupOrderTest {
     public void aReplayTakesTheStepInItsRecordingsOrder() throws Exception {
         Path order = Files.createTempFile("startup", ".jsonl");
         RowCodec.writeJsonl(order, Arrays.asList(
-                RowCodec.writeScheduleStartup("register", "dn1"),
-                RowCodec.writeScheduleStartup("register", "dn0")));
+                RowCodec.writeScheduleStartup("register", "dn1", 0L, 0L),
+                RowCodec.writeScheduleStartup("register", "dn0", 0L, 0L)));
         System.setProperty(ScheduleLog.PREFIX_PROPERTY, order.toString());
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final List<String> took =

@@ -36,12 +36,13 @@ import org.junit.Test;
  * workload's and not a divergence.
  */
 public class ScheduleLogTest {
+    /** The events written; marks (a clock's origin) are not the order. */
     private final List<JsonObject> written =
             Collections.synchronizedList(new ArrayList<JsonObject>());
     private final ScheduleLog.Sink writer = new ScheduleLog.Sink() {
         @Override
         public void write(JsonObject row) {
-            written.add(row);
+            if (!row.has("mark")) written.add(row);
         }
     };
 

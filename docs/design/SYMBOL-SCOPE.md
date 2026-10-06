@@ -336,8 +336,9 @@ binary operations with constants), each local defined once, followed up to four 
 ticks in milliseconds); a wrapper with no readable scale ticks in milliseconds.
 
 A `DECLARED_SITE` with `inputKind: CLOCK` is published for a `call_return` of a clock that no
-region holds as its own method. A `CLOCK` root's value in a replay is the reading plus a skew the
-obligation states (`FocusedReplay.clockSkew`).
+region holds as its own method. A `CLOCK` root's value in a replay is the reading -- the
+application's clock, which follows the replay's order's timeline (`runtime/Clocks`, PIPELINE.md §5)
+-- plus a skew the obligation states (`FocusedReplay.clockSkew`).
 
 ### 4.2 Fault markers
 

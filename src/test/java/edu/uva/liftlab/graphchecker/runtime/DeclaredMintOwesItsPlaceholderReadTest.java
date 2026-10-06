@@ -161,7 +161,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 SKEW, roots.get(0).clockSkew());
         assertEquals("so the host read the instant less that skew",
                 Long.toString(Long.parseLong(INSTANT) - SKEW),
-                roots.get(0).hostReading());
+                roots.get(0).baseReading());
         assertEquals("and the clock it is: the JVM clock it wraps, its tick",
                 Clock.of(1_000_000L, Clock.WALL), roots.get(0).clock());
 

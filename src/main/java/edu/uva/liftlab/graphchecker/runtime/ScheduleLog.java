@@ -202,6 +202,19 @@ public final class ScheduleLog {
     private static final String ENGINE_THREAD = "causynth-";
     private static int firstOpen;
     /**
+     * The furthest slot settled at or before the frontier: the place in
+     * the order the application's clocks have reached ({@link
+     * #publishTimeLocked}).  -1 before any.
+     */
+    private static int reachedSlot = -1;
+    /** Whether the clocks run past the frontier's instant until it moves:
+     *  it stood a timeout with no thread waiting on the order ({@link
+     *  #clockAtCap}). */
+    private static boolean capLifted;
+    /** The reached slot and the cap last handed to {@link Clocks}. */
+    private static int publishedReached = -2;
+    private static int publishedCap = -2;
+    /**
      * The first open slot in a later event's way ({@link #blocking}): an
      * open WAKE never is, since its daemon may be blocked behind a lock a
      * held thread owns -- a daemon's turn never comes sooner than recorded,
@@ -689,7 +702,8 @@ public final class ScheduleLog {
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
-                pending.endpoint);
+                pending.endpoint).stamped(Clocks.stampNanos(),
+                Clocks.stampMillis());
         writeLocked(RowCodec.writeScheduleEvent(event));
     }
 
@@ -1118,6 +1132,7 @@ public final class ScheduleLog {
     private static void markLocked(int slot, byte next) {
         if (state[slot] == OPEN && heldKind(slot)) openHeld--;
         state[slot] = next;
+        if (slot <= firstBlocking) reachedSlot = Math.max(reachedSlot, slot);
         if (next == GIVEN_UP) return;
         ArrayDeque<Integer> keyed = SLOTS.get(order.get(slot).key());
         if (keyed != null) keyed.remove(Integer.valueOf(slot));
@@ -1233,15 +1248,101 @@ public final class ScheduleLog {
                 || !blocking(firstBlocking))) {
             firstBlocking++;
         }
-        if (firstBlocking > frontier) frontierMovedLocked();
+        if (firstBlocking > frontier) {
+            // What the frontier passed: its furthest settled slot.
+            for (int index = firstBlocking - 1;
+                 index > reachedSlot && index >= frontier; index--) {
+                if (state[index] != OPEN) {
+                    reachedSlot = index;
+                    break;
+                }
+            }
+            frontierMovedLocked();
+        }
         holds = openHeld > 0 || firstBlocking < line;
+        publishTimeLocked();
         LOCK.notifyAll();
+    }
+
+    /**
+     * Hands the application's clocks ({@link Clocks}) the order's place:
+     * the instant of the furthest slot settled at or before the frontier,
+     * and, while the line stands, the frontier's own as the cap -- an event
+     * the recording made at that instant has not happened here yet, so
+     * neither has its time.  Past the line, or with the cap lifted, nothing
+     * caps it.
+     */
+    private static boolean publishTimeLocked() {
+        if (!RecordingWindow.opened()) return false;
+        int cap = lineStandsLocked() && !capLifted
+                && firstBlocking < order.size() ? firstBlocking : -1;
+        if (reachedSlot == publishedReached && cap == publishedCap) {
+            return false;
+        }
+        publishedReached = reachedSlot;
+        publishedCap = cap;
+        ScheduleEvent lo = reachedSlot < 0 ? null : order.get(reachedSlot);
+        ScheduleEvent hi = cap < 0 ? null : order.get(cap);
+        Clocks.reached(lo == null ? Long.MIN_VALUE : lo.nanos(),
+                lo == null ? Long.MIN_VALUE : lo.millis(),
+                hi == null ? Long.MAX_VALUE : hi.nanos(),
+                hi == null ? Long.MAX_VALUE : hi.millis(),
+                hi == null ? null : "slot " + cap + " (" + hi.render()
+                        + ")");
+        return true;
+    }
+
+    /**
+     * A read of the application's clocks stood at the frontier's instant
+     * ({@link Clocks}): when the frontier stood a stall ({@link
+     * #stalledLocked}) and no thread waits on the order -- so no watchdog
+     * will move it -- the clocks run on past it until it moves, named.
+     * With a thread waiting, the watchdog's own bound holds.
+     */
+    static void clockAtCap() {
+        mute();
+        try {
+            synchronized (LOCK) {
+                if (capLifted || !WAITERS.isEmpty()
+                        || firstBlocking >= order.size()) {
+                    return;
+                }
+                long now = System.currentTimeMillis();
+                long stood = now - lastProgress;
+                if (!stalledLocked(stood, now)) return;
+                capLifted = true;
+                // A lift is one only when it moved the clocks' cap.
+                if (!publishTimeLocked()) return;
+                Clocks.liftedUnwaited();
+                stateLocked("schedule-clock#" + firstBlocking, "the"
+                        + " application's clocks stood " + stood + " ms at"
+                        + " the instant of slot " + firstBlocking + " ("
+                        + order.get(firstBlocking).render() + "), which did"
+                        + " not happen, with no thread waiting on the order:"
+                        + " they run on past it until the order moves");
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * Whether a cap of the application's clocks that stood {@code stood} ms
+     * is a stall, by the watchdog's own test: a timeout with nothing
+     * computing ({@link #computingLocked}), or {@link #CEILING} timeouts
+     * whatever runs.
+     */
+    private static boolean stalledLocked(long stood, long now) {
+        long timeout = timeoutMillis();
+        return stood >= CEILING * timeout
+                || stood >= timeout && !computingLocked(now);
     }
 
     /** The frontier moved: every waiter's stall starts over, and what was
      *  seen of the old frontier's owner is forgotten. */
     private static void frontierMovedLocked() {
         lastProgress = System.currentTimeMillis();
+        capLifted = false;
         letGoSinceProgress = false;
         RELEASED.clear();
         ELSEWHERE.clear();
@@ -1266,6 +1367,8 @@ public final class ScheduleLog {
         mute();
         try {
             synchronized (LOCK) {
+                // This class owns the clocks' cap: freed under its lock.
+                Clocks.free();
                 if (!holds) return;
                 int first = -1;
                 for (int index = firstOpen; index < state.length; index++) {
@@ -1462,7 +1565,12 @@ public final class ScheduleLog {
      * deferred, never missed, and {@link #CEILING} bounds the deferral.
      */
     private static boolean computingLocked(long now) {
-        if (now - cpuSampledAt >= CPU_SAMPLE_MS) lookLocked(now, true);
+        if (cpuSampledAt == 0L) {
+            // Nothing looked at yet: this look is the baseline.
+            lookLocked(now, false);
+        } else if (now - cpuSampledAt >= CPU_SAMPLE_MS) {
+            lookLocked(now, true);
+        }
         return computing;
     }
 
@@ -1619,6 +1727,10 @@ public final class ScheduleLog {
         letGoAt = 0L;
         stallSince = -1L;
         openHeld = 0;
+        reachedSlot = -1;
+        capLifted = false;
+        publishedReached = -2;
+        publishedCap = -2;
         for (int index = 0; index < all.size(); index++) {
             ScheduleEvent event = all.get(index);
             ArrayDeque<Integer> slots = SLOTS.get(event.key());
@@ -1658,19 +1770,51 @@ public final class ScheduleLog {
         }
     }
 
-    /** The startup marks of the order this replay is handed, prefix then
-     *  rest; none in a recording ({@link StartupOrder}). */
-    static List<JsonObject> startupMarks() {
+    /** The marks of the timeline of the order this replay is handed
+     *  ({@link Clocks}, {@link StartupOrder}), prefix then rest; none in a
+     *  recording. */
+    static List<JsonObject> timelineMarks() {
         List<JsonObject> marks = new ArrayList<JsonObject>();
         for (Path file : Arrays.asList(prefixFile(), suffixFile())) {
             if (file == null || !file.toFile().isFile()) continue;
             try {
-                marks.addAll(SessionReader.readScheduleStartup(file));
+                marks.addAll(SessionReader.readScheduleTimeline(file));
             } catch (IOException unreadable) {
                 // Its schedule names an unreadable order once it loads it.
             }
         }
         return marks;
+    }
+
+    /** Whether this run is handed an order: a replay. */
+    static boolean ordered() {
+        return prefixFile() != null || suffixFile() != null;
+    }
+
+    /**
+     * The workload opened its window: the application's clocks reach the
+     * order's opening ({@link Clocks#windowOpened}) and are capped by the
+     * order at once -- its frontier's instant, or nothing with no order
+     * installed -- under this class's lock, the one owner of the cap; and
+     * this run states its own opening ({@link ScheduleEvent#OPEN}), in both
+     * passes.  Whatever was published before (events the open window let in
+     * first, an earlier window) is published again.
+     */
+    static void windowOpened() {
+        mute();
+        try {
+            synchronized (LOCK) {
+                loadOrderLocked();
+                Clocks.windowOpened(RecordingWindow.index());
+                publishedReached = -2;
+                publishedCap = -2;
+                publishTimeLocked();
+            }
+        } finally {
+            unmute();
+        }
+        writeMark(RowCodec.writeScheduleTime(ScheduleEvent.OPEN,
+                Clocks.stampNanos(), Clocks.stampMillis()));
     }
 
     /** This thread waits on something no slot holds ({@code StartupOrder}'s
@@ -1777,7 +1921,12 @@ public final class ScheduleLog {
             PASSED_SLOTS.clear();
             MADE.clear();
             ClockLoops.resetForTests();
+            Clocks.resetForTests();
             moves = 0L;
+            reachedSlot = -1;
+            capLifted = false;
+            publishedReached = -2;
+            publishedCap = -2;
             letGoSinceProgress = false;
             letGoAt = 0L;
             firstOpen = 0;

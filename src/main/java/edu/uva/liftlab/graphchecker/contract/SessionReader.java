@@ -5,8 +5,10 @@ import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -229,19 +231,25 @@ public final class SessionReader {
         return stated[0];
     }
 
-    /** The startup marks a schedule file states ({@link
-     *  ScheduleEvent#STARTUP}), whole, in their order. */
-    public static List<JsonObject> readScheduleStartup(Path file)
+    /** The marks of the run's timeline a schedule file states ({@link
+     *  ScheduleEvent#ORIGIN}, {@link ScheduleEvent#STARTUP}, {@link
+     *  ScheduleEvent#OPEN}), whole, in their order. */
+    public static List<JsonObject> readScheduleTimeline(Path file)
             throws IOException {
         List<JsonObject> marks = new ArrayList<JsonObject>();
         schedulePrefix(file, row -> {
-            if (row.has("mark") && ScheduleEvent.STARTUP.equals(
+            if (row.has("mark") && TIMELINE.contains(
                     row.get("mark").getAsString())) {
                 marks.add(row);
             }
         });
         return marks;
     }
+
+    private static final Set<String> TIMELINE =
+            new HashSet<String>(Arrays.asList(
+                    ScheduleEvent.ORIGIN, ScheduleEvent.STARTUP,
+                    ScheduleEvent.OPEN));
 
     /** Each row of a schedule file, up to the first one that will not read. */
     private static void schedulePrefix(Path file, Consumer<JsonObject> each)
