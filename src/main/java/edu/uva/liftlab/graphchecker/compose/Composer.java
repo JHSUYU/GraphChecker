@@ -1009,14 +1009,13 @@ public final class Composer {
      *  ({@link Concrete}), kept once the path is a disjunct. */
     private final Map<String, Concrete> pathConcrete =
             new LinkedHashMap<String, Concrete>();
-    /** The arrivals the path being composed holds at their recorded value
-     *  ({@link #handoffRead}), conjoined with its terms. */
-    private final List<String> pathHolds = new ArrayList<String>();
     /** What the composed paths rest on concretely, by subject. */
     private final Map<String, Concrete> concrete =
             new LinkedHashMap<String, Concrete>();
     /** How the alternatives of one slot read in SMT. */
     private final ComposedFamilies composedFamilies;
+    /** What a path or an arm rests on ({@link RestsOn}). */
+    final RestsOn restsOn;
 
     private Composer(Corpus corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
@@ -1024,6 +1023,7 @@ public final class Composer {
         this.corpus = corpus;
         this.anchor = anchor;
         this.scope = scope;
+        this.restsOn = new RestsOn(corpus, scope, anchor);
         this.declaredDomains = declaredDomains == null
                 ? Collections.<String, RootDomain>emptyMap()
                 : declaredDomains;
@@ -1339,24 +1339,18 @@ public final class Composer {
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
         lowering.path();
-        // Where the path decided: at the target row, or, where it never
-        // reached the anchor, at the guard it left the way to the throw at
-        // (a row that did not reach the anchor stands at no point of it).
-        DecisionRow way = target.reachedAnchor() ? null
-                : wayGuard(path.decisions);
-        boolean symbolicWay = way != null
-                && !corpus.termSymbols(session, way.term()).isEmpty();
-        long cutoff = target.reachedAnchor() ? target.seq()
-                : way == null ? Long.MAX_VALUE : way.seq();
-        // What the fatal arm is: phi; a symbolic way guard's other arm, the
-        // way to the throw; else (a concrete one) the constant false.
-        String fatalTerm = target.reachedAnchor() ? target.phiTerm()
-                : symbolicWay ? Arms.conjunct(way.term(), !way.outcome())
-                : "false";
+        // Where the path decided, and its fatal arm (RestsOn#decided).
+        RestsOn.Decided decided = restsOn.decided(session, target,
+                path.decisions);
+        DecisionRow way = decided.way;
+        boolean symbolicWay = decided.symbolicWay;
+        long cutoff = decided.cutoff;
+        String fatalTerm = decided.fatalTerm;
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
-        Map<String, Long> reached = closure(session, anchor, cutoff, null);
+        Map<String, Long> reached = restsOn.closure(session, anchor, cutoff,
+                null);
         // What a family may move is no constant anywhere in this path: not
         // a pin after a refused join, not a variable independence leaves
         // out.  ONE entry point: the anchor's reads and the world's planted
@@ -1377,15 +1371,14 @@ public final class Composer {
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
         pathConcrete.clear();
-        pathHolds.clear();
         int unboundBefore = lowering.unbound().size();
         frames(session, reached.keySet());
 
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
-        List<DecisionRow> conditions = before(path.decisions, cutoff);
-        conditions.addAll(reachedConditions(session, reached));
-        Independence relevant = independence(session,
+        List<DecisionRow> conditions = RestsOn.before(path.decisions, cutoff);
+        conditions.addAll(restsOn.reachedConditions(session, reached));
+        Independence relevant = restsOn.independence(session,
                 Collections.singletonList(fatalTerm),
                 familyBound(session, repairing.reads), reached,
                 conditions);
@@ -1393,7 +1386,7 @@ public final class Composer {
         //       the roots alone: a location a family binds and nothing else
         //       reaches holds the formula's alternatives, not the witness (a
         //       confirming run is held to these only).
-        Set<String> restsOn = independence(session,
+        Set<String> fatalLocations = restsOn.independence(session,
                 fatalRests(fatalTerm, path.decisions, cutoff),
                 Collections.<String>emptySet(), reached, conditions)
                 .locations();
@@ -1414,12 +1407,13 @@ public final class Composer {
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
 
-        // (2) Each anchor handoff, answered or not: nothing here (its family
-        //     binds it; collected in `bound`).  Never a literal.
-        Set<String> interactionIds = new LinkedHashSet<String>();
+        // (2) Each anchor handoff, answered or not: its family binds it
+        //     (collected in `bound`), never a literal; one no producer this
+        //     corpus attests is held in `holds`.
         Set<String> handoffs = new LinkedHashSet<String>();
+        List<String> holds = new ArrayList<String>();
         List<AttachRow> bound = new ArrayList<AttachRow>();
-        handoffReads(session, interactionIds, handoffs, refusals, bound);
+        handoffReads(session, handoffs, holds, bound);
 
         // (3) State joins, read := observed write's expression, kept by
         //     symbol: a read with family alternatives must not also be
@@ -1510,9 +1504,13 @@ public final class Composer {
         //      phi), by the same rule as (2).
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
-        reachedHandoffs(session, reaching, interactionIds, handoffs,
-                refusals, bound);
-        terms.addAll(pathHolds);
+        reachedHandoffs(session, lowering.reachedSymbols(reaching), handoffs,
+                holds, bound, refusals, "");
+        terms.addAll(holds);
+        Set<String> interactionIds = new LinkedHashSet<String>();
+        for (AttachRow attach : bound) {
+            interactionIds.add(attach.interaction().id());
+        }
 
         // Read BEFORE end() forgets them: any refusal drops the whole path
         // (it would otherwise rest on a free constant).
@@ -1578,9 +1576,10 @@ public final class Composer {
         observedReads.put(path.pathId, observed);
         for (SmtLowering.Unbound value : lowering.unbound().subList(
                 unboundBefore, lowering.unbound().size())) {
-            pathConcrete.putIfAbsent(value.subject, new Concrete(value.kind,
-                    value.subject, value.value, value.reason,
-                    value.movesWith));
+            // One row per value and arm: an arm's own run holds its value.
+            pathConcrete.putIfAbsent(value.subject + "|" + value.arm,
+                    new Concrete(value.kind, value.subject, value.value,
+                            value.reason, value.movesWith).in(value.arm));
         }
         for (Map.Entry<String, Concrete> row : pathConcrete.entrySet()) {
             concrete.put(path.pathId + "|" + row.getKey(),
@@ -1591,7 +1590,7 @@ public final class Composer {
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, fatal, "(=> " + selector + " "
                 + VmTermLowering.and(withoutFatalArm) + ")",
-                target.observedFatal(), interactionIds, restsOn, cutoff);
+                target.observedFatal(), interactionIds, fatalLocations, cutoff);
     }
 
     /**
@@ -1647,20 +1646,6 @@ public final class Composer {
                             Collections.singletonList(name)));
         }
         return stated;
-    }
-
-    /** The last decision a path took at a site on the way to the throw
-     *  (the target sites' path sites), or null. */
-    private DecisionRow wayGuard(List<DecisionRow> decisions) {
-        Set<String> way = new LinkedHashSet<String>();
-        for (StaticScopeMap.Site target : scope.targetSites()) {
-            way.addAll(target.pathSites());
-        }
-        DecisionRow last = null;
-        for (DecisionRow decision : decisions) {
-            if (way.contains(decision.siteId())) last = decision;
-        }
-        return last;
     }
 
     private static List<String> selectors(List<Disjunct> disjuncts) {
@@ -1893,38 +1878,43 @@ public final class Composer {
     }
 
     /**
-     * Each of the anchor's handoffs, by {@link #handoffRead}: bound by its
-     * FAMILY alone, or the path is refused by name.
+     * Each of the anchor's handoffs, by {@link #arrival}.
      */
-    private void handoffReads(String session, Set<String> interactionIds,
-                              Set<String> handoffs, List<GapRow> refusals,
-                              List<AttachRow> bound) {
+    private void handoffReads(String session, Set<String> handoffs,
+                              List<String> holds, List<AttachRow> bound) {
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
-            handoffRead(session, attach, interactionIds, handoffs, refusals,
-                    bound);
+            if (handoffs.add(attach.symbol())) {
+                arrival(session, attach, holds, bound);
+            }
         }
     }
 
     /**
-     * Every OTHER handoff this path's conjunction reaches (e.g. a delivered
-     * value a joined write put into a container), by the same rule.
-     * Unbound, each would be a free constant: a handoff variable this
+     * Every OTHER handoff a conjunction names, by {@link #arrival}: a
+     * path's (e.g. a delivered value a joined write put into a container)
+     * and an arm's alike ({@link ComposedFamilies}: those its delivery and
+     * its closure's conditions and joins read).  {@code handoffs} holds the
+     * symbols the conjunction states already.  A handoff variable the
      * session minted no attach for (the corpus states it of another run)
-     * has no family here, and refuses the path by name.
+     * has no family there, and refuses the conjunction by name.
+     *
+     * @param arm the arm selector whose conjunction names them, "" for the
+     *            path's own
      */
-    private void reachedHandoffs(String session, List<String> terms,
-                                 Set<String> interactionIds,
-                                 Set<String> handoffs, List<GapRow> refusals,
-                                 List<AttachRow> bound) {
-        for (String name : lowering.reachedSymbols(terms)) {
+    void reachedHandoffs(String session, Collection<String> names,
+                         Set<String> handoffs, List<String> holds,
+                         List<AttachRow> bound, List<GapRow> refusals,
+                         String arm) {
+        for (String name : names) {
             if (handoffs.contains(name)) continue;
             AttachRow attach = corpus.attach(session, name);
             if (attach != null) {
-                handoffRead(session, attach, interactionIds, handoffs,
-                        refusals, bound);
+                handoffs.add(name);
+                arrival(session, attach, holds, bound);
             } else if (corpus.handoffSymbol(name) && handoffs.add(name)) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, name, "this path names a "
+                        GapClass.DIAGNOSTIC, name, (arm.isEmpty()
+                                ? "this path" : "arm " + arm) + " names a "
                                 + "handoff variable no attach row of its "
                                 + "session minted, so no family of this "
                                 + "run binds what it read"));
@@ -1933,30 +1923,32 @@ public final class Composer {
     }
 
     /**
-     * One attach, stated once per symbol ({@code handoffs} holds the
-     * symbols already bound): an ATTESTED producer delivered it, and its
-     * FAMILY alone binds it (PIPELINE §8); nothing is conjoined here, and
-     * it takes just its sort from the delivery ({@link #attestedArrival}).
-     * Answered or not: an obligation's answer is what its replay planted at
-     * the consumer, and a witness rests only on a value a run compatible
-     * with its path delivered (hdfs-17967-pathC rb1: a flip answered the
-     * DataNode's key id with 119532 while the moved serial had its producer
-     * deliver 119533, and the answer, pinned as a literal, let the solver
-     * move the serial past it).  An arrival no producer this corpus attests
-     * delivered has a producer no row states (THE ONE RULE, {@link
-     * SmtLowering#unbound}): it is HELD at the value its row states it
-     * received, conjoined with the path's terms and named (a {@link
-     * Concrete} HELD, "producer unstated"); never free by default, never a
-     * silent pin.  A row stating no value this lowering places leaves the
-     * path resting on what no row states: refused by name.
+     * THE ONE RULE for one arrival a conjunction names, a path's and an
+     * arm's alike (PIPELINE §8), stated once per conjunction.  An ATTESTED
+     * producer delivered it: its FAMILY alone binds it (it joins {@code
+     * bound}); nothing is conjoined here, and it takes just its sort from
+     * the delivery ({@link #attestedArrival}).  Answered or not: an
+     * obligation's answer is what its replay planted at the consumer, and a
+     * witness rests only on a value a run compatible with its path
+     * delivered (hdfs-17967-pathC rb1: a flip answered the DataNode's key
+     * id with 119532 while the moved serial had its producer deliver
+     * 119533, and the answer, pinned as a literal, let the solver move the
+     * serial past it).  Its producer attested and no export of it lowers:
+     * what it delivered is unknown and nothing pins it, FREE, named.  No
+     * producer this corpus attests (or none named): HELD at the value its
+     * row states it received ({@code holds} receives the conjunct, stated
+     * under the caller's selector), named "producer unstated" ({@link
+     * SmtLowering#unbound}); a value the lowering places nowhere pins
+     * nothing, FREE, named.  Never free by default, never a silent pin, and
+     * never a refused conjunction (hdfs-11741 PS1-PS3: the SASL sender's
+     * arms were refused for the expiry dates its closure read from a
+     * refresh whose NameNode handler no session instrumented, and the key
+     * id they would have bound was left HELD).  Inside an arm's body its
+     * row names that arm ({@link SmtLowering#arm}).
      */
-    private void handoffRead(String session, AttachRow attach,
-                             Set<String> interactionIds,
-                             Set<String> handoffs, List<GapRow> refusals,
-                             List<AttachRow> bound) {
-        if (!handoffs.add(attach.symbol())) return;
-        Interaction interaction = attach.interaction();
-        if (interaction == null) {
+    private void arrival(String session, AttachRow attach,
+                         List<String> holds, List<AttachRow> bound) {
+        if (attach.interaction() == null) {
             // No known source, so no family: named, and held below.
             composedFamilies.unpaired(session, attach);
         }
@@ -1964,24 +1956,17 @@ public final class Composer {
                 ? Collections.<ExportRow>emptyList()
                 : arms.attestedExports(attach.producer());
         if (attestedArrival(attach, attested)) {
-            // An attested arrival has a producer, so its interaction.
-            interactionIds.add(interaction.id());
             bound.add(attach);
             return;
         }
         Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
         if (!attested.isEmpty()) {
-            // Its producer is attested and no export of it lowers: what it
-            // delivered is unknown, nothing pins it -- FREE, named.
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "attested producer "
                     + attach.producer().id() + ", whose "
                     + attested.size() + " export(s) did not lower");
             return;
         }
-        // No producer this corpus attests (or none named): held at what its
-        // row states it received, named; a value the lowering places
-        // nowhere pins nothing, FREE, named -- never a dropped path.
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
         Term value = lowering.statedValue(received, attach.javaType());
@@ -1993,7 +1978,7 @@ public final class Composer {
             return;
         }
         lowering.declareStated(attach.symbol(), value.sort);
-        pathHolds.add("(= " + attach.symbol() + " " + value.text + ")");
+        holds.add("(= " + attach.symbol() + " " + value.text + ")");
         lowering.held(attach.symbol(), received, attach.producer() == null
                 ? "the attach names no producer"
                 : "no export row of this corpus attests its producer "
@@ -2026,98 +2011,6 @@ public final class Composer {
             return true;
         }
         return false;
-    }
-
-    /**
-     * Every row of this session that states a value a symbol of this path
-     * may be: every MINT ROW of the session wherever published (a mint is
-     * identified by its version, see {@link SmtLowering#mintedReadSymbol};
-     * a sibling activation may publish it under its own address), then the
-     * reads of the reached occurrences.
-     */
-    private List<ReadRow> statedRows(String session,
-                                     Set<String> occurrences) {
-        List<ReadRow> rows = new ArrayList<ReadRow>();
-        Set<String> stated = new LinkedHashSet<String>();
-        SessionReader reader = corpus.session(session);
-        // Mint rows first: other reads resolve to the symbols they state.
-        if (reader != null) {
-            for (ReadRow read : reader.reads()) {
-                if (read.mintVersion() >= 0L && read.symbol() != null
-                        && !read.symbol().isEmpty()
-                        && stated.add(read.symbol())) {
-                    rows.add(read);
-                }
-            }
-        }
-        // Then the anchor, then reached occurrences in closure order (P3);
-        // a symbol is stated by the first row met.
-        for (String occurrenceId : occurrences) {
-            OccurrenceAddress at = corpus.occurrence(occurrenceId);
-            if (at == null) continue;
-            for (ReadRow read : corpus.readsOn(session, at)) {
-                if (read.symbol() == null || stated.add(read.symbol())) {
-                    rows.add(read);
-                }
-            }
-        }
-        return rows;
-    }
-
-    /**
-     * The occurrences this path's joins reach, and each one's cutoff seq:
-     * P3, a row-level fixed point over ONE session's log.
-     *
-     * <p>The start keeps its cutoff (the target observation; widening it
-     * would include the anchor decision phi negates).  Any other occurrence
-     * is reached at the seq of the write a read joined to, widened by later
-     * writes; its reads before the cutoff are joined in turn.</p>
-     *
-     * <p>P3 (PIPELINE §8): EARLIER VERSIONS of a reached write's location
-     * are reached too, since a state is the result of every earlier mutation (e.g. what
-     * a map lacks was removed earlier under a clock comparison).  Each
-     * (location, version) is handled once.</p>
-     */
-    Map<String, Long> closure(String session, OccurrenceAddress start,
-                              long cutoff, List<WriteRow> seeds) {
-        Map<String, Long> reached = new LinkedHashMap<String, Long>();
-        reached.put(start.id(), cutoff);
-        List<String> pending = new ArrayList<String>();
-        pending.add(start.id());
-        List<WriteRow> versions = new ArrayList<WriteRow>();
-        Set<String> handled = new LinkedHashSet<String>();
-        if (seeds != null) {
-            for (WriteRow seed : seeds) {
-                reach(seed, start, reached, pending, versions, handled);
-            }
-        }
-        while (!pending.isEmpty() || !versions.isEmpty()) {
-            while (!pending.isEmpty()) {
-                String at = pending.remove(0);
-                OccurrenceAddress occurrence = corpus.occurrence(at);
-                if (occurrence == null) continue;
-                boolean whole = anchor.id().equals(at);
-                long cut = reached.get(at);
-                for (ReadRow read : corpus.readsOn(session, occurrence)) {
-                    if (!whole && read.seq() >= cut) continue;
-                    if (read.observedVersion() < 0L) continue;
-                    WriteRow write = corpus.writeOf(session,
-                            SmtLowering.locationKey(read.location()),
-                            read.observedVersion());
-                    if (write == null) continue;
-                    reach(write, start, reached, pending, versions,
-                            handled);
-                }
-            }
-            if (versions.isEmpty()) continue;
-            WriteRow write = versions.remove(0);
-            String key = SmtLowering.locationKey(write.location());
-            for (WriteRow under : corpus.writesOf(session, key)) {
-                if (under.version() >= write.version()) continue;
-                reach(under, start, reached, pending, versions, handled);
-            }
-        }
-        return reached;
     }
 
     /**
@@ -2174,53 +2067,38 @@ public final class Composer {
         public final List<String> movesWith;
         /** The path it was composed on ({@link #on}). */
         public final String pathId;
+        /** The arm whose body it is in, null for the path's own ({@link
+         *  SmtLowering.Unbound#arm}): a path's row states no arm. */
+        public final String arm;
 
         Concrete(String kind, String subject, String value, String reason,
                  List<String> movesWith) {
-            this(kind, subject, value, reason, movesWith, "");
+            this(kind, subject, value, reason, movesWith, "", "");
         }
 
         private Concrete(String kind, String subject, String value,
                          String reason, List<String> movesWith,
-                         String pathId) {
+                         String pathId, String arm) {
             this.kind = kind;
             this.subject = subject;
             this.value = value;
             this.reason = reason;
             this.movesWith = Collections.unmodifiableList(movesWith);
             this.pathId = pathId;
+            this.arm = arm == null || arm.isEmpty() ? null : arm;
         }
 
         /** The same row, on this path. */
         Concrete on(String path) {
             return new Concrete(kind, subject, value, reason, movesWith,
-                    path);
+                    path, arm);
         }
-    }
 
-    /**
-     * One write this path rests on (joined or an earlier version): its
-     * writer is reached and its location's earlier versions queued.  An
-     * INITIAL has neither: no occurrence wrote it.
-     */
-    private void reach(WriteRow write, OccurrenceAddress start,
-                       Map<String, Long> reached,
-                       List<String> pending, List<WriteRow> versions,
-                       Set<String> handled) {
-        String writer = write.endpoint().occurrence().id();
-        // Never the anchor or the start: their cutoff is fixed.
-        if (write.initial() || anchor.id().equals(writer)
-                || start.id().equals(writer)) {
-            return;
+        /** The same row, in this arm's body. */
+        Concrete in(String selector) {
+            return new Concrete(kind, subject, value, reason, movesWith,
+                    pathId, selector);
         }
-        if (handled.add(SmtLowering.locationKey(write.location()) + "#"
-                + write.version())) {
-            versions.add(write);
-        }
-        Long held = reached.get(writer);
-        if (held != null && held.longValue() >= write.seq()) return;
-        reached.put(writer, write.seq());
-        pending.add(writer);
     }
 
     /**
@@ -2241,170 +2119,6 @@ public final class Composer {
                     refusals));
         }
         return conditions;
-    }
-
-    /** The decisions of every reached occurrence but the anchor, each
-     *  before its cutoff: what {@link #closureConditions} may state. */
-    List<DecisionRow> reachedConditions(String session,
-                                        Map<String, Long> reached) {
-        List<DecisionRow> conditions = new ArrayList<DecisionRow>();
-        for (Map.Entry<String, Long> entry : reached.entrySet()) {
-            if (anchor.id().equals(entry.getKey())) continue;
-            OccurrenceAddress at = corpus.occurrence(entry.getKey());
-            if (at == null) continue;
-            conditions.addAll(before(corpus.decisionsOf(session, at),
-                    entry.getValue().longValue()));
-        }
-        return conditions;
-    }
-
-    /** The decisions strictly before {@code seq}. */
-    private static List<DecisionRow> before(List<DecisionRow> decisions,
-                                            long seq) {
-        List<DecisionRow> earlier = new ArrayList<DecisionRow>();
-        for (DecisionRow decision : decisions) {
-            if (decision.seq() < seq) earlier.add(decision);
-        }
-        return earlier;
-    }
-
-    /** What {@code seeds} and the variables a family binds ({@code
-     *  bound}) rest on among these conditions and the reads of the reached
-     *  occurrences ({@link Independence}); a read brings the construction
-     *  guard of the write it observed. */
-    Independence independence(String session, List<String> seeds,
-                              Collection<String> bound,
-                              Map<String, Long> reached,
-                              List<DecisionRow> conditions) {
-        return Independence.of(corpus, session, seeds, bound, conditions,
-                statedRows(session, reached.keySet()),
-                read -> constructionGuards(session, corpus.writeOf(session,
-                        read.location(), read.observedVersion())));
-    }
-
-    /** The construction guards already found, by session and write. */
-    private final Map<String, List<DecisionRow>> built =
-            new LinkedHashMap<String, List<DecisionRow>>();
-
-    /**
-     * THE CONSTRUCTION GUARD of a reference write (R3-REFCONT §1.6, D5):
-     * the decisions its occurrence took before it at the guard sites of the
-     * mutations its method made on a container it then published
-     * ({@link StaticScopeMap#constructionGuards}).  A referent rests on
-     * every decision that shaped it, the ones that skipped a mutation
-     * included, and those leave no node in its state: an arm delivering the
-     * write, or a read joined to it, conjoins them in the polarity they took
-     * ({@link Independence} keeps them), and the reads they name are joined
-     * in turn.  A decision whose condition guards a conditional mutation of
-     * the referent's chain (REMOVE_IF, PUT_IF, APPEND_IF) stays free, as
-     * that node states it both ways.  None for a write that stored no
-     * container's state.
-     */
-    List<DecisionRow> constructionGuards(String session, WriteRow write) {
-        if (write == null || write.referentState() == null) {
-            return Collections.<DecisionRow>emptyList();
-        }
-        return built.computeIfAbsent(session + "|" + write.location() + "@"
-                + write.version(), unused -> {
-            String site = write.endpoint().site();
-            Set<String> sites = new LinkedHashSet<String>();
-            for (String carrier : scope.carriersAt(site,
-                    write.javaType(), write.location().kind())) {
-                for (StaticScopeMap.Guard guard
-                        : scope.constructionGuards(site, carrier)) {
-                    sites.add(guard.siteId());
-                }
-            }
-            List<DecisionRow> guards = new ArrayList<DecisionRow>();
-            if (sites.isEmpty()) return guards;
-            Set<JsonElement> free = mutationGuards(session,
-                    write.referentState());
-            for (DecisionRow decision : corpus.decisionsOf(session,
-                    write.endpoint().occurrence())) {
-                if (decision.seq() < write.seq()
-                        && sites.contains(decision.siteId())
-                        && !decides(session, decision, free)) {
-                    guards.add(decision);
-                }
-            }
-            return guards;
-        });
-    }
-
-    /**
-     * The guards of the conditional mutations of one container's chain
-     * ({@link ContainerSmtCodec#conditionalMutation}), down to its base:
-     * each version's mutation and, through the read it rests on, the
-     * version before.
-     */
-    private Set<JsonElement> mutationGuards(String session,
-                                            WriteRow.Referent state) {
-        Set<JsonElement> guards = ExpressionWalk.identitySet();
-        Set<JsonElement> walked = ExpressionWalk.identitySet();
-        List<JsonElement> pending = new ArrayList<JsonElement>();
-        WriteRow first = corpus.writeOf(session, state.location(),
-                state.version());
-        if (first != null) {
-            pending.add(corpus.expression(session, first.expressionRef()));
-        }
-        while (!pending.isEmpty()) {
-            for (ExpressionWalk walk = ExpressionWalk.of(pending.remove(
-                    pending.size() - 1), walked); walk.hasNext(); ) {
-                JsonObject node = walk.next();
-                String type = JsonFields.optionalString(node, "_type");
-                if ("ContainerRelation".equals(type)
-                        && ContainerSmtCodec.conditionalMutation(
-                        JsonFields.optionalString(node, "operation"))) {
-                    guards.add(unwrapped(node.get("guard")));
-                } else if (VmRows.GUARDED_READ_TYPE.equals(type)) {
-                    WriteRow below = corpus.writeOf(session,
-                            SmtLowering.locationKey(JsonFields.object(node,
-                                    "location")), VmRows.recordedVersion(
-                                    node));
-                    if (below != null) {
-                        pending.add(corpus.expression(session,
-                                below.expressionRef()));
-                    }
-                }
-            }
-        }
-        return guards;
-    }
-
-    /**
-     * Whether a decision's condition is one of these guards: the node
-     * itself, or its complement over the same operands (the arm a removal
-     * that did not fire states).
-     */
-    private boolean decides(String session, DecisionRow decision,
-                            Set<JsonElement> guards) {
-        if (guards.isEmpty()) return false;
-        for (String reference : SmtNames.symbols(decision.term(),
-                new LinkedHashSet<String>())) {
-            JsonElement condition = unwrapped(corpus.expression(session,
-                    reference));
-            if (guards.contains(condition)) return true;
-            for (JsonElement guard : guards) {
-                if (condition != null && condition.isJsonObject()
-                        && guard != null && guard.isJsonObject()
-                        && condition.getAsJsonObject().get("_left")
-                        == guard.getAsJsonObject().get("_left")
-                        && condition.getAsJsonObject().get("_right")
-                        == guard.getAsJsonObject().get("_right")) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /** A value beneath the consumer boundaries around it. */
-    private static JsonElement unwrapped(JsonElement value) {
-        JsonElement found = value;
-        while (VmExpressionIr.consumerBoundary(found)) {
-            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
-        }
-        return found;
     }
 
     /**
@@ -2541,7 +2255,8 @@ public final class Composer {
      * a moved one ({@link #repairing}), else null.
      */
     private static String movedOwner(JsonObject node, Set<String> moved) {
-        JsonElement owner = unwrapped(node == null ? null : node.get("owner"));
+        JsonElement owner = RestsOn.unwrapped(node == null ? null
+                : node.get("owner"));
         if (!VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(owner))) {
             return null;
         }
@@ -2558,7 +2273,7 @@ public final class Composer {
      * refused, an object this session logs the state of.
      */
     private boolean storesItsContainer(String session, WriteRow store) {
-        JsonElement stored = unwrapped(corpus.expression(session,
+        JsonElement stored = RestsOn.unwrapped(corpus.expression(session,
                 store.expressionRef()));
         if (!SmtLowering.named(stored)) return false;
         String rid = Long.toString(VmRows.referencedObjectRid(
@@ -2759,7 +2474,7 @@ public final class Composer {
                      Independence relevant, SmtLowering.SessionJoin join,
                      List<GapRow> refusals, Map<String, String> joins,
                      Set<String> answered) {
-        for (ReadRow read : statedRows(session, occurrences)) {
+        for (ReadRow read : restsOn.statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (!relevant.keeps(read)) continue;
             if (joins.containsKey(read.symbol())) continue;
@@ -2826,7 +2541,7 @@ public final class Composer {
                     Independence relevant, SmtLowering.SessionJoin join,
                     List<GapRow> refusals, List<ReadRow> joined,
                     Map<String, String> joins, Set<String> answered) {
-        for (ReadRow read : statedRows(session, occurrences)) {
+        for (ReadRow read : restsOn.statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (!relevant.keeps(read)) continue;
             // Family alternatives are for the reads the stage re-pairs: the

@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 
+import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -155,7 +156,7 @@ public final class ClosurePlanner {
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
                             Branches branches) {
-        Walk walk = new Walk(corpus, scope);
+        Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
@@ -476,6 +477,11 @@ public final class ClosurePlanner {
         private final OccurrenceAddress occurrence;
         /** session|expressionRef of values this occurrence contributed. */
         private final Set<String> contributed = new LinkedHashSet<String>();
+        /** Session -> the seq of the last value this occurrence contributed
+         *  there: where the prefix its deliveries rest on ends ({@link
+         *  #demanded}). */
+        private final Map<String, Long> cutoffs =
+                new LinkedHashMap<String, Long>();
         private final Set<String> flipSites = new LinkedHashSet<String>();
         /** The symbols of a concrete anchor's predicate reads ({@link
          *  #concrete}); none on any other demand. */
@@ -499,6 +505,9 @@ public final class ClosurePlanner {
          */
         private boolean absorb(Demand other) {
             boolean grew = contributed.addAll(other.contributed);
+            for (Map.Entry<String, Long> cutoff : other.cutoffs.entrySet()) {
+                grew |= contributes(cutoff.getKey(), cutoff.getValue());
+            }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
                     && !CLOSURE_MEMBER.equals(why)) {
@@ -506,6 +515,33 @@ public final class ClosurePlanner {
                 grew = true;
             }
             return grew;
+        }
+
+        /** One value this occurrence contributed: its expression, in its
+         *  session, at its seq. */
+        private void contributes(String sessionId, String expressionRef,
+                                 long seq) {
+            contributed.add(sessionId + "|" + expressionRef);
+            contributes(sessionId, seq);
+        }
+
+        /** @return whether the prefix in this session now runs further */
+        private boolean contributes(String sessionId, long seq) {
+            Long held = cutoffs.get(sessionId);
+            if (held != null && held.longValue() >= seq) return false;
+            cutoffs.put(sessionId, seq);
+            return true;
+        }
+
+        /** The expressions this occurrence contributed in one session. */
+        private List<String> delivered(String sessionId) {
+            List<String> refs = new ArrayList<String>();
+            for (String each : contributed) {
+                if (each.startsWith(sessionId + "|")) {
+                    refs.add(each.substring(sessionId.length() + 1));
+                }
+            }
+            return refs;
         }
     }
 
@@ -520,6 +556,9 @@ public final class ClosurePlanner {
     private static final class Walk {
         private final Corpus corpus;
         private final StaticScopeMap map;
+        /** What a delivery rests on, as COMPOSE keeps it ({@link
+         *  #demanded}). */
+        private final RestsOn restsOn;
         private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
         /** what|endpoint id of each delivery said unread. */
         private final Set<String> unread = new LinkedHashSet<String>();
@@ -547,9 +586,11 @@ public final class ClosurePlanner {
          *  #controlProducer}). */
         private final Set<String> faultless = new LinkedHashSet<String>();
 
-        private Walk(Corpus corpus, StaticScopeMap map) {
+        private Walk(Corpus corpus, StaticScopeMap map,
+                     OccurrenceAddress anchor) {
             this.corpus = corpus;
             this.map = map;
+            this.restsOn = new RestsOn(corpus, map, anchor);
         }
 
         /** Whether a session recorded a fault decision of {@code
@@ -657,7 +698,7 @@ public final class ClosurePlanner {
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(demand.occurrence);
         group.addAll(stateConnected(corpus, demand.occurrence));
-        Set<String> demanded = demanded(corpus, demand, group);
+        Set<String> demanded = demanded(walk, demand, group);
         List<Demand> next = new ArrayList<Demand>();
         for (OccurrenceAddress member : group) {
             for (AttachRow attach : corpus.attachesOn(member)) {
@@ -748,13 +789,19 @@ public final class ClosurePlanner {
     /** The symbols one occurrence's demanded values name: the anchor's fatal
      *  predicate (a concrete one's predicate reads, {@link #concrete}),
      *  its decisions at its guard-set sites, and its contributed
-     *  expressions -- then the fixed point over its group's reads and the
-     *  writes they could observe. A factor member deciding the same site
-     *  decides it on its own objects, and demands nothing here. Terms are
-     *  EXPR references, asked of their expressions' DAG
-     *  ({@link Corpus#termSymbols}), never rendered. */
-    private static Set<String> demanded(Corpus corpus, Demand demand,
+     *  expressions; what COMPOSE keeps of each of its admitted paths and
+     *  deliveries ({@link RestsOn}: the decisions and reads of every
+     *  occurrence the joins from its prefix reach that rest on what moves,
+     *  so a handoff they name is demanded of the group member that
+     *  received it -- hdfs-11741's balancer KeyManager, deciding on the
+     *  expiry dates of nn0's updateBlockKeys@1 response); then the fixed
+     *  point over its group's reads and the writes they could observe. A
+     *  factor member deciding the same site decides it on its own objects,
+     *  and demands nothing here. Terms are EXPR references, asked of their
+     *  expressions' DAG ({@link Corpus#termSymbols}), never rendered. */
+    private static Set<String> demanded(Walk walk, Demand demand,
                                         List<OccurrenceAddress> group) {
+        Corpus corpus = walk.corpus;
         Set<String> named = new LinkedHashSet<String>();
         GroupReads reads = new GroupReads(corpus, group);
         for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
@@ -780,6 +827,21 @@ public final class ClosurePlanner {
             named.addAll(corpus.expressionSymbols(
                     contributed.substring(0, split),
                     contributed.substring(split + 1)));
+        }
+        if (demand.anchor) {
+            for (Corpus.RecordedPath path
+                    : corpus.pathsOf(demand.occurrence)) {
+                TargetRow target = corpus.target(path.sessionId,
+                        demand.occurrence);
+                if (target == null) continue;
+                named.addAll(walk.restsOn.ofPath(path.sessionId, target,
+                        path.decisions));
+            }
+        }
+        for (Map.Entry<String, Long> cutoff : demand.cutoffs.entrySet()) {
+            named.addAll(walk.restsOn.ofDelivery(cutoff.getKey(),
+                    demand.occurrence, cutoff.getValue(),
+                    demand.delivered(cutoff.getKey())));
         }
         Set<String> settled = new LinkedHashSet<String>();
         boolean grew = true;
@@ -929,8 +991,8 @@ public final class ClosurePlanner {
             paired.flipSites.addAll(guards);
             for (ExportRow export : walk.corpus.exportsOf(
                     attach.producer())) {
-                paired.contributed.add(export.sessionId() + "|"
-                        + export.expressionRef());
+                paired.contributes(export.sessionId(),
+                        export.expressionRef(), export.seq());
             }
             into.add(paired);
         }
@@ -1031,8 +1093,8 @@ public final class ClosurePlanner {
         if (write.initial()) return;
         Demand paired = new Demand(write.endpoint().occurrence(),
                 CLOSURE_MEMBER, false);
-        paired.contributed.add(write.sessionId() + "|"
-                + write.expressionRef());
+        paired.contributes(write.sessionId(), write.expressionRef(),
+                write.seq());
         paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
         into.add(paired);
     }

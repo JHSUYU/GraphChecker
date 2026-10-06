@@ -4138,6 +4138,67 @@ public class ExploreTest {
 
     /** One anchor's closure, every admitted session a parent of growth but
      *  those whose branch stopped ({@link Branches}). */
+    /**
+     * WHAT COMPOSE KEEPS OF A REACHED WRITER, EXPLORE DEMANDS (compose.RestsOn):
+     * the writer the anchor's read joins decided, before its write, on a
+     * value it received; COMPOSE keeps that decision (a received value
+     * moves), so the handoff it names is demanded and its producer is a
+     * closure member (hdfs-11741: the balancer's KeyManager decides on the
+     * expiry dates of nn0's updateBlockKeys@1 response, whose handler no
+     * session ran).  A decision over nothing that moves demands nothing.
+     */
+    @Test
+    public void aKeptDecisionOfAReachedWriterDemandsItsHandoff()
+            throws Exception {
+        OccurrenceAddress anchor = occurrence("hdfs-case/bal",
+                "REGION.move", CausalContext.of(Role.CLIENT, "", 1),
+                "Dispatcher#move#3");
+        OccurrenceAddress keys = occurrence("hdfs-case/bal", "REGION.keys",
+                CausalContext.of(Role.CLIENT, "", 2), "KeyManager#update#5");
+        OccurrenceAddress handler = occurrence("hdfs-case/nn0",
+                "REGION.handler", CausalContext.of(Role.CLIENT, "", 3),
+                "NameNodeRpc#getBlockKeys#9");
+        Endpoint sent = at(handler, "XCH.resp.expiry-date",
+                "PBHelper#convert#9");
+        LocationId stored = LocationId.of(LocationKind.INSTANCE, "7", "24");
+        // the writer's decision names its received handoff? -> the
+        // handoff's producer is a task
+        for (boolean received : new boolean[]{true, false}) {
+            Path iteration = tree.newFolder("rests-on-" + received)
+                    .toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(anchor, false);
+            seed.activation(keys, false);
+            seed.activation(handler, false);
+            seed.symbolic("e.expiry", "M_EXPIRY_OUT");
+            seed.export(sent, "e.expiry", 1L, "600");
+            seed.attach(at(keys, "XCH.resp.expiry-date",
+                    "PBHelper#convert#9"), "M_HOFF_EXPIRY", "600", sent);
+            seed.symbolic("EXPR.0000000000000001", received
+                    ? "M_HOFF_EXPIRY" : "M_UNMOVED");
+            seed.decision(keys, "KeyManager#u4", 1, true,
+                    "EXPR.0000000000000001");
+            seed.symbolic("e.key", "M_KEY");
+            seed.write(at(keys, Endpoint.stateSite("KeyManager", "update",
+                    12, true), "KeyManager#update#12"), stored, 5L, "e.key");
+            seed.symbolic("EXPR.0000000000000002", "M_READ_KEY");
+            seed.read(at(anchor, Endpoint.stateSite("Dispatcher", "move", 3,
+                    false), "Dispatcher#move#3"), stored, 5L, "M_READ_KEY",
+                    "7");
+            seed.target(anchor, "Dispatcher#move#3",
+                    "(not EXPR.0000000000000002)");
+            seed.flush();
+            ClosurePlanner.Plan plan = closure(Corpus.read(iteration, null),
+                    anchor, StaticScopeMap.empty());
+            boolean planned = false;
+            for (Task task : plan.tasks) {
+                planned |= task.focused().id().equals(handler.id());
+            }
+            assertEquals("received " + received + ": " + plan.tasks + " "
+                    + plan.gaps, received, planned);
+        }
+    }
+
     private static ClosurePlanner.Plan closure(Corpus corpus,
                                                OccurrenceAddress anchor,
                                                StaticScopeMap map) {
