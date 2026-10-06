@@ -290,11 +290,13 @@ startup taker is held (`StartupOrder#holding`: its hold, at most one timeout, bo
 at the window's opening time ran up to -- a start-up slower than its recording may need time to pass
 before its window (round TM13: hdfs-11741 has no startup mark before its opening, and its seed and every
 obligation replay stood two minutes there while a DataNode's heartbeat waits ran out and no heartbeat
-came due, until the old ceiling of eight timeouts lifted it) -- and at a startup pass this run made only
-once time stood there a schedule timeout, since what a node does once it joined the recording did at once
-(17's first heartbeats); never at a startup mark this run has not passed, whose pass comes from the
-start-up's own progress (lifted, time ran past it on the NameNode daemons' sleeps and hdfs-adhoc-22 gave
-up 23 seed slots, round TM14; a stand there only waited for a slow start-up, round TM13W2). The price is
+came due, until the old ceiling of eight timeouts lifted it); never at a startup mark this run has not
+passed, whose pass comes from the start-up's own progress (lifted, time ran past it on the NameNode
+daemons' sleeps and hdfs-adhoc-22 gave up 23 seed slots, round TM14; a stand there only waited for a slow
+start-up, round TM13W2); at a startup pass this run made only as a last-resort valve once time stood there
+the watchdog's ceiling of eight timeouts, since what a node does once it joined the recording did at once
+(17's first heartbeats) and a slow replay's stand there before its opening is its own slowness (round
+TM15: lifted after one timeout, 22 gave up 66). The price is
 named: such a start-up ends later in model time than its recording's, and inside the window time stands
 at that later instant until the order's stamps pass it (round TM1: lifted after a bare timeout, hdfs-11741's window opened 62 s of model time late). Inside the
 window a cap is lifted after a stall by the watchdog's own test (a timeout with nothing computing, or the

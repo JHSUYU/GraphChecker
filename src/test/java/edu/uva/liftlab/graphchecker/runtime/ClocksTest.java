@@ -140,7 +140,7 @@ public class ClocksTest {
     @Test
     public void aWaitThatRanOutPastAStandingCapLiftsItToItsDeadline()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "400");
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "100");
         follow(time(ScheduleEvent.ORIGIN, 0L),
                 startup("register", "dn0", 50L),
                 startup("register", "dn1", 60L),
@@ -158,7 +158,7 @@ public class ClocksTest {
                 Clocks.nanos() - 1L);
 
         StartupOrder.done(StartupOrder.begin("register", "dn0"));
-        standAtCap(450L);
+        standAtCap(850L);
         // dn2's taker is held until dn1 passes: its hold bounds the wait.
         Thread taker = new Thread(() -> StartupOrder.done(
                 StartupOrder.begin("register", "dn2")));
@@ -178,14 +178,14 @@ public class ClocksTest {
         ranOut(200L);
         atCap("at a pass this run made, a wait lifts nothing at first",
                 first + 70L * MS, Clocks.nanos() - 1L);
-        standAtCap(450L);
+        standAtCap(850L);
         long[] signalled = Clocks.waitBegins(300L * MS);
         Clocks.waited(signalled);
         atCap("nor one a signal ended", first + 70L * MS,
                 Clocks.nanos() - 2L);
         long deadline = ranOut(200L);
-        atCap("once it stood a timeout there, a wait that ran out lifts the"
-                + " cap to its deadline", deadline, Clocks.nanos());
+        atCap("once it stood the ceiling there, a wait that ran out lifts"
+                + " the cap to its deadline", deadline, Clocks.nanos());
         assertTrue(deadline - (first + 270L * MS) < 10L);
         Thread.sleep(100L);
         atCap("and no further", deadline, Clocks.nanos());

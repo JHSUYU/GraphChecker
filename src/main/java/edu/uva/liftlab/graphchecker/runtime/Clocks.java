@@ -63,19 +63,22 @@ import java.util.concurrent.atomic.LongAdder;
  * window may need time to pass (hdfs-11741, round TM13: no startup mark
  * before the opening, the seed and every obligation replay stood two
  * minutes there while a DataNode's heartbeat waits ran out and no
- * heartbeat came due, until the old ceiling of eight timeouts) -- and at a
- * startup pass this run made only once time stood there a schedule
- * timeout, since what a node does once it joined the recording did at once
- * (17's first heartbeats).  Never at a startup mark this run has not
- * passed: its pass comes from the start-up's own progress, and lifted,
- * time ran past it on the NameNode's daemons' sleeps (round TM14:
- * hdfs-adhoc-22 gave up 23 seed slots where it had given up none; a stand
- * there only ever waited for a slow start-up, round TM13W2).  A held
- * startup taker's own hold bounds that wait.  Inside the window a cap is
- * lifted after a stall by the watchdog's test (a timeout with nothing
- * computing, or the ceiling, {@code ScheduleLog#stalledLocked}) and only
- * when no thread waits on the order, whose watchdog otherwise moves the
- * frontier ({@code ScheduleLog#clockAtCap}).  Lifts are counted at exit.</p>
+ * heartbeat came due, until the old ceiling of eight timeouts).  Never at
+ * a startup mark this run has not passed: its pass comes from the
+ * start-up's own progress, and lifted there, time ran past it on the
+ * NameNode daemons' sleeps (round TM14: hdfs-adhoc-22 gave up 23 seed
+ * slots where it had given up none; a stand there only waited for a slow
+ * start-up, round TM13W2).  At a pass this run made, only as a last-resort
+ * valve once time stood there the watchdog's ceiling of eight timeouts:
+ * what a node does once it joined the recording did at once (17's first
+ * heartbeats), and a slow replay's stand there before its opening is its
+ * own slowness (round TM15: lifted after one timeout, 22 gave up 66).
+ * A held startup taker's own hold bounds that wait.  Inside the window a
+ * cap is lifted after a stall by the watchdog's test (a timeout with
+ * nothing computing, or the ceiling, {@code ScheduleLog#stalledLocked})
+ * and only when no thread waits on the order, whose watchdog otherwise
+ * moves the frontier ({@code ScheduleLog#clockAtCap}).  Lifts are counted
+ * at exit.</p>
  */
 public final class Clocks {
     private static final Object LOCK = new Object();
@@ -286,7 +289,7 @@ public final class Clocks {
                 && began[2] > at.hiNanos - began[0]
                 && began[2] < Long.MAX_VALUE - began[0]
                 && (at.stand == OPENING
-                        || at.stand == PASS && stoodATimeout(at))
+                        || at.stand == PASS && stoodTheCeiling(at))
                 && !StartupOrder.holding()) {
             at = liftedTo(began);
         }
@@ -303,11 +306,13 @@ public final class Clocks {
         own[0] = Math.max(own[0], began[1] + 1L);
     }
 
-    /** Whether time has stood at {@code at}'s cap one schedule timeout. */
-    private static boolean stoodATimeout(Bounds at) {
+    /** Whether time has stood at {@code at}'s cap the watchdog's ceiling
+     *  of {@code ScheduleLog#CEILING} timeouts: the last-resort valve. */
+    private static boolean stoodTheCeiling(Bounds at) {
         long since = at.reached.get();
         return since != 0L && System.nanoTime() - since
-                >= TimeUnit.MILLISECONDS.toNanos(ScheduleLog.timeoutMillis());
+                >= TimeUnit.MILLISECONDS.toNanos(ScheduleLog.CEILING
+                        * ScheduleLog.timeoutMillis());
     }
 
     /** {@code from + by}, at most {@code cap}. */
