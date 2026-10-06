@@ -207,6 +207,13 @@ final class LoggedEventSites {
         return site.site(write);
     }
 
+    /** The site a version node states its store ran at, or "" (no gap: the
+     *  caller names what it lacks). */
+    static String statedSite(JsonObject node) {
+        Logged own = node == null ? null : new Logged(node);
+        return own != null && own.states() ? own.site(true) : "";
+    }
+
     /** The method a logged event states it ran in, as a scope map row's
      *  {@code vmSite} spells it; "" when it states no site. */
     static String method(JsonObject node) {

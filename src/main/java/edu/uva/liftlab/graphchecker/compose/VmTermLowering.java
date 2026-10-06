@@ -50,6 +50,11 @@ public final class VmTermLowering {
             String content = ReadRow.stringContent(text);
             return content == null ? "" : VmExpressionIr.quote(content);
         }
+        // A reference's one literal is null; any other is a named object,
+        // a symbol and no literal.
+        if (sort == Sort.REF) {
+            return VmExpressionIr.SYMBOLIC_NULL.equals(text) ? "nullRef" : "";
+        }
         return "";
     }
 

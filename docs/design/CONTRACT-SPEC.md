@@ -146,6 +146,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `DECLARATION_MISSING` | a root, port or name the case never declared; an undecided or erroring solver ask |
 | `HOOK_UNDECLARED` | a tree hook that ran in a case whose plan declares its source nowhere (`ActiveRegion#observeConfiguredSourceEntry`): no root of the case, nothing minted, its value concrete (DIAGNOSTIC; an `UNSAT_CLOSED` result counts them, `undeclaredHookCount`) |
 | `LINEAGE_LOST` | an address degraded by an unattributable hop; an unpaired attach; a missing site index |
+| `UNATTRIBUTED_STORE` | reads observed a version no write row of their session states: its store ran outside every activation (the site, when the VM states it), or its row was not published; DIAGNOSTIC, one per (location, version) at the session's close, naming the first reader and how many |
 | `TASK_UNANSWERED` | a planned task no activation answered (BLOCKING when PLAN states it) |
 | `ADDRESS_UNSTABLE` | one planned task answered at two addresses across the corpus; a replay's occurrence that answered the declared one by its question, at the address the run computed ([IDENTITY.md §9](IDENTITY.md); DIAGNOSTIC) |
 | `SOLVER_TIMEOUT` | a flip query z3 did not answer in time |

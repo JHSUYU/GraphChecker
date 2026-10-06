@@ -55,6 +55,15 @@ public enum GapKind {
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
     /**
+     * Reads observed a version no write row of their session states: its
+     * store ran outside every activation (a thread in no region the plan
+     * started), or its row was not published.  DIAGNOSTIC, one per location
+     * and version at the session's close ({@code runtime.RowRuntime}): no
+     * writer row is such a read's recorded arm ({@code
+     * explore.Corpus#outsideStore}).
+     */
+    UNATTRIBUTED_STORE,
+    /**
      * A planned task no activation of this replay answered (DIAGNOSTIC: the
      * replay states what ran instead).  BLOCKING when PLAN states it: a row
      * whose anchor names a node its occurrence address does not, which no

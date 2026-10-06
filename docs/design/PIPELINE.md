@@ -1260,8 +1260,13 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   walk every pin asks, a method return's and a container answer's too, and EXPLORE's flip query
   alike, where a read of any location with write rows moves, `SmtLowering#forSession`) -- FREE, the
   read unconstrained and named with what it rests on (`SmtLowering#unbound`, a `Composer.Concrete`
-  FREE in `concrete[]`), since a pin would hold it while a witness moves that; else PIN to the value
-  the row states (a version no write row states: HELD, named "producer unstated"), else REFUSE
+  FREE in `concrete[]`), since a pin would hold it while a witness moves that; else, a version no
+  write row states (a store outside every activation, `UNATTRIBUTED_STORE`) of a location a writer
+  choice re-pairs (`SessionJoin#repaired`: in a flip query any location with write rows), OWN -- the
+  read's own symbol, which the writer choice binds beside the run's arm holding it to what it read,
+  as a read whose writer is known (`SmtLowering#bind`; hdfs-adhoc-39 OA4's `BlockInfo.uc` read of
+  the completion); else PIN to the value the row states (a version no write row states: HELD, named
+  "producer unstated"), else REFUSE
   (`UNSTATED_VALUE`); a write of a frame whose producer moves is FREE before any join; dropped, the
   join raises nothing (no refusal, side condition or gap); what a read
   row's binding required

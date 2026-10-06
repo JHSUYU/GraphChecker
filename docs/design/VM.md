@@ -644,7 +644,7 @@ that does not hold.
 | operations of an unmodeled collection | element fields hooked; the container relation silently lost |
 | digests, MACs, ciphers, logging | silently lost by design (muted) |
 | Jackson generator and bean writer, direct `ByteBuffer` | silently lost (muted or `Unsafe`) |
-| a value handed to a thread outside every region | silently lost; its writes to tracked locations are versioned unattributed |
+| a value handed to a thread outside every region | lost; its writes to tracked locations are versioned unattributed, no row, and each version a read observed is named at the session's close (`UNATTRIBUTED_STORE`, `runtime.RowRuntime#unattributedStores`) |
 | a separate process | silently lost (no mechanism) |
 | clocks, `Random`, `identityHashCode` | concrete natives; clocks become roots only through the Java-side mint |
 
