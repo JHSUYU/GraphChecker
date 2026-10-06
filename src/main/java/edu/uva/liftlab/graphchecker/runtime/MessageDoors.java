@@ -201,6 +201,31 @@ public final class MessageDoors {
     }
 
     /**
+     * A received message of {@code transport} ({@code correlationId}, {@code
+     * half}) is handed to a worker queue: an IPC server's Reader queueing a
+     * call for its handlers.  The hand-off is named by the message -- its
+     * sender's endpoint, which the receipt's anchor names too -- not by how
+     * many the thread handed off before ({@code Identity#handoffStarting}):
+     * the receiving side's twin of a request counted per verb ({@link
+     * #requestStarting}).  A message whose sender this run did not file
+     * names nothing, and its hand-off is a plain start.
+     *
+     * @return what {@link #handedOff} takes, in a finally
+     */
+    public static Object handingOff(String transport, String correlationId,
+                                    String half) {
+        String sender = Interactions.sender(Text.safe(transport),
+                Text.safe(correlationId), Text.safe(half));
+        return Identity.handoffStarting(sender.isEmpty() ? ""
+                : Text.safe(transport) + "." + sender);
+    }
+
+    /** The hand-off {@link #handingOff} began is over. */
+    public static void handedOff(Object handoff) {
+        Identity.handoffEnded(handoff);
+    }
+
+    /**
      * One message arrives: ends the exchange the thread was serving and
      * installs this one.
      *

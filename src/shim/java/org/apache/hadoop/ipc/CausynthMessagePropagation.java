@@ -148,6 +148,24 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * The IPC server's Reader hands one received call to its handlers
+   * ({@code Server#internalQueueCall}): the hand-off is the call's request,
+   * named by it ({@link MessageDoors#handingOff}), not by how many calls its
+   * connection carried before.
+   *
+   * @return what {@link #handedOff} takes, in a finally
+   */
+  public static Object handingOff(byte[] clientId, int callId) {
+    return MessageDoors.handingOff(IPC, rpcCorrelation(clientId, callId),
+        MessageDoors.REQUEST);
+  }
+
+  /** The hand-off {@link #handingOff} began is over. */
+  public static void handedOff(Object handoff) {
+    MessageDoors.handedOff(handoff);
+  }
+
+  /**
    * The operation a protobuf RPC request asks for, as {@code
    * <protocol>.<method>} with the protocol's simple name: the name Hadoop
    * gives the request itself ({@code RpcProtobufRequest#toString}, from its

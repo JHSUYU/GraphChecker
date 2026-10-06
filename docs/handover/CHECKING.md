@@ -35,8 +35,8 @@ roots in `movedRoots`.
 python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      # names every leaf symbol
 ```
 
-- The tree is the one the case ran on (`experiments/hadoop/*/case.sh repo=`): r5 `/bigtemp/vnr3ne/wt/hadoop-hdfs-
-  study-r5` for every HDFS case but 11741 (`hadoop-hdfs-11741-r5`). The legend reads the tree's classes with `javap`.
+- The tree is the one the case ran on (`experiments/hadoop/*/case.sh repo=`): r6 `/bigtemp/vnr3ne/wt/hadoop-hdfs-
+  study-r6` for every HDFS case but 11741 (`hadoop-hdfs-11741-r6`). The legend reads the tree's classes with `javap`.
 - It groups the leaves: ROOT (category, door or configuration key, where minted), CLOCK, HANDOFF (port `<- producer`
   node and method, or `<- ?` when no producer is stated), READ (class.method and the candidate fields), OTHER.
 - The formula's shape: `fatal_target` = OR of `path_selector__i`, exactly one selected; `path_fatal__i` = `(=> sel_i
