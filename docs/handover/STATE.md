@@ -26,9 +26,9 @@ requirement in [../STATUS.md](../STATUS.md).
 - **The time model regresses non-clock cases**: 19, 26, 37 never reach their target on its body (UNSAT/fine without
   it). Root cause (thread dump, `/bigtemp/vnr3ne/gc-out/hdfs-open-arms/diag/rerun-5c42/`): a timed-out monitor wait
   waits for its WAKE turn while holding the program's monitor (`TimedWaits.monitorWait`), so
-  `IncrementalBlockReportManager.waitTillNextIBR` blocks `DataXceiver`. Body choice in progress (agent T, rounds
-  P1A/P1B/P3C under `/bigtemp/vnr3ne/gc-out/hdfs-time-r6`): A = time model, B = reverted, C = time model + the monitor
-  release (`hdfs-ipc-handoff-name` 2beee3f94).
+  `IncrementalBlockReportManager.waitTillNextIBR` blocks `DataXceiver`. Body choice (agent T, rounds P1A/P1B/P3C under
+  `/bigtemp/vnr3ne/gc-out/hdfs-time-r6`): B, the time model REVERTED on hdfs-int (8f9acc7c4), reaches the anchor on every
+  probed case but 21; the time family runs on the r7 workarounds (owner: the time model by workarounds only).
 - **Agents** (briefs `/bigtemp/vnr3ne/analysis/study-2026-10-06b/`): T time family (r7, body choice, 21's thread-rename
   workaround); C codec capture by builder-bound exports (`hdfs-codec-capture` 53e1e2ce7: 17897 PASS with its key-id chain
   closed; 07, 11741 next), then concrete exports as constant arms and a retried call's own occurrence (14); R rule 1's
