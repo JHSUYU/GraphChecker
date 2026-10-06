@@ -42,9 +42,9 @@ import java.util.Set;
  *       domain (a marker over both values), else PINNED to the recorded read,
  *       as the composition pins it;</li>
  *   <li>a CLOCK is per path, never equal across paths, with domain {@code
- *       [base reading, base reading + 30 days]} in the clock's own ticks:
- *       the base reading of that execution ({@code
- *       RootMintRow#baseReading}), which a skew is off, so no model skews a
+ *       [host reading, host reading + 30 days]} in the clock's own ticks:
+ *       the host's reading of that execution ({@code
+ *       RootMintRow#hostReading}), which a skew is off, so no model skews a
  *       clock behind its host ({@link
  *       JavaPrimitiveSmtSemantics#clockSkewCeiling}; no reading: {@code [0,
  *       Long.MAX_VALUE]}); its nearest world is the instant the execution
@@ -748,13 +748,13 @@ final class FlipQuery {
                     clockVariables.put(variable, row.rootId());
                 }
                 // {@link JavaPrimitiveSmtSemantics#clockDomain}: floor = this
-                // execution's base reading (a skew is off it, and never
+                // execution's host reading (a skew is off it, and never
                 // below), ceiling = floor + window ({@link
                 // JavaPrimitiveSmtSemantics#clockSkewCeiling}), so no model
                 // flips by long overflow.  The nearest world is the instant
                 // the execution ran the cell at, where its node's clock may
                 // have run on off the host (RootMintRow#clockSkew).
-                String floor = instant(minted.baseReading());
+                String floor = instant(minted.hostReading());
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
                         floor.isEmpty() ? "0" : floor,
                         JavaPrimitiveSmtSemantics.clockSkewCeiling(floor,

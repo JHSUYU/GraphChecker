@@ -51,9 +51,6 @@ public final class RowCodec {
     private static final String CALL_SITE = "callSite";
     private static final String ITERATION = "iteration";
     private static final String SEQ = "seq";
-    /** The members a schedule row states the application's clocks in. */
-    private static final String NANOS = "ns";
-    private static final String MILLIS = "ms";
     private static final String JAVA_TYPE = "javaType";
 
     private RowCodec() {
@@ -534,8 +531,6 @@ public final class RowCodec {
         if (!event.endpoint().isEmpty()) {
             json.addProperty(ENDPOINT, event.endpoint());
         }
-        json.addProperty(NANOS, event.nanos());
-        json.addProperty(MILLIS, event.millis());
         return json;
     }
 
@@ -563,55 +558,20 @@ public final class RowCodec {
 
     /** The mark of {@code who} completing startup {@code step} ({@link
      *  ScheduleEvent#STARTUP}). */
-    public static JsonObject writeScheduleStartup(String step, String who,
-                                                  long nanos, long millis) {
-        JsonObject json = writeScheduleTime(ScheduleEvent.STARTUP, nanos,
-                millis);
+    public static JsonObject writeScheduleStartup(String step, String who) {
+        JsonObject json = writeScheduleMark(ScheduleEvent.STARTUP, 0L);
         json.addProperty("step", step);
         json.addProperty("who", who);
         return json;
     }
 
-    /**
-     * A mark of the run's timeline ({@link ScheduleEvent#ORIGIN}, {@link
-     * ScheduleEvent#OPEN}, {@link ScheduleEvent#STARTUP}), stamped with the
-     * application's clocks there.
-     */
-    public static JsonObject writeScheduleTime(String mark, long nanos,
-                                               long millis) {
-        JsonObject json = writeScheduleMark(mark, 0L);
-        json.addProperty(NANOS, nanos);
-        json.addProperty(MILLIS, millis);
-        return json;
-    }
-
-    /** {@code System.nanoTime()} as a schedule row states it. */
-    public static long scheduleNanos(JsonObject row) {
-        return number(row, NANOS);
-    }
-
-    /** {@code System.currentTimeMillis()} as a schedule row states it. */
-    public static long scheduleMillis(JsonObject row) {
-        return number(row, MILLIS);
-    }
-
-    /** The refusal of a schedule row written before rows stated their
-     *  clock readings: such a corpus is re-recorded, never read. */
-    public static final String PRE_CLOCK_CONTRACT =
-            "schedule row predates the clock-stamp contract; re-record";
-
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
-        if (!json.has(NANOS) || !json.has(MILLIS)) {
-            throw new IllegalArgumentException(PRE_CLOCK_CONTRACT + ": "
-                    + json);
-        }
         return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
                 json.has(CONTEXT) ? string(json, CONTEXT) : "",
                 string(json, "site"), integer(json, "k"),
                 optionalString(json, OCCURRENCE),
-                optionalString(json, ENDPOINT))
-                .stamped(number(json, NANOS), number(json, MILLIS));
+                optionalString(json, ENDPOINT));
     }
 
     // ---- files ---------------------------------------------------------

@@ -51,7 +51,7 @@ public final class RootMintRow extends Value {
      * @param category  where the root's value enters the world; the CLOCK
      *                  category is exactly the CLOCK kind
      * @param clock     a CLOCK's clock, null for any other root
-     * @param clockSkew how far a CLOCK's node clock ran off the base
+     * @param clockSkew how far a CLOCK's node clock ran off the host's
      *                  reading here ({@link #clockSkew}); 0 for any other
      */
     public static RootMintRow of(String sessionId, long seq,
@@ -77,7 +77,7 @@ public final class RootMintRow extends Value {
                 || !Fields.required(recordedValue, "recordedValue").trim()
                 .matches("-?[0-9]+"))) {
             throw new IllegalArgumentException("clockSkew: only a CLOCK "
-                    + "root that states an instant runs off the base "
+                    + "root that states an instant runs off the host's "
                     + "reading: " + stated + " " + recordedValue + " "
                     + clockSkew);
         }
@@ -124,7 +124,7 @@ public final class RootMintRow extends Value {
 
     /**
      * The value the region ran the root at; for a CLOCK the instant its
-     * node's clock read there, which is {@link #baseReading} moved by
+     * node's clock read there, which is {@link #hostReading} moved by
      * {@link #clockSkew}.
      */
     public String recordedValue() {
@@ -163,9 +163,9 @@ public final class RootMintRow extends Value {
     }
 
     /**
-     * How far a CLOCK's node clock ran off the base reading at this cell
+     * How far a CLOCK's node clock ran off the host's reading at this cell
      * (a replay's plant, or the jump before it the clock ran on from,
-     * {@code runtime.NodeClocks}); 0 for the base reading itself and for any
+     * {@code runtime.NodeClocks}); 0 for the host's own instant and for any
      * other root.
      */
     public long clockSkew() {
@@ -173,14 +173,12 @@ public final class RootMintRow extends Value {
     }
 
     /**
-     * What the application's clock read at this cell before any skew --
-     * the host's in a recording, the replay's model of its order's timeline
-     * in a replay ({@code runtime.Clocks}): {@link #recordedValue} less
+     * What the host's clock read at this cell: {@link #recordedValue} less
      * {@link #clockSkew}.  A clock's counterfactual is a skew off it (the
      * focus row's {@code clockDeltas}); the seed plants nothing, so there
      * it is the recorded value.
      */
-    public String baseReading() {
+    public String hostReading() {
         if (clockSkew == 0L) return recordedValue;
         return new java.math.BigInteger(recordedValue.trim())
                 .subtract(java.math.BigInteger.valueOf(clockSkew)).toString();

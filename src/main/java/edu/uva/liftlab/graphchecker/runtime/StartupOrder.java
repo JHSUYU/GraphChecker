@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -43,10 +42,6 @@ public final class StartupOrder {
     /** Per step, the passes completed in this run, or given up. */
     private static final Map<String, Set<String>> PASSED =
             new HashMap<String, Set<String>>();
-    /** How many takers are held right now: while one is, its step's mark
-     *  is a wait the hold itself bounds, and the clock standing at it is no
-     *  stall ({@link #holding}).  Guarded by LOCK. */
-    private static int held;
     /** Per step and taker, how often it began the step in this run. */
     private static final Map<String, Integer> BEGUN =
             new HashMap<String, Integer>();
@@ -78,64 +73,43 @@ public final class StartupOrder {
             }
             long deadline = System.currentTimeMillis()
                     + ScheduleLog.timeoutMillis();
-            boolean holding = !passed.containsAll(before);
-            if (holding) held++;
-            try {
-                while (!passed.containsAll(before)) {
-                    long left = deadline - System.currentTimeMillis();
-                    if (left <= 0L) {
-                        before.removeAll(passed);
-                        passed.addAll(before);
-                        for (String missing : before) {
-                            Clocks.passed(named, missing);
-                        }
-                        ScheduleLog.diverged("startup#" + named, pass
-                                + " took " + named + " after waiting "
-                                + ScheduleLog.timeoutMillis() + " ms for "
-                                + before + ", marked before it, which did"
-                                + " not complete it: they are given up");
-                        break;
-                    }
-                    try {
-                        LOCK.wait(left);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        before.removeAll(passed);
-                        ScheduleLog.diverged("startup#" + named, pass
-                                + " took " + named + " when interrupted"
-                                + " while waiting for " + before
-                                + ", marked before it");
-                        break;
-                    }
+            while (!passed.containsAll(before)) {
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0L) {
+                    before.removeAll(passed);
+                    passed.addAll(before);
+                    ScheduleLog.diverged("startup#" + named, pass + " took "
+                            + named + " after waiting "
+                            + ScheduleLog.timeoutMillis() + " ms for " + before
+                            + ", marked before it, which did not complete it:"
+                            + " they are given up");
+                    break;
                 }
-            } finally {
-                if (holding) held--;
+                try {
+                    LOCK.wait(left);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    before.removeAll(passed);
+                    ScheduleLog.diverged("startup#" + named, pass + " took "
+                            + named + " when interrupted while waiting for "
+                            + before + ", marked before it");
+                    break;
+                }
             }
             return new String[] {named, pass};
         }
     }
 
-    /** Whether a taker is held now ({@link Clocks} lifts no cap while one
-     *  is: StartupOrder gives the missing passes up within a timeout). */
-    static boolean holding() {
-        synchronized (LOCK) {
-            return held > 0;
-        }
-    }
-
-    /** The pass {@link #begin} returned completed: marked, stamped with
-     *  the application's clocks (which reach the order's mark of it), and
-     *  the takers held behind it go on. */
+    /** The pass {@link #begin} returned completed: marked, and the takers
+     *  held behind it go on. */
     static void done(String[] pass) {
         if (pass == null) return;
         synchronized (LOCK) {
             passedLocked(pass[0]).add(pass[1]);
             LOCK.notifyAll();
         }
-        Clocks.passed(pass[0], pass[1]);
         String who = pass[1].substring(0, pass[1].lastIndexOf('#'));
-        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who,
-                Clocks.stampNanos(), Clocks.stampMillis()));
+        ScheduleLog.writeMark(RowCodec.writeScheduleStartup(pass[0], who));
     }
 
     private static Set<String> passedLocked(String step) {
@@ -146,11 +120,7 @@ public final class StartupOrder {
         if (marked == null) {
             marked = new HashMap<String, List<String>>();
             Map<String, Integer> passes = new HashMap<String, Integer>();
-            for (JsonObject mark : ScheduleLog.timelineMarks()) {
-                if (!ScheduleEvent.STARTUP.equals(
-                        mark.get("mark").getAsString())) {
-                    continue;
-                }
+            for (JsonObject mark : ScheduleLog.startupMarks()) {
                 String step = mark.get("step").getAsString();
                 String who = mark.get("who").getAsString();
                 int n = passes.merge(step + "\n" + who, 1, Integer::sum) - 1;
@@ -165,7 +135,6 @@ public final class StartupOrder {
     static void resetForTests() {
         synchronized (LOCK) {
             marked = null;
-            held = 0;
             PASSED.clear();
             BEGUN.clear();
         }
