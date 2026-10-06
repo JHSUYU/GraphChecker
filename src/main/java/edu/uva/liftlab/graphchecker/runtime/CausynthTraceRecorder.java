@@ -103,7 +103,6 @@ public final class CausynthTraceRecorder {
     public static void startRecording() {
         initialize();
         RecordingWindow.open();
-        ScheduleLog.windowOpened();
         // Enforced prefix: running timed waits convert to virtual time.
         if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
     }

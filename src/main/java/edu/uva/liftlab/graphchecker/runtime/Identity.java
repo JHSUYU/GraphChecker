@@ -115,6 +115,12 @@ public final class Identity {
          * own: a child thread starts with none.
          */
         private String requestVerb = "";
+        /**
+         * The received message this thread is handing to a worker queue
+         * ({@link #handoffStarting}), {@code ""} when none: a start it makes
+         * meanwhile is that message's.
+         */
+        private String handedMessage = "";
 
         private State() {
             levels.add(new Level(null, 0L, null));
@@ -760,10 +766,13 @@ public final class Identity {
             return;
         }
         State state = state();
-        // A start made with a request in hand hands that request off: it is
-        // that operation's, its k counted per verb (IDENTITY §3).
-        String site = state.requestVerb.isEmpty() ? stable
-                : stable + ":" + state.requestVerb;
+        // A received message handed to a worker queue is that message's
+        // (#handoffStarting); a start made with a request in hand hands that
+        // request off: it is that operation's, its k counted per verb
+        // (IDENTITY §3).
+        String named = state.handedMessage.isEmpty() ? state.requestVerb
+                : state.handedMessage;
+        String site = named.isEmpty() ? stable : stable + ":" + named;
         // One reading of the window, for the count and the filed start.
         int window = RecordingWindow.index();
         int iteration = state.nextStartEvent(site, window);
@@ -826,6 +835,50 @@ public final class Identity {
         if (token <= 0L) return;
         exitFrame(token);
         requestInHand("");
+    }
+
+    /**
+     * This thread hands a received message to a worker queue ({@code
+     * MessageDoors#handingOff}), until {@link #handoffEnded}: every start it
+     * makes meanwhile is that message's, named by {@code message} (its
+     * sender's endpoint) and standing on none of the thread's own frames, so
+     * no other message the thread handed off before renames it (IDENTITY §3).
+     * An IPC server's Reader counted its calls per connection: one call the
+     * replay did not make renamed every later call of that connection, and
+     * each one stood its watchdog out (hdfs-adhoc-21, round TM13: 14 of its
+     * 17 stalls).
+     *
+     * @return what {@link #handoffEnded} takes; null for a message that
+     *         names no sender, whose hand-off is a plain start
+     */
+    static Object handoffStarting(String message) {
+        if (Text.safe(message).isEmpty()) return null;
+        State state = state();
+        Handoff handoff = new Handoff(state.scopeBase, state.handedMessage);
+        state.scopeBase = state.depth();
+        state.handedMessage = message;
+        return handoff;
+    }
+
+    /** The hand-off {@link #handoffStarting} began is over. */
+    static void handoffEnded(Object token) {
+        if (!(token instanceof Handoff)) return;
+        Handoff handoff = (Handoff) token;
+        State state = state();
+        state.handedMessage = handoff.message;
+        state.scopeBase = Math.max(0, Math.min(handoff.scopeBase,
+                state.depth()));
+    }
+
+    /** What a hand-off replaced: the scope root and the message before it. */
+    private static final class Handoff {
+        final int scopeBase;
+        final String message;
+
+        Handoff(int scopeBase, String message) {
+            this.scopeBase = scopeBase;
+            this.message = message;
+        }
     }
 
     /**

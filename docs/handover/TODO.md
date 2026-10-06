@@ -31,10 +31,10 @@ gated, then the next.
    unfinished at the handover).
 3. **`hdfs-solver-fallback`** (D1): a host solver killed at its memory hold is placed through the ledger by its
    measured peak, or fails by name at once (it asked 16 GB on its pinned host and waited 3900 s). Owed: one live case.
-4. **`hdfs-time-model`** (A2, reviewed, review fixes in): the tm16 gate passed (no 120 s stand; 11741 PASS CLOCK_SKEW
-   in 3004 s; 17897, bug1, 17960 PASS); its head 49f502302 (system/hdfs merged) needs one live check. Owed, not
-   blocking: 11741's admitted replays take a median 258 s vs 165-207 s before (two 15 s stalls: the window opens 65 s
-   late in model time). Delete `hdfs-clock-replay` with the merge.
+4. **`hdfs-time-model`**: merged, then REVERTED on hdfs-int (8f9acc7c4, 2026-10-06): its body made 19, 26 and 37 miss
+   their declared occurrence (a timed-out monitor wait waiting for its WAKE turn with the program's monitor held); the
+   time family runs on the r7 tree's workarounds instead (owner: the time model by workarounds only). Delete
+   `hdfs-clock-replay` and `hdfs-time-model` once HDFS is done.
 5. **The r6 trees + `hdfs-ipc-handoff-name`** (A2, stacked on the time model): build both r6 trees properly
    (OPERATIONS §1 "HDFS trees (next)"), javap the hooks on a case's classpath, rerun every HDFS workload test on r6,
    switch every `case.sh` in one commit; gate: 21's and 52's stalls by blocking slot before/after (`probe/stalls.py`),
@@ -105,6 +105,13 @@ If a check still cannot reach its target after that round, swap it (only 04 is l
 3. Hand-check every `.smt` (CHECKING.md §2: legend, chain, symbols, propagation against the HDFS code); write the chain
    of each SAT and a one-line reading of each UNSAT into STATUS.
 4. Merge `system/hdfs` into `main`; push only when the owner asks.
+
+### 5b. Later (owner 2026-10-06): the two-phase final run
+For a clean final acceptance run after the two branches are done: (1) the ~36 short cases a few at a time (6-8
+concurrent: their time is serial SEED, recording and seed replay, so exclusivity buys them little); (2) the deep
+closures (11741 08 09 05 06 11 14, 07) one at a time with the whole cluster (their cost is hundreds of obligation
+replays, which fan out: 09 has 653 verdicts over 9 tasks and 7 regions), agents offline meanwhile. Expected ~4-5 h in
+all versus ~9-10 h with every case exclusive. Not now: today each branch only runs its cases to their `.smt`.
 
 ### 6. Cleanup still owed (RULES: every change deletes what it replaces)
 - Cleanup batch 1, phase 2 (`brief-cleanup-1.md`): MapFields.safe/Text.safe copies, LineageScan's classFiles copy,

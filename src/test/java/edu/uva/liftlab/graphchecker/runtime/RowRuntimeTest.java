@@ -28,6 +28,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -526,6 +527,82 @@ public class RowRuntimeTest {
         CausynthMessagePropagation.requestEnded(nested);
         RuntimeTraceContext.endRequest(test);
         RecordingWindow.reset();
+    }
+
+    /**
+     * A received call handed to the handlers' queue is named by its request
+     * (IDENTITY §3), the server-side twin of a request counted per verb: the
+     * Reader's START is the call's, standing on none of the Reader's own
+     * frames, so a call one run handed off and the other did not renames
+     * none of the rest (hdfs-adhoc-21, round TM13: one call missing on a
+     * connection renamed every later one); a call whose sender this run did
+     * not file is a plain start.
+     */
+    @Test
+    public void aReceivedCallHandedOffIsNamedByItsRequest() throws Exception {
+        String queue = "<org.apache.hadoop.ipc.Server: void internalQueueCall("
+                + "org.apache.hadoop.ipc.Server$Call,boolean)>#u5";
+        // Each run's calls, by the api of the client root that sent each.
+        String[][] runs = {{"a", "b", "c"}, {"a", "extra", "b", "c"}};
+        byte[] clientId = {7, 7};
+        List<Map<String, String>> named = new ArrayList<>();
+        for (String[] run : runs) {
+            reset();
+            Identity.resetForTests();
+            Interactions.resetForTests();
+            ScheduleLog.resetForTests();
+            List<JsonObject> rows = new ArrayList<>();
+            ScheduleLog.install(rows::add);
+            RecordingWindow.open();
+            Object client = new Object();
+            RuntimeTraceContext.registerSource(client, new SourceRef(
+                    "EXTERNAL_APP", "DFS_CLIENT", "t/client0", 0L));
+            Object server = new Object();
+            RuntimeTraceContext.registerSource(server, NN);
+            for (int call = 0; call < run.length; call++) {
+                long sending = RuntimeTraceContext.beginRequest(client,
+                        run[call]);
+                CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                        CausynthMessagePropagation.rpcCorrelation(clientId,
+                                call), "0", "REQUEST", client, null, "");
+                RuntimeTraceContext.endRequest(sending);
+            }
+            // One Reader hands every call off, then one no client sent.
+            long reader = RuntimeTraceContext.beginRequest(server, "reader");
+            for (int call = 0; call <= run.length; call++) {
+                Object handoff = CausynthMessagePropagation.handingOff(
+                        clientId, call);
+                Identity.startWork(queue, new Object());
+                CausynthMessagePropagation.handedOff(handoff);
+            }
+            RuntimeTraceContext.endRequest(reader);
+            Map<String, String> starts = new LinkedHashMap<>();
+            int call = 0;
+            for (JsonObject row : rows) {
+                if (!row.has("kind")) continue;
+                ScheduleEvent event = RowCodec.readScheduleEvent(row);
+                if (event.kind() != ScheduleEvent.Kind.START) continue;
+                starts.put(call < run.length ? run[call] : "unsent",
+                        event.context() + " " + event.site() + "#"
+                                + event.k());
+                call++;
+            }
+            named.add(starts);
+            ScheduleLog.resetForTests();
+            RecordingWindow.reset();
+        }
+        for (String api : runs[0]) {
+            assertEquals(api + ": its hand-off's name is its request's",
+                    named.get(0).get(api), named.get(1).get(api));
+            assertTrue(named.get(0).get(api), named.get(0).get(api)
+                    .contains(queue + ":HADOOP_IPC."));
+        }
+        assertEquals("three calls, three names", 3, new java.util.HashSet<>(
+                Arrays.asList(named.get(0).get("a"), named.get(0).get("b"),
+                        named.get(0).get("c"))).size());
+        assertTrue("a call no client sent is a plain start: "
+                        + named.get(0).get("unsent"),
+                named.get(0).get("unsent").endsWith(" " + queue + "#0"));
     }
 
     /** Named as Hadoop's protobuf RPC request is, which names itself by

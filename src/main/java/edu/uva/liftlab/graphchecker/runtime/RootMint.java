@@ -925,14 +925,14 @@ final class RootMint {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
-        // No node owns it, so it is on no node's clock: the base reading,
+        // No node owns it, so it is on no node's clock: the host's reading,
         // named MINT_UNATTRIBUTED.
         if (mintUnattributed(active, action.symbol,
                 "declared primitive input at "
                         + firstNonBlank(fieldSignature, action.cell))) {
             return concrete;
         }
-        // A clock reads its node's clock (NodeClocks): the base reading
+        // A clock reads its node's clock (NodeClocks): the host's reading
         // moved by the jump before it.
         ActiveRegion owner = active.rootOwner(action.symbol);
         String node = owner.d3Address.node().render();
@@ -991,8 +991,8 @@ final class RootMint {
             active.pathRecordingStarted = true;
             JsonElement expression = primitiveBoxExpression(api, fresh);
             // What the region ran the root at: the box's value.  A clock
-            // also states how far its node's clock ran off the base reading,
-            // which a skew is relative to (RootMintRow#baseReading).
+            // also states how far its node's clock ran off the host there,
+            // the reading a skew is relative to (RootMintRow#hostReading).
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
                     ConcolicRegionRuntime.recordedScalar(planted),
@@ -1024,39 +1024,39 @@ final class RootMint {
 
     /**
      * The value one declared clock reading runs at: its node's clock
-     * ({@link NodeClocks}), the base reading moved by the skew of the jump
-     * before it in the recording's order.  The base reading's own box where
-     * there is none; where the mint's type cannot hold the instant, the
-     * base reading, named BLOCKING.
+     * ({@link NodeClocks}), the host's reading moved by the skew of the jump
+     * before it in the recording's order.  The host's own box where there is
+     * none; where the mint's type cannot hold the instant, the host's, named
+     * BLOCKING.
      */
     static Object clockReading(String node, SymbolizeAction action,
-                               Object base) {
+                               Object host) {
         long skew = NodeClocks.skew(node, action.clock, action.eventSeq);
-        if (skew == 0L) return base;
-        long instant = readingOf(base).longValue() + skew;
+        if (skew == 0L) return host;
+        long instant = readingOf(host).longValue() + skew;
         Object moved = ModelValues.coerce("", Long.toString(instant),
-                base.getClass());
+                host.getClass());
         if (moved == null
                 || moved == ModelValues.UnsupportedReplayValue.INSTANCE) {
             RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
                     action.symbol, "this clock reading runs on at instant "
                             + instant + ", which the type the mint reads "
-                            + "cannot hold, so it reads the base reading");
-            return base;
+                            + "cannot hold, so it reads the host's");
+            return host;
         }
         return moved;
     }
 
     /**
-     * How far a minted clock reading ran off the base reading (the skew
+     * How far a minted clock reading ran off the host's reading (the skew
      * its row states), filed as a jump of its node's clock where the wave
      * planted it: the clock runs on from there.  A reading the recording
      * states no event for, or whose clock states no source, is on no
      * clock's order, and the plant moves it alone (named).
      */
     static long clockSkew(String node, SymbolizeAction action,
-                          Object base, Object ran, boolean planted) {
-        long skew = readingOf(ran).longValue() - readingOf(base).longValue();
+                          Object host, Object ran, boolean planted) {
+        long skew = readingOf(ran).longValue() - readingOf(host).longValue();
         if (planted && !NodeClocks.jump(node, action.clock, action.eventSeq,
                 skew)) {
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,

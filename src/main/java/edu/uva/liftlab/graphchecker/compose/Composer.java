@@ -2876,11 +2876,11 @@ public final class Composer {
     }
 
     /**
-     * A clock row's base reading, or null (named) when it states no
+     * A clock row's host reading, or null (named) when it states no
      * instant.
      */
     private Long instant(RootMintRow row) {
-        Long reading = number(row.baseReading());
+        Long reading = number(row.hostReading());
         if (reading == null) {
             gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     row.rootId(), "the mint of this clock cell states no "
@@ -2891,9 +2891,9 @@ public final class Composer {
     }
 
     /**
-     * How far each session's base clock read a clock cell later than the
+     * How far each session's host clock read a clock cell later than the
      * recording read it (session -> cell symbol -> milliseconds or ticks of
-     * that clock; {@link SmtLowering#clockBases}): its base reading less the
+     * that clock; {@link SmtLowering#clockBases}): its host reading less the
      * recording's, at the cell itself where the recording read it, else at
      * the nearest cell (by seq) of the same clock of the same node that both
      * read -- the same anchor {@link #placed} puts a cell on the recording's
@@ -2923,9 +2923,9 @@ public final class Composer {
                     new LinkedHashMap<RootMintRow, Long>();
             for (RootMintRow row : session.getValue()) {
                 RootMintRow recorded = corpus.rootOf(seed, row.rootId());
-                Long host = number(row.baseReading());
+                Long host = number(row.hostReading());
                 Long reading = recorded == null ? null
-                        : number(recorded.baseReading());
+                        : number(recorded.hostReading());
                 if (host != null && reading != null) {
                     anchored.put(row, host - reading);
                 }
@@ -2962,7 +2962,7 @@ public final class Composer {
     /**
      * Every CLOCK root of the corpus on the recording's timeline, before any
      * path composes ({@link #clockTimeline}): a cell the seed read at the
-     * seed's base reading; one it never read (a region woven after it, an
+     * seed's host reading; one it never read (a region woven after it, an
      * occurrence a replay moved -- hdfs-17897 NP3: dn0's addKeys under the
      * command queue's anchor, not the heartbeat's) where {@link #placed} puts
      * it; one no session can place, every symbol of it into {@link
@@ -2976,7 +2976,7 @@ public final class Composer {
         Map<String, Long> readings = new LinkedHashMap<String, Long>();
         for (List<RootMintRow> rows : corpus.roots().values()) {
             RootMintRow row = seedRow(rows);
-            Long reading = number(row.baseReading());
+            Long reading = number(row.hostReading());
             if (row.kind() != RootKind.CLOCK || reading == null
                     || !row.sessionId().equals(seed)) {
                 continue;
@@ -2989,7 +2989,7 @@ public final class Composer {
             RootMintRow row = seedRow(rows);
             if (row.kind() != RootKind.CLOCK
                     || clockTimeline.containsKey(row.rootId())
-                    || number(row.baseReading()) == null) {
+                    || number(row.hostReading()) == null) {
                 continue;
             }
             Long reading = placed(rows, read, readings);
@@ -3014,7 +3014,7 @@ public final class Composer {
     private Long placed(List<RootMintRow> rows, List<RootMintRow> read,
                         Map<String, Long> readings) {
         for (RootMintRow cell : rows) {
-            Long host = number(cell.baseReading());
+            Long host = number(cell.hostReading());
             if (cell.kind() != RootKind.CLOCK || host == null) continue;
             RootMintRow nearest = null;
             long from = 0L;
@@ -3022,7 +3022,7 @@ public final class Composer {
                 RootMintRow same = corpus.rootOf(cell.sessionId(),
                         anchor.rootId());
                 Long sameHost = same == null ? null
-                        : number(same.baseReading());
+                        : number(same.hostReading());
                 if (sameHost == null || !anchor.occurrence().node().equals(
                         cell.occurrence().node())
                         || !cell.clock().same(same.clock())) {

@@ -185,6 +185,16 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a
   started thread for its life, a task claimed on a pool's thread until it returns.
+- **A received message's hand-off.** A thread that hands a received message to a worker queue names
+  the hand-off by the message (`MessageDoors#handingOff`, `Identity#handoffStarting`; from the Hadoop
+  trees' IPC `Server#internalQueueCall` through the shim, `CausynthMessagePropagation#handingOff`, the
+  call's correlation): every start it makes meanwhile is `<site>:<transport>.<sender endpoint>` --
+  the endpoint the receipt's anchor names too -- standing on none of the thread's own frames, so its
+  `k` counts that message alone and the handler's CLAIM follows it. Counted per thread, the IPC
+  Reader's `internalQueueCall` was the k-th call of its connection: one call a replay did not make
+  renamed every later call of that connection, each a stall (hdfs-adhoc-21, round TM13: 14 of 17). A
+  message whose sender this run did not file names nothing; its hand-off is a plain start. The
+  receiving side's twin of the request's level below.
 - **A request's level.** A request starts at its RPC engine's invoke point, before the client's call
   (`MessageDoors#requestStarting`, from the Hadoop trees' `ProtobufRpcEngine2`/`ProtobufRpcEngine`
   `Invoker#invoke` through the shim, closed by `#requestEnded` in its `finally`). A RESPONSE its thread
@@ -549,9 +559,7 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 
 ## 8. The schedule
 
-`contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint), stamped with what the
-application's clocks read when it was written (`ns`, `ms`; no part of the key: the timeline a replay's
-clocks follow, PIPELINE.md §5). Kinds: `START`,
+`contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
@@ -591,9 +599,7 @@ where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS,
 was cut at its witness; `{mark: INVOCATION, of}` which invocation of a parameterized workload test
 the run is (`runtime/JUnitInvocation#stated`), written before the window and handed on with every
 order, so a replay held to a run of another invocation is refused by name (`ScheduleLog#invocation`).
-`{mark: ORIGIN, ns, ms}` and `{mark: OPEN, ns, ms}` state the run's first application clock read and
-its window's opening (`runtime/Clocks`, `ScheduleLog#windowOpened`).
-`{mark: STARTUP, step, who, ns, ms}` states one taker completing a startup step an adapter names
+`{mark: STARTUP, step, who}` states one taker completing a startup step an adapter names
 (`MessageDoors#startupStep(step, who)`/`#startupDone`): a step that builds state a replay reads and
 that no slot orders, before the window or inside it (the NameNode's IPC handler takes no slot between
 its `RECV` and the write lock its step runs under); `who` names the taker the same in both passes.
@@ -684,7 +690,12 @@ order:
   again, a grace apart. A let-go does not restart the stall's clock for the waits that remain: a
   wait for a slot is held at most `CEILING` timeouts and a grace, and an event that never comes,
   with nothing computing toward it, costs a timeout and a grace. After two give-ups past the cut
-  the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
+  the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row. A held
+  timed wait asks for its turn once a quantum and spends the quantum in its own wait, before its
+  deadline and after it (`ScheduleLog#timedOut` asks, never waits): the monitor or lock it waits on
+  stays released until its `WAKE` is written, as the JVM's wait returns only then (hdfs-adhoc-19:
+  a timed-out `waitTillNextIBR` WAKE held past its count kept the IBR manager's monitor, and the
+  DataXceiver whose block notify the order waited for blocked on it);
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
@@ -695,13 +706,6 @@ order:
   except claimed work on a consumer thread (§4's `threadKey`), which held there would hold every
   item queued behind it: it is held at the send that started it, its anchor's producer
   (`Confirmation#submitter`), up the chain while that send is claimed work too;
-- the order's place is the application's time (`runtime/Clocks`, PIPELINE.md §5): the instant of the
-  furthest slot settled at or before the frontier is reached, the frontier's own, plus one millisecond
-  tick, is the cap while the line stands (`ScheduleLog#publishTimeLocked`, under the schedule's lock, which owns the
-  cap from the window's opening to its close); a frontier that stood a stall by the watchdog's own test (a
-  timeout with nothing computing, or the ceiling, `ScheduleLog#stalledLocked`) with no thread waiting on the
-  order -- so no watchdog moves it -- lets the clocks run past it until it moves (`schedule-clock#<slot>`,
-  `ScheduleLog#clockAtCap`);
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.

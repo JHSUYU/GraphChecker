@@ -118,6 +118,25 @@ recommendation.
   approximately right `.smt` is enough: a `candidate.smt2` z3 decides, with the main causal chain in it; residual
   gaps (some seed give-ups, a few HELD values, a bounded round) are acceptable when named in STATUS. Still: no
   fabricated result, every workaround listed in STATUS, and no regression of the other 38 cases.
+- **The time model is workarounds only, never ground on** (owner 2026-10-06, long-term: "好的，time model我现在全部workaround，
+  不必死磕，设为长期记忆"; "时间模型整个都不用死磕。.smt能跑出来即可，即使小有问题也可以接受"): replay clock fidelity, seed
+  give-ups from clock-driven turns (heartbeats, IBRs, the edit log's async claims) and the whole start-up/clock family
+  are handled by workarounds (test-cluster configuration, the HDFS adapter, small system-code patches, listed in
+  STATUS), never by engine work to perfect the time model; this also covers a non-clock case whose seed replay
+  stalls on that timing. An approximately right `.smt` is enough there; no fabricated result; no regression.
+- **Reasonable parallelism, not over-subscription** (owner 2026-10-06 afternoon: "你也不要过分并行哈。合理的并行。要不然反而会让速度
+  变慢"): at ~18 live campaigns (four agents' gates plus the lead's rounds) every case ran 3-5x slower and heads starved for
+  ledger room. Each agent runs at most 2 live campaigns at once (critical path first, offline gates where they answer);
+  the lead's rounds are what a gate or the final round needs; about 8-10 live campaigns in all; a queue is paused rather
+  than starved. Ten lifts pay most inside one case (its obligations fan out). The principle ("并行你要记住是让吞吐提升。而不是
+  单单为了并行"): parallelism serves throughput -- cases finished and fixes validated per hour -- measured by each case's
+  wall time against its solo history (round-slow.sh) and the ledger's waits, never by how full the lifts look.
+- **Lock what is right; the rest on `system/hdfs1`** (owner 2026-10-06 ~16:00: "当前所有已经跑完.smt，时间用时合理。.smt也正确的代码就放到
+  system/hdfs上。然后剩下的所有case。去system/hdfs1上处理。这样我们可以避免不断陷入regression"): `system/hdfs` is the locked body
+  (only docs land on it); one locking round on it closes every case it can, each right `.smt` there final; every other
+  change (codec capture, open arms, rule 1, the retried-call identity) and every case still open is worked on
+  `system/hdfs1`, branched from the locked body. The end state is these two branches (owner: "最终就是两个分支，system/hdfs和
+  system/hdfs1"): nothing merges back into `system/hdfs` or `main`; STATUS names the branch that closed each case.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.
@@ -130,14 +149,17 @@ recommendation.
   growing cannot close is a named `WITNESS_CHAIN_OPEN` RUN_DEFECT (on `hdfs-export-weave`).
 - **An arm the bug may live in is never closed silently** (lead, 2026-10-06, merged b650a0f6d): every open decider arm of
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
-  back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT). **A world a faithful run refutes** (lead,
-  2026-10-06, the owner may overrule; on `hdfs-open-arms`): an open arm's flip (toward the arm) whose replay ran its
-  world faithfully -- every assignment minted and planted, no prefix abandoned, every inherited flip taken; no order
-  hold gave way and no paired read misread; the world acted in the window (a plant at the recorded value is no act)
+  back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
+- **A faithful run that never enters an open arm's occurrence refutes that world** (lead, 2026-10-06, after the
+  handover; agent S's design A for 39/40, tightened after review; on `hdfs-open-arms`, for `system/hdfs1`): for an open
+  arm's flip toward the arm only, a replay that ran its world faithfully -- every assignment minted and planted, no
+  prefix abandoned, every inherited flip taken; no order hold gave way and no paired read misread (holds still waiting
+  wait only on the never-entered occurrence); the world acted in the window (a plant at the recorded value is no act)
   and no slot was given up before it did; the workload ended by itself -- and never entered the flip's occurrence
-  refutes that world (`WORLD_REFUTED`); the flip is asked again with exactly that world excluded, never the arm, a
-  refuted world never re-run, at most past eight (named `bounded`); an UNSAT after it states what it rests on. Never
-  CONFIRM, never another flip; anything short of the four stays NOT_ADMITTED.
+  refutes that world (`WORLD_REFUTED`). The world is named and excluded from the arm's re-ask, never the arm; a refuted
+  world is never re-run, at most past eight (named `bounded`); an UNSAT after it states what it rests on, and each
+  refutation is read against the code before the UNSAT counts. Anything short of faithful stays NOT_ADMITTED/UNANSWERED
+  (a RUN_DEFECT at the end, as the owner ruled for a run failure). Never applied to CONFIRM.
 - **The engine's own plumbing is never program state** (lead, 2026-10-06, codec-capture design): no field of the engine's
   runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
   a READ_SITE; a read made by such code takes its observed version's value at import.

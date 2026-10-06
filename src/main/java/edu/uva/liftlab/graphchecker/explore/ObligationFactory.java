@@ -636,14 +636,14 @@ public final class ObligationFactory {
             if (value != null) planted.roots.put(variable.getValue(), value);
         }
         // A clock's model is an instant of the recording's window; the replay
-        // is owed the difference from the base reading there (a skew, as
-        // the replay plants it: RootMintRow#baseReading).
+        // is owed the difference from the host's reading there (a skew, as
+        // the replay plants it: RootMintRow#hostReading).
         for (Map.Entry<String, String> variable
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
             RootMintRow read = corpus.rootOf(candidate.path.sessionId,
                     rootId);
-            String recorded = read == null ? "" : read.baseReading();
+            String recorded = read == null ? "" : read.hostReading();
             String delta = skew(values.get(variable.getKey()), recorded);
             if (delta.isEmpty()) {
                 gaps.add(GapRow.of(candidate.path.sessionId,
@@ -1090,7 +1090,7 @@ public final class ObligationFactory {
      * moved it to, else at the recording's ({@link
      * FlipQuery.WriterChoice#recorded}); each root at the world's value,
      * else at the reading its path's session ran; each clock at the instant
-     * the world's skew put it at, else at its base reading; each answered
+     * the world's skew put it at, else at its host reading; each answered
      * handoff at its answer -- as the claim loop excludes a refuted model
      * ({@code compose.Composer#refutations}).  A choice the query cannot
      * state (an unanswered control, a reading no literal spells) is left
@@ -1140,8 +1140,8 @@ public final class ObligationFactory {
                 String delta = world.world.clockDeltas.get(
                         variable.getValue());
                 equal(chosen, variable.getKey(), delta == null
-                        ? read.baseReading().trim()
-                        : instant(read.baseReading(), delta),
+                        ? read.hostReading().trim()
+                        : instant(read.hostReading(), delta),
                         built.sorts.get(variable.getKey()));
             }
             for (FlipQuery.Control control : built.controls) {

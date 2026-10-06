@@ -34,7 +34,7 @@ set +e
 read -r -a hosts <<<"${LIFTS}"
 mkdir -p "${log_dir}"
 mapfile -t commands < <(grep -v '^\s*$' "${jobs_file}")
-declare -A running pid_host pid_job pid_charge started
+declare -A running=() pid_host=() pid_job=() pid_charge=() started=()
 for host in "${hosts[@]}"; do running[$host]=0; done
 next=0
 reap() {
@@ -51,6 +51,54 @@ reap() {
     fi
   done
 }
+# A job no host has room for holds its need on the host with the most room,
+# as a waiting head step does (run_engine.sh campaign_head_hold_room): every
+# other start there counts the hold (campaign_host_head_room), so that host
+# drains as its starts return instead of a running campaign's pool taking each
+# freed slot first (round HI3, 2026-10-06: two of twenty queued campaigns
+# started in 25 minutes while two deep explorations kept ~600 obligations
+# queued).  The hold is the job's until a job starts, renewed while it waits.
+hold_job=""
+release_hold() {
+  [[ -z "${campaign_head_hold}" ]] || rm -f -- "${campaign_head_hold}"
+  campaign_head_hold=""; hold_job=""
+}
+trap release_hold EXIT
+hold_room() {
+  local need=$1 host room best="" best_room="" dir
+  if [[ -n "${campaign_head_hold}" && "${hold_job}" == "${next}" ]]; then
+    touch -- "${campaign_head_hold}"
+    return 0
+  fi
+  release_hold
+  for host in "${hosts[@]}"; do
+    (( running[$host] < slots )) || continue
+    # Another sweep's job holds this host: two holds on one host each count
+    # the other's, and neither job could ever start there.
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")/heads"
+    ! compgen -G "${dir}/fanout.*.hold" >/dev/null || continue
+    room=$(campaign_host_room "${host}") || continue
+    [[ -z "${best_room}" ]] || (( room > best_room )) || continue
+    best=${host}; best_room=${room}
+  done
+  [[ -n "${best}" ]] || return 0
+  dir="${campaign_host_gate_root}/$(campaign_host_key "${best}")/heads"
+  mkdir -p "${dir}"
+  campaign_head_hold="${dir}/fanout.$(hostname -s).$$.$(date +%s).hold"
+  printf '%s\n' "${need}" >"${campaign_head_hold}"
+  hold_job=${next}
+  # Two sweeps that chose at once: the later name gives its hold up and
+  # chooses again at its next poll.
+  local first
+  first=$(compgen -G "${dir}/fanout.*.hold" | LC_ALL=C sort | head -n 1)
+  [[ "${first}" == "${campaign_head_hold}" ]] || release_hold
+}
+job_need() {
+  local need=${JOB_MEMORY_MB:-4000}
+  [[ ! "$1" =~ ^(NEED|ADMIT)_MB=([0-9]+)[[:space:]] ]] \
+    || need=${BASH_REMATCH[2]}
+  printf '%s\n' "${need}"
+}
 # The job after the last one launched that has not returned yet.
 skip_returned() {
   while (( next < ${#commands[@]} )) && [[ -e "${log_dir}/${next}.exit" ]]; do
@@ -60,6 +108,7 @@ skip_returned() {
 skip_returned
 while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
   reap
+  launched=0
   for host in "${hosts[@]}"; do
     # The ledger charges a start at once, so a host takes jobs until its
     # slots or its room run out.
@@ -89,8 +138,14 @@ while (( next < ${#commands[@]} )) || (( ${#pid_host[@]} > 0 )); do
       pid_charge[$!]=${charge}; started[$!]=$(date +%s)
       running[$host]=$(( running[$host] + 1 ))
       next=$(( next + 1 ))
+      launched=1
       skip_returned
     done
   done
+  if (( launched )); then
+    release_hold
+  elif (( next < ${#commands[@]} )); then
+    hold_room "$(job_need "${commands[$next]}")"
+  fi
   sleep "${campaign_host_poll_s}"
 done

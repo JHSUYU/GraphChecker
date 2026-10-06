@@ -36,13 +36,12 @@ import org.junit.Test;
  * workload's and not a divergence.
  */
 public class ScheduleLogTest {
-    /** The events written; marks (a clock's origin) are not the order. */
     private final List<JsonObject> written =
             Collections.synchronizedList(new ArrayList<JsonObject>());
     private final ScheduleLog.Sink writer = new ScheduleLog.Sink() {
         @Override
         public void write(JsonObject row) {
-            if (!row.has("mark")) written.add(row);
+            written.add(row);
         }
     };
 
@@ -653,6 +652,50 @@ public class ScheduleLogTest {
                 ScheduleLog.enforcing());
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains("1 of them let go"));
+    }
+
+    /**
+     * The WAKE of a timed-out wait the order still holds is asked for, never
+     * waited for under the application's monitor: the ask answers at once,
+     * and the waiter spends its hold in its own wait, so a notifier can take
+     * the monitor meanwhile (hdfs-adhoc-19: a DataXceiver blocked on the IBR
+     * manager while the actor's WAKE waited for its turn holding it).
+     */
+    @Test(timeout = 20000L)
+    public void aTimedOutWakeAsksForItsTurnWithTheMonitorReleased()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "3000");
+        final String site = "<C: void waitTillNextIBR(long)>#u18";
+        ScheduleLog.enforceForTests(prefix("x"));
+        ScheduleLog.Wake held = ScheduleLog.wake(site);
+        long asked = System.nanoTime();
+        assertFalse("held at the cut: not yet", ScheduleLog.timedOut(held));
+        assertTrue("one ask, no wait", TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - asked) < 1000L);
+        ScheduleLog.withdraw(held);
+
+        final Object monitor = new Object();
+        Thread waiter = new Thread(() -> {
+            synchronized (monitor) {
+                try {
+                    TimedWaits.waitOn(monitor, 50L, site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        waiter.start();
+        Thread.sleep(300L);
+        long before = System.nanoTime();
+        synchronized (monitor) {
+            assertTrue("the waiter still waits for its turn",
+                    waiter.isAlive());
+        }
+        assertTrue("the monitor was free while the WAKE was held",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 1000L);
+        waiter.join();
+        assertEquals(Collections.singletonList(site), sites());
     }
 
     /**
