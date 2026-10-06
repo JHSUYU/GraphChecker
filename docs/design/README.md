@@ -145,6 +145,15 @@ version it observed.
   that world, queued first; it stays in flight until its replay lands. The replay is judged
   ADMITTED, NOT_ADMITTED (by name), UNSAT or ADMISSION_GAP.
 - GROW re-runs extend the closure.
+- EXPLORE demands what COMPOSE keeps: the handoffs a fatal condition or a kept writer decision rests on are demanded,
+  each resolved straight to its attach row whatever its group, so their producers become tasks (`compose/RestsOn`, one
+  admission rule and one closure walk shared by EXPLORE, COMPOSE and CONFIRM).
+- A guard on a helper's return is decided by the helper's branch (`ite(decider, the constant arm's verdict, the run's
+  own predicate)`, enum constants and `equals` included); an open arm no run took is a flip site of the reached anchor
+  and is named at the fixed point (`OPEN_ARM_UNANSWERED`, a RUN_DEFECT when its flips only came back NOT_ADMITTED).
+- A solved obligation's REPLAY is queued first behind any witness CONFIRM or GROW re-run, never ahead of them.
+- A declared bound that cut the search (wave budget, paths per task round, world depth, task bound, PLAN's closure
+  cut, the claim bound) is named in `result.json` `bounded`.
 - The first replay that observes the fatal at the declared occurrence ends the exploration: the
   first witness.
 
@@ -152,6 +161,8 @@ version it observed.
 - One formula covers every admitted session. Each message and each shared-state read gets a
   family of writer arms (exactly one is chosen), each guarded by the path condition that produced
   it. Eligibility is one rule (`Arms#eligible`).
+- Every clock cell is placed on the recording's timeline before any path composes (`Composer#placeClocks`, every seed
+  reading an anchor); a cell no session can place refuses only the paths that name it.
 - What is symbolic stays symbolic. A value whose stated producer moves (by `movers()`, the one
   predicate) is a FREE leaf; a value no row states the producer of is HELD at its recorded value,
   named in `concrete[]` ("producer unstated"); a container state the VM marked incomplete is
@@ -170,7 +181,9 @@ version it observed.
     exploration cut while it owed arms: EXPLORATION_CUT, judged once at EMIT).
 - A model CONFIRM refuted or gave no verdict on excludes the claim's region (its clocks' too) from
   every later composition; an UNSAT whose unsat core names a refutation states `restsOnRefutations`,
-  and one whose core names a refused model is RUN_DEFECT.
+  and one whose core names a refused model, or whose core is unknown beside one, is RUN_DEFECT (`UNSAT_BESIDE_REFUSED`;
+  a core is known only where its own run said unsat). Within a rank, a witness that is its selected session's own run
+  is claimed first; each valuation is asked once across both rank passes.
 
 **9. CONFIRM** replays the witness world from the recording. It holds the chosen edges (writer
 ORDER, STATE pairings including INITIAL, WIRE deliveries) and checks that the anchor observes the
@@ -192,4 +205,10 @@ fatal boundary variable is unbound).
 - Replays are charged the campaign's measured need. Obligations stream over every lift; a sweep's
   cases share one pool. Details and pitfalls: [PERFORMANCE.md](PERFORMANCE.md).
 - The budget's reserve covers COMPOSE, EMIT, CONFIRM and REPRODUCE.
+- The host ledger's memory reading is refreshed by one shell per host (`<host>/refresh`); the others use a reading up
+  to 30 s old.
+- In flight, not in the body (STATE §2, TODO §1): every static export site woven and a witness's own chain closed
+  before it is claimed (`hdfs-export-weave`), the time model (`hdfs-time-model`), the IPC hand-off naming
+  (`hdfs-ipc-handoff-name`, r6 trees), capture at the IPC door by walking the protobuf message (`hdfs-codec-capture`),
+  the owed-path bound (`hdfs-frontier-depth`).
 - WIRE-CODEC (codec holes in opaque payloads) is not in the body: branch `wire-codec-p1`.

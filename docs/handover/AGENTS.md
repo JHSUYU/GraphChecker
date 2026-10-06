@@ -259,3 +259,42 @@ deleted, rounds HG5A and HG7)
 - **`onlift.sh` runs over ssh, which drops exported variables**: pass them on the remote command line (`onlift.sh ...
   env VAR=... cmd`), or a build may write `~/.m2`.
 - **Agents' live runs and the lead's sweep share the ledger**; judge any run by stage times and queue waits.
+
+**How the 2026-10-05/06 lead ran the agents** (`system/hdfs` 75dd26444 -> 176acc689 and the docs after: fourteen merges,
+rounds HG8F, HG9, HG9B, HG9L, SW1, HG10V; four coding agents A1, A2, A4, D1 and four review agents)
+- **Each coding agent kept one area across packages**, continued by `SendMessage`: A1 COMPOSE/claim (claim loop -> (b2)
+  RestsOn: EXPLORE demands what COMPOSE keeps -> export weave + witness chain closure), A2 schedule/time (time model ->
+  IPC hand-off naming, r6 trees), A4 scope/driver (clock placement -> bound mark -> guard decider -> codec capture),
+  D1 EXPLORE/identity (prefix span -> frontier depth + owed-path bound -> solver fallback, rule 1).
+- **Design gate, then sorted by the goal.** Every symbolic/identity/schedule change sent a <= 1-page design first. The lead
+  asked each to sort its holes into (A) "the current `.smt` is wrong or incomplete" (fix now) and (B) "right, widening
+  only makes more flippable" (after the 46); A4's scope batch 2 shrank to two (A) holes that way.
+- **A review agent before every large merge** (time model, (b2), decider): read-only, briefed with the owner's
+  principles and the exact focus questions (soundness, completeness, rules, tests), file:line findings with a concrete
+  scenario. Every one found real issues the gates had passed: the time model's 120 s pre-window stand in every replay,
+  (b2)'s two-hop handoff and session-wide over-demand, the decider's silently closed open arm (39). The author fixed them,
+  the lead merged.
+- **Small changes the lead reviewed and merged itself** (clock placement, claim-loop fixes, bound mark, confirm-first,
+  shim stubs), each built and shell-tested via `onlift.sh` on the merged head; a combination of two large merges got a
+  small live check (HG10V) before more merges.
+- **The lead ran the rounds and the checking** (HG9 35 cases, HG9B named bugs, budget-cut reruns HG9L-*, the swap's SW1),
+  verified every finished case with `round-verify.sh`, and sent each new failure class to the agent owning that area with
+  the evidence paths (12's and 14's unbound handoffs to A1, 05/06/08/09's bound to D1).
+- **Two agents' Hadoop hooks share one tree generation** (A2's IPC hand-off naming, A4's codec door calls on
+  `gc/hdfs-study-r6` and `gc/hdfs-11741-r6`): the shim entry points the trees call were merged first as inert stubs, so
+  any jar runs on r6, and the trees are built once with both.
+
+**Lessons from 2026-10-05/06**
+- **A "done" count must pass CHECKING.md §1.** The lead counted 07 and 14 done before round-verify read `cone.json`
+  (UNBOUND), and 05/06/08/09 before the bound was visible. Add a column to the check, not a note to memory.
+- **Under a full sweep, a case's budget is the cluster's, not the case's**: 20 concurrent heads cut six cases at 90
+  min; rerun them at 3 h (`HG9L-*` job files), and give the final round 3 h from the start.
+- **Agents' offline gates can jam a host**: dozens of `offline-ab.sh` waiters each refreshing the ledger over NFS put 254
+  processes in D state on lift11. Gates go through `onlift.sh` off lift11, a few cases at a time.
+- **Check every background wait for an end condition**: `pgrep -f` on a string the waiter itself contains never ends;
+  a chain of waits on a wait's output never ends once the first's condition cannot happen. Stop stale ones (the lead
+  stopped six) and tell the agent.
+- **An agent's own scratch files live in the session's temp directory**: copy what a successor needs (patches,
+  scripts) to `/bigtemp/vnr3ne/handover/<date>/` at the stop (D1's rule-1 prototype lived only there).
+- **The order of merges follows the dependencies the agents name**: export weave before codec capture; time model
+  before hand-off naming; shim stubs before any r6 build.

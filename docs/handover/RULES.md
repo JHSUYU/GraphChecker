@@ -10,9 +10,10 @@ say the same; this file is the one other agents read.
 **Handing over** (owner, 2026-10-04 night): when the owner says stop, do these in order:
 1. Stop every agent and every run (`tools/rounds/stop-run.sh`).
 2. Have each agent commit its WIP and report its state.
-3. Write the state, the per-system TODO, the rules, the agent method, the tools and servers, and the
-   design into the docs: [STATE.md](STATE.md), [TODO.md](TODO.md), this file,
-   [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md), [../design/](../design/README.md).
+3. Write the state, the per-system TODO, the rules, the agent method, the tools and servers, the checking
+   method and its traps, and the design into the docs: [STATE.md](STATE.md), [TODO.md](TODO.md), this file,
+   [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md), [PARALLEL.md](PARALLEL.md), [CHECKING.md](CHECKING.md),
+   [../design/](../design/README.md).
 4. Update the memory notes.
 5. Delete outdated documents ("不用的旧文档都全部删掉").
 6. Commit and push when the owner asks.
@@ -103,6 +104,31 @@ recommendation.
   this replaces the earlier "每个case独占集群"): cases run concurrently through the ledger; the goal is a right `.smt`.
 - **Agents** ("具体写代码coding agent最多4个。读，reveiw的可以稍微多点。但是reveiw要在关键，复杂的地方采用"): see [AGENTS.md](AGENTS.md).
 
+**The 2026-10-05/06 rulings** (owner, quoted) **and the lead's standing decisions** (the owner may overrule them)
+- **The core goal** (owner 2026-10-05): "我们的核心目标是46个adhoc check先跑通出有正确因果链的.smt". A symbolic-scope
+  hole is fixed now when the current formula is wrong or incomplete (a value the code puts on the chain is missing: a
+  guard field that is not a symbol, a wire value unbound or HELD, a fatal arm that is a constant because its deciding
+  branch is never asked); a widening that only makes more of a right formula flippable waits until the 46 are done
+  (TODO HDFS §5 (B)).
+- **Swaps used** ("32直接换成05吧"; "可以把个别特别challenging的换成我们能处理的"): 32 -> 05; 01, 17, 43 -> 06, 38, 45 (their seed
+  replays never reached the target, with or without the time model). Of the swap rule's alternates only 04 is left.
+- **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
+- **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
+  `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.
+- **A SAT is judged on the path it claims, an UNSAT on every path it rests on** (lead, 2026-10-06): cone.py gates a SAT
+  on the claimed selector's fatal cone (other selectors' unbound handoffs are computed and reported as
+  `unboundOffWitness`, never hidden); an UNSAT on every admitted path, and COMPOSE refuses to close while any path's
+  cone holds an unattested handoff (on `hdfs-export-weave`, not merged yet). Not a per-case or per-variable exemption.
+- **A witness ends exploration only when its own chain is closed** (lead, 2026-10-06): when the first witness's fatal
+  cone names a HELD/unbound handoff, EXPLORE grows only that chain's producers, re-composes, then claims; a chain that
+  growing cannot close is a named `WITNESS_CHAIN_OPEN` RUN_DEFECT (on `hdfs-export-weave`).
+- **An arm the bug may live in is never closed silently** (lead, 2026-10-06, merged b650a0f6d): every open decider arm of
+  a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
+  back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
+- **The engine's own plumbing is never program state** (lead, 2026-10-06, codec-capture design): no field of the engine's
+  runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
+  a READ_SITE; a read made by such code takes its observed version's value at import.
+
 **Engineering**
 - **General fixes only.** No per-case code, no fixes derived from a case's expected verdict, no
   dead code, no fallback paths, no flags to keep an old path. Per-system code is allowed only as a
@@ -151,6 +177,15 @@ recommendation.
   "Per-system surface"; never a root chosen per case or by the expected mechanism.
 - **Delete what automation replaces:** every automating merge deletes the old code, manual tools,
   hand rows and scripts it replaced.
+- **Waits end** (2026-10-06): every background wait has a timeout and waits on a pid or a file; never `pgrep -f`
+  on a string its own command line contains (it matches itself and never ends: a lead's and an agent's waits ran for
+  hours), never a chain of waits on another wait's output.
+- **Shell under `set -u`: initialize every local** (`local x=""`): an unset one errors the function and its callers
+  retry forever (the ledger fix's first version spun the shell test, 2026-10-06).
+- **Offline gates are started off `lift11`, a few cases at a time** (`onlift.sh`): dozens of `offline-ab.sh` waiters on
+  one host jammed NFS (254 processes in D state on lift11, 2026-10-06; the ledger now refreshes a host's reading once).
+- **Worktrees and snapshots leave out `third_party/`** (`tools/lib/worktree-add.sh`): 99 % of the repository's files are
+  the VM's source; a full checkout on NFS took 45+ minutes and made every commit in it slow.
 - **Lock, then one change at a time:** keep the last all-passing main; integrate one large change
   per live round; stacking several big changes is what made rounds regress repeatedly
   (2026-10-01).
@@ -202,6 +237,7 @@ unused config and duplicate helpers, 664 lines; the COMPOSE refactor steps 1-4 o
 HDFS §1 and §8.
 
 **Acceptance**
+- **How to check**: [CHECKING.md](CHECKING.md) (round-verify's columns, the hand check with the legend, the traps).
 - **What a real PASS is:** the claim, polarityDecides, the mechanism's roots in
   `claim.movedRoots`, confirmed, cone gate — a PASS line or a finding kind alone is not acceptance.
 - **Mechanism mandate:** 17899 bug1/2/3, 17897, 17967 A/B/C are MARKER_FLIPPED by an IPC door
