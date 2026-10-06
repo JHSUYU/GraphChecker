@@ -198,7 +198,7 @@ public class FocusedReplayDecidedTest {
             }
             for (String step : ((String) row[3]).split(" ")) {
                 if ("act".equals(step)) FocusedReplay.worldActed();
-                if ("depart".equals(step)) FocusedReplay.departed();
+                if ("depart".equals(step)) FocusedReplay.departed("7 (x)");
             }
             if ((Boolean) row[1]) {
                 FocusedReplay.workloadEnded(thrown,

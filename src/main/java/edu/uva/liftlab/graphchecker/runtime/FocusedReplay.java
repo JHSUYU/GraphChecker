@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 
@@ -560,11 +561,14 @@ public final class FocusedReplay {
                 String detail = "occurrence " + Text.safe(FOCUS.get(id))
                         + " never reached " + Text.safe(obligation.siteId())
                         + "#" + obligation.ordinal() + " in this replay";
+                List<String> unrefuted = new ArrayList<String>();
                 WorldRefutation refutation = OPEN_ARMS.contains(id)
-                        ? refuted(obligation, held) : null;
+                        ? refuted(obligation, held, unrefuted) : null;
                 results.add(refutation == null
                         ? ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                        sessionId, detail)
+                        sessionId, detail + (unrefuted.isEmpty() ? ""
+                        : "; its world is not refuted: "
+                        + String.join("; ", unrefuted)))
                         : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, WORLD_REFUTED + ": " + detail + ", and the"
                         + " world it ran, faithfully, never entered it: "
@@ -597,21 +601,28 @@ public final class FocusedReplay {
      *   <li>the workload ended by itself ({@link #workloadEnded}), not at a
      *       bound, a witness or a refusal.</li>
      * </ol>
-     * Anything short of them stays a plain NOT_ADMITTED.  Called under
-     * {@link #LOCK}.
+     * Anything short of them stays a plain NOT_ADMITTED, the conditions
+     * that failed added to {@code unrefuted}.  Called under {@link #LOCK}.
      */
     private static WorldRefutation refuted(Obligation obligation,
-                                           Confirmation.Held held) {
+                                           Confirmation.Held held,
+                                           List<String> unrefuted) {
         String at = Text.safe(FOCUS.get(Text.safe(obligation.obligationId())));
-        if (at.isEmpty() || ENTERED.contains(at) || !workloadEnded) {
-            return null;
+        if (at.isEmpty() || ENTERED.contains(at)) return null;
+        if (!workloadEnded) {
+            unrefuted.add("(d) the workload did not end by itself");
         }
         if (!unstated(obligation).isEmpty() || !unplantedLocked().isEmpty()) {
-            return null;
+            unrefuted.add("(a) " + firstNonBlank(unstated(obligation),
+                    "an assignment was left unplanted: "
+                            + unplantedLocked()));
         }
-        if (held == null || !held.gaveWay.isEmpty()
-                || !held.misread.isEmpty()) {
-            return null;
+        if (held == null) {
+            unrefuted.add("(b) the run's order holds could not be read");
+        } else if (!held.gaveWay.isEmpty() || !held.misread.isEmpty()) {
+            List<String> gave = new ArrayList<String>(held.gaveWay);
+            gave.addAll(held.misread);
+            unrefuted.add("(b) " + String.join("; ", gave));
         }
         Set<String> occurrence = new LinkedHashSet<String>();
         occurrence.add(at);
@@ -620,19 +631,28 @@ public final class FocusedReplay {
             occurrence.add(task.focused().anyDelivery().id());
         }
         List<String> holds = new ArrayList<String>();
-        for (Map.Entry<String, Set<String>> hold : held.waiting.entrySet()) {
+        for (Map.Entry<String, Set<String>> hold : held == null
+                ? new LinkedHashMap<String, Set<String>>().entrySet()
+                : held.waiting.entrySet()) {
             for (String before : hold.getValue()) {
                 int bar = before.indexOf('|');
                 if (!occurrence.contains(bar < 0 ? before
                         : before.substring(0, bar))) {
-                    return null;
+                    unrefuted.add("(b) the hold of " + hold.getKey()
+                            + " still waited at the end on " + before
+                            + ", another occurrence than " + at);
                 }
             }
             holds.add(hold.getKey() + " for " + hold.getValue());
         }
         long acted = FIRST_ACT.get();
         long departed = FIRST_DEPARTURE.get();
-        if (departed != 0L && (acted == 0L || departed < acted)) return null;
+        if (departed != 0L && (acted == 0L || departed < acted)) {
+            unrefuted.add("(c) slot " + firstDeparture + " was given up "
+                    + (acted == 0L ? "and the world never acted"
+                    : "before the world first acted"));
+        }
+        if (!unrefuted.isEmpty()) return null;
         List<String> conditions = new ArrayList<String>();
         conditions.add("(a) every assigned root and clock skew was minted at"
                 + " its value and no prefix was abandoned");
@@ -682,12 +702,17 @@ public final class FocusedReplay {
     }
 
     /** The run departed from the recorded order: a slot was given up
-     *  ({@code ScheduleLog#giveUpLocked}).  The first one counts. */
-    static void departed() {
-        if (FIRST_DEPARTURE.get() == 0L) {
-            FIRST_DEPARTURE.compareAndSet(0L, TICKS.incrementAndGet());
+     *  ({@code ScheduleLog#giveUpLocked}, which names it).  The first one
+     *  counts. */
+    static void departed(String slot) {
+        if (FIRST_DEPARTURE.get() == 0L
+                && FIRST_DEPARTURE.compareAndSet(0L, TICKS.incrementAndGet())) {
+            firstDeparture = slot;
         }
     }
+
+    /** The first slot given up, as the schedule names it. */
+    private static volatile String firstDeparture = "";
 
     /** Whether the workload ended by itself ({@link #workloadEnded}). */
     private static volatile boolean workloadEnded;
@@ -1145,6 +1170,7 @@ public final class FocusedReplay {
             ENTERED.clear();
             FIRST_ACT.set(0L);
             FIRST_DEPARTURE.set(0L);
+            firstDeparture = "";
             workloadEnded = false;
             endedBy = "";
             endedAt = "";
