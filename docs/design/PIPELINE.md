@@ -1039,7 +1039,8 @@ cancelled or reaped, by id):
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queued solves are cancelled, what
   runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is
-  declared: it defines the explored space (how deep closures nest), so it cuts nothing.
+  declared and generous: a last-resort valve (RULES, the owner's bound rule), named in `result.json`
+  `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
 - **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
@@ -1058,8 +1059,8 @@ that is no `SAT_CANDIDATE` is one BLOCKING `EXPLORATION_CUT` row: an UNSAT over 
 those arms says nothing about them, so EMIT publishes it as a `RUN_DEFECT`. A SAT the corpus holds
 stands, as CONFIRM validates it (the row DIAGNOSTIC); a WITNESSED end whose witness CONFIRM then
 refuted owes it all, since the next claim is composed over the trimmed corpus with no new EXPLORE
-(`campaign_next_claim`). FIXED_POINT and the declared wave bound, which defines the explored space,
-owe nothing (HG5A: hdfs-adhoc-17 cancelled 151 queued obligations with none answered, 24 reaped 3
+(`campaign_next_claim`). FIXED_POINT and the declared wave bound owe nothing here; the bound is
+named in `bounded` instead (§11) (HG5A: hdfs-adhoc-17 cancelled 151 queued obligations with none answered, 24 reaped 3
 jobs, QJM 07/08/09 cancelled 1215/157/108 and reaped 2/16/25, and each but 07 had published
 UNSAT_CLOSED).
 
@@ -1960,7 +1961,16 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `telemetryCount`, `undeclaredHookCount` (an `UNSAT_CLOSED` claim's count of the tree hooks that
    ran on their own concrete value, `HOOK_UNDECLARED` rows by hook and activation; null for any
    other claim), `accepted = (claim ∈ {SAT_CANDIDATE, UNSAT_CLOSED}) ∧ gapCount = 0`,
-   `targetOccurrence`, `valuations`, `witnessFindings`.
+   `targetOccurrence`, `valuations`, `witnessFindings`; `bounded` (`campaign_bounds`), whatever the
+   claim: null, or `{by, detail}` naming by configuration key each declared bound that cut the
+   search -- the wave budget (`region_path_max_waves`, the stop REGION_PATH_WAVE_BUDGET_REACHED),
+   `region_path_max_paths_per_region` and `region_path_max_world_depth` (ObligationFactory's
+   DIAGNOSTIC rows, the bound in their subject, §7.4), `region_path_max_tasks` (the last round's
+   `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`) and `campaign_max_claims`
+   (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
+   the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a
+   `## Bounded` section, `triage.py` in its `bounded` column and `BOUNDED=` count,
+   `tools/rounds/round-verify.sh` as `BOUNDED:<keys>` and a per-round count.
 4. `final/run-manifest.json`: provenance, iteration manifests, the path, size and sha256 of each
    required final artifact (`candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json`,
    `result.json`; a missing or empty one fails EMIT), stage wall times, session rows and bytes.

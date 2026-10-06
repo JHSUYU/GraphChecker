@@ -2,9 +2,11 @@
 # round-verify.sh <round> [case...]: per finished case, how EXPLORE ended, the claim, z3 on the exported candidate.smt2,
 # the blocking gaps, whether a SAT moved roots, and the formula's leaf symbols (roots, reads, handoffs: every declared
 # constant but the formula's own selectors and named identities); an UNSAT over none (NO-SYMBOL) decided nothing that
-# moves, a scope hole to read before it counts. No case: every finished case of the round.
+# moves, a scope hole to read before it counts. BOUNDED:<keys> names the declared bounds that cut the case's search
+# (result.json's `bounded`, RULES: a named, rare last resort), and the round's last line counts those cases. No case:
+# every finished case of the round.
 out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}; round=$1; shift
-want=" $* "
+want=" $* "; cases=0; bounded=0
 while IFS=$'\t' read -r n c; do
   [[ $# -eq 0 || "$want" == *" $c "* ]] || continue
   d=$out/accept-$round-$n; s=$d/summary.tsv
@@ -16,6 +18,10 @@ while IFS=$'\t' read -r n c; do
   extra=$(python3 - "$f" <<'PY'
 import json,sys,os
 f=sys.argv[1]; out=[]
+try:
+    b=json.load(open(os.path.join(f,'result.json'))).get('bounded')
+    if b: out.append('BOUNDED:'+','.join(b['by']))
+except Exception: pass
 try:
     g=json.load(open(os.path.join(f,'gaps.json')))
     b=[r for r in g.get('gaps',[]) if r.get('class')=='BLOCKING']
@@ -50,4 +56,6 @@ print(' '.join(out))
 PY
 )
   printf "%-24s %-15s %6ss  end=%-24s z3=%-6s %s\n" "$c" "$claim" "$secs" "${stop:--}" "${z:--}" "$extra"
+  cases=$((cases + 1)); [[ $extra != BOUNDED:* ]] || bounded=$((bounded + 1))
 done < "$out/sweep-$round-cases.tsv"
+echo "# $round: $cases case(s), $bounded BOUNDED"
