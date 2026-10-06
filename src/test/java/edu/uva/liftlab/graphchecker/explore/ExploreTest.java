@@ -3945,6 +3945,77 @@ public class ExploreTest {
     }
 
     /**
+     * A read of a version no write row states (a store outside every
+     * activation, named UNATTRIBUTED_STORE) is, in a flip query, its own
+     * symbol wherever a write row states its location -- the run's own
+     * choice holds it to what it read, beside each eligible writer -- so a
+     * flip can move it as it moves a read whose writer is known
+     * (hdfs-adhoc-39 OA4: the append's read of BlockInfo.uc saw the
+     * completion, stored in no activation, and the VM's guarded read
+     * lowered to the null it returned: the open arm's flip had no
+     * variable).  The same read of a location no row writes stays the
+     * value it returned.
+     */
+    @Test
+    public void aReadOfAStoreOutsideEveryActivationIsMovedLikeAnyRead()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        for (boolean written : new boolean[] {true, false}) {
+            String name = "outside-" + written;
+            Path iteration = tree.newFolder(name).toPath();
+            OccurrenceAddress again = occurrence("hdfs-case/dn0",
+                    "REGION.addkeys", CausalContext.of(Role.of("KEY_UPDATE"),
+                            "", 2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.activation(again, false, true, "fixture#key-updater");
+            seed.constant("e.2", "2");
+            if (written) {
+                seed.write(at(again, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), KEY_ID, 6L,
+                        "e.2");
+            }
+            // The lookup saw version 9, which no row of the session wrote.
+            seed.read(LOOKED_UP, KEY_ID, 9L, "M_READ_KEY", "1");
+            // As the VM states it: an exact read of the value it returned.
+            JsonObject read = readNode(KEY_ID, 9L, "I", literal(1));
+            read.addProperty("observedExact", true);
+            seed.expression(VM_LOOKUP, binary("==", read, literal(2)));
+            seed.decision(TARGET, "Lookup#u8", 1, false, VM_LOOKUP);
+            seed.flush();
+            scopeMap(iteration,
+                    targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                    scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                            "BlockTokenSecretManager#u12",
+                            "BlockTokenSecretManager#addKeys",
+                            "<example.Keys: int value>",
+                            "<example.Manager: example.Keys allKeys>", ""));
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path wave = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave, 0);
+            Worker worker = solve(iteration, wave,
+                    named(obligations(wave), "Lookup#u8"), out, "w0");
+            String detail = name + ": " + detail(worker) + "\n"
+                    + query(worker);
+            if (written) {
+                assertEquals(detail, Verdict.SAT_MODEL_READY,
+                        worker.verdict);
+                assertTrue(detail, query(worker).contains("wchoice_"));
+                assertTrue(detail, detail(worker).contains(
+                        "1 planted pairing(s)"));
+            } else {
+                // No writer to choose: the read is the value it returned,
+                // and the flip has no variable of its own.
+                assertEquals(detail, Verdict.NOT_ADMITTED, worker.verdict);
+                assertTrue(detail, detail(worker).contains(
+                        "the query was refused: ADMISSION_GAP"));
+            }
+        }
+    }
+
+    /**
      * One writer choice binds every read one occurrence made of a location
      * (IDENTITY §4), so where its reads saw two writes, or a version no row
      * wrote, no writer's choice is the run: the run's own choice holds each

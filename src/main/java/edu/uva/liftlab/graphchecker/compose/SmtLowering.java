@@ -1656,6 +1656,13 @@ public final class SmtLowering {
         /** PIN: what the recording states the read returned, else null. */
         T pinned();
 
+        /** OWN: the read's own symbol, for a version no write row states
+         *  at a location a writer choice re-pairs; null where the read has
+         *  none (no single row symbol, no stated value). */
+        default T own() {
+            return null;
+        }
+
         /** What the recording states the read returned, as its row or
          *  node spells it ("" for none): what a pin holds, named. */
         String returned();
@@ -1757,6 +1764,16 @@ public final class SmtLowering {
             freed(key + "@" + version, "its write did not lower and rests "
                     + "on what can move", cut);
             return binder.free();
+        }
+        // A version no write row states -- a store outside every activation
+        // (UNATTRIBUTED_STORE) -- of a location a writer choice re-pairs:
+        // the read's own symbol, which the choice binds (the run's own arm
+        // holding it to what it read), exactly as a read whose writer is
+        // known.  Pinned to its value, no choice could move it.
+        if (unwritten && version >= 0L && !key.isEmpty()
+                && join.repaired(key, event)) {
+            T own = binder.own();
+            if (own != null) return own;
         }
         T pinned = binder.pinned();
         if (pinned != null) {
@@ -1933,6 +1950,16 @@ public final class SmtLowering {
                 return pinned != null
                         ? symbolTerm(symbolNode(pinned, javaType), expected)
                         : statedValue(returned(), javaType);
+            }
+
+            @Override
+            public Term own() {
+                Set<String> named = join.readSymbols(key, version);
+                Term value = statedValue(returned(), javaType);
+                if (named.size() != 1 || value == null) return null;
+                String read = named.iterator().next();
+                declareStated(read, value.sort);
+                return symbolTerm(symbolNode(read, javaType), expected);
             }
 
             @Override

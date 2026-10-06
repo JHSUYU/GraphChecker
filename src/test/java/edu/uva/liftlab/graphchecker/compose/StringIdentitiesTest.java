@@ -136,6 +136,8 @@ public class StringIdentitiesTest {
             {"2", Sort.BOOL, ""}, {"-7", Sort.INT, "(- 7)"},
             {"true", Sort.INT, ""}, {"\"a\\\"b\"", Sort.STRING, "\"a\"\"b\""},
             {"N", Sort.STRING, ""}, {"5", Sort.REF, ""},
+            // A reference's one literal is null; a named object is a symbol.
+            {"N", Sort.REF, "nullRef"}, {"M_L'a.B'_7", Sort.REF, ""},
         };
         for (Object[] row : rows) {
             assertEquals(row[0] + " as " + row[1], row[2],

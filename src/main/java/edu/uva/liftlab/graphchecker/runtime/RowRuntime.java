@@ -551,6 +551,12 @@ public final class RowRuntime {
                 Text.safe(site));
     }
 
+    /** Where the store of a version outside every region ran ("" unstated),
+     *  or null when the VM stated no such store ({@link #storedOutside}). */
+    static String outsideSite(String key) {
+        return OUTSIDE.get(Text.safe(key));
+    }
+
     /**
      * Each version reads of this session observed and no write row of it
      * states, named once (UNATTRIBUTED_STORE, DIAGNOSTIC): never a silent

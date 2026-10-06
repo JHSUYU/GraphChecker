@@ -599,12 +599,16 @@ public final class Confirmation {
                 }
                 String writer = WROTE.get(observed);
                 if (edge.getValue().equals(writer)) continue;
+                String outside = writer == null
+                        ? RowRuntime.outsideSite(observed) : null;
                 mismatches.add("STATE " + edge.getKey() + ": the model"
                         + " joined this read to writer " + edge.getValue()
                         + " (version " + version + "), the run observed "
-                        + observed + (writer == null
-                        ? ", a version no write of this run states"
-                        : " written by " + writer));
+                        + observed + (writer != null ? " written by " + writer
+                        : outside != null ? ", stored outside every"
+                        + " activation" + (outside.isEmpty() ? ""
+                        : " at " + outside) + ", which no ORDER holds"
+                        : ", a version no write of this run states"));
             }
         }
         return mismatches;
