@@ -43,6 +43,16 @@ its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, th
   `gc-out/hdfs-time-model/probe/runs.txt`) against no model (SL2, D2B; HG8F under load): 25 0-2 / 8, 87; 34 0 / 6,
   91; 35 0 / 81, 85; 23 37-38 / 83, 86; 22 0-43 / 66, 32-85; 52 4 and 72 / 72, 84; 21 12-138 / 81, 89. Where the
   clock decided (25 34 35, 22 on TM13, 52's extra heartbeat) the give-ups are gone.
+- 22 and 25 vary run to run with the clock lifts or without them (22: 0, 0, 23, 38, 41, 66; 25: 0, 2, 89, 238 under
+  load), first divergences by blocking slot: a DataNode heartbeat turn not due inside the window (22 TM14/TM16: the
+  replay reads at the frontier's instant plus its tick, the recording's turn about a millisecond before its SEND,
+  and a recorded heartbeat gap of 2999.2 ms then leaves the next turn not due), and the NameNode's edit path
+  (`FSEditLogAsync.enqueueEdit` START/CLAIM) after an addBlock met NotReplicatedYet (22 TM12/TM15, 25 TM16b); 25
+  TM16 under load: 116 stalls at `Shell.runCommand` STARTs. The recordings differ too: 22's start-up took 9 to 283
+  s, and a slow one leaves more periodic DataNode turns inside the window.
+- A late opening: a start-up whose waits lifted its pre-window cap opens its window later in model time (11741 TM16:
+  65 s), and inside it time stands at that instant until the order's stamps pass it (two 15 s stalls per 11741
+  replay). Option: shift the window's timeline by that lateness at the opening (not built).
 - Left, read by the BLOCKING slot each stall stood at (`probe/stalls.py`; the first open slot a stall sweeps is
   often an idle handler's 1 s `CallQueueManager.take` poll, which blocks nothing): 21's stalls are the IPC Reader's
   hand-off of a call renamed after one missing call (below) behind one DataNode heartbeat not sent; 52's start at
