@@ -131,6 +131,14 @@ recommendation.
 - **An arm the bug may live in is never closed silently** (lead, 2026-10-06, merged b650a0f6d): every open decider arm of
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
   back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
+- **A faithful run that never enters an open arm's occurrence refutes that world** (lead, 2026-10-06, after the
+  handover; agent S's design A for 39/40): for open-arm flips only, a replay that planted its whole world (every root
+  and skew minted at its value, no prefix abandoned), whose order holds never gave way (any still waiting wait only on
+  the never-entered occurrence), whose first skipped slot comes after the world first acted, and whose workload ended
+  by itself, answers that world: the program does not reach the occurrence there (39: a held block report makes
+  `complete()` fail, so the test never appends). The world is named (`WORLD_REFUTED`) and excluded from the arm's
+  re-ask, never the arm; anything short of faithful stays NOT_ADMITTED/UNANSWERED (a RUN_DEFECT at the end, as the
+  owner ruled for a run failure). Never applied to CONFIRM.
 - **The engine's own plumbing is never program state** (lead, 2026-10-06, codec-capture design): no field of the engine's
   runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
   a READ_SITE; a read made by such code takes its observed version's value at import.
