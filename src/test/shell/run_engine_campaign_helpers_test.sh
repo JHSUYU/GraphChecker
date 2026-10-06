@@ -948,7 +948,7 @@ done
 # 48: `obligation_memory_mb` joined it when the obligation pool started
 # spanning every lift: what one obligation takes on the host that runs it is
 # the case's measured need, and the gate that keeps every host's memory safe
-# reads it (campaign_await_host_memory).
+# reads it (the host ledger).
 # 44: `campaign_max_iterations` left with the epoch loop (one iteration per
 # campaign; growth happens inside EXPLORE's waves), `causynth_cache_dir` with
 # the seed cache, and `causynth_process_dirs`, which no case ever set.
@@ -1997,27 +1997,40 @@ $(live_charges "${solver_test}/hosts")"
     || fail "a host with no room for a solver held its question (${status})"
 )
 
-# A question its host's solver could not answer (out of heap, died) is no
-# answer: it is asked once more of a solver of its own, and a second failure
-# fails the worker -- an unfinished obligation (campaign_obligation_unfinished)
-# -- never a bare NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations
-# "answered" by an OutOfMemoryError).  Neither settles its question.
-# A question whose host had no room for its solver (3) is answered at once in
-# a solver JVM of its own, under the obligation's charge.
+# A question its host's solver could not answer (out of heap, died, ended at
+# what its host could hold) is no answer: it is asked once more of a solver
+# of its own, placed by what the first held -- its watched peak, or the
+# host's solver's heap -- with the usual margin, on any host with the room;
+# a second failure, or no host with the room, fails the worker by name -- an
+# unfinished obligation (campaign_obligation_unfinished) -- never a bare
+# NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations "answered" by an
+# OutOfMemoryError).  Neither settles its question.  A question whose host
+# had no room for its solver (3) is answered at once in a solver JVM of its
+# own, under the obligation's charge.  Per row: the case, and the need the
+# second ask is placed by.
 retry_test=${test_tmp}/solver-retry
-for alone in answers fails noroom; do
+while read -r alone retry_need; do
   mkdir -p "${retry_test}/${alone}"
   retry_status=0
   (
     campaign_solve_obligation() {
-      [[ "${alone}" != noroom ]] || return 3
+      [[ "${alone}" != noroom && "${alone}" != killed ]] || return 3
       : >"$4/question.asked"
       echo "ObligationSolverMain: java.lang.OutOfMemoryError: Java heap space" >&2
       return 1
     }
     campaign_solve_obligation_alone() {
-      [[ "${alone}" != noroom || "${5:-}" == 1024 ]] \
-        || { echo "not asked at once" >&2; return 1; }
+      [[ "$5" == 1024 ]] || { echo "not asked at once" >&2; return 1; }
+      [[ "${alone}" != killed ]] || { campaign_watch_peak_mb=1788; return 1; }
+      printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
+        >"$4/obligation_result.jsonl"
+      printf '(assert false)\n' >"$4/obligation_query.smt2"
+    }
+    campaign_solve_obligation_placed() {
+      [[ "$5" == "${retry_need}" ]] \
+        || { echo "placed at $5 MB, not ${retry_need}" >&2; return 1; }
+      [[ "${alone}" != nohost ]] \
+        || { campaign_host_wait_reason="no host of the pool has $5 MB"; return 4; }
       [[ "${alone}" != fails ]] || { echo "the second one died" >&2; return 1; }
       printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
         >"$4/obligation_result.jsonl"
@@ -2029,20 +2042,94 @@ for alone in answers fails noroom; do
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
     || fail "a solver that failed settled a question"
-  if [[ "${alone}" != fails ]]; then
-    [[ "${retry_status}" -eq 0 && "$(jq -r .verdict \
-        "${retry_test}/${alone}/obligation_result.jsonl")" == UNSAT ]] \
-      || fail "the second solver's answer is not the obligation's"
-  else
-    [[ "${retry_status}" -ne 0 && ! -e \
-        "${retry_test}/fails/obligation_result.jsonl" ]] \
-      || fail "a question no solver answered was given an answer"
-    grep -q 'Error: obligation OB.1: its solver failed twice.*the second one died' \
-      "${retry_test}/fails/stderr.log" \
+  case "${alone}" in
+    fails|nohost)
+      [[ "${retry_status}" -ne 0 && ! -e \
+          "${retry_test}/${alone}/obligation_result.jsonl" ]] \
+        || fail "a question no solver answered was given an answer" ;;
+    *)
+      [[ "${retry_status}" -eq 0 && "$(jq -r .verdict \
+          "${retry_test}/${alone}/obligation_result.jsonl")" == UNSAT ]] \
+        || fail "the second solver's answer is not the obligation's \
+(${alone}): $(cat "${retry_test}/${alone}/stderr.log")" ;;
+  esac
+  case "${alone}" in
+    fails) grep -q 'Error: obligation OB.1: its solver failed twice.*the second one died' \
+        "${retry_test}/fails/stderr.log" \
       || fail "the unfinished worker does not say why: \
-$(cat "${retry_test}/fails/stderr.log")"
-  fi
-done
+$(cat "${retry_test}/fails/stderr.log")" ;;
+    nohost) grep -q "Error: obligation OB.1: its solver did not answer, and no \
+host has room for a solver of its own of 12288 MB (the first held 8192 MB).*no \
+host of the pool has 12288 MB" "${retry_test}/nohost/stderr.log" \
+      || fail "a second ask no host could hold does not fail by name: \
+$(cat "${retry_test}/nohost/stderr.log")" ;;
+  esac
+done <<'EOF_RETRY'
+answers 12288
+fails 12288
+noroom 12288
+killed 2688
+nohost 12288
+EOF_RETRY
+
+# SOLVER-PLACED: a solver asked again goes to the pool's host with the most
+# room for its need (MemAvailable less the 30000 MB reserve of a 100000 MB
+# host), charged there while it runs and released after: here, or a peer
+# (--run-placed, from a directory under the worker).  No host with the room
+# within campaign_solver_place_patience_s: 4, at once, nothing started.  Per
+# row: the head's, lift14's and lift15's MemAvailable, the need, and where it
+# runs (none: 4).
+placed_dir=${test_tmp}/solver-placed
+while read -r placed_own placed_14 placed_15 placed_need placed_expected; do
+  rm -rf -- "${placed_dir}"
+  mkdir -p "${placed_dir}/worker"
+  (
+    campaign_host_gate_root="${placed_dir}/hosts"
+    campaign_local_host_names=" localhost gate-head "
+    hostname() { echo gate-head; }
+    campaign_worker_hosts="gate-head lift14 lift15"
+    campaign_host_total_mb() { echo 100000; }
+    campaign_host_available_mb() {
+      case "$1" in
+        lift14) echo "${placed_14}" ;;
+        lift15) echo "${placed_15}" ;;
+        *) echo "${placed_own}" ;;
+      esac
+    }
+    campaign_host_max_used_pct=70
+    campaign_host_poll_s=0
+    campaign_solver_place_patience_s=0
+    campaign_solve_obligation_alone() {
+      printf 'gate-head %s %s\n' "$5" "$(live_charges "${campaign_host_gate_root}" \
+        | grep -c "^$5\\.")" >"${placed_dir}/ran"
+    }
+    campaign_run_placed() {
+      [[ "${campaign_root}" == "${placed_dir}/worker" ]] \
+        || fail "a peer's placed directory is not under its worker"
+      printf '%s %s %s\n' "$1" "$7" "$(live_charges "${campaign_host_gate_root}" \
+        | grep -c "^$7\\.")" >"${placed_dir}/ran"
+    }
+    run_capturing_status campaign_solve_obligation_placed OB.1 obligations \
+      sessions "${placed_dir}/worker" "${placed_need}"
+    if [[ "${placed_expected}" == none ]]; then
+      [[ "${status}" -eq 4 && ! -e "${placed_dir}/ran" ]] \
+        || fail "a need no host holds was placed (${status})"
+    else
+      [[ "${status}" -eq 0 && "$(cat "${placed_dir}/ran")" \
+          == "${placed_expected} ${placed_need} 1" ]] \
+        || fail "a solver of ${placed_need} MB with ${placed_own}/${placed_14}/\
+${placed_15} MB available ran as $(cat "${placed_dir}/ran" 2>/dev/null), not on \
+${placed_expected} charged once"
+    fi
+    [[ -z "$(live_charges "${campaign_host_gate_root}")" ]] \
+      || fail "a placed solver's charge outlived it"
+  ) || exit 1
+done <<'EOF_PLACED'
+31000 34000 36000 2688 lift15
+47000 34000 36000 2688 gate-head
+31000 36000 35500 2688 lift14
+31000 31000 31000 2688 none
+EOF_PLACED
 
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
@@ -4729,22 +4816,7 @@ mkdir "${campaign_host_gate_root}/lift15/lock"
 campaign_host_try_charge lift15 6000
 wait
 [[ "${status}" -eq 0 ]] || fail "a held lock was answered as ${status}"
-# A host whose memory stays unreadable past the ssh patience is the
-# waiter's named failure; within it the start waits (sshd refuses
-# connections under a round's burst).
-campaign_host_available_mb() { return 1; }
-real_campaign_log=$(declare -f campaign_log)
-campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
-campaign_host_poll_s=0
-campaign_ssh_patience_s=1
-run_capturing_status campaign_await_host_memory lift13 6000
-[[ "${status}" -eq 2 ]] \
-  || fail "an unreadable host admitted an obligation"
-grep -q 'the memory of host lift13 could not be read for 1s' \
-    "${memory_dir}/gate.log" \
-  || fail "the unreadable host is not named: $(cat "${memory_dir}/gate.log")"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
-eval "${real_campaign_log}"
 reset_config
 
 # MEMORY-READ: one shell refreshes a host's reading.  While another holds the

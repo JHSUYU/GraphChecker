@@ -636,11 +636,16 @@ solver says so after a minute and every ten minutes after (`campaign_solver_wait
 with no room to start a solver now answers the question in a solver JVM of its own at once
 (`campaign_solve_obligation_alone ... <charged_mb>`, `ObligationSolverMain --obligation-id`),
 under the solve's own charge (what a solver starts at, §7.7), what it grows past that asked of the
-host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
-ended while answering it) is no answer: it is asked once more of a solver JVM of its own at
-`engine_memory_mb`, once the host has room for it (`campaign_solve_obligation_alone`, the offline
-gate's entry too); neither settles a question (`question.txt`/`question.asked` are removed), and
-a second failure fails the worker: an unfinished obligation (§7.7).
+host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it,
+died, or was ended at what its host could hold) is no answer: it is asked once more of a solver JVM of
+its own at `engine_memory_mb`, placed as any start (`campaign_solve_obligation_placed`): its need is
+what the first measurably held -- its watched peak, or the host's solver's heap -- with the usual
+margin (`campaign_need_of_peak_mb`, ×1.5), charged on the pool's host with the most room for it, this
+one or a peer (`--run-placed`); no host with the room within `campaign_solver_place_patience_s` (60)
+fails the worker at once, by name (hdfs-adhoc-11 CW4b/CW5: workers waited their whole 3900 s bound
+for 16384 MB on the one host they ran on). Neither settles a question
+(`question.txt`/`question.asked` are removed), and a second failure fails the worker: an unfinished
+obligation (§7.7).
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
@@ -2137,8 +2142,7 @@ comparison.
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
   `gaps.jsonl`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
-  memory for a head step of <mb> MB on any host: …` (a host's solver: `waiting for memory on
-  <host>: …`); a replay ended past its charge says why in its `replay.log`; the host ledger is
+  memory for a head step of <mb> MB on any host: …`; a replay ended past its charge says why in its `replay.log`; the host ledger is
   `$CAUSYNTH_HOST_LEDGER/<host>/{available,charges/,cores}`.
 - How EXPLORE ended: `iteration-0000/exploration.json` (the stop, every COMPOSE attempt at a
   witness, every obligation cancelled or reaped) and the log's `round N (wave W): …` lines.
