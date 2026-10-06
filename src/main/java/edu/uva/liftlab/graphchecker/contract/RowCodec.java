@@ -608,13 +608,26 @@ public final class RowCodec {
 
     public static void writeJsonl(Path file, List<JsonObject> rows)
             throws IOException {
-        Files.createDirectories(file.toAbsolutePath().getParent());
-        try (BufferedWriter out = Files.newBufferedWriter(file,
-                StandardCharsets.UTF_8)) {
-            for (JsonObject row : rows) {
-                out.write(toLine(row));
-                out.write("\n");
+        // Whole or not at all: a JVM ended mid-write (a planner past its
+        // heap, run again at twice it) leaves the last whole file.  CC3-07:
+        // the rerun read the half a dead planner wrote of slots.jsonl, and
+        // the exploration's every later round failed on it.
+        Path parent = file.toAbsolutePath().getParent();
+        Files.createDirectories(parent);
+        Path partial = Files.createTempFile(parent,
+                file.getFileName().toString(), ".partial");
+        try {
+            try (BufferedWriter out = Files.newBufferedWriter(partial,
+                    StandardCharsets.UTF_8)) {
+                for (JsonObject row : rows) {
+                    out.write(toLine(row));
+                    out.write("\n");
+                }
             }
+            Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } finally {
+            Files.deleteIfExists(partial);
         }
     }
 
