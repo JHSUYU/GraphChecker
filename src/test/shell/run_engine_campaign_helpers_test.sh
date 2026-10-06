@@ -5190,6 +5190,36 @@ LIFTS=localhost CAUSYNTH_HOST_LEDGER="${admit_dir}/ledger" \
 [[ "$(tr -d ' ' <"${admit_dir}/0.out")" == 0 ]] \
   || fail "an ADMIT_MB job held a charge while it ran: $(cat "${admit_dir}/0.out")"
 
+# FANOUT-3: a job no host has room for holds its need on the host with the
+# most room while it waits (a heads/ hold every other start counts), and the
+# hold goes once a job starts: a running campaign's pool no longer takes each
+# freed slot ahead of the queued campaigns (round HI3).
+hold_dir="${test_tmp}/fanout-hold"
+mkdir -p "${hold_dir}/logs"
+hold_host=$(campaign_host_key localhost)
+mkdir -p "${hold_dir}/ledger/${hold_host}/charges"
+hold_block="${hold_dir}/ledger/${hold_host}/charges/99999999.${hold_host}.1.1.1"
+: >"${hold_block}"
+printf '%s\n' "ADMIT_MB=1234 echo held >${hold_dir}/0.out" >"${hold_dir}/jobs"
+( LIFTS=localhost CAUSYNTH_HOST_LEDGER="${hold_dir}/ledger" \
+    bash "${repo}/tools/adhoc/fanout.sh" \
+    "${hold_dir}/jobs" "${hold_dir}/logs" >"${hold_dir}/fanout.out" 2>&1 ) &
+hold_fanout=$!
+for _ in $(seq 1 60); do
+  compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" >/dev/null && break
+  sleep 0.5
+done
+hold_file=$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" | head -n 1)
+[[ -n "${hold_file}" && "$(cat "${hold_file}")" == 1234 \
+    && ! -e "${hold_dir}/0.out" ]] \
+  || fail "a job with no room held nothing while it waited: \
+$(ls -R "${hold_dir}/ledger") $(cat "${hold_dir}/fanout.out")"
+rm -f -- "${hold_block}"
+wait "${hold_fanout}" || fail "fanout failed a held job: $(cat "${hold_dir}/fanout.out")"
+[[ -s "${hold_dir}/0.out" ]] \
+  && ! compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" >/dev/null \
+  || fail "the held job did not start, or its hold outlived it"
+
 # HEADS-1: a round's heads are chosen at launch from the hosts' room
 # (tools/rounds/launch-round.sh, tools/lib/heads.sh heads_choose): the
 # heaviest case first, each to the host with the most room among those that
