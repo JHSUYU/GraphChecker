@@ -146,7 +146,7 @@ eleven merges into main, none reverted)
   regions dropped by a root rule). The author fixes them all; the lead decides the disputed ones.
 - **Merges in a dedicated worktree** `/bigtemp/vnr3ne/wt/main-pw`: per round a branch `main-<x>` from main, `git
   merge --no-ff` the change, resolve conflicts by hand (two implementations of one concept become one interface),
-  `mvn -q -o package` + shell test via `onlift.sh`, commit, `git worktree add --detach ~/gc-run/p<N>`, build it,
+  `mvn -q -o package` + shell test via `onlift.sh`, commit, `tools/lib/worktree-add.sh ~/gc-run/p<N> <commit> --detach`, build it,
   `launch-round.sh` all regression cases, a `Monitor` on `round-monitor.sh`; on all-PASS fast-forward `main` to
   the candidate, then a README/STATUS docs commit for that round.
 - **Canaries before a full round** for large changes (WIRE-CODEC: 11741 + 17897 first), always launched through

@@ -32,8 +32,8 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 
 | check | site (our tree) | guard | workload | window | state (2026-10-05) |
 | --- | --- | --- | --- | --- | --- |
-| hdfs-adhoc-01 | C/DFSInputStream.java:517 | the NN returns no located block for an offset (`newBlocks==null \|\| count==0`) | TestPread#testPreadDFS | up | open: clock-driven seed give-ups (80+ with sorted listings, SL2): time model (A2) |
 | hdfs-adhoc-05 | H/qjournal/client/QuorumOutputStream.java:106 | `bufToSend.getLength()==numReadyBytes` (the double buffer's flush) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG8W); swapped in for 32 (owner 2026-10-05: 32's map removal runs in unnamed pre-window work) |
+| hdfs-adhoc-06 | H/qjournal/client/QuorumOutputStream.java:112 | `data.length == bufToSend.getLength()` (the flushed buffer's backing array) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (SW1, 64 symbols, none unbound), but 51 task rounds read only 32 paths: owes the bound fix (TODO §5); swapped in for 01 (owner 2026-10-05) |
 | hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | UNSAT at FIXED_POINT (HG8A, 3 h budget, compose-cost merged): 129 obligations, 61 branches pruned by (r,c), 93 symbols |
 | hdfs-adhoc-08 | H/qjournal/server/Journal.java:487 | `reqInfo.epoch < lastPromisedEpoch` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG7D, 3 h budget): 417 obligations, 155 paths, 725 symbols |
 | hdfs-adhoc-09 | H/qjournal/server/Journal.java:504 | `reqInfo.committedTxId >= committedTxnId` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG7D, 3 h budget): 477 obligations, 151 paths, 1068 symbols |
@@ -43,7 +43,6 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | hdfs-adhoc-14 | same file :441 | 6-argument: password from the DN's key != the token password from the NN's key | TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] | up | UNSAT at FIXED_POINT on the r4 tree (R4A): REGION.084d06ab on Anchor:<call> [doAs@0] |
 | hdfs-adhoc-15 | H/server/blockmanagement/BlockInfo.java:447 | commitBlock: `!isComplete()` | TestBlockToken#testBlockTokenInLastLocatedBlockLegacy | up | UNSAT (HG7) |
 | hdfs-adhoc-16 | H/server/blockmanagement/BlockInfo.java:428 | `uc != null && !isComplete()` | TestClientProtocolForPipelineRecovery#testUpdatePipeLineAfterDNReg | up | UNSAT (HG7; was RUN_DEFECT until E1) |
-| hdfs-adhoc-17 | H/server/blockmanagement/BlockManager.java:2871 | `!storedBlock.isComplete()` | TestAddStripedBlocks#testAddUCReplica | up | open: clock-driven seed give-ups (80+ with sorted listings, SL2): time model (A2) |
 | hdfs-adhoc-19 | H/server/datanode/BPOfferService.java:777 | the DNA_FINALIZE bpid equals the BPOS bpid | TestDFSFinalize#testFinalize | up | UNSAT (HG7) |
 | hdfs-adhoc-20 | H/server/datanode/BPOfferService.java:615 | `txid >= lastActiveClaimTxId` | TestClientProtocolForPipelineRecovery#testPipelineRecoveryOnOOB | up | UNSAT (HG7) |
 | hdfs-adhoc-21 | H/server/datanode/BPServiceActor.java:290 (throw at :293) | NN software version < the DN's minimum NN version | TestDFSInputStream#testSkipWithRemoteBlockReader | startup | open: clock-driven seed give-ups (80+ with sorted listings, SL2; R4A): time model (A2) |
@@ -61,19 +60,22 @@ exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` t
 | hdfs-adhoc-34 | same file :741 | namespaceIDs incompatible | TestDFSStartupVersions#testVersions | up | open: time-model class |
 | hdfs-adhoc-35 | same file :750 | clusterIDs incompatible | TestDFSStartupVersions#testVersions | up | open: time-model class |
 | hdfs-adhoc-37 | same file :942 | cannot roll back to a newer state | TestDFSRollback#testRollback | up | rerun HG8B (3 h budget): SL1 cut by the budget; listing fix merged (give-ups 80 -> 13) |
+| hdfs-adhoc-38 | H/server/namenode/FSDirAppendOp.java:123 | the file's storage policy is LAZY_PERSIST (append refused) | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (SW1, 13 symbols, none unbound, unbounded); swapped in for 17 (owner 2026-10-05) |
 | hdfs-adhoc-39 | same file :133 | the last block is COMMITTED, not COMPLETE | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (HG7R; 126 obligations, 8 paths); SL1 once OCCURRENCE_ADDRESS_SHARED (block-report ops, timing; A3 queue) |
 | hdfs-adhoc-40 | same file :139 | the last block is not sufficiently replicated | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (HG7R) |
-| hdfs-adhoc-43 | same file :117 | a second truncate with another length while the block is under recovery | TestFileTruncate#testTruncateTwiceTogether | up | open: time-model class (clock/draw) |
+| hdfs-adhoc-45 | H/server/namenode/FSEditLog.java:1471 | `!isSegmentOpen()` in endCurrentLogSegment | TestEditLog#testSimpleEditLog[1] | up | UNSAT at FIXED_POINT but NO-SYMBOL (SW1L-45): the edit log's segment state is the NameNode's own, set by its own thread (to read by hand); swapped in for 43 (owner 2026-10-05) |
 | hdfs-adhoc-48 | H/server/namenode/INodeDirectory.java:356 | `oldChild == children.get(i)` | TestRenameWithSnapshots#testRenameUndo_1 | up | UNSAT at FIXED_POINT (HG7R): children list modeled, the way left at a concrete guard |
 | hdfs-adhoc-49 | H/server/namenode/snapshot/DirectorySnapshottableFeature.java:189 | `n+1 > snapshotQuota` | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R; 209 obligations) |
 | hdfs-adhoc-50 | same file :198 | duplicate snapshot name | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R, SL1; 141 obligations, 3 paths) |
 | hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | UNSAT at FIXED_POINT (HG8Z): declared at the test thread's first image save (FSImageFormatProtobuf.Saver.save, one snapshot; `first` named a rebuilt cluster's format-time save, 0 snapshots, which made the check vacuous); 68 seed give-ups (clock class) |
 
-Summary (2026-10-05 evening, rounds HG8E/HG8F/HG8Z/WD3 on the merged body): 37 right-shaped verdicts with symbols (10 12
-SAT confirmed; 05 07 08 09 11 14 15 16 19 20 21 22 23 24 25 26 27 30 33 34 37 39 40 49 50 52 UNSAT at the fixed point;
-21 22 23 provisional until the time model), 4 UNSAT over a chain that is constant in the window, reasons named (28 29 31:
-the block-pool map filled before the window, removed only after the target in unnamed work; 48: a single-thread
-operation under the namesystem lock), 4 clock-driven (01 17 35 43: the time model). 32 swapped out for 05.
+Summary (2026-10-06, rounds HG9/HG9B/HG9L/SW1 on the merged body; round-verify with UNBOUND): done -- UNSAT at the
+fixed point, z3 unsat on the file, unbounded, no unbound handoff -- 11 19 20 26 27 29 30 33 37 38 49 50, and 28 31 45 48
+over a chain constant in the window (28 31: the block-pool map filled before the window, removed only after the
+target in unnamed work; 48: a single-thread operation under the namesystem lock; 45: the edit log's own segment
+state); 10 SAT confirmed, reproduced 10/10. Owed: 15 16 39 40 (the guard's decider never in the fatal predicate: A4),
+07 (a relayed QJM segment: A4), 12 14 (unbound handoffs: A1), 05 06 08 09 (task rounds bounded at 32 paths: D1),
+21 22 23 24 25 34 35 52 (the time model: A2). Swapped: 32 for 05; 01 17 43 for 06 38 45 (owner 2026-10-05).
 
 ## HDFS named bug checks (10)
 

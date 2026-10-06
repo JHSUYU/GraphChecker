@@ -45,7 +45,8 @@ when the owner asks.
 | r5 trees + identity amplifier | (A3, coding) | | Approved: a request door first ends the exchange its thread stands in and is counted per verb in hand (`MessageDoors.requestStarting` at the RPC engine's invoke point, new tree branches gc/hdfs-study-r5, gc/hdfs-11741-r5); an extra RPC (retry, heartbeat) no longer renames every later request (hdfs-adhoc-52's give-up cascade). Review before merge. |
 | `hdfs-seed-speed` | merged (093c8918b) | | deletable (its worktree became `gc-hdfs-native-plant`) |
 | `hdfs-native-plant` | merged (0b4a30720) | | deletable (its worktree became `gc-hdfs-clock-place`) |
-| `hdfs-clock-place` | this row's commit | `/bigtemp/vnr3ne/wt/gc-hdfs-clock-place` | COMPOSE places clock cells before the paths compose (`Composer#placeClocks`); a cell no session can place refuses only the paths that name it (DIAGNOSTIC, `refusedPaths`), the composition-wide BLOCKING deleted. Gate (`/bigtemp/vnr3ne/gc-out/hdfs-native-plant/clock-gate`): NP3-17897 RUN_DEFECT -> SAT_CANDIDATE MARKER_FLIPPED with its three paths refused, CONFIRM realized; NP7 (17960, slowdisk-zero, 17897) and HG8E/F (11741, 17897, 12, 14) identical; HG7N 11741 and 17897 identical formula, claim, gaps and refused paths, only z3's per-valuation models differ (as baseline vs its recording does). Ready to merge. |
+| `hdfs-clock-place` | merged (bd71f7490) | | deletable (its worktree became `gc-hdfs-bound-scope`) |
+| `hdfs-bound-scope` | this row's commit | `/bigtemp/vnr3ne/wt/gc-hdfs-bound-scope` | A4: `result.json` `bounded` names each declared bound that cut the search (`campaign_bounds`), shown by report.py, triage.py, round-verify.sh. Next on it: the symbolic-scope batch 2 design. |
 | `hdfs-time-model` | (A2, coding) | `/bigtemp/vnr3ne/wt/gc-hdfs-time-model` | Design approved 2026-10-05: application clock reads in a replay follow the recording's timeline re-anchored at every move of the order (v = max(last, min(hi, lo + elapsed))), a CLOCK root's skew on top, no keyed reads. Probes of 01 17 21 22 23 25 34 35 43 52, then a review agent. |
 | `hdfs-draw-sites2` | `2d84363cd` | `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites` | HG6, merged (825f190a7) via hdfs-address-shared; its later commits only merge system/hdfs into it. Deletable. |
 | `hdfs-clock-replay` | `22520bf02` | none | C1 (keyed clock replay), parked; its commit message holds the C1 findings the time model starts from. |
@@ -107,13 +108,13 @@ agents' runs under `/bigtemp/vnr3ne/gc-out/<branch>/`.
 | R4A (A3) | r4 trees | 14 UNSAT at FIXED_POINT; bug1, 17897, 17960 PASS; 11741 confirmed CLOCK_SKEW |
 | HG8B | `hg8b` = 50b64875f | 24 26 37 with a 3 h budget (running at this commit) |
 
-Per check: [../checks/README.md](../checks/README.md). Summary (46 HDFS cases, 2026-10-05 day):
-- known bugs: 10/10 PASS by mandate on the current body (HG7N); on `hdfs-native-plant` 17960 (its configuration hook
-  root) and slowdisk-zero (its re-pairing, held as ORDER rows) reproduce natively 10/10, 11741 (clock) still owed
-  until the time model merges; 11741's key-id binding still timing-dependent (A3);
-- study: 18 right-shaped verdicts (10 12 SAT; 07 08 09 14 15 16 19 20 27 30 33 39 40 48 49 50 UNSAT at the fixed
-  point with symbols); 11 28 29 31 UNSAT with no symbol (container reads pinned: D1); 24 26 37 rerunning (HG8B); 52 and
-  32 swapped for 05 (owner 2026-10-05); 01 17 35 43 clock-driven (the time model, A2);
+Per check: [../checks/README.md](../checks/README.md). Summary (46 HDFS cases, 2026-10-06, rounds HG9/HG9B/HG9L/SW1):
+- known bugs: 9/10 PASS by mandate on the merged body (HG9B); 11741 is CLOCK_SKEW with both clocks moved and in the
+  cone, but two key-id handoffs are unbound (A1: the NameNode's data-encryption key id export is not woven);
+- study: done 16 (11 19 20 26 27 29 30 33 37 38 49 50 with symbols; 28 31 45 48 over a chain constant in the window)
+  and 10 SAT; owed 15 16 39 40 (decider: A4), 07 (relay: A4), 12 14 (unbound handoffs: A1), 05 06 08 09 (bounded
+  task rounds: D1), 21 22 23 24 25 34 35 52 (time model: A2). Swapped (owner 2026-10-05): 32 for 05, 01 17 43 for
+  06 38 45;
 - new bugs: none.
 
 ## 5. Where the analyses and evidence live

@@ -65,7 +65,7 @@ Never overwrite an image a round uses; build a new directory.
 ## 4. Rounds (live campaigns)
 
 ```bash
-git worktree add --detach ~/gc-run/p<N> <commit>
+tools/lib/worktree-add.sh ~/gc-run/p<N> <commit> --detach   # no third_party/: seconds, not most of an hour
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
 GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image \
   tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads chosen by room
@@ -127,7 +127,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 **The HDFS group (a sweep of the 46 cases), as the 2026-10-05 lead ran it (round HG7):**
 
 ```bash
-git -C ~/GraphChecker worktree add --detach ~/gc-run/<snap> system/hdfs
+tools/lib/worktree-add.sh ~/gc-run/<snap> system/hdfs --detach
 (cd ~/gc-run/<snap> && /bigtemp/vnr3ne/bin/onlift.sh -g 6 mvn -q -o package -DskipTests)
 out=/bigtemp/vnr3ne/gc-out/hdfs-study
 cp $out/rounds/HG7.cases $out/rounds/<ROUND>.cases            # the 46 case ids, one per line
@@ -170,7 +170,7 @@ validate a branch that needs a different tree (no branch does today; `pairing-po
 never on main:
 
 ```bash
-git worktree add -q --detach ~/gc-run/p<N> <main>
+tools/lib/worktree-add.sh ~/gc-run/p<N> <main> --detach
 cd ~/gc-run/p<N> && git merge --no-ff -q <branch> -m "Validation merge: <branch>"     # resolve docs conflicts by keeping both sides
 sed -i 's#repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx$#repo=<tree>#' \
   experiments/hadoop/hdfs-17967/case.sh experiments/hadoop/hdfs-17899/case.sh \

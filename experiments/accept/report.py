@@ -407,6 +407,11 @@ else:
 note += (" | the recorded valuation refutes the recording"
          if polarity_decides
          else " | the recorded valuation does not refute the recording")
+# A declared bound that cut the search (result.json bounded, RULES: a named,
+# rare last resort) comes before the reason, so the cut cell keeps it.
+bounded = result.get("bounded") or {}
+if bounded:
+    note += " | BOUNDED by %s" % ",".join(bounded.get("by", []))
 if claim != "SAT_CANDIDATE" and result.get("claimReason"):
     note += " | %s" % result["claimReason"]
 # The probe stays a reported signal, never a gate.
@@ -579,6 +584,15 @@ if concrete:
     if len(others) > CONCRETE_SHOWN:
         out.append("* ... and %d more" % (len(others) - CONCRETE_SHOWN))
     out.append("")
+
+if bounded:
+    out += ["## Bounded", "",
+            "Declared bounds cut this search (result.json bounded): the"
+            " verdict is over what they left, and a bound is a named, rare"
+            " last resort -- a closure that needs one is a defect to read.",
+            "", "* %s -- %s" % (", ".join("`%s`" % key for key
+                                          in bounded.get("by", [])),
+                               bounded.get("detail", "")), ""]
 
 rests = result.get("restsOnRefutations") or []
 if rests:

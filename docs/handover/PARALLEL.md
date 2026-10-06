@@ -24,6 +24,11 @@ host, and it is why isolation must be strict.
 - **Shared, read-only while in use:** the built system trees (`/bigtemp/vnr3ne/wt/hadoop-*` and their Maven repos
   `/bigtemp/vnr3ne/m2/<tree>`), the VM images (`/bigtemp/vnr3ne/vm-*`), the recorded corpora of rounds run with
   `PRUNE=0` (the offline gate's inputs), the host ledger (`$CAUSYNTH_HOST_LEDGER`, one for the cluster).
+- **Worktrees without the VM's source:** 47,665 of the repository's 48,098 files are `third_party/` (the concolic
+  VM), which no build or run reads. A full checkout writes them all to NFS (a worktree took 45+ minutes, a commit in
+  it minutes); `tools/lib/worktree-add.sh <path> <commit> [-b <branch> | --detach]` leaves them out (10 s, `git
+  status` 0.3 s, `mvn -q -o package` 27 s). Every snapshot and agent worktree is made with it; the VM's source is read
+  or changed in a full checkout.
 - **Isolated, one per run or agent:** a git worktree per branch (`/bigtemp/vnr3ne/wt/gc-<branch>`); a frozen snapshot
   per validated commit (`~/gc-run/<name>`, built once, never edited); a `GC_OUT` per agent and per round family
   (`/bigtemp/vnr3ne/gc-out/<branch>`, `hdfs-study` for the lead's HDFS rounds); a round name used once; replay scratch
