@@ -59,7 +59,8 @@ public class ConeTest {
                 // An arm of another path: closed.
                 row("HELD", "M_I_field_HOFF.armHeld").on("P1")
                         .in("message_arm__0__x"));
-        Set<String> open = Cone.unbound(FORMULA, "path_selector__0__a", "P0",
+        Cone cone = new Cone(FORMULA);
+        Set<String> open = cone.unbound("path_selector__0__a", "P0",
                 Collections.singleton("message_arm__0__x"), concrete);
         assertEquals("the fatal's own unbound v_H, one named through a"
                         + " define-fun, and the chosen arm's HELD one; not the"
@@ -68,9 +69,9 @@ public class ConeTest {
                 new TreeSet<String>(Arrays.asList("M_I_field_HOFF.armHeld",
                         "M_I_field_HOFF.held", "M_I_field_HOFF.viaDef")),
                 open);
-        assertEquals("another path's own open link", Collections.singleton(
-                "M_I_field_HOFF.other"), Cone.unbound(FORMULA,
-                "path_selector__1__b", "P1",
+        assertEquals("another path's own open link, off the same reading",
+                Collections.singleton("M_I_field_HOFF.other"),
+                cone.unbound("path_selector__1__b", "P1",
                 Collections.<String>emptySet(),
                 Collections.<Composer.Concrete>emptyList()));
     }

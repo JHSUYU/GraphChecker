@@ -24,7 +24,11 @@ import java.util.TreeSet;
  * witness chose holds FREE or HELD ({@code concrete[]}, its arm).  Each is a
  * value the witness rests on that no producer the corpus attests made.
  *
- * <p>Read iteratively: a composed formula nests thousands deep.</p>
+ * <p>Read iteratively: a composed formula nests thousands deep.  Read once
+ * per formula, its assertions indexed by the selector they are stated under:
+ * every path of a body asks it (hdfs-11741 HL1: 66 paths over a 45 MB body,
+ * each read whole again, and each assertion of another selector searched to
+ * the end of the text for this one's -- 44 minutes of a witness attempt).</p>
  */
 final class Cone {
 
@@ -37,13 +41,13 @@ final class Cone {
     private final Map<String, int[]> defs = new HashMap<String, int[]>();
     private final Map<String, Set<String>> defined =
             new HashMap<String, Set<String>>();
-    /** The selector's fatal and family assertions' bodies. */
-    private final List<Node> fatalBodies = new ArrayList<Node>();
-    private final List<Node> familyBodies = new ArrayList<Node>();
+    /** selector -> the forms of the assertions stated under it, in order. */
+    private final Map<String, List<int[]>> asserted =
+            new HashMap<String, List<int[]>>();
 
-    private Cone(String text, String selector) {
+    Cone(String text) {
         this.text = text;
-        for (int[] form : topLevel(text)) read(form, selector);
+        for (int[] form : topLevel(text)) read(form);
     }
 
     /**
@@ -51,19 +55,23 @@ final class Cone {
      * whose witness chose {@code arms}: cone.py's {@code unbound} for that
      * path, sorted.
      */
-    static Set<String> unbound(String formula, String selector,
-                               String pathId, Collection<String> arms,
-                               Collection<Composer.Concrete> concrete) {
+    synchronized Set<String> unbound(String selector, String pathId,
+                                     Collection<String> arms,
+                                     Collection<Composer.Concrete> concrete) {
+        List<Node> fatal = new ArrayList<Node>();
+        List<Node> families = new ArrayList<Node>();
+        for (int[] form : asserted.getOrDefault(selector,
+                Collections.<int[]>emptyList())) {
+            assertion(parse(form[0], form[1]), selector, fatal, families);
+        }
         Set<String> open = new TreeSet<String>();
-        Cone cone = new Cone(formula, selector);
         Set<String> bound = new HashSet<String>();
-        for (Node family : cone.familyBodies) {
-            bound.addAll(cone.names(family, Collections.<String>emptySet()));
+        for (Node family : families) {
+            bound.addAll(names(family, Collections.<String>emptySet()));
         }
         // The last fatal assertion of the selector, as cone.py's dict keeps.
-        if (!cone.fatalBodies.isEmpty()) {
-            for (String name : cone.names(
-                    cone.fatalBodies.get(cone.fatalBodies.size() - 1),
+        if (!fatal.isEmpty()) {
+            for (String name : names(fatal.get(fatal.size() - 1),
                     Collections.<String>emptySet())) {
                 if (name.contains(BOUNDARY) && !bound.contains(name)) {
                     open.add(name);
@@ -81,9 +89,10 @@ final class Cone {
         return open;
     }
 
-    /** One top-level command: the declarations, definitions and the
-     *  selector's fatal and family assertions are kept. */
-    private void read(int[] form, String selector) {
+    /** One top-level command: the declarations, definitions and each
+     *  assertion stated under a selector -- {@code (assert (=> s ...))} or
+     *  {@code (assert (! (=> s ...) ...))} -- are kept. */
+    private void read(int[] form) {
         List<String> head = atoms(form[0] + 1, form[1], 3);
         if (head.isEmpty()) return;
         switch (head.get(0)) {
@@ -101,22 +110,24 @@ final class Cone {
             case "define-fun":
                 if (head.size() > 1) defs.put(head.get(1), form);
                 return;
-            case "assert":
-                // Only an assertion under this selector is parsed whole.
-                if (text.indexOf("(=> " + selector + " ", form[0]) < 0
-                        || text.indexOf("(=> " + selector + " ", form[0])
-                        >= form[1]) {
-                    return;
+            case "assert": {
+                List<String> lead = leading(form[0], form[1], 7);
+                int arrow = lead.indexOf("=>");
+                if (arrow > 0 && arrow + 1 < lead.size()
+                        && "(".equals(lead.get(arrow - 1))) {
+                    asserted.computeIfAbsent(lead.get(arrow + 1),
+                            selector -> new ArrayList<int[]>()).add(form);
                 }
-                assertion(parse(form[0], form[1]), selector);
                 return;
+            }
             default:
         }
     }
 
     /** {@code (assert (! (=> selector body) :named name))}: a fatal or a
      *  family of this selector keeps its body. */
-    private void assertion(Node node, String selector) {
+    private static void assertion(Node node, String selector,
+                                  List<Node> fatal, List<Node> families) {
         if (node.kids.size() < 2) return;
         Node body = node.kids.get(1);
         String name = "";
@@ -135,9 +146,9 @@ final class Cone {
             return;
         }
         if (name.startsWith("path_fatal")) {
-            fatalBodies.add(body.kids.get(2));
+            fatal.add(body.kids.get(2));
         } else if (name.startsWith("message_family")) {
-            familyBodies.add(body.kids.get(2));
+            families.add(body.kids.get(2));
         }
     }
 
@@ -251,6 +262,27 @@ final class Cone {
             }
         }
         return forms;
+    }
+
+    /** The first {@code limit} tokens of [from, to): each parenthesis one,
+     *  each atom one. */
+    private List<String> leading(int from, int to, int limit) {
+        List<String> tokens = new ArrayList<String>();
+        int at = from;
+        while (at < to && tokens.size() < limit) {
+            char one = text.charAt(at);
+            if (Character.isWhitespace(one)) {
+                at++;
+            } else if (one == '(' || one == ')') {
+                tokens.add(String.valueOf(one));
+                at++;
+            } else {
+                int end = atomEnd(at, to);
+                tokens.add(text.substring(at, end));
+                at = end;
+            }
+        }
+        return tokens;
     }
 
     /** The first {@code limit} atoms of the list body [from, to), nested
