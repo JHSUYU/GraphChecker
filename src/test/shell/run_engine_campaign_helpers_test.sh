@@ -3382,6 +3382,29 @@ reopened=0
 again=W1 open=0" ]] || fail "the open witness chain was handled as: \
 ${chain_said}"
 
+# STREAM-CONFIRM-FIRST: a solve's REPLAY goes first in the queue, behind only
+# the witness's confirmation and GROW's re-runs that lead it (hdfs-11741 AR1:
+# 473 later replays started ahead of the confirmation).  Per row: the queue's
+# kinds before, and after.
+while IFS='|' read -r confirm_before confirm_after; do
+  confirm_said=$(
+    stream_queue=()
+    for confirm_kind in ${confirm_before}; do
+      stream_queue+=("${confirm_kind} r q")
+    done
+    campaign_stream_queue_replay "REPLAY obligations-0004 A g0/c g0/p"
+    printf '%s,' "${stream_queue[@]%% *}"
+  )
+  [[ "${confirm_said}" == "${confirm_after}" ]] \
+    || fail "a REPLAY queued over [${confirm_before}] gave ${confirm_said}, \
+not ${confirm_after}"
+done <<'ROWS'
+CONFIRM RERUN OBLIGATION|CONFIRM,RERUN,REPLAY,OBLIGATION,
+OBLIGATION REPLAY|REPLAY,OBLIGATION,REPLAY,
+CONFIRM|CONFIRM,REPLAY,
+|REPLAY,
+ROWS
+
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
 # exactly like `replay_timeout_s`.
 grep -q 'CAUSYNTH_CAMPAIGN_WORKER_HOSTS' "${repo}/run_engine.sh" \

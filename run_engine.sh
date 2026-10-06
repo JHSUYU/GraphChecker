@@ -5324,8 +5324,12 @@ campaign_stream_wait() {
 # answered SAT_MODEL_READY is owed its replay: its REPLAY goes first in the
 # queue at once, never waiting for a step -- still in flight, still within
 # the exploration's share and its host's cores -- on the class tree and plan
-# its solve started on, charged then.  Every other return waits in
-# stream_pending for the next step to land it.
+# its solve started on, charged then -- behind only a witness's confirmation
+# and GROW's re-runs queued first, which end the exploration or hold every
+# solve (hdfs-11741 AR1: 473 replays of solves that returned later started
+# ahead of the witness's confirmation, which ran four hours after the witness
+# landed).  Every other return waits in stream_pending for the next step to
+# land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker
   if [[ "${pid}" == "${stream_ticker}" ]]; then
@@ -5342,13 +5346,25 @@ campaign_stream_ended() {
         '.verdict // ""' "${worker}/obligation_result.jsonl" 2>/dev/null)" \
         == SAT_MODEL_READY ]]; then
       campaign_log "obligation ${id}: solved on ${host}, its replay queued"
-      stream_queue=("REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" \
-        "${stream_queue[@]}")
+      campaign_stream_queue_replay \
+        "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
     else
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
     fi
     unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' 'stream_job_tree[$pid]'
   fi
+}
+
+# Puts one REPLAY first in the queue, behind the CONFIRM and RERUN entries
+# that lead it (campaign_stream_ended).
+campaign_stream_queue_replay() {
+  local at=0
+  while (( at < ${#stream_queue[@]} )) \
+      && [[ "${stream_queue[at]}" == CONFIRM\ * \
+         || "${stream_queue[at]}" == RERUN\ * ]]; do
+    at=$((at + 1))
+  done
+  stream_queue=("${stream_queue[@]:0:at}" "$1" "${stream_queue[@]:at}")
 }
 
 # What returned since the last step began, landed: each obligation's

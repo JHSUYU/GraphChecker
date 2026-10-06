@@ -42,7 +42,8 @@ running out of memory, and a single case alone takes the whole cluster.
   seed replay (HG4: 11741 674 / 662-715 MB; adhoc-07 238 / 194-257; outlier adhoc-15 514 / up to 2003, which grows
   through the ledger).
 - **An obligation is two starts**: its SOLVE (charged what a solver starts at, 1 GB; answered by its host's warm solver
-  when one serves) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once, on the class
+  when one serves) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once (behind only a
+  witness's confirmation and GROW's re-runs, which end the exploration or hold every solve), on the class
   tree and plan its solve started on. Until the replay lands the obligation is in flight (never re-proposed). Most
   obligations end at the solve (UNSAT, refused), so they never wait for replay memory.
 - **The shared pool** (a sweep, `stream_shared_pool=true`): the explorations running at once divide the pool's slots

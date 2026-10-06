@@ -805,7 +805,9 @@ One pool for the whole exploration. An obligation is two starts: its SOLVE
 solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
 worker directory, on the model's focus row the solve left there), which the head queues first the
 moment the solve returns (`campaign_stream_ended`; between two starts of a dispatch too,
-`campaign_stream_collect_jobs`), not at the next step, on the class tree and
+`campaign_stream_collect_jobs`), not at the next step -- behind only a witness's `CONFIRM` and GROW's
+`RERUN`s queued first (`campaign_stream_queue_replay`; hdfs-11741 AR1: 473 replays of later solves
+started ahead of the witness's confirmation, four hours) -- on the class tree and
 plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
 since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
 `--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
@@ -1017,7 +1019,8 @@ cancelled or reaped, by id):
   (§10): its task is planned in the step (`campaign_confirm_plan`, its verdict
   `witness-attempts/NNNN/confirm.json`, its replay in `<campaign>/witness-confirm/NNNN/`, out of the
   iteration), a verdict known at once (a refusal, the selected session itself the run) decided there;
-  otherwise its replay is a job of the pool (`CONFIRM`, queued first, charged as the seed replay is,
+  otherwise its replay is a job of the pool (`CONFIRM`, queued first and kept first, no solve's REPLAY
+  queued ahead of it, charged as the seed replay is,
   on the class tree and plan of the generation current when it starts), so landing, planning and
   later attempts go on while it runs (hdfs-17967-pathB HG3: a refuted attempt held the head's only
   step for 31 min while the witness obligation waited, unlanded). Its return lands like any job's,
