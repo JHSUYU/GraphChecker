@@ -20,11 +20,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -41,13 +39,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * decoded ({@link #receive}) and binds each element to the message object it
  * was decoded into, with the message it arrived in; a getter's attach takes
  * the element of the message it is called on ({@link #bound}), whatever its
- * thread serves by then.</p>
+ * thread serves by then.  A message no door decoded was built in this JVM:
+ * its getter returns the program's own value, and attaches nothing
+ * (hdfs-adhoc-07: jn0's {@code getSegmentInfo} builds the segment its
+ * {@code acceptRecovery} compares with the one it received).</p>
  *
  * <p>Both sides walk alike: depth first, each message's port fields, then
  * its message-valued fields -- a nested message, each element of a repeated
- * one, a {@code oneof}'s message -- every class's fields by name.  The k-th
- * port field the walk meets is the port's k-th element on the wire, staged
- * or not.  A class's default instance (JVM-wide) is never walked.</p>
+ * one, a {@code oneof}'s message -- every class's fields by name, a message
+ * held twice walked twice, as the wire carries it twice.  The k-th port
+ * field the walk meets is the port's k-th element on the wire, staged or
+ * not.  A class's default instance (JVM-wide) is walked, never bound.</p>
  */
 final class MessageCodec {
     private MessageCodec() {
@@ -137,20 +139,26 @@ final class MessageCodec {
      */
     static void receive(Object message) {
         if (message == null || ports.isEmpty()) return;
-        walk(message, (holder, owner, port) -> BINDINGS.put(holder,
-                port.portId, Element.received(SymbolicMessageEnvelope.take(
-                        port.portId))));
+        walk(message, (holder, owner, port) -> {
+            Element element = Element.received(SymbolicMessageEnvelope.take(
+                    port.portId));
+            if (holder != plan(holder.getClass()).defaultInstance) {
+                BINDINGS.put(holder, port.portId, element);
+            }
+        });
     }
 
     /**
      * The element a message field's port has in {@code message}, the one
-     * its getter was called on: the one its decode bound, else none
-     * ({@link SymbolicMessageEnvelope#ABSENT}: a message this JVM built, or
-     * a class's default instance, which no decode binds).
+     * its getter was called on: the one its decode bound ({@link
+     * SymbolicMessageEnvelope#ABSENT} when the message it arrived in
+     * carried none), or null for a message no door decoded -- one this JVM
+     * built, or a class's default instance -- whose field is the program's
+     * own value.
      */
     static Element bound(Object message, String portId) {
-        Element element = message == null ? null
-                : BINDINGS.get(message, portId);
+        if (message == null || !BINDINGS.decoded(message)) return null;
+        Element element = BINDINGS.get(message, portId);
         return element == null ? Element.NONE : element;
     }
 
@@ -190,20 +198,17 @@ final class MessageCodec {
     private static void walk(Object message, Visit visit) {
         pauseObservation();
         try {
-            walk(message, visit,
-                    Collections.newSetFromMap(
-                            new IdentityHashMap<Object, Boolean>()));
+            visit(message, visit);
         } finally {
             resumeObservation();
         }
     }
 
-    private static void walk(Object message, Visit visit, Set<Object> seen) {
+    /** A built message is a tree (immutable, made bottom up), so the walk
+     *  needs no visited set. */
+    private static void visit(Object message, Visit visit) {
         Plan plan = plan(message.getClass());
-        if (plan == null || plan.defaultInstance == message
-                || !seen.add(message)) {
-            return;
-        }
+        if (plan == null) return;
         for (Map.Entry<Field, PortField> port : plan.ports.entrySet()) {
             visit.port(message, plan.owner, port.getValue());
         }
@@ -216,10 +221,10 @@ final class MessageCodec {
             }
             if (value instanceof Collection) {
                 for (Object element : (Collection<?>) value) {
-                    if (element != null) walk(element, visit, seen);
+                    if (element != null) visit(element, visit);
                 }
             } else if (value != null) {
-                walk(value, visit, seen);
+                visit(value, visit);
             }
         }
     }
@@ -348,6 +353,11 @@ final class MessageCodec {
             Map<String, Element> elements =
                     held.get(new Identity(message, null));
             return elements == null ? null : elements.get(portId);
+        }
+
+        /** Whether a door's walk decoded {@code message}. */
+        synchronized boolean decoded(Object message) {
+            return held.containsKey(new Identity(message, null));
         }
 
         synchronized void clear() {

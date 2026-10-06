@@ -226,11 +226,12 @@ final class WireExport {
      * the carrier leaf then denotes the sender's expression, which the
      * instrumented frame reads back into its local.  A message field's
      * element is the one bound to {@code receiver}, the message its getter
-     * was called on ({@link MessageCodec#bound}); a declared row's is taken
-     * from the message the thread received.  The delivery is filed on the
-     * occurrence it arrived in, with the producer's handle and the message
-     * it came in held ({@link Interactions#delivering}) for the whole
-     * attach.
+     * was called on ({@link MessageCodec#bound}): a message no door decoded
+     * was built here, and its field, the program's own value, attaches
+     * nothing.  A declared row's element is taken from the message the
+     * thread received.  The delivery is filed on the occurrence it arrived
+     * in, with the producer's handle and the message it came in held
+     * ({@link Interactions#delivering}) for the whole attach.
      */
     static void attachLeaf(String portId, Object carrier, String field,
                            String descriptor, Object receiver) {
@@ -257,7 +258,7 @@ final class WireExport {
                             + "declares, so it filed nothing");
             return;
         }
-        if (carrier == null) return;
+        if (carrier == null || element == null) return;
         long handle = element.handle;
         Interactions.delivering(handle, element.correlationId, element.half);
         try {

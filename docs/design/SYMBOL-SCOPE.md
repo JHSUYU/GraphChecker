@@ -1098,8 +1098,11 @@ receiving walk, after the parse and inside the exchange the door installed, take
 binds it to the message object it was decoded into, with the message it arrived in (weakly, by
 identity); a getter's attach takes the element of the message it is called on (`MessageCodec#bound`,
 the weave passes the getter's receiver), whatever its thread serves by then, and pairs with that
-message's correlation and half. The k-th port field a walk meets is the port's k-th element on the
-wire. A door export runs at the door's occurrence (a server's response door after its call's regions
+message's correlation and half. A message no door decoded was built in this JVM (or is a class's
+JVM-wide default instance): its getter returns the program's own value and attaches nothing
+(hdfs-adhoc-07: jn0's `getSegmentInfo` builds the segment `acceptRecovery` compares with the one it
+received; read as a wire value it was a free, unbound `v_H`). The k-th port field a walk meets is the
+port's k-th element on the wire; a message held twice is walked twice, as the wire carries it. A door export runs at the door's occurrence (a server's response door after its call's regions
 closed: ambient, under the call's anchor); the closure grows the port's static export sites, the
 setter calls, from it (PIPELINE §7.2).
 
@@ -1201,7 +1204,8 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
   setter call in scope: no repeated, enum, `bytes`, nested or map-keyed fields, no string codecs,
   no message of a transport without services (DataTransfer ops' own `Op*Proto`, HTTP bodies,
   ZooKeeper nodes). A door that is handed no message (SASL, HTTP, ZooKeeper; HBase's RPC until its
-  adapter hands its door the message) carries no message field. A relay keeps its producer only for
+  adapter hands its door the message) carries no message field, and a message parsed where no door
+  walks it (`received`) is taken for one built here: its fields are the parse's constants. A relay keeps its producer only for
   a decoded message object it hands on as is: a value copied out of a decoded message by a getter
   that is no attach site is exported concrete, from the relay. `String`, boxed and reference leaves
   get no `v_H`. Every other cross-process value needs a declared row.

@@ -17,8 +17,9 @@ import org.junit.Test;
  * {@code Type} holding two {@code Field}s whose {@code number_} is a port:
  * a parse binds each element to the message object it was decoded into, in
  * the exchange it arrived in, and a relay of the decoded message hands on
- * those elements, the one the decode carried none for counted empty.  No
- * concolic VM runs these tests, so only decoded elements are staged.
+ * those elements, the one the decode carried none for counted empty.  A
+ * message built here is no wire value.  No concolic VM runs these tests,
+ * so only decoded elements are staged.
  */
 public class MessageCodecTest {
     private static final String PORT = "XCH.0.wire.auto:Field.Number";
@@ -72,14 +73,14 @@ public class MessageCodecTest {
                 {"in the exchange it arrived in, whatever the thread serves"
                         + " now", "c-1 RESPONSE",
                         second.correlationId + " " + second.half},
-                {"a message no decode bound",
-                        SymbolicMessageEnvelope.ABSENT,
+                // Built here: its field is the program's own value, and its
+                // getter attaches nothing.
+                {"a message no door decoded", null,
                         MessageCodec.bound(Field.newBuilder().setNumber(9)
-                                .build(), PORT).handle},
-                {"nor a class's JVM-wide default instance",
-                        SymbolicMessageEnvelope.ABSENT,
+                                .build(), PORT)},
+                {"nor a class's JVM-wide default instance", null,
                         MessageCodec.bound(Field.getDefaultInstance(),
-                                PORT).handle},
+                                PORT)},
                 // Relayed inside a new request (the response door unwraps
                 // the RPC engine's wrapper): the second element under its
                 // original handle at its own ordinal, the first counted
@@ -90,6 +91,16 @@ public class MessageCodecTest {
                                 CausynthMessagePropagation.IPC, "c-2", "0",
                                 null, new Wrapper(Type.newBuilder()
                                         .addFields(decoded.getFields(0))
+                                        .addFields(decoded.getFields(1))
+                                        .build())).symbolic},
+                // A message held twice is on the wire twice.
+                {"a message held twice is walked twice",
+                        "CSE6;" + token(PORT) + ",42,0;" + token(PORT)
+                                + ",42,1",
+                        CausynthMessagePropagation.outboundResponse(
+                                CausynthMessagePropagation.IPC, "c-3", "0",
+                                null, new Wrapper(Type.newBuilder()
+                                        .addFields(decoded.getFields(1))
                                         .addFields(decoded.getFields(1))
                                         .build())).symbolic}};
         for (Object[] row : rows) {
