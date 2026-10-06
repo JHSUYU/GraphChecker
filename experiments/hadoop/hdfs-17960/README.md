@@ -29,7 +29,7 @@ flipped decision, which is what makes this case the worked example for the whole
 
 ## Build and run
 
-Hadoop checkout: the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7b`, branch `gc/hdfs-study-r7b` (on `system/hdfs`; it descends from `gc/hdfs-unified-dtx`, the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope). HDFS-17960's fix (PR #8672) is not in trunk, so the base has the
+Hadoop checkout: the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7`, branch `gc/hdfs-study-r7` (on `system/hdfs`; it descends from `gc/hdfs-unified-dtx`, the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope). HDFS-17960's fix (PR #8672) is not in trunk, so the base has the
 bug; the workload (`TestOrderedSnapshotDeletion#testOrderedDeletionWithRestart`) is the one
 first written on the branch-3.4 tree `gc/hdfs-17960`, ported onto trunk's JUnit 5 file.
 `artifacts/` records that older tree's paths: they are a frozen run's own provenance and are
