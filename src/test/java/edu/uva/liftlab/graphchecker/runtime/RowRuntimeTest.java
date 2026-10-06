@@ -1188,6 +1188,13 @@ public class RowRuntimeTest {
         RowRuntime.read(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
+        // Nor does a generated message's builder (EnginePlumbing).
+        RowRuntime.write(occurrence, 17L, Endpoint.stateSite(
+                com.google.protobuf.Field.Builder.class.getName(),
+                "setNumber", "(I)Lcom/google/protobuf/Field$Builder;", 2,
+                true), LocationId.of(LocationKind.INSTANCE, "351", "16"),
+                6255L, rmwExpression(), "", "Caller.body()#u9@1", null, null,
+                false);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, RootCategory.HOOK, "3", "3", "6",
                 true, null, 0L);
@@ -1284,7 +1291,8 @@ public class RowRuntimeTest {
         assertEquals("2", attaches.get(0).answeredValue());
         List<WriteRow> writes = RowCodec.readAll(dir.writes(),
                 RowCodec::readWrite);
-        assertEquals("the tool's own wait set is no write", 3, writes.size());
+        assertEquals("neither the tool's own wait set nor a generated"
+                + " builder is a write", 3, writes.size());
         assertEquals(125L, writes.get(0).version());
         assertEquals(10L, writes.get(0).seq());
         assertEquals("java.util.concurrent.atomic.AtomicInteger"
