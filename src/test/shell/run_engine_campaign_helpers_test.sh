@@ -1696,7 +1696,8 @@ run_capturing_status seed_factor_validate 0 >/dev/null \
 
 # REPLAY-NEED: the seed replay, before any replay of the campaign was
 # measured, needs the recording's measured peak times
-# campaign_replay_memory_factor (7); it is charged that need, never more
+# campaign_replay_memory_factor (7); it is charged the recording's peak times
+# campaign_seed_charge_factor (2), at least 512 MB, never more
 # than half a host's ceiling (cap: CAUSYNTH_HOST_MAX_USED_PCT of this host's
 # MemTotal, halved; campaign_replay_charge_mb), its replay JVM is held to
 # that charge (CAUSYNTH_CHARGED_MB) and sized by the whole need
@@ -1744,9 +1745,9 @@ heap=${need_whole} need=${need_after}" ]] \
 ${need_peak} MB is ${need_said}, not ${need_expected} MB sized by \
 ${need_whole} MB, then ${need_after} MB"
 done <<'EOF'
-300 400 2100 2100 640
-442 674 3094 3094 1024
-300 100 2100 2100 512
+300 400 600 2100 640
+442 674 884 3094 1024
+200 100 512 1400 512
 99999 2003 cap 699993 3072
 - 400 - - -
 300 - 2100 2100 -

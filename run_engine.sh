@@ -2554,8 +2554,17 @@ campaign_target_reached() {
 # it (hdfs-17960 4.89, solr-18413 3.65, solr-18406 6.94; the block-key cases
 # under 1.2).  Its peak is the campaign's first measured replay need
 # (campaign_replay_measured): every replay after it is charged from what the
-# campaign's replays measured, never from the recording again.
+# campaign's replays measured, never from the recording again.  That need
+# sizes the replay's heap; the seed replay is CHARGED less at its start,
+# campaign_seed_charge_factor times the recording's peak, and granted what it
+# grows past that while its host has real room (campaign_watch_workload), as
+# every replay is: HDFS seed replays peaked at 0.5 to 1.4 times their
+# recording (rounds HG9, HI2: 177-1062 MB charged 2.6-11 GB), and charged
+# seven times it, four of HI2's first wave held 44 GB of the cluster's
+# ledger over under 4 GB of real use while every lift's real use stood at
+# 20-36 %.
 campaign_replay_memory_factor=7
+campaign_seed_charge_factor=2
 campaign_session_replay() {
   local iteration_dir=$1 bound need charge
   [[ "${campaign_recorded_workload_rss_mb}" =~ ^[1-9][0-9]*$ ]] \
@@ -2565,7 +2574,10 @@ with"
   bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
   (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
   need=$(( campaign_recorded_workload_rss_mb * campaign_replay_memory_factor ))
-  charge=$(campaign_replay_charge_mb "${need}")
+  charge=$(( campaign_recorded_workload_rss_mb * campaign_seed_charge_factor ))
+  (( charge >= campaign_replay_min_need_mb )) \
+    || charge=${campaign_replay_min_need_mb}
+  charge=$(campaign_replay_charge_mb "${charge}")
   campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
     "${causynth_static_scope_map}" "${charge}" "${bound}" \
     "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \

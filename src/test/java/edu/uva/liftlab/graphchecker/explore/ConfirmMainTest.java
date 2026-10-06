@@ -672,7 +672,9 @@ public class ConfirmMainTest {
      * the fatal IS the run that confirms the claim -- unless its world
      * planted a pairing: a choice its run took under an order its replay
      * held, which CONFIRM makes again in a replay of its own, strict.  A
-     * planted root or answer is the session's own run; a skew planted on a
+     * planted answer, the moved root, or another root at its recorded value
+     * is the session's own run; another root planted at another value ran
+     * another model, which a replay decides; a skew planted on a
      * clock cell the composition anchors is no clock of the model's, and
      * its replay drops it and keeps one outside the composition.
      */
@@ -694,6 +696,8 @@ public class ConfirmMainTest {
         Object[][] table = {
                 {null, null, null, true},
                 {"rootAssignments", "FAULT:IPC", "true", true},
+                {"rootAssignments", "OTHER", "7", true},
+                {"rootAssignments", "OTHER", "8", false},
                 {"clockDeltas", "CLOCK.gone", "7000", false},
                 {"answers", consumer.id(), "119979", true},
                 {"pairings", Confirmation.id(reader), Confirmation.id(writer),
@@ -710,7 +714,8 @@ public class ConfirmMainTest {
                         "43000");
             }
             RowCodec.writeJsonl(focus, Collections.singletonList(world));
-            Path out = folder.newFolder("world-" + row[0]).toPath();
+            Path out = folder.newFolder("world-" + row[0] + "-" + row[2])
+                    .toPath();
             JsonObject summary = ConfirmMain.write(iteration,
                     claim("FAULT:IPC", "true"), manifest(), out);
             boolean realized = (Boolean) row[3];
