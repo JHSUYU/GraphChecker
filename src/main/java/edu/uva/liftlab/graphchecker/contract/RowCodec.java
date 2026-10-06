@@ -570,7 +570,16 @@ public final class RowCodec {
         return number(row, MILLIS);
     }
 
+    /** The refusal of a schedule row written before rows stated their
+     *  clock readings: such a corpus is re-recorded, never read. */
+    public static final String PRE_CLOCK_CONTRACT =
+            "schedule row predates the clock-stamp contract; re-record";
+
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
+        if (!json.has(NANOS) || !json.has(MILLIS)) {
+            throw new IllegalArgumentException(PRE_CLOCK_CONTRACT + ": "
+                    + json);
+        }
         return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
                 json.has(CONTEXT) ? string(json, CONTEXT) : "",

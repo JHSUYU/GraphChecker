@@ -107,9 +107,9 @@ public class ClocksTest {
                 elsewhere(false));
 
         openWindow();
-        Thread.sleep(100L);
-        atCap("the opening holds time until the order caps it",
-                first + 300L * MS + TICK, Clocks.nanos());
+        long opened = Clocks.nanos();
+        assertTrue("the opening: time reaches the order's opening",
+                opened >= first + 300L * MS && opened < first + 400L * MS);
         ScheduleLog.enforceForTests(Arrays.asList(
                 event("x", 400L), event("y", 2000L)));
         Thread.sleep(150L);
@@ -131,23 +131,90 @@ public class ClocksTest {
                 " 0 cap(s) lifted"));
     }
 
+    /**
+     * Before the window a timed wait that ran out past the cap time stands
+     * at lifts it to its deadline, no further: at once at a mark time ran
+     * up to, at a pass this run made only after it stood a timeout, never
+     * beside a held startup taker, never for a wait a signal ended.
+     */
     @Test
-    public void aCapThatStoodATimeoutWithNothingToMoveItIsLifted()
+    public void aWaitThatRanOutPastAStandingCapLiftsItToItsDeadline()
             throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "200");
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "400");
         follow(time(ScheduleEvent.ORIGIN, 0L),
-                startup("register", "dn0", 50L), time(ScheduleEvent.OPEN,
-                        10_000L));
+                startup("register", "dn0", 50L),
+                startup("register", "dn1", 60L),
+                time(ScheduleEvent.OPEN, 10_000L));
         Clocks.nanos();
         long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
                 .get(0));
         Thread.sleep(100L);
-        atCap("at the first pass", first + 50L * MS, Clocks.nanos());
-        standUntilLifted("1 at a startup mark");
+        atCap("time ran up to the first mark", first + 50L * MS,
+                Clocks.nanos());
+        // dn1's taker is held until dn0 passes: its hold bounds the wait.
+        Thread taker = new Thread(() -> StartupOrder.done(
+                StartupOrder.begin("register", "dn1")));
+        taker.start();
+        long until = System.nanoTime() + 2000L * MS;
+        while (!StartupOrder.holding() && System.nanoTime() < until) {
+            Thread.sleep(5L);
+        }
+        assertTrue("dn1 is held", StartupOrder.holding());
+        ranOut(200L);
+        atCap("a wait beside a held taker lifts nothing", first + 50L * MS,
+                Clocks.nanos() - 1L);
+        StartupOrder.done(StartupOrder.begin("register", "dn0"));
+        taker.join();
+        atCap("every pass made: time stands at the last", first + 60L * MS,
+                Clocks.nanos());
+        ranOut(200L);
+        atCap("at a pass this run made, a wait lifts nothing at first",
+                first + 60L * MS, Clocks.nanos() - 1L);
+        Thread.sleep(450L);
+        Clocks.nanos();
+        long[] signalled = Clocks.waitBegins(300L * MS);
+        Clocks.waited(signalled);
+        atCap("nor one a signal ended", first + 60L * MS,
+                Clocks.nanos() - 2L);
+        long deadline = ranOut(200L);
+        atCap("once it stood a timeout there, a wait that ran out lifts the"
+                + " cap to its deadline", deadline, Clocks.nanos());
+        assertTrue(deadline - (first + 260L * MS) < 10L);
         Thread.sleep(100L);
-        assertTrue("a startup pass that never came, nothing computing: time"
-                + " runs past it", Clocks.nanos() > first + 100L * MS);
+        atCap("and no further", deadline, Clocks.nanos());
+        assertTrue(Clocks.progress(), Clocks.progress().contains(
+                "1 to a timed wait's deadline before the window"));
+        freshRun();
 
+        follow(time(ScheduleEvent.ORIGIN, 0L), time(ScheduleEvent.OPEN,
+                10_000L));
+        Clocks.nanos();
+        first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN).get(0));
+        Thread.sleep(60L);
+        Clocks.nanos();
+        long far = ranOut(20_000L);
+        atCap("at a mark time ran up to, at once", far, Clocks.nanos());
+        assertTrue(far - (first + 10_000L * MS) > 0L);
+    }
+
+    /** A timed wait of {@code ms} begun now, ended by its timeout;
+     *  returns its deadline. */
+    private static long ranOut(long ms) {
+        long[] wait = Clocks.waitBegins(ms * MS);
+        Clocks.timedOut(wait);
+        Clocks.waited(wait);
+        return wait[0] + ms * MS;
+    }
+
+    @Test
+    public void aFrontierNoThreadWaitsOnIsLiftedAfterAStall()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "200");
+        follow(time(ScheduleEvent.ORIGIN, 0L), time(ScheduleEvent.OPEN,
+                10_000L));
+        Clocks.nanos();
+        long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
+                .get(0));
         openWindow();
         ScheduleLog.enforceForTests(Collections.singletonList(
                 event("x", 10_050L)));
@@ -158,6 +225,61 @@ public class ClocksTest {
         Thread.sleep(100L);
         assertTrue("a frontier no thread waits on: time runs past it",
                 Clocks.nanos() > first + 10_100L * MS);
+    }
+
+    /**
+     * ScheduleLog owns the cap: an opening publishes the order's at once,
+     * whatever the open window let in first, and none for an order that
+     * holds no event.
+     */
+    @Test
+    public void theOpeningPublishesTheOrdersCapAtOnce() throws Exception {
+        follow(time(ScheduleEvent.ORIGIN, 0L), time(ScheduleEvent.OPEN,
+                100L));
+        Clocks.nanos();
+        long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
+                .get(0));
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node, NODE);
+        request = RuntimeTraceContext.beginRequest(node, "clocks-test");
+        ScheduleLog.enforceForTests(Arrays.asList(event("x", 150L),
+                event("y", 2000L)));
+        RecordingWindow.open();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        ScheduleLog.windowOpened();
+        Thread.sleep(150L);
+        long read = Clocks.nanos();
+        assertTrue("from the slot reached toward the frontier's instant, not"
+                + " held at the opening's", read >= first + 250L * MS
+                && read < first + 2000L * MS);
+        freshRun();
+
+        follow(time(ScheduleEvent.ORIGIN, 0L), time(ScheduleEvent.OPEN,
+                100L));
+        Clocks.nanos();
+        first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN).get(0));
+        openWindow();
+        Thread.sleep(150L);
+        assertTrue("an order with no event caps nothing",
+                Clocks.nanos() > first + 200L * MS);
+    }
+
+    @Test
+    public void anOrderStatingNoOriginLeavesTheHostsClocks() throws Exception {
+        follow(startup("register", "dn0", 50L));
+        long before = System.nanoTime();
+        long read = Clocks.nanos();
+        assertTrue("the host's clock", before <= read
+                && read <= System.nanoTime());
+        JsonObject preContract = RowCodec.writeScheduleEvent(event("x", 1L));
+        preContract.remove("ns");
+        try {
+            RowCodec.readScheduleEvent(preContract);
+            assertTrue("a row with no clock stamp is refused", false);
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .startsWith(RowCodec.PRE_CLOCK_CONTRACT));
+        }
     }
 
     /** A read at a cap: never past it. */

@@ -35,30 +35,33 @@ REGION.084d06ab stands on `Anchor:3093ec49939a753e@HADOOP_IPC/test` with index `
 its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, the time-model class); bug1, 17897,
 17960 PASS; 11741 confirmed CLOCK_SKEW, its key id the open binding of §4. r3 is never touched again.
 
-### 3. The time model (the start-up/clock family: 01 17 21 22 23 35 43, + 52; 25 34 regression canaries)
-- On `hdfs-time-model` (review, then merge; PIPELINE §5 "application clocks", STATUS row "A replay's application
-  time follows its order"): every application clock read goes through `Clocks`, every schedule row and STARTUP mark
-  is stamped, a replay reads its order's timeline (`max(last, min(hi, lo + elapsed))`), a CLOCK root's skew sits on
-  top of it (`RootMintRow#baseReading`). Seed give-up lines, model (rounds TM8-TM13, `gc-out/hdfs-time-model/probe/
-  runs.txt`) against no model (SL2, D2B; HG8F under load): 25 0-2 / 8, 87; 34 0 / 6, 91; 35 0 / 81, 85; 23 37-38 /
-  83, 86; 22 0-43 / 66, 32-85; 01 30-61 / 84, 85; 52 4 and 72 / 72, 84; 43 96 / 88, 90; 21 12-138 / 81, 89; 17 18-122
-  / 85, 87. Where the clock decided (25 34 35, 22 on TM13, 52's extra heartbeat) the give-ups are gone; the rest vary run to
-  run and are not the clock.
-- Left, not the clock, by first divergence: an IPC handler's `CallQueueManager.take` racing another (21, 52, 34 on
-  TM12, 17 after its NameNode restart; the lock turn below); a DataNode's IBR wait woken where the recording's was
-  not (`waitTillNextIBR` "unrecorded WAKE"), then NotReplicatedYet (22 23 01 43); client polling loops (01's 200
-  `getBlockLocations` slots, 22's `getDatanodeReport`/`create`).
-- Open, clock-shaped: in some recordings of 17 (TM10, TM12, TM13, not TM8 or TM13D) every DataNode's in-window turn
-  #1 finds its heartbeat not due though turn #0 ran before the window opened (no in-window #0 event) and time stood
-  at the last registration; the 3 s interval puts turn #1 within 7 ms of the recording's due time. Read the turn's
-  reads with a CLOCKDIAG-style probe of the actor thread from turn #0 through turn #1 (round TM13D's probe logged only
-  the first 40 reads).
+### 3. The time model (the clock family: 21 22 23 24 25 34 35 52; 01 17 43 swapped out by the owner 2026-10-05)
+- On `hdfs-time-model` (review fixes in, then merge; PIPELINE §5 "application clocks", STATUS row "A replay's
+  application time follows its order"): every application clock read goes through `Clocks`, every schedule event and
+  timeline mark is stamped, a replay reads its order's timeline (`max(last, min(hi, lo + elapsed))`), a CLOCK root's
+  skew sits on top of it (`RootMintRow#baseReading`). Seed give-up lines, model (rounds TM8-TM13,
+  `gc-out/hdfs-time-model/probe/runs.txt`) against no model (SL2, D2B; HG8F under load): 25 0-2 / 8, 87; 34 0 / 6,
+  91; 35 0 / 81, 85; 23 37-38 / 83, 86; 22 0-43 / 66, 32-85; 52 4 and 72 / 72, 84; 21 12-138 / 81, 89. Where the
+  clock decided (25 34 35, 22 on TM13, 52's extra heartbeat) the give-ups are gone.
+- Left, read by the BLOCKING slot each stall stood at (`probe/stalls.py`; the first open slot a stall sweeps is
+  often an idle handler's 1 s `CallQueueManager.take` poll, which blocks nothing): 21's stalls are the IPC Reader's
+  hand-off of a call renamed after one missing call (below) behind one DataNode heartbeat not sent; 52's start at
+  a late FSEditLogAsync claim (slot 1710), then the NameNode restart's FSImage and `Shell.runCommand` starts.
 - Fidelity: a soft WAKE taken late is stamped up to seconds past the next slot's instant (52: 2480 events past the
   next slot by more than 1 ms; LeaseRenewer, JvmPauseMonitor, GcTimeMonitor), since time runs on to the first
   blocking slot's instant; `/bigtemp/vnr3ne/gc-out/hdfs-time-model/probe/drift.py` measures it per run.
 - D2's lock turn (answered, not built): hold an adapter-named lock's entry (FSNamesystem's write lock) as a slot,
   keyed by the lock's location, like the store-write turn; build it when a case's first divergence is a lock race
-  (52's on r5 + the model is not).
+  (none is on r5 + the model).
+- Approved, waiting on this merge: a received message handed to a worker queue is named by the message (an IPC
+  server Reader's `internalQueueCall`, one Hadoop IPC hook; branch `hdfs-ipc-handoff-name`, Hadoop tree
+  `gc/hdfs-study-r6`): 14 of 21's 17 stalls are that hand-off renamed (round TM13). 52's late FSEditLogAsync claim
+  (slot 1710) stays open.
+- Clock polling at a cap is counted as computing by the watchdog's CPU look (21: 3.4M reads stood at a cap), so
+  such a stall waits for the ceiling, not a timeout.
+- The C1 lessons (keyed clock replay, parked branch `hdfs-clock-replay`, deleted at this merge): replaying
+  in-window reads alone mixes two timelines; keying pre-window reads by node|handoffs handed threads each other's
+  times.
 
 ### 4. hdfs-11741: the key id's binding across the wire
 The witness is confirmed CLOCK_SKEW and its allKeys reads are complete (PS3), but the SASL data-encryption key id

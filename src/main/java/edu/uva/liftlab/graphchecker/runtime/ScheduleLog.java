@@ -1272,11 +1272,13 @@ public final class ScheduleLog {
      * neither has its time.  Past the line, or with the cap lifted, nothing
      * caps it.
      */
-    private static void publishTimeLocked() {
-        if (!RecordingWindow.opened()) return;
+    private static boolean publishTimeLocked() {
+        if (!RecordingWindow.opened()) return false;
         int cap = lineStandsLocked() && !capLifted
                 && firstBlocking < order.size() ? firstBlocking : -1;
-        if (reachedSlot == publishedReached && cap == publishedCap) return;
+        if (reachedSlot == publishedReached && cap == publishedCap) {
+            return false;
+        }
         publishedReached = reachedSlot;
         publishedCap = cap;
         ScheduleEvent lo = reachedSlot < 0 ? null : order.get(reachedSlot);
@@ -1287,6 +1289,7 @@ public final class ScheduleLog {
                 hi == null ? Long.MAX_VALUE : hi.millis(),
                 hi == null ? null : "slot " + cap + " (" + hi.render()
                         + ")");
+        return true;
     }
 
     /**
@@ -1308,6 +1311,8 @@ public final class ScheduleLog {
                 long stood = now - lastProgress;
                 if (!stalledLocked(stood, now)) return;
                 capLifted = true;
+                // A lift is one only when it moved the clocks' cap.
+                if (!publishTimeLocked()) return;
                 Clocks.liftedUnwaited();
                 stateLocked("schedule-clock#" + firstBlocking, "the"
                         + " application's clocks stood " + stood + " ms at"
@@ -1315,7 +1320,6 @@ public final class ScheduleLog {
                         + order.get(firstBlocking).render() + "), which did"
                         + " not happen, with no thread waiting on the order:"
                         + " they run on past it until the order moves");
-                publishTimeLocked();
             }
         } finally {
             unmute();
@@ -1360,10 +1364,11 @@ public final class ScheduleLog {
 
     /** The workload closed its window: what the order still holds is let go. */
     static void windowClosed() {
-        Clocks.free();
         mute();
         try {
             synchronized (LOCK) {
+                // This class owns the clocks' cap: freed under its lock.
+                Clocks.free();
                 if (!holds) return;
                 int first = -1;
                 for (int index = firstOpen; index < state.length; index++) {
@@ -1788,11 +1793,26 @@ public final class ScheduleLog {
 
     /**
      * The workload opened its window: the application's clocks reach the
-     * order's opening ({@link Clocks#windowOpened}), and this run states its
-     * own ({@link ScheduleEvent#OPEN}), in both passes.
+     * order's opening ({@link Clocks#windowOpened}) and are capped by the
+     * order at once -- its frontier's instant, or nothing with no order
+     * installed -- under this class's lock, the one owner of the cap; and
+     * this run states its own opening ({@link ScheduleEvent#OPEN}), in both
+     * passes.  Whatever was published before (events the open window let in
+     * first, an earlier window) is published again.
      */
     static void windowOpened() {
-        Clocks.windowOpened(RecordingWindow.index());
+        mute();
+        try {
+            synchronized (LOCK) {
+                loadOrderLocked();
+                Clocks.windowOpened(RecordingWindow.index());
+                publishedReached = -2;
+                publishedCap = -2;
+                publishTimeLocked();
+            }
+        } finally {
+            unmute();
+        }
         writeMark(RowCodec.writeScheduleTime(ScheduleEvent.OPEN,
                 Clocks.stampNanos(), Clocks.stampMillis()));
     }

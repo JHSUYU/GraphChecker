@@ -55,19 +55,23 @@ import java.util.concurrent.atomic.LongAdder;
  * keyed replay mixed two, and handed threads sharing a key each other's
  * start-up times).</p>
  *
- * <p>A read never blocks: the cap holds time, never a thread.  A read that
- * finds a cap standing long enough asks for it to be lifted: before the
- * window, after the watchdog's ceiling of eight timeouts, never while a
- * startup taker is held, by name: time standing at a pass runs on toward
- * the next mark, and time standing at the next mark runs past it ({@link
- * #liftLocked}); inside, after a stall by the watchdog's test (a timeout
- * with nothing computing, or the ceiling, {@code ScheduleLog#stalledLocked})
- * and only when no thread waits on the order, whose watchdog otherwise
- * moves the frontier ({@code ScheduleLog#clockAtCap}).  A slow start-up
- * is no stall: lifted, its time would run ahead of the window's opening and
- * stand there while the order caught up (hdfs-11741, round TM1: lifted
- * after a timeout, the window opened 62 s of model time past its recorded
- * instant).  Lifts are counted at exit.</p>
+ * <p>A read never blocks: the cap holds time, never a thread.  Before the
+ * window, a timed wait that runs its time out past the cap time stands at,
+ * with no startup taker held, lifts the cap to its deadline and no further
+ * ({@link #waited}): at once at a mark time ran up to -- the start-up runs
+ * slower than its recording, and code that sleeps and then measures how
+ * long it slept needs that time to have passed (hdfs-11741, round TM13: no
+ * startup mark before the opening, time stood at it while a DataNode's
+ * heartbeat waits ran out and no heartbeat came due, two minutes in the
+ * seed and in every obligation replay; hdfs-adhoc-22/25 stood as long at
+ * their first registration) -- and at a startup pass this run made only
+ * once time stood there a schedule timeout, since what a node does once it
+ * joined the recording did at once (17's first heartbeats).  A held
+ * startup taker's own hold bounds that wait.  Inside the window a cap is
+ * lifted after a stall by the watchdog's test (a timeout with nothing
+ * computing, or the ceiling, {@code ScheduleLog#stalledLocked}) and only
+ * when no thread waits on the order, whose watchdog otherwise moves the
+ * frontier ({@code ScheduleLog#clockAtCap}).  Lifts are counted at exit.</p>
  */
 public final class Clocks {
     private static final Object LOCK = new Object();
@@ -75,6 +79,8 @@ public final class Clocks {
      *  on since its last timed wait ({@link #waited}). */
     private static final ThreadLocal<long[]> OWN_MILLIS =
             ThreadLocal.withInitial(() -> new long[] {Long.MIN_VALUE});
+    /** Nanoseconds in a millisecond. */
+    private static final long MILLI = TimeUnit.MILLISECONDS.toNanos(1L);
     /** What a cap allows past its instant: one millisecond tick. */
     static final long TICK_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
     /** One cap's ask for a lift at most this often. */
@@ -87,7 +93,10 @@ public final class Clocks {
      */
     private static final class Bounds {
         final long baseNanos;
-        final long baseMillis;
+        /** The millisecond clock's base, in nanoseconds of wall time: its
+         *  reading derives from it, so no move floors a fraction away and
+         *  {@code currentTimeMillis} never drifts behind {@code nanoTime}. */
+        final long baseWallNanos;
         final long hostAt;
         /** {@link Long#MAX_VALUE}: no cap. */
         final long hiNanos;
@@ -95,27 +104,36 @@ public final class Clocks {
         /** What the cap is, as a lift names it; null: no cap. */
         final String cap;
         final boolean inWindow;
+        /** Whether the cap is a startup pass this run made (time stands at
+         *  it by design), not a mark time ran up to. */
+        final boolean atPass;
         /** When a read first stood at the cap (host nanos), 0 before. */
         final AtomicLong reached = new AtomicLong();
 
-        Bounds(long baseNanos, long baseMillis, long hostAt, long hiNanos,
-               long hiMillis, String cap, boolean inWindow) {
+        Bounds(long baseNanos, long baseWallNanos, long hostAt, long hiNanos,
+               long hiMillis, String cap, boolean inWindow, boolean atPass) {
             this.baseNanos = baseNanos;
-            this.baseMillis = baseMillis;
+            this.baseWallNanos = baseWallNanos;
             this.hostAt = hostAt;
             this.hiNanos = hiNanos;
             this.hiMillis = hiMillis;
             this.cap = cap;
             this.inWindow = inWindow;
+            this.atPass = atPass;
         }
 
         long nanos(long host) {
             return Math.min(hiNanos, baseNanos + (host - hostAt));
         }
 
+        long wallNanos(long host) {
+            long ran = baseWallNanos + (host - hostAt);
+            return hiMillis == Long.MAX_VALUE ? ran
+                    : Math.min(hiMillis * MILLI, ran);
+        }
+
         long millis(long host) {
-            return Math.min(hiMillis, baseMillis
-                    + TimeUnit.NANOSECONDS.toMillis(host - hostAt));
+            return Math.floorDiv(wallNanos(host), MILLI);
         }
     }
 
@@ -150,15 +168,15 @@ public final class Clocks {
     private static final List<Mark> STARTUP = new ArrayList<Mark>();
     private static final Map<String, Mark> PASSES = new HashMap<String, Mark>();
     private static final List<Mark> OPENS = new ArrayList<Mark>();
-    /** Whether time standing at the latest pass reached was released
-     *  toward the next mark by a stall. */
-    private static boolean released;
     private static boolean windowSeen;
     /** When a read at a cap last asked for a lift (host nanos). */
     private static final AtomicLong ASKED = new AtomicLong();
     private static final LongAdder AT_CAP = new LongAdder();
     private static int liftsUnwaited;
-    private static int liftsStartup;
+    private static int liftsDeadline;
+    /** The caps a deadline lifted, each named once. */
+    private static final java.util.Set<String> LIFTED =
+            new java.util.HashSet<String>();
 
     private Clocks() {
     }
@@ -196,6 +214,7 @@ public final class Clocks {
         long ran = nanos ? at.nanos(host) : at.millis(host);
         if (ran >= (nanos ? at.hiNanos : at.hiMillis)) {
             AT_CAP.increment();
+            at.reached.compareAndSet(0L, host);
             if (asks) atCap(at, host);
         }
         long read = (nanos ? LAST_NANOS : LAST_MILLIS).accumulateAndGet(ran,
@@ -253,6 +272,13 @@ public final class Clocks {
     static void waited(long[] began) {
         Bounds at = bounds;
         if (began == null || at == null) return;
+        if (began[3] != 0L && at.cap != null && !at.inWindow
+                && began[2] > at.hiNanos - began[0]
+                && began[2] < Long.MAX_VALUE - began[0]
+                && (!at.atPass || stoodATimeout(at))
+                && !StartupOrder.holding()) {
+            at = liftedTo(began);
+        }
         long nanos = began[0] + 1L;
         long millis = Long.MIN_VALUE;
         if (began[3] != 0L && at.cap != null) {
@@ -266,76 +292,65 @@ public final class Clocks {
         own[0] = Math.max(own[0], began[1] + 1L);
     }
 
+    /** Whether time has stood at {@code at}'s cap one schedule timeout. */
+    private static boolean stoodATimeout(Bounds at) {
+        long since = at.reached.get();
+        return since != 0L && System.nanoTime() - since
+                >= TimeUnit.MILLISECONDS.toNanos(ScheduleLog.timeoutMillis());
+    }
+
     /** {@code from + by}, at most {@code cap}. */
     private static long upTo(long from, long by, long cap) {
         return by >= cap - from ? cap : from + by;
     }
 
     /**
-     * A read stood at the cap; at most once a second, a lift is asked for:
-     * inside the window of the order ({@code ScheduleLog#clockAtCap}),
-     * before it here, once the cap stood the watchdog's ceiling.
+     * A read stood at the cap: inside the window of the order, at most once
+     * a second, a lift is asked for ({@code ScheduleLog#clockAtCap}).
      */
     private static void atCap(Bounds at, long host) {
-        at.reached.compareAndSet(0L, host);
+        if (!at.inWindow) return;
         long asked = ASKED.get();
         if (asked != 0L && host - asked < ASK_NANOS
                 || !ASKED.compareAndSet(asked, host)) {
             return;
         }
-        if (at.inWindow) {
-            ScheduleLog.clockAtCap();
-            return;
-        }
-        long stood = host - at.reached.get();
-        // Before the window only the watchdog's ceiling lifts a cap: the
-        // replay's own start-up -- reading its plan over NFS, I/O no CPU
-        // look sees -- stood 38-70 s at hdfs-adhoc-22/23/25's first
-        // registration with "nothing computing", and lifted, time ran on
-        // to the opening and past it (round TM8: 22's window opened 10 s of
-        // model time late).  A held startup taker bounds its own wait (one
-        // timeout): the cap at its mark stands for it (17: six lifts, each
-        // beside a registration held out of the recorded order).
-        if (StartupOrder.holding() || stood < TimeUnit.MILLISECONDS.toNanos(
-                ScheduleLog.CEILING * ScheduleLog.timeoutMillis())) {
-            return;
-        }
-        String lifted;
-        synchronized (LOCK) {
-            lifted = bounds == at ? liftLocked() : null;
-        }
-        if (lifted != null) {
-            ScheduleLog.diverged("clock#" + lifted, "the application's"
-                    + " clocks stood " + TimeUnit.NANOSECONDS.toMillis(stood)
-                    + " ms at the instant of " + lifted + ", marked in the"
-                    + " order before the window: they run on past it toward"
-                    + " the next mark");
-        }
+        ScheduleLog.clockAtCap();
     }
 
     /**
-     * A startup cap is lifted: time standing at a pass runs on toward the
-     * next mark; time standing at the next mark runs past it, the mark
-     * counted as reached, on toward the one after.  Returns what it stood
-     * at.
+     * Before the window, the timed wait {@code began} ran its time out past
+     * the cap time stood at: the cap moves to its deadline, no further,
+     * time standing where it stood until then.  Returns where time is
+     * bounded now.
      */
-    private static String liftLocked() {
-        Mark at = null;
-        Mark next = null;
-        for (Mark mark : STARTUP) {
-            if (!mark.reached) {
-                next = mark;
-                break;
+    private static Bounds liftedTo(long[] began) {
+        long nanos = began[0] + began[2];
+        long millis = began[1] + TimeUnit.NANOSECONDS.toMillis(began[2]);
+        String stood;
+        boolean first;
+        Bounds now;
+        synchronized (LOCK) {
+            now = bounds;
+            if (now == null || now.inWindow || now.cap == null
+                    || now.hiNanos >= nanos) {
+                return now;
             }
-            at = mark;
+            stood = now.cap;
+            moveLocked(now.hiNanos, now.hiMillis, nanos, millis,
+                    "a timed wait's deadline past " + stood, false, false);
+            liftsDeadline++;
+            first = LIFTED.add(stood);
+            now = bounds;
         }
-        Mark lifted = at != null && !released ? at : next;
-        if (lifted == null) return null;
-        lifted.reached = true;
-        released = true;
-        liftsStartup++;
-        publishStartupLocked();
-        return lifted.name;
+        if (first) {
+            ScheduleLog.diverged("clock#" + stood, "before the window the"
+                    + " application's clocks stood at " + stood + " while "
+                    + Thread.currentThread().getName() + "'s timed wait of "
+                    + TimeUnit.NANOSECONDS.toMillis(began[2]) + " ms ran out"
+                    + " past it: time runs on to each such wait's deadline");
+        }
+        return now;
     }
 
     // ---- the replay's place, as the order moves it ------------------------
@@ -365,8 +380,8 @@ public final class Clocks {
                 shiftNanos = host - RowCodec.scheduleNanos(origin);
                 shiftMillis = wall - RowCodec.scheduleMillis(origin);
                 load(marks);
-                bounds = new Bounds(host, wall, host, Long.MAX_VALUE,
-                        Long.MAX_VALUE, null, false);
+                bounds = new Bounds(host, wall * MILLI, host, Long.MAX_VALUE,
+                        Long.MAX_VALUE, null, false, false);
                 publishStartupLocked();
                 Runtime.getRuntime().addShutdownHook(new Thread(
                         () -> EngineConsole.println("Causynth clocks: "
@@ -421,14 +436,13 @@ public final class Clocks {
                 return;
             }
             mark.reached = true;
-            released = false;
             publishStartupLocked();
         }
     }
 
     /**
      * Before the window: from the origin up to the first mark, then
-     * standing at the latest pass reached (until released, then up to the
+     * standing at the latest pass reached (until the next pass or the
      * next mark), each cap exactly at its instant.
      */
     private static void publishStartupLocked() {
@@ -445,17 +459,20 @@ public final class Clocks {
         // it read after the pass (hdfs-adhoc-17, round TM6: one tick past
         // its pass, a DataNode set its next heartbeat 0.4 ms past the
         // recording's, and its turn #1 found it not due).
-        Mark cap = at != null && !released ? at : next;
+        Mark cap = at != null ? at : next;
         moveLocked(at == null ? Long.MIN_VALUE : at.nanos,
                 at == null ? Long.MIN_VALUE : at.millis,
                 cap == null ? Long.MAX_VALUE : cap.nanos,
                 cap == null ? Long.MAX_VALUE : cap.millis,
-                cap == null ? null : cap.name, false);
+                cap == null ? null : cap.name, false, cap != null && cap == at);
     }
 
     /**
      * The workload opened its window (its {@code index}-th): time reaches
-     * the order's opening of it, and the order holds it from here.
+     * the order's opening of it, standing there; the order caps it at once
+     * after ({@code ScheduleLog#windowOpened}, under its lock, which owns
+     * the cap: an order read after the opening let time run 2-12 s free,
+     * round TM3).
      */
     static void windowOpened(int index) {
         if (!started) start();
@@ -464,22 +481,11 @@ public final class Clocks {
             if (bounds == null) return;
             Mark open = index >= 1 && index <= OPENS.size()
                     ? OPENS.get(index - 1) : null;
-            // Until the order caps time, it stands at the opening: reading
-            // the order takes the concolic VM seconds (round TM3: 2-12 s of
-            // hdfs-adhoc-43/52's model time ran free while it did).  The
-            // order may have capped it already, from another thread that met
-            // the open window first: its cap stands (round TM2, 17: time
-            // ran three seconds free, then stood there).
-            Bounds now = bounds;
-            boolean capped = now.inWindow && now.cap != null;
             moveLocked(open == null ? Long.MIN_VALUE : open.nanos,
                     open == null ? Long.MIN_VALUE : open.millis,
-                    capped ? now.hiNanos : open == null ? Long.MAX_VALUE
-                            : open.nanos + TICK_NANOS,
-                    capped ? now.hiMillis : open == null ? Long.MAX_VALUE
-                            : open.millis + 1L,
-                    capped ? now.cap : open == null ? null : open.name,
-                    true);
+                    open == null ? Long.MAX_VALUE : open.nanos + TICK_NANOS,
+                    open == null ? Long.MAX_VALUE : open.millis + 1L,
+                    open == null ? null : open.name, true, false);
         }
     }
 
@@ -495,7 +501,8 @@ public final class Clocks {
             moveLocked(shifted(loNanos, shiftNanos),
                     shifted(loMillis, shiftMillis),
                     ticked(shifted(hiNanos, shiftNanos), TICK_NANOS),
-                    ticked(shifted(hiMillis, shiftMillis), 1L), cap, true);
+                    ticked(shifted(hiMillis, shiftMillis), 1L), cap, true,
+                    false);
         }
     }
 
@@ -504,7 +511,7 @@ public final class Clocks {
         synchronized (LOCK) {
             if (bounds == null) return;
             moveLocked(Long.MIN_VALUE, Long.MIN_VALUE, Long.MAX_VALUE,
-                    Long.MAX_VALUE, null, true);
+                    Long.MAX_VALUE, null, true, false);
         }
     }
 
@@ -532,12 +539,13 @@ public final class Clocks {
      */
     private static void moveLocked(long loNanos, long loMillis, long hiNanos,
                                    long hiMillis, String cap,
-                                   boolean inWindow) {
+                                   boolean inWindow, boolean atPass) {
         Bounds now = bounds;
         long host = System.nanoTime();
         bounds = new Bounds(Math.max(loNanos, now.nanos(host)),
-                Math.max(loMillis, now.millis(host)), host, hiNanos,
-                hiMillis, cap, inWindow);
+                Math.max(loMillis == Long.MIN_VALUE ? Long.MIN_VALUE
+                        : loMillis * MILLI, now.wallNanos(host)), host, hiNanos,
+                hiMillis, cap, inWindow, atPass);
     }
 
     /** The replay's account of its clocks, at exit. */
@@ -549,9 +557,10 @@ public final class Clocks {
                     : TimeUnit.NANOSECONDS.toMillis(host - at.nanos(host));
             return "the application read its order's timeline; "
                     + AT_CAP.sum() + " read(s) stood at a cap, "
-                    + (liftsUnwaited + liftsStartup) + " cap(s) lifted ("
+                    + (liftsUnwaited + liftsDeadline) + " cap(s) lifted ("
                     + liftsUnwaited + " with no thread waiting on the order, "
-                    + liftsStartup + " at a startup mark); at exit it ran "
+                    + liftsDeadline + " to a timed wait's deadline before the"
+                    + " window); at exit it ran "
                     + behind + " ms behind the host";
         }
     }
@@ -568,13 +577,13 @@ public final class Clocks {
             STARTUP.clear();
             PASSES.clear();
             OPENS.clear();
-            released = false;
+            LIFTED.clear();
             windowSeen = false;
             AT_CAP.reset();
             ASKED.set(0L);
             OWN_MILLIS.remove();
             liftsUnwaited = 0;
-            liftsStartup = 0;
+            liftsDeadline = 0;
         }
     }
 }

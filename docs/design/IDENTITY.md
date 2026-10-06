@@ -697,9 +697,11 @@ order:
   (`Confirmation#submitter`), up the chain while that send is claimed work too;
 - the order's place is the application's time (`runtime/Clocks`, PIPELINE.md §5): the instant of the
   furthest slot settled at or before the frontier is reached, the frontier's own, plus one millisecond
-  tick, is the cap while the line stands (`ScheduleLog#publishTimeLocked`); a frontier that stood a timeout with no thread waiting
-  on the order -- so no watchdog moves it -- lets the clocks run past it until it moves
-  (`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`);
+  tick, is the cap while the line stands (`ScheduleLog#publishTimeLocked`, under the schedule's lock, which owns the
+  cap from the window's opening to its close); a frontier that stood a stall by the watchdog's own test (a
+  timeout with nothing computing, or the ceiling, `ScheduleLog#stalledLocked`) with no thread waiting on the
+  order -- so no watchdog moves it -- lets the clocks run past it until it moves (`schedule-clock#<slot>`,
+  `ScheduleLog#clockAtCap`);
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.

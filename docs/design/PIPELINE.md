@@ -248,9 +248,10 @@ occurrence ran).
 and everything that reads through it -- `Timer`, `StopWatch`, `BPServiceActor.Scheduler`,
 `SocketIOWithTimeout` -- reads the application's clock). The JDK's own reads, a library jar's, an unwoven
 test class's direct read and the engine's (the watchdog, a timed wait's deadline, `StartupOrder`'s hold)
-stay the host's. A recording reads the host and stamps every schedule row with what the application's
-clocks read there (`ns`, `ms`): its first read (`ORIGIN`), each event, each startup pass, the window's
-opening (`OPEN`). A replay reads its order's timeline, moved to start at its own first read:
+stay the host's. A recording reads the host and stamps with what the application's clocks read there
+(`ns`, `ms`) its first read (`ORIGIN`), each schedule event, each startup pass and the window's opening
+(`OPEN`); occurrence, `WITNESS` and `INVOCATION` marks carry no stamp. A schedule row with no stamp is
+refused by name (`RowCodec#PRE_CLOCK_CONTRACT`: a corpus recorded before stamps is re-recorded). A replay reads its order's timeline, moved to start at its own first read:
 `v = max(last, min(hi, lo + host time since lo moved))`. `lo` is the stamp of the furthest point the
 replay has reached -- its origin, each startup pass it completed (`StartupOrder#done`), its window's
 opening (`ScheduleLog#windowOpened`), each slot settled at or before the order's frontier
@@ -278,21 +279,28 @@ milliseconds (time creeping on for every reader ran hdfs-adhoc-17's start-up 29 
 registration, round TM5); the millisecond step the waiter's alone, from where every thread's stood, or
 every sleep would carry everyone's a millisecond on. So a slower replay waits at the cap where its
 recording's heartbeat was not yet due, a turn its slot released early reads at least its slot's instant,
-and no read goes back. The window's opening moves `lo` to the order's opening and holds time there until
-the order publishes its cap (reading the order takes the concolic VM seconds: round TM3 ran 2-12 s of
-model time free while it did), or keeps a cap the order already published (another thread may meet the
-open window first and load the order). No read is keyed or written. A read never blocks;
-a cap that stood long enough is lifted by name (`SCHEDULE_DIVERGED`): before the window by the clock
-itself after the watchdog's ceiling of eight timeouts (`clock#<mark>`: time standing at a pass runs on
-toward the next mark, time at the next mark past it), never while a startup taker is held
-(`StartupOrder#holding`: its hold, at most one timeout, bounds that wait; round TM8: 17's six lifts each
-stood beside a registration held out of the recorded order) -- the replay's own start-up, reading its
-plan over NFS, is I/O no CPU look sees, and lifted on a timeout with "nothing computing" round TM8 ran
-22's window 10 s of model time late; inside it after a stall by the watchdog's own test (a timeout with
-nothing computing, or the ceiling: `ScheduleLog#stalledLocked`) and only when no thread waits on the
-order (`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier.
-A slow start-up computing past its cap is no stall: lifted after a bare timeout, hdfs-11741's opened its
-window 62 s of model time past the recorded opening, and its window's time stood there (round TM1). The
+and no read goes back. The window's opening moves `lo` to the order's opening, and the order publishes
+its cap at once, under the schedule's lock, which owns the cap (`ScheduleLog#windowOpened`: the order is read
+there, round TM3 ran 2-12 s of model time free while a replay read it after the opening): its frontier's
+instant, or none for an order that holds no event, whatever the open window let in first; the window's
+close frees the clocks under the same lock. No read is keyed or written. A read never blocks; a cap is
+lifted by name (`SCHEDULE_DIVERGED`). Before the window a timed wait that ran its time out past the cap
+time stands at lifts it to its deadline and no further (`clock#<mark>`, `Clocks#waited`), never while a
+startup taker is held (`StartupOrder#holding`: its hold, at most one timeout, bounds that wait): at once
+at a mark time ran up to -- the start-up runs slower than its recording, and code that sleeps and then
+measures how long it slept needs the time to have passed (round TM13: hdfs-11741 has no startup mark
+before its opening, and the seed and every obligation replay stood two minutes there while a DataNode's
+heartbeat waits ran out and no heartbeat came due, until the old ceiling of eight timeouts lifted it;
+hdfs-adhoc-22/25 stood as long at their first registration) -- and at a startup pass this run made only
+once time stood there a schedule timeout, since what a node does once it joined the recording did at
+once (17's first heartbeats). The price is named: such a start-up ends later in model time than its
+recording's, and inside the window time stands at that later instant until the order's stamps pass it
+(round TM1: lifted after a bare timeout, hdfs-11741's window opened 62 s of model time late). Inside the
+window a cap is lifted after a stall by the watchdog's own test (a timeout with nothing computing, or the
+ceiling: `ScheduleLog#stalledLocked`) and only when no thread waits on the order
+(`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier; a lift
+counts only when it moved the published cap. The millisecond clock derives from a nanosecond wall base,
+so no move floors a fraction off it. The
 replay log's exit line `Causynth clocks: ...` counts the reads that stood at a cap and the lifts.
 
 A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put

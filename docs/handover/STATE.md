@@ -49,7 +49,6 @@ when the owner asks.
 | `hdfs-bound-scope` | this row's commit | `/bigtemp/vnr3ne/wt/gc-hdfs-bound-scope` | A4: `result.json` `bounded` names each declared bound that cut the search (`campaign_bounds`), shown by report.py, triage.py, round-verify.sh. Next on it: the symbolic-scope batch 2 design. |
 | `hdfs-time-model` | (A2, coding) | `/bigtemp/vnr3ne/wt/gc-hdfs-time-model` | Design approved 2026-10-05: application clock reads in a replay follow the recording's timeline re-anchored at every move of the order (v = max(last, min(hi, lo + elapsed))), a CLOCK root's skew on top, no keyed reads. Probes of 01 17 21 22 23 25 34 35 43 52, then a review agent. |
 | `hdfs-draw-sites2` | `2d84363cd` | `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites` | HG6, merged (825f190a7) via hdfs-address-shared; its later commits only merge system/hdfs into it. Deletable. |
-| `hdfs-clock-replay` | `22520bf02` | none | C1 (keyed clock replay), parked; its commit message holds the C1 findings the time model starts from. |
 | `hdfs-construction-only-values` | `ca50b8319` | | parked since 10-04 (needs an 11741 chain check). |
 | `main` | `fe3a5f1a0` | `~/GraphChecker` | the 2026-10-03 handover body (V25 14/14). `system/solr`, `system/hbase`, `system/zookeeper` = `main`. |
 | `solr-bug-reindex` | `12283e3f1` | `.claude/worktrees/agent-a6cdfa854234df67e` | Solr #04 + Solr replay fidelity; SBR26 13/14 (solr-18413 regressed). Parked for the Solr turn. |
