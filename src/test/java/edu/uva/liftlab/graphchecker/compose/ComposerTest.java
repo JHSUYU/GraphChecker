@@ -755,34 +755,52 @@ public class ComposerTest {
     }
 
     /**
-     * A model CONFIRM refuted is excluded from every later composition of
-     * the iteration ({@code refuted_claims.jsonl}): the claim over it is
-     * another model, or none.  One whose path the corpus no longer
-     * composes states nothing.
+     * A model CONFIRM refuted ({@code refuted_claims.jsonl}) or gave no
+     * verdict on ({@code refused_models.jsonl}) is excluded from every later
+     * composition of the iteration, its arms matched by their digests at
+     * whatever path ordinal the claim spelled them ({@code
+     * Refutations#atPath}): the claim over it is another model, or none.
+     * One whose path the corpus no longer composes states nothing.  An UNSAT
+     * resting on a refused model is no verdict: no run decided it.
      */
     @Test
-    public void aRefutedModelIsNoModelOfTheNextComposition()
+    public void anExcludedModelIsNoModelOfTheNextComposition()
             throws Exception {
-        Path iteration = folder.newFolder("refuted").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
-                at("export#1", 0), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
-                at("attach#1", 0), 0);
-        session(iteration, "s0", false, "false", producer, consumer,
-                "vh", "false", null, true, false, "EXPR.v1.marker");
-        session(iteration, "s1", true, "true", producer, consumer,
-                "vh", "true", null, true, true, "EXPR.v1.marker");
-        ClaimPolicy.Decision first = ClaimPolicy.decide(
-                compose(iteration, 8), solver());
-        assertEquals(ClaimKind.MARKER_FLIPPED, first.claim().kind());
-        ClaimPolicy.Outcome claimed = first.outcomes().get(
-                first.claim().valuationOrdinal());
-        for (String path : new String[]{"elsewhere",
-                claimed.selected().path().pathId}) {
+        // the file, the path the model names, the arms' path ordinal moved
+        Object[][] table = {
+                {"refuted_claims.jsonl", "elsewhere", false},
+                {"refuted_claims.jsonl", "claimed", false},
+                {"refused_models.jsonl", "elsewhere", false},
+                {"refused_models.jsonl", "claimed", true},
+        };
+        for (Object[] row : table) {
+            String file = (String) row[0];
+            boolean refused = file.startsWith("refused");
+            Path iteration = folder.newFolder("excluded-" + file + "-"
+                    + row[1] + "-" + row[2]).toPath();
+            Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                    at("export#1", 0), 0);
+            Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                    at("attach#1", 0), 0);
+            session(iteration, "s0", false, "false", producer, consumer,
+                    "vh", "false", null, true, false, "EXPR.v1.marker");
+            session(iteration, "s1", true, "true", producer, consumer,
+                    "vh", "true", null, true, true, "EXPR.v1.marker");
+            ClaimPolicy.Decision first = ClaimPolicy.decide(
+                    compose(iteration, 8), solver());
+            assertEquals(ClaimKind.MARKER_FLIPPED, first.claim().kind());
+            ClaimPolicy.Outcome claimed = first.outcomes().get(
+                    first.claim().valuationOrdinal());
+            boolean excluded = "claimed".equals(row[1]);
             JsonObject model = new JsonObject();
-            model.addProperty("pathId", path);
+            model.addProperty("pathId", excluded
+                    ? claimed.selected().path().pathId : "elsewhere");
             JsonArray arms = new JsonArray();
-            for (String arm : claimed.selectedArms().keySet()) arms.add(arm);
+            for (String arm : claimed.selectedArms().keySet()) {
+                arms.add((Boolean) row[2]
+                        ? Refutations.atPath(arm, "41") : arm);
+            }
+            assertTrue("the claim chose arms", arms.size() > 0);
             model.add("arms", arms);
             JsonObject assignment = new JsonObject();
             for (Map.Entry<String, String> root
@@ -790,27 +808,110 @@ public class ComposerTest {
                 assignment.addProperty(root.getKey(), root.getValue());
             }
             model.add("assignment", assignment);
-            JsonObject row = new JsonObject();
-            row.add("model", model);
-            row.addProperty("reason", "the run published no target row");
-            RowCodec.writeJsonl(iteration.resolve("refuted_claims.jsonl"),
-                    Collections.singletonList(row));
-            boolean refuted = !"elsewhere".equals(path);
+            JsonObject excludedRow = new JsonObject();
+            excludedRow.add("model", model);
+            excludedRow.addProperty("reason",
+                    "the run published no target row");
+            RowCodec.writeJsonl(iteration.resolve(file),
+                    Collections.singletonList(excludedRow));
+            String detail = Arrays.toString(row);
             Composer.Composition next = compose(iteration, 8);
-            assertEquals(path, refuted,
-                    next.body().contains("refuted_claim__0"));
-            assertEquals(path, refuted,
-                    named(next.gaps(), GapKind.CLAIM_REFUTED));
+            String name = (refused ? "refused" : "refuted") + "_claim__0";
+            assertEquals(detail, excluded, next.body().contains(name));
+            assertEquals(detail, excluded, named(next.gaps(), refused
+                    ? GapKind.CLAIM_REFUSED : GapKind.CLAIM_REFUTED));
             ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
-            assertEquals(path, refuted ? ClaimKind.NO_SUPPORTED_WITNESS
-                            : ClaimKind.MARKER_FLIPPED,
-                    again.claim().kind());
-            // A refuted model is no part of the run itself: a path it
+            assertEquals(detail, excluded ? ClaimKind.NO_SUPPORTED_WITNESS
+                    : ClaimKind.MARKER_FLIPPED, again.claim().kind());
+            // An excluded model is no part of the run itself: a path it
             // excludes does not contradict its own run, and the UNSAT names
-            // what it rests on.
-            assertFalse(path + ": " + again.claim().gaps(),
+            // what it rests on -- no verdict where that was never run.
+            assertFalse(detail + ": " + again.claim().gaps(),
                     named(again.claim().gaps(),
                             GapKind.PATH_SELF_CONTRADICTORY));
+            if (!excluded) continue;
+            JsonObject claim = ComposeMain.campaignClaim(next, again);
+            assertEquals(detail + ": " + claim, refused ? "RUN_DEFECT"
+                    : "UNSAT_CLOSED", claim.get("claim").getAsString());
+            assertEquals(detail, name, claim.getAsJsonArray(
+                    "restsOnRefutations").get(0).getAsJsonObject()
+                    .get("name").getAsString());
+            if (!refused) continue;
+            // And where no core run says what the UNSAT rests on, it may
+            // rest on the refused model: no verdict either.
+            Composer.Composition coreless = compose(iteration, 8);
+            JsonObject unknown = ComposeMain.campaignClaim(coreless,
+                    ClaimPolicy.decide(coreless, corelessSolver()));
+            assertEquals(detail + ": " + unknown, "RUN_DEFECT",
+                    unknown.get("claim").getAsString());
+        }
+    }
+
+    /** A z3 whose every core run answers unknown, and every other run as
+     *  z3 does. */
+    private Z3 corelessSolver() throws IOException {
+        Path script = folder.newFile("z3-coreless.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case \"$input\" in",
+                "  *get-unsat-core*) echo unknown ;;",
+                "  *) printf '%s' \"$input\" | exec " + z3() + " \"$@\" ;;",
+                "esac"));
+        assertTrue("the fixture solver is executable",
+                script.toFile().setExecutable(true));
+        solver();
+        return new Z3(script, 30000L);
+    }
+
+    /**
+     * WITHIN A RANK, ITS OWN RUN FIRST: of the moved-root witnesses, one
+     * whose selected session already ran the model -- observed the fatal on
+     * the selected path, took only its own pairings, ran the moved root at
+     * the model's value (explore.Moved#ranBy, the test CONFIRM's
+     * realizedBy confirms it by) -- is claimed before an earlier
+     * valuation's that only the composition joins (hdfs-adhoc-10 SL1: a
+     * fault first in the root order claimed through a re-paired arm, the
+     * SYNC fault its own session had run thirteen valuations behind).  With
+     * no such witness, the valuations' order stands.
+     */
+    @Test
+    public void aWitnessItsOwnSessionRanIsClaimedFirst() throws Exception {
+        String other = "marker_o";
+        String otherRoot = "ROOT.OTHER";
+        // its own session observed the fatal? -> the root the claim moves
+        Object[][] table = {{true, MARKER_ROOT}, {false, otherRoot}};
+        for (Object[] row : table) {
+            boolean observed = (Boolean) row[0];
+            Path iteration = folder.newFolder("own-run-" + observed)
+                    .toPath();
+            for (boolean explored : new boolean[]{false, true}) {
+                Session session = new Session(iteration,
+                        explored ? "s1" : "s0", explored);
+                // The other fault first: the first single move.
+                session.roots.add(RootMintRow.of(session.id, ++session.seq,
+                        PRODUCER, otherRoot, other, RootKind.MARKER,
+                        RootCategory.FAULT, "false", null, null, true, null,
+                        0L));
+                session.marker(explored ? "true" : "false");
+                // The recording's path reaches the fatal with the other
+                // fault; the explored one's, which ran the marker, with it.
+                session.target(explored ? MARKER : other,
+                        explored && observed, true);
+                session.write();
+            }
+            obligation(iteration, "s1",
+                    Collections.singletonMap(MARKER_ROOT, "true"));
+            Composer.Composition composition = compose(iteration, 8);
+            String detail = Arrays.toString(row) + ": "
+                    + composition.valuations();
+            assertEquals(detail, Collections.singleton(otherRoot),
+                    composition.valuations().get(1).moved().keySet());
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(detail + " " + decision.claim().gaps(),
+                    ClaimKind.MARKER_FLIPPED, decision.claim().kind());
+            assertEquals(detail, Collections.singleton(row[1]),
+                    decision.claim().movedRoots().keySet());
         }
     }
 
@@ -2117,7 +2218,8 @@ public class ComposerTest {
      * link the recording's own readings run against gives way by that much;
      * a cell the seed never read is placed at the seed's reading of a cell
      * its session also read, plus the time its host read between the two;
-     * one no session can place is BLOCKING.
+     * one no session can place refuses the paths that name it, by name, and
+     * every other path composes.
      */
     @Test
     public void aNodesClockIsOneOrderOnTheRecordingsTimeline()
@@ -2164,9 +2266,17 @@ public class ComposerTest {
         lone.target("true", false, true);
         lone.write();
         Composer.Composition unplaced = compose(iteration, 4);
-        assertTrue("a cell no session can place on the recording's timeline "
-                        + "is refused by name: " + unplaced.gaps(),
-                blocking(unplaced.gaps(), "ROOT.LONE"));
+        assertEquals("a cell no session can place on the recording's "
+                        + "timeline refuses the path that names it, by "
+                        + "name, and no other: " + unplaced.refusedPaths(),
+                "1 s2 DECLARATION_MISSING ROOT.LONE",
+                unplaced.refusedPaths().size() + " "
+                        + unplaced.refusedPaths().get(0).get("sessionId")
+                        .getAsString() + " " + unplaced.refusedPaths()
+                        .get(0).get("reason").getAsString().split(":")[0]);
+        assertEquals(2, unplaced.disjuncts().size());
+        assertFalse("nothing withholds the claim: " + unplaced.gaps(),
+                blocking(unplaced.gaps()));
         assertFalse(unplaced.clockCells().contains("clk_lone"));
     }
 

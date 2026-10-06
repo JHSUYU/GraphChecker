@@ -37,6 +37,42 @@ public class Z3Test {
     }
 
     /**
+     * An unsat answer's core is known only where its own run said unsat: a
+     * core run that timed out or answered unknown names no core, which is
+     * not the empty one (an UNSAT that may rest on an excluded model would
+     * read as resting on none).  {what the core run does, known, core}.
+     */
+    @Test
+    public void aCoreIsKnownOnlyWhereItsRunSaidUnsat() throws IOException {
+        Object[][] rows = {
+                {"printf 'unsat\\n(refused_claim__0 valuation__m)\\n'", true,
+                        Arrays.asList("refused_claim__0", "valuation__m")},
+                {"exec sleep 60", false, Collections.<String>emptyList()},
+                {"echo unknown", false, Collections.<String>emptyList()},
+        };
+        for (Object[] row : rows) {
+            Path script = folder.newFile("z3-core-" + row[1] + "-"
+                    + Math.abs(row[0].hashCode())).toPath();
+            Files.write(script, Arrays.asList("#!/bin/bash",
+                    "input=$(cat)",
+                    "case \"$input\" in",
+                    "  *get-unsat-core*) " + row[0] + " ;;",
+                    "  *) echo unsat ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(script.toFile().setExecutable(true));
+            Z3.Answer answer = new Z3(script, 1000L).ask(
+                    "(declare-const m Bool)\n(assert m)\n",
+                    Collections.<String>emptyList(), true);
+            assertTrue(row[0] + ": " + answer, answer.unsat());
+            assertEquals(row[0] + ": " + answer, row[1], answer.coreKnown());
+            assertEquals(row[0] + ": " + answer, row[2], answer.core());
+            assertEquals("a disjunction of it knows its core as it does",
+                    row[1], Z3.Answer.unsatOfAll(Arrays.asList(answer,
+                            answer)).coreKnown());
+        }
+    }
+
+    /**
      * A z3 whose every run reads the arithmetic engine its query states and
      * acts as the query's {@code ; on<engine> <act>} comment says: answer
      * {@code sat} (its model naming the engine), {@code unknown}, answer

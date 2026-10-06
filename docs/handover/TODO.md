@@ -78,9 +78,10 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
   re-asked arms (07: 203 arms asked ~7.8 times under different dependence digests; 47 of 189 changed verdict) and its
   1 GB `slots.jsonl` rewritten every round before changing anything.
 - **24 26 37** (budget-cut in HG5A), **33** (FREEZE fixed), **50** (array identity fixed): rerun.
-- The owner's bound rule (RULES): a declared bound may stop exploration only as a named, rare last resort. Mark an
-  end at the declared bound (REGION_PATH_WAVE_BUDGET_REACHED) visibly in result.json (`bounded: {by, detail}`),
-  report.py and triage.py; count such cases every round.
+- The owner's bound rule (RULES): every BOUNDED case of a round (`round-verify.sh`'s count, `result.json` `bounded`)
+  is read: a large closure gets the cluster and a longer budget, a redundant one is an engine defect. HG8F/HG8W: 05,
+  06, 08, 09 and 11741 read only `region_path_max_paths_per_region` (32) recorded paths of some tasks (17-194 task
+  rounds each).
 - Scope batch 2 (the owner's top priority "让更多的都可翻转"): 29/30 recoveryId (a SCOPE boundary for system callees
   out of scope; growth spends on demanded rows; follow receivers built by calls); 17 the lease grant state; 15/39 a
   turn for tracked-write ordering (complete vs IBR); 07 an export capture where the QJM client sets the segment it
@@ -207,3 +208,12 @@ codec hole (a value carried inside an opaque payload); then rebase it onto the b
 
 **VM performance.** The VM sends each expression node once per channel (STATUS open item 41). A plan budget should
 be derived from the seed's measured cost.
+
+**CONFIRM: a session "itself the run" may have planted more than the model moved** (claim-loop review, 2026-10-05).
+`explore.Moved#ranBy` -- `ConfirmMain#realizedBy` and COMPOSE's own-run rank both judge by it -- checks the model's
+moved roots at their values, its clocks and that the world planted no pairing, but not roots the session's world
+planted beyond the model's moved set (`rootAssignments` outside `movedRoots`): such a session ran another world, yet
+confirms the claim without a replay. The realized sessions seen so far plant exactly the moved root (SL1-4 hdfs-adhoc-10
+`2aa5e579a4a739bf-95b10301`, CL1 `b0e2952cbf454340-ca8612dd`: one assignment each). Strict: a planted root outside the
+model's moved set at a value other than its recorded one is no realization (a replay decides). Strictness of CONFIRM:
+a review agent reads the change.

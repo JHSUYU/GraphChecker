@@ -2,8 +2,10 @@
 """triage.py <round> [gc-out] : one row per case of a sweep (sweep.sh), from
 its summary and its final result: the case, the class of its outcome, the
 finding and moved roots, the confirmation, how many claims CONFIRM refuted on
-the way (result.json refutedClaims), the elapsed seconds, and where a campaign
-failed, the stage and reason.
+the way (result.json refutedClaims), the declared bounds that cut its search
+(result.json bounded: their configuration keys, counted BOUNDED on the last
+line -- RULES: a bound is a named, rare last resort), the elapsed seconds,
+and where a campaign failed, the stage and reason.
 
 Classes:
   CONFIRMED     a SAT witness the program agreed with (confirmation true): a
@@ -106,6 +108,7 @@ def classify(row, result_path, lines, root, text):
         claim = result.get("claim", "")
         refuted = result.get("refutedClaims") or []
         row["refuted"] = len(refuted)
+        row["bounded"] = ",".join((result.get("bounded") or {}).get("by", []))
         if claim == "SAT_CANDIDATE" and confirmation.get("confirmed") is True:
             # A result written before COMPOSE stated the rank states none.
             row["class"] = ("CONFIG_ONLY"
@@ -167,7 +170,7 @@ for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
     row = {"n": n, "case": case,
            "class": "RUNNING" if os.path.isdir(root) else "PENDING",
            "elapsed": "", "finding": "", "confirmed": "", "refuted": "",
-           "stage": "", "reason": ""}
+           "bounded": "", "stage": "", "reason": ""}
     lines = (list(csv.DictReader(open(summary), delimiter="\t"))
              if os.path.exists(summary) else [])
     if lines:
@@ -201,4 +204,6 @@ writer.writerows(rows)
 counts = {}
 for row in rows:
     counts[row["class"]] = counts.get(row["class"], 0) + 1
-print("# " + " ".join("%s=%d" % item for item in sorted(counts.items())), file=sys.stderr)
+print("# " + " ".join("%s=%d" % item for item in sorted(counts.items()))
+      + " BOUNDED=%d" % sum(1 for row in rows if row["bounded"]),
+      file=sys.stderr)
