@@ -9,9 +9,9 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * The two shim entry points the r6 trees call before codec capture gives
- * them a behaviour: a response leaving with its message is the plain
- * response door, and a parsed message changes nothing.
+ * The shim entry points the r6 trees call before codec capture gives them a
+ * behaviour: a response or an op leaving with its message is the plain door,
+ * and a parsed message changes nothing.
  */
 public class ShimCodecEntriesTest {
     @Before
@@ -44,6 +44,17 @@ public class ShimCodecEntriesTest {
                         new Object());
         assertEquals(plain.correlationId, carrying.correlationId);
         assertEquals(plain.attemptId, carrying.attemptId);
+        assertEquals(plain.trace, carrying.trace);
+        assertEquals(plain.symbolic, carrying.symbolic);
+    }
+
+    @Test
+    public void anOpLeavingWithItsMessageIsThePlainOpDoor() {
+        CausynthMessagePropagation.Outbound plain =
+                CausynthMessagePropagation.outboundOp();
+        CausynthMessagePropagation.Outbound carrying =
+                CausynthMessagePropagation.outboundOp(new Object());
+        assertEquals(plain.active(), carrying.active());
         assertEquals(plain.trace, carrying.trace);
         assertEquals(plain.symbolic, carrying.symbolic);
     }
