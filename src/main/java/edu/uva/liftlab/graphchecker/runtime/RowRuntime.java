@@ -548,18 +548,21 @@ public final class RowRuntime {
                               boolean reachedAnchor) {
         target(occurrence, seq, anchorSiteId, reachedAnchor
                         ? fatalTerm(condition, fatalArm) : "",
-                observedFatal, reachedAnchor);
+                observedFatal, reachedAnchor, null);
     }
 
-    /** The anchor with phi already stated (a disjunction of fatal arms). */
+    /** The anchor with phi already stated (a disjunction of fatal arms, a
+     *  helper decision's condition), and the open decider arm it left out,
+     *  if any (TargetRow.OpenArm). */
     static void target(OccurrenceAddress occurrence, long seq,
                        String anchorSiteId, String phiTerm,
-                       boolean observedFatal, boolean reachedAnchor) {
+                       boolean observedFatal, boolean reachedAnchor,
+                       TargetRow.OpenArm openArm) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null) return;
         session.target(TargetRow.of(sessionId(), sequence(seq), occurrence,
                 Text.safe(anchorSiteId), Text.safe(phiTerm), observedFatal,
-                reachedAnchor));
+                reachedAnchor, openArm));
         if (observedFatal && reachedAnchor
                 && FocusedReplay.declaredTarget(occurrence)) {
             ConcolicResultPublisher.concludeAtWitness();

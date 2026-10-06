@@ -982,8 +982,9 @@ final class ConcolicTaskPlan {
         final int targetBranchOccurrence;
         /** Solver-selected outcome that reaches the declared failure. */
         final boolean targetBranchRequiredOutcome;
-        /** The helper branch arms deciding the target branch when it tests
-         *  the constant a helper returned, each with its own
+        /** The helper branches deciding the target branch when it tests
+         *  what a helper returned: both arms of each, with its verdict or
+         *  open, and the nested helper's deciders under it
          *  (causynth.BooleanReturns); empty for none. */
         final List<StaticScopeMap.Guard> targetDeciders;
         /** Every test of a disjunctive target guard and its fatal arm, the

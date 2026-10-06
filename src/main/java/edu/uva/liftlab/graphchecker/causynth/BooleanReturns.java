@@ -97,14 +97,17 @@ final class BooleanReturns {
             return Collections.<StaticScopeMap.Guard>emptyList();
         }
         return tested(body, (Local) tested, compared,
-                condition instanceof EqExpr, depth);
+                condition instanceof EqExpr, false, depth);
     }
 
     /** The deciders of the test {@code tested ==} (or {@code !=}) {@code
-     *  compared}, {@code tested} the result of one helper call. */
+     *  compared}, {@code tested} the result of one helper call; {@code
+     *  nullThrows}: the test is {@code tested.equals(c)}, so an arm returning
+     *  null throws there and is open. */
     private static List<StaticScopeMap.Guard> tested(Body body, Local tested,
                                                      Kept compared,
                                                      boolean equal,
+                                                     boolean nullThrows,
                                                      int depth) {
         List<StaticScopeMap.Guard> found =
                 new ArrayList<StaticScopeMap.Guard>();
@@ -123,9 +126,10 @@ final class BooleanReturns {
         }
         for (IfStmt branch : branches) {
             Boolean taken = verdict(returned(helperBody, branch.getTarget()),
-                    compared, equal);
+                    compared, equal, nullThrows);
             Boolean fallen = verdict(returned(helperBody,
-                    helperBody.getUnits().getSuccOf(branch)), compared, equal);
+                    helperBody.getUnits().getSuccOf(branch)), compared, equal,
+                    nullThrows);
             if (taken == null && fallen == null
                     || taken != null && taken.equals(fallen)) {
                 continue;
@@ -174,11 +178,13 @@ final class BooleanReturns {
                 || !(tested instanceof Local)) {
             return found;
         }
+        // h2().equals(c) throws where h2() returned null; c.equals(h2()) is
+        // false there.
         for (StaticScopeMap.Guard inner : tested(helperBody, (Local) tested,
-                constant, true, depth)) {
+                constant, true, tested == base, depth)) {
             Boolean verdict = inner.verdict() == null ? null
                     : verdict(Kept.ofInt(inner.verdict() ? 1 : 0), compared,
-                    equal);
+                    equal, false);
             found.add(new StaticScopeMap.Guard(inner.siteId(),
                     inner.outcome(), verdict, inner.deciders()));
         }
@@ -196,10 +202,12 @@ final class BooleanReturns {
     }
 
     /** Whether the guard's condition holds when an arm returns {@code
-     *  returned}; null for no constant, or one of another kind. */
+     *  returned}; null for no constant, one of another kind, or a null that
+     *  throws ({@code nullThrows}). */
     private static Boolean verdict(Kept returned, Kept compared,
-                                   boolean equal) {
-        if (returned == null || returned.reference() != compared.reference()) {
+                                   boolean equal, boolean nullThrows) {
+        if (returned == null || returned.reference() != compared.reference()
+                || nullThrows && returned.kind == Kept.Kind.NULL) {
             return null;
         }
         return Boolean.valueOf(equal == returned.equals(compared));

@@ -202,19 +202,6 @@ public final class StaticScopeMap {
             return verdict;
         }
 
-        /** Whether some decider arm under these guards is open: the run
-         *  that took its constant sibling states nothing of what the open
-         *  arm would have returned. */
-        public static boolean anyOpen(Collection<Guard> deciders) {
-            Deque<Guard> pending = new ArrayDeque<Guard>(deciders);
-            while (!pending.isEmpty()) {
-                Guard decider = pending.pop();
-                if (decider.verdict == null) return true;
-                pending.addAll(decider.deciders);
-            }
-            return false;
-        }
-
         /** Every decider site under these guards, theirs too. */
         public static Set<String> decidingSites(Collection<Guard> guards) {
             Set<String> sites = new LinkedHashSet<String>();
@@ -420,23 +407,6 @@ public final class StaticScopeMap {
             Set<String> sites = new LinkedHashSet<String>(guards);
             for (Guard guard : chain) sites.add(guard.siteId());
             sites.addAll(Guard.decidingSites(chain));
-            return sites;
-        }
-
-        /**
-         * The deciders a reached anchor asks (causynth.BooleanReturns): every
-         * decider site of a guard whose deciders hold an open arm.  A run
-         * that took the constant arm states nothing of what the open one
-         * returns, and the open one only runs where a decision below it
-         * turns.
-         */
-        public Set<String> openDeciderSites() {
-            Set<String> sites = new LinkedHashSet<String>();
-            for (List<Guard> deciders : guardDeciders.values()) {
-                if (!Guard.anyOpen(deciders)) continue;
-                for (Guard decider : deciders) sites.add(decider.siteId());
-                sites.addAll(Guard.decidingSites(deciders));
-            }
             return sites;
         }
 

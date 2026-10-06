@@ -147,6 +147,23 @@ final class FlipQuery {
         return Arms.predicate(decision.term());
     }
 
+    /**
+     * Whether a task's flip sites ask this decision: every decision at a
+     * site they name, or the one decision an entry {@link #asked} names
+     * (an open decider arm's, TargetRow.OpenArm: only the call that fed the
+     * guard, never every call of the helper).
+     */
+    static boolean asks(Set<String> flipSites, DecisionRow decision) {
+        return flipSites.contains(decision.siteId())
+                || flipSites.contains(asked(decision.siteId(),
+                decision.ordinal()));
+    }
+
+    /** A flip-site entry naming one decision of a site. */
+    static String asked(String siteId, int ordinal) {
+        return siteId + "@" + ordinal;
+    }
+
     /** One published term with its {@code EXPR.} references lowered by the ONE
      *  lowering (as the composer does), so flip and composition read the same
      *  predicate. A term with no reference returns unchanged. */

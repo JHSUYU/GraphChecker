@@ -1361,7 +1361,9 @@ public final class Composer {
         // a pin after a refused join, not a variable independence leaves
         // out.  ONE entry point: the anchor's reads and the world's planted
         // ones, less a location a reader mutated a container through.
-        Repairing repairing = repairing(session, reached, cutoff);
+        Repairing repairing = repairing(session, reached, cutoff,
+                target.reachedAnchor() ? corpus.readEvents(session,
+                        target.phiTerm()) : Collections.<Long>emptySet());
         Set<String> pinned = repairing.pinned;
         Set<String> moved = repairing.keys;
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
@@ -2607,7 +2609,12 @@ public final class Composer {
     /**
      * THE READS A STATE FAMILY RE-PAIRS on one path ({@code
      * SmtLowering.SessionJoin#repaired}), ONE entry point: the anchor's,
-     * up to its cutoff, and every read the session's world planted a
+     * up to its cutoff and every read phi itself names ({@code phiReads},
+     * by read event: a target a helper decision decided stands at that
+     * decision, and what the guard read after it -- an open arm's {@code
+     * f.count} past its {@code f == null} -- is still phi's, as
+     * explore.ClosurePlanner#concrete reads it), and every read the
+     * session's world planted a
      * pairing on ({@code Corpus.World#pairings}: reader -> writer, as
      * {@code runtime.Confirmation} names them), with every read its
      * occurrence made of the location -- one choice per occurrence's
@@ -2630,7 +2637,7 @@ public final class Composer {
      * the session states no write of plants nothing.
      */
     private Repairing repairing(String session, Map<String, Long> reached,
-                                long cutoff) {
+                                long cutoff, Set<Long> phiReads) {
         Map<String, String> pairings = corpus.world(session).pairings;
         Map<String, String> planted = new LinkedHashMap<String, String>();
         Set<String> plantedBlocks = new LinkedHashSet<String>();
@@ -2657,7 +2664,8 @@ public final class Composer {
         for (ReadRow read : sessionReads) {
             boolean atAnchor = anchor.id().equals(
                     read.endpoint().occurrence().id())
-                    && read.seq() <= cutoff;
+                    && (read.seq() <= cutoff
+                    || phiReads.contains(Long.valueOf(read.seq())));
             if (atAnchor || plantedBlocks.contains(block(read))) {
                 blocks.computeIfAbsent(block(read),
                         key -> new ArrayList<ReadRow>()).add(read);

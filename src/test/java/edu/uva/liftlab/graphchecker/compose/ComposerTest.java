@@ -3334,6 +3334,10 @@ public class ComposerTest {
         // by name.  So does a cell copied through the very owner asking for
         // it ({@code new Block(b)} where b may be the copy: a40h2
         // FsDatasetImpl-1092), which once recursed until the heap was full.
+        // A target a helper decision decided stands at that decision, before
+        // the reads the guard then made (`f == null ? -1 : f.count`): they
+        // are still phi's, so the owner still moves -- 3 is still no
+        // witness, the run's cell kept under the other writer's flag.
         String commit = "org/apache/Commit";
         LocationId latest = LocationId.of(LocationKind.INSTANCE, "8", "48");
         LocationId flag = LocationId.of(LocationKind.INSTANCE, "8", "56");
@@ -3345,9 +3349,12 @@ public class ComposerTest {
                 {7L, "read", ClaimKind.STATE_PAIRING_FLIPPED},
                 {7L, "twice", ClaimKind.NO_SUPPORTED_WITNESS},
                 {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS},
-                {7L, "copied", ClaimKind.NO_SUPPORTED_WITNESS}}) {
+                {7L, "copied", ClaimKind.NO_SUPPORTED_WITNESS},
+                {3L, "decided", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "decided", ClaimKind.STATE_PAIRING_FLIPPED}}) {
             long generation = (Long) each[0];
             String row = generation + " " + each[1];
+            boolean decided = "decided".equals(each[1]);
             Path iteration = folder.newFolder("moved-owner-" + generation
                     + "-" + each[1]).toPath();
             OccurrenceAddress reader = occurrence("case/leader",
@@ -3377,7 +3384,7 @@ public class ComposerTest {
             long version = 0L;
             for (int index = 0; index < ("twice".equals(each[1]) ? 2
                     : "written".equals(each[1]) || "copied".equals(each[1])
-                    ? 1 : 0); index++) {
+                    || decided ? 1 : 0); index++) {
                 session.write(Endpoint.of(theirs, "Commit#init#3:WRITE",
                         at("generation#" + index, 0), 0), other, ++version,
                         "copied".equals(each[1]) ? "EXPR.v1.copied"
@@ -3428,8 +3435,15 @@ public class ComposerTest {
                     generationThroughOwner, integer("I", 4L)));
             session.expression("EXPR.00000000000000f2", read("INSTANCE_FIELD",
                     8L, 56L, flagged, "Z"));
-            session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
-                    false, true);
+            if (decided) {
+                session.targetAt(latestRead - 1,
+                        "(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                        false, true);
+            } else {
+                session.target(
+                        "(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                        false, true);
+            }
             session.write();
 
             Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
@@ -7633,6 +7647,14 @@ public class ComposerTest {
 
         void target(String phi, boolean observedFatal, boolean reached) {
             targets.add(TargetRow.of(id, ++seq, occurrence, ANCHOR_SITE, phi,
+                    observedFatal, reached));
+        }
+
+        /** A target standing at an earlier event (a helper decision's,
+         *  runtime.RowPublication#decided). */
+        void targetAt(long at, String phi, boolean observedFatal,
+                      boolean reached) {
+            targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
                     observedFatal, reached));
         }
 

@@ -438,7 +438,7 @@ public final class ObligationFactory {
                     continue;
                 }
                 if (flipSites == null
-                        || !flipSites.contains(decision.siteId())) {
+                        || !FlipQuery.asks(flipSites, decision)) {
                     continue;
                 }
                 Candidate candidate =

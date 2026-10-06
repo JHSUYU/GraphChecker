@@ -79,6 +79,8 @@ public class BooleanReturnsTest {
         SootMethod switched = switched(owner);
         SootMethod uc = ucState(owner, state, min);
         SootMethod complete = complete(owner, state, uc, object);
+        SootMethod nullable = nullOrComplete(owner, state);
+        SootMethod completeOrThrow = complete(owner, state, nullable, object);
 
         String suff = sig(sufficient);
         String has = sig(min);
@@ -110,6 +112,10 @@ public class BooleanReturnsTest {
                 null, false,
                 Arrays.asList(sig(uc) + "#u2=true:open" + notHasArms,
                         sig(uc) + "#u2=false:true" + notHasArms)},
+            {"h2().equals(c) throws where h2() returned null: that arm is"
+                    + " open", completeOrThrow, null, false,
+                Arrays.asList(sig(nullable) + "#u1=true:open[]",
+                        sig(nullable) + "#u1=false:true[]")},
             {"two arms the guard takes alike decide nothing", alike, null,
                 true, Collections.emptyList()},
             {"a helper with a switch has none", switched, null, true,
@@ -247,11 +253,29 @@ public class BooleanReturnsTest {
         return method;
     }
 
+    /** {@code if (i0 <= 0) return null; return State.COMPLETE;} */
+    private static SootMethod nullOrComplete(SootClass owner,
+                                             SootClass state) {
+        SootMethod method = method(owner, "nullOrComplete", state.getType());
+        Body body = method.getActiveBody();
+        Local held = local(body, "$r1", state.getType());
+        Unit low = Jimple.v().newReturnStmt(NullConstant.v());
+        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newLeExpr(
+                body.getParameterLocal(0), IntConstant.v(0)), low));
+        body.getUnits().add(Jimple.v().newAssignStmt(held,
+                Jimple.v().newStaticFieldRef(state.getFieldByName("COMPLETE")
+                        .makeRef())));
+        body.getUnits().add(Jimple.v().newReturnStmt(held));
+        body.getUnits().add(low);
+        return method;
+    }
+
     /** {@code return getState(i0).equals(State.COMPLETE);}, as {@code
      *  isComplete} compiles. */
     private static SootMethod complete(SootClass owner, SootClass state,
                                        SootMethod uc, SootClass object) {
-        SootMethod method = method(owner, "isComplete", BooleanType.v());
+        SootMethod method = method(owner, "isComplete"
+                + owner.getMethodCount(), BooleanType.v());
         Body body = method.getActiveBody();
         Local held = local(body, "$r1", state.getType());
         Local constant = local(body, "$r2", state.getType());

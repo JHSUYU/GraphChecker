@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -616,24 +617,11 @@ final class RowPublication {
         }
         long at = reach == null ? 0L
                 : optionalLongInteger(reach, "vmEventId", 0L);
-        String phi = reached
-                ? RowRuntime.fatalTerm(condition, observed == fatalArm) : "";
-        // A target testing what a helper returned (causynth.BooleanReturns):
-        // its condition is the helper decision that chose the return, at
-        // each arm its verdict or, an open arm the run took, the condition
-        // the run itself stated (decided), and it stands where the earliest
-        // decision it rests on stands, so the prefix is cut before it.
-        if (reached && !task.targetDeciders.isEmpty()) {
-            String ref = Text.safe(RowRuntime.expressionRef(condition));
-            Decided decided = decided(active.branchMappings,
-                    task.targetDeciders, at, ref.isEmpty()
-                            ? String.valueOf(observed)
-                            : Arms.conjunct(ref, observed), observed);
-            if (decided != null) {
-                phi = fatalArm ? decided.condition : not(decided.condition);
-                at = decided.at;
-            }
-        }
+        Phi stated = reached ? phi(active.branchMappings,
+                task.targetDeciders, condition, observed, fatalArm, at)
+                : new Phi("", at, null);
+        String phi = stated.phi;
+        at = stated.at;
         boolean observedFatal = reached && observed == fatalArm;
         if (reached && task.targetGuards.size() > 1) {
             List<String> arms = new ArrayList<>();
@@ -653,18 +641,65 @@ final class RowPublication {
                             + " before it cannot be cut");
         }
         RowRuntime.target(occurrence, at, anchor, phi, observedFatal,
-                reached);
+                reached, stated.openArm);
     }
 
-    /** A guard's condition as {@link #decided} states it, and the event
-     *  of the earliest decision it rests on. */
+    /** A reached target's phi, the event it stands at, and the open decider
+     *  arm it leaves out, if any. */
+    static final class Phi {
+        final String phi;
+        final long at;
+        final TargetRow.OpenArm openArm;
+
+        Phi(String phi, long at, TargetRow.OpenArm openArm) {
+            this.phi = phi;
+            this.at = at;
+            this.openArm = openArm;
+        }
+    }
+
+    /**
+     * A reached target's phi in the fatal polarity: the branch's own
+     * condition as the run stated it, the arm it took ({@code observed})
+     * against the fatal one; or, where it tests what a helper returned
+     * (causynth.BooleanReturns), the condition of the helper decision that
+     * chose the return ({@link #decided}), standing where the earliest
+     * decision that condition rests on stands, so the prefix is cut before
+     * it.  An open arm the run did not take leaves phi the run's own and the
+     * decision on the path, and is named on the row.
+     */
+    static Phi phi(List<JsonObject> mappings,
+                   List<StaticScopeMap.Guard> deciders, JsonObject condition,
+                   boolean observed, boolean fatalArm, long at) {
+        String own = RowRuntime.fatalTerm(condition, observed == fatalArm);
+        if (deciders.isEmpty()) return new Phi(own, at, null);
+        String ref = Text.safe(RowRuntime.expressionRef(condition));
+        Decided decided = decided(mappings, deciders, at, ref.isEmpty()
+                ? String.valueOf(observed) : Arms.conjunct(ref, observed),
+                observed);
+        if (decided == null) return new Phi(own, at, null);
+        if (decided.open != null) return new Phi(own, at, decided.open);
+        return new Phi(fatalArm ? decided.condition
+                : not(decided.condition), decided.at, null);
+    }
+
+    /** A guard's condition as {@link #decided} states it, the event of the
+     *  earliest decision it rests on and that decision (what a flip of it
+     *  asks); or, instead, the open arm it could not state. */
     static final class Decided {
         final String condition;
         final long at;
+        final String askedSiteId;
+        final int askedOrdinal;
+        final TargetRow.OpenArm open;
 
-        Decided(String condition, long at) {
+        private Decided(String condition, long at, String askedSiteId,
+                        int askedOrdinal, TargetRow.OpenArm open) {
             this.condition = condition;
             this.at = at;
+            this.askedSiteId = askedSiteId;
+            this.askedOrdinal = askedOrdinal;
+            this.open = open;
         }
     }
 
@@ -678,15 +713,16 @@ final class RowPublication {
      * arm being its verdict, or, open and taken, {@code own}, the guard's
      * condition as the run stated it.  The decision is its own predicate;
      * concrete, it tested a nested helper's return, and its condition is the
-     * one that helper's deciders give, in turn.  Null -- the guard is its
-     * own condition, the decision stays on the path -- where the latest
-     * decision is no decider's, a constant arm it took is not what the guard
-     * observed ({@code observed}), a concrete one has nothing below it, or
-     * the other arm is open: a run that never took it states nothing of what
-     * it returns, and EXPLORE asks it (an open decider is a flip site of the
-     * reached anchor, explore.ClosurePlanner).  This call's decisions, not
-     * an earlier call's: the latest in the helper's method is the one its
-     * return ran from.
+     * one that helper's deciders give, in turn.  Where the other arm is open
+     * the run states nothing of what it returns: the result names that arm
+     * ({@link Decided#open}), with the decision whose flip runs it -- this
+     * one where it states a predicate, else the nested one its condition
+     * rests on -- and the guard stays its own condition.  Null -- the guard
+     * is its own condition -- where the latest decision is no decider's, a
+     * constant arm it took is not what the guard observed ({@code observed}),
+     * or a concrete one has nothing below it.  This call's decisions, not an
+     * earlier call's: the latest in the helper's method is the one its return
+     * ran from.
      */
     static Decided decided(List<JsonObject> mappings,
                            List<StaticScopeMap.Guard> deciders, long before,
@@ -705,28 +741,40 @@ final class RowPublication {
         }
         if (latest == null) return null;
         String site = optionalString(latest, "siteId");
+        int ordinal = optionalInteger(latest, "occurrence", -1);
         boolean outcome = optionalBool(latest, "outcome", false);
         StaticScopeMap.Guard took = arm(deciders, site, outcome);
         StaticScopeMap.Guard other = arm(deciders, site, !outcome);
-        if (took == null || other == null || other.verdict() == null
+        if (took == null || other == null || ordinal < 1
                 || took.verdict() != null
                 && took.verdict().booleanValue() != observed) {
             return null;
         }
-        String taken = took.verdict() == null ? own
-                : String.valueOf(observed);
-        String otherwise = String.valueOf(other.verdict());
         String held = Text.safe(RowRuntime.expressionRef(
                 object(latest, "witness").get("sourceSatisfiedPredicate")));
-        if (!held.isEmpty()) {
-            return new Decided(ite(held, taken, otherwise), at);
-        }
-        Decided nested = took.deciders().isEmpty() ? null
+        Decided nested = !held.isEmpty() || took.deciders().isEmpty() ? null
                 : decided(mappings, took.deciders(), at,
                 String.valueOf(outcome), outcome);
-        return nested == null ? null : new Decided(ite(outcome
-                ? nested.condition : not(nested.condition), taken,
-                otherwise), nested.at);
+        // An open arm below leaves this decision's own condition unstated.
+        if (nested != null && nested.open != null) return nested;
+        String askedSite = !held.isEmpty() ? site
+                : nested == null ? "" : nested.askedSiteId;
+        int askedOrdinal = !held.isEmpty() ? ordinal
+                : nested == null ? 0 : nested.askedOrdinal;
+        if (other.verdict() == null) {
+            return new Decided("", at, askedSite, askedOrdinal,
+                    TargetRow.OpenArm.of(site, ordinal, !outcome, askedSite,
+                            askedOrdinal));
+        }
+        if (held.isEmpty() && nested == null) return null;
+        String predicate = !held.isEmpty() ? held
+                : outcome ? nested.condition : not(nested.condition);
+        String taken = took.verdict() == null ? own
+                : String.valueOf(observed);
+        return new Decided(ite(predicate, taken,
+                String.valueOf(other.verdict())),
+                !held.isEmpty() ? at : nested.at, askedSite, askedOrdinal,
+                null);
     }
 
     /** The decider arm of {@code site} at {@code outcome}, or null. */

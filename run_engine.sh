@@ -5639,6 +5639,34 @@ campaign_exploration_cut() {
     "${iteration_dir}/exploration.json" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
+# The open decider arms the declared anchor's runs left phi without and no run
+# took (ExploreMain#openArms, the last round's manifest), judged once here: an
+# arm whose flip came to no verdict -- a replay that never reached the
+# decision -- leaves the UNSAT that closes over it none, one ADMISSION_GAP row
+# each, BLOCKING under any claim but a SAT_CANDIDATE (whose witness stands as
+# CONFIRM decides it).  Every arm is named in result.json concrete[] (OPEN_ARM)
+# and only an UNSAT one leaves unsatClosureComplete true.
+campaign_open_arms() {
+  local iteration_dir=$1 claim last="" round
+  for round in "${iteration_dir}"/obligations-*/explore_manifest.json; do
+    [[ -s "${round}" ]] && last=${round}
+  done
+  [[ -n "${last}" ]] || return 0
+  claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
+  jq -c --arg claim "${claim}" --arg epoch "$(basename "${iteration_dir}")" '
+    (.openArms // [])[] | select(.state == "UNANSWERED")
+    | {schemaVersion: 1, sessionId: "", stage: "EXPLORE",
+       kind: "ADMISSION_GAP",
+       cls: (if $claim == "SAT_CANDIDATE" then "DIAGNOSTIC" else "BLOCKING"
+             end),
+       subject: "OPEN_ARM_UNANSWERED", topologyEpoch: $epoch,
+       detail: ("the open arm \(.siteId)=\(.outcome) of \(.anchor) was left"
+         + " out of phi by the runs that reached it, and its flip (asked at"
+         + " \(.asked | join(", "))) came to no verdict on \(.paths.UNANSWERED)"
+         + " path(s): no run took the arm, so no UNSAT closes over it")}' \
+    "${last}" >>"${iteration_dir}/campaign_gaps.jsonl"
+}
+
 # Gap rows this iteration's stages wrote outside a session live in one file,
 # ${iteration_dir}/campaign_gaps.jsonl, appended by whoever raises them and
 # read once by EMIT.  Nothing collects or truncates it.
@@ -6524,6 +6552,7 @@ campaign_emit() {
   # a row that states no class is blocking: a gap added to some stage
   # withholds the claim until its producer states why it cannot break a chain.
   campaign_exploration_cut "${iteration_dir}"
+  campaign_open_arms "${iteration_dir}"
   campaign_write_gaps \
     "${composition_manifest}" \
     "${iteration_dir}" \
@@ -6598,7 +6627,12 @@ campaign_emit() {
     $gapDocuments[0] as $gaps |
     ($r.campaignClaim) as $decided |
     ($r.reachability // "UNKNOWN") as $reachability |
-    ($r.unsatClosureComplete // false) as $unsatClosureComplete |
+    # An open decider arm no run took closes only by its UNSAT flip
+    # (campaign_open_arms).
+    (($r.unsatClosureComplete // false)
+     and ([($exploreDocuments[0].openArms // [])[]
+           | select(.state != "UNSAT")] | length == 0))
+      as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
@@ -6727,10 +6761,13 @@ campaign_emit() {
                  subject: "", detail: $decided.claimReason}]
           else [] end)),
      # What the decision rested on concretely: each anchor every admitted
-     # path decided on no symbol (EXPLORE), and each value COMPOSE stated
-     # as a constant or left free, with what it rests on (Composer.Concrete).
+     # path decided on no symbol (EXPLORE), each open decider arm no run
+     # took (EXPLORE, with its flip), and each value COMPOSE stated as a
+     # constant or left free, with what it rests on (Composer.Concrete).
      concrete: ([($exploreDocuments[0].concreteAnchors // [])[]
-                 | {kind: "ANCHOR"} + .] + ($c.concrete // [])),
+                 | {kind: "ANCHOR"} + .]
+                + [($exploreDocuments[0].openArms // [])[]
+                   | {kind: "OPEN_ARM"} + .] + ($c.concrete // [])),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it

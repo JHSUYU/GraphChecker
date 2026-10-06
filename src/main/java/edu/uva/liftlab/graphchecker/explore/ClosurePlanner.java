@@ -162,17 +162,23 @@ public final class ClosurePlanner {
         // The anchor flips only the decisions on its way to the throw: the
         // target's guard set (PIPELINE §7.2) and, when no run of it reached
         // the throw, the chain its path left by; flipping a chain guard of a
-        // path that went on to the throw only leaves it.  A reached one asks
-        // the deciders with an open arm too (StaticScopeMap.Site
-        // #openDeciderSites).  The throw itself is no branch.
+        // path that went on to the throw only leaves it.  A reached one also
+        // asks, of each open decider arm a run left phi without
+        // (TargetRow.OpenArm), the one decision whose flip runs it.  The
+        // throw itself is no branch.
         boolean reached = false;
         for (TargetRow row : corpus.targetsOn(anchor)) {
             reached |= row.reachedAnchor();
+            TargetRow.OpenArm open = row.openArm();
+            if (row.reachedAnchor() && open != null
+                    && !open.askedSiteId().isEmpty()) {
+                start.flipSites.add(FlipQuery.asked(open.askedSiteId(),
+                        open.askedOrdinal()));
+            }
         }
         for (StaticScopeMap.Site target : scope.targetSites()) {
             start.flipSites.addAll(reached ? target.guards
                     : target.pathSites());
-            if (reached) start.flipSites.addAll(target.openDeciderSites());
         }
         Concrete concrete = concrete(corpus, anchor, start.flipSites, scope);
         if (concrete != null) {
@@ -302,7 +308,7 @@ public final class ClosurePlanner {
             } else {
                 for (DecisionRow decision
                         : corpus.decisionsOf(sessionId, anchor)) {
-                    if (!flipSites.contains(decision.siteId())) continue;
+                    if (!FlipQuery.asks(flipSites, decision)) continue;
                     if (!corpus.termSymbols(sessionId, decision.term())
                             .isEmpty()) {
                         return null;
@@ -761,7 +767,7 @@ public final class ClosurePlanner {
         GroupReads reads = new GroupReads(corpus, group);
         for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
             for (DecisionRow decision : path.decisions) {
-                if (!demand.flipSites.contains(decision.siteId())) continue;
+                if (!FlipQuery.asks(demand.flipSites, decision)) continue;
                 named.addAll(corpus.termSymbols(path.sessionId,
                         decision.term()));
                 reads.under(corpus, path.sessionId, decision.term(), named);

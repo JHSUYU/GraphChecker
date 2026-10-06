@@ -301,10 +301,20 @@ true on one arm, open on the other, where its second compares the live count. At
 the arm it took, the other arm)` -- that decision the latest in the helper's method before the
 guard, an arm its verdict or, open and taken, the guard's own condition; a concrete decision's
 condition is its nested helper deciders', in turn -- and the target stands at the earliest decision
-it rests on. Where the other arm is open and never ran, the run states nothing of it: the guard is
-its own condition, the decision stays on the path, and a reached anchor flips it
-(`StaticScopeMap.Site#openDeciderSites`, `explore.ClosurePlanner#plan`), so EXPLORE runs the open
-arm.
+it rests on; COMPOSE keeps every read the guard's condition names re-pairable, wherever it stands
+after that decision (`Composer#repairing`, by read event). In `h2().equals(c)` an arm returning null
+throws, so it is open. Where the other arm is open and never ran, the run states nothing of it: the
+guard is its own condition, the decision stays on the path, and the target row names the arm
+(`TargetRow.OpenArm`) with the one decision whose flip runs it -- that decision where it states a
+predicate, else the nested one its condition rests on; the reached anchor asks that decision alone,
+never every call of the helper (`explore.ClosurePlanner#plan`, `FlipQuery#asks`). At the fixed point
+each open arm no admitted run took is named with what its flips came to (`ExploreMain#openArms`,
+`result.json` `concrete[]` OPEN_ARM): an UNSAT flip closes it, any other leaves `unsatClosureComplete`
+false, and one whose flip came to no verdict (a replay that never reached the decision) leaves no
+verdict (`OPEN_ARM_UNANSWERED`, BLOCKING but under a SAT, `run_engine.sh` `campaign_open_arms`). The
+attribution reads the latest decision in the helper's method before the guard, by event order: a
+decision of another call of the same method in between (a recursion, a callback) would be taken for
+the one that chose the return.
 
 The slice (§2.2) and the map use two relations: the slice widens by may-reach, the map's guards
 are post-dominance.

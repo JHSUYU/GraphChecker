@@ -555,6 +555,34 @@ jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
 
+# OPEN-ARM: an open decider arm no run took (ExploreMain#openArms) is named in
+# concrete[]; only an UNSAT flip closes over it, and one whose flip came to no
+# verdict leaves the UNSAT none (OPEN_ARM_UNANSWERED, campaign_open_arms).
+for state in UNSAT UNANSWERED; do
+  emit_unsat_fixture
+  jq '.solver.unsatClosureComplete = true' "${composition_manifest}" \
+    >"${composition_manifest}.tmp"
+  mv "${composition_manifest}.tmp" "${composition_manifest}"
+  jq --arg state "${state}" '.openArms = [{anchor: "REGION.T#1",
+      siteId: "H#u2", outcome: true, state: $state, paths: {($state): 1},
+      asked: ["H#u2@1"]}]' \
+    "${emit_iteration}/obligations-0000/explore_manifest.json" \
+    >"${emit_root}/manifest.tmp"
+  mv "${emit_root}/manifest.tmp" \
+    "${emit_iteration}/obligations-0000/explore_manifest.json"
+  run_emit
+  jq -e --arg state "${state}" '
+    [.concrete[] | select(.kind == "OPEN_ARM") | .state] == [$state]
+    and .evidence.unsatClosureComplete == ($state == "UNSAT")
+    and .claim == (if $state == "UNSAT" then "UNSAT_CLOSED"
+                   else "RUN_DEFECT" end)
+    and ([.defects[].subject] | index("OPEN_ARM_UNANSWERED") != null)
+        == ($state != "UNSAT")' \
+    "${campaign_final}/result.json" >/dev/null \
+    || fail "an open arm ${state} was not judged: \
+$(jq -c '{claim, concrete, evidence, defects}' "${campaign_final}/result.json")"
+done
+
 # A model CONFIRM gave no verdict on (refused_models) is the composition's
 # to judge: excluded from it, an UNSAT resting on it is RUN_DEFECT there
 # (ComposeMain#campaignClaim); one that does not stands, the model named.
