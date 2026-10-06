@@ -95,13 +95,16 @@ public final class Z3 {
         private final String status;
         private final Map<String, String> values;
         private final List<String> core;
+        /** Whether a core run said unsat and named the core. */
+        private final boolean coreKnown;
         private final String reason;
 
         private Answer(String status, Map<String, String> values,
-                       List<String> core, String reason) {
+                       List<String> core, boolean coreKnown, String reason) {
             this.status = status;
             this.values = Collections.unmodifiableMap(values);
             this.core = Collections.unmodifiableList(core);
+            this.coreKnown = coreKnown;
             this.reason = reason;
         }
 
@@ -141,21 +144,37 @@ public final class Z3 {
             return values;
         }
 
-        /** The names of the conjuncts one unsat answer closed on. */
+        /** The names of the conjuncts one unsat answer closed on; empty
+         *  where {@link #coreKnown} is not. */
         public List<String> core() {
             return core;
         }
 
         /**
+         * Whether {@link #core} is the core: asked, and its own run said
+         * unsat.  A core run that timed out, found no room or answered
+         * unknown names nothing, which is not the empty core: what the
+         * answer rests on is then unknown.
+         */
+        public boolean coreKnown() {
+            return coreKnown;
+        }
+
+        /**
          * What a disjunction whose every disjunct {@code refuted} answered
          * unsat answers: unsat, its core the union of theirs (each model
-         * takes one disjunct, which its own core refutes).
+         * takes one disjunct, which its own core refutes), known only where
+         * every one of theirs is.
          */
         public static Answer unsatOfAll(List<Answer> refuted) {
             Set<String> core = new LinkedHashSet<String>();
-            for (Answer each : refuted) core.addAll(each.core());
+            boolean known = true;
+            for (Answer each : refuted) {
+                core.addAll(each.core());
+                known &= each.coreKnown();
+            }
             return new Answer("unsat", Collections.<String, String>emptyMap(),
-                    new ArrayList<String>(core), "");
+                    new ArrayList<String>(core), known, "");
         }
 
         @Override
@@ -250,9 +269,14 @@ public final class Z3 {
                     timeoutMillis));
         }
         List<String> core = Collections.emptyList();
+        boolean coreKnown = false;
         if (wantCore && "unsat".equals(status)) {
-            core = parseCore(run(CORE_TRACKING, query,
-                    "(check-sat)\n(get-unsat-core)\n", timeoutMillis));
+            // A core run that did not say unsat (its budget ran out, no
+            // host had room, it answered unknown) names no core.
+            String printed = run(CORE_TRACKING, query,
+                    "(check-sat)\n(get-unsat-core)\n", timeoutMillis);
+            coreKnown = "unsat".equals(firstLine(printed));
+            if (coreKnown) core = parseCore(printed);
         }
         // Not after a timeout: it would spend the budget again for "".
         String reason = "";
@@ -261,7 +285,7 @@ public final class Z3 {
             reason = parseReason(run("", query,
                     "(check-sat)\n(get-info :reason-unknown)\n", budget));
         }
-        return new Answer(status, values, core, reason);
+        return new Answer(status, values, core, coreKnown, reason);
     }
 
     /**
