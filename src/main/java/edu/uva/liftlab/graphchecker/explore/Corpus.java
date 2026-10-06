@@ -56,6 +56,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Supplier;
 
 /** One iteration's sessions, indexed: the ONE corpus view both stages read.
@@ -495,10 +496,14 @@ public final class Corpus implements Arms.Rows {
         return sites;
     }
 
-    /** Which occurrences delivered them: a new producer is new topology. */
+    /** Which occurrences delivered them: a new producer is new topology.
+     *  A set, sorted: the order replies arrive in is a race, never input
+     *  (hdfs-adhoc-07 CC5: the client's recovery takes the three journal
+     *  nodes' replies in any order, and keyed by that order every arm of
+     *  every client call it feeds was asked once per order). */
     private Set<String> producers(String sessionId,
                                   OccurrenceAddress occurrence) {
-        Set<String> from = new LinkedHashSet<String>();
+        Set<String> from = new TreeSet<String>();
         for (AttachRow attach : attachesOn(sessionId, occurrence)) {
             Endpoint producer = attach.producer();
             if (producer == null) continue;

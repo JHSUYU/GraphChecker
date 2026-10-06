@@ -1259,6 +1259,28 @@ public class ExploreTest {
                         + "moves as sessions land",
                 corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
                 corpus.inputShape("s-more", TARGET, reversed, qopKey));
+        // A member's replies from two producers, in either arrival order.
+        Path raced = tree.newFolder("raced").toPath();
+        for (String order : new String[] {"s-ab", "s-ba"}) {
+            Session session = new Session(raced, order);
+            session.activation(TARGET, true);
+            session.activation(WRITER, false);
+            Endpoint[] from = order.equals("s-ab")
+                    ? new Endpoint[] {ROTATED, SENT}
+                    : new Endpoint[] {SENT, ROTATED};
+            for (Endpoint producer : from) {
+                session.attach(DELIVERED, "M_HOFF_" + producer.id(), "1",
+                        producer);
+            }
+            session.flush();
+        }
+        Corpus racedCorpus = Corpus.read(raced, null);
+        assertEquals("who delivered is a set: the order replies arrive in "
+                        + "is a race",
+                racedCorpus.inputShape("s-ab", TARGET,
+                        Collections.singletonList(WRITER), qopKey),
+                racedCorpus.inputShape("s-ba", TARGET,
+                        Collections.singletonList(WRITER), qopKey));
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
