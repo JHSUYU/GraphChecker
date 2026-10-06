@@ -108,6 +108,13 @@ If a check still cannot reach its target after that round, swap it (only 04 is l
    of each SAT and a one-line reading of each UNSAT into STATUS.
 4. Merge `system/hdfs` into `main`; push only when the owner asks.
 
+### 5b. Later (owner 2026-10-06): the two-phase final run
+For a clean final acceptance run after the two branches are done: (1) the ~36 short cases a few at a time (6-8
+concurrent: their time is serial SEED, recording and seed replay, so exclusivity buys them little); (2) the deep
+closures (11741 08 09 05 06 11 14, 07) one at a time with the whole cluster (their cost is hundreds of obligation
+replays, which fan out: 09 has 653 verdicts over 9 tasks and 7 regions), agents offline meanwhile. Expected ~4-5 h in
+all versus ~9-10 h with every case exclusive. Not now: today each branch only runs its cases to their `.smt`.
+
 ### 6. Cleanup still owed (RULES: every change deletes what it replaces)
 - Cleanup batch 1, phase 2 (`brief-cleanup-1.md`): MapFields.safe/Text.safe copies, LineageScan's classFiles copy,
   ScheduleLog.prefixFile, run_engine.sh's `input_flag=-j` branch, test-only accessors, `src/test/resources/

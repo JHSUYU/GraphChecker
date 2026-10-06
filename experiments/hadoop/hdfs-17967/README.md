@@ -15,7 +15,7 @@ instead of clearing its cached key and retrying once, which is what the PR adds.
 | `pathB` | the move TARGET, on `DataXceiver.replaceBlock` (`DataXceiver.java:1241`) | the PROXY | `DataXceiver.java:1285 throw ioe` |
 | `pathC` | the RECONSTRUCTING node, on `StripedBlockWriter.init` | the reconstruction TARGET | `StripedWriter.java:122 throw new IOException("All targets are failed.")` |
 
-All three run on the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r6`, branch `gc/hdfs-study-r6` (on `system/hdfs`; it descends from `gc/hdfs-unified-dtx`, the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope). It has the bug: no HDFS-17967 fix is in trunk (its
+All three run on the HDFS tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7`, branch `gc/hdfs-study-r7` (on `system/hdfs`; it descends from `gc/hdfs-unified-dtx`, the unified tree `gc/hdfs-unified`, trunk 734dd8a67cd, inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`, plus the DataTransfer op's envelope). It has the bug: no HDFS-17967 fix is in trunk (its
 `DataXceiver.java` handles no `InvalidEncryptionKeyException` in the relays). Do not base
 this case on the upstream follow-up branch `HDFS-17899-followup-invalid-encryption-key`: it
 has the fix, so there is no fatal arm to reach.
