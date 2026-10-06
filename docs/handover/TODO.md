@@ -41,8 +41,8 @@ its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, th
   is stamped, a replay reads its order's timeline (`max(last, min(hi, lo + elapsed))`), a CLOCK root's skew sits on
   top of it (`RootMintRow#baseReading`). Seed give-up lines, model (rounds TM8-TM13, `gc-out/hdfs-time-model/probe/
   runs.txt`) against no model (SL2, D2B; HG8F under load): 25 0-2 / 8, 87; 34 0 / 6, 91; 35 0 / 81, 85; 23 37-38 /
-  83, 86; 22 43 / 66, 32-85; 01 30-61 / 84, 85; 52 4 and 72 / 72, 84; 43 96 / 88, 90; 21 12-138 / 81, 89; 17 18-122
-  / 85, 87. Where the clock decided (25 34 35, 52's extra heartbeat) the give-ups are gone; the rest vary run to
+  83, 86; 22 0-43 / 66, 32-85; 01 30-61 / 84, 85; 52 4 and 72 / 72, 84; 43 96 / 88, 90; 21 12-138 / 81, 89; 17 18-122
+  / 85, 87. Where the clock decided (25 34 35, 22 on TM13, 52's extra heartbeat) the give-ups are gone; the rest vary run to
   run and are not the clock.
 - Left, not the clock, by first divergence: an IPC handler's `CallQueueManager.take` racing another (21, 52, 34 on
   TM12, 17 after its NameNode restart; the lock turn below); a DataNode's IBR wait woken where the recording's was
