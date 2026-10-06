@@ -34,7 +34,7 @@ set +e
 read -r -a hosts <<<"${LIFTS}"
 mkdir -p "${log_dir}"
 mapfile -t commands < <(grep -v '^\s*$' "${jobs_file}")
-declare -A running pid_host pid_job pid_charge started
+declare -A running=() pid_host=() pid_job=() pid_charge=() started=()
 for host in "${hosts[@]}"; do running[$host]=0; done
 next=0
 reap() {

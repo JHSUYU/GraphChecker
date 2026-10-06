@@ -5176,6 +5176,12 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 [[ -z "$(live_charges "${fanout_dir}/ledger")" ]] \
   || fail "a returned job is still charged: \
 $(live_charges "${fanout_dir}/ledger")"
+# Resumed once every job returned, it has nothing to run and ends cleanly.
+LIFTS=localhost CAUSYNTH_HOST_LEDGER="${fanout_dir}/ledger" JOB_MEMORY_MB=1 \
+  bash "${repo}/tools/adhoc/fanout.sh" "${fanout_dir}/jobs" \
+  "${fanout_dir}/logs" >"${fanout_dir}/fanout-again.out" 2>&1 \
+  || fail "a fanout resumed with every job returned failed: \
+$(cat "${fanout_dir}/fanout-again.out")"
 
 # FANOUT-2: an ADMIT_MB job starts only where the ledger has its room and
 # holds no charge while it runs (a campaign head reserves its own room).
