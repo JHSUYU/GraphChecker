@@ -336,9 +336,11 @@ public final class Clocks {
                     || now.hiNanos >= nanos) {
                 return now;
             }
+            // Named after the mark it was lifted from, so each mark's
+            // lifts are one row however many waits move it on.
             stood = now.cap;
-            moveLocked(now.hiNanos, now.hiMillis, nanos, millis,
-                    "a timed wait's deadline past " + stood, false, false);
+            moveLocked(now.hiNanos, now.hiMillis, nanos, millis, stood,
+                    false, false);
             liftsDeadline++;
             first = LIFTED.add(stood);
             now = bounds;
@@ -348,7 +350,8 @@ public final class Clocks {
                     + " application's clocks stood at " + stood + " while "
                     + Thread.currentThread().getName() + "'s timed wait of "
                     + TimeUnit.NANOSECONDS.toMillis(began[2]) + " ms ran out"
-                    + " past it: time runs on to each such wait's deadline");
+                    + " past it: time runs on to each such wait's deadline"
+                    + " (every lift counted at exit)");
         }
         return now;
     }
