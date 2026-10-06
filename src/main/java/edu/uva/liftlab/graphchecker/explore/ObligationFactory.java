@@ -393,8 +393,8 @@ public final class ObligationFactory {
      * §7.5), a NOT_ADMITTED replay ran no world, and one whose branch
      * stopped ran none the question is asked in. Such sessions still attest
      * arms ({@link Frontier}).  Every path is keyed; {@code
-     * maxPathsPerTask} bounds the paths that offer an owed arm, so it cuts
-     * new work only.</p>
+     * maxPathsPerTask} bounds the paths that offer an owed arm no round has
+     * in flight, so it defers new work only, to the next round.</p>
      *
      * @param flipSites site ids this task's demand names; null = none
      * @param branches  which sessions a path may be cut from
@@ -428,6 +428,7 @@ public final class ObligationFactory {
             // (PIPELINE §7.4: cheap, and they grow the graph), at most
             // maxFlipsPerPath of them.
             List<Candidate> owedHere = new ArrayList<Candidate>();
+            List<Candidate> flying = new ArrayList<Candidate>();
             int unflipped = 0;
             for (int index : faultFirst(corpus, path)) {
                 DecisionRow decision = path.decisions.get(index);
@@ -450,18 +451,30 @@ public final class ObligationFactory {
                                     + " -> " + !decision.outcome(), reason));
                     continue;
                 }
+                // Queued or running: owed, but not this round's to ask
+                // (Frontier#open holds it), so it holds no path slot.
+                if (owed.flying(candidate)) {
+                    flying.add(candidate);
+                    continue;
+                }
                 if (owedHere.size() >= bounds.maxFlipsPerPath) {
                     unflipped++;
                     continue;
                 }
                 owedHere.add(candidate);
             }
+            for (Candidate candidate : flying) {
+                offered.add(candidate.obligationId);
+                candidates.add(candidate);
+            }
             // The path bound counts new work, never repetition: a path whose
-            // arms are all settled or offered by a path before it is no path
-            // to cut from (hdfs-adhoc-08 HG8F: of 15995 paths past the
-            // bound, 15670 offered nothing owed).  Smallest-world-first means
-            // the bound keeps the paths closest to the recording; one that
-            // drops work says so (gap below).
+            // arms are all settled, in flight or offered by a path before it
+            // is no path to cut from (hdfs-adhoc-08 HG8F: of 15995 paths past
+            // the bound, 15670 offered nothing owed).  Smallest-world-first
+            // means the bound keeps the paths closest to the recording.  It
+            // DEFERS, never drops: every round reads the task's paths again,
+            // and once the paths before them are answered or in flight, the
+            // ones it left are the first that count (gap below).
             if (owedHere.isEmpty()) continue;
             if (paths >= bounds.maxPathsPerTask) {
                 unread++;
@@ -502,7 +515,7 @@ public final class ObligationFactory {
                             + "path(s) that offer an owed arm and this round "
                             + "planned from " + paths + ": " + unread
                             + " path(s), the ones carrying the largest "
-                            + "worlds, were not cut from"));
+                            + "worlds, wait for a later round"));
         }
         return candidates;
     }

@@ -809,6 +809,28 @@ public class ExploreTest {
         assertTrue("and the bound names only the two that offer an owed "
                         + "arm: " + named, named.startsWith("this task has 2 "
                 + "recorded path(s) that offer an owed arm"));
+        // It defers, never drops: with that path's arms in flight, the next
+        // round cuts from the path it left.
+        Path flying = out.resolve("in_flight-0008.jsonl");
+        RowCodec.writeAll(flying, obligations(one),
+                ExploreCodec::writeObligation);
+        Path later = out.resolve("obligations-0008");
+        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, flying,
+                iteration.resolve(StaticScopeMap.FILE), later, 8, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                new ObligationFactory.Bounds(1,
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
+                        ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
+        Set<String> deferred = new LinkedHashSet<String>();
+        for (Obligation obligation : obligations(later)) {
+            if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
+                deferred.add(obligation.pathId());
+            }
+        }
+        Set<String> left = new LinkedHashSet<String>(owedPaths);
+        left.removeAll(cut);
+        assertEquals("the next round cuts from the path the bound left: "
+                + deferred, left, deferred);
     }
 
     /**

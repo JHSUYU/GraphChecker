@@ -585,10 +585,14 @@ candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
 arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is
-keyed, and the path bound counts only the paths that offer an OWED arm -- one no ledger settles and
-no path before it offers: a path whose arms are all settled or already offered is no path to cut
-from and is skipped uncounted, so the bound cuts new work, never repetition (hdfs-adhoc-08 HG8F: of
-15995 paths past the bound, 15670 offered nothing owed; the 325 others held 86 owed arms). Every
+keyed, and the path bound counts only the paths that offer an OWED arm -- one no ledger settles, no
+round has in flight and no path before it offers: a path whose arms are all settled, in flight or
+already offered is no path to cut from and is skipped uncounted, so the bound cuts new work, never
+repetition (hdfs-adhoc-08 HG8F: of 15995 paths past the bound, 15670 offered nothing owed; the 325
+others held 86 owed arms). It DEFERS, never drops: every round reads the task's paths again, and
+once the paths before them are answered or in flight the deferred ones are the first that count, so
+a fixed point defers nothing; EMIT names the bound only where the last round deferred
+(`campaign_bounds`). Every
 bound that drops work files a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too,
 each arm once per task round. The planner builds no query;
 an arm in flight is held by its flip (`ObligationFactory#flip`, §7.3), the first half of its
@@ -1998,8 +2002,9 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `targetOccurrence`, `valuations`, `witnessFindings`; `bounded` (`campaign_bounds`), whatever the
    claim: null, or `{by, detail}` naming by configuration key each declared bound that cut the
    search -- the wave budget (`region_path_max_waves`, the stop REGION_PATH_WAVE_BUDGET_REACHED),
-   `region_path_max_paths_per_region` and `region_path_max_world_depth` (ObligationFactory's
-   DIAGNOSTIC rows, the bound in their subject, §7.4), `region_path_max_tasks` (the last round's
+   `region_path_max_paths_per_region` (the LAST round's deferral rows: an earlier round's the rounds
+   after it read, §7.4) and `region_path_max_world_depth` (ObligationFactory's DIAGNOSTIC rows, the
+   bound in their subject), `region_path_max_tasks` (the last round's
    `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a

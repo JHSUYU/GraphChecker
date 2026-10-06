@@ -5551,10 +5551,12 @@ campaign_stream_manifest() {
 # the search only as a named, rare last resort, counted every round): null
 # when none did, else {by: [the configuration key of each], detail}.  They
 # are the wave budget (region_path_max_waves, the stop
-# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round reads of one task
-# (region_path_max_paths_per_region) and the world depth it cuts from
-# (region_path_max_world_depth), ObligationFactory's rows naming the bound in
-# their subject; the tasks one anchor's closure plans (region_path_max_tasks:
+# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round cuts from per task
+# (region_path_max_paths_per_region), only where the LAST round planned
+# deferred some -- an earlier round's deferral is work the rounds after it
+# read first, and a fixed point defers none -- and the world depth a round
+# cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
+# bound in their subject; the tasks one anchor's closure plans (region_path_max_tasks:
 # the last round's `truncated`, as campaign_stream_truncation judges it, since
 # a later round plans what an earlier one left); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
@@ -5575,11 +5577,14 @@ campaign_bounds() {
     --slurpfile rounds <(cat "${iteration_dir}"/obligations-*/\
 explore_manifest.json 2>/dev/null) \
     --slurpfile gaps "${campaign_final}/gaps.json" \
+    --slurpfile last <(cat "$(printf '%s\n' "${iteration_dir}"/obligations-* \
+      | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
     --argjson decided "${decided}" --argjson refutes "${refutes}" \
     --argjson maxClaims "${campaign_max_claims}" '
+    def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
-      | select(.subject | test(" " + $bound + "=[0-9]+$"))];
-    rows("max-paths-per-region") as $paths
+      | bound($bound)];
+    [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
@@ -5587,9 +5592,9 @@ explore_manifest.json 2>/dev/null) \
          | {by: "region_path_max_waves", detail: $exploration[0].detail}),
         (select(($paths | length) > 0)
          | {by: "region_path_max_paths_per_region",
-            detail: ("\($paths | length) task round(s) cut from only"
-              + " \($paths[0].subject | sub(".* "; "")) of the recorded"
-              + " paths that offer an owed arm, the rest uncut")}),
+            detail: ("the last round deferred \($paths | length) task(s)"
+              + " past \($paths[0].subject | sub(".* "; "")) recorded paths"
+              + " that offer an owed arm")}),
         (select(($depth | length) > 0)
          | {by: "region_path_max_world_depth",
             detail: ("\($depth | length) task round(s) cut from no path"
