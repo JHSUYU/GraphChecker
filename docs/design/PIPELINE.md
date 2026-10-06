@@ -932,10 +932,12 @@ lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute 
 every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
-leases old is deleted. Every start states its measured need, with no default. A solve needs what
-a solver JVM starts at (`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its
-own under that charge when its host has no room for its solver; the host's solver is charged on its
-own, §7.5), never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+leases old is deleted. Every start states its measured need, with no default. A solve on a host
+where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
+(`campaign_question_mb`, 512 MB: the serving solver's JVM is charged on its own, §7.5; HI1/HI2's z3
+runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host what a solver JVM starts at
+(`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its own under that charge
+when its host has no room for its solver), either growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and

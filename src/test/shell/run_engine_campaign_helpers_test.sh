@@ -3246,11 +3246,15 @@ $(cat "${stream_dir}/explore.log")"
   [[ "${cap_ran}" == "${cap_ran_most}" ]] \
     || fail "a pool at a ${cap_peak} MB peak with ${cap_fresh} other \
 exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
-  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged \
-      | sort -u)" == "${campaign_solver_start_mb}" ]] \
+  # One host: its first solve is cold, charged what a solver starts at; the
+  # others find its solver serving and are charged a question's z3 run.
+  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged | sort -n \
+      | paste -sd ' ' -)" == "${campaign_question_mb} \
+${campaign_question_mb} ${campaign_solver_start_mb}" ]] \
     || fail "the pool's solves were charged $(cat \
       "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
-not what a solver starts at, ${campaign_solver_start_mb} MB"
+not a solver's start (${campaign_solver_start_mb} MB) for the cold one and \
+a question's (${campaign_question_mb} MB) for the warm ones"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
   if [[ "${cap_sharers}" == - ]]; then
@@ -3341,9 +3345,11 @@ stream_fixture stream-split
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "a split exploration did not finish: $(cat "${stream_dir}/explore.log")"
 split_round0="${stream_dir}/obligations-0000"
-[[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -u)" \
-    == "${campaign_solver_start_mb}" ]] \
-  || fail "a solve was not charged what a solver starts at: $(cat \
+[[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -n \
+    | paste -sd ' ' -)" == "${campaign_question_mb} \
+${campaign_question_mb} ${campaign_solver_start_mb}" ]] \
+  || fail "the solves were not charged a solver's start for the cold one and \
+a question's for the warm ones: $(cat \
     "${split_round0}"/{A,B,C}/solve-charged | paste -sd ' ' -)"
 split_plan="instrumented-classes generations/g0/execution_task_plan.jsonl"
 [[ "$(cat "${split_round0}/A/replay-args")" \
@@ -3763,7 +3769,7 @@ done
 $(cat "${stream_dir}/explore.log")"
 [[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
 ${campaign_solver_start_mb}
-lift12 SOLVE B ${campaign_solver_start_mb}
+lift12 SOLVE B ${campaign_question_mb}
 lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
 generations/g0/execution_task_plan.jsonl" ]] \
   || fail "the remote solves and REPLAY did not run where and as they \

@@ -118,6 +118,12 @@ recommendation.
   approximately right `.smt` is enough: a `candidate.smt2` z3 decides, with the main causal chain in it; residual
   gaps (some seed give-ups, a few HELD values, a bounded round) are acceptable when named in STATUS. Still: no
   fabricated result, every workaround listed in STATUS, and no regression of the other 38 cases.
+- **The time model is workarounds only, never ground on** (owner 2026-10-06, long-term: "好的，time model我现在全部workaround，
+  不必死磕，设为长期记忆"; "时间模型整个都不用死磕。.smt能跑出来即可，即使小有问题也可以接受"): replay clock fidelity, seed
+  give-ups from clock-driven turns (heartbeats, IBRs, the edit log's async claims) and the whole start-up/clock family
+  are handled by workarounds (test-cluster configuration, the HDFS adapter, small system-code patches, listed in
+  STATUS), never by engine work to perfect the time model; this also covers a non-clock case whose seed replay
+  stalls on that timing. An approximately right `.smt` is enough there; no fabricated result; no regression.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.

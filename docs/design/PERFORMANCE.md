@@ -43,8 +43,9 @@ running out of memory, and a single case alone takes the whole cluster.
   over less than 4 GB of real use (HDFS seed replays peak at 0.5-1.4 times their recording). Obligation replays peak within +-10 % of their own
   seed replay (HG4: 11741 674 / 662-715 MB; adhoc-07 238 / 194-257; outlier adhoc-15 514 / up to 2003, which grows
   through the ledger).
-- **An obligation is two starts**: its SOLVE (charged what a solver starts at, 1 GB; answered by its host's warm solver
-  when one serves) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once (behind only a
+- **An obligation is two starts**: its SOLVE (on a host where its campaign's solver serves, charged its question's z3 run,
+  `campaign_question_mb` 512 MB: z3 runs measured a median 1 MB, p90 369 MB, at most 1.8 GB over 118 processes, while
+  1 GB each held 51 GB of the ledger in HI2; on a cold host what a solver starts at, 1 GB) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once (behind only a
   witness's confirmation and GROW's re-runs, which end the exploration or hold every solve), on the class
   tree and plan its solve started on. Until the replay lands the obligation is in flight (never re-proposed). Most
   obligations end at the solve (UNSAT, refused), so they never wait for replay memory.
