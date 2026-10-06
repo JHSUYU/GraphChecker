@@ -135,7 +135,8 @@ recommendation.
   system/hdfs上。然后剩下的所有case。去system/hdfs1上处理。这样我们可以避免不断陷入regression"): `system/hdfs` is the locked body
   (only docs land on it); one locking round on it closes every case it can, each right `.smt` there final; every other
   change (codec capture, open arms, rule 1, the retried-call identity) and every case still open is worked on
-  `system/hdfs1`, branched from the locked body. `hdfs1` merges back only if it does not regress the locked set.
+  `system/hdfs1`, branched from the locked body. The end state is these two branches (owner: "最终就是两个分支，system/hdfs和
+  system/hdfs1"): nothing merges back into `system/hdfs` or `main`; STATUS names the branch that closed each case.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.
