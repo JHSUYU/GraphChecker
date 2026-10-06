@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -60,9 +61,11 @@ public final class ConfiguredSourcePhaseContract {
             "runtimeDeclaredCallee", "enclosingCallIds");
     private static final Set<String> OCCURRENCE_FIELDS = union(
             CONFIG_OCCURRENCE_FIELDS, "invocationId");
-    /** A CONFIG row's integral domain, from its static anchors. */
+    /** A CONFIG row's integral domain, from its static anchors, and what
+     *  its own validation admits ({@link Validity}). */
     private static final Set<String> DOMAIN_FIELDS = names(
-            "domainMin", "domainMax");
+            "domainMin", "domainMax", Validity.MIN, Validity.MAX,
+            Validity.BY);
 
     private ConfiguredSourcePhaseContract() {
     }
@@ -87,10 +90,12 @@ public final class ConfiguredSourcePhaseContract {
      */
     public static JsonObject configDeclaration(
             String sourceId, String fieldSignature, String method,
-            int unitIndex, String domainMin, String domainMax) {
+            int unitIndex, String domainMin, String domainMax,
+            Validity valid) {
         JsonObject row = site(CONFIG_DECLARATION_AUTHORITY, sourceId,
                 fieldSignature, method, unitIndex);
         domain(row, domainMin, domainMax);
+        valid.write(row);
         validateDeclaration(row);
         return row;
     }
@@ -207,6 +212,7 @@ public final class ConfiguredSourcePhaseContract {
         JsonObject row = occurrenceRow(declaration, CONFIG_PLAN_AUTHORITY,
                 occurrenceId, runtimeEventSeq, field, enclosingCallIds);
         domain(row, declaration.domainMin, declaration.domainMax);
+        declaration.valid.write(row);
         return row;
     }
 
@@ -327,7 +333,7 @@ public final class ConfiguredSourcePhaseContract {
                     field + " states half a domain or a non-integral one");
         }
         return new Declaration(sourceId, signature, method, unit, category,
-                min, max);
+                min, max, Validity.read(row));
     }
 
     private static Occurrence validateOccurrence(JsonObject row) {
@@ -415,11 +421,12 @@ public final class ConfiguredSourcePhaseContract {
         private final RootCategory category;
         private final String domainMin;
         private final String domainMax;
+        private final Validity valid;
 
         private Declaration(String sourceId, String fieldSignature,
                             String method, int unitIndex,
                             RootCategory category, String domainMin,
-                            String domainMax) {
+                            String domainMax, Validity valid) {
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
             this.method = method;
@@ -428,6 +435,7 @@ public final class ConfiguredSourcePhaseContract {
             this.category = category;
             this.domainMin = domainMin;
             this.domainMax = domainMax;
+            this.valid = valid;
         }
 
         public String sourceId() { return sourceId; }
@@ -495,5 +503,8 @@ public final class ConfiguredSourcePhaseContract {
 
         /** A CONFIG site's static domain bound, or {@code ""}. */
         public String domainMax() { return declared.domainMax; }
+
+        /** What a CONFIG site's own validation admits. */
+        public Validity valid() { return declared.valid; }
     }
 }

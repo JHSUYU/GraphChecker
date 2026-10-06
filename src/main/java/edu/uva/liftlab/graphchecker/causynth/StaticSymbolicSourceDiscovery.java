@@ -209,7 +209,8 @@ final class StaticSymbolicSourceDiscovery {
                 source.sourceId, field, signature, unitIndex),
                 ConfiguredSourcePhaseContract.configDeclaration(
                         source.sourceId, field, signature, unitIndex,
-                        source.domainMin, source.domainMax), signature);
+                        source.domainMin, source.domainMax, source.valid),
+                signature);
     }
 
     /** A tree's hook call. */

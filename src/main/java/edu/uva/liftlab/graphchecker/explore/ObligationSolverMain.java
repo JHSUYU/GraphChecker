@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
+import edu.uva.liftlab.graphchecker.runtime.FocusedReplay;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -216,13 +217,16 @@ public final class ObligationSolverMain {
                     outcome.holding.edges);
         }
         Task task = candidate.task;
+        JsonObject focus = ExploreCodec.writeFocusRow(task.focused(),
+                declared, task.seedSessionId(), task.factor(),
+                outcome.obligation, outcome.inheritedFlips,
+                outcome.clockDeltas, outcome.rootMints, outcome.pairings,
+                cut);
+        // An open decider arm's flip: its replay may refute its world
+        // (FocusedReplay#refuted).
+        if (outcome.openArm) focus.addProperty(FocusedReplay.OPEN_ARM, true);
         JsonObject published = publish(out, outcome.obligation,
-                outcome.result, outcome.smt2, outcome.gaps,
-                ExploreCodec.writeFocusRow(task.focused(), declared,
-                        task.seedSessionId(), task.factor(),
-                        outcome.obligation, outcome.inheritedFlips,
-                        outcome.clockDeltas, outcome.rootMints,
-                        outcome.pairings, cut));
+                outcome.result, outcome.smt2, outcome.gaps, focus);
         // Asked, and settled only by what its replay decides: its worker
         // makes it the settled question then (run_engine.sh
         // campaign_obligation_replay).

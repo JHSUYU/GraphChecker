@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -388,6 +389,10 @@ final class RootMint {
         String domainMax() {
             return phase.domainMax();
         }
+
+        Validity valid() {
+            return phase.valid();
+        }
     }
 
     /**
@@ -651,8 +656,10 @@ final class RootMint {
                 carried = null;
             }
             if (VmExpressionIr.carriesSymbolicValue(carried)) return;
+            String read = ConcolicRegionRuntime.recordedScalar(
+                    field.get(owner));
             if (writeModeledField(owner, fieldSignature, descriptor, value)) {
-                FocusedReplay.planted(sourceId);
+                FocusedReplay.planted(sourceId, !value.trim().equals(read));
                 return;
             }
             RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
@@ -720,13 +727,14 @@ final class RootMint {
     private static String applyFocusedRootAssignment(
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
-        String value = focusedRootValue(active, sourceId,
-                readExactField(owner, fieldSignature));
+        Object observed = readExactField(owner, fieldSignature);
+        String value = focusedRootValue(active, sourceId, observed);
         if (value.isEmpty()) return "";
         if (!active.mintIsPlaceable(owner)) return "";
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
             // Filed only on a write: an unplaced one is ASSIGNMENT_UNPLANTED.
-            FocusedReplay.planted(sourceId);
+            FocusedReplay.planted(sourceId, !value.trim().equals(
+                    ConcolicRegionRuntime.recordedScalar(observed)));
             return value;
         }
         RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER,
@@ -990,7 +998,11 @@ final class RootMint {
                     ConcolicRegionRuntime.recordedScalar(planted),
                     clock ? clockSkew(node, action, concrete, planted,
                             !assigned.isEmpty()) : 0L);
-            if (!assigned.isEmpty()) FocusedReplay.planted(root);
+            if (!assigned.isEmpty()) {
+                FocusedReplay.planted(root, !ConcolicRegionRuntime
+                        .recordedScalar(planted).equals(ConcolicRegionRuntime
+                                .recordedScalar(ran)));
+            }
             if (config) active.configurationMinted(root, fresh);
             // The region takes a door fault: it ends the exchange in hand,
             // as a native plant's does (any other root names no marker).

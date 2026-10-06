@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
@@ -420,7 +421,7 @@ final class ActiveRegion {
         row.addProperty("reused", reused);
         row.addProperty("category", entry.category().name());
         configDomain(row, entry.domainMin(), entry.domainMax(),
-                recordedValue);
+                entry.valid(), recordedValue);
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(sourceId)));
         symbolizedRows.add(row);
@@ -429,15 +430,36 @@ final class ActiveRegion {
     /**
      * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
      * static anchors ({@code causynth.ConfigRoots}) and the value this mint
-     * read.  None stated: a boolean, or no anchor, and the root is pinned.
-     * A declaration stating half a domain, or a bound that is no integer,
+     * read, clipped to what its own validation admits ({@link Validity}),
+     * which the mint row names -- unless the value read lies outside it,
+     * when the validation is no validation of this value: dropped, named,
+     * nothing clipped.  None
+     * stated: a boolean, or no anchor, and the root is pinned.  A
+     * declaration stating half a domain, or a bound that is no integer,
      * states none either, named.
      */
     static void configDomain(JsonObject row, String staticMin,
-                             String staticMax, String recordedValue) {
+                             String staticMax, Validity valid,
+                             String recordedValue) {
         String min = safe(staticMin).trim();
         String max = safe(staticMax).trim();
         String value = safe(recordedValue).trim();
+        Validity kept = Validity.ANY;
+        if (valid != null && valid != Validity.ANY
+                && INTEGER.matcher(value).matches()
+                && !valid.admits(new BigInteger(value))) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    optionalString(row, "sourceId"), "the value this"
+                            + " configuration's mint read (" + value + ")"
+                            + " lies outside what its validation admits ["
+                            + (valid.min() == null ? "" : valid.min()) + ", "
+                            + (valid.max() == null ? "" : valid.max())
+                            + "] by " + valid.by() + ", so that validation"
+                            + " bounds nothing");
+        } else if (valid != null) {
+            valid.write(row);
+            kept = valid;
+        }
         if (min.isEmpty() && max.isEmpty()) return;
         if (!INTEGER.matcher(min).matches()
                 || !INTEGER.matcher(max).matches()
@@ -450,11 +472,13 @@ final class ActiveRegion {
                             + " and is pinned");
             return;
         }
+        // The static hull and the reading, within the validation the
+        // reading passed (a value it rejects is no cluster's).
         BigInteger read = new BigInteger(value);
         row.addProperty("domainMin",
-                read.min(new BigInteger(min)).toString());
+                kept.clip(read.min(new BigInteger(min))).toString());
         row.addProperty("domainMax",
-                read.max(new BigInteger(max)).toString());
+                kept.clip(read.max(new BigInteger(max))).toString());
     }
 
     private static final java.util.regex.Pattern INTEGER =
@@ -541,7 +565,8 @@ final class ActiveRegion {
             // A configuration getter's return is the root of its key.
             row.addProperty("sourceId", action.configSource);
             configDomain(row, action.configDomainMin,
-                    action.configDomainMax, recordedValue);
+                    action.configDomainMax, action.configValid,
+                    recordedValue);
         }
         // A declared wall-clock read says so, so no reader guesses a clock
         // from a name.  Trap: never publish the PLAN's instant as its value.

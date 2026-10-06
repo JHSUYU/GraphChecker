@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -896,7 +897,8 @@ public class ManualMintStatesItsValueTest {
                 ConfiguredSourcePhaseContract.declarationsOf(
                         singletonArray(ConfiguredSourcePhaseContract
                                 .configDeclaration("CONFIG:k", FIELD,
-                                        PHASE_METHOD, UNIT, "0", "4")))
+                                        PHASE_METHOD, UNIT, "0", "4",
+                                        Validity.ANY)))
                         .get(0), NODE + "#epoch1/region/" + REGION + "#7",
                 11L, FIELD, Arrays.asList(7L)));
         configTask.add(ConfiguredSourcePhaseContract.PLAN_FIELD, reads);
@@ -980,7 +982,7 @@ public class ManualMintStatesItsValueTest {
             JsonObject row = new JsonObject();
             row.addProperty("sourceId", "CONFIG:k");
             ActiveRegion.configDomain(row, (String) domain[1],
-                    (String) domain[2], (String) domain[3]);
+                    (String) domain[2], Validity.ANY, (String) domain[3]);
             assertEquals((String) domain[0], domain[4],
                     row.has("domainMin") ? row.get("domainMin").getAsString()
                             + ".." + row.get("domainMax").getAsString()
@@ -988,6 +990,22 @@ public class ManualMintStatesItsValueTest {
             assertEquals((String) domain[0], domain[5], gaps().size());
         }
         assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
+        // Its validation is named, and clips the static hull, while the
+        // value read passes it; it is dropped, named, and clips nothing
+        // where the value read fails it.
+        Validity atLeastSix = Validity.of(java.math.BigInteger.valueOf(6),
+                null, "a.B#u3");
+        for (String read : new String[] {"7", "5"}) {
+            JsonObject row = new JsonObject();
+            row.addProperty("sourceId", "CONFIG:k");
+            ActiveRegion.configDomain(row, "4", "10", atLeastSix, read);
+            assertEquals(read, "7".equals(read), row.has(Validity.MIN));
+            assertEquals(read, "7".equals(read) ? "6" : "4",
+                    row.get("domainMin").getAsString());
+        }
+        assertEquals(4, gaps().size());
+        assertTrue(gap().detail(), gap().detail().contains("(5) lies outside"
+                + " what its validation admits [6, ] by a.B#u3"));
     }
 
     /** One expression naming one VM symbol, as a mint publishes it. */

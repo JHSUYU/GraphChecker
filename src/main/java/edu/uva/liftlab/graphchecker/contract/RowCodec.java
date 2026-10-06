@@ -415,6 +415,7 @@ public final class RowCodec {
         if (row.clockSkew() != 0L) {
             json.addProperty(RootMintRow.CLOCK_SKEW, row.clockSkew());
         }
+        row.valid().write(json);
         return json;
     }
 
@@ -435,7 +436,8 @@ public final class RowCodec {
                         optionalString(json, RootMintRow.CLOCK_SOURCE))
                         : null,
                 json.has(RootMintRow.CLOCK_SKEW)
-                        ? number(json, RootMintRow.CLOCK_SKEW) : 0L);
+                        ? number(json, RootMintRow.CLOCK_SKEW) : 0L)
+                .validated(Validity.read(json));
     }
 
     public static JsonObject writeTarget(TargetRow row) {
@@ -508,13 +510,45 @@ public final class RowCodec {
         json.addProperty("obligationId", row.obligationId());
         json.addProperty("verdict", row.verdict().name());
         json.addProperty("detail", row.detail());
+        if (row.refutation() != null) {
+            json.add(REFUTATION, writeRefutation(row.refutation()));
+        }
         return json;
     }
 
     public static ObligationResult readObligationResult(JsonObject json) {
+        JsonObject refutation = optionalObject(json, REFUTATION);
         return ObligationResult.of(string(json, "obligationId"),
                 Verdict.valueOf(string(json, "verdict")),
-                string(json, SESSION_ID), string(json, "detail"));
+                string(json, SESSION_ID), string(json, "detail"),
+                refutation == null ? null : readRefutation(refutation));
+    }
+
+    /** A result row's {@link WorldRefutation}. */
+    private static final String REFUTATION = "refutation";
+
+    public static JsonObject writeRefutation(WorldRefutation refutation) {
+        JsonObject json = new JsonObject();
+        JsonArray conditions = new JsonArray();
+        for (String condition : refutation.conditions()) {
+            conditions.add(condition);
+        }
+        json.add("conditions", conditions);
+        json.addProperty("exception", refutation.exception());
+        json.addProperty("thrownAt", refutation.thrownAt());
+        json.addProperty("testFrame", refutation.testFrame());
+        return json;
+    }
+
+    private static WorldRefutation readRefutation(JsonObject json) {
+        List<String> conditions = new ArrayList<String>();
+        for (JsonElement condition : array(json, "conditions")) {
+            conditions.add(condition.getAsString());
+        }
+        return WorldRefutation.of(conditions,
+                optionalString(json, "exception"),
+                optionalString(json, "thrownAt"),
+                optionalString(json, "testFrame"));
     }
 
     /** One scheduling event; no session id (prefixes cross sessions). */

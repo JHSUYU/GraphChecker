@@ -150,7 +150,11 @@ version it observed.
   admission rule and one closure walk shared by EXPLORE, COMPOSE and CONFIRM).
 - A guard on a helper's return is decided by the helper's branch (`ite(decider, the constant arm's verdict, the run's
   own predicate)`, enum constants and `equals` included); an open arm no run took is a flip site of the reached anchor
-  and is named at the fixed point (`OPEN_ARM_UNANSWERED`, a RUN_DEFECT when its flips only came back NOT_ADMITTED).
+  and is named at the fixed point (`OPEN_ARM_UNANSWERED`, a RUN_DEFECT when its flips only came back NOT_ADMITTED);
+  a replay that ran the arm's world faithfully and never entered its occurrence refutes that world (`WORLD_REFUTED`),
+  and the flip is asked again without it.
+- An integral configuration's domain also takes every literal a recorded decision compares it with, within what its
+  own validation admits (`contract.Validity`), through one reader (`explore.Corpus#domainOf`).
 - A solved obligation's REPLAY is queued first behind any witness CONFIRM or GROW re-run, never ahead of them.
 - A declared bound that cut the search (wave budget, paths per task round, world depth, task bound, PLAN's closure
   cut, the claim bound) is named in `result.json` `bounded`.

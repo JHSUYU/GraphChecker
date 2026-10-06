@@ -9,6 +9,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -72,6 +73,8 @@ final class SymbolizeAction {
     final String configSource;
     final String configDomainMin;
     final String configDomainMax;
+    /** What the configuration's own validation admits. */
+    final Validity configValid;
     /** A fault marker's name ({@code FAULT:<TRANSPORT>:..}); "" for any
      *  other input. */
     final String marker;
@@ -144,6 +147,7 @@ final class SymbolizeAction {
                 InputActionCatalog.DECLARED_DOMAIN_MIN);
         this.configDomainMax = optionalString(json,
                 InputActionCatalog.DECLARED_DOMAIN_MAX);
+        this.configValid = Validity.read(json);
         this.marker = optionalString(json,
                 InputActionCatalog.DECLARED_FAULT_MARKER);
         this.siteId = optionalString(json, "siteId");

@@ -103,6 +103,17 @@ public class ConfigRootsTest {
                         + CONF + ")>")) + " " + source(roots.call(
                         "<t.Manager: int limitOf(" + CONF + ")>", 1,
                         getInt))},
+            {"a wrapper's own validation rides beside the static hull, which"
+                    + " it clips only where a run's reading passes it",
+                "CONFIG:k.min int [1,6] [2,] by <t.Manager: int minOf("
+                        + CONF + ")>#u2", source(roots.field(field(
+                        "int min"))) + " " + roots.field(field("int min"))
+                        .valid},
+            {"a validation one return bypasses bounds nothing: every path"
+                    + " to the value's return must pass it",
+                "CONFIG:k.cap int [1,5] [,]", source(roots.field(field(
+                        "int cap"))) + " " + roots.field(field("int cap"))
+                        .valid},
             {"a getter called on a subclass is the catalog's",
                 "CONFIG:k.sub int [2,2]", source(roots.call(run(), 5,
                         "<org.apache.hadoop.hdfs.HdfsConfiguration: int "
@@ -221,6 +232,8 @@ public class ConfigRootsTest {
         SootField low = field(manager, "low", IntType.v());
         SootField san = field(manager, "san", IntType.v());
         SootField debt = field(manager, "debt", IntType.v());
+        SootField min = field(manager, "min", IntType.v());
+        SootField cap = field(manager, "cap", IntType.v());
 
         SootMethod wrapper = view(manager, "legacy", "k.legacy", "true",
                 confType, text, get, equals);
@@ -241,6 +254,41 @@ public class ConfigRootsTest {
                 J.newAssignStmt(l2, J.newStaticInvokeExpr(max.makeRef(), l1,
                         IntConstant.v(2))),
                 J.newReturnStmt(l2));
+
+        // A wrapper that throws on a value below 2 before it returns it.
+        SootClass failure = library("java.lang.RuntimeException", object);
+        SootMethod minOf = method(manager, "minOf",
+                Collections.<Type>singletonList(confType), IntType.v(),
+                Modifier.STATIC);
+        Local m0 = local(minOf, "r0", confType);
+        Local m1 = local(minOf, "$i0", IntType.v());
+        Local m2 = local(minOf, "$r1", failure.getType());
+        Unit valid = J.newReturnStmt(m1);
+        body(minOf, J.newIdentityStmt(m0, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(m1, J.newVirtualInvokeExpr(m0,
+                        getInt.makeRef(), StringConstant.v("k.min"),
+                        IntConstant.v(1))),
+                J.newIfStmt(J.newGeExpr(m1, IntConstant.v(2)), valid),
+                J.newAssignStmt(m2, J.newNewExpr(failure.getType())),
+                J.newThrowStmt(m2), valid);
+
+        // A wrapper whose check of a value below 3 one return bypasses.
+        SootMethod capOf = method(manager, "capOf",
+                Collections.<Type>singletonList(confType), IntType.v(),
+                Modifier.STATIC);
+        Local c0 = local(capOf, "r0", confType);
+        Local c1 = local(capOf, "$i0", IntType.v());
+        Local c2 = local(capOf, "$r1", failure.getType());
+        Unit checked = J.newReturnStmt(c1);
+        Unit bypassed = J.newReturnStmt(c1);
+        body(capOf, J.newIdentityStmt(c0, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(c1, J.newVirtualInvokeExpr(c0,
+                        getInt.makeRef(), StringConstant.v("k.cap"),
+                        IntConstant.v(1))),
+                J.newIfStmt(J.newLtExpr(c1, IntConstant.v(0)), bypassed),
+                J.newIfStmt(J.newGeExpr(c1, IntConstant.v(3)), checked),
+                J.newAssignStmt(c2, J.newNewExpr(failure.getType())),
+                J.newThrowStmt(c2), checked, bypassed);
 
         SootMethod init = method(manager, "<init>",
                 Collections.<Type>singletonList(confType), VoidType.v(), 0);
@@ -329,9 +377,37 @@ public class ConfigRootsTest {
         writers.put(field("int debt"), Collections.singletonList(
                 setDebt.getSignature() + "#u3"));
 
+        SootMethod setMin = method(manager, "setMin",
+                Collections.<Type>singletonList(confType), VoidType.v(), 0);
+        Local t0 = local(setMin, "r0", self);
+        Local t1 = local(setMin, "r1", confType);
+        Local t2 = local(setMin, "$i0", IntType.v());
+        body(setMin, J.newIdentityStmt(t0, J.newThisRef(self)),
+                J.newIdentityStmt(t1, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(t2, J.newStaticInvokeExpr(minOf.makeRef(),
+                        t1)),
+                store(t0, min, t2), J.newReturnVoidStmt());
+        writers.put(field("int min"), Collections.singletonList(
+                setMin.getSignature() + "#u3"));
+
+        SootMethod setCap = method(manager, "setCap",
+                Collections.<Type>singletonList(confType), VoidType.v(), 0);
+        Local p0 = local(setCap, "r0", self);
+        Local p1 = local(setCap, "r1", confType);
+        Local p2 = local(setCap, "$i0", IntType.v());
+        body(setCap, J.newIdentityStmt(p0, J.newThisRef(self)),
+                J.newIdentityStmt(p1, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(p2, J.newStaticInvokeExpr(capOf.makeRef(),
+                        p1)),
+                store(p0, cap, p2), J.newReturnVoidStmt());
+        writers.put(field("int cap"), Collections.singletonList(
+                setCap.getSignature() + "#u3"));
+
         compare(manager, self, "check", limit, 10, bump, edges);
+        compare(manager, self, "checkCap", cap, 4, bump, edges);
         compare(manager, self, "checkLow", low, 3, bump, edges);
         compare(manager, self, "checkDebt", debt, 0, bump, edges);
+        compare(manager, self, "checkMin", min, 5, bump, edges);
         String checkSig = "<" + MANAGER + ": void check()>";
         for (String read : new String[]{"boolean ordered", "int counter",
                 "boolean legacy", "int san"}) {

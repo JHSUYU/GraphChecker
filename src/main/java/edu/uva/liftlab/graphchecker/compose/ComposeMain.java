@@ -69,14 +69,14 @@ public final class ComposeMain {
     /** Writes the query, the manifest and the claim; answers one summary line. */
     static String run(Arguments arguments) throws IOException {
         long started = System.nanoTime();
-        // Root domains are read once, here, and handed to the composer only.
-        Corpus corpus = Corpus.read(arguments.iteration, null);
+        // Root domains are read once, with the corpus (Corpus#domainOf).
+        Corpus corpus = Corpus.read(arguments.iteration,
+                arguments.rootDomains);
         System.err.println("compose: read " + corpus.sessions().size()
                 + " session(s) in " + seconds(System.nanoTime() - started)
                 + " s");
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
-                RootDomain.declared(arguments.rootDomains),
                 arguments.maxValuations,
                 StaticScopeMap.read(arguments.scopeMap));
         long lowered = System.nanoTime();

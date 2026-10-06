@@ -1161,6 +1161,9 @@ public final class ScheduleLog {
         if (state[slot] != OPEN) return;
         markLocked(slot, GIVEN_UP);
         givenUp++;
+        FocusedReplay.departed(slot + " (" + order.get(slot).render()
+                + (slot < cut ? ", in the prefix" : ", past the cut at "
+                + cut) + ")");
     }
 
     /** A turn's END gives up what the turn did not make, WAKEs aside. */

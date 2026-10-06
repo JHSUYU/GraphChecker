@@ -197,7 +197,8 @@ public final class CausynthPipeline {
                             unitIndex, callee);
                     return source == null ? null
                             : new StaticScopeMap.ConfigCall(source.sourceId,
-                                    source.domainMin, source.domainMax);
+                                    source.domainMin, source.domainMax,
+                                    source.valid);
                 },
                 demand.marks(),
                 method -> !CausynthStaticFacts.applicationMethod(method),

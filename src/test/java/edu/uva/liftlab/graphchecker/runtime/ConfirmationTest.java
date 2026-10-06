@@ -433,6 +433,100 @@ public class ConfirmationTest {
     }
 
     /**
+     * How a replay held its world ({@code Confirmation#held}, condition (b)
+     * of a WORLD_REFUTED): a hold an interrupt ended stands while its
+     * activation does nothing tracked after it, and gave way once it does;
+     * a placeholder read that observed another writer than its MINT edge's
+     * is a misread, one never minted none; edges a world plants and the
+     * replay cannot read fail it whole.
+     */
+    @Test
+    public void anInterruptedHoldStandsOnlyUntilItsActivationRunsOn()
+            throws Exception {
+        String reader = Endpoint.activation(OccurrenceAddress.parse(ANCHOR),
+                ExecutionIndex.empty());
+        String never = Endpoint.activation(OccurrenceAddress.parse(PRODUCER),
+                ExecutionIndex.empty());
+        Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
+        // ran on after the interrupt, a placeholder read at the edge's cell
+        // (null: none), stands, misread
+        Object[][] table = {
+                {false, null, true, false},
+                {true, null, false, false},
+                {false, Boolean.TRUE, true, false},
+                {false, Boolean.FALSE, true, true}};
+        for (Object[] row : table) {
+            reset();
+            handed("", Arrays.asList(
+                    "{\"kind\":\"ORDER\",\"before\":\"" + never
+                            + "\",\"after\":\"" + reader + "\"}",
+                    "{\"kind\":\"STATE\",\"reader\":\"" + endpoint(ANCHOR,
+                            "a.Handler#h()#12:READ").id() + "\",\"mint\":true,"
+                            + "\"writer\":\"" + writer.id()
+                            + "\",\"version\":\"4\","
+                            + "\"location\":\"INSTANCE/1#40\"}"));
+            assertTrue(Confirmation.ordering());
+            Thread held = new Thread(() -> {
+                Thread.currentThread().interrupt();
+                Confirmation.entering(reader);
+                if ((Boolean) row[0]) {
+                    Confirmation.wrote(cell, 9L, writer, false);
+                }
+            });
+            held.start();
+            held.join(5000L);
+            if (row[1] != null) {
+                Confirmation.wrote(cell, 4L, (Boolean) row[1] ? writer
+                        : endpoint(PRODUCER, "a.Convert#c()#2:WRITE"), false);
+                Confirmation.read(endpoint(PRODUCER, "a.Convert#c()#3:READ"),
+                        cell, 4L, 9L);
+            }
+            Confirmation.Held run = Confirmation.held();
+            String what = Arrays.toString(row) + ": " + run.gaveWay + " "
+                    + run.waiting + " " + run.misread;
+            assertEquals(what, (Boolean) row[2], run.gaveWay.isEmpty()
+                    && run.waiting.containsKey(reader));
+            assertEquals(what, (Boolean) row[3], !run.misread.isEmpty());
+        }
+        // Two holds an interrupt ended on one thread both stand: the later
+        // one never hides the earlier.
+        reset();
+        String second = Endpoint.activation(OccurrenceAddress.parse(MINT),
+                ExecutionIndex.empty());
+        handed("", Arrays.asList(
+                "{\"kind\":\"ORDER\",\"before\":\"" + never
+                        + "\",\"after\":\"" + reader + "\"}",
+                "{\"kind\":\"ORDER\",\"before\":\"" + never
+                        + "\",\"after\":\"" + second + "\"}"));
+        assertTrue(Confirmation.ordering());
+        Thread both = new Thread(() -> {
+            Thread.currentThread().interrupt();
+            Confirmation.entering(reader);
+            Thread.currentThread().interrupt();
+            Confirmation.entering(second);
+        });
+        both.start();
+        both.join(5000L);
+        Confirmation.Held twice = Confirmation.held();
+        assertTrue(twice.waiting.toString(), twice.gaveWay.isEmpty()
+                && twice.waiting.containsKey(reader)
+                && twice.waiting.containsKey(second));
+        reset();
+        Path worker = folder.newFolder().toPath();
+        Files.write(worker.resolve("focused_task.jsonl"), ("{\"taskId\":"
+                + "\"T\",\"obligationId\":\"OB\",\"pathId\":\"p\","
+                + "\"focused\":\"" + ANCHOR + "\",\"seedSessionId\":\"seed\","
+                + "\"flip\":null,\"pairings\":{\"r\":\"w\"}}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        Path plan = worker.resolve("execution_task_plan.jsonl");
+        Files.write(plan, new byte[0]);
+        System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
+        assertTrue("edges a world plants and the replay cannot read",
+                Confirmation.held().misread.get(0).startsWith("EDGES: "));
+    }
+
+    /**
      * An ORDER on claimed work (a server pipeline's request) is held at the
      * send that started it, up the chain of claimed work; on any other
      * activation, where it runs; and refused where no send runs outside

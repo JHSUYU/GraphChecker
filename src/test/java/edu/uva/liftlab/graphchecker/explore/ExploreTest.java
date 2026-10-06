@@ -1777,6 +1777,97 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * WORLD_REFUTED: a replay of an open arm's flip that refuted its world
+     * answers nothing of the arm.  The arm is asked again with exactly that
+     * world excluded, the round names the refuted world on the arm's row
+     * (digest, conditions, the workload's exception), and the arm closes
+     * UNSAT once no other world of the corpus takes it -- an UNSAT that says
+     * it rests on the refuted world.
+     */
+    @Test
+    public void aRefutedWorldIsExcludedAndTheArmAskedAgain() throws Exception {
+        Assume.assumeTrue(z3Available());
+        String helper = "State#u2";
+        Path iteration = tree.newFolder("refuted-arm").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL, "7",
+                "7", "11", true);
+        seed.decision(TARGET, helper, 1, false, "(> M_SERIAL 10)");
+        seed.targets.add(TargetRow.of("s-seed", 99L, TARGET, "Throw#u30",
+                "false", false, true, TargetRow.OpenArm.of(helper, 1, true,
+                        helper, 1)));
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u9"));
+        Corpus corpus = Corpus.read(iteration, null);
+        assertTrue("a flip toward the open arm runs it",
+                corpus.openArmFlip(TARGET, helper, 1, true));
+        assertFalse("the same decision flipped away from it is ordinary",
+                corpus.openArmFlip(TARGET, helper, 1, false));
+        Path out = tree.newFolder("refuted-arm-out").toPath();
+        Path results = out.resolve("results.jsonl");
+        Files.write(results, new byte[0]);
+        plan(iteration, TARGET_SELECTOR, null, results,
+                out.resolve("obligations-0000"), 0);
+        Obligation asked = obligations(out.resolve("obligations-0000"))
+                .get(0);
+        Worker first = solve(iteration, out.resolve("obligations-0000"),
+                asked, out, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, first.verdict);
+        assertEquals("the one world that takes it",
+                "11", first.obligation.rootAssignments().get("CASE.SERIAL"));
+        // Its replay refuted that world: the worker's answer, as the head
+        // lands it in the iteration.
+        ObligationResult refuted = ObligationResult.of(asked.obligationId(),
+                Verdict.NOT_ADMITTED, "s-flip", "WORLD_REFUTED: never entered",
+                edu.uva.liftlab.graphchecker.contract.WorldRefutation.of(
+                        Arrays.asList("(a)", "(b)", "(c)", "(d)"),
+                        "java.io.IOException: closed", "A.close(A.java:9)",
+                        "T.test(T.java:3)"));
+        Path landed = iteration.resolve("obligations-0000")
+                .resolve(asked.obligationId());
+        Files.createDirectories(landed);
+        Files.copy(first.directory.resolve(ObligationDir.FOCUSED_TASK),
+                landed.resolve(ObligationDir.FOCUSED_TASK));
+        record(landed.resolve(ObligationDir.RESULT), refuted);
+        record(results, refuted);
+        JsonObject again = plan(iteration, TARGET_SELECTOR, null, results,
+                out.resolve("obligations-0001"), 1);
+        List<Obligation> reasked = obligations(out.resolve("obligations-0001"));
+        assertEquals("asked again: " + reasked, 1, reasked.size());
+        JsonObject arm = again.getAsJsonArray("openArms").get(0)
+                .getAsJsonObject();
+        assertEquals("PENDING", arm.get("state").getAsString());
+        JsonArray worlds = arm.getAsJsonArray("refutedWorlds");
+        assertEquals("named: " + arm, 1, worlds.size());
+        assertEquals("java.io.IOException: closed", worlds.get(0)
+                .getAsJsonObject().get("exception").getAsString());
+        Worker second = solve(iteration, out.resolve("obligations-0001"),
+                reasked.get(0), out, "w1");
+        assertEquals("no other world takes the arm", Verdict.UNSAT,
+                second.verdict);
+        String query = new String(Files.readAllBytes(second.directory
+                .resolve("obligation_query.smt2")), StandardCharsets.UTF_8);
+        assertTrue(query, query.contains("; refuted world "
+                + worlds.get(0).getAsJsonObject().get("world")
+                .getAsString()));
+        ObligationResult closed = RowCodec.readAll(second.directory
+                .resolve(ObligationDir.RESULT), RowCodec::readObligationResult)
+                .get(0);
+        assertTrue(closed.detail(), closed.detail().contains(
+                "rests: " + worlds.get(0).getAsJsonObject().get("world")
+                        .getAsString()));
+        record(results, closed);
+        JsonObject last = plan(iteration, TARGET_SELECTOR, null, results,
+                out.resolve("obligations-0002"), 2);
+        JsonObject named = last.getAsJsonArray("openArms").get(0)
+                .getAsJsonObject();
+        assertEquals("UNSAT", named.get("state").getAsString());
+        assertEquals(1, named.getAsJsonArray("refutedWorlds").size());
+    }
+
     // ---- (4) a root with no domain is pinned, here as in the composer --
 
     @Test

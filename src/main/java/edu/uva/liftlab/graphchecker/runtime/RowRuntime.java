@@ -26,6 +26,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
@@ -180,6 +181,7 @@ public final class RowRuntime {
             }
             return null;
         }
+        FocusedReplay.entered(address);
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
@@ -518,8 +520,9 @@ public final class RowRuntime {
                                 String rootId, String symbol, RootKind kind,
                                 RootCategory category,
                                 String recordedValue, String domainMin,
-                                String domainMax, boolean declared,
-                                Clock clock, long clockSkew) {
+                                String domainMax, Validity valid,
+                                boolean declared, Clock clock,
+                                long clockSkew) {
         if (kind == RootKind.CLOCK) {
             // The cell the mint already filed, restated so a CLOCK row
             // nothing filed at the mint still resolves.
@@ -534,7 +537,7 @@ public final class RowRuntime {
                 Text.safe(recordedValue),
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
-                declared, clock, clockSkew));
+                declared, clock, clockSkew).validated(valid));
         // The mint is IN the session -- a different fact from the plant,
         // which survives an occurrence whose rows are discarded.
         FocusedReplay.mintPublished(rootId);

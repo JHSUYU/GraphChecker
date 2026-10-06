@@ -151,13 +151,15 @@ recommendation.
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
   back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
 - **A faithful run that never enters an open arm's occurrence refutes that world** (lead, 2026-10-06, after the
-  handover; agent S's design A for 39/40): for open-arm flips only, a replay that planted its whole world (every root
-  and skew minted at its value, no prefix abandoned), whose order holds never gave way (any still waiting wait only on
-  the never-entered occurrence), whose first skipped slot comes after the world first acted, and whose workload ended
-  by itself, answers that world: the program does not reach the occurrence there (39: a held block report makes
-  `complete()` fail, so the test never appends). The world is named (`WORLD_REFUTED`) and excluded from the arm's
-  re-ask, never the arm; anything short of faithful stays NOT_ADMITTED/UNANSWERED (a RUN_DEFECT at the end, as the
-  owner ruled for a run failure). Never applied to CONFIRM.
+  handover; agent S's design A for 39/40, tightened after review; on `hdfs-open-arms`, for `system/hdfs1`): for an open
+  arm's flip toward the arm only, a replay that ran its world faithfully -- every assignment minted and planted, no
+  prefix abandoned, every inherited flip taken; no order hold gave way and no paired read misread (holds still waiting
+  wait only on the never-entered occurrence); the world acted in the window (a plant at the recorded value is no act)
+  and no slot was given up before it did; the workload ended by itself -- and never entered the flip's occurrence
+  refutes that world (`WORLD_REFUTED`). The world is named and excluded from the arm's re-ask, never the arm; a refuted
+  world is never re-run, at most past eight (named `bounded`); an UNSAT after it states what it rests on, and each
+  refutation is read against the code before the UNSAT counts. Anything short of faithful stays NOT_ADMITTED/UNANSWERED
+  (a RUN_DEFECT at the end, as the owner ruled for a run failure). Never applied to CONFIRM.
 - **The engine's own plumbing is never program state** (lead, 2026-10-06, codec-capture design): no field of the engine's
   runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
   a READ_SITE; a read made by such code takes its observed version's value at import.

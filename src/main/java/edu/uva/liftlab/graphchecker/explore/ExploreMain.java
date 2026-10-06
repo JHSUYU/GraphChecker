@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
@@ -280,12 +281,18 @@ public final class ExploreMain {
      * path's flip TAKEN where a replay ran it ({@code ADMITTED}) or another
      * recorded path took it -- phi states the arm there, and an arm one path
      * took is not listed -- {@code UNSAT} where no world of the corpus takes
-     * it, {@code UNANSWERED} where its flip came to anything else (a replay
-     * that never reached the decision, NOT_ADMITTED), {@code PENDING} while
-     * one is in flight, {@code NOT_ASKED} where no round cut it from that
-     * path, {@code NOT_FLIPPABLE} where no decision under it states a
-     * predicate.  The arm's state is the first of UNANSWERED, NOT_ASKED,
-     * PENDING, NOT_FLIPPABLE, UNSAT any of its paths is in.  EMIT names each
+     * it, {@code PENDING} while one is in flight or proposed (a flip asked
+     * again without a world its replay refuted among them), {@code
+     * UNANSWERED} where its flip came to anything else (a replay that never
+     * reached the decision and refuted nothing, NOT_ADMITTED), {@code
+     * NOT_ASKED} where no round cut it from that path, {@code NOT_FLIPPABLE}
+     * where no decision under it states a predicate.  The arm's state is the
+     * first of UNANSWERED, NOT_ASKED, PENDING, NOT_FLIPPABLE, UNSAT any of
+     * its paths is in.  Each world a replay of its flip refuted
+     * (WORLD_REFUTED, {@link Corpus#refutedWorlds}) is named on the row
+     * ({@code refutedWorlds}: its digest, obligation, session, the
+     * conditions that held, the workload's terminating exception and where
+     * it was thrown): an UNSAT rests on them.  EMIT names each arm
      * (result.json concrete[] OPEN_ARM): an UNSAT closes over none but an
      * UNSAT one, and an UNANSWERED one leaves no verdict.
      */
@@ -297,7 +304,7 @@ public final class ExploreMain {
             proposed.add(obligation.obligationId());
         }
         String[] order = {"UNANSWERED", "NOT_ASKED", "PENDING",
-                "NOT_FLIPPABLE", "UNSAT"};
+                "NOT_FLIPPABLE", BOUNDED, "UNSAT"};
         JsonArray arms = new JsonArray();
         for (OccurrenceAddress root : roots) {
             Task task = null;
@@ -308,6 +315,8 @@ public final class ExploreMain {
                     new LinkedHashMap<String, Map<String, Integer>>();
             Map<String, Set<String>> asked =
                     new LinkedHashMap<String, Set<String>>();
+            Map<String, Map<String, JsonObject>> refuted =
+                    new LinkedHashMap<String, Map<String, JsonObject>>();
             Set<String> taken = new LinkedHashSet<String>();
             for (TargetRow row : corpus.targetsOn(root)) {
                 TargetRow.OpenArm arm = row.openArm();
@@ -317,8 +326,10 @@ public final class ExploreMain {
                     continue;
                 }
                 String key = arm.siteId() + "=" + arm.outcome();
+                Map<String, JsonObject> worlds = refuted.computeIfAbsent(key,
+                        k -> new LinkedHashMap<String, JsonObject>());
                 String state = openArmState(corpus, task, root, row, arm,
-                        frontier, proposed);
+                        frontier, proposed, worlds);
                 if ("TAKEN".equals(state)) taken.add(key);
                 states.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, Integer>())
@@ -356,18 +367,31 @@ public final class ExploreMain {
                 row.add("asked", ExploreCodec.list(new ArrayList<String>(
                         asked.getOrDefault(arm.getKey(),
                                 new LinkedHashSet<String>()))));
+                JsonArray worlds = new JsonArray();
+                for (JsonObject world : refuted.get(arm.getKey()).values()) {
+                    worlds.add(world);
+                }
+                row.add("refutedWorlds", worlds);
                 arms.add(row);
             }
         }
         return arms;
     }
 
-    /** What one path's flip of its open arm came to ({@link #openArms}). */
+    /** An open arm whose flip is asked no more past {@link
+     *  ObligationFactory#MAX_REFUTED_WORLDS} refuted worlds: the named
+     *  valve, result.json {@code bounded}. */
+    static final String BOUNDED = "BOUNDED";
+
+    /** What one path's flip of its open arm came to ({@link #openArms});
+     *  the worlds its replays refuted are added to {@code refuted}, by
+     *  digest. */
     private static String openArmState(Corpus corpus, Task task,
                                        OccurrenceAddress root, TargetRow row,
                                        TargetRow.OpenArm arm,
                                        Frontier frontier,
-                                       Set<String> proposed) {
+                                       Set<String> proposed,
+                                       Map<String, JsonObject> refuted) {
         if (arm.askedSiteId().isEmpty()) return "NOT_FLIPPABLE";
         if (task == null) return "NOT_ASKED";
         for (Corpus.RecordedPath path : corpus.pathsOf(root)) {
@@ -378,6 +402,13 @@ public final class ExploreMain {
                         || decision.ordinal() != arm.askedOrdinal()) {
                     continue;
                 }
+                List<Corpus.Refuted> worlds = corpus.refutedWorlds(
+                        ObligationFactory.flip(task.taskId(), path.pathId,
+                                decision.siteId(), decision.ordinal(),
+                                !decision.outcome()));
+                for (Corpus.Refuted world : worlds) {
+                    refuted.putIfAbsent(world.digest, refutedWorld(world));
+                }
                 String id = ObligationFactory.obligationId(task.taskId(),
                         decision.siteId(), decision.ordinal(),
                         !decision.outcome(), ObligationFactory.dependence(
@@ -387,12 +418,30 @@ public final class ExploreMain {
                     return "TAKEN";
                 }
                 if (verdict == Verdict.UNSAT) return "UNSAT";
-                if (verdict != null) return "UNANSWERED";
-                return frontier.inFlight(id) || proposed.contains(id)
-                        ? "PENDING" : "NOT_ASKED";
+                if (frontier.inFlight(id) || proposed.contains(id)) {
+                    return "PENDING";
+                }
+                if (Corpus.distinctWorlds(worlds)
+                        >= ObligationFactory.MAX_REFUTED_WORLDS) {
+                    return BOUNDED;
+                }
+                return verdict != null ? "UNANSWERED" : "NOT_ASKED";
             }
         }
         return "NOT_ASKED";
+    }
+
+    /** One refuted world as an open arm's row names it. */
+    private static JsonObject refutedWorld(Corpus.Refuted world) {
+        JsonObject row = new JsonObject();
+        row.addProperty("world", world.digest);
+        row.addProperty("obligationId", world.obligationId);
+        row.addProperty("sessionId", world.sessionId);
+        JsonObject why = RowCodec.writeRefutation(world.refutation);
+        for (Map.Entry<String, JsonElement> member : why.entrySet()) {
+            row.add(member.getKey(), member.getValue());
+        }
+        return row;
     }
 
     /**

@@ -26,13 +26,19 @@ public final class JUnitMethodRunner {
             throw new IllegalStateException(refusedOpen);
         }
         int status = 0;
+        Throwable ended = null;
         try {
             JUnitLifecycle.run(args);
         } catch (Throwable failure) {
             // The replay's outcome is read from stderr.
             EngineConsole.trace(failure);
             status = 1;
+            ended = failure;
         }
+        // The workload ended by itself, whatever it threw: a replay's world
+        // may be refuted by it (FocusedReplay#refuted).
+        FocusedReplay.workloadEnded(ended, args == null || args.length == 0
+                ? "" : args[0]);
         exit(status);
     }
 

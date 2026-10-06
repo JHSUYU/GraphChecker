@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import java.util.ArrayList;
@@ -134,7 +135,8 @@ final class RowPlaceholderMint {
                     kind, RootCategory.valueOf(optionalString(row,
                             "category")), recorded,
                     optionalString(row, "domainMin"),
-                    optionalString(row, "domainMax"), true,
+                    optionalString(row, "domainMax"), Validity.read(row),
+                    true,
                     kind == RootKind.CLOCK ? Clock.of(optionalLongInteger(row,
                             InputActionCatalog.DECLARED_WALL_CLOCK, 0L),
                             optionalString(row,

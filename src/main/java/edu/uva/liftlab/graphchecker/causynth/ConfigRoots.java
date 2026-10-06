@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import soot.Body;
@@ -23,17 +24,28 @@ import soot.jimple.CmpgExpr;
 import soot.jimple.CmplExpr;
 import soot.jimple.ConditionExpr;
 import soot.jimple.Constant;
+import soot.jimple.EqExpr;
 import soot.jimple.FieldRef;
+import soot.jimple.GeExpr;
+import soot.jimple.GotoStmt;
+import soot.jimple.GtExpr;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IfStmt;
 import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
+import soot.jimple.LeExpr;
 import soot.jimple.LongConstant;
+import soot.jimple.LookupSwitchStmt;
+import soot.jimple.LtExpr;
 import soot.jimple.ParameterRef;
 import soot.jimple.ReturnStmt;
+import soot.jimple.ReturnVoidStmt;
 import soot.jimple.StringConstant;
+import soot.jimple.TableSwitchStmt;
+import soot.jimple.ThrowStmt;
 import soot.toolkits.graph.BriefUnitGraph;
+import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.MHGPostDominatorsFinder;
 
 import java.math.BigInteger;
@@ -103,7 +115,12 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * {@code c} a branch compares its value with within {@value #FLOWS} flows
  * of the slice, never through a field; then through its clamps, whose
  * image a planted value must lie in.  The mint adds the value it read
- * ({@code runtime.ActiveRegion}).</p>
+ * ({@code runtime.ActiveRegion}), and the corpus each literal a recorded
+ * decision compares the root with ({@code explore.Corpus#domainOf}).  Its
+ * {@link Validity} is what its own validation admits: a branch of its
+ * wrapper's body or its field's writer comparing the value with a literal,
+ * one arm of which only throws, that every path to the return or store
+ * passes ({@link #validation}); the domain never leaves it.</p>
  *
  * <p>What is not minted is named ({@link #gaps}, {@code DECLARATION_MISSING}
  * DIAGNOSTIC): a read of a key no literal names ({@value #KEY_UNRESOLVED}),
@@ -181,20 +198,24 @@ final class ConfigRoots {
     private static final Set<String> GUARDS = new LinkedHashSet<>(
             Arrays.asList("guard_dependency", "exception_guard"));
 
-    /** One configuration root: its id, its Java type, its static domain. */
+    /** One configuration root: its id, its Java type, its static domain
+     *  and what its own validation admits. */
     static final class Source {
         final String sourceId;
         final String javaType;
-        /** The hull of the anchors, or "" (a boolean, or none found). */
+        /** The hull of the anchors within {@link #valid}, or "" (a boolean,
+         *  or none found). */
         final String domainMin;
         final String domainMax;
+        final Validity valid;
 
         private Source(String sourceId, String javaType, String domainMin,
-                       String domainMax) {
+                       String domainMax, Validity valid) {
             this.sourceId = sourceId;
             this.javaType = javaType;
             this.domainMin = domainMin;
             this.domainMax = domainMax;
+            this.valid = valid;
         }
     }
 
@@ -236,14 +257,22 @@ final class ConfigRoots {
         final String view;
         final List<Clamp> clamps;
         final List<BigInteger> defaults;
+        /** What the validation it passed admits ({@link #validation}). */
+        final Validity valid;
 
         ConfigValue(String key, int keyParam, String view, List<Clamp> clamps,
                     List<BigInteger> defaults) {
+            this(key, keyParam, view, clamps, defaults, Validity.ANY);
+        }
+
+        ConfigValue(String key, int keyParam, String view, List<Clamp> clamps,
+                    List<BigInteger> defaults, Validity valid) {
             this.key = key;
             this.keyParam = keyParam;
             this.view = view;
             this.clamps = clamps;
             this.defaults = defaults;
+            this.valid = valid;
         }
 
         /** The same value: one key in one shape (its defaults may differ). */
@@ -260,18 +289,34 @@ final class ConfigRoots {
             return new ConfigValue(key, keyParam, literal, clamps, defaults);
         }
 
-        /** {@code Math.max}/{@code min} of this: an integral value only. */
+        /** {@code Math.max}/{@code min} of this: an integral value only;
+         *  its validation's bounds go through the clamp too. */
         ConfigValue clamped(Clamp clamp) {
             if (view != null) return null;
             List<Clamp> through = new ArrayList<>(clamps);
             through.add(clamp);
-            return new ConfigValue(key, keyParam, view, through, defaults);
+            Validity mapped = valid == Validity.ANY ? valid : Validity.of(
+                    valid.min() == null ? (clamp.floor ? clamp.bound : null)
+                            : clamp.apply(valid.min()),
+                    valid.max() == null ? (clamp.floor ? null : clamp.bound)
+                            : clamp.apply(valid.max()), valid.by());
+            return new ConfigValue(key, keyParam, view, through, defaults,
+                    mapped);
         }
 
-        ConfigValue withDefaults(List<BigInteger> more) {
+        /** The same value as another place stores or returns it: both
+         *  defaults, either validation. */
+        ConfigValue merged(ConfigValue other) {
             List<BigInteger> all = new ArrayList<>(defaults);
-            all.addAll(more);
-            return new ConfigValue(key, keyParam, view, clamps, all);
+            all.addAll(other.defaults);
+            return new ConfigValue(key, keyParam, view, clamps, all,
+                    valid.or(other.valid));
+        }
+
+        /** This value past a validation too ({@link #validation}). */
+        ConfigValue validated(Validity checked) {
+            return new ConfigValue(key, keyParam, view, clamps, defaults,
+                    valid.and(checked));
         }
 
         /** Its root's id: the key, and the literal of its view. */
@@ -291,21 +336,25 @@ final class ConfigRoots {
         final String view;
         final List<Clamp> clamps;
         final List<BigInteger> defaults;
+        /** What a wrapper's own validation admits of what it returns. */
+        final Validity valid;
 
         Getter(int keyArg, int defaultArg) {
             this(keyArg, defaultArg, null, null,
                     Collections.<Clamp>emptyList(),
-                    Collections.<BigInteger>emptyList());
+                    Collections.<BigInteger>emptyList(), Validity.ANY);
         }
 
         Getter(int keyArg, int defaultArg, String key, String view,
-               List<Clamp> clamps, List<BigInteger> defaults) {
+               List<Clamp> clamps, List<BigInteger> defaults,
+               Validity valid) {
             this.keyArg = keyArg;
             this.defaultArg = defaultArg;
             this.key = key;
             this.view = view;
             this.clamps = clamps;
             this.defaults = defaults;
+            this.valid = valid;
         }
     }
 
@@ -469,7 +518,7 @@ final class ConfigRoots {
                 continue;
             }
             Source source = roots.source(value.sourceId(), fieldType(field),
-                    value.defaults, value.clamps,
+                    value.defaults, value.clamps, value.valid,
                     Collections.singleton(field), out, guardsFrom);
             shapes.put(value.key, new Shape(source.sourceId, source.javaType,
                     value, field, true));
@@ -509,13 +558,17 @@ final class ConfigRoots {
         for (Map.Entry<Shape, List<Read>> shape : minted.entrySet()) {
             Set<String> cells = new LinkedHashSet<>();
             List<BigInteger> defaults = new ArrayList<>();
+            Validity valid = null;
             for (Read read : shape.getValue()) {
                 cells.add(text(read.edge.get("toCell")));
                 defaults.addAll(read.value.defaults);
+                valid = valid == null ? read.value.valid
+                        : valid.or(read.value.valid);
             }
             Shape key = shape.getKey();
             Source source = roots.source(key.sourceId, key.javaType,
-                    defaults, key.value.clamps, cells, out, guardsFrom);
+                    defaults, key.value.clamps, valid, cells, out,
+                    guardsFrom);
             for (Read read : shape.getValue()) {
                 roots.calls.put(callSite(read.method, read.unitIndex,
                         read.callee), source);
@@ -769,14 +822,17 @@ final class ConfigRoots {
     }
 
     /** A root read at {@code cells}, its domain from its defaults and the
-     *  literals the slice compares those cells with, through its clamps. */
+     *  literals the slice compares those cells with, through its clamps;
+     *  what its validation admits rides along, and clips the domain only
+     *  where a run's reading passes it ({@code
+     *  runtime.ActiveRegion#configDomain}). */
     private Source source(String sourceId, String javaType,
                           List<BigInteger> defaults, List<Clamp> clamps,
-                          Collection<String> cells,
+                          Validity valid, Collection<String> cells,
                           Map<String, List<Map<String, Object>>> out,
                           Map<String, List<Map<String, Object>>> guardsFrom) {
         if ("boolean".equals(javaType)) {
-            return new Source(sourceId, javaType, "", "");
+            return new Source(sourceId, javaType, "", "", Validity.ANY);
         }
         List<BigInteger> spread = new ArrayList<>(defaults);
         for (BigInteger compared : comparedLiterals(cells, out, guardsFrom)) {
@@ -785,7 +841,7 @@ final class ConfigRoots {
             spread.add(compared.add(BigInteger.ONE));
         }
         if (spread.isEmpty()) {
-            return new Source(sourceId, javaType, "", "");
+            return new Source(sourceId, javaType, "", "", valid);
         }
         // No floor at 0: `if (limit < 0)` compares with 0, and -1 is the
         // value that flips it.
@@ -797,7 +853,138 @@ final class ConfigRoots {
             min = clamp.apply(min);
             max = clamp.apply(max);
         }
-        return new Source(sourceId, javaType, min.toString(), max.toString());
+        return new Source(sourceId, javaType, min.toString(), max.toString(),
+                valid);
+    }
+
+    /** How many units an arm may run, straight, before its throw. */
+    private static final int THROW_REACH = 64;
+
+    /**
+     * What a configuration value passes in one body, by its own validation,
+     * on its way to {@code use} (the store or return that hands it on): each
+     * branch comparing one of {@code values} (its locals, casts and parses)
+     * with an integral literal, directly or through a {@code long} {@code
+     * cmp}, one arm of which only throws ({@link #onlyThrows}) and which
+     * dominates {@code use} -- every path to it passes the branch, an
+     * exception handler a head of its own -- admits the values of its other
+     * arm ({@code if (minR <= 0) throw}: {@code >= 1}).  An equality admits
+     * no interval and bounds nothing; a check this rule does not recognise
+     * ({@code Preconditions.checkArgument}, one in another method) bounds
+     * nothing either: a domain past it may hold a value the cluster rejects,
+     * which can confirm a configuration-only SAT (triage names it
+     * CONFIG_ONLY).
+     */
+    private static Validity validation(Body body, Set<Local> values,
+                                       String method, Unit use) {
+        Validity valid = Validity.ANY;
+        if (body == null || values.isEmpty()) return valid;
+        MHGDominatorsFinder<Unit> dominators =
+                new MHGDominatorsFinder<>(new BriefUnitGraph(body));
+        int index = 0;
+        for (Unit unit : body.getUnits()) {
+            int at = index++;
+            if (!(unit instanceof IfStmt) || !(((IfStmt) unit).getCondition()
+                    instanceof ConditionExpr)
+                    || !dominators.isDominatedBy(use, unit)) {
+                continue;
+            }
+            boolean takenThrows = onlyThrows(body,
+                    ((IfStmt) unit).getTarget());
+            boolean fallThrows = onlyThrows(body,
+                    body.getUnits().getSuccOf(unit));
+            if (takenThrows == fallThrows) continue;
+            Validity admitted = admits((ConditionExpr) ((IfStmt) unit)
+                    .getCondition(), values, body, !takenThrows,
+                    SiteId.render(method, at));
+            if (admitted != null) valid = valid.and(admitted);
+        }
+        return valid;
+    }
+
+    /** The values {@code value OP c} admits when it {@code holds} (or
+     *  does not), the value one of {@code values}; null when the condition
+     *  compares none of them with a literal, or is an equality. */
+    private static Validity admits(ConditionExpr condition, Set<Local> values,
+                                   Body body, boolean holds, String by) {
+        Value left = condition.getOp1();
+        Value right = condition.getOp2();
+        // `cmp a, b` against 0: the comparison is cmp's.
+        Value compared = left instanceof Local
+                ? uniqueDefinition(body, (Local) left) : null;
+        if ((compared instanceof CmpExpr || compared instanceof CmplExpr
+                || compared instanceof CmpgExpr)
+                && BigInteger.ZERO.equals(literal(right))) {
+            left = ((soot.jimple.BinopExpr) compared).getOp1();
+            right = ((soot.jimple.BinopExpr) compared).getOp2();
+        }
+        int relation;
+        if (condition instanceof GtExpr) relation = 2;
+        else if (condition instanceof GeExpr) relation = 1;
+        else if (condition instanceof LtExpr) relation = -2;
+        else if (condition instanceof LeExpr) relation = -1;
+        else return null;
+        BigInteger c;
+        if (values.contains(left) && literal(right) != null) {
+            c = literal(right);
+        } else if (values.contains(right) && literal(left) != null) {
+            c = literal(left);
+            relation = -relation;
+        } else {
+            return null;
+        }
+        if (!holds) relation = relation == 2 ? -1 : relation == 1 ? -2
+                : relation == -2 ? 1 : 2;
+        switch (relation) {
+            case 2: return Validity.of(c.add(BigInteger.ONE), null, by);
+            case 1: return Validity.of(c, null, by);
+            case -2: return Validity.of(null, c.subtract(BigInteger.ONE), by);
+            default: return Validity.of(null, c, by);
+        }
+    }
+
+    /** Whether the arm from {@code start} runs straight -- no branch, no
+     *  switch, no return, jumps followed -- to a throw within {@value
+     *  #THROW_REACH} units. */
+    private static boolean onlyThrows(Body body, Unit start) {
+        Unit at = start;
+        for (int step = 0; step < THROW_REACH && at != null; step++) {
+            if (at instanceof ThrowStmt) return true;
+            if (at instanceof IfStmt || at instanceof TableSwitchStmt
+                    || at instanceof LookupSwitchStmt
+                    || at instanceof ReturnStmt
+                    || at instanceof ReturnVoidStmt) {
+                return false;
+            }
+            at = at instanceof GotoStmt ? ((GotoStmt) at).getTarget()
+                    : body.getUnits().getSuccOf(at);
+        }
+        return false;
+    }
+
+    /** The locals one configuration value stands in within a body: {@code
+     *  value} and, back through each one's single definition, the locals,
+     *  casts and parses it is the same value through. */
+    private static Set<Local> chain(Value value, Body body) {
+        Set<Local> locals = new LinkedHashSet<>();
+        Value at = value;
+        for (int step = 0; step < 16 && at != null; step++) {
+            if (at instanceof CastExpr) {
+                at = ((CastExpr) at).getOp();
+                continue;
+            }
+            if (at instanceof InvokeExpr && PARSES.contains(((InvokeExpr) at)
+                    .getMethodRef().getSignature())) {
+                InvokeExpr parse = (InvokeExpr) at;
+                at = parse instanceof InstanceInvokeExpr
+                        ? ((InstanceInvokeExpr) parse).getBase()
+                        : parse.getArg(0);
+                continue;
+            }
+            if (!(at instanceof Local) || !locals.add((Local) at)) break;
+            at = uniqueDefinition(body, (Local) at);
+        }
+        return locals;
     }
 
     /**
@@ -922,8 +1109,10 @@ final class ConfigRoots {
                 continue;
             }
             if (stored != null && !stored.sameShape(value)) return null;
-            stored = stored == null ? value : stored.withDefaults(
-                    value.defaults);
+            // What the writer itself rejects before it stores.
+            value = value.validated(validation(body, chain(right, body),
+                    method, unit));
+            stored = stored == null ? value : stored.merged(value);
             stores.computeIfAbsent(method, ignored -> new ArrayList<>())
                     .add(unit);
         }
@@ -1042,7 +1231,7 @@ final class ConfigRoots {
         }
         if (getter.key != null) {
             return new ConfigValue(getter.key, -1, getter.view,
-                    getter.clamps, defaults);
+                    getter.clamps, defaults, getter.valid);
         }
         Value key = getter.keyArg < invoke.getArgCount()
                 ? invoke.getArg(getter.keyArg) : null;
@@ -1053,14 +1242,14 @@ final class ConfigRoots {
         }
         if (key instanceof StringConstant) {
             return new ConfigValue(((StringConstant) key).value, -1,
-                    getter.view, getter.clamps, defaults);
+                    getter.view, getter.clamps, defaults, getter.valid);
         }
         int parameter = definition instanceof IdentityStmt
                 && ((IdentityStmt) definition).getRightOp()
                 instanceof ParameterRef ? ((ParameterRef) ((IdentityStmt)
                 definition).getRightOp()).getIndex() : -1;
         return new ConfigValue(null, parameter, getter.view, getter.clamps,
-                defaults);
+                defaults, getter.valid);
     }
 
     /**
@@ -1114,18 +1303,22 @@ final class ConfigRoots {
                     || returned != null && !returned.sameShape(value)) {
                 return null;
             }
-            returned = returned == null ? value
-                    : returned.withDefaults(value.defaults);
+            // What the wrapper itself rejects before this return; the
+            // returns' validities join.
+            value = value.validated(validation(body,
+                    chain(((ReturnStmt) unit).getOp(), body), signature,
+                    unit));
+            returned = returned == null ? value : returned.merged(value);
         }
         if (returned == null) return null;
         if (returned.key != null) {
             return new Getter(-1, -1, returned.key, returned.view,
-                    returned.clamps, returned.defaults);
+                    returned.clamps, returned.defaults, returned.valid);
         }
         return returned.keyParam >= 0 && "java.lang.String".equals(
                 method.getParameterType(returned.keyParam).toString())
                 ? new Getter(returned.keyParam, -1, null, returned.view,
-                returned.clamps, returned.defaults) : null;
+                returned.clamps, returned.defaults, returned.valid) : null;
     }
 
     /** Whether {@code reference} names {@code catalogMethod} on a subclass

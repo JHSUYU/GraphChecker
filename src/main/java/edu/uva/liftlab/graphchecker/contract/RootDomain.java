@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -75,7 +77,51 @@ public final class RootDomain extends Value {
      */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared) {
-        return resolved(row, row.recordedValue(), declared);
+        return resolved(row, declared,
+                Collections.<BigInteger>emptyList());
+    }
+
+    /**
+     * The same, for an integral configuration widened by {@code compared}:
+     * each literal a recorded decision compared the root with, its {@code
+     * c - 1, c, c + 1} joining the mint's hull and its reading (a comparison
+     * with a value the slice does not state, a live replica count, is one
+     * with the literal the run had: SYMBOL-SCOPE §4.3), the whole within
+     * what the configuration's own validation admits ({@link
+     * RootMintRow#valid}) when the reading lies within it.  The case's
+     * declaration still wins.
+     */
+    public static RootDomain resolved(RootMintRow row,
+                                      Map<String, RootDomain> declared,
+                                      Collection<BigInteger> compared) {
+        RootDomain mint = resolved(row, row.recordedValue(), declared);
+        if (declared != null && declared.containsKey(row.rootId())
+                || row.kind() != RootKind.INTEGRAL
+                || row.category() != RootCategory.CONFIG) {
+            return mint;
+        }
+        BigInteger low = mint.min == null ? null : new BigInteger(mint.min);
+        BigInteger high = mint.max == null ? null : new BigInteger(mint.max);
+        if (!compared.isEmpty() && integral(row.recordedValue())) {
+            BigInteger reading = new BigInteger(row.recordedValue().trim());
+            low = low == null ? reading : low.min(reading);
+            high = high == null ? reading : high.max(reading);
+            for (BigInteger literal : compared) {
+                low = low.min(literal.subtract(BigInteger.ONE));
+                high = high.max(literal.add(BigInteger.ONE));
+            }
+        }
+        if (low == null || high == null) return mint;
+        // A validation the recorded reading itself fails is no validation
+        // of this value (the mint drops it, named): nothing is clipped.
+        Validity valid = row.valid();
+        if (!integral(row.recordedValue()) || valid.admits(
+                new BigInteger(row.recordedValue().trim()))) {
+            low = valid.clip(low);
+            high = valid.clip(high);
+        }
+        return of(row.rootId(), row.kind(), row.recordedValue(),
+                low.toString(), high.toString());
     }
 
     /**
