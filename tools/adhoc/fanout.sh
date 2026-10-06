@@ -87,6 +87,11 @@ hold_room() {
   campaign_head_hold="${dir}/fanout.$(hostname -s).$$.$(date +%s).hold"
   printf '%s\n' "${need}" >"${campaign_head_hold}"
   hold_job=${next}
+  # Two sweeps that chose at once: the later name gives its hold up and
+  # chooses again at its next poll.
+  local first
+  first=$(compgen -G "${dir}/fanout.*.hold" | LC_ALL=C sort | head -n 1)
+  [[ "${first}" == "${campaign_head_hold}" ]] || release_hold
 }
 job_need() {
   local need=${JOB_MEMORY_MB:-4000}
