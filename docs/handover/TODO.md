@@ -81,6 +81,10 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
   turn for tracked-write ordering (complete vs IBR); 07 an export capture where the QJM client sets the segment it
   attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), so jn0 pairs by
   HANDLE instead of an unattested arrival.
+- A JVM-level relation hole (owner's JVM-relation rule): a generated protobuf message's field that the library's
+  parser set and code reads directly (hdfs-11741 AR1: the balancer's `PBHelper.convert(BlockKeyProto)` reads
+  `keyId_` = 182909, HELD "no write row states this version") should be the wire attach's value. Seen inside an arm
+  11741a's witness chose; cone.py unbound 0 (a read, not a handoff); not in 11741b's witness.
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 - **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate,
   in this order: 05 or 06 (QJM output stream, NN->JN; clean UNSAT in HG2), then 04 (client ack timeout, CLOCK), then 38

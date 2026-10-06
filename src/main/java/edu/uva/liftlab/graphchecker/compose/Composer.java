@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.Moved;
@@ -214,6 +215,7 @@ public final class Composer {
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
+        private final Map<String, Endpoint> unattestedArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         /** refuted_claim__k, refused_claim__k -> the model it excludes. */
         private final Map<String, Refutations.Refuted> refutations;
@@ -283,6 +285,9 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.observedArrivals);
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
+            this.unattestedArrivals = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Endpoint>(
+                            composed.unattestedArrivals));
             this.armChoices = composed.composedFamilies.armChoices();
             this.refutations = Collections.unmodifiableMap(
                     new LinkedHashMap<String, Refutations.Refuted>(
@@ -534,6 +539,35 @@ public final class Composer {
          *  a gap (result.json {@code concrete[]}). */
         public List<Concrete> concrete() {
             return concrete;
+        }
+
+        /**
+         * THE WITNESS'S OPEN CHAIN: each value its path's fatal condition
+         * rests on that no producer the corpus attests made -- the set
+         * {@code experiments/accept/cone.py} reads off this formula for the
+         * claimed path ({@link Cone}) -- each with the producer occurrence
+         * its arrival names where no attested export delivered it, the one
+         * GROW can plan (PIPELINE §7.9); none where nothing could (a value
+         * whose attested producer's export did not lower, an attach naming
+         * no producer).  Empty for an outcome that selects no path.
+         */
+        public List<JsonObject> openChain(ClaimPolicy.Outcome witness) {
+            List<JsonObject> open = new ArrayList<JsonObject>();
+            if (witness == null || witness.selected() == null) return open;
+            Disjunct path = witness.selected();
+            for (String symbol : Cone.unbound(body, path.selector(),
+                    path.path().pathId, witness.selectedArms().keySet(),
+                    concrete)) {
+                Endpoint producer = unattestedArrivals.get(symbol);
+                JsonObject row = new JsonObject();
+                row.addProperty("symbol", symbol);
+                row.addProperty("producer", producer == null ? ""
+                        : producer.occurrence().render());
+                row.addProperty("producerEndpointId",
+                        producer == null ? "" : producer.id());
+                open.add(row);
+            }
+            return open;
         }
 
         public List<RootDomain> roots() {
@@ -984,6 +1018,10 @@ public final class Composer {
     /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
+    /** Each arrival no producer the corpus attests delivered, by symbol:
+     *  the producer its attach names, or null (Composer#arrival). */
+    private final Map<String, Endpoint> unattestedArrivals =
+            new LinkedHashMap<String, Endpoint>();
     /** This epoch's skeleton: which interactions have a slot (PIPELINE
      *  §7.1). */
     private SlotTable slots;
@@ -1967,6 +2005,9 @@ public final class Composer {
                     + attested.size() + " export(s) did not lower");
             return;
         }
+        // No producer the corpus attests delivered it: the one GROW could
+        // plan, where the attach names one (Composition#openChain).
+        unattestedArrivals.put(attach.symbol(), attach.producer());
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
         Term value = lowering.statedValue(received, attach.javaType());

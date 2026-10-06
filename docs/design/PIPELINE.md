@@ -1035,6 +1035,19 @@ cancelled or reaped, by id):
   left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
+  A witness ends the exploration only once its OWN chain is closed (owner 2026-10-06): an attempt
+  whose COMPOSE names an open chain (`ComposeMain#campaignClaim` `openChain`: each value the claimed
+  path's fatal condition rests on that no attested producer made -- the set
+  `experiments/accept/cone.py` reads off the formula, `compose.Cone` -- the claim RUN_DEFECT) is
+  not confirmed (`campaign_stream_open_chain`); the head cancels the queued obligations and grows the
+  producers those values' arrivals name (`campaign_stream_open`): each later round grows only its
+  exposures of them, each producer once, and queues none of its obligations
+  (`campaign_stream_chain_round`); once the GROW swaps in, the attempt's witnesses still in the
+  corpus are attempted again, a re-run landing as a witness of its own
+  (`campaign_stream_chain_reattempt`). A chain whose every producer was grown already cannot close,
+  and a fixed point ends a chain no exposure reaches: the final claim names each open value
+  (`WITNESS_CHAIN_OPEN`, EMIT's `defects[]`). hdfs-adhoc-12 AW2: the HA status txid's export at
+  nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
   the exploration has stopped otherwise, no attempt is made.
 - **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from

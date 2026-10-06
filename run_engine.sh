@@ -4267,6 +4267,10 @@ campaign_explore() {
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_solver_seen=() stream_confirming=()
+  # An open witness chain (campaign_stream_attempt): the producers it names,
+  # those already grown, and the witnesses attempted again once they are.
+  local -A stream_chain=() stream_chain_grown=()
+  local -a stream_chain_witnesses=()
   : >"${results}"
   : >"${attempts}"
   mkdir -p "$(dirname "${stream_plan}")"
@@ -4400,6 +4404,7 @@ campaign_stream_step_start() {
     (( ${#stream_pending[@]} == 0 )) || campaign_stream_land
     if campaign_stream_swap_due; then
       campaign_stream_swap
+      (( ${#stream_chain[@]} == 0 )) || campaign_stream_chain_reattempt
     fi
     (( ${#stream_staged[@]} == 0 )) || campaign_stream_move
     if [[ -z "${stream_stop}" ]] && campaign_stream_plan_due; then
@@ -4510,6 +4515,7 @@ campaign_stream_step_done() {
       "${iteration_dir}/witness-attempts/${id}/model")
     stream_queue=("CONFIRM - ${id}" "${stream_queue[@]}")
   fi
+  [[ ! -s "${dir}/chain" ]] || campaign_stream_open "${dir}"
   [[ ! -s "${dir}/deferred" ]] || mapfile -t -O "${#stream_deferred[@]}" \
     stream_deferred <"${dir}/deferred"
   if [[ -s "${dir}/decided" ]]; then
@@ -4532,6 +4538,47 @@ campaign_stream_step_done() {
   elif [[ -s "${dir}/round" ]]; then
     campaign_stream_take_round "${iteration_dir}/$(cat "${dir}/round")"
   fi
+}
+
+# The witness chain an attempt left open (<dir>/chain): its producers not
+# grown yet become the chain the rounds grow (campaign_stream_chain_round),
+# the queued obligations are cancelled, and its witnesses wait to be
+# attempted again once the GROW swaps in (campaign_stream_chain_reattempt).
+# A chain whose every producer was grown already cannot close: the
+# exploration goes on as before, and the claim it reaches names it
+# (WITNESS_CHAIN_OPEN).
+campaign_stream_open() {
+  local dir=$1 producer
+  local -a fresh=()
+  while read -r producer; do
+    [[ -n "${stream_chain_grown[${producer}]+x}" ]] || fresh+=("${producer}")
+  done <"${dir}/chain"
+  stream_chain=()
+  if (( ${#fresh[@]} == 0 )); then
+    campaign_log "the witness's chain is open, and every producer it names \
+was grown already: it cannot close"
+    return 0
+  fi
+  for producer in "${fresh[@]}"; do
+    stream_chain[${producer}]=1
+  done
+  mapfile -t stream_chain_witnesses <"${dir}/chain-witnesses"
+  campaign_stream_drop
+  campaign_log "the witness's chain is open: EXPLORE grows its \
+${#fresh[@]} producer(s) and attempts it again; the queued obligations are \
+cancelled"
+}
+
+# Once a GROW of an open chain swapped in: the chain's witnesses still in
+# the corpus are attempted again (a re-run lands as a witness of its own,
+# campaign_stream_move), and the chain is the attempt's to state anew.
+campaign_stream_chain_reattempt() {
+  local witness
+  for witness in "${stream_chain_witnesses[@]}"; do
+    [[ ! -d "${sessions}/${witness}" ]] || stream_witnesses+=("${witness}")
+  done
+  stream_chain_witnesses=()
+  stream_chain=()
 }
 
 # A planned round, taken -- in this order -- through the wave budget, and
@@ -4571,6 +4618,13 @@ not yet woven"
     stream_cancelled+=("${ids[@]}")
     return 0
   fi
+  # While a witness's chain is open, a round grows the exposures of that
+  # chain's producers and nothing else, and queues none of its obligations
+  # (PIPELINE §7.9).
+  if (( ${#stream_chain[@]} > 0 )); then
+    campaign_stream_chain_round "${round_dir}" "${ids[@]}"
+    return 0
+  fi
   # A round that exposes regions grows the corpus first: what it proposes is
   # asked again over the grown one, once GROW's re-runs have swapped in.
   if (( exposed > 0 )); then
@@ -4582,6 +4636,30 @@ not yet woven"
     stream_flying[${ids[${index}]}]=${rows[${index}]}
     stream_queue+=("OBLIGATION ${name} ${ids[${index}]}")
   done
+}
+
+# A round planned while a witness's chain is open: its exposures of the
+# chain's producers (growth-chain.jsonl) grown, each producer once, and its
+# obligations cancelled, named in exploration.json -- the exploration goes
+# on only to close that chain.
+campaign_stream_chain_round() {
+  local round_dir=$1 occurrence grow=0
+  shift
+  stream_cancelled+=("$@")
+  jq -c --argjson chain "$(printf '%s\n' "${!stream_chain[@]}" \
+      | jq -R . | jq -s -c .)" \
+    'select(.kind == "EXPOSED_REGION" and (.occurrence as $at
+       | any($chain[]; . == $at)))' "${round_dir}/growth.jsonl" \
+    >"${round_dir}/growth-chain.jsonl"
+  while read -r occurrence; do
+    stream_chain_grown[${occurrence}]=1
+    grow=$((grow + 1))
+  done < <(jq -r '.occurrence' "${round_dir}/growth-chain.jsonl" | sort -u)
+  campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
+${grow} of its producer(s) exposed here grow, and the round's $# \
+obligation(s) wait"
+  (( grow == 0 )) || campaign_stream_grow "${round_dir}" \
+    "${round_dir}/growth-chain.jsonl"
 }
 
 # One row of the exploration's own, <class> <subject> <detail>, as EMIT
@@ -4695,6 +4773,10 @@ campaign_stream_attempt() {
     >"${dir}/attempt.json"
   campaign_log "witness $*: COMPOSE over the corpus as it stands \
 (exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity}"
+  if [[ "${status}" -eq 0 && "${polarity}" == true ]] \
+      && campaign_stream_open_chain "${step}" "${dir}" "$@"; then
+    return 0
+  fi
   if [[ "${claim}" != SAT_CANDIDATE || "${polarity}" != true ]]; then
     campaign_stream_attempt_row "${dir}" null "" 0 false
   elif ! campaign_claim_room; then
@@ -4726,6 +4808,34 @@ that verdict lands" 0 false
     fi
     campaign_confirm_settle "${iteration_dir}" "${dir}"
     campaign_stream_confirmed "${step}" "${dir}" 0
+  fi
+}
+
+# A witness attempt whose COMPOSE names an open chain (ComposeMain
+# #campaignClaim: openChain, cone.py's open links of the claimed path) is
+# not confirmed -- a claim never stands on a value no attested producer
+# made: its row says so, and the producers its arrivals name, with its
+# witnesses, go to the head (<step>/chain, <step>/chain-witnesses), which
+# grows them and attempts the witnesses again (campaign_stream_open).  False
+# where the chain is closed.
+campaign_stream_open_chain() {
+  local step=$1 dir=$2 manifest=$2/candidate_composition_manifest.json open
+  shift 2
+  open=$(jq '.solver.campaignClaim.openChain // [] | length' \
+    "${manifest}" 2>/dev/null) || open=0
+  (( open > 0 )) || return 1
+  jq -r '.solver.campaignClaim.openChain[].producer | select(. != "")' \
+    "${manifest}" | LC_ALL=C sort -u >"${step}/chain"
+  printf '%s\n' "$@" >"${step}/chain-witnesses"
+  if [[ -s "${step}/chain" ]]; then
+    campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
+${open} value(s) its path's fatal condition rests on no attested producer \
+made (openChain); EXPLORE grows the $(grep -c '' "${step}/chain") \
+producer(s) they name and attempts its witnesses again" 0 false
+  else
+    campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
+${open} value(s) its path's fatal condition rests on no attested producer \
+made (openChain), and none names a producer EXPLORE could grow" 0 false
   fi
 }
 
@@ -5342,7 +5452,7 @@ campaign_exposures() {
 # (campaign_stream_swap), no obligation starts and no round is planned.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
-  local growth="${round_dir}/growth.jsonl"
+  local growth=${2:-${round_dir}/growth.jsonl}
   local rows="${round_dir}/exposed_region_plan.jsonl"
   local worker file
   # An exposure names the obligation whose replay is re-run.  One that names
@@ -6725,7 +6835,14 @@ campaign_emit() {
        + (if ($decided.unsatBesideRefused // false)
           then [{stage: "COMPOSE", code: "UNSAT_BESIDE_REFUSED",
                  subject: "", detail: $decided.claimReason}]
-          else [] end)),
+          else [] end)
+       # A witness whose causal chain EXPLORE could not close: a value the
+       # fatal condition of its path rests on that no attested producer made.
+       + [($decided.openChain // [])[]
+          | {stage: "COMPOSE", code: "WITNESS_CHAIN_OPEN", subject: .symbol,
+             detail: ("no producer the corpus attests made this value"
+               + (if .producer == "" then "" else "; its arrival names "
+                  + .producer + ", which EXPLORE did not grow" end))}]),
      # What the decision rested on concretely: each anchor every admitted
      # path decided on no symbol (EXPLORE), and each value COMPOSE stated
      # as a constant or left free, with what it rests on (Composer.Concrete).
