@@ -6,6 +6,7 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTyp
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
@@ -30,12 +31,16 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>A message field's port (a derived port: {@code StaticScopeMap}'s
  * {@code EXPORT_SITE} row states the field as its cell) crosses with its
- * message, not at the builder's setter.  The outbound door walks the message
- * ({@link #send}): each port field is exported from the message itself, or,
- * in a message this JVM decoded, its decoded element is staged again under
- * its ORIGINAL producer -- a relay hands on what it received (hdfs-adhoc-07:
- * the QJM client hands jn1's prepareRecovery segment to jn0's
- * acceptRecovery).  After the parse the receiving side walks the message it
+ * message.  Its value is exported where it is live, at the builder's setter
+ * inside the region that computed it, and bound to that BUILDER ({@link
+ * #set}); the builder's {@code build()} hands its elements to the message it
+ * builds ({@link #built}).  The outbound door walks the message ({@link
+ * #send}) and stages each port field's element: one built here, the setter's
+ * export; one decoded here, its element again under its ORIGINAL producer --
+ * a relay hands on what it received (hdfs-adhoc-07: the QJM client hands
+ * jn1's prepareRecovery segment to jn0's acceptRecovery); any other, the
+ * field exported at the door (a constant: past its region, a field states no
+ * expression).  After the parse the receiving side walks the message it
  * decoded ({@link #receive}) and binds each element to the message object it
  * was decoded into, with the message it arrived in; a getter's attach takes
  * the element of the message it is called on ({@link #bound}), whatever its
@@ -50,6 +55,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * held twice walked twice, as the wire carries it twice.  The k-th port
  * field the walk meets is the port's k-th element on the wire, staged or
  * not.  A class's default instance (JVM-wide) is walked, never bound.</p>
+ *
+ * <p>Limits: a nested message a builder builds inside generated code
+ * ({@code setFoo(Foo.Builder)}) and a {@code toBuilder()} copy pass no
+ * {@code build()} call the weave sees, so their fields are exported at the
+ * door, as constants.</p>
  */
 final class MessageCodec {
     private MessageCodec() {
@@ -120,16 +130,39 @@ final class MessageCodec {
     static void send(Object message) {
         if (message == null || ports.isEmpty()) return;
         walk(message, (holder, owner, port) -> {
-            Element decoded = BINDINGS.get(holder, port.portId);
-            if (decoded == null) {
+            Element element = BINDINGS.get(holder, port.portId);
+            if (element == null) {
                 WireExport.export(port.portId, new WireExport.Leaf(holder,
                         owner, port.field, port.descriptor));
-            } else if (decoded.handle == SymbolicMessageEnvelope.ABSENT) {
+            } else if (element.handle == SymbolicMessageEnvelope.ABSENT) {
                 SymbolicMessageEnvelope.skip(port.portId);
+            } else if (element.built) {
+                WireExport.stage(port.portId, element.handle,
+                        element.producer);
             } else {
-                WireExport.relay(port.portId, decoded);
+                WireExport.relay(port.portId, element);
             }
         });
+    }
+
+    /**
+     * A message field's value exported at its builder's setter: bound to
+     * that builder, where its {@code build()} finds it.  The last setter
+     * call of a port is the field's value.
+     */
+    static void set(Object builder, String portId, long handle,
+                    Endpoint producer) {
+        if (builder != null && !ports.isEmpty()) {
+            BINDINGS.put(builder, portId, new Element(handle, producer));
+        }
+    }
+
+    /** {@code builder} built {@code message}: the elements its setters
+     *  exported are the message's. */
+    static void built(Object builder, Object message) {
+        if (builder != null && message != null && !ports.isEmpty()) {
+            BINDINGS.copy(builder, message);
+        }
     }
 
     /**
@@ -162,18 +195,36 @@ final class MessageCodec {
         return element == null ? Element.NONE : element;
     }
 
-    /** One decoded element: its handle, and the message it arrived in. */
+    /**
+     * One element: its handle and either the message it arrived in (a
+     * decoded one) or the export that made it (one built here, {@code
+     * producer}).
+     */
     static final class Element {
         private static final Element NONE = new Element(
                 SymbolicMessageEnvelope.ABSENT, "", "");
         final long handle;
         final String correlationId;
         final String half;
+        /** Whether a setter here exported it (else a door decoded it). */
+        final boolean built;
+        /** The setter's export (null when no row could state it). */
+        final Endpoint producer;
 
         private Element(long handle, String correlationId, String half) {
             this.handle = handle;
             this.correlationId = correlationId;
             this.half = half;
+            this.built = false;
+            this.producer = null;
+        }
+
+        private Element(long handle, Endpoint producer) {
+            this.handle = handle;
+            this.correlationId = "";
+            this.half = "";
+            this.built = true;
+            this.producer = producer;
         }
 
         /** {@code handle}, taken from the message this thread received. */
@@ -355,9 +406,24 @@ final class MessageCodec {
             return elements == null ? null : elements.get(portId);
         }
 
-        /** Whether a door's walk decoded {@code message}. */
+        /** Whether a door's walk decoded {@code message}: its elements
+         *  name the message they arrived in, never an export of this JVM. */
         synchronized boolean decoded(Object message) {
-            return held.containsKey(new Identity(message, null));
+            Map<String, Element> elements =
+                    held.get(new Identity(message, null));
+            return elements != null && !elements.isEmpty()
+                    && !elements.values().iterator().next().built;
+        }
+
+        /** {@code to} holds what {@code from} holds. */
+        synchronized void copy(Object from, Object to) {
+            Map<String, Element> elements =
+                    held.get(new Identity(from, null));
+            if (elements == null) return;
+            expunge();
+            held.computeIfAbsent(new Identity(to, dropped),
+                    key -> new HashMap<String, Element>())
+                    .putAll(elements);
         }
 
         synchronized void clear() {

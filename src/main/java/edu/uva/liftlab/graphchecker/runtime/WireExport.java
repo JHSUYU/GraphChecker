@@ -23,10 +23,11 @@ import java.lang.reflect.Field;
  * The wire's near half (SYMBOL-SCOPE §6.3): a value crossing one declared
  * communication port, and the endpoint row that says it crossed.
  *
- * <p>Out: export a leaf's expression -- a declared row's carrier leaf where
- * the weave captured it, a message field where its door walked the message
- * ({@link MessageCodec}) -- stage the handle on the outbound message, and
- * state the producer endpoint whether or not a region was live.  In: take
+ * <p>Out: export a leaf's expression where the weave captured it -- a
+ * declared row's value, staged on the thread's next outbound message; a
+ * message field's value at its builder's setter, bound to the builder,
+ * which the door that carries the message stages ({@link MessageCodec}) --
+ * and state the producer endpoint whether or not a region was live.  In: take
  * the element (a message field's from the message it was decoded into, a
  * declared row's from the message the thread received), attach the
  * producer's expression onto the arrived leaf, and mint the consumer's
@@ -73,16 +74,38 @@ final class WireExport {
     }
 
     /**
-     * Exports the live expression of one declared row's port, read from the
-     * carrier leaf the instrumented frame made (a broker leaf must be a
-     * field).
+     * Exports the live expression of one port where the weave captured it,
+     * read from the carrier leaf the instrumented frame made (a broker leaf
+     * must be a field): a declared row's, staged on the message this thread
+     * sends next; a message field's ({@code builder} its builder, the
+     * setter's receiver), bound to that builder for the door that carries
+     * the message it builds.  Every export is woven
+     * (RuntimeRegionPlanner#exportSites), planned or not.
      */
     static void exportLeaf(String portId, Object carrier, String field,
-                           String descriptor) {
-        // The woven call is the declaration: every export of a declared row
-        // is woven (RuntimeRegionPlanner#exportSites), planned or not.
+                           String descriptor, Object builder) {
         if (carrier == null || Text.safe(portId).isEmpty()) return;
-        export(portId, new Leaf(carrier, CARRIER_CLASS, field, descriptor));
+        Leaf leaf = new Leaf(carrier, CARRIER_CLASS, field, descriptor);
+        if (builder == null) {
+            export(portId, leaf);
+            return;
+        }
+        Export exported = export(leaf);
+        if (exported.handle < 0L) {
+            // Unbound: the door exports the field, a constant.
+            refused(portId, "export", exported.handle,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    "the message carries its field's value as a constant");
+            return;
+        }
+        Endpoint producer = publishExportRow(portId, leaf, exported.handle,
+                exported.eventId);
+        pauseObservation();
+        try {
+            MessageCodec.set(builder, portId, exported.handle, producer);
+        } finally {
+            resumeObservation();
+        }
     }
 
     /**
@@ -119,7 +142,8 @@ final class WireExport {
                 .producer());
     }
 
-    private static void stage(String portId, long handle, Endpoint producer) {
+    /** Stages one element on the message this thread sends next. */
+    static void stage(String portId, long handle, Endpoint producer) {
         if (!SymbolicMessageEnvelope.stage(portId, handle, producer)) {
             // The row still states the endpoint; the loss is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,

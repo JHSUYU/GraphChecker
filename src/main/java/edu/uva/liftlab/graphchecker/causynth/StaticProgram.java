@@ -439,7 +439,7 @@ public final class StaticProgram {
      * captures a wire port's value, or the body writes a declared field.</p>
      *
      * <p>Trap: a message field's producer capture (a builder's setter call)
-     * is no unit of work, since the door exports the message whole
+     * is no unit of work, since the door carries the message whole
      * (SYMBOL-SCOPE §6.3): a loop building the repeated field of ONE message
      * never qualifies.  Rooted there, the message's other leaves -- hdfs-11741's
      * {@code currentKey}, converted before the {@code allKeys} loop -- would be

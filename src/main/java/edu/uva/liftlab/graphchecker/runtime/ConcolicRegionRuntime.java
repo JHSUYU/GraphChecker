@@ -1053,11 +1053,27 @@ public final class ConcolicRegionRuntime {
                 : active.expressionStore;
     }
 
-    /** Exports the live expression of one declared communication port. */
+    /**
+     * Exports the live expression of one declared communication port;
+     * {@code builder} is the builder a message field's setter was called on
+     * (its export is that builder's), else null.
+     */
     public static void exportCommunicationLeaf(String portId, Object carrier,
                                                String field,
-                                               String descriptor) {
-        WireExport.exportLeaf(portId, carrier, field, descriptor);
+                                               String descriptor,
+                                               Object builder) {
+        WireExport.exportLeaf(portId, carrier, field, descriptor, builder);
+    }
+
+    /** {@code builder} built {@code message}: the message fields its
+     *  setters exported are the message's ({@link MessageCodec#built}). */
+    public static void builtMessage(Object builder, Object message) {
+        pauseObservation();
+        try {
+            MessageCodec.built(builder, message);
+        } finally {
+            resumeObservation();
+        }
     }
 
     /**

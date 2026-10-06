@@ -128,11 +128,12 @@ version it observed.
 - Random draws are replayed, keyed by the schedule context, the site and a count (stable under
   a GROW). Clock VALUES are not yet replayed: the start-up/clock family's time model (TODO).
 
-*The wire.* A protobuf message field crosses with its message: the door that carries it (IPC request
-and response, DataTransfer op) walks the message, exporting each field or, for a message this JVM
-decoded, handing on its original producer's element; the parse binds each element to the message
-object, and a getter attaches the element of the message it reads. A declared row is exported where
-the weave captured it. The engine's own plumbing (its runtime classes, generated messages and
+*The wire.* A protobuf message field crosses with its message: it is exported at the builder's setter
+inside its region, bound to the builder, and handed to the message by its `build()`; the door that
+carries the message (IPC request and response, DataTransfer op) walks it and stages each field's
+element, or, for a message this JVM decoded, its original producer's; the parse binds each element
+to the message object, and a getter attaches the element of the message it reads. A declared row is
+exported where the weave captured it. The engine's own plumbing (its runtime classes, generated messages and
 builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
 
 *Read-out.* Read-out pages stream to the publication thread as they are captured.

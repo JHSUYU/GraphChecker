@@ -948,7 +948,8 @@ public class RowRuntimeTest {
         try {
             // No concolic VM runs these tests: the broker refuses both steps.
             WireExport.exportLeaf(out,
-                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J",
+                    null);
             assertTrue(SymbolicMessageEnvelope.stage(in, 41L, null));
             SymbolicMessageEnvelope.installInbound(
                     SymbolicMessageEnvelope.takeOutbound());
@@ -1024,7 +1025,8 @@ public class RowRuntimeTest {
             here = Identity.currentOccurrence(NN.key());
             // No concolic VM runs these tests: the broker refuses the export.
             WireExport.exportLeaf(port,
-                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J",
+                    null);
         } finally {
             ConcolicRegionRuntime.exitRegionEntry(entry);
             Identity.exitFrame(frame);

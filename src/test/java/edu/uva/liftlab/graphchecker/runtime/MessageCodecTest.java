@@ -108,6 +108,32 @@ public class MessageCodecTest {
         }
     }
 
+    /**
+     * A message built here carries what its builder's setters exported: the
+     * door stages each element under its export, and the message's own
+     * getter attaches nothing.
+     */
+    @Test
+    public void aBuiltMessageCarriesItsSettersExports() {
+        Field.Builder builder = Field.newBuilder().setNumber(7);
+        MessageCodec.set(builder, PORT, 77L, null);
+        Field built = builder.build();
+        MessageCodec.built(builder, built);
+        Object[][] rows = {
+                {"its getter attaches nothing", null,
+                        MessageCodec.bound(built, PORT)},
+                {"its door stages the setter's export",
+                        "CSE6;" + token(PORT) + ",77,0",
+                        CausynthMessagePropagation.outboundResponse(
+                                CausynthMessagePropagation.IPC, "c-4", "0",
+                                null, new Wrapper(Type.newBuilder()
+                                        .addFields(built).build()))
+                                .symbolic}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
     /** The RPC engine's response wrapper ({@code ProtobufWrapper}). */
     private static final class Wrapper {
         @SuppressWarnings("unused")

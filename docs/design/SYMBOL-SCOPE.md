@@ -1051,11 +1051,10 @@ a primitive or `String`, on a message an RPC carries, is the consumer of port
 getter decodes and caches, `poolId_`), its `codecField` (catalog member `codecField`, copied to the
 region port rows; `StaticScopeMap`'s `EXPORT_SITE` states it as its `cell`). Its producers are
 argument 0 of every call of `<M>$Builder.setF(T)` in the analysed program (the application classes
-in scope): the slice's and the regions' (the sending side's demand, the region skeletons, the
-`EXPORT_SITE` rows the closure grows producers from), never woven as exports (§6.3). A capture a
+in scope), exported bound to the builder (§6.3). A capture a
 declared row already holds stays that row's; a getter whose body names no one field, or a port with
 no producer, derives nothing. A builder's setter call is no unit of a loop's work
-(`StaticProgram#serviceLoopCandidate`): the door exports the message whole, so a loop building one
+(`StaticProgram#serviceLoopCandidate`): the door carries the message whole, so a loop building one
 message's repeated field never roots a region (hdfs-11741: the `currentKey` converted before the
 `allKeys` loop would be built with no activation).
 
@@ -1086,25 +1085,34 @@ A message field's port crosses with its message, through the door that carries i
 (`runtime/MessageCodec`, its table the scope map's `EXPORT_SITE` cells): the IPC request and
 response doors and the DataTransfer op's (the r6 trees hand the shim the message: `outboundRequest`'s
 request payload, `outboundResponse`'s return value, `outboundOp(op)`; the IPC client's and server's
-parse and each op handler of `Receiver` call `received(message)`). Both sides walk the message
-alike: depth first, each message's port fields, then its message-valued fields (a nested message,
-each element of a repeated one, a `oneof`'s), every class's fields by name; a class's JVM-wide
-default instance is never walked. The outbound walk exports each port field from the message itself
-(`WireExport#export`, the VM's `exportExpression` on the field), or, in a message this JVM decoded,
-stages its decoded element again under its ORIGINAL producer: a relay hands on what it received
-(hdfs-adhoc-07: the QJM client hands jn1's prepareRecovery segment to jn0's acceptRecovery,
-`QuorumJournalManager.java:374/394`); an element the decode carried none for is counted empty. The
-receiving walk, after the parse and inside the exchange the door installed, takes each element and
-binds it to the message object it was decoded into, with the message it arrived in (weakly, by
-identity); a getter's attach takes the element of the message it is called on (`MessageCodec#bound`,
-the weave passes the getter's receiver), whatever its thread serves by then, and pairs with that
-message's correlation and half. A message no door decoded was built in this JVM (or is a class's
-JVM-wide default instance): its getter returns the program's own value and attaches nothing
-(hdfs-adhoc-07: jn0's `getSegmentInfo` builds the segment `acceptRecovery` compares with the one it
-received; read as a wire value it was a free, unbound `v_H`). The k-th port field a walk meets is the
-port's k-th element on the wire; a message held twice is walked twice, as the wire carries it. A door export runs at the door's occurrence (a server's response door after its call's regions
-closed: ambient, under the call's anchor); the closure grows the port's static export sites, the
-setter calls, from it (PIPELINE §7.2).
+parse and each op handler of `Receiver` call `received(message)`). Its value is exported where it is
+live: at the builder's setter (the port's producer capture, woven in every region skeleton), inside
+the region that computed it and at that region's occurrence, which the closure grows (PIPELINE
+§7.2), and bound to the BUILDER (`MessageCodec#set`); every `m = b.build()` (or `buildPartial()`)
+of such a builder in the campaign's woven methods hands the builder's elements to `m`
+(`MessageCodec#built`). A server's response door runs after its call's regions closed, where a
+field states no expression and the door's occurrence is a role no closure grows (CC2-17897: the
+NameNode's data-encryption key id, symbolic in 15 of 15 setter exports of `REGION.3897f002` on
+HG9B, concrete in 22 of 22 door exports, `WITNESS_CHAIN_OPEN`). Both sides walk the message alike:
+depth first, each message's port fields, then its message-valued fields (a nested message, each
+element of a repeated one, a `oneof`'s), every class's fields by name; a message held twice is
+walked twice, as the wire carries it, and a class's JVM-wide default instance is walked, never
+bound. The k-th port field a walk meets is the port's k-th element on the wire. The outbound walk
+stages each port field's element: one built here, the setter's export; one decoded here, its
+element again under its ORIGINAL producer -- a relay hands on what it received (hdfs-adhoc-07: the
+QJM client hands jn1's prepareRecovery segment to jn0's acceptRecovery,
+`QuorumJournalManager.java:374/394`); one the decode carried none for, counted empty; any other,
+the field exported at the door (`WireExport#export`, a constant). The receiving walk, after the
+parse and inside the exchange the door installed, takes each element and binds it to the message
+object it was decoded into, with the message it arrived in (weakly, by identity); a getter's attach
+takes the element of the message it is called on (`MessageCodec#bound`, the weave passes the
+getter's receiver), whatever its thread serves by then, and pairs with that message's correlation
+and half. A message no door decoded was built in this JVM (or is a class's default instance): its
+getter returns the program's own value and attaches nothing (hdfs-adhoc-07: jn0's `getSegmentInfo`
+builds the segment `acceptRecovery` compares with the one it received; read as a wire value it was
+a free, unbound `v_H`). Limits: a nested message a builder builds inside generated code
+(`setFoo(Foo.Builder)`), a `toBuilder()` copy, and a `build()` outside the campaign's woven methods
+pass no woven build, so their fields are exported at the door, as constants.
 
 A declared row's export is woven, planned or not: INSTRUMENT captures each of its OUT ports in every
 region skeleton (`runtime/RuntimeRegionPlanner#exportSites`), and a plan row declares only the ports
@@ -1205,7 +1213,8 @@ A refusal is its frame's: the paths and arms whose closure reaches an occurrence
   no message of a transport without services (DataTransfer ops' own `Op*Proto`, HTTP bodies,
   ZooKeeper nodes). A door that is handed no message (SASL, HTTP, ZooKeeper; HBase's RPC until its
   adapter hands its door the message) carries no message field, and a message parsed where no door
-  walks it (`received`) is taken for one built here: its fields are the parse's constants. A relay keeps its producer only for
+  walks it (`received`) is taken for one built here: its fields are the parse's constants. A message
+  built past a woven `build()` (§6.3's limits) carries its fields as constants. A relay keeps its producer only for
   a decoded message object it hands on as is: a value copied out of a decoded message by a getter
   that is no attach site is exported concrete, from the relay. `String`, boxed and reference leaves
   get no `v_H`. Every other cross-process value needs a declared row.

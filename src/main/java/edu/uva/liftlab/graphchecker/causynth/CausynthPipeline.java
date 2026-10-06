@@ -604,7 +604,7 @@ public final class CausynthPipeline {
         instrumentConcolicLoopBounds(envelope.loopBoundMethods,
                 envelope.loopBound, envelope.fixedCountLoopSites, refs);
         instrumentConcolicCommunicationHandoffs(campaign, envelope.exports,
-                refs);
+                envelope.methods, refs);
         envelope.freezeRootLoops();
         // ONE entry per root hook group, however many planned occurrences
         // share it, and one enclosing entry per loop root: the replay offers
@@ -1261,14 +1261,16 @@ public final class CausynthPipeline {
 
     /**
      * The wire's captures: each attach a planned consumer declares, and
-     * every export of a declared row ({@code exports}), so a producer no task
+     * every export of the program ({@code exports}), so a producer no task
      * plans still states the endpoint its delivery pairs with.  A message
-     * field's value is exported by the door that carries its message
-     * ({@code runtime.MessageCodec}), never here.
+     * field's export is bound to its builder, and every {@code build()} of
+     * such a builder in the campaign's woven methods ({@code woven}) hands it
+     * to the message built ({@link #instrumentMessageBuilds}).
      */
     private void instrumentConcolicCommunicationHandoffs(
             List<InstrumentationPlan> campaign,
-            List<CommunicationHandoffSpec> exports, HookCatalog refs) {
+            List<CommunicationHandoffSpec> exports, Set<String> woven,
+            HookCatalog refs) {
         Map<String, CommunicationHandoffSpec> sites = new LinkedHashMap<>();
         List<CommunicationHandoffSpec> declared = new ArrayList<>(exports);
         for (InstrumentationPlan plan : campaign) {
@@ -1285,9 +1287,60 @@ public final class CausynthPipeline {
             instrumentCommunicationHandoff(site, refs);
             if (site.outgoing()) exported++;
         }
-        LOG.info("Wove {} export(s), every declared row's in every region "
-                + "skeleton, and {} attach(es) the plan declares", exported,
+        LOG.info("Wove {} export(s), every region skeleton's, and {} "
+                + "attach(es) the plan declares", exported,
                 sites.size() - exported);
+        instrumentMessageBuilds(sites.values(), woven, refs);
+    }
+
+    /**
+     * After every {@code m = b.build()} (or {@code buildPartial()}) of the
+     * builder of a message whose field is a port, in the woven methods: the
+     * elements the builder's setters exported are {@code m}'s
+     * ({@code runtime.MessageCodec#built}), which the door that carries
+     * {@code m} stages.
+     */
+    private void instrumentMessageBuilds(
+            Collection<CommunicationHandoffSpec> sites, Set<String> woven,
+            HookCatalog refs) {
+        Set<String> builders = new LinkedHashSet<>();
+        for (CommunicationHandoffSpec site : sites) {
+            if (!site.codecField().isEmpty()) {
+                builders.add(CausynthStaticFacts.fieldOwner(
+                        site.codecField()) + "$Builder");
+            }
+        }
+        if (builders.isEmpty()) return;
+        int built = 0;
+        for (String signature : woven) {
+            Body body = CausynthStaticFacts.activeBody(
+                    CausynthStaticFacts.method(signature));
+            if (body == null) continue;
+            for (Unit unit : snapshotUnits(body)) {
+                if (originalUnitIndex(unit) < 0
+                        || !(unit instanceof DefinitionStmt)
+                        || !((Stmt) unit).containsInvokeExpr()) {
+                    continue;
+                }
+                InvokeExpr call = ((Stmt) unit).getInvokeExpr();
+                SootMethodRef callee = call.getMethodRef();
+                if (!(call instanceof InstanceInvokeExpr)
+                        || !callee.getParameterTypes().isEmpty()
+                        || !("build".equals(callee.getName())
+                        || "buildPartial".equals(callee.getName()))
+                        || !builders.contains(
+                        callee.getDeclaringClass().getName())) {
+                    continue;
+                }
+                insertAfterSequence(body, unit, Collections.singletonList(
+                        invoke(refs.ref(Hook.BUILT_MESSAGE),
+                                ((InstanceInvokeExpr) call).getBase(),
+                                ((DefinitionStmt) unit).getLeftOp())));
+                built++;
+            }
+        }
+        LOG.info("Wove {} message build(s) of {} port-carrying builder(s)",
+                built, builders.size());
     }
 
     private void instrumentCommunicationHandoff(
@@ -1335,10 +1388,15 @@ public final class CausynthPipeline {
                 throw handoffFailure(site, "ARGUMENT_UNAVAILABLE");
             }
             List<Unit> units = new ArrayList<>();
+            // A message field's export is its builder's, the setter's
+            // receiver.
+            Value builder = site.codecField().isEmpty()
+                    || !(invoke instanceof InstanceInvokeExpr)
+                    ? NullConstant.v() : ((InstanceInvokeExpr) invoke).getBase();
             Value value = addCommunicationHandoff(body,
                     invoke.getArg(site.argumentIndex()),
                     invoke.getMethodRef().parameterType(site.argumentIndex()),
-                    site, NullConstant.v(), units, refs);
+                    site, builder, units, refs);
             if (!site.outgoing()) invoke.setArg(site.argumentIndex(), value);
             insertBeforeSequence(body, cut, units);
             return;
@@ -1390,7 +1448,8 @@ public final class CausynthPipeline {
             Local carrier = newCarrierLeaf(body, declaredType, value, units);
             emit(units, refs.ref(Hook.EXPORT_COMMUNICATION_LEAF),
                     StringConstant.v(site.portId()), carrier,
-                    StringConstant.v(leaf[0]), StringConstant.v(leaf[1]));
+                    StringConstant.v(leaf[0]), StringConstant.v(leaf[1]),
+                    receiver);
             return value;
         }
         Value target = value;
@@ -3682,6 +3741,7 @@ public final class CausynthPipeline {
         MATERIALIZE_FIELD,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
+        BUILT_MESSAGE,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
         PAUSE_VM_PATH_CONDITION,
@@ -3871,7 +3931,9 @@ public final class CausynthPipeline {
                             string)
                     .add(Hook.EXPORT_COMMUNICATION_LEAF, runtime,
                             "exportCommunicationLeaf", VoidType.v(), string,
-                            object, string, string)
+                            object, string, string, object)
+                    .add(Hook.BUILT_MESSAGE, runtime, "builtMessage",
+                            VoidType.v(), object, object)
                     .add(Hook.ATTACH_COMMUNICATION_LEAF, runtime,
                             "attachCommunicationLeaf", VoidType.v(), string,
                             object, string, string, object)

@@ -39,14 +39,16 @@ gated, then the next.
    (OPERATIONS §1 "HDFS trees (next)"), javap the hooks on a case's classpath, rerun every HDFS workload test on r6,
    switch every `case.sh` in one commit; gate: 21's and 52's stalls by blocking slot before/after (`probe/stalls.py`),
    17897/bug1/17960 unchanged, one non-clock case. Then the full time-model family on the merged body.
-6. **`hdfs-codec-capture`** (agent C; engine code in, offline/live gates owed; needs the r6 trees: study-r6 7e81b3a588c
-   hands the DataTransfer op to the door, shim stub `hdfs-shim-dt-door` 5888aec74): the IPC and DataTransfer doors walk
-   the protobuf message (`MessageCodec`: export from the message's own fields; the parse binds each decoded element to
-   its message object; the getter attaches from its receiver's binding; a relay re-stages the original producer); the
-   engine's runtime classes and generated protobuf messages/builders are never state (`EnginePlumbing`); setter
-   exports, message frames and the three protobuf WIRE_FLOW rows deleted. Fixes 07 (relayed segment) and 11741's HELD
-   carrier read. Gate: 07, 12, 11741 with cone unbound 0; producer growth on 07 and 11741 unchanged or explained
-   (exports are stated at the door's occurrence); a review agent before the merge.
+6. **`hdfs-codec-capture`** (agent C; engine code in, gates owed; needs the r6 trees: study-r6 7e81b3a588c hands the
+   DataTransfer op to the door, shim stub `hdfs-shim-dt-door` 5888aec74): a message field's value is exported at its
+   builder's setter inside its region, bound to the builder, handed to the message by a woven `build()`; the IPC and
+   DataTransfer doors walk the message (`MessageCodec`) and stage each field's element (built here: the setter's
+   export; decoded here: re-staged under its original producer; else a constant door export); the parse binds each
+   decoded element to its message object, and getters attach only from decoded bindings; the engine's runtime classes
+   and generated protobuf messages/builders are never state (`EnginePlumbing`); message frames and the three protobuf
+   WIRE_FLOW rows deleted. (A door-only export, the first design, lost the value at a server's response door: CC2-17897
+   WITNESS_CHAIN_OPEN.) Gate, in order: 17897 PASS with its chain closed and 12 unchanged; 07 and 11741 cone unbound
+   0 and 08 unchanged; the offline gate vs `~/gc-run/cc-base`; a review agent before the merge.
 7. **Rule 1** (D1; prototype `/bigtemp/vnr3ne/handover/2026-10-06/rule1-demanded-sites.patch`): an arm's key holds the
    RestsOn kept conditions of its prefix closure, so 11's six IPC arms are not re-asked ~110 times (CW5: 1267 asks vs
    WD3's 47). Safety: 11's `getRpcResponse` u18#3 (ADMITTED on one path, UNSAT on another: core `r_in_19=true`) must not
