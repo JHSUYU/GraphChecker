@@ -185,6 +185,16 @@ frames with hash `fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)`.
   empty) files no frame, captures no scope and writes no event -- its k would count arrivals,
   which nothing schedules -- but an unnamed start: the work that claims it is unnamed (§1), a
   started thread for its life, a task claimed on a pool's thread until it returns.
+- **A received message's hand-off.** A thread that hands a received message to a worker queue names
+  the hand-off by the message (`MessageDoors#handingOff`, `Identity#handoffStarting`; from the Hadoop
+  trees' IPC `Server#internalQueueCall` through the shim, `CausynthMessagePropagation#handingOff`, the
+  call's correlation): every start it makes meanwhile is `<site>:<transport>.<sender endpoint>` --
+  the endpoint the receipt's anchor names too -- standing on none of the thread's own frames, so its
+  `k` counts that message alone and the handler's CLAIM follows it. Counted per thread, the IPC
+  Reader's `internalQueueCall` was the k-th call of its connection: one call a replay did not make
+  renamed every later call of that connection, each a stall (hdfs-adhoc-21, round TM13: 14 of 17). A
+  message whose sender this run did not file names nothing; its hand-off is a plain start. The
+  receiving side's twin of the request's level below.
 - **A request's level.** A request starts at its RPC engine's invoke point, before the client's call
   (`MessageDoors#requestStarting`, from the Hadoop trees' `ProtobufRpcEngine2`/`ProtobufRpcEngine`
   `Invoker#invoke` through the shim, closed by `#requestEnded` in its `finally`). A RESPONSE its thread
