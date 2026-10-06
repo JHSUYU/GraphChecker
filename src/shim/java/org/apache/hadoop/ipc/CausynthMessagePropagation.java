@@ -80,27 +80,54 @@ public final class CausynthMessagePropagation {
       String correlationId, String attemptId, Object localOwner,
       Object scope, Object request) {
     return new Outbound(MessageDoors.outboundRequest(transport,
-        correlationId, attemptId, localOwner, scope, verb(request)));
+        correlationId, attemptId, localOwner, scope, verb(request),
+        carried(request, "payload")));
   }
 
   /**
-   * One IPC response leaving, with the response it carries ({@code
-   * response}, the server's return value). Inert until codec capture
-   * (hdfs-codec-capture) gives it its behaviour; the r6 trees call it.
+   * One IPC response leaving with the response it carries ({@code
+   * response}, the server's return value): the door walks its message.
    */
   public static Outbound outboundResponse(String transport,
       String correlationId, String attemptId, Object localOwner,
       Object response) {
-    return outbound(transport, correlationId, attemptId,
-        MessageDoors.RESPONSE, localOwner, null);
+    return new Outbound(MessageDoors.outbound(transport, correlationId,
+        attemptId, MessageDoors.RESPONSE, localOwner, null,
+        carried(response, "message")));
   }
 
   /**
-   * One IPC message parsed on this thread, inside its inbound exchange.
-   * Inert until codec capture (hdfs-codec-capture) gives it its behaviour;
-   * the r6 trees call it.
+   * One message parsed on this thread, inside its inbound exchange (an IPC
+   * request or response, a DataTransfer op): its message fields' elements
+   * are bound to it ({@link MessageDoors#parsed}).
    */
   public static void received(Object message) {
+    MessageDoors.parsed(message);
+  }
+
+  /**
+   * The protobuf message an IPC request or response wrapper carries: the
+   * {@code field} of the RPC engine's wrapper ({@code
+   * RpcProtobufRequest.payload}, {@code RpcWritable.ProtobufWrapper.message},
+   * package-private in Hadoop), or null when it has none.
+   */
+  static Object carried(Object wrapper, String field) {
+    if (wrapper == null) {
+      return null;
+    }
+    for (Class<?> type = wrapper.getClass(); type != null;
+        type = type.getSuperclass()) {
+      try {
+        java.lang.reflect.Field held = type.getDeclaredField(field);
+        held.setAccessible(true);
+        return held.get(wrapper);
+      } catch (NoSuchFieldException absent) {
+        // The field is declared further up, or not at all.
+      } catch (ReflectiveOperationException | RuntimeException sealed) {
+        return null;
+      }
+    }
+    return null;
   }
 
   /**
@@ -258,26 +285,19 @@ public final class CausynthMessagePropagation {
   }
 
   /**
-   * One DataTransfer op leaves ({@code Sender#send}): a request on a
-   * correlation of its own (its SEND names the op's producer endpoint),
-   * carrying the values its thread exported for the op, which the op's
-   * trace info takes to the receiver with the correlation.  The sender keeps
-   * serving whatever it serves: a DataNode forwards an op to its mirror
-   * inside the op it received.
-   */
-  public static Outbound outboundOp() {
-    return outbound(DATA_TRANSFER, "hdfs-dt-" + UUID.randomUUID(), "1",
-        MessageDoors.REQUEST, null);
-  }
-
-  /**
-   * The same op leaving with the op message it carries ({@code
-   * DataTransferProtoUtil#withCausynth}).  Inert until codec capture
-   * (hdfs-codec-capture) gives it its behaviour; the r6 trees call it, and
-   * a DataNode's Receiver hands each parsed op to {@link #received}.
+   * One DataTransfer op leaves ({@code Sender#send}, through {@code
+   * DataTransferProtoUtil#withCausynth}): a request on a correlation of its
+   * own (its SEND names the op's producer endpoint), carrying the op's
+   * message fields, which the door walks, and the values its thread
+   * exported, which the op's trace info takes to the receiver with the
+   * correlation.  The sender keeps serving whatever it serves: a DataNode
+   * forwards an op to its mirror inside the op it received.  A DataNode's
+   * {@code Receiver} hands each parsed op to {@link #received}.
    */
   public static Outbound outboundOp(Object op) {
-    return outboundOp();
+    return new Outbound(MessageDoors.outbound(DATA_TRANSFER,
+        "hdfs-dt-" + UUID.randomUUID(), "1", MessageDoors.REQUEST, null,
+        null, op));
   }
 
   /**

@@ -468,15 +468,10 @@ public final class CausynthPipeline {
             exports = RuntimeRegionPlanner.exportSites(
                     RegionSkeletonInstrumentationSelection
                             .skeletonsFromEnvironment());
-            // An export's method and frame are woven as a planned
-            // region's are: its leaves are addressed within them.
+            // An export's method is woven as a planned region's is.
             for (CommunicationHandoffSpec export : exports) {
                 methods.add(export.method());
                 loopBoundMethods.add(export.method());
-                if (!export.frameMethod().isEmpty()) {
-                    methods.add(export.frameMethod());
-                    loopBoundMethods.add(export.frameMethod());
-                }
             }
             for (InstrumentationPlan plan : campaign) {
                 materializations.mergeFrom(plan.materializations());
@@ -1266,8 +1261,10 @@ public final class CausynthPipeline {
 
     /**
      * The wire's captures: each attach a planned consumer declares, and
-     * every export of the program ({@code exports}), so a producer no task
-     * plans still states the endpoint its delivery pairs with.
+     * every export of a declared row ({@code exports}), so a producer no task
+     * plans still states the endpoint its delivery pairs with.  A message
+     * field's value is exported by the door that carries its message
+     * ({@code runtime.MessageCodec}), never here.
      */
     private void instrumentConcolicCommunicationHandoffs(
             List<InstrumentationPlan> campaign,
@@ -1288,57 +1285,9 @@ public final class CausynthPipeline {
             instrumentCommunicationHandoff(site, refs);
             if (site.outgoing()) exported++;
         }
-        LOG.info("Wove {} export(s), every region skeleton's, and {} "
-                + "attach(es) the plan declares", exported,
+        LOG.info("Wove {} export(s), every declared row's in every region "
+                + "skeleton, and {} attach(es) the plan declares", exported,
                 sites.size() - exported);
-        Map<String, Boolean> frames = new LinkedHashMap<>();
-        for (CommunicationHandoffSpec site : sites.values()) {
-            if (site.frameMethod().isEmpty()) continue;
-            Boolean outgoing = frames.get(site.frameMethod());
-            if (outgoing != null && outgoing != site.outgoing()) {
-                throw new IllegalStateException(
-                        "COMMUNICATION_FRAME_SIDE_CONFLICT: "
-                                + site.frameMethod());
-            }
-            frames.put(site.frameMethod(), site.outgoing());
-        }
-        for (Map.Entry<String, Boolean> frame : frames.entrySet()) {
-            instrumentCommunicationFrame(frame.getKey(), frame.getValue(),
-                    refs);
-        }
-    }
-
-    /**
-     * Brackets the one call that builds (or, mirrored, decodes) one message
-     * instance, so the k-th frame means the same on both sides and
-     * same-shaped groups do not run together.
-     */
-    private void instrumentCommunicationFrame(String frameMethod,
-                                              boolean outgoing,
-                                              HookCatalog refs) {
-        Body body = selectedBody(frameMethod, "COMMUNICATION_FRAME_METHOD",
-                frameMethod);
-        SootMethod method = body.getMethod();
-        Unit insertionPoint = safeInstrumentationEntry(body, method);
-        if (insertionPoint == null) {
-            throw new IllegalStateException(
-                    "COMMUNICATION_FRAME_METHOD_HAS_NO_SAFE_ENTRY: "
-                            + frameMethod);
-        }
-        Hook open = outgoing ? Hook.PUSH_OUTBOUND_MESSAGE_FRAME
-                : Hook.PUSH_INBOUND_MESSAGE_FRAME;
-        Hook close = outgoing ? Hook.POP_OUTBOUND_MESSAGE_FRAME
-                : Hook.POP_INBOUND_MESSAGE_FRAME;
-        List<Unit> originalUnits = snapshotUnits(body);
-        Unit opened = invoke(refs.ref(open));
-        insertBeforeOrAppendNoRedirect(body, insertionPoint,
-                Collections.singletonList(opened));
-        for (Unit unit : originalReturns(originalUnits, 0)) {
-            body.getUnits().insertBefore(invoke(refs.ref(close)), unit);
-        }
-        // Close on throw too, or the frame swallows later messages.
-        appendCatchAll(body, opened, "$causynthMessageFrameThrown",
-                (units, caught) -> emit(units, refs.ref(close)));
     }
 
     private void instrumentCommunicationHandoff(
@@ -1356,7 +1305,7 @@ public final class CausynthPipeline {
             addCommunicationHandoff(body,
                     body.getParameterLocal(site.argumentIndex()),
                     method.getParameterType(site.argumentIndex()), site,
-                    units, refs);
+                    NullConstant.v(), units, refs);
             insertBeforeOrAppendNoRedirect(body,
                     safeInstrumentationEntry(body, method), units);
             return;
@@ -1370,7 +1319,8 @@ public final class CausynthPipeline {
                 ReturnStmt returned = (ReturnStmt) unit;
                 List<Unit> units = new ArrayList<>();
                 Value value = addCommunicationHandoff(body, returned.getOp(),
-                        method.getReturnType(), site, units, refs);
+                        method.getReturnType(), site, NullConstant.v(), units,
+                        refs);
                 if (!site.outgoing()) returned.setOp(value);
                 insertBeforeSequence(body, unit, units);
             }
@@ -1388,7 +1338,7 @@ public final class CausynthPipeline {
             Value value = addCommunicationHandoff(body,
                     invoke.getArg(site.argumentIndex()),
                     invoke.getMethodRef().parameterType(site.argumentIndex()),
-                    site, units, refs);
+                    site, NullConstant.v(), units, refs);
             if (!site.outgoing()) invoke.setArg(site.argumentIndex(), value);
             insertBeforeSequence(body, cut, units);
             return;
@@ -1397,10 +1347,16 @@ public final class CausynthPipeline {
             throw handoffFailure(site, "CALL_RETURN_UNAVAILABLE");
         }
         Value target = ((DefinitionStmt) cut).getLeftOp();
+        // A message field's attach takes its element from the message the
+        // getter is called on: the one it was decoded into.
+        InvokeExpr call = cut.getInvokeExpr();
+        Value receiver = site.codecField().isEmpty()
+                || !(call instanceof InstanceInvokeExpr) ? NullConstant.v()
+                : ((InstanceInvokeExpr) call).getBase();
         List<Unit> units = new ArrayList<>();
         Value value = addCommunicationHandoff(body, target,
-                cut.getInvokeExpr().getMethodRef().returnType(), site,
-                units, refs);
+                call.getMethodRef().returnType(), site, receiver, units,
+                refs);
         if (!site.outgoing() && value != target) {
             units.add(Jimple.v().newAssignStmt(target, value));
         }
@@ -1427,11 +1383,11 @@ public final class CausynthPipeline {
 
     private Value addCommunicationHandoff(
             Body body, Value value, Type declaredType,
-            CommunicationHandoffSpec site, List<Unit> units,
+            CommunicationHandoffSpec site, Value receiver, List<Unit> units,
             HookCatalog refs) {
         if (site.outgoing()) {
             String[] leaf = carrierLeaf(declaredType);
-            Local carrier = newCarrierLeaf(body, leaf, value, units);
+            Local carrier = newCarrierLeaf(body, declaredType, value, units);
             emit(units, refs.ref(Hook.EXPORT_COMMUNICATION_LEAF),
                     StringConstant.v(site.portId()), carrier,
                     StringConstant.v(leaf[0]), StringConstant.v(leaf[1]));
@@ -1445,8 +1401,8 @@ public final class CausynthPipeline {
                     immediateValue(body, value, units)));
             target = local;
         }
-        addCommunicationLeafAttach(body, target, declaredType, site, units,
-                refs);
+        addCommunicationLeafAttach(body, target, declaredType, site,
+                receiver, units, refs);
         return target;
     }
 
@@ -1456,34 +1412,35 @@ public final class CausynthPipeline {
                 + ": " + site.portId());
     }
 
-    /** Allocates one carrier and stores {@code value} on its typed leaf. */
-    private static Local newCarrierLeaf(Body body, String[] leaf,
+    /**
+     * One carrier holding {@code value} on its typed leaf, made by the
+     * engine's own factory ({@code HandoffLeafCarrier.of}): the store is the
+     * engine's code, never a site of the frame it is woven into.
+     */
+    private static Local newCarrierLeaf(Body body, Type declaredType,
                                         Value value, List<Unit> units) {
-        SootClass owner = carrierClass();
         RefType type = RefType.v(HANDOFF_LEAF_CARRIER_CLASS);
         Local carrier = newTraceLocal(body, type, "$causynthHandoffCarrier");
         units.add(Jimple.v().newAssignStmt(carrier,
-                Jimple.v().newNewExpr(type)));
-        units.add(Jimple.v().newInvokeStmt(
-                Jimple.v().newSpecialInvokeExpr(carrier,
-                        Scene.v().makeMethodRef(owner, "<init>",
-                                Collections.<Type>emptyList(),
-                                VoidType.v(), false))));
-        units.add(Jimple.v().newAssignStmt(
-                Jimple.v().newInstanceFieldRef(carrier,
-                        Scene.v().makeFieldRef(owner, leaf[0],
-                                carrierLeafType(value.getType()), false)),
-                immediateValue(body, value, units)));
+                Jimple.v().newStaticInvokeExpr(Scene.v().makeMethodRef(
+                        carrierClass(), "of", Collections.singletonList(
+                                carrierLeafType(declaredType)), type, true),
+                        immediateValue(body, value, units))));
         return carrier;
     }
 
-    /** Reads one carrier leaf back into the receiving frame's own value. */
+    /**
+     * Reads one carrier leaf back into the receiving frame's own value,
+     * through the engine's own getter: the read is the engine's code, so no
+     * row states it and the value it returns is the attached one.
+     */
     private static Unit readCarrierLeaf(Local carrier, String[] leaf,
                                         Value target) {
+        Type type = carrierLeafType(target.getType());
         return Jimple.v().newAssignStmt(target,
-                Jimple.v().newInstanceFieldRef(carrier,
-                        Scene.v().makeFieldRef(carrierClass(), leaf[0],
-                                carrierLeafType(target.getType()), false)));
+                Jimple.v().newVirtualInvokeExpr(carrier,
+                        Scene.v().makeMethodRef(carrierClass(), leaf[0],
+                                Collections.<Type>emptyList(), type, false)));
     }
 
     /** The carrier field and descriptor one Jimple type crosses on. */
@@ -1508,14 +1465,15 @@ public final class CausynthPipeline {
 
     private void addCommunicationLeafAttach(
             Body body, Value target, Type declaredType,
-            CommunicationHandoffSpec site, List<Unit> units,
+            CommunicationHandoffSpec site, Value receiver, List<Unit> units,
             HookCatalog refs) {
         Type valueType = target.getType();
         String[] leaf = carrierLeaf(declaredType);
-        Local carrier = newCarrierLeaf(body, leaf, target, units);
+        Local carrier = newCarrierLeaf(body, declaredType, target, units);
         emit(units, refs.ref(Hook.ATTACH_COMMUNICATION_LEAF),
                 StringConstant.v(site.portId()), carrier,
-                StringConstant.v(leaf[0]), StringConstant.v(leaf[1]));
+                StringConstant.v(leaf[0]), StringConstant.v(leaf[1]),
+                receiver);
         if (declaredType instanceof PrimType
                 || "java.lang.Object".equals(valueType.toString())) {
             units.add(readCarrierLeaf(carrier, leaf, target));
@@ -3724,10 +3682,6 @@ public final class CausynthPipeline {
         MATERIALIZE_FIELD,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
-        PUSH_OUTBOUND_MESSAGE_FRAME,
-        POP_OUTBOUND_MESSAGE_FRAME,
-        PUSH_INBOUND_MESSAGE_FRAME,
-        POP_INBOUND_MESSAGE_FRAME,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
         PAUSE_VM_PATH_CONDITION,
@@ -3920,15 +3874,7 @@ public final class CausynthPipeline {
                             object, string, string)
                     .add(Hook.ATTACH_COMMUNICATION_LEAF, runtime,
                             "attachCommunicationLeaf", VoidType.v(), string,
-                            object, string, string)
-                    .add(Hook.PUSH_OUTBOUND_MESSAGE_FRAME, runtime,
-                            "pushOutboundMessageFrame", VoidType.v())
-                    .add(Hook.POP_OUTBOUND_MESSAGE_FRAME, runtime,
-                            "popOutboundMessageFrame", VoidType.v())
-                    .add(Hook.PUSH_INBOUND_MESSAGE_FRAME, runtime,
-                            "pushInboundMessageFrame", VoidType.v())
-                    .add(Hook.POP_INBOUND_MESSAGE_FRAME, runtime,
-                            "popInboundMessageFrame", VoidType.v())
+                            object, string, string, object)
                     .add(Hook.PAUSE_OBSERVATION, runtime, "pauseObservation",
                             VoidType.v())
                     .add(Hook.RESUME_OBSERVATION, runtime, "resumeObservation",

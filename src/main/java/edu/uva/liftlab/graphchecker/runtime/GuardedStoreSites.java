@@ -38,8 +38,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  */
 final class GuardedStoreSites {
     /** Names this epoch's scope map, read once for this table, for
-     *  {@link ClockLoops} and for the READ_SITE methods
-     *  ({@code RowPublication#installReadSites}). */
+     *  {@link ClockLoops}, for the READ_SITE methods
+     *  ({@code RowPublication#installReadSites}) and for the message fields
+     *  a door walks ({@link MessageCodec#install}). */
     static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
     /** SYMBOL-SCOPE §5.3:
@@ -76,6 +77,7 @@ final class GuardedStoreSites {
             table = of(rows);
             ClockLoops.install(rows);
             RowPublication.installReadSites(rows);
+            MessageCodec.install(rows);
         } catch (IOException | RuntimeException rejected) {
             return "GUARDED_STORE_SITES_ARTIFACT_REJECTED: " + artifact
                     + ": " + rejected.getMessage();

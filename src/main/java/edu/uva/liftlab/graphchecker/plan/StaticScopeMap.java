@@ -60,7 +60,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       bytes, a digest -- where a symbol costs every expression it flows
  *       through and binds nothing.</li>
  *   <li>{@code EXPORT_SITE}: defines the value of a declared wire port
- *       ({@code portId}), the producer half of an interaction.</li>
+ *       ({@code portId}), the producer half of an interaction; a message
+ *       field's port states that field as its {@code cell}, which the door
+ *       exports from (SYMBOL-SCOPE §6.3).</li>
  *   <li>{@code DECLARED_SITE}: a value entering from outside the slice's
  *       text that a case may declare symbolic -- an {@code ACCESSOR_RETURN} or
  *       a {@code CALL_RETURN} (incl. {@code Debug.makeSymbolicBoolean} fault
@@ -665,7 +667,9 @@ public final class StaticScopeMap {
             for (Map<String, Object> port : region.ports) {
                 // The producer side only: an attach defines no port value,
                 // and read as an export it made the consumer's own region a
-                // static candidate producer of what it received.
+                // static candidate producer of what it received.  A message
+                // field's port names its field as the cell: the door exports
+                // from it (runtime.MessageCodec), never a STATE location.
                 if (!"OUT".equals(text(port.get(RuntimeSelectedRegionFinalizer
                         .REGION_PORT_SIDE)))) {
                     continue;
@@ -684,7 +688,10 @@ public final class StaticScopeMap {
                     continue;
                 }
                 found.add(new Site(EXPORT_SITE, region.regionId, siteId,
-                        vmSite(method), "", "", portId, "", "", null,
+                        vmSite(method), text(port.get(
+                                CommunicationCatalogContract
+                                        .PORT_CODEC_FIELD)), "", portId, "",
+                        "", null,
                         Collections.<String>emptyList(),
                         Collections.<Boolean>emptyList()));
             }

@@ -257,19 +257,19 @@ final class HandoffMint {
 
     /**
      * States one delivered v_H as the consumer endpoint of an interaction,
-     * paired to its producer by the staged VM handle, never by a guess.
-     * {@code answer} is the wave's value written into it, or "".
+     * paired to its producer by the staged VM handle, else by the message it
+     * arrived in, never by a guess.  {@code answer} is the wave's value
+     * written into it, or "".
      */
     private static void publishAttachRow(Endpoint consumer, String portId,
                                          String symbol, String javaType,
                                          String arrival, String answer) {
         if (consumer == null || !RowRuntime.open()) return;
         try {
-            RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            RowRuntime.attachedAt(consumer, Interactions.deliverySeq(), portId,
-                    Interactions.deliveryHandle(),
-                    view.exchangeCorrelationId, symbol, javaType, arrival,
-                    !answer.isEmpty(), answer);
+            Interactions.Delivery delivery = Interactions.delivery();
+            RowRuntime.attachedAt(consumer, delivery.seq(), portId,
+                    delivery.handle, delivery.correlationId, delivery.half,
+                    symbol, javaType, arrival, !answer.isEmpty(), answer);
         } catch (Throwable unstated) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     portId,

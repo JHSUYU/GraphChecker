@@ -1498,15 +1498,14 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * Every export the weave captures: each OUT port of every region
-     * skeleton, planned or not, so an unplanned producer's export is a row
-     * too -- ambient, at the occurrence it ran in -- that a delivery pairs
-     * with, and the closure can grow that producer when a demanded attach
-     * names it (PIPELINE §7.2); an export no demand reaches stays a row.
-     * hdfs-adhoc-12 HG9L: the NameNode's {@code
-     * PBHelper.convert(NNHAStatusHeartbeat)} roots no planned region, so
-     * {@code setTxid} was woven with no export, the DataNode's attach of the
-     * HA status txid paired with nothing, and the fatal held it unbound.
+     * Every export the weave captures: each OUT port of a declared row in
+     * every region skeleton, planned or not, so an unplanned producer's
+     * export is a row too -- ambient, at the occurrence it ran in -- that a
+     * delivery pairs with, and the closure can grow that producer when a
+     * demanded attach names it (PIPELINE §7.2); an export no demand reaches
+     * stays a row.  A message field's port is exported by the door that
+     * carries its message ({@code MessageCodec}), never at its setter calls:
+     * they are its producers for the slice and the regions only.
      */
     public static List<CommunicationHandoffSpec> exportSites(
             Collection<StaticProgram.RegionRow> skeletons) {
@@ -1514,7 +1513,9 @@ public final class RuntimeRegionPlanner {
         for (StaticProgram.RegionRow skeleton : skeletons) {
             for (Map<String, Object> port : skeleton.communicationPorts) {
                 if (!CommunicationHandoffSpec.OUT.equals(stringValue(port.get(
-                        RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE)))) {
+                        RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE)))
+                        || !stringValue(port.get(CommunicationCatalogContract
+                        .PORT_CODEC_FIELD)).isEmpty()) {
                     continue;
                 }
                 Map<String, Object> site = handoffSite(port,
@@ -1557,7 +1558,7 @@ public final class RuntimeRegionPlanner {
                 CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
                 CommunicationCatalogContract.PORT_JAVA_TYPE,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD,
-                CommunicationCatalogContract.PORT_FRAME_METHOD,
+                CommunicationCatalogContract.PORT_CODEC_FIELD,
                 CommunicationCatalogContract.DECLARED_CALLEE}) {
             String value = stringValue(port.get(field));
             if (!value.isEmpty()) site.put(field, value);

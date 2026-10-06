@@ -23,7 +23,7 @@ public final class CommunicationHandoffSpec {
     private final String side;
     private final String captureKind;
     private final String method;
-    private final String frameMethod;
+    private final String codecField;
     private final String declaredCallee;
     private final int unitIndex;
     private final int argumentIndex;
@@ -38,8 +38,8 @@ public final class CommunicationHandoffSpec {
         captureKind = optionalString(row, CAPTURE_KIND);
         method = optionalString(row,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD);
-        frameMethod = optionalString(row,
-                CommunicationCatalogContract.PORT_FRAME_METHOD);
+        codecField = optionalString(row,
+                CommunicationCatalogContract.PORT_CODEC_FIELD);
         declaredCallee = optionalString(row,
                 CommunicationCatalogContract.DECLARED_CALLEE);
         unitIndex = optionalInteger(row,
@@ -99,9 +99,10 @@ public final class CommunicationHandoffSpec {
     public String captureKind() { return captureKind; }
     public String method() { return method; }
 
-    /** Method whose one call builds one value of this port; "" = framed by its
-     *  RPC. */
-    public String frameMethod() { return frameMethod; }
+    /** The message field the port is carried in ({@code <M: T f>}), or ""
+     *  for a declared row: such an attach takes its element from the
+     *  getter's receiver, the message it was decoded into. */
+    public String codecField() { return codecField; }
     public String declaredCallee() { return declaredCallee; }
     public int unitIndex() { return unitIndex; }
     public int argumentIndex() { return argumentIndex; }

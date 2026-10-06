@@ -33,7 +33,7 @@ public class ASharedDagIsNeverUnfoldedTest {
         String envelope = envelope(new int[] {0, 1000, 0},
                 chain(0, "s"), chain(1000, "s"), chain(2000, "t"));
         PathConditionWindow window = PathConditionWindow.window(envelope, 0,
-                new VmExpressionTable.Store());
+                new VmExpressionTable.Store(owner -> false));
         JsonObject event = JsonParser.parseString(
                 "{\"opcode\":171,\"codePosition\":\"p\"}").getAsJsonObject();
         JsonArray indices = new JsonArray();
@@ -54,7 +54,7 @@ public class ASharedDagIsNeverUnfoldedTest {
         String other = envelope(new int[] {0, 2000, 0},
                 chain(0, "s"), chain(1000, "s"), chain(2000, "t"));
         PathConditionWindow apart = PathConditionWindow.window(other, 0,
-                new VmExpressionTable.Store());
+                new VmExpressionTable.Store(owner -> false));
         assertFalse(VmBranchAttestation.sameExpression(selector(apart, 0),
                 selector(apart, 1)));
 

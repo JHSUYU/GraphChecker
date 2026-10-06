@@ -136,10 +136,6 @@ public final class ConcolicInstrumentationSelections {
             methods.addAll(branchMethods);
             for (CommunicationHandoffSpec site : communicationHandoffs) {
                 methods.add(site.method());
-                // The frame is woven too: its leaves are addressed within it.
-                if (!site.frameMethod().isEmpty()) {
-                    methods.add(site.frameMethod());
-                }
             }
             // A declaration may live in a helper the root calls.
             for (ConfiguredSourcePhaseContract.Occurrence phase

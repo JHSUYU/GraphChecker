@@ -39,14 +39,14 @@ gated, then the next.
    (OPERATIONS §1 "HDFS trees (next)"), javap the hooks on a case's classpath, rerun every HDFS workload test on r6,
    switch every `case.sh` in one commit; gate: 21's and 52's stalls by blocking slot before/after (`probe/stalls.py`),
    17897/bug1/17960 unchanged, one non-clock case. Then the full time-model family on the merged body.
-6. **`hdfs-codec-capture`** (A4; design approved, a plan-only WIP commit): after export-weave. The IPC door walks the
-   message (export from the message's own fields at the outbound door; bind each decoded element to its message object
-   after the parse; attach at the demanded getter from the receiver's binding; a relay re-stages the original producer);
-   the engine's runtime classes and generated protobuf messages/builders are never state; the setter capture loop and
-   the three protobuf WIRE_FLOW rows deleted. First step: check that Soot loads a generated getter's body
-   (`Scene.forceResolve(owner, BODIES)`; else ASM). Fixes 07 (relayed segment) and 11741's HELD carrier read. Gate:
-   07, 12, 11741 with cone unbound 0; producer growth on 07 and 11741 unchanged or explained (exports are stated at the
-   door's occurrence); a review agent before the merge.
+6. **`hdfs-codec-capture`** (agent C; engine code in, offline/live gates owed; needs the r6 trees: study-r6 7e81b3a588c
+   hands the DataTransfer op to the door, shim stub `hdfs-shim-dt-door` 5888aec74): the IPC and DataTransfer doors walk
+   the protobuf message (`MessageCodec`: export from the message's own fields; the parse binds each decoded element to
+   its message object; the getter attaches from its receiver's binding; a relay re-stages the original producer); the
+   engine's runtime classes and generated protobuf messages/builders are never state (`EnginePlumbing`); setter
+   exports, message frames and the three protobuf WIRE_FLOW rows deleted. Fixes 07 (relayed segment) and 11741's HELD
+   carrier read. Gate: 07, 12, 11741 with cone unbound 0; producer growth on 07 and 11741 unchanged or explained
+   (exports are stated at the door's occurrence); a review agent before the merge.
 7. **Rule 1** (D1; prototype `/bigtemp/vnr3ne/handover/2026-10-06/rule1-demanded-sites.patch`): an arm's key holds the
    RestsOn kept conditions of its prefix closure, so 11's six IPC arms are not re-asked ~110 times (CW5: 1267 asks vs
    WD3's 47). Safety: 11's `getRpcResponse` u18#3 (ADMITTED on one path, UNSAT on another: core `r_in_19=true`) must not
@@ -79,7 +79,7 @@ If a check still cannot reach its target after that round, swap it (only 04 is l
   asked six times and every replay was NOT_ADMITTED ("occurrence 844c… never reached"). Find why the flipped replay
   loses the anchor occurrence (DO2's 291 obligations vs DO1's 125 may come from the decider's re-pairable reads:
   check). Evidence `/bigtemp/vnr3ne/gc-out/hdfs-decider-open/accept-DO{1,2}-39`.
-- **07**: codec capture (§1.6); its UNSAT has 6 unbound relayed-segment handoffs today.
+- **07**: codec capture (§1.6, on its branch); its UNSAT had 6 unbound relayed-segment handoffs.
 - **40**: the configuration root `dfs.namenode.replication.min` has domain [1,1] (SYMBOL-SCOPE §4.3's hull ignores a
   comparison through a field): a general domain for an integral compared with a non-constant is owed, with CONFIRM to
   refute what it over-approximates; 40's open arm is closed only by that domain.
@@ -153,8 +153,10 @@ the final round of the group (concurrently, through the ledger).
 
 ## HBase (`system/hbase` = main today)
 
-**0.** Before any HBase run on the new body: `hbase-unified` `CausynthRpc.java:61-62` drops `, call.param` (the payload
-door is gone with WIRE-CODEC); rebuild hbase-client.
+**0.** Before any HBase run on the new body: `hbase-unified` `CausynthRpc.java:61-62` hands its request's protobuf
+message (`call.param`) to `MessageDoors.outbound(..., scope, message)` and the response door its response's, and calls
+`MessageDoors.parsed(message)` after each parse (the door walk of codec capture, SYMBOL-SCOPE §6.3: a derived port is
+carried only by a door handed its message); rebuild hbase-client.
 
 **1. Settle `hbase-startup`'s two design questions** (the lead decides; see [STATE.md](STATE.md) §2):
 - An identity rule for threads started by libraries (ZooKeeper's EventThread, Netty event loops). They must not

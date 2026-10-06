@@ -306,21 +306,19 @@ public final class RowRuntime {
 
     /**
      * One v_H minted at an endpoint already allocated, paired with the
-     * export of the message this thread received ({@link
-     * MessageDoors#current}): by the element's handle, else by that
-     * message and the port when the message carried an element for it.
+     * export of the message the element arrived in ({@code correlationId},
+     * {@code half}): by the element's handle, else by that message and the
+     * port when the message carried an element for it.
      */
     public static Endpoint attachedAt(Endpoint endpoint, long seq,
                                       String portId, long handle,
-                                      String correlationId, String symbol,
-                                      String javaType, String arrival,
-                                      boolean answered,
+                                      String correlationId, String half,
+                                      String symbol, String javaType,
+                                      String arrival, boolean answered,
                                       String answeredValue) {
         if (endpoint == null) return null;
-        MessageDoors.Inbound received = MessageDoors.current();
         Interactions.Pairing pairing = Interactions.pairing(portId, handle,
-                received == null ? "" : received.correlationId,
-                received == null ? "" : received.half);
+                correlationId, half);
         Endpoint producer = pairing.producer();
         if (producer != null && handle > 0L
                 && !"HANDLE".equals(pairing.key())) {
@@ -350,9 +348,8 @@ public final class RowRuntime {
                         GapClass.DIAGNOSTIC, endpoint.id(),
                         handle == SymbolicMessageEnvelope.ABSENT
                                 ? "the message carried no element for "
-                                + Text.safe(portId) + ": its sender forwarded"
-                                + " the value without exporting it, so the"
-                                + " delivery pairs with no export"
+                                + Text.safe(portId) + ", so the delivery"
+                                + " pairs with no export"
                                 : "the delivery at " + Text.safe(portId)
                                 + " was paired with no export of this run"));
             }
@@ -405,16 +402,19 @@ public final class RowRuntime {
     }
 
     /**
-     * The tool's own code.  Its wait sets and frame levels are never program
-     * state, though the VM versions them once an application reference keys
-     * them (adhoc pipeline-reply.flush: TimedWaits' send counter, read and
-     * written in one call, stood as a BLOCKING TOPOLOGY_DIVERGENCE).
+     * The engine's own plumbing ({@link EnginePlumbing}): the tool's code
+     * and generated protobuf messages and builders.  Never program state,
+     * though the VM versions it once an application reference keys it
+     * (adhoc pipeline-reply.flush: TimedWaits' send counter, read and
+     * written in one call, stood as a BLOCKING TOPOLOGY_DIVERGENCE; hdfs-11741
+     * AR1: the woven read-back of a wire carrier's leaf stood HELD).
      */
     private static boolean ownCode(String site) {
-        return site != null && site.startsWith(OWN_CODE);
+        if (site == null) return false;
+        int method = site.indexOf('#');
+        return EnginePlumbing.site(method < 0 ? site
+                : site.substring(0, method));
     }
-
-    private static final String OWN_CODE = "edu.uva.liftlab.graphchecker.";
 
     /**
      * One write, at the site index the event stood on WHEN it ran.

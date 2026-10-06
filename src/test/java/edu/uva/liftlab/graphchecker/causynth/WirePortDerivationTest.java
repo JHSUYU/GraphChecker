@@ -10,6 +10,7 @@ import soot.Modifier;
 import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
+import soot.SootField;
 import soot.SootMethod;
 import soot.Type;
 import soot.Unit;
@@ -35,9 +36,10 @@ import static org.junit.Assert.assertEquals;
  * RPC carries its message.  The scene is protobuf-shaped: a message {@code
  * KeyProto} whose hierarchy reaches {@code GeneratedMessageV3}, held by the
  * response of a service method {@code getKeys(RpcController, KeysRequest)},
- * its {@code KeyProto$Builder.setKeyId}, two producers calling it, and an
- * declared throw deciding on two {@code getKeyId()} reads -- beside a third
- * read nothing demands -- and on the same field of {@code SectionProto}, a
+ * its getter returning its field {@code keyId_}, its {@code
+ * KeyProto$Builder.setKeyId}, two producers calling it, and an declared
+ * throw deciding on two {@code getKeyId()} reads -- beside a third read
+ * nothing demands -- and on the same field of {@code SectionProto}, a
  * message no service carries (an on-disk section) with its own setter call.
  */
 public class WirePortDerivationTest {
@@ -77,6 +79,10 @@ public class WirePortDerivationTest {
                                 ".wire.auto:KeyProto.KeyId")},
                 {"its type", "int", port.get(
                         CommunicationCatalogContract.PORT_JAVA_TYPE)},
+                {"carried in the field its getter returns, which the door"
+                        + " walks", "<" + MESSAGE + ": int keyId_>",
+                        port.get(CommunicationCatalogContract
+                                .PORT_CODEC_FIELD)},
                 {"every setter call is a producer, argument 0",
                         Arrays.asList(
                                 "CALL_ARGUMENT " + ENCODE_A + "#u2 0 "
@@ -233,29 +239,35 @@ public class WirePortDerivationTest {
                         "java.lang.IllegalStateException", 0));
     }
 
-    /** {@code int getKeyId()} on the message and {@code setKeyId(int)} on
-     *  its {@code $Builder}. */
+    /** {@code int getKeyId()} returning its field {@code keyId_} on the
+     *  message, and {@code setKeyId(int)} on its {@code $Builder}. */
     private static SootMethod[] keyIdField(SootClass message,
                                            SootClass object) {
         SootClass builder = application(message.getName() + "$Builder",
                 object);
         RefType messageType = message.getType();
         RefType builderType = builder.getType();
+        SootField keyId = new SootField("keyId_", IntType.v(),
+                Modifier.PRIVATE);
+        message.addField(keyId);
         SootMethod getter = method(message, "getKeyId",
                 Collections.<Type>emptyList(), IntType.v(), 0);
         Local self = local(getter, "r0", messageType);
+        Local held = local(getter, "i0", IntType.v());
         body(getter, Jimple.v().newIdentityStmt(self,
                         Jimple.v().newThisRef(messageType)),
-                Jimple.v().newReturnStmt(IntConstant.v(0)));
+                Jimple.v().newAssignStmt(held, Jimple.v()
+                        .newInstanceFieldRef(self, keyId.makeRef())),
+                Jimple.v().newReturnStmt(held));
         SootMethod setter = method(builder, "setKeyId",
                 Collections.<Type>singletonList(IntType.v()), builderType, 0);
-        Local held = local(setter, "r0", builderType);
+        Local building = local(setter, "r0", builderType);
         Local value = local(setter, "i0", IntType.v());
-        body(setter, Jimple.v().newIdentityStmt(held,
+        body(setter, Jimple.v().newIdentityStmt(building,
                         Jimple.v().newThisRef(builderType)),
                 Jimple.v().newIdentityStmt(value,
                         Jimple.v().newParameterRef(IntType.v(), 0)),
-                Jimple.v().newReturnStmt(held));
+                Jimple.v().newReturnStmt(building));
         return new SootMethod[]{getter, setter};
     }
 

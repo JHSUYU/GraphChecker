@@ -3,10 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,21 +16,21 @@ import java.util.Map;
  * exact string on the receiver thread; correlation ids are never an
  * expression lookup.</p>
  *
- * <p>Each leaf is addressed by {@code (frame, port, ordinal)}, and a decode
- * looks its element up rather than consuming a queue head: one port carries
- * many unrelated values, so head-of-queue pairing shifts every pairing after
- * the first asymmetry.  A frame is one construction of the port's value; the
- * k-th frame the sender opens is the k-th the receiver opens.  Frame 0 is the
- * message itself.  Ordinals approximate field paths and agree while both sides
- * walk a frame in the same order; a disagreement is reported (a leaf nothing
- * looked up, a lookup with no leaf), never absorbed.</p>
+ * <p>Each leaf is addressed by {@code (port, ordinal)}, and a decode looks its
+ * element up rather than consuming a queue head: one port carries many
+ * unrelated values, so head-of-queue pairing shifts every pairing after the
+ * first asymmetry.  The k-th element of a port is the port's k-th field in
+ * the door's walk of the message ({@link MessageCodec}), which both sides
+ * walk alike, staged or not ({@link #skip}), or a declared row's k-th
+ * capture; a disagreement is reported (a leaf nothing looked up, a lookup
+ * with no leaf), never absorbed.</p>
  *
  * <p>The wire carries only what the receiver cannot derive: handle and
  * position.  Plan data does not travel; both sides load the same plan.
  * Refusing a wire is a named row, never an exception into the workload.</p>
  */
 public final class SymbolicMessageEnvelope {
-    private static final String SCHEMA = "CSE5";
+    private static final String SCHEMA = "CSE6";
     /**
      * How many values one message may carry: the only bound on a wire.  Do
      * not add a length bound; it would be a second authority over the same
@@ -42,11 +40,6 @@ public final class SymbolicMessageEnvelope {
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
-    /**
-     * How many frames one message may open, on either side.  Reaching it is
-     * named: an unopened frame makes its elements collide with the parent's.
-     */
-    private static final int MAX_FRAMES = 64;
 
     /** The message this thread is building. */
     private static final ThreadLocal<Outbound> OUTBOUND = new ThreadLocal<>();
@@ -58,7 +51,7 @@ public final class SymbolicMessageEnvelope {
 
     /**
      * A {@link #take} that found no element: the sender staged nothing for
-     * the port on this message (a value it forwarded without exporting it).
+     * this element of the port on this message.
      */
     static final long ABSENT = -1L;
 
@@ -74,6 +67,15 @@ public final class SymbolicMessageEnvelope {
     static boolean stage(String portId, long handle, Endpoint producer) {
         if (empty(portId) || handle < 0L) return false;
         return outbound().stage(portId, handle, producer);
+    }
+
+    /**
+     * Counts one element of {@code portId} the next message carries none
+     * for, so the elements after it keep the ordinals the receiver's walk
+     * gives them.
+     */
+    static void skip(String portId) {
+        if (!empty(portId)) outbound().count(portId);
     }
 
     /**
@@ -101,20 +103,6 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Opens a frame around the value this thread is about to serialize;
-     * frames are numbered in open order on both sides.
-     */
-    static void pushOutboundFrame() {
-        outbound().push();
-    }
-
-    /** Closes the innermost outbound frame. */
-    static void popOutboundFrame() {
-        Outbound message = OUTBOUND.get();
-        if (message != null) message.pop();
-    }
-
-    /**
      * Removes and serializes the entries staged for the next outbound message.
      * An empty string means the message carries no symbolic envelope.
      */
@@ -125,8 +113,7 @@ public final class SymbolicMessageEnvelope {
         StringBuilder wire = new StringBuilder(SCHEMA);
         for (Entry entry : message.entries) {
             wire.append(';').append(token(entry.portId)).append(',')
-                    .append(entry.handle).append(',')
-                    .append(entry.frame).append(',').append(entry.ordinal);
+                    .append(entry.handle).append(',').append(entry.ordinal);
         }
         return wire.toString();
     }
@@ -173,18 +160,6 @@ public final class SymbolicMessageEnvelope {
         if (message != null) message.reportUnattached();
     }
 
-    /** Opens the next frame of the message being decoded, counted as the sender counted. */
-    static void pushInboundFrame() {
-        Inbound message = INBOUND.get();
-        if (message != null) message.push();
-    }
-
-    /** Closes the innermost inbound frame. */
-    static void popInboundFrame() {
-        Inbound message = INBOUND.get();
-        if (message != null) message.pop();
-    }
-
     /**
      * Takes the element this port is decoding next, by ordinal: its handle
      * (0 for a concrete one), or {@link #ABSENT} when the message carries
@@ -202,71 +177,37 @@ public final class SymbolicMessageEnvelope {
         INBOUND.remove();
     }
 
-    /**
-     * The frames one side opened in a message, and per (frame, port) the
-     * next ordinal: both sides count alike.
-     */
-    private static class Frames {
-        private final String side;
+    /** Per port, the next ordinal one side counts: both sides count
+     *  alike. */
+    private static class Ordinals {
         private final Map<String, Integer> next = new LinkedHashMap<>();
-        private final Deque<Integer> open = new ArrayDeque<>();
-        private int opened;
 
-        Frames(String side) {
-            this.side = side;
-        }
-
-        void push() {
-            if (opened >= MAX_FRAMES) {
-                RowRuntime.messageContextRefused(
-                        "symbolic message envelope " + side + " frame",
-                        "this message already has " + opened + " open frames,"
-                                + " the most one message may state, so the"
-                                + " frame was not opened and the elements"
-                                + " inside it take the enclosing frame's"
-                                + " ordinals");
-                return;
-            }
-            open.addLast(++opened);
-        }
-
-        void pop() {
-            if (!open.isEmpty()) open.removeLast();
-        }
-
-        int frame() {
-            return open.isEmpty() ? 0 : open.peekLast();
-        }
-
-        /** Counts one element of {@code portId} in the current frame. */
+        /** Counts one element of {@code portId}. */
         int count(String portId) {
-            String counter = frame() + "\n" + portId;
-            Integer held = next.get(counter);
+            Integer held = next.get(portId);
             int ordinal = held == null ? 0 : held;
-            next.put(counter, ordinal + 1);
+            next.put(portId, ordinal + 1);
             return ordinal;
         }
     }
 
     /** One decoded message and how much of it has been looked up. */
-    private static final class Inbound extends Frames {
+    private static final class Inbound extends Ordinals {
         private final List<Entry> entries;
         private final boolean[] lookedUp;
         private final String wire;
 
         Inbound(List<Entry> entries, String wire) {
-            super("inbound");
             this.entries = entries;
             this.lookedUp = new boolean[entries.size()];
             this.wire = wire;
         }
 
         long take(String portId) {
-            int frame = frame();
             int ordinal = count(portId);
             for (int index = 0; index < entries.size(); index++) {
                 Entry entry = entries.get(index);
-                if (entry.frame != frame || entry.ordinal != ordinal
+                if (entry.ordinal != ordinal
                         || !portId.equals(entry.portId)) continue;
                 if (lookedUp[index]) break;
                 lookedUp[index] = true;
@@ -292,19 +233,14 @@ public final class SymbolicMessageEnvelope {
         }
     }
 
-    /** One message being built, and the frames open inside it. */
-    private static final class Outbound extends Frames {
+    /** One message being built. */
+    private static final class Outbound extends Ordinals {
         private final List<Entry> entries = new ArrayList<>();
 
-        Outbound() {
-            super("outbound");
-        }
-
         boolean stage(String portId, long handle, Endpoint producer) {
+            int ordinal = count(portId);
             if (entries.size() >= MAX_ENTRIES) return false;
-            int frame = frame();
-            entries.add(new Entry(portId, handle, frame,
-                    count(portId), producer));
+            entries.add(new Entry(portId, handle, ordinal, producer));
             return true;
         }
     }
@@ -317,25 +253,21 @@ public final class SymbolicMessageEnvelope {
         List<Entry> entries = new ArrayList<>();
         for (int index = 1; index < rows.length; index++) {
             String[] fields = rows[index].split(",", -1);
-            if (fields.length != 4) throw malformed();
+            if (fields.length != 3) throw malformed();
             String portId = text(fields[0]);
             long handle;
-            int frame;
             int ordinal;
             try {
                 handle = Long.parseLong(fields[1]);
-                frame = Integer.parseInt(fields[2]);
-                ordinal = Integer.parseInt(fields[3]);
+                ordinal = Integer.parseInt(fields[2]);
             } catch (NumberFormatException invalid) {
                 throw malformed();
             }
             if (handle < 0L || !Long.toString(handle).equals(fields[1])
-                    || frame < 0 || frame > MAX_FRAMES
-                    || !Integer.toString(frame).equals(fields[2])
-                    || ordinal < 0 || ordinal >= MAX_ENTRIES
-                    || !Integer.toString(ordinal).equals(fields[3])
+                    || ordinal < 0
+                    || !Integer.toString(ordinal).equals(fields[2])
                     || empty(portId)) throw malformed();
-            entries.add(new Entry(portId, handle, frame, ordinal, null));
+            entries.add(new Entry(portId, handle, ordinal, null));
         }
         return entries;
     }
@@ -371,15 +303,13 @@ public final class SymbolicMessageEnvelope {
     private static final class Entry {
         private final String portId;
         private final long handle;
-        private final int frame;
         private final int ordinal;
         private final Endpoint producer;
 
-        private Entry(String portId, long handle, int frame, int ordinal,
+        private Entry(String portId, long handle, int ordinal,
                       Endpoint producer) {
             this.portId = portId;
             this.handle = handle;
-            this.frame = frame;
             this.ordinal = ordinal;
             this.producer = producer;
         }

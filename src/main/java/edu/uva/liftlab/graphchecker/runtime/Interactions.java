@@ -148,36 +148,59 @@ public final class Interactions {
     }
 
     /**
-     * The delivery this thread is attaching ({handle, attach event id}), held
-     * for one attach because the mint runs frames below the decode.
+     * The delivery this thread is attaching, held for one attach because the
+     * mint runs frames below the decode.
      */
-    private static final ThreadLocal<long[]> DELIVERY =
-            new ThreadLocal<long[]>();
+    private static final ThreadLocal<Delivery> DELIVERY =
+            new ThreadLocal<Delivery>();
 
-    public static void delivering(long handle) {
-        DELIVERY.set(new long[] {handle, 0L});
+    /**
+     * One element being attached: its VM handle and the message it arrived
+     * in ({@code correlationId}, {@code half}) -- the message a decoded
+     * element was bound to, whatever this thread serves when its getter
+     * runs.
+     */
+    public static void delivering(long handle, String correlationId,
+                                  String half) {
+        DELIVERY.set(new Delivery(handle, Text.safe(correlationId),
+                Text.safe(half)));
     }
 
     /** States the VM ledger entry this delivery was attached at. */
     public static void deliveringAt(long attachEventId) {
-        long[] delivery = DELIVERY.get();
-        if (delivery != null) delivery[1] = attachEventId;
+        Delivery delivery = DELIVERY.get();
+        if (delivery != null) delivery.seq = attachEventId;
     }
 
     public static void delivered() {
         DELIVERY.remove();
     }
 
-    /** The handle of the delivery being attached on this thread, or 0. */
-    public static long deliveryHandle() {
-        long[] delivery = DELIVERY.get();
-        return delivery == null ? 0L : delivery[0];
+    /** The delivery being attached on this thread (handle 0, no message,
+     *  when none is). */
+    public static Delivery delivery() {
+        Delivery delivery = DELIVERY.get();
+        return delivery == null ? Delivery.NONE : delivery;
     }
 
-    /** The VM event id of that attach, or 0: the row's place in the run. */
-    public static long deliverySeq() {
-        long[] delivery = DELIVERY.get();
-        return delivery == null ? 0L : delivery[1];
+    /** One delivery: its handle, its message, and the VM event id of its
+     *  attach (0 until stated): the row's place in the run. */
+    public static final class Delivery {
+        private static final Delivery NONE = new Delivery(0L, "", "");
+        public final long handle;
+        public final String correlationId;
+        public final String half;
+        private long seq;
+
+        private Delivery(long handle, String correlationId, String half) {
+            this.handle = handle;
+            this.correlationId = correlationId;
+            this.half = half;
+        }
+
+        public long seq() {
+            return seq;
+        }
     }
 
     /**

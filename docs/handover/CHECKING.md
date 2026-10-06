@@ -75,8 +75,9 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
 7. **A value frozen at its recording (HELD)**: three causes seen. The producer exported nothing (12's
    `NNHAStatusHeartbeatProto.Txid`, legend `<- ?`); the producer's occurrence was never planned (14, fixed by (b2):
    EXPLORE demands what COMPOSE keeps); the "state" was the engine's own carrier field read back after an attach
-   (11741, `PBHelper.convert` bci 74: `HandoffLeafCarrier`), engine plumbing that must never be state (codec-capture,
-   TODO). A HELD read inside the witness's cone is a broken chain.
+   (11741, `PBHelper.convert` bci 74: `HandoffLeafCarrier`), engine plumbing that must never be state (fixed on
+   `hdfs-codec-capture`: the carrier is made and read back by engine code, and a plumbing read imports as the value it
+   observed). A HELD read inside the witness's cone is a broken chain.
 8. **Unbound values off the witness** (12, AW4): the SAT's own chain was closed but three other paths held the txid
    (each heartbeat response its own producer occurrence). A SAT is judged on its claimed path; an UNSAT on every path
    (RULES).

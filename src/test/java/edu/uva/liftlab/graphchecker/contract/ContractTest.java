@@ -219,7 +219,7 @@ public class ContractTest {
             JsonObject envelope = new JsonObject();
             envelope.add(VmExpressionTable.FIELD, table);
             envelope.add("expression", vmReference(depth));
-            JsonObject chain = new VmExpressionTable.Store()
+            JsonObject chain = new VmExpressionTable.Store(owner -> false)
                     .importEnvelope(envelope).getAsJsonObject("expression");
             if (doubled) assertSame(chain.get("_left"), chain.get("_right"));
             Set<String> symbols = new LinkedHashSet<>();
@@ -246,7 +246,7 @@ public class ContractTest {
      */
     @Test
     public void aVmNodeIsKeptOnceAndDefinedAlike() {
-        VmExpressionTable.Store store = new VmExpressionTable.Store();
+        VmExpressionTable.Store store = new VmExpressionTable.Store(owner -> false);
         JsonObject first = store.importEnvelope(vmEnvelope(
                 vmReference(1), vmDefinition(1, symbol("M_I_site"))))
                 .getAsJsonObject("expression");
@@ -268,6 +268,37 @@ public class ContractTest {
     }
 
     /**
+     * The engine's own plumbing is never program state: a read a generated
+     * message's code (or the engine's) made is imported as the value of the
+     * version it observed, so no row and no HELD value can stand on it
+     * (hdfs-11741 AR1: the woven read-back of a wire carrier's leaf); a read
+     * the program made stays a read.
+     */
+    @Test
+    public void aReadThePlumbingMadeIsTheValueItObserved() {
+        String message = "o/a/h/HdfsServerProtos$BlockKeyProto";
+        VmExpressionTable.Store store = new VmExpressionTable.Store(
+                message::equals);
+        for (String site : new String[]{message, "o/a/h/PBHelper"}) {
+            JsonObject read = new JsonObject();
+            read.addProperty("_type", "ReadFromExpression");
+            JsonObject at = new JsonObject();
+            at.addProperty("className", site);
+            read.add("site", at);
+            JsonObject observed = new JsonObject();
+            observed.add("expression", vmReference(1));
+            read.add("observedVersion", observed);
+            JsonObject imported = store.importEnvelope(vmEnvelope(
+                    vmReference(2), vmDefinition(1, symbol("M_I_keyId")),
+                    vmDefinition(2, read))).getAsJsonObject("expression");
+            assertEquals(site, message.equals(site) ? "SymbolExpression"
+                            : "ReadFromExpression",
+                    imported.get("_type").getAsString());
+            store = new VmExpressionTable.Store(message::equals);
+        }
+    }
+
+    /**
      * A paged read-out is read one record at a time against the page's own
      * table, which comes after its records: each record is expanded and
      * handed on in page order, sharing the nodes the table shares (and the
@@ -277,7 +308,7 @@ public class ContractTest {
      */
     @Test
     public void aPagedReadOutIsReadOneRecordAtATime() {
-        VmExpressionTable.Store store = new VmExpressionTable.Store();
+        VmExpressionTable.Store store = new VmExpressionTable.Store(owner -> false);
         JsonObject earlier = store.importEnvelope(vmEnvelope(vmReference(1),
                 vmDefinition(1, symbol("M_I_site"))))
                 .getAsJsonObject("expression");
@@ -352,7 +383,7 @@ public class ContractTest {
         };
         for (String[] refused : refusals) {
             try {
-                new VmExpressionTable.Store().importRecords(refused[0],
+                new VmExpressionTable.Store(owner -> false).importRecords(refused[0],
                         "records", stated -> true, record -> { });
                 fail("read: " + refused[0]);
             } catch (IllegalArgumentException refusal) {

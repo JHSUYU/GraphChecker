@@ -313,6 +313,12 @@ final class SymbolicRegionPlanner {
                     CommunicationCatalogContract.EXCHANGE_SITE_KEY}) {
                 row.put(field, flow.get(field));
             }
+            Object codecField = flow.get(
+                    CommunicationCatalogContract.PORT_CODEC_FIELD);
+            if (codecField != null) {
+                row.put(CommunicationCatalogContract.PORT_CODEC_FIELD,
+                        codecField);
+            }
             row.put(CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
                     portId);
             row.putAll(capture);

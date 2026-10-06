@@ -128,6 +128,13 @@ version it observed.
 - Random draws are replayed, keyed by the schedule context, the site and a count (stable under
   a GROW). Clock VALUES are not yet replayed: the start-up/clock family's time model (TODO).
 
+*The wire.* A protobuf message field crosses with its message: the door that carries it (IPC request
+and response, DataTransfer op) walks the message, exporting each field or, for a message this JVM
+decoded, handing on its original producer's element; the parse binds each element to the message
+object, and a getter attaches the element of the message it reads. A declared row is exported where
+the weave captured it. The engine's own plumbing (its runtime classes, generated messages and
+builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
+
 *Read-out.* Read-out pages stream to the publication thread as they are captured.
 
 **6. IMPORT** checks the row invariants and publishes the seed session.
@@ -169,8 +176,9 @@ version it observed.
   refused (an unhooked mutation came between). Every refused path is listed (`refusedPaths`).
 - The run as recorded is always a world of the formula (a writer whose block the run broke gets
   the observed arm); a path contradicting its own run is PATH_SELF_CONTRADICTORY.
-- WIRE pairing: by the VM handle, else by (correlation, half, port) of the very message the attach
-  received; an element a message did not carry pairs with nothing and is named.
+- WIRE pairing: by the VM handle, else by (correlation, half, port) of the very message the element
+  arrived in (a message field's: the message object its getter is called on, which the door's walk
+  bound it to); an element a message did not carry pairs with nothing and is named.
 - `candidate.smt2` is the full formula: the disjunction of admitted paths, roots free over their
   domains, the fatal arm asserted. The verdict is z3 on exactly that file.
 - The claims:
@@ -209,6 +217,5 @@ fatal boundary variable is unbound).
   to 30 s old.
 - In flight, not in the body (STATE §2, TODO §1): every static export site woven and a witness's own chain closed
   before it is claimed (`hdfs-export-weave`), the time model (`hdfs-time-model`), the IPC hand-off naming
-  (`hdfs-ipc-handoff-name`, r6 trees), capture at the IPC door by walking the protobuf message (`hdfs-codec-capture`),
-  the owed-path bound (`hdfs-frontier-depth`).
+  (`hdfs-ipc-handoff-name`, r6 trees), the owed-path bound (`hdfs-frontier-depth`).
 - WIRE-CODEC (codec holes in opaque payloads) is not in the body: branch `wire-codec-p1`.

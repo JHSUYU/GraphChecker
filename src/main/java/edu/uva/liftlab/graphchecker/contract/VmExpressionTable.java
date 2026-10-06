@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -71,7 +72,17 @@ public final class VmExpressionTable {
     public static final class Store {
         private final SharedExpressionTable.Codec codec =
                 new SharedExpressionTable.Codec();
-        private final RawResolver rawResolver = new RawResolver();
+        private final RawResolver rawResolver;
+
+        /**
+         * @param plumbing whether code of a class (the VM's spelling, {@code
+         *                 a/b/C$D}) is the engine's own plumbing, never
+         *                 program state (RULES): a read such code made is
+         *                 imported as the value of the version it observed
+         */
+        public Store(Predicate<String> plumbing) {
+            rawResolver = new RawResolver(plumbing);
+        }
 
         public JsonObject importEnvelope(String serialized) {
             JsonElement parsed;
@@ -157,9 +168,11 @@ public final class VmExpressionTable {
         private final Map<RawKey, Integer> defined = new ConcurrentHashMap<>();
         private final Map<String, String> names = new HashMap<>();
         private final Map<String, JsonPrimitive> strings = new HashMap<>();
+        private final Predicate<String> plumbing;
 
-        private RawResolver() {
+        private RawResolver(Predicate<String> plumbing) {
             super("VM expression");
+            this.plumbing = plumbing;
         }
 
         @Override
@@ -176,7 +189,36 @@ public final class VmExpressionTable {
             // answers for the key from now on.
             JsonObject stated = streaming ? definitions.remove(key)
                     : definitions.get(key);
-            return stated == null ? null : canonical(stated).getAsJsonObject();
+            return stated == null ? null
+                    : canonical(observedValue(stated)).getAsJsonObject();
+        }
+
+        /**
+         * A read the engine's own plumbing made -- a wire carrier's read-back,
+         * a generated message's or builder's field -- stands for the value
+         * of the version it observed (its {@code observedVersion}'s
+         * expression, else the value it read): no row states such a read,
+         * and its location is no program state (RULES).  Any other node
+         * stands for itself.
+         */
+        private JsonObject observedValue(JsonObject stated) {
+            if (!VmRows.GUARDED_READ_TYPE.equals(
+                    optionalString(stated, "_type"))) {
+                return stated;
+            }
+            JsonElement site = stated.get("site");
+            if (site == null || !site.isJsonObject() || !plumbing.test(
+                    optionalString(site.getAsJsonObject(), "className"))) {
+                return stated;
+            }
+            JsonElement observed = stated.get("observedVersion");
+            JsonElement value = observed != null && observed.isJsonObject()
+                    ? observed.getAsJsonObject().get("expression") : null;
+            if (value == null || !value.isJsonObject()) {
+                value = stated.get("concreteValue");
+            }
+            return value != null && value.isJsonObject()
+                    ? value.getAsJsonObject() : stated;
         }
 
         /** Whether a page is being read record by record. */

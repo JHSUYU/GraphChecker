@@ -436,13 +436,14 @@ public final class StaticProgram {
      *
      * <p>{@code CONDITION_BOUNDED}: always.  {@code FIXED_COUNT_INDEXED}: only
      * when one iteration is one unit of demanded work -- the body (or a callee)
-     * defines a declared wire port, or the body writes a declared field.</p>
+     * captures a wire port's value, or the body writes a declared field.</p>
      *
-     * <p>Trap: a loop inside a port's FRAME METHOD walks the leaves of ONE
-     * message ({@code SymbolicMessageEnvelope} addresses leaves by {@code
-     * (frame, port, ordinal)}), so it never qualifies; rooting there leaves the
-     * frame's leaves outside the loop with no activation, and the whole
-     * message is dropped downstream.</p>
+     * <p>Trap: a message field's producer capture (a builder's setter call)
+     * is no unit of work, since the door exports the message whole
+     * (SYMBOL-SCOPE §6.3): a loop building the repeated field of ONE message
+     * never qualifies.  Rooted there, the message's other leaves -- hdfs-11741's
+     * {@code currentKey}, converted before the {@code allKeys} loop -- would be
+     * built with no activation, so their values carry no expression.</p>
      */
     private boolean serviceLoopCandidate(RegionRow skeleton,
                                          Map<String, Object> loop,
@@ -471,10 +472,10 @@ public final class StaticProgram {
         for (Map<String, Object> port : skeleton.communicationPorts) {
             String definition = text(port.get(CommunicationCatalogContract
                     .PORT_DEFINITION_METHOD));
-            if (definition.isEmpty()) continue;
-            // A loop in the port's frame walks one message's leaves.
-            if (owner.equals(text(port.get(CommunicationCatalogContract
-                    .PORT_FRAME_METHOD)))) {
+            if (definition.isEmpty() || "OUT".equals(text(port.get(
+                    RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE)))
+                    && !text(port.get(CommunicationCatalogContract
+                    .PORT_CODEC_FIELD)).isEmpty()) {
                 continue;
             }
             if (calledInLoop.contains(definition)) {

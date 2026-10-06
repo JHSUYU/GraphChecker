@@ -16,7 +16,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * request or a response leaves (outbound) carrying the sender's GraphChecker
  * context and the symbolic values it exports, and arrives (inbound) where the
  * receiver installs them for as long as it serves that message.  Its values
- * are the {@code WIRE_FLOW} ports the thread staged.  Plus the workload's
+ * are the ports the thread staged: a declared row's, and the message fields
+ * of the protobuf message the door is handed, which the door walks
+ * ({@link MessageCodec}); a message parsed inside the exchange is walked
+ * again ({@link #parsed}), binding each element to it.  Plus the workload's
  * side of attribution: nodes and their aliases, request scopes, the
  * recorded window, daemon ticks and scopes carried across a queue.
  *
@@ -119,8 +122,21 @@ public final class MessageDoors {
     public static Outbound outbound(String transport, String correlationId,
                                     String attemptId, String half,
                                     Object localOwner, Object scope) {
-        return outbound(transport, correlationId, attemptId, half,
-                localOwner, scope, "");
+        return send(transport, correlationId, attemptId, half, localOwner,
+                scope, "", null);
+    }
+
+    /**
+     * The same, the message leaving with the protobuf {@code message} it
+     * carries: the door walks it, every message field's value carried
+     * ({@link MessageCodec#send}).
+     */
+    public static Outbound outbound(String transport, String correlationId,
+                                    String attemptId, String half,
+                                    Object localOwner, Object scope,
+                                    Object message) {
+        return send(transport, correlationId, attemptId, half, localOwner,
+                scope, "", message);
     }
 
     /**
@@ -135,15 +151,17 @@ public final class MessageDoors {
                                            String correlationId,
                                            String attemptId,
                                            Object localOwner, Object scope,
-                                           String verb) {
-        return outbound(transport, correlationId, attemptId, REQUEST,
-                localOwner, scope, verb);
+                                           String verb, Object message) {
+        return send(transport, correlationId, attemptId, REQUEST,
+                localOwner, scope, verb, message);
     }
 
-    private static Outbound outbound(String transport, String correlationId,
-                                     String attemptId, String half,
-                                     Object localOwner, Object scope,
-                                     String verb) {
+    private static Outbound send(String transport, String correlationId,
+                                 String attemptId, String half,
+                                 Object localOwner, Object scope,
+                                 String verb, Object message) {
+        // Staged before the door files what the message carries.
+        MessageCodec.send(message);
         String trace = CausynthTraceRecorder.outboundExchange(transport,
                 correlationId, attemptId, half, localOwner, scope,
                 Text.safe(verb));
@@ -249,6 +267,15 @@ public final class MessageDoors {
         Inbound scope = new Inbound(0L, correlationId, attemptId, REQUEST);
         CURRENT.set(scope);
         return scope;
+    }
+
+    /**
+     * A protobuf message parsed on this thread inside the exchange it
+     * arrived in: each of its message fields' elements is bound to it
+     * ({@link MessageCodec#receive}), for the getters that read it.
+     */
+    public static void parsed(Object message) {
+        MessageCodec.receive(message);
     }
 
     /** Ends {@code scope} if the thread still serves it. */
