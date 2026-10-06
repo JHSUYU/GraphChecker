@@ -80,6 +80,10 @@ public class RowRuntimeTest {
 
     @After
     public void clear() {
+        // A test's exchange and levels are its own: left standing, the
+        // thread's next test (SaslExchangeHalfTest) sent in them.
+        MessageDoors.endInbound();
+        Identity.resetForTests();
         RuntimeTraceContext.resetForTests();
         RowRuntime.resetForTests();
     }
