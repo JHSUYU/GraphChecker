@@ -525,13 +525,36 @@ public final class ScheduleLog {
         }
     }
 
-    /** The WAKE of a {@link Turn#FREE} wait the wall clock ended. */
-    static void timedOut(Wake wake) {
-        if (wake == null) return;
+    /**
+     * Asks once, without blocking, whether the WAKE of a {@link Turn#FREE}
+     * wait the wall clock ended may be written, and writes it when it may
+     * (true).  Not yet (false): the waiter waits a quantum on its own
+     * primitive and asks again, so the monitor or lock its wait released
+     * stays released until the WAKE is written, as the JVM returns from a
+     * wait only then.  Admitted holding it, the WAKE of an
+     * {@code IncrementalBlockReportManager#waitTillNextIBR} past its recorded
+     * count held the manager's monitor through its hold, and the DataXceiver
+     * whose block notify the order waited for blocked on that monitor
+     * (hdfs-adhoc-19, -39).
+     */
+    static boolean timedOut(Wake wake) {
+        if (wake == null) return true;
         mute();
         try {
             takeTurnWake(TURN.get());
-            admit(wake.event);
+            synchronized (LOCK) {
+                loadOrderLocked();
+                if (!holds) {
+                    appendLocked(wake.event);
+                    return true;
+                }
+                Thread self = Thread.currentThread();
+                if (!admitNowLocked(wake.event, self)) return false;
+                doneWaitingLocked(self);
+                HELD.remove(self);
+                LET_GO.remove(self);
+                return true;
+            }
         } finally {
             unmute();
         }
@@ -870,19 +893,7 @@ public final class ScheduleLog {
         }
         Thread self = Thread.currentThread();
         try {
-            while (true) {
-                int slot = slotOf(event);
-                int at = waitsAtLocked(event, slot);
-                if (at == GO) {
-                    if (slot < 0 && event.kind == ScheduleEvent.Kind.WAKE
-                            && LET_GO.contains(self)) {
-                        VACANT.set(Boolean.TRUE);
-                    }
-                    admittedLocked(event, slot);
-                    return;
-                }
-                waitLocked(self, at);
-                if (passedLocked(event, at) || watchdogLocked()) continue;
+            while (!admitNowLocked(event, self)) {
                 LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
             }
         } catch (InterruptedException interrupted) {
@@ -894,6 +905,28 @@ public final class ScheduleLog {
             doneWaitingLocked(self);
             HELD.remove(self);
             LET_GO.remove(self);
+        }
+    }
+
+    /**
+     * One ask of THE rule for {@code event}: admitted and written (true), or
+     * not yet (false), {@code self} kept waiting at its position for the
+     * watchdog; runs the watchdog.
+     */
+    private static boolean admitNowLocked(Pending event, Thread self) {
+        while (true) {
+            int slot = slotOf(event);
+            int at = waitsAtLocked(event, slot);
+            if (at == GO) {
+                if (slot < 0 && event.kind == ScheduleEvent.Kind.WAKE
+                        && LET_GO.contains(self)) {
+                    VACANT.set(Boolean.TRUE);
+                }
+                admittedLocked(event, slot);
+                return true;
+            }
+            waitLocked(self, at);
+            if (!passedLocked(event, at) && !watchdogLocked()) return false;
         }
     }
 
