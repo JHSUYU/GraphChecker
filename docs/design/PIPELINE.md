@@ -134,9 +134,10 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
    target's `guards` with their fatal arms, the helper branch arms deciding a guard on a helper's
-   constant return, nested (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards
-   before them; `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders at every
-   depth. Loop-bound
+   constant return, each with its verdict or open, nested (`guardDeciders`,
+   `causynth.BooleanReturns`) and the `chain` of guards before them; `StaticScopeMap.Site.pathSites`
+   = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
+   the one decision each target row's open decider arm names (`TargetRow.OpenArm`). Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
@@ -316,11 +317,14 @@ which COMPOSE pins (§8, *A query's stated answer*).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
-the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on a constant
-a helper returned, the predicate of the decision that chose it (`RowPublication#decidedBy`: the latest
-decision in the helper's method before the target, when it is one of its `guardDeciders` arms; a
-concrete one there is decided by its nested helper's in turn; none: the target's constant) in the
-polarity of the arm the target took, the target standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
+the fatal polarity (`RowRuntime.fatalTerm`); when the target branch tests what a helper returned,
+its condition from the decision that chose the return (`RowPublication#decided`: the latest decision
+in the helper's method before the target, when it is one of its `guardDeciders` branches, as
+`ite(that decision as it held, the arm it took, the other arm)`, an arm its verdict or, open and
+taken, the target's own condition; a concrete one there takes its condition from its nested helper's
+deciders in turn; where the other arm is open and never ran, the target's own condition, and the row
+names the arm and the decision whose flip runs it, `openArm`) in the fatal polarity
+(`RowPublication#phi`), the target standing at the earliest decision it rests on; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
 evaluation decided, from the test it reached the target at, with `observedFatal` = one
 test took its fatal arm. A decision that states no predicate (the VM decided it concretely) is the
 constant of the arm it took: `true` on the fatal arm, `false` on the healthy one, so a concrete
@@ -400,12 +404,16 @@ schedule) and:
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
-   flight) | `FIXED_POINT`, and `concreteAnchors`). What only the seed ran is BLOCKING at the fixed
+   flight) | `FIXED_POINT`, `concreteAnchors` and `openArms`). What only the seed ran is BLOCKING at the fixed
    point alone: nothing proposed, exposed or in flight, and no witness. A concrete anchor (§7.2) is
    information, never a gap: its decision is a constant of the formula (§8, a `false` phi), and each
    round's manifest states it in `concreteAnchors` (`ExploreMain#concreteRow`: its admitted paths,
    how many decided it on the way to the throw, the reads its closure demands and their locations,
-   the earlier reads off the cone), which EMIT publishes in `result.json` `concrete[]`.
+   the earlier reads off the cone), which EMIT publishes in `result.json` `concrete[]`. So are the
+   open decider arms the anchor's reached, admitted runs left phi without (`TargetRow.OpenArm`) and
+   no run took (`ExploreMain#openArms`: per arm the state of its flip on each path that left it --
+   UNSAT, UNANSWERED (a flip that came to no verdict, a replay that never reached the decision),
+   PENDING, NOT_ASKED, NOT_FLIPPABLE -- an arm a path took is not listed), judged at EMIT (§11).
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -1258,7 +1266,8 @@ are stated as they are made and taken back with a refused path (`ComposedFamilie
 nothing twice.
 
 **State families** (`stateFamilies`), for the joined reads the stage re-pairs (`SessionJoin#repaired`,
-one rule, one entry point, `Composer#repairing`): the anchor's up to its cutoff, and every read the
+one rule, one entry point, `Composer#repairing`): the anchor's up to its cutoff and every read its phi
+names by read event (a target a helper decision decided stands at that decision), and every read the
 selected session's world planted a pairing on (`Corpus.World#pairings`, each with every read its
 occurrence made of the location, as the replay held them), each block of one occurrence's reads of
 one location by the same test -- a named owner, and a read of it that could have seen a writer
@@ -1981,7 +1990,11 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
 3. `final/result.json`: `claim` = the campaign claim; a `SAT_CANDIDATE` whose confirmation is not
    `confirmed` is `SAT_UNCONFIRMED` when the confirmation `refutes` it, else `RUN_DEFECT` with a
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
-   `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
+   `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `concrete[]`
+   with the last round's `openArms` (kind OPEN_ARM) beside its concrete anchors, and
+   `evidence.unsatClosureComplete` true only where every such arm's flip came to UNSAT; an arm whose
+   flip came to no verdict is one `OPEN_ARM_UNANSWERED` row (`campaign_open_arms`), BLOCKING under any
+   claim but a `SAT_CANDIDATE`; `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
    category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
    `telemetryCount`, `undeclaredHookCount` (an `UNSAT_CLOSED` claim's count of the tree hooks that

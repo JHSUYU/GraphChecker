@@ -1615,6 +1615,76 @@ public class ExploreTest {
         assertTrue("the obligation announces the control it invented", named);
     }
 
+    // ---- an open decider arm: asked at one decision, named until closed --
+
+    /**
+     * A reached anchor whose phi left out an open decider arm
+     * (TargetRow.OpenArm, causynth.BooleanReturns) asks the ONE decision
+     * the row names -- the call of the helper that fed the guard, never
+     * every call of its method -- and the round's manifest names the arm
+     * until a flip closes it: PENDING while asked, UNANSWERED once its only
+     * replay never reached the decision, UNSAT once no world takes it; an
+     * arm with no decision to ask is NOT_FLIPPABLE.
+     */
+    @Test
+    public void anOpenDeciderArmIsAskedAtTheCallThatFedTheGuard()
+            throws Exception {
+        String helper = "State#u2";
+        Object[][] rows = {
+            // the arm's asked decision, the answer, the arm's state
+            {helper, null, "PENDING"},
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED"},
+            {helper, Verdict.UNSAT, "UNSAT"},
+            {"", null, "NOT_FLIPPABLE"}};
+        for (Object[] row : rows) {
+            String asked = (String) row[0];
+            Path iteration = tree.newFolder("open-arm-" + row[2]).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                    "7", null, null, true);
+            // An earlier call of the helper, and the one that fed the guard.
+            seed.decision(TARGET, helper, 1, true, "(> M_SERIAL 3)");
+            seed.decision(TARGET, helper, 2, false, "(> M_SERIAL 10)");
+            seed.targets.add(TargetRow.of("s-seed", 99L, TARGET, "Throw#u30",
+                    "false", false, true, TargetRow.OpenArm.of(helper, 2,
+                            true, asked, 2)));
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u9"));
+            Path out = tree.newFolder("open-arm-out-" + row[2]).toPath();
+            Path results = out.resolve("results.jsonl");
+            Files.createDirectories(out);
+            Files.write(results, new byte[0]);
+            JsonObject first = plan(iteration, TARGET_SELECTOR, null, results,
+                    out.resolve("obligations-0000"), 0);
+            List<Obligation> proposed = obligations(
+                    out.resolve("obligations-0000"));
+            if (asked.isEmpty()) {
+                assertTrue("nothing to ask: " + proposed, proposed.isEmpty());
+            } else {
+                assertEquals("one flip, of the call that fed the guard: "
+                        + proposed, 1, proposed.size());
+                assertEquals(2, proposed.get(0).ordinal());
+            }
+            JsonObject named = first;
+            if (row[1] != null) {
+                record(results, ObligationResult.of(
+                        proposed.get(0).obligationId(), (Verdict) row[1],
+                        "s-flip", "answered"));
+                named = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve("obligations-0001"), 1);
+            }
+            JsonArray arms = named.getAsJsonArray("openArms");
+            assertEquals("the arm is named: " + arms, 1, arms.size());
+            JsonObject arm = arms.get(0).getAsJsonObject();
+            assertEquals(helper, arm.get("siteId").getAsString());
+            assertTrue(arm.get("outcome").getAsBoolean());
+            assertEquals("its state: " + arm, row[2],
+                    arm.get("state").getAsString());
+        }
+    }
+
     // ---- (4) a root with no domain is pinned, here as in the composer --
 
     @Test

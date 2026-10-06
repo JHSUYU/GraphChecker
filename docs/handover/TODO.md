@@ -76,11 +76,19 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
   is read: a large closure gets the cluster and a longer budget, a redundant one is an engine defect. HG8F/HG8W: 05,
   06, 08, 09 and 11741 read only `region_path_max_paths_per_region` (32) recorded paths of some tasks (17-194 task
   rounds each).
-- Scope batch 2 (the owner's top priority "让更多的都可翻转"): 29/30 recoveryId (a SCOPE boundary for system callees
-  out of scope; growth spends on demanded rows; follow receivers built by calls); 17 the lease grant state; 15/39 a
-  turn for tracked-write ordering (complete vs IBR); 07 an export capture where the QJM client sets the segment it
-  attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), so jn0 pairs by
-  HANDLE instead of an unattested arrival.
+- Scope batch 2, sorted by the 46-check goal (the formula is wrong or incomplete first): (A) fixes in flight --
+  `hdfs-decider-open` (15, 17, 39, maybe 16, 40: a guard on a helper's return whose deciding branch has an open arm;
+  `BlockInfo.java:374`) and then `hdfs-relay-export` (07: the QJM client relays jn1's prepareRecovery segment into
+  acceptRecovery, `QuorumJournalManager.java:374/394`, `setStateToAccept`; jn0's StartTxId/EndTxId handoffs have no
+  producer). (B) right for what the code does, widening only makes more flippable, AFTER the 46:
+  - 29/30 recoveryId: the anchors decide on the block-pool map (written at DN startup, removed at shutdown) and
+    `bpServiceToActive` (`BPOfferService.java:536`; its in-window writer `:612` is gated by the NN's HA state, constant
+    ACTIVE without HA); `BlockRecoveryWorker.java:177` is a way guard both seeds passed.
+  - 17 (block-report lease) and 39 (IBR ordering): turns on threads that make no schedule events (the DN actor's lease,
+    the NN's `enqueueBlockOp` thread, `BlockManager.java:5595`) -- the time-model/turn work.
+  - An identity compare of a tracked reference with an enum constant states no term (VM.md §5.2): with one, 39's open
+    arm would move by writer arm instead of by replay.
+  - 05: decided by a thread-local buffer invariant (`QuorumOutputStream.java:106`).
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 - A configuration root's domain ignores comparisons through a field (SYMBOL-SCOPE §4.3's hull: defaults, compared
   literals ±1, the mint's value): hdfs-adhoc-40's `dfs.namenode.replication.min` has domain [1,1], since
