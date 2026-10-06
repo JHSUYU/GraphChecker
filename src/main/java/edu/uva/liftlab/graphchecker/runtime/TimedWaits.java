@@ -787,7 +787,7 @@ public final class TimedWaits {
                 // The run went free: the rest on the wall clock.
                 wait = deadline - System.nanoTime();
                 if (wait <= 0L) {
-                    timedOut(sleepQuantum(), wake);
+                    ScheduleLog.timedOut(wake);
                     WakeScopes.woke(site);
                     return null;
                 }
@@ -848,9 +848,7 @@ public final class TimedWaits {
      * held for as long as the order holds it (a poll past its recorded count
      * waits for the order to move, {@code ScheduleLog#waitsAtLocked}), then
      * waits out its own deadline on the wall clock ({@code ScheduleLog.turn},
-     * {@code timedOut}): a poll never comes sooner than its timeout.  Its
-     * WAKE then asks for its turn the same way ({@link #timedOut}), never
-     * holding what the wait released.</p>
+     * {@code timedOut}): a poll never comes sooner than its timeout.</p>
      */
     private static boolean takeTurn(String site, boolean signalled,
                                     Quantum quantum, long deadline)
@@ -891,7 +889,7 @@ public final class TimedWaits {
                 quantum.onTheClock(deadline);
                 long left = deadline - System.nanoTime();
                 if (left <= 0L) {
-                    timedOut(quantum, wake);
+                    ScheduleLog.timedOut(wake);
                     WakeScopes.woke(site);
                     return false;
                 }
@@ -905,26 +903,6 @@ public final class TimedWaits {
                 throw interrupted;
             }
         }
-    }
-
-    /**
-     * A wait the wall clock ended: its WAKE asks for its turn every quantum,
-     * the quantum spent on the wait's own primitive, so the monitor or lock
-     * the wait released stays released until the WAKE is written ({@code
-     * ScheduleLog#timedOut}).  A signal meanwhile changes nothing: the wait
-     * already ran its time out, and its caller re-checks.  An interrupt
-     * meanwhile is kept pending, as a wait that has ended keeps one.
-     */
-    private static void timedOut(Quantum quantum, ScheduleLog.Wake wake) {
-        boolean interrupted = false;
-        while (!ScheduleLog.timedOut(wake)) {
-            try {
-                quantum.await(QUANTUM_MS);
-            } catch (InterruptedException interrupt) {
-                interrupted = true;
-            }
-        }
-        if (interrupted) Thread.currentThread().interrupt();
     }
 
     private static void wake(String site) {
