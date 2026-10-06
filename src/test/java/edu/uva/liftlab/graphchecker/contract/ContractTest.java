@@ -429,6 +429,10 @@ public class ContractTest {
                 "[0, 2]"},
             {"CONFIG:min", RootCategory.CONFIG, positive, "1", "[1, 2]"},
             {"CONFIG:min", RootCategory.CONFIG, positive, "", "[1, 1]"},
+            // a validation the recorded reading (1) fails clips nothing
+            {"CONFIG:min", RootCategory.CONFIG, Validity.of(java.math
+                    .BigInteger.valueOf(2), null, "<B: int init(C)>#u5"),
+                "1", "[0, 2]"},
             {"CONFIG:min", RootCategory.CONFIG, Validity.ANY, "1 512",
                 "[0, 513]"},
             {"CASE.K", RootCategory.CONFIG, Validity.ANY, "9", "[0, 2]"},

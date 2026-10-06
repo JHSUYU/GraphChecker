@@ -1801,6 +1801,11 @@ public class ExploreTest {
         seed.flush();
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                 "Guard#u9"));
+        Corpus corpus = Corpus.read(iteration, null);
+        assertTrue("a flip toward the open arm runs it",
+                corpus.openArmFlip(TARGET, helper, 1, true));
+        assertFalse("the same decision flipped away from it is ordinary",
+                corpus.openArmFlip(TARGET, helper, 1, false));
         Path out = tree.newFolder("refuted-arm-out").toPath();
         Path results = out.resolve("results.jsonl");
         Files.write(results, new byte[0]);

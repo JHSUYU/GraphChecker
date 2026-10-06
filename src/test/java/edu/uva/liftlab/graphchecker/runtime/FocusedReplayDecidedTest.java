@@ -42,6 +42,7 @@ public class FocusedReplayDecidedTest {
     public void reset() {
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
         RowRuntime.resetForTests();
+        RecordingWindow.reset();
     }
 
     /** Hands the replay one focus row: flip {@link #SITE}#1 to true at
@@ -152,15 +153,22 @@ public class FocusedReplayDecidedTest {
     }
 
     /** Hands the replay an open decider arm's flip ({@code openArm}) of
-     *  {@link #SITE}#1 at {@link #FOCUS}, in a world of its own. */
-    private void handedAnArm(boolean openArm) throws Exception {
+     *  {@link #SITE}#1 at {@link #FOCUS}, in a world of its own; {@code
+     *  inherits}: one that holds {@link #PARENT_SITE}#1 true at {@link
+     *  #PARENT} too. */
+    private void handedAnArm(boolean openArm, boolean inherits)
+            throws Exception {
         Path worker = folder.newFolder().toPath();
         Files.write(worker.resolve("focused_task.jsonl"), ("{\"taskId\":\"T\","
                 + "\"obligationId\":\"OB\",\"pathId\":\"p\",\"focused\":\""
                 + FOCUS + "\",\"focusedOccurrenceId\":\""
                 + OccurrenceAddress.parse(FOCUS).id() + "\",\"seedSessionId\":"
                 + "\"seed\",\"flip\":{\"siteId\":\"" + SITE + "\",\"ordinal\""
-                + ":1,\"outcome\":true},\"inheritedFlips\":[],"
+                + ":1,\"outcome\":true},\"inheritedFlips\":["
+                + (inherits ? "{\"focusedOccurrenceId\":\""
+                + OccurrenceAddress.parse(PARENT).id() + "\",\"siteId\":\""
+                + PARENT_SITE + "\",\"ordinal\":1,\"outcome\":true,"
+                + "\"obligationId\":\"PARENT\"}" : "") + "],"
                 + "\"rootAssignments\":{},\"clockDeltas\":{},\"answers\":{},"
                 + "\"rootMints\":{}" + (openArm ? ",\"openArm\":true" : "")
                 + "}\n").getBytes(StandardCharsets.UTF_8));
@@ -173,39 +181,62 @@ public class FocusedReplayDecidedTest {
      * WORLD_REFUTED: an open decider arm's flip whose replay ran its world
      * faithfully and never entered the flip's occurrence refutes that world
      * -- all four conditions or a plain NOT_ADMITTED: (a) every assignment
-     * minted, no prefix abandoned, (b) no hold gave way, (c) no slot given up
-     * before the world first acted, (d) the workload ended by itself.  Never
-     * any other flip.
+     * minted, no prefix abandoned, every inherited flip reached and taken,
+     * (b) no hold gave way, (c) the world acted in the window, and before
+     * any slot was given up -- a plant at the recorded value, or one before
+     * the window, is no act -- (d) the workload ended by itself.  Never any
+     * other flip.
      */
     @Test
     public void aFaithfulRunThatNeverEnteredAnOpenArmRefutesItsWorld()
             throws Exception {
         Throwable thrown = new java.io.IOException("Unable to close file");
         Object[][] rows = {
-            // open arm, ended, entered, first act/departure order, refuted
-            {true, true, false, "", true},
+            // open arm, ended, entered, steps, refuted
+            {true, true, false, "act", true},
             {true, true, false, "act depart", true},
+            {true, true, false, "", false},
+            {true, true, false, "still", false},
+            {true, true, false, "early", false},
+            {true, true, false, "answer", true},
             {true, true, false, "depart act", false},
-            {true, false, false, "", false},
-            {true, true, true, "", false},
-            {false, true, false, "", false}};
+            {true, true, false, "inherit act", false},
+            {true, true, false, "inherit take act", true},
+            {true, false, false, "act", false},
+            {true, true, true, "act", false},
+            {false, true, false, "act", false}};
         for (Object[] row : rows) {
             reset();
-            handedAnArm((Boolean) row[0]);
+            RecordingWindow.open();
+            String steps = (String) row[3];
+            handedAnArm((Boolean) row[0], steps.contains("inherit"));
             FocusedReplay.obligationIds();
             if ((Boolean) row[2]) {
                 FocusedReplay.entered(OccurrenceAddress.parse(FOCUS));
             }
-            for (String step : ((String) row[3]).split(" ")) {
-                if ("act".equals(step)) FocusedReplay.worldActed();
+            for (String step : steps.split(" ")) {
+                if ("act".equals(step)) FocusedReplay.planted("r", true);
+                if ("still".equals(step)) FocusedReplay.planted("r", false);
+                if ("answer".equals(step)) FocusedReplay.answered(true);
                 if ("depart".equals(step)) FocusedReplay.departed("7 (x)");
+                if ("take".equals(step)) {
+                    FocusedReplay.observeDecision(
+                            OccurrenceAddress.parse(PARENT), PARENT_SITE, 1,
+                            true);
+                }
+                if ("early".equals(step)) {
+                    RecordingWindow.reset();
+                    FocusedReplay.planted("r", true);
+                    RecordingWindow.open();
+                }
             }
             if ((Boolean) row[1]) {
                 FocusedReplay.workloadEnded(thrown,
                         FocusedReplayDecidedTest.class.getName());
             }
             ObligationResult result = only("s");
-            String what = java.util.Arrays.toString(row);
+            String what = java.util.Arrays.toString(row) + " "
+                    + result.detail();
             assertEquals(what, Verdict.NOT_ADMITTED, result.verdict());
             assertEquals(what, row[4], result.refutation() != null);
             assertEquals(what, row[4],

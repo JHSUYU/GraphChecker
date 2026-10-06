@@ -431,17 +431,32 @@ final class ActiveRegion {
      * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
      * static anchors ({@code causynth.ConfigRoots}) and the value this mint
      * read, with what its own validation admits ({@link Validity}), which
-     * the mint row names.  None stated: a boolean, or no anchor, and the
-     * root is pinned.  A declaration stating half a domain, or a bound that
-     * is no integer, states none either, named.
+     * the mint row names -- unless the value read lies outside it, when the
+     * validation is no validation of this value: dropped, named.  None
+     * stated: a boolean, or no anchor, and the root is pinned.  A
+     * declaration stating half a domain, or a bound that is no integer,
+     * states none either, named.
      */
     static void configDomain(JsonObject row, String staticMin,
                              String staticMax, Validity valid,
                              String recordedValue) {
-        if (valid != null) valid.write(row);
         String min = safe(staticMin).trim();
         String max = safe(staticMax).trim();
         String value = safe(recordedValue).trim();
+        if (valid != null && valid != Validity.ANY
+                && INTEGER.matcher(value).matches()
+                && !valid.admits(new BigInteger(value))) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    optionalString(row, "sourceId"), "the value this"
+                            + " configuration's mint read (" + value + ")"
+                            + " lies outside what its validation admits ["
+                            + (valid.min() == null ? "" : valid.min()) + ", "
+                            + (valid.max() == null ? "" : valid.max())
+                            + "] by " + valid.by() + ", so that validation"
+                            + " bounds nothing");
+        } else if (valid != null) {
+            valid.write(row);
+        }
         if (min.isEmpty() && max.isEmpty()) return;
         if (!INTEGER.matcher(min).matches()
                 || !INTEGER.matcher(max).matches()

@@ -131,11 +131,13 @@ recommendation.
 - **An arm the bug may live in is never closed silently** (lead, 2026-10-06, merged b650a0f6d): every open decider arm of
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
   back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT). **A world a faithful run refutes** (lead,
-  2026-10-06, the owner may overrule; on `hdfs-open-arms`): an open arm's flip whose replay ran its world faithfully --
-  every assignment minted and no prefix abandoned, no order hold gave way, no slot given up before the world first
-  acted, the workload ended by itself -- and never entered the flip's occurrence refutes that world (`WORLD_REFUTED`);
-  the flip is asked again with exactly that world excluded, never the arm; an UNSAT after it states what it rests on.
-  Never CONFIRM, never another flip; anything short of the four stays NOT_ADMITTED.
+  2026-10-06, the owner may overrule; on `hdfs-open-arms`): an open arm's flip (toward the arm) whose replay ran its
+  world faithfully -- every assignment minted and planted, no prefix abandoned, every inherited flip taken; no order
+  hold gave way and no paired read misread; the world acted in the window (a plant at the recorded value is no act)
+  and no slot was given up before it did; the workload ended by itself -- and never entered the flip's occurrence
+  refutes that world (`WORLD_REFUTED`); the flip is asked again with exactly that world excluded, never the arm, a
+  refuted world never re-run, at most past eight (named `bounded`); an UNSAT after it states what it rests on. Never
+  CONFIRM, never another flip; anything short of the four stays NOT_ADMITTED.
 - **The engine's own plumbing is never program state** (lead, 2026-10-06, codec-capture design): no field of the engine's
   runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
   a READ_SITE; a read made by such code takes its observed version's value at import.

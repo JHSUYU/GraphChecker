@@ -304,7 +304,7 @@ public final class ExploreMain {
             proposed.add(obligation.obligationId());
         }
         String[] order = {"UNANSWERED", "NOT_ASKED", "PENDING",
-                "NOT_FLIPPABLE", "UNSAT"};
+                "NOT_FLIPPABLE", BOUNDED, "UNSAT"};
         JsonArray arms = new JsonArray();
         for (OccurrenceAddress root : roots) {
             Task task = null;
@@ -378,6 +378,11 @@ public final class ExploreMain {
         return arms;
     }
 
+    /** An open arm whose flip is asked no more past {@link
+     *  ObligationFactory#MAX_REFUTED_WORLDS} refuted worlds: the named
+     *  valve, result.json {@code bounded}. */
+    static final String BOUNDED = "BOUNDED";
+
     /** What one path's flip of its open arm came to ({@link #openArms});
      *  the worlds its replays refuted are added to {@code refuted}, by
      *  digest. */
@@ -397,10 +402,11 @@ public final class ExploreMain {
                         || decision.ordinal() != arm.askedOrdinal()) {
                     continue;
                 }
-                for (Corpus.Refuted world : corpus.refutedWorlds(
+                List<Corpus.Refuted> worlds = corpus.refutedWorlds(
                         ObligationFactory.flip(task.taskId(), path.pathId,
                                 decision.siteId(), decision.ordinal(),
-                                !decision.outcome()))) {
+                                !decision.outcome()));
+                for (Corpus.Refuted world : worlds) {
                     refuted.putIfAbsent(world.digest, refutedWorld(world));
                 }
                 String id = ObligationFactory.obligationId(task.taskId(),
@@ -414,6 +420,9 @@ public final class ExploreMain {
                 if (verdict == Verdict.UNSAT) return "UNSAT";
                 if (frontier.inFlight(id) || proposed.contains(id)) {
                     return "PENDING";
+                }
+                if (worlds.size() >= ObligationFactory.MAX_REFUTED_WORLDS) {
+                    return BOUNDED;
                 }
                 return verdict != null ? "UNANSWERED" : "NOT_ASKED";
             }

@@ -990,6 +990,19 @@ public class ManualMintStatesItsValueTest {
             assertEquals((String) domain[0], domain[5], gaps().size());
         }
         assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
+        // Its validation is named while the value read passes it, and is
+        // dropped, named, where the value read fails it.
+        Validity atLeastSix = Validity.of(java.math.BigInteger.valueOf(6),
+                null, "a.B#u3");
+        for (String read : new String[] {"7", "5"}) {
+            JsonObject row = new JsonObject();
+            row.addProperty("sourceId", "CONFIG:k");
+            ActiveRegion.configDomain(row, "6", "10", atLeastSix, read);
+            assertEquals(read, "7".equals(read), row.has(Validity.MIN));
+        }
+        assertEquals(4, gaps().size());
+        assertTrue(gap().detail(), gap().detail().contains("(5) lies outside"
+                + " what its validation admits [6, ] by a.B#u3"));
     }
 
     /** One expression naming one VM symbol, as a mint publishes it. */

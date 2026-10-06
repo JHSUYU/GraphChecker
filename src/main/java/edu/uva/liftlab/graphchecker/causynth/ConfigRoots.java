@@ -45,6 +45,7 @@ import soot.jimple.StringConstant;
 import soot.jimple.TableSwitchStmt;
 import soot.jimple.ThrowStmt;
 import soot.toolkits.graph.BriefUnitGraph;
+import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.MHGPostDominatorsFinder;
 
 import java.math.BigInteger;
@@ -118,8 +119,8 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * decision compares the root with ({@code explore.Corpus#domainOf}).  Its
  * {@link Validity} is what its own validation admits: a branch of its
  * wrapper's body or its field's writer comparing the value with a literal,
- * one arm of which only throws ({@link #validation}); the domain never
- * leaves it.</p>
+ * one arm of which only throws, that every path to the return or store
+ * passes ({@link #validation}); the domain never leaves it.</p>
  *
  * <p>What is not minted is named ({@link #gaps}, {@code DECLARATION_MISSING}
  * DIAGNOSTIC): a read of a key no literal names ({@value #KEY_UNRESOLVED}),
@@ -859,22 +860,30 @@ final class ConfigRoots {
     private static final int THROW_REACH = 64;
 
     /**
-     * What a configuration value passes in one body, by its own validation:
-     * each branch comparing one of {@code values} (its locals, casts and
-     * parses) with an integral literal, directly or through a {@code long}
-     * {@code cmp}, one arm of which only throws ({@link #onlyThrows}),
-     * admits the values of its other arm ({@code if (minR <= 0) throw}:
-     * {@code >= 1}).  An equality admits no interval and bounds nothing.
+     * What a configuration value passes in one body, by its own validation,
+     * on its way to {@code use} (the store or return that hands it on): each
+     * branch comparing one of {@code values} (its locals, casts and parses)
+     * with an integral literal, directly or through a {@code long} {@code
+     * cmp}, one arm of which only throws ({@link #onlyThrows}) and which
+     * dominates {@code use} -- every path to it passes the branch, an
+     * exception handler a head of its own -- admits the values of its other
+     * arm ({@code if (minR <= 0) throw}: {@code >= 1}).  An equality admits
+     * no interval and bounds nothing; a check this rule does not recognise
+     * ({@code Preconditions.checkArgument}, one in another method) bounds
+     * nothing either, and CONFIRM refutes a world past it.
      */
     private static Validity validation(Body body, Set<Local> values,
-                                       String method) {
+                                       String method, Unit use) {
         Validity valid = Validity.ANY;
         if (body == null || values.isEmpty()) return valid;
+        MHGDominatorsFinder<Unit> dominators =
+                new MHGDominatorsFinder<>(new BriefUnitGraph(body));
         int index = 0;
         for (Unit unit : body.getUnits()) {
             int at = index++;
             if (!(unit instanceof IfStmt) || !(((IfStmt) unit).getCondition()
-                    instanceof ConditionExpr)) {
+                    instanceof ConditionExpr)
+                    || !dominators.isDominatedBy(use, unit)) {
                 continue;
             }
             boolean takenThrows = onlyThrows(body,
@@ -1099,7 +1108,7 @@ final class ConfigRoots {
             if (stored != null && !stored.sameShape(value)) return null;
             // What the writer itself rejects before it stores.
             value = value.validated(validation(body, chain(right, body),
-                    method));
+                    method, unit));
             stored = stored == null ? value : stored.merged(value);
             stores.computeIfAbsent(method, ignored -> new ArrayList<>())
                     .add(unit);
@@ -1283,7 +1292,6 @@ final class ConfigRoots {
         Body body = CausynthStaticFacts.activeBody(method);
         if (body == null) return null;
         ConfigValue returned = null;
-        Set<Local> values = new LinkedHashSet<>();
         for (Unit unit : body.getUnits()) {
             if (!(unit instanceof ReturnStmt)) continue;
             ConfigValue value = valueOf(((ReturnStmt) unit).getOp(), body,
@@ -1292,12 +1300,14 @@ final class ConfigRoots {
                     || returned != null && !returned.sameShape(value)) {
                 return null;
             }
+            // What the wrapper itself rejects before this return; the
+            // returns' validities join.
+            value = value.validated(validation(body,
+                    chain(((ReturnStmt) unit).getOp(), body), signature,
+                    unit));
             returned = returned == null ? value : returned.merged(value);
-            values.addAll(chain(((ReturnStmt) unit).getOp(), body));
         }
         if (returned == null) return null;
-        // What the wrapper itself rejects before it returns.
-        returned = returned.validated(validation(body, values, signature));
         if (returned.key != null) {
             return new Getter(-1, -1, returned.key, returned.view,
                     returned.clamps, returned.defaults, returned.valid);

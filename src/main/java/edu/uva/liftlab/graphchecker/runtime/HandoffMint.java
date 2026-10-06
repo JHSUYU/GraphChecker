@@ -177,6 +177,11 @@ final class HandoffMint {
                                 + " written into " + leaf.signature());
                 return;
             }
+            if (!answer.isEmpty()) {
+                // The world acts where the answer moves what arrived.
+                FocusedReplay.answered(!recordedValue.equals(ConcolicRegionRuntime
+                        .recordedScalar(leaf.field.get(leaf.owner))));
+            }
             JsonObject minted = mintLeaf(active, leaf,
                     mintLabel(phaseId, portId));
             if (minted == null) {

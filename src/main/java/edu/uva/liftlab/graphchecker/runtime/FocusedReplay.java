@@ -215,10 +215,7 @@ public final class FocusedReplay {
         for (Obligation obligation : OBLIGATIONS) {
             if (obligation.answers() == null) continue;
             String value = obligation.answers().get(id);
-            if (value != null) {
-                worldActed();
-                return value;
-            }
+            if (value != null) return value;
         }
         return "";
     }
@@ -499,7 +496,8 @@ public final class FocusedReplay {
                 results.add(refusedAt.isEmpty() ? result
                         : ObligationResult.of(result.obligationId(),
                                 result.verdict(), result.sessionId(),
-                                endedAtRefusal(result.detail())));
+                                endedAtRefusal(result.detail()),
+                                result.refutation()));
             }
         }
         return results;
@@ -612,11 +610,14 @@ public final class FocusedReplay {
         if (!workloadEnded) {
             unrefuted.add("(d) the workload did not end by itself");
         }
-        if (!unstated(obligation).isEmpty() || !unplantedLocked().isEmpty()) {
-            unrefuted.add("(a) " + firstNonBlank(unstated(obligation),
-                    "an assignment was left unplanted: "
-                            + unplantedLocked()));
-        }
+        // (a) the world as asked: every assignment minted and planted, no
+        // prefix abandoned and no refusal deciding the replay, and every
+        // flip it inherited reached and taken (the path it stands on ran).
+        String world = firstNonBlank(unstated(obligation), refusedAt,
+                inherited(), unplantedLocked().isEmpty() ? ""
+                        : "an assignment was left unplanted: "
+                        + unplantedLocked());
+        if (!world.isEmpty()) unrefuted.add("(a) " + world);
         if (held == null) {
             unrefuted.add("(b) the run's order holds could not be read");
         } else if (!held.gaveWay.isEmpty() || !held.misread.isEmpty()) {
@@ -647,10 +648,13 @@ public final class FocusedReplay {
         }
         long acted = FIRST_ACT.get();
         long departed = FIRST_DEPARTURE.get();
-        if (departed != 0L && (acted == 0L || departed < acted)) {
-            unrefuted.add("(c) slot " + firstDeparture + " was given up "
-                    + (acted == 0L ? "and the world never acted"
-                    : "before the world first acted"));
+        if (acted == 0L) {
+            unrefuted.add("(c) the world never acted in the window: no plant"
+                    + " moved a value, no skew moved a clock, no answer moved"
+                    + " an arrival and no hold waited");
+        } else if (departed != 0L && departed < acted) {
+            unrefuted.add("(c) slot " + firstDeparture + " was given up"
+                    + " before the world first acted");
         }
         if (!unrefuted.isEmpty()) return null;
         List<String> conditions = new ArrayList<String>();
@@ -692,10 +696,13 @@ public final class FocusedReplay {
     private static final AtomicLong FIRST_ACT = new AtomicLong();
     private static final AtomicLong FIRST_DEPARTURE = new AtomicLong();
 
-    /** The world acted on the run: a root or skew planted ({@link #planted}),
-     *  a handoff answered ({@link #answer}), an order hold waiting
-     *  ({@code Confirmation#entering}).  The first one counts. */
+    /** The world acted on the run inside its window: a plant that moved a
+     *  value or a clock ({@link #planted}), an answer that moved an arrival
+     *  ({@link #answered}), an order hold waiting ({@code
+     *  Confirmation#entering}).  The first one counts; one before the window
+     *  (a configuration planted at a startup read) does not. */
     static void worldActed() {
+        if (!RecordingWindow.opened()) return;
         if (FIRST_ACT.get() == 0L) {
             FIRST_ACT.compareAndSet(0L, TICKS.incrementAndGet());
         }
@@ -1001,14 +1008,21 @@ public final class FocusedReplay {
      * Records that a mint WROTE the wave's value; asking
      * {@link #rootAssignment} and failing to write is a different fact.
      */
-    public static void planted(String rootId) {
+    public static void planted(String rootId, boolean moved) {
         load();
         String id = Text.safe(rootId);
         if (id.isEmpty()) return;
-        worldActed();
+        // The world acts where the plant moves what the run read.
+        if (moved) worldActed();
         synchronized (LOCK) {
             PLANTED.add(id);
         }
+    }
+
+    /** A handoff was answered ({@code HandoffMint}); {@code moved}: the
+     *  answer is not what arrived. */
+    static void answered(boolean moved) {
+        if (moved) worldActed();
     }
 
     /** Notes that a mint of this root RAN, planted or not. */

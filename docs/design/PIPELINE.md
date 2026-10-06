@@ -482,8 +482,10 @@ schedule) and:
    no run took (`ExploreMain#openArms`: per arm the state of its flip on each path that left it --
    UNSAT, UNANSWERED (a flip that came to no verdict, a replay that never reached the decision and
    refuted nothing), PENDING (asked, a flip asked again without a refuted world among them),
-   NOT_ASKED, NOT_FLIPPABLE -- an arm a path took is not listed -- and `refutedWorlds`, each world a
-   replay of its flip refuted, §7.6), judged at EMIT (§11).
+   BOUNDED (asked no more past `ObligationFactory#MAX_REFUTED_WORLDS` = 8 refuted worlds, the named
+   valve for a clock or a wide integral that offers one world per value: `result.json` `bounded`
+   `open_arm_max_refuted_worlds`), NOT_ASKED, NOT_FLIPPABLE -- an arm a path took is not listed -- and
+   `refutedWorlds`, each world a replay of its flip refuted, §7.6), judged at EMIT (§11).
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -811,12 +813,18 @@ writer, each as CONFIRM names them, `ConfirmMain#writer`; one of a read another 
 that moves one is asked again with every writer choice held to the recorded writer
 (`ObligationFactory#heldToRecording`; a container state follows its writer's, and a refused term
 `unsupported__*` has no recorded value and stays free), and a model that then plants something is
-the one issued. An open decider arm's flip (`Corpus#openArmAsks`) is asked without each world a
-replay of it refuted (`Corpus#refutedWorlds`, by the flip's `ObligationFactory#flip`): one `(not
-(and ...))` per world over what the query can choose of it -- each pairing's writer selector, each
-root and clock at its value, each answered handoff (`ObligationFactory#excluded`; what the query
-does not name cannot recur and constrains nothing) -- and its UNSAT says it rests on them; its focus
-row carries `openArm`, and a refuted world's question is never reused. A model that plants nothing its path's session did not run -- no moved clock, no
+the one issued. An open decider arm's flip -- the decision a run that left the arm open asks,
+flipped TOWARD the arm, away from what that run took (`Corpus#openArmFlip`; the same decision
+flipped the other way is an ordinary flip) -- is asked without each world a replay of it refuted
+(`Corpus#refutedWorlds`, by the flip's `ObligationFactory#flip`): one `(not (and ...))` per world,
+exactly the world it ran -- every writer choice at the selector the world moved it to, else at the
+recording's; every root at the world's value, else at the reading its path's session ran; every
+clock at the instant its skew put it at, else at its base reading; every answered handoff
+(`ObligationFactory#excluded`; a choice the query cannot state is left out) -- and its UNSAT says it
+rests on them. A model whose whole world (`ObligationFactory#wholeWorldDigest`) is one already
+refuted is never run again, and past `MAX_REFUTED_WORLDS` refuted worlds the flip is refused
+(`OPEN_ARM_MAX_REFUTED_WORLDS`, the arm BOUNDED, §7.1); its focus row carries `openArm`, and a
+refuted world's question is never reused. A model that plants nothing its path's session did not run -- no moved clock, no
 answer, no pairing, and every assigned root at the value that session minted -- would have its
 replay run that session's world again, and is refused before any replay (`NOT_ADMITTED`, a
 DIAGNOSTIC `ADMISSION_GAP` under `EXPLORATION`). Assigning roots, all at their recorded values, it
@@ -868,11 +876,15 @@ not observe its paired writer's version, or an order that stalled, is `PAIRING_U
 anything else is `NOT_ADMITTED` naming why. **A refuted world** (`WORLD_REFUTED`,
 `FocusedReplay#refuted`, an open decider arm's flip only, never CONFIRM's): a replay that never
 entered the flip's occurrence and ran its world faithfully -- (a) every assigned root and skew
-minted at its value, no prefix abandoned; (b) no order hold gave way (`Confirmation#held`: none
-waited out its timeout, no paired read observed another writer) and a hold in force at the end --
-still waiting, or until an interrupt of the run's own end (a cluster's shutdown) let it go -- waits
-only on that occurrence; (c) no slot was given up (`ScheduleLog#giveUpLocked`) before
-the world first acted (a plant, an answer, a hold waiting: `FocusedReplay#worldActed`); (d) the
+minted and planted at its value, no prefix abandoned, and every flip it inherited reached and
+taken; (b) no order hold gave way (`Confirmation#held`: none waited out its timeout, no paired read
+or placeholder (MINT edge) observed another writer, its edges were readable) and a hold in force at
+the end -- still waiting, or until an interrupt of the run's own end (a cluster's shutdown) let it
+go and its activation did nothing tracked after -- waits only on that occurrence; (c) the world
+ACTED in the window -- a plant that moved a value off what the run read, a skew that moved a clock,
+an answer that moved an arrival, a hold that waited (`FocusedReplay#worldActed`; a plant at the
+recorded value, a zero skew or a configuration planted at a startup read before the window is no
+act) -- and no slot was given up (`ScheduleLog#giveUpLocked`) before it first did; (d) the
 workload ended by itself (`JUnitMethodRunner#main`, not a bound, a witness or a refusal) -- is
 NOT_ADMITTED with a `refutation` (the conditions, the workload's exception, where it was thrown and
 the test frame it passed). It answers nothing of the arm (`Frontier#consume` leaves it owed), so the
@@ -2125,9 +2137,10 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim;
    `restsOnRefutations` (the refuted and refused models an UNSAT's core names, and each world a
-   replay refuted for an open arm whose flip came back UNSAT, kind `REFUTED_WORLD`); `concrete[]`
+   replay refuted for an open arm whose flip came back UNSAT or BOUNDED, kind `REFUTED_WORLD`); `concrete[]`
    with the last round's `openArms` (kind OPEN_ARM) beside its concrete anchors, and
-   `evidence.unsatClosureComplete` true only where every such arm's flip came to UNSAT; an arm whose
+   `evidence.unsatClosureComplete` true only where every such arm's flip came to UNSAT or stopped at
+   its named bound (BOUNDED, in `bounded`); an arm whose
    flip came to no verdict is one `OPEN_ARM_UNANSWERED` row (`campaign_open_arms`), BLOCKING under any
    claim but a `SAT_CANDIDATE`; `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
@@ -2141,7 +2154,8 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `region_path_max_paths_per_region` (the LAST round's deferral rows: an earlier round's the rounds
    after it read, §7.4) and `region_path_max_world_depth` (ObligationFactory's DIAGNOSTIC rows, the
    bound in their subject), `region_path_max_tasks` (the last round's
-   `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`) and `campaign_max_claims`
+   `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
+   (an open arm the last round left BOUNDED, §7.1) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a
    `## Bounded` section, `triage.py` in its `bounded` column and `BOUNDED=` count,

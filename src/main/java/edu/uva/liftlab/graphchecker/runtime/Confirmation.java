@@ -228,6 +228,7 @@ public final class Confirmation {
         String actual = producer == null ? "" : id(producer);
         Wire chosen;
         synchronized (LOCK) {
+            ranOn();
             ATTACHED.put(id(consumer), actual);
             chosen = WIRE.get(id(consumer));
         }
@@ -259,6 +260,7 @@ public final class Confirmation {
                       boolean initial) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
+            ranOn();
             WROTE.put(key(location, version), initial ? INITIAL
                     : id(writer));
         }
@@ -269,6 +271,7 @@ public final class Confirmation {
                      long observedVersion, long mintVersion) {
         if (!expected() || reader == null || location == null) return;
         synchronized (LOCK) {
+            ranOn();
             if (mintVersion != ReadRow.UNKNOWN_VERSION) {
                 MINTED.add(key(location, observedVersion));
             }
@@ -368,9 +371,10 @@ public final class Confirmation {
             planted(RecordingPlant.HOLDING, activation, waiting);
             // A hold that waits is the world acting on the run
             // (FocusedReplay#worldActed), and stays in force until it ends.
+            long thread = Thread.currentThread().getId();
             if (!waiting.isEmpty()) {
                 FocusedReplay.worldActed();
-                WAITING.put(activation, before);
+                WAITING.put(thread, new Hold(activation, before));
             }
             long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
                     ORDER_TIMEOUT_MS);
@@ -395,36 +399,62 @@ public final class Confirmation {
                     try {
                         LOCK.wait(Math.min(left, 200L));
                     } catch (InterruptedException interrupted) {
-                        // The run's own end (a cluster's shutdown) ended
-                        // the wait: the hold stood until then.
-                        ENDED_WAITING.put(activation, before);
+                        // An interrupt (a cluster's shutdown) ended the
+                        // wait: the hold stood until then, unless the
+                        // activation goes on to do tracked work (#ranOn).
+                        ENDED_WAITING.put(thread, new Hold(activation,
+                                before));
                         Thread.currentThread().interrupt();
                         return;
                     }
                 }
             } finally {
-                WAITING.remove(activation);
+                WAITING.remove(thread);
             }
             planted(RecordingPlant.APPLIED, activation, before);
         }
     }
 
-    /** Activation -> those ordered before it, while its hold waits. */
-    private static final Map<String, Set<String>> WAITING =
-            new HashMap<String, Set<String>>();
-    /** The same, for a hold whose wait an interrupt ended: the run's own
-     *  end (a cluster shutting down) let it go, the order never did. */
-    private static final Map<String, Set<String>> ENDED_WAITING =
-            new HashMap<String, Set<String>>();
+    /** One hold: the activation held and those ordered before it. */
+    private static final class Hold {
+        final String activation;
+        final Set<String> before;
+
+        Hold(String activation, Set<String> before) {
+            this.activation = activation;
+            this.before = before;
+        }
+    }
+
+    /** Thread -> its hold, while it waits. */
+    private static final Map<Long, Hold> WAITING = new HashMap<Long, Hold>();
+    /** Thread -> its hold, where an interrupt ended the wait. */
+    private static final Map<Long, Hold> ENDED_WAITING =
+            new HashMap<Long, Hold>();
+    /** The activations whose interrupted hold then ran on into tracked
+     *  work: their order gave way. */
+    private static final Set<String> RAN_ON = new LinkedHashSet<String>();
+
+    /** A tracked read, write or attach on this thread: if an interrupt
+     *  ended its hold, the held activation ran on.  Called under
+     *  {@link #LOCK}. */
+    private static void ranOn() {
+        if (ENDED_WAITING.isEmpty()) return;
+        Hold ended = ENDED_WAITING.get(Thread.currentThread().getId());
+        if (ended != null) RAN_ON.add(ended.activation);
+    }
 
     /**
      * How this run held its world's order, read at the close
      * ({@code FocusedReplay#refuted}): the holds that gave way (an order
-     * waited out its timeout), each hold in force until the end -- still
-     * waiting, or until an interrupt of the run's own end let it go -- with
-     * the activations it waits for, and each STATE read that observed
-     * another writer than the model's.  A read that never happened is none
-     * of them.
+     * waited out its timeout, or an interrupted hold whose activation ran
+     * on into tracked work), each hold in force until the end -- still
+     * waiting, or until an interrupt let it go and its activation did
+     * nothing tracked after -- with the activations it waits for, and each
+     * edge the run did not hold: a STATE read that observed another writer
+     * than the model's, a placeholder join (MINT) whose location's
+     * placeholders all observed another writer, or edges that could not be
+     * read at all.  A read that never happened is none of them.
      */
     static final class Held {
         final List<String> gaveWay;
@@ -442,18 +472,43 @@ public final class Confirmation {
     static Held held() {
         load();
         synchronized (LOCK) {
+            List<String> gaveWay = new ArrayList<String>(UNREALIZED);
             Map<String, Set<String>> waiting =
                     new LinkedHashMap<String, Set<String>>();
-            Map<String, Set<String>> held =
-                    new LinkedHashMap<String, Set<String>>(ENDED_WAITING);
-            held.putAll(WAITING);
-            for (Map.Entry<String, Set<String>> hold : held.entrySet()) {
-                Set<String> missing =
-                        new LinkedHashSet<String>(hold.getValue());
+            List<Hold> holds = new ArrayList<Hold>(ENDED_WAITING.values());
+            holds.addAll(WAITING.values());
+            for (Hold hold : holds) {
+                Set<String> missing = new LinkedHashSet<String>(hold.before);
                 missing.removeAll(EXITED);
-                if (!missing.isEmpty()) waiting.put(hold.getKey(), missing);
+                if (missing.isEmpty()) continue;
+                if (RAN_ON.contains(hold.activation)) {
+                    gaveWay.add("ORDER " + hold.activation + ": an interrupt"
+                            + " ended its hold and it ran on into tracked"
+                            + " work before " + missing + " exited");
+                } else {
+                    waiting.computeIfAbsent(hold.activation,
+                            key -> new LinkedHashSet<String>())
+                            .addAll(missing);
+                }
             }
             List<String> misread = new ArrayList<String>();
+            if (!unread.isEmpty()) misread.add(unread);
+            // A placeholder minted at the location, none of the writer's:
+            // its read observed another (one never minted never read).
+            for (Map.Entry<String, String> edge : MINT.entrySet()) {
+                String[] joined = edge.getKey().split(" ", 2);
+                boolean seen = false;
+                boolean taken = false;
+                for (String minted : MINTED) {
+                    if (!minted.startsWith(joined[1] + "@")) continue;
+                    seen = true;
+                    taken |= joined[0].equals(WROTE.get(minted));
+                }
+                if (seen && !taken) {
+                    misread.add("STATE mint " + joined[1] + ": no"
+                            + " placeholder observed writer " + joined[0]);
+                }
+            }
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
                 String observed = READ.get(edge.getKey());
                 if (observed == null
@@ -465,8 +520,7 @@ public final class Confirmation {
                 misread.add("STATE " + edge.getKey() + " observed "
                         + observed + ", not writer " + edge.getValue());
             }
-            return new Held(new ArrayList<String>(UNREALIZED), waiting,
-                    misread);
+            return new Held(gaveWay, waiting, misread);
         }
     }
 
@@ -679,6 +733,7 @@ public final class Confirmation {
             UNREALIZED.clear();
             WAITING.clear();
             ENDED_WAITING.clear();
+            RAN_ON.clear();
             unread = "";
             WIRE.clear();
             STATE.clear();

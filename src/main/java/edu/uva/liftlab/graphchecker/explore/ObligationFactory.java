@@ -50,6 +50,13 @@ import java.util.TreeSet;
  * processes: a round's queries are independent.</p>
  */
 public final class ObligationFactory {
+    /** How many refuted worlds one open arm's flip is asked again past:
+     *  the named valve of the WORLD_REFUTED re-ask (result.json
+     *  {@code bounded} {@code open_arm_max_refuted_worlds}). */
+    static final int MAX_REFUTED_WORLDS = 8;
+    /** The reason a flip past {@link #MAX_REFUTED_WORLDS} is refused. */
+    static final String REFUTED_BOUND = "OPEN_ARM_MAX_REFUTED_WORLDS";
+
     /** How many recorded paths of one task a round proposes flips from. */
     public static final int DEFAULT_MAX_PATHS_PER_TASK = 32;
     /** How many flips one path may offer in one round. */
@@ -160,8 +167,8 @@ public final class ObligationFactory {
          *  never a timeout, an undecided solver, or a reused answer (the
          *  obligation it reused settles it). */
         public final boolean settles;
-        /** Whether the flip asks an open decider arm ({@link
-         *  Corpus#openArmAsks}): its replay may refute its world. */
+        /** Whether the flip runs an open decider arm ({@link
+         *  Corpus#openArmFlip}): its replay may refute its world. */
         public final boolean openArm;
 
         private Outcome(Obligation obligation, ObligationResult result,
@@ -863,9 +870,8 @@ public final class ObligationFactory {
         DecisionRow decision = candidate.decision;
         FlipQuery.Built built = FlipQuery.build(corpus, candidate.task,
                 candidate.path, candidate.index);
-        boolean openArm = corpus.openArmAsks(candidate.task.focused())
-                .contains(FlipQuery.asked(decision.siteId(),
-                        decision.ordinal()));
+        boolean openArm = corpus.openArmFlip(candidate.task.focused(),
+                decision.siteId(), decision.ordinal(), !decision.outcome());
         // An open arm's flip is asked without each world a replay of it
         // refuted (WORLD_REFUTED): exactly that world, never the arm.
         List<Corpus.Refuted> refuted = openArm
@@ -878,6 +884,15 @@ public final class ObligationFactory {
         Corpus.World inherited = corpus.world(candidate.path.sessionId);
         String question = question(candidate, inherited, built, given);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
+        // The named valve: an open arm's flip is not asked again past
+        // MAX_REFUTED_WORLDS refuted worlds (a clock or a wide integral may
+        // offer one world per value); result.json `bounded` names it.
+        if (refuted.size() >= MAX_REFUTED_WORLDS) {
+            return refused(candidate, Verdict.NOT_ADMITTED, REFUTED_BOUND
+                    + ": " + refuted.size() + " world(s) its replays"
+                    + " refuted, and the flip is not asked again past "
+                    + MAX_REFUTED_WORLDS, "", gaps, question, false);
+        }
         ObligationDir.Answer earlier = answered.get(question);
         // A refuted world answers nothing of its question's arm: never
         // reused (the corpus that excludes it may be one session behind).
@@ -993,6 +1008,28 @@ public final class ObligationFactory {
                 overlay(inherited.answers, planted.answers);
         Map<String, String> pairings =
                 overlay(inherited.pairings, planted.pairings);
+        // A world a replay of this flip refuted is never run again, even
+        // where the query could not state it whole.
+        if (!refuted.isEmpty()) {
+            List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
+            flips.add(new Corpus.Flip(candidate.task.focused().id(),
+                    decision.siteId(), decision.ordinal(),
+                    !decision.outcome(), id));
+            flips.addAll(inherited.flips);
+            String digest = wholeWorldDigest(new Corpus.World(roots,
+                    clockDeltas, answers, Collections.<String, String>
+                    emptyMap(), pairings, flips));
+            for (Corpus.Refuted world : refuted) {
+                if (world.digest.equals(digest)) {
+                    return refused(candidate, Verdict.NOT_ADMITTED,
+                            "the model's world " + digest + " is one a"
+                                    + " replay of this flip refuted"
+                                    + " (obligation " + world.obligationId
+                                    + "): never run again", query, gaps,
+                            question, false);
+                }
+            }
+        }
         // The world's pairings held as CONFIRM holds a model's, over the
         // session the path was cut from (ConfirmMain#holding).
         ConfirmMain.Holding holding;
@@ -1047,75 +1084,71 @@ public final class ObligationFactory {
     }
 
     /**
-     * Each refuted world of this flip as an exclusion of the query: {@code
-     * (not (and ...))} over what the query can choose of it -- each pairing's
-     * writer selector, each root and clock at its value (a clock as the
-     * instant its skew put it at on this path's reading), each answered
-     * handoff -- as the claim loop excludes a refuted model
-     * ({@code compose.Composer#refutations}): what the query does not name
-     * cannot recur in its model and constrains nothing.  A world of which
-     * the query names nothing is stated in a comment only.
+     * Each refuted world of this flip as an exclusion of the query, exactly
+     * the world its replay ran: {@code (not (and ...))} over every choice
+     * the query offers -- each writer choice at the selector the world
+     * moved it to, else at the recording's ({@link
+     * FlipQuery.WriterChoice#recorded}); each root at the world's value,
+     * else at the reading its path's session ran; each clock at the instant
+     * the world's skew put it at, else at its base reading; each answered
+     * handoff at its answer -- as the claim loop excludes a refuted model
+     * ({@code compose.Composer#refutations}).  A choice the query cannot
+     * state (an unanswered control, a reading no literal spells) is left
+     * out, and a world of which it can state nothing is a comment only.
      */
     private static List<String> excluded(Corpus corpus, Candidate candidate,
                                          FlipQuery.Built built,
                                          List<Corpus.Refuted> refuted) {
+        String session = candidate.path.sessionId;
         List<String> assertions = new ArrayList<String>();
         for (Corpus.Refuted world : refuted) {
             List<String> chosen = new ArrayList<String>();
-            for (Map.Entry<String, String> pairing
-                    : world.world.pairings.entrySet()) {
-                for (FlipQuery.WriterChoice choice : built.choices) {
+            for (FlipQuery.WriterChoice choice : built.choices) {
+                String selector = choice.recorded;
+                for (ReadRow read : choice.reads) {
+                    String writer = world.world.pairings.get(
+                            Confirmation.id(read.endpoint()));
+                    if (writer == null) continue;
                     for (Map.Entry<String, WriteRow> write
                             : choice.writes.entrySet()) {
-                        if (write.getValue() == null
-                                || !ConfirmMain.writer(write.getValue())
-                                .equals(pairing.getValue())) {
-                            continue;
-                        }
-                        for (ReadRow read : choice.reads) {
-                            if (Confirmation.id(read.endpoint())
-                                    .equals(pairing.getKey())) {
-                                chosen.add(write.getKey());
-                                break;
-                            }
+                        if (write.getValue() != null && ConfirmMain.writer(
+                                write.getValue()).equals(writer)) {
+                            selector = write.getKey();
                         }
                     }
+                }
+                if (!selector.isEmpty()
+                        && built.modelSymbols.contains(selector)) {
+                    chosen.add(selector);
                 }
             }
             for (Map.Entry<String, String> variable
                     : built.rootVariables.entrySet()) {
                 String value = world.world.rootAssignments.get(
                         variable.getValue());
-                String literal = value == null ? "" : SmtText.literal(value,
-                        built.sorts.get(variable.getKey()));
-                if (!literal.isEmpty()) {
-                    chosen.add("(= " + variable.getKey() + " " + literal
-                            + ")");
+                if (value == null) {
+                    value = corpus.rootValue(session, variable.getValue());
                 }
+                equal(chosen, variable.getKey(), value,
+                        built.sorts.get(variable.getKey()));
             }
             for (Map.Entry<String, String> variable
                     : built.clockVariables.entrySet()) {
+                RootMintRow read = corpus.rootOf(session,
+                        variable.getValue());
+                if (read == null) continue;
                 String delta = world.world.clockDeltas.get(
                         variable.getValue());
-                RootMintRow read = corpus.rootOf(candidate.path.sessionId,
-                        variable.getValue());
-                String instant = delta == null || read == null ? ""
-                        : instant(read.baseReading(), delta);
-                String literal = instant.isEmpty() ? "" : SmtText.literal(
-                        instant, built.sorts.get(variable.getKey()));
-                if (!literal.isEmpty()) {
-                    chosen.add("(= " + variable.getKey() + " " + literal
-                            + ")");
-                }
+                equal(chosen, variable.getKey(), delta == null
+                        ? read.baseReading().trim()
+                        : instant(read.baseReading(), delta),
+                        built.sorts.get(variable.getKey()));
             }
             for (FlipQuery.Control control : built.controls) {
                 String answered = world.world.answers.get(
                         control.attachEndpointId);
-                String literal = answered == null ? ""
-                        : SmtText.literal(answered, control.sort);
-                if (!literal.isEmpty()) {
-                    chosen.add("(= " + control.variable + " " + literal
-                            + ")");
+                if (answered != null) {
+                    equal(chosen, control.variable, answered, control.sort);
                 }
             }
             String named = "; refuted world " + world.digest
@@ -1127,6 +1160,17 @@ public final class ObligationFactory {
                     + String.join(" ", chosen) + ")))");
         }
         return assertions;
+    }
+
+    /** {@code (= variable value)} into {@code chosen}, where the value is a
+     *  literal of the variable's sort. */
+    private static void equal(List<String> chosen, String variable,
+                              String value, String sort) {
+        String literal = value == null || value.isEmpty() ? ""
+                : SmtText.literal(value, sort);
+        if (!literal.isEmpty()) {
+            chosen.add("(= " + variable + " " + literal + ")");
+        }
     }
 
     /**

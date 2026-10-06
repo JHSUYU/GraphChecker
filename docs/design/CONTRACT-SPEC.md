@@ -231,7 +231,7 @@ field=<f> <subject>`.
   clockDeltas: {rootId: skew}, answers, pairings: {reader: writer} (each as `Confirmation#id`
   names it, `INITIAL` for a location's INITIAL), rootMints: {rootId: rendered mint occurrence},
   unproducible, schedulePrefix?: {sessionId, events, rest, of, cutAtFocus}, openArm?}` (`openArm`
-  true on an open decider arm's flip, `Corpus#openArmAsks`: its replay may refute its world). A clock's counterfactual is a skew
+  true on an open decider arm's flip toward the arm, `Corpus#openArmFlip`: its replay may refute its world). A clock's counterfactual is a skew
   the replay adds to its own base reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,

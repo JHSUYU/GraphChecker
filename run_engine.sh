@@ -5739,6 +5739,8 @@ explore_manifest.json 2>/dev/null) \
     | rows("max-world-depth") as $depth
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
+    | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]
+      as $armsBounded
     | [ (select($exploration[0].stop == "REGION_PATH_WAVE_BUDGET_REACHED")
          | {by: "region_path_max_waves", detail: $exploration[0].detail}),
         (select(($paths | length) > 0)
@@ -5755,6 +5757,11 @@ explore_manifest.json 2>/dev/null) \
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"
               + " \($truncated) occurrence(s), at the task bound")}),
+        (select(($armsBounded | length) > 0)
+         | {by: "open_arm_max_refuted_worlds",
+            detail: ("\($armsBounded | length) open decider arm(s) asked no"
+              + " more past their refuted worlds: " + ($armsBounded
+              | map("\(.siteId)=\(.outcome) of \(.anchor)") | join(", ")))}),
         (select($cut != null)
          | {by: "schedule_max_jobs",
             detail: ("PLAN planned the closure only to demand depth"
@@ -6799,11 +6806,12 @@ campaign_emit() {
     $gapDocuments[0] as $gaps |
     ($r.campaignClaim) as $decided |
     ($r.reachability // "UNKNOWN") as $reachability |
-    # An open decider arm no run took closes only by its UNSAT flip
-    # (campaign_open_arms).
+    # An open decider arm no run took closes only by its UNSAT flip, or at
+    # its named bound (campaign_open_arms, campaign_bounds).
     (($r.unsatClosureComplete // false)
      and ([($exploreDocuments[0].openArms // [])[]
-           | select(.state != "UNSAT")] | length == 0))
+           | select(.state != "UNSAT" and .state != "BOUNDED")]
+          | length == 0))
       as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
@@ -6866,9 +6874,11 @@ campaign_emit() {
      # refused_claim__ labels its unsat core names (ComposeMain#campaignClaim),
      # each the model it excludes -- a region the verdict rests on beside the
      # corpus -- and each world a replay refuted for an open decider arm whose
-     # flip then came back UNSAT (REFUTED_WORLD, ExploreMain#openArms).
+     # flip then came back UNSAT or stopped at its bound (REFUTED_WORLD,
+     # ExploreMain#openArms).
      restsOnRefutations: (($decided.restsOnRefutations // [])
-       + [($exploreDocuments[0].openArms // [])[] | select(.state == "UNSAT")
+       + [($exploreDocuments[0].openArms // [])[]
+          | select(.state == "UNSAT" or .state == "BOUNDED")
           | . as $arm | (.refutedWorlds // [])[]
           | {kind: "REFUTED_WORLD", anchor: $arm.anchor,
              siteId: $arm.siteId, outcome: $arm.outcome} + .]),

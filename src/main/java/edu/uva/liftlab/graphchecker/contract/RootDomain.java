@@ -88,7 +88,8 @@ public final class RootDomain extends Value {
      * with a value the slice does not state, a live replica count, is one
      * with the literal the run had: SYMBOL-SCOPE §4.3), the whole within
      * what the configuration's own validation admits ({@link
-     * RootMintRow#valid}).  The case's declaration still wins.
+     * RootMintRow#valid}) when the reading lies within it.  The case's
+     * declaration still wins.
      */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared,
@@ -111,9 +112,14 @@ public final class RootDomain extends Value {
             }
         }
         if (low == null || high == null) return mint;
+        // A validation the recorded reading itself fails is no validation
+        // of this value (the mint drops it, named): nothing is clipped.
         Validity valid = row.valid();
-        low = valid.clip(low);
-        high = valid.clip(high);
+        if (!integral(row.recordedValue()) || valid.admits(
+                new BigInteger(row.recordedValue().trim()))) {
+            low = valid.clip(low);
+            high = valid.clip(high);
+        }
         return of(row.rootId(), row.kind(), row.recordedValue(),
                 low.toString(), high.toString());
     }

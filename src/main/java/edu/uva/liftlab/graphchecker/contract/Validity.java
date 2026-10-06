@@ -74,6 +74,11 @@ public final class Validity extends Value {
         return of(low, high, joined(by, other.by));
     }
 
+    /** Whether {@code value} lies within these bounds. */
+    public boolean admits(BigInteger value) {
+        return value != null && clip(value).equals(value);
+    }
+
     /** {@code value} raised or lowered into these bounds. */
     public BigInteger clip(BigInteger value) {
         if (value == null) return null;

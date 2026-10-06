@@ -312,15 +312,14 @@ each open arm no admitted run took is named with what its flips came to (`Explor
 `result.json` `concrete[]` OPEN_ARM): an UNSAT flip closes it, any other leaves `unsatClosureComplete`
 false, and one whose flip came to no verdict (a replay that never reached the decision) leaves no
 verdict (`OPEN_ARM_UNANSWERED`, BLOCKING but under a SAT, `run_engine.sh` `campaign_open_arms`).
-A replay of the arm's flip that ran its world faithfully and never entered the flip's occurrence
-refutes that world (`WORLD_REFUTED`, `runtime.FocusedReplay#refuted`, PIPELINE §7.6; a lead decision
-of 2026-10-06): the arm stays owed and its flip is asked again with exactly that world excluded
-(`ObligationFactory#excluded`), the arm's row names each refuted world (`refutedWorlds`: digest,
-conditions, the workload's exception and where it was thrown), and an UNSAT after them rests on
-them (`result.json` `restsOnRefutations`, kind `REFUTED_WORLD`). hdfs-adhoc-39's world pairing the
-append's read of `BlockInfo.uc` with addBlock's write held the DataNode's block report behind the
-append, which runs only after `close()`, which waits for that report: the workload ended at
-`TestFileAppend.java:339` before the append. The
+A replay of the arm's flip (toward the arm, `Corpus#openArmFlip`) that ran its world faithfully and
+acted on it, and never entered the flip's occurrence, refutes that world (`WORLD_REFUTED`,
+`runtime.FocusedReplay#refuted`, PIPELINE §7.6; a lead decision of 2026-10-06): the arm stays owed
+and its flip is asked again with exactly that world excluded (`ObligationFactory#excluded`), never
+re-running a refuted one and at most past eight (BOUNDED, named in `result.json` `bounded`), the
+arm's row names each refuted world (`refutedWorlds`: digest, conditions, the workload's exception
+and where it was thrown), and an UNSAT after them rests on them (`result.json`
+`restsOnRefutations`, kind `REFUTED_WORLD`): read each against the code before counting it. The
 attribution reads the latest decision in the helper's method before the guard, by event order: a
 decision of another call of the same method in between (a recursion, a callback) would be taken for
 the one that chose the return.
@@ -557,10 +556,17 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
   queries and the composition share, and an arm resting on the root is owed again when its domain
   widens (`ObligationFactory#dependence`). Never past the configuration's own validation
   (`contract.Validity`): a branch of its wrapper's body or its field's writer comparing the value
-  with a literal, one arm of which runs straight to a throw (`ConfigRoots#validation`;
-  `initMinReplication`'s `minR <= 0` throws, so `>= 1`): a cluster holding such a value refuses to
-  start, and a plant at the window's reads would never meet the check, so CONFIRM could not refute
-  it. The declaration, the plan row and the mint row state it (`validMin`, `validMax`, `validBy`).
+  with a literal, one arm of which runs straight to a throw, and which every path to the value's
+  store or return passes (dominance over the method's graph, an exception handler a head of its own;
+  `ConfigRoots#validation`; `initMinReplication`'s `minR <= 0` throws, so `>= 1`); a wrapper's
+  returns join their validities, so one return that bypasses the check bounds nothing. A cluster
+  holding such a value refuses to start, and a plant at the window's reads would never meet the
+  check, so CONFIRM could not refute it. A validation the value the mint read itself fails is no
+  validation of it: dropped, named (`DECLARATION_MISSING` DIAGNOSTIC), and the domain is not clipped
+  (`ActiveRegion#configDomain`, `RootDomain#resolved`). A check this rule does not recognise --
+  `Preconditions.checkArgument`, one in another method, an equality -- bounds nothing: the domain
+  may then hold a value the cluster rejects, and CONFIRM refutes a world planted there. The
+  declaration, the plan row and the mint row state it (`validMin`, `validMax`, `validBy`).
   A declaration stating half a domain or a bound that is no integer states none, named, and the root
   is pinned.
 

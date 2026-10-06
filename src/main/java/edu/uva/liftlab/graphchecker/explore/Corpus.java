@@ -465,8 +465,8 @@ public final class Corpus implements Arms.Rows {
      * The decisions a reached anchor asks for its open decider arms
      * (TargetRow.OpenArm): of each run that reached it and left phi without
      * an arm, the one decision whose flip runs it, as {@link FlipQuery#asked}
-     * spells it.  The one rule the closure plans the asks by and a flip is
-     * known to be one by.
+     * spells it: what the closure plans the asks by ({@link #openArmFlip}
+     * tells which way of it runs the arm).
      */
     public Set<String> openArmAsks(OccurrenceAddress anchor) {
         Set<String> asks = new LinkedHashSet<String>();
@@ -479,6 +479,39 @@ public final class Corpus implements Arms.Rows {
             }
         }
         return asks;
+    }
+
+    /**
+     * Whether a flip runs an open decider arm of a reached anchor: it is the
+     * decision a run that left the arm open asks ({@link #openArmAsks}), and
+     * it goes TOWARD the arm -- the other outcome than that run took there
+     * (at the deciding decision itself, the arm's own outcome).  A flip of
+     * the same decision the other way is an ordinary flip.
+     */
+    public boolean openArmFlip(OccurrenceAddress anchor, String siteId,
+                               int ordinal, boolean flippedOutcome) {
+        for (TargetRow row : targetsOn(anchor)) {
+            TargetRow.OpenArm open = row.openArm();
+            if (!row.reachedAnchor() || open == null
+                    || !open.askedSiteId().equals(siteId)
+                    || open.askedOrdinal() != ordinal) {
+                continue;
+            }
+            Boolean ran = null;
+            for (DecisionRow decision : decisionsOf(row.sessionId(),
+                    anchor)) {
+                if (decision.siteId().equals(siteId)
+                        && decision.ordinal() == ordinal) {
+                    ran = decision.outcome();
+                }
+            }
+            if (ran == null && open.siteId().equals(siteId)
+                    && open.ordinal() == ordinal) {
+                ran = !open.outcome();
+            }
+            if (ran != null && ran != flippedOutcome) return true;
+        }
+        return false;
     }
 
     /** The world one session ran in; empty for the seed or a session with no
