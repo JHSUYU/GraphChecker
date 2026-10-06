@@ -149,7 +149,7 @@ and GROW's re-runs, fan out over the hosts in
 cores. A head's own steps go to its host when it has room, else to the pool's host with the most
 room (`campaign_head_charged`, run there through `run_engine.sh --run-placed`). Every start on a
 host is charged to the ledger first, at its measured need, for as long as it runs: the seed replay
-(seven times the recording's measured peak), an obligation's solve (what a solver starts at), then
+(twice the recording's measured peak at its start, its heap sized for seven times it, growing while its host has room), an obligation's solve (what a solver starts at), then
 every obligation's, re-run's and CONFIRM's replay
 (the campaign's measured replay need: the largest peak its replays stated so far, the seed's first,
 times 1.5, at least 512 MB; `campaign_replay_need_mb`), each replay at most half a host's ceiling at

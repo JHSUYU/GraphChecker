@@ -2554,8 +2554,17 @@ campaign_target_reached() {
 # it (hdfs-17960 4.89, solr-18413 3.65, solr-18406 6.94; the block-key cases
 # under 1.2).  Its peak is the campaign's first measured replay need
 # (campaign_replay_measured): every replay after it is charged from what the
-# campaign's replays measured, never from the recording again.
+# campaign's replays measured, never from the recording again.  That need
+# sizes the replay's heap; the seed replay is CHARGED less at its start,
+# campaign_seed_charge_factor times the recording's peak, and granted what it
+# grows past that while its host has real room (campaign_watch_workload), as
+# every replay is: HDFS seed replays peaked at 0.5 to 1.4 times their
+# recording (rounds HG9, HI2: 177-1062 MB charged 2.6-11 GB), and charged
+# seven times it, four of HI2's first wave held 44 GB of the cluster's
+# ledger over under 4 GB of real use while every lift's real use stood at
+# 20-36 %.
 campaign_replay_memory_factor=7
+campaign_seed_charge_factor=2
 campaign_session_replay() {
   local iteration_dir=$1 bound need charge
   [[ "${campaign_recorded_workload_rss_mb}" =~ ^[1-9][0-9]*$ ]] \
@@ -2565,7 +2574,10 @@ with"
   bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
   (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
   need=$(( campaign_recorded_workload_rss_mb * campaign_replay_memory_factor ))
-  charge=$(campaign_replay_charge_mb "${need}")
+  charge=$(( campaign_recorded_workload_rss_mb * campaign_seed_charge_factor ))
+  (( charge >= campaign_replay_min_need_mb )) \
+    || charge=${campaign_replay_min_need_mb}
+  charge=$(campaign_replay_charge_mb "${charge}")
   campaign_head_charged "${charge}" campaign_seed_replay "${iteration_dir}" \
     "${causynth_static_scope_map}" "${charge}" "${bound}" \
     "seed_replay_time_factor=${seed_replay_time_factor} x the recording's \
@@ -2924,6 +2936,13 @@ campaign_solver_heap_mb=8192
 # host waited behind it (e2: the first question of a host answered after 1-5
 # minutes, the rest in a second; "one needs 8192 MB and 9474 MB stay free").
 campaign_solver_start_mb=1024
+
+# What a question its host's serving solver answers is charged, in MB: its z3
+# run, a child of that solver (the solver JVM's own charge is its JVM's).
+# Charged a solver's start, a sweep's questions held 51 GB of the ten lifts'
+# ledger over z3 runs of a median 1 MB, p90 369 MB, at most 1.8 GB (118 z3
+# processes, HI1/HI2), and new campaigns waited for room their lifts had.
+campaign_question_mb=512
 
 # The solver directory of the corpus ${1} (an iteration's sessions), on this
 # host: named by the host too, since a pid means something on one host only.
@@ -5159,9 +5178,9 @@ campaign_stream_unenroll() {
 campaign_stream_admit_host() {
   local kind=$1 host turn count pass is status=0 mb
   count=${#stream_hosts[@]}
-  mb=$(campaign_stream_charge_mb "${kind}")
   for pass in warm cold; do
     [[ "${pass}" == cold || "${kind}" == OBLIGATION ]] || continue
+    mb=$(campaign_stream_charge_mb "${kind}" "${pass}")
     for ((turn = 0; turn < count; turn++)); do
       host=${stream_hosts[$(( (stream_next_host + turn) % count ))]}
       # An obligation tries each host once, in the pass of its warmth.
@@ -5188,10 +5207,14 @@ campaign_stream_warm() {
   [[ -n "${seen}" ]] && (( $(date +%s) - seen < campaign_solver_idle_s ))
 }
 
-# What one start of <kind> of the pool is charged now: an OBLIGATION's solve
-# what a solver JVM starts at (campaign_solver_start_mb: its question is
-# answered in a JVM of its own, under this charge, when its host has no room
-# for its solver; the host's solver is charged on its own); a replay -- a
+# What one start of <kind> of the pool is charged now, on a host of <warmth>
+# (warm: this campaign's solver likely still serves there, campaign_stream_warm;
+# else cold): an OBLIGATION's solve on a warm host what its question's z3 run
+# holds (campaign_question_mb; the host's solver JVM is charged on its own),
+# on a cold one what a solver JVM starts at (campaign_solver_start_mb: its
+# question is answered in a JVM of its own, under this charge, when its host
+# has no room for its solver); either grows as its JVM does
+# (campaign_watch_workload); a replay -- a
 # REPLAY, a RERUN, a CONFIRM, and the pool's slots (campaign_stream_has_slot)
 # -- the campaign's measured replay need (campaign_replay_need_mb), at most
 # half a host's ceiling (campaign_replay_charge_mb).  A solve charged a
@@ -5199,7 +5222,9 @@ campaign_stream_warm() {
 # obligations waited 12 of EXPLORE's 13 minutes for room for a 2500 MB
 # replay each, and their solver refused all eight: none replayed).
 campaign_stream_charge_mb() {
-  if [[ "${1:-}" == OBLIGATION ]]; then
+  if [[ "${1:-}" == OBLIGATION && "${2:-cold}" == warm ]]; then
+    printf '%s\n' "${campaign_question_mb}"
+  elif [[ "${1:-}" == OBLIGATION ]]; then
     printf '%s\n' "${campaign_solver_start_mb}"
   else
     campaign_replay_charge_mb "$(campaign_replay_need_mb)"

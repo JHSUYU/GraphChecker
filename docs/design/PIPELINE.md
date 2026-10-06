@@ -932,10 +932,12 @@ lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute 
 every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
-leases old is deleted. Every start states its measured need, with no default. A solve needs what
-a solver JVM starts at (`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its
-own under that charge when its host has no room for its solver; the host's solver is charged on its
-own, §7.5), never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+leases old is deleted. Every start states its measured need, with no default. A solve on a host
+where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
+(`campaign_question_mb`, 512 MB: the serving solver's JVM is charged on its own, §7.5; HI1/HI2's z3
+runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host what a solver JVM starts at
+(`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its own under that charge
+when its host has no room for its solver), either growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
@@ -1000,7 +1002,9 @@ told apart from a crash) -- the seed
 replay (`campaign_session_replay`), before any replay of the campaign was measured, needing seven
 times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its native
 recording, up to 6.94 times in round x1; a recording that measured none, or a seed replay that
-states no peak, fails REPLAY by name), and the final CONFIRM replay (`campaign_confirm_claim`),
+states no peak, fails REPLAY by name; it is charged only `campaign_seed_charge_factor` (2) times the
+recording's peak at its start: HDFS seed replays peaked at 0.5-1.4 times their recording, HG9/HI2), and the final
+CONFIRM replay (`campaign_confirm_claim`),
 needing the measured replay need (above), each charged at most half a host's ceiling at its start
 (`campaign_replay_charge_mb`: a charge only an idle host can hold waited 75 minutes in round HG1;
 past its charge the replay grows while its host has room) and its heap sized by the whole need
@@ -1858,7 +1862,9 @@ with it is a `RUN_DEFECT`.
   a target row of it at the anchor reached it and observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
   rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
-  every moved non-clock root at the model's value, and its clocks are the model's (on every cell
+  every moved non-clock root at the model's value, its world planted no other root at a value other
+  than the recording's (a world planting more than the model moved ran another model: a replay of
+  the claim's decides), and its clocks are the model's (on every cell
   the composition anchors, the skews its world planted are exactly the claim's jumps; skews compare,
   each off its own run's host), the session is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)

@@ -42,6 +42,8 @@ public final class Moved {
     final Map<String, String> mints = new LinkedHashMap<String, String>();
     /** Every clock root id the composition anchors. */
     final Set<String> anchored = new LinkedHashSet<String>();
+    /** Root id -> the value the recording minted it at. */
+    final Map<String, String> recorded = new LinkedHashMap<String, String>();
     /** Why a moved root cannot be planted, or "". */
     String refusal = "";
 
@@ -68,7 +70,11 @@ public final class Moved {
             for (RootMintRow row : rows.roots()) {
                 named.putIfAbsent(row.rootId(), row);
                 named.putIfAbsent(row.symbol(), row);
-                if (rows == recording) minted.putIfAbsent(row.rootId(), row);
+                if (rows == recording) {
+                    minted.putIfAbsent(row.rootId(), row);
+                    moved.recorded.putIfAbsent(row.rootId(),
+                            row.recordedValue());
+                }
             }
         }
         for (Map.Entry<String, String> entry : movedRoots.entrySet()) {
@@ -119,7 +125,10 @@ public final class Moved {
      * Whether {@code session}, run in {@code world}, IS this model's run:
      * the model plants (no refusal), its world planted no pairing (a pairing
      * is a moved choice its own run took under an order the replay held, so
-     * CONFIRM makes it again in a replay of its own, strict), it minted every
+     * CONFIRM makes it again in a replay of its own, strict), it planted no
+     * root beyond the model's moved ones at a value other than the
+     * recording's (such a world ran another model, which a replay of the
+     * claim's own decides), it minted every
      * moved root at the model's value (its mint row), and its clocks are the
      * model's jumps and nothing else ({@link #clocksOf}: skews, each off its
      * own run's host, so the two timelines compare; an instant of the replay
@@ -135,6 +144,15 @@ public final class Moved {
      *  (its clocks not yet pinned back) can already be judged by. */
     public boolean ranRootsBy(Corpus.World world, SessionReader session) {
         if (!refusal.isEmpty() || !world.pairings.isEmpty()) return false;
+        for (Map.Entry<String, String> planted
+                : world.rootAssignments.entrySet()) {
+            if (values.containsKey(planted.getKey())) continue;
+            String at = recorded.get(planted.getKey());
+            if (at == null || !at.trim().equalsIgnoreCase(
+                    planted.getValue().trim())) {
+                return false;
+            }
+        }
         Map<String, String> ran = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
             ran.put(row.rootId(), row.recordedValue());
