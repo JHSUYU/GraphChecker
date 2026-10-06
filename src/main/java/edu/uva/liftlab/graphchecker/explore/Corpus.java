@@ -1167,7 +1167,7 @@ public final class Corpus implements Arms.Rows {
     /** The shared state one published expression rests on: for each read node
      *  ({@code location} + {@code readEventId}), the latest write at or before
      *  the read. ONE implementation, shared by the composer ({@code
-     *  ComposedFamilies.expressionWrites}) and the closure (PIPELINE §7.2).
+     *  compose.RestsOn#seedWrites}) and the closure (PIPELINE §7.2).
      *  Locations the session never wrote are skipped (no version to guess). */
     public List<StateRead> expressionStateReads(String sessionId,
                                                 String expressionRef) {
