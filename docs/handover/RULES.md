@@ -128,7 +128,9 @@ recommendation.
   变慢"): at ~18 live campaigns (four agents' gates plus the lead's rounds) every case ran 3-5x slower and heads starved for
   ledger room. Each agent runs at most 2 live campaigns at once (critical path first, offline gates where they answer);
   the lead's rounds are what a gate or the final round needs; about 8-10 live campaigns in all; a queue is paused rather
-  than starved. Ten lifts pay most inside one case (its obligations fan out).
+  than starved. Ten lifts pay most inside one case (its obligations fan out). The principle ("并行你要记住是让吞吐提升。而不是
+  单单为了并行"): parallelism serves throughput -- cases finished and fixes validated per hour -- measured by each case's
+  wall time against its solo history (round-slow.sh) and the ledger's waits, never by how full the lifts look.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.
