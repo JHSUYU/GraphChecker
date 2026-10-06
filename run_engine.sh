@@ -6865,8 +6865,13 @@ campaign_emit() {
      # The excluded models an UNSAT rests on: the refuted_claim__ and
      # refused_claim__ labels its unsat core names (ComposeMain#campaignClaim),
      # each the model it excludes -- a region the verdict rests on beside the
-     # corpus.
-     restsOnRefutations: ($decided.restsOnRefutations // []),
+     # corpus -- and each world a replay refuted for an open decider arm whose
+     # flip then came back UNSAT (REFUTED_WORLD, ExploreMain#openArms).
+     restsOnRefutations: (($decided.restsOnRefutations // [])
+       + [($exploreDocuments[0].openArms // [])[] | select(.state == "UNSAT")
+          | . as $arm | (.refutedWorlds // [])[]
+          | {kind: "REFUTED_WORLD", anchor: $arm.anchor,
+             siteId: $arm.siteId, outcome: $arm.outcome} + .]),
      # The admitted paths COMPOSE refused by name, each with its first
      # refusal: no disjunct of the formula, never silent.
      refusedPaths: ($decided.refusedPaths // []),

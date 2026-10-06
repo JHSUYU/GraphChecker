@@ -25,13 +25,14 @@ public final class RootMintRow extends Value {
     private final boolean declared;
     private final Clock clock;
     private final long clockSkew;
+    private final Validity valid;
 
     private RootMintRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String rootId,
                         String symbol, RootKind kind, RootCategory category,
                         String recordedValue, String domainMin,
                         String domainMax, boolean declared, Clock clock,
-                        long clockSkew) {
+                        long clockSkew, Validity valid) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -45,6 +46,7 @@ public final class RootMintRow extends Value {
         this.declared = declared;
         this.clock = clock;
         this.clockSkew = clockSkew;
+        this.valid = valid;
     }
 
     /**
@@ -88,7 +90,23 @@ public final class RootMintRow extends Value {
                 stated, from,
                 Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(domainMin), Fields.optional(domainMax),
-                declared, clock, clockSkew);
+                declared, clock, clockSkew, Validity.ANY);
+    }
+
+    /** This row with what the configuration's own validation admits
+     *  ({@link Validity}): the domain a world moves it in never leaves it
+     *  ({@link RootDomain#resolved}). */
+    public RootMintRow validated(Validity admitted) {
+        return new RootMintRow(sessionId, seq, occurrence, rootId, symbol,
+                kind, category, recordedValue, domainMin, domainMax,
+                declared, clock, clockSkew,
+                admitted == null ? Validity.ANY : admitted);
+    }
+
+    /** What the configuration's own validation admits; {@link
+     *  Validity#ANY} for any other root. */
+    public Validity valid() {
+        return valid;
     }
 
     public String sessionId() {
@@ -195,7 +213,7 @@ public final class RootMintRow extends Value {
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,
                 category, recordedValue, domainMin, domainMax, declared,
-                clock, clockSkew};
+                clock, clockSkew, valid};
     }
 
     @Override

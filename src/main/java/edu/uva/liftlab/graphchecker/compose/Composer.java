@@ -1008,7 +1008,6 @@ public final class Composer {
     /** The epoch's static facts: where a reference write's construction
      *  guard is ({@link #constructionGuards}). */
     private final StaticScopeMap scope;
-    private final Map<String, RootDomain> declaredDomains;
     private final int maxValuations;
     private final SmtLowering lowering;
     private final List<GapRow> gaps = new ArrayList<GapRow>();
@@ -1081,15 +1080,11 @@ public final class Composer {
     final RestsOn restsOn;
 
     private Composer(Corpus corpus, OccurrenceAddress anchor,
-                     Map<String, RootDomain> declaredDomains,
                      int maxValuations, StaticScopeMap scope) {
         this.corpus = corpus;
         this.anchor = anchor;
         this.scope = scope;
         this.restsOn = new RestsOn(corpus, scope, anchor);
-        this.declaredDomains = declaredDomains == null
-                ? Collections.<String, RootDomain>emptyMap()
-                : declaredDomains;
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
         lowering.clockBases(clockBases());
@@ -1104,14 +1099,13 @@ public final class Composer {
     }
 
     /** Composes the declared occurrence; a missing one is a claim, not a
-     *  crash. */
+     *  crash.  Each root's domain is the corpus's ({@link
+     *  Corpus#domainOf}). */
     public static Composition compose(Corpus corpus,
                                       OccurrenceAddress anchor,
-                                      Map<String, RootDomain> declaredDomains,
                                       int maxValuations,
                                       StaticScopeMap scope) {
-        return new Composer(corpus, anchor, declaredDomains, maxValuations,
-                scope).run();
+        return new Composer(corpus, anchor, maxValuations, scope).run();
     }
 
     /** Every how many admitted paths the composer says how far it is. */
@@ -2824,8 +2818,7 @@ public final class Composer {
             String instant = Long.toString(reading);
             placedCells.add(row);
             ticks.put(row.symbol(), row.clockNanos());
-            RootDomain domain = RootDomain.resolved(row, instant,
-                    declaredDomains);
+            RootDomain domain = corpus.domainOf(row, instant);
             String floor = domain.min() == null ? instant
                     : integralLiteral(domain.min());
             String ceiling = domain.max() == null
@@ -3209,9 +3202,9 @@ public final class Composer {
                 readings.get(previous))) + "))";
     }
 
-    /** The case's declaration where there is one, the mint's otherwise. */
+    /** The corpus's domain of one root ({@link Corpus#domainOf}). */
     private RootDomain domainOf(RootMintRow row) {
-        return RootDomain.resolved(row, declaredDomains);
+        return corpus.domainOf(row);
     }
 
     /**

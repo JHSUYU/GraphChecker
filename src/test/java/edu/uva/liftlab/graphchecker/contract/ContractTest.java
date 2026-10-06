@@ -408,6 +408,60 @@ public class ContractTest {
     }
 
     /**
+     * An integral configuration's domain joins the c - 1, c, c + 1 of every
+     * literal a recorded decision compared it with (minReplication against a
+     * live replica count of 1: [1, 1] becomes [0, 2]) and never leaves what
+     * its own validation admits ({@code minR <= 0} throws: [1, 2]); the
+     * case's declaration still wins, and no other root widens.
+     */
+    @Test
+    public void aComparedLiteralWidensAConfigurationWithinItsValidity() {
+        OccurrenceAddress at = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0)));
+        Map<String, RootDomain> declared = new LinkedHashMap<>();
+        declared.put("CASE.K", RootDomain.of("CASE.K", RootKind.INTEGRAL, "",
+                "-1", "+1"));
+        Validity positive = Validity.of(java.math.BigInteger.ONE, null,
+                "<B: int init(C)>#u3");
+        Object[][] rows = {
+            // root, category, validity, compared, domain
+            {"CONFIG:min", RootCategory.CONFIG, Validity.ANY, "1",
+                "[0, 2]"},
+            {"CONFIG:min", RootCategory.CONFIG, positive, "1", "[1, 2]"},
+            {"CONFIG:min", RootCategory.CONFIG, positive, "", "[1, 1]"},
+            {"CONFIG:min", RootCategory.CONFIG, Validity.ANY, "1 512",
+                "[0, 513]"},
+            {"CASE.K", RootCategory.CONFIG, Validity.ANY, "9", "[0, 2]"},
+            {"HOOK.K", RootCategory.HOOK, Validity.ANY, "9", "[1, 1]"}};
+        for (Object[] row : rows) {
+            java.util.List<java.math.BigInteger> compared =
+                    new java.util.ArrayList<>();
+            for (String literal : ((String) row[3]).split(" ")) {
+                if (!literal.isEmpty()) {
+                    compared.add(new java.math.BigInteger(literal));
+                }
+            }
+            RootDomain domain = RootDomain.resolved(RootMintRow.of("s", 1L,
+                    at, (String) row[0], "sym", RootKind.INTEGRAL,
+                    (RootCategory) row[1], "1", "1", "1", true, null, 0L)
+                    .validated((Validity) row[2]), declared, compared);
+            assertEquals(java.util.Arrays.toString(row), row[4],
+                    "[" + domain.min() + ", " + domain.max() + "]");
+        }
+        JsonObject stated = new JsonObject();
+        positive.write(stated);
+        assertEquals("a row states it whole", positive,
+                Validity.read(stated));
+        assertEquals("two validations at once", Validity.of(
+                java.math.BigInteger.ONE, java.math.BigInteger.TEN,
+                "<B: int init(C)>#u3,x"), positive.and(Validity.of(null,
+                java.math.BigInteger.TEN, "x")));
+        assertEquals("either writer's: no bound one leaves open",
+                Validity.ANY, positive.or(Validity.of(null,
+                java.math.BigInteger.TEN, "x")));
+    }
+
+    /**
      * A root row's bounds are absolute: a configuration whose default is -1
      * states {@code domainMin "-2"}, minus two.  Only a case's declaration
      * (root-domains.jsonl) spells {@code +k}/{@code -k} off the reading.

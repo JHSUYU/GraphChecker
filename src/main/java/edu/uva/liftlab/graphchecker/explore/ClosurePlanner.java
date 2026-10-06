@@ -170,13 +170,8 @@ public final class ClosurePlanner {
         boolean reached = false;
         for (TargetRow row : corpus.targetsOn(anchor)) {
             reached |= row.reachedAnchor();
-            TargetRow.OpenArm open = row.openArm();
-            if (row.reachedAnchor() && open != null
-                    && !open.askedSiteId().isEmpty()) {
-                start.flipSites.add(FlipQuery.asked(open.askedSiteId(),
-                        open.askedOrdinal()));
-            }
         }
+        start.flipSites.addAll(corpus.openArmAsks(anchor));
         for (StaticScopeMap.Site target : scope.targetSites()) {
             start.flipSites.addAll(reached ? target.guards
                     : target.pathSites());

@@ -303,6 +303,7 @@ public final class DeclaredSiteCapture {
                 port.addProperty(InputActionCatalog.DECLARED_DOMAIN_MAX,
                         config.domainMax);
             }
+            config.valid.write(port);
         }
         String caller = SiteId.methodOf(site.siteId);
         port.addProperty("sourceKind",

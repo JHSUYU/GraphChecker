@@ -38,6 +38,7 @@ import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.contract.WorldRefutation;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.io.IOException;
@@ -256,6 +257,36 @@ public final class Corpus implements Arms.Rows {
     /** session id -> the world its focus row states it ran in. */
     private final Map<String, World> worlds =
             new LinkedHashMap<String, World>();
+
+    /**
+     * ONE WORLD A REPLAY REFUTED for an open decider arm's flip
+     * (WORLD_REFUTED, {@code runtime.FocusedReplay#refuted}): the session
+     * that ran it faithfully and never entered the flip's occurrence, the
+     * world its focus row states, and why.  The flip is asked again without
+     * it ({@link ObligationFactory#solve}); an UNSAT then rests on it.
+     */
+    public static final class Refuted {
+        public final String obligationId;
+        public final String sessionId;
+        public final World world;
+        /** {@link ObligationFactory#wholeWorldDigest}. */
+        public final String digest;
+        public final WorldRefutation refutation;
+
+        Refuted(String obligationId, String sessionId, World world,
+                WorldRefutation refutation) {
+            this.obligationId = obligationId;
+            this.sessionId = sessionId;
+            this.world = world;
+            this.digest = ObligationFactory.wholeWorldDigest(world);
+            this.refutation = refutation;
+        }
+    }
+
+    /** flip ({@link ObligationFactory#flip}) -> the worlds replays refuted
+     *  for it, in wave and name order. */
+    private final Map<String, List<Refuted>> refuted =
+            new LinkedHashMap<String, List<Refuted>>();
     /** Obligation id -> the verdict its worker's own file states. */
     private final Map<String, ObligationResult> waveVerdicts =
             new LinkedHashMap<String, ObligationResult>();
@@ -403,8 +434,51 @@ public final class Corpus implements Arms.Rows {
         for (ObligationDir worker : workers) {
             for (ObligationResult result : worker.results()) {
                 waveVerdicts.put(result.obligationId(), result);
+                if (result.refutation() == null || worker.focus().isEmpty()) {
+                    continue;
+                }
+                JsonObject focus = worker.focus().get(0);
+                JsonObject flip = JsonFields.object(focus, "flip");
+                if (!flip.has("siteId")) continue;
+                refuted.computeIfAbsent(ObligationFactory.flip(
+                        JsonFields.optionalString(focus, "taskId"),
+                        JsonFields.optionalString(focus, "pathId"),
+                        JsonFields.optionalString(flip, "siteId"),
+                        flip.get("ordinal").getAsInt(),
+                        flip.get("outcome").getAsBoolean()),
+                        key -> new ArrayList<Refuted>()).add(new Refuted(
+                        result.obligationId(), worker.sessionId(),
+                        ExploreCodec.readWorld(focus), result.refutation()));
             }
         }
+    }
+
+    /** The worlds replays refuted for one flip ({@link ObligationFactory
+     *  #flip}); empty for any flip but an open decider arm's. */
+    public List<Refuted> refutedWorlds(String flip) {
+        List<Refuted> worlds = refuted.get(flip == null ? "" : flip);
+        return worlds == null ? Collections.<Refuted>emptyList()
+                : Collections.unmodifiableList(worlds);
+    }
+
+    /**
+     * The decisions a reached anchor asks for its open decider arms
+     * (TargetRow.OpenArm): of each run that reached it and left phi without
+     * an arm, the one decision whose flip runs it, as {@link FlipQuery#asked}
+     * spells it.  The one rule the closure plans the asks by and a flip is
+     * known to be one by.
+     */
+    public Set<String> openArmAsks(OccurrenceAddress anchor) {
+        Set<String> asks = new LinkedHashSet<String>();
+        for (TargetRow row : targetsOn(anchor)) {
+            TargetRow.OpenArm open = row.openArm();
+            if (row.reachedAnchor() && open != null
+                    && !open.askedSiteId().isEmpty()) {
+                asks.add(FlipQuery.asked(open.askedSiteId(),
+                        open.askedOrdinal()));
+            }
+        }
+        return asks;
     }
 
     /** The world one session ran in; empty for the seed or a session with no
@@ -1531,15 +1605,70 @@ public final class Corpus implements Arms.Rows {
         return declaredDomains.get(rootId);
     }
 
-    /** An absolute {@code [min, max]} for one root, or null when pinned. The
-     *  case file is the authority ({@code +k}/{@code -k} are relative to the
-     *  recorded reading); no domain means pinned here and in the composition.
+    /**
+     * THE DOMAIN OF ONE ROOT, the one reader the flip queries and the
+     * composition share: the case file is the authority ({@code +k}/{@code
+     * -k} are relative to the recorded reading); else the mint's, an
+     * integral configuration's widened by every literal a recorded decision
+     * of this corpus compares its symbol with ({@link #comparedLiterals})
+     * and kept within what its own validation admits ({@link
+     * RootDomain#resolved}).  No domain means pinned here and in the
+     * composition.  A CLOCK's is its instant's ({@link #domainOf(RootMintRow,
+     * String)}).
      */
-    public String[] domainOf(RootMintRow root) {
-        // A CLOCK has a floor and no window (FlipQuery's rule).
-        if (root == null || root.kind() == RootKind.CLOCK) return null;
-        RootDomain domain = RootDomain.resolved(root, declaredDomains);
-        return domain.min() == null || domain.max() == null ? null
-                : new String[]{domain.min(), domain.max()};
+    public RootDomain domainOf(RootMintRow root) {
+        return RootDomain.resolved(root, declaredDomains,
+                comparedLiterals(root.symbol()));
+    }
+
+    /** A CLOCK cell's domain about one reading of it (the composition's
+     *  timeline): the case's declaration about that reading, else the
+     *  mint's. */
+    public RootDomain domainOf(RootMintRow root, String reading) {
+        return RootDomain.resolved(root, reading, declaredDomains);
+    }
+
+    /** symbol -> the literals recorded decisions compare it with. */
+    private final Map<String, Set<java.math.BigInteger>> compared =
+            new HashMap<String, Set<java.math.BigInteger>>();
+
+    /**
+     * Every integral literal a recorded decision of this corpus compares
+     * {@code symbol} with directly ({@code (op c symbol)} or {@code (op
+     * symbol c)}, {@code op} an order or an equality), its term lowered by
+     * the one lowering; once per symbol.
+     */
+    Set<java.math.BigInteger> comparedLiterals(String symbol) {
+        Set<java.math.BigInteger> known = compared.get(symbol);
+        if (known != null) return known;
+        Set<java.math.BigInteger> literals =
+                new java.util.TreeSet<java.math.BigInteger>();
+        String name = java.util.regex.Pattern.quote(symbol);
+        String literal = "(-?[0-9]+|\\(-\\s+[0-9]+\\))";
+        java.util.regex.Pattern atom = java.util.regex.Pattern.compile(
+                "\\((?:<=|>=|<|>|=)\\s+(?:" + literal + "\\s+\\|?" + name
+                        + "\\|?|\\|?" + name + "\\|?\\s+" + literal + ")\\)");
+        for (Map.Entry<String, List<DecisionRow>> path
+                : decisions.entrySet()) {
+            String sessionId = path.getKey().substring(0,
+                    path.getKey().indexOf('|'));
+            for (DecisionRow decision : path.getValue()) {
+                if (!Arms.predicate(decision.term()) || !termSymbols(
+                        sessionId, decision.term()).contains(symbol)) {
+                    continue;
+                }
+                java.util.regex.Matcher found = atom.matcher(
+                        FlipQuery.statedTerm(this, sessionId,
+                                decision.term()));
+                while (found.find()) {
+                    String spelled = found.group(1) != null
+                            ? found.group(1) : found.group(2);
+                    literals.add(new java.math.BigInteger(spelled
+                            .replaceAll("[()\\s]", "")));
+                }
+            }
+        }
+        compared.put(symbol, literals);
+        return literals;
     }
 }

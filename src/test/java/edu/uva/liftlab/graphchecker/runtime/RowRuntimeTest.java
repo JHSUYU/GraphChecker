@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
@@ -1111,11 +1112,11 @@ public class RowRuntimeTest {
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, RootCategory.HOOK, "3", "3", "6",
-                true, null, 0L);
+                Validity.ANY, true, null, 0L);
         RowRuntime.rootMint(occurrence, 13L,
                 "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED", "M_Z_marker",
-                RootKind.MARKER, RootCategory.HOOK, "true", "", "", true,
-                null, 0L);
+                RootKind.MARKER, RootCategory.HOOK, "true", "", "",
+                Validity.ANY, true, null, 0L);
         RowRuntime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
@@ -1860,13 +1861,13 @@ public class RowRuntimeTest {
         // and one root that is not a clock at all.
         RowRuntime.rootMint(occurrence, 3L, "HDFS.KEY.NOW@nn0", "M_J_now_nn0",
                 RootKind.CLOCK, RootCategory.CLOCK, "1789358344655", "", "",
-                true, Clock.of(1_000_000L, Clock.WALL), 0L);
+                Validity.ANY, true, Clock.of(1_000_000L, Clock.WALL), 0L);
         RowRuntime.rootMint(occurrence, 4L, "HDFS.KEY.NOW@dn1", "M_J_now_dn1",
                 RootKind.CLOCK, RootCategory.CLOCK, "1789358344999", "", "",
-                true, Clock.of(1_000_000L, Clock.WALL), 0L);
+                Validity.ANY, true, Clock.of(1_000_000L, Clock.WALL), 0L);
         RowRuntime.rootMint(occurrence, 5L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_serial", RootKind.INTEGRAL, RootCategory.HOOK, "3", "3",
-                "6", true, null, 0L);
+                "6", Validity.ANY, true, null, 0L);
 
         // `key.getExpiryDate() < now`, over nn0's clock alone.
         RowRuntime.decision(occurrence, 12L,

@@ -366,32 +366,95 @@ public final class Confirmation {
             Set<String> waiting = new LinkedHashSet<String>(before);
             waiting.removeAll(EXITED);
             planted(RecordingPlant.HOLDING, activation, waiting);
+            // A hold that waits is the world acting on the run
+            // (FocusedReplay#worldActed), and stays in force until it ends.
+            if (!waiting.isEmpty()) {
+                FocusedReplay.worldActed();
+                WAITING.put(activation, before);
+            }
             long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
                     ORDER_TIMEOUT_MS);
             long deadline = System.currentTimeMillis() + timeout;
-            while (!EXITED.containsAll(before)) {
-                long left = deadline - System.currentTimeMillis();
-                if (left <= 0L) {
-                    missing = new LinkedHashSet<String>(before);
-                    missing.removeAll(EXITED);
-                    UNREALIZED.add("ORDER " + activation + ": the model"
-                            + " orders it after " + missing + ", which did not"
-                            + " exit within " + timeout + " ms, so this"
-                            + " program cannot realize the model's order");
-                    Set<String> held = new LinkedHashSet<String>(before);
-                    held.removeAll(missing);
-                    planted(RecordingPlant.APPLIED, activation, held);
-                    planted(RecordingPlant.UNHELD, activation, missing);
-                    return;
+            try {
+                while (!EXITED.containsAll(before)) {
+                    long left = deadline - System.currentTimeMillis();
+                    if (left <= 0L) {
+                        missing = new LinkedHashSet<String>(before);
+                        missing.removeAll(EXITED);
+                        UNREALIZED.add("ORDER " + activation + ": the model"
+                                + " orders it after " + missing + ", which"
+                                + " did not exit within " + timeout + " ms,"
+                                + " so this program cannot realize the"
+                                + " model's order");
+                        Set<String> held = new LinkedHashSet<String>(before);
+                        held.removeAll(missing);
+                        planted(RecordingPlant.APPLIED, activation, held);
+                        planted(RecordingPlant.UNHELD, activation, missing);
+                        return;
+                    }
+                    try {
+                        LOCK.wait(Math.min(left, 200L));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
                 }
-                try {
-                    LOCK.wait(Math.min(left, 200L));
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
+            } finally {
+                WAITING.remove(activation);
             }
             planted(RecordingPlant.APPLIED, activation, before);
+        }
+    }
+
+    /** Activation -> those ordered before it, while its hold waits. */
+    private static final Map<String, Set<String>> WAITING =
+            new HashMap<String, Set<String>>();
+
+    /**
+     * How this run held its world's order, read at the close
+     * ({@code FocusedReplay#refuted}): the holds that gave way (an order
+     * waited out its timeout), each hold still in force with the
+     * activations it waits for, and each STATE read that observed another
+     * writer than the model's.  A read that never happened is none of them.
+     */
+    static final class Held {
+        final List<String> gaveWay;
+        final Map<String, Set<String>> waiting;
+        final List<String> misread;
+
+        private Held(List<String> gaveWay, Map<String, Set<String>> waiting,
+                     List<String> misread) {
+            this.gaveWay = gaveWay;
+            this.waiting = waiting;
+            this.misread = misread;
+        }
+    }
+
+    static Held held() {
+        load();
+        synchronized (LOCK) {
+            Map<String, Set<String>> waiting =
+                    new LinkedHashMap<String, Set<String>>();
+            for (Map.Entry<String, Set<String>> hold : WAITING.entrySet()) {
+                Set<String> missing =
+                        new LinkedHashSet<String>(hold.getValue());
+                missing.removeAll(EXITED);
+                if (!missing.isEmpty()) waiting.put(hold.getKey(), missing);
+            }
+            List<String> misread = new ArrayList<String>();
+            for (Map.Entry<String, String> edge : STATE.entrySet()) {
+                String observed = READ.get(edge.getKey());
+                if (observed == null
+                        || edge.getValue().equals(WROTE.get(observed))
+                        || !INITIAL.equals(edge.getValue())
+                        && atAnotherTurn(edge.getKey(), edge.getValue())) {
+                    continue;
+                }
+                misread.add("STATE " + edge.getKey() + " observed "
+                        + observed + ", not writer " + edge.getValue());
+            }
+            return new Held(new ArrayList<String>(UNREALIZED), waiting,
+                    misread);
         }
     }
 
@@ -602,6 +665,7 @@ public final class Confirmation {
             PLANTED.clear();
             EXITED.clear();
             UNREALIZED.clear();
+            WAITING.clear();
             unread = "";
             WIRE.clear();
             STATE.clear();

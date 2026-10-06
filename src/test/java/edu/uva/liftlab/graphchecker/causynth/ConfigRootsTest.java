@@ -103,6 +103,12 @@ public class ConfigRootsTest {
                         + CONF + ")>")) + " " + source(roots.call(
                         "<t.Manager: int limitOf(" + CONF + ")>", 1,
                         getInt))},
+            {"a wrapper's own validation bounds the domain: a value it"
+                    + " throws on is no cluster's, and the root names it",
+                "CONFIG:k.min int [2,6] [2,] by <t.Manager: int minOf("
+                        + CONF + ")>#u2", source(roots.field(field(
+                        "int min"))) + " " + roots.field(field("int min"))
+                        .valid},
             {"a getter called on a subclass is the catalog's",
                 "CONFIG:k.sub int [2,2]", source(roots.call(run(), 5,
                         "<org.apache.hadoop.hdfs.HdfsConfiguration: int "
@@ -221,6 +227,7 @@ public class ConfigRootsTest {
         SootField low = field(manager, "low", IntType.v());
         SootField san = field(manager, "san", IntType.v());
         SootField debt = field(manager, "debt", IntType.v());
+        SootField min = field(manager, "min", IntType.v());
 
         SootMethod wrapper = view(manager, "legacy", "k.legacy", "true",
                 confType, text, get, equals);
@@ -241,6 +248,23 @@ public class ConfigRootsTest {
                 J.newAssignStmt(l2, J.newStaticInvokeExpr(max.makeRef(), l1,
                         IntConstant.v(2))),
                 J.newReturnStmt(l2));
+
+        // A wrapper that throws on a value below 2 before it returns it.
+        SootClass failure = library("java.lang.RuntimeException", object);
+        SootMethod minOf = method(manager, "minOf",
+                Collections.<Type>singletonList(confType), IntType.v(),
+                Modifier.STATIC);
+        Local m0 = local(minOf, "r0", confType);
+        Local m1 = local(minOf, "$i0", IntType.v());
+        Local m2 = local(minOf, "$r1", failure.getType());
+        Unit valid = J.newReturnStmt(m1);
+        body(minOf, J.newIdentityStmt(m0, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(m1, J.newVirtualInvokeExpr(m0,
+                        getInt.makeRef(), StringConstant.v("k.min"),
+                        IntConstant.v(1))),
+                J.newIfStmt(J.newGeExpr(m1, IntConstant.v(2)), valid),
+                J.newAssignStmt(m2, J.newNewExpr(failure.getType())),
+                J.newThrowStmt(m2), valid);
 
         SootMethod init = method(manager, "<init>",
                 Collections.<Type>singletonList(confType), VoidType.v(), 0);
@@ -329,9 +353,23 @@ public class ConfigRootsTest {
         writers.put(field("int debt"), Collections.singletonList(
                 setDebt.getSignature() + "#u3"));
 
+        SootMethod setMin = method(manager, "setMin",
+                Collections.<Type>singletonList(confType), VoidType.v(), 0);
+        Local t0 = local(setMin, "r0", self);
+        Local t1 = local(setMin, "r1", confType);
+        Local t2 = local(setMin, "$i0", IntType.v());
+        body(setMin, J.newIdentityStmt(t0, J.newThisRef(self)),
+                J.newIdentityStmt(t1, J.newParameterRef(confType, 0)),
+                J.newAssignStmt(t2, J.newStaticInvokeExpr(minOf.makeRef(),
+                        t1)),
+                store(t0, min, t2), J.newReturnVoidStmt());
+        writers.put(field("int min"), Collections.singletonList(
+                setMin.getSignature() + "#u3"));
+
         compare(manager, self, "check", limit, 10, bump, edges);
         compare(manager, self, "checkLow", low, 3, bump, edges);
         compare(manager, self, "checkDebt", debt, 0, bump, edges);
+        compare(manager, self, "checkMin", min, 5, bump, edges);
         String checkSig = "<" + MANAGER + ": void check()>";
         for (String read : new String[]{"boolean ordered", "int counter",
                 "boolean legacy", "int san"}) {

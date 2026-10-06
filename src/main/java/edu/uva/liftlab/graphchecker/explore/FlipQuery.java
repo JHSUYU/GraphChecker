@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
@@ -113,12 +114,16 @@ final class FlipQuery {
         /** Each reader's choice of writer per location ({@code
          *  wchoice_*}). */
         final List<WriterChoice> choices;
+        /** Every declared variable's sort ({@link
+         *  VmTermLowering.Sort#smt}): how a value of it is spelled. */
+        final Map<String, String> sorts;
         final List<GapRow> gaps;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       List<Control> controls, Map<String, String> rootVariables,
                       Map<String, String> clockVariables,
-                      List<WriterChoice> choices, List<GapRow> gaps) {
+                      List<WriterChoice> choices, Map<String, String> sorts,
+                      List<GapRow> gaps) {
             this.smt2 = smt2;
             this.modelSymbols =
                     Collections.unmodifiableList(modelSymbols);
@@ -129,11 +134,25 @@ final class FlipQuery {
             this.clockVariables =
                     Collections.unmodifiableMap(clockVariables);
             this.choices = Collections.unmodifiableList(choices);
+            this.sorts = Collections.unmodifiableMap(sorts);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
         boolean ok() {
             return refusal.isEmpty();
+        }
+
+        /** This query with {@code assertions} after its own: the worlds
+         *  its flip's replays refuted ({@code ObligationFactory#solve}). */
+        Built excluding(List<String> assertions) {
+            StringBuilder text = new StringBuilder();
+            for (String assertion : assertions) {
+                text.append(assertion).append('\n');
+            }
+            return new Built(smt2 + SmtNames.legalSymbols(text.toString()),
+                    modelSymbols, refusal,
+                    controls, rootVariables, clockVariables, choices, sorts,
+                    gaps);
         }
     }
 
@@ -483,7 +502,7 @@ final class FlipQuery {
                     reached(rootVariables, reached),
                     reached(clockVariables, reached),
                     new ArrayList<WriterChoice>(choicesByReader.values()),
-                    gaps);
+                    sorts, gaps);
         }
 
         /**
@@ -765,7 +784,10 @@ final class FlipQuery {
             }
             rootVariables.put(variable, row.rootId());
             if (row.kind() == RootKind.MARKER && row.declared()) return;
-            String[] domain = corpus.domainOf(row);
+            RootDomain resolved = corpus.domainOf(row);
+            String[] domain = resolved.min() == null
+                    || resolved.max() == null ? null
+                    : new String[]{resolved.min(), resolved.max()};
             if (domain == null) {
                 // A declared relative window with no recorded reading is
                 // unresolvable: named, not treated as "no domain".
@@ -1534,7 +1556,7 @@ final class FlipQuery {
             return new Built("", Collections.<String>emptyList(), reason,
                     new ArrayList<Control>(controls.values()),
                     rootVariables, clockVariables,
-                    Collections.<WriterChoice>emptyList(), gaps);
+                    Collections.<WriterChoice>emptyList(), sorts, gaps);
         }
 
         /** The flipped decision's predicate, in this query's names. */

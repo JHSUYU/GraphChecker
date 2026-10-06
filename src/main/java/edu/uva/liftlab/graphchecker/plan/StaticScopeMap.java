@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
@@ -473,17 +474,20 @@ public final class StaticScopeMap {
     }
 
     /** The configuration root one getter call's return is: {@code
-     *  CONFIG:<key>} and the domain its static anchors span ("": none). */
+     *  CONFIG:<key>}, the domain its static anchors span ("": none) and
+     *  what its own validation admits. */
     public static final class ConfigCall {
         public final String sourceId;
         public final String domainMin;
         public final String domainMax;
+        public final Validity valid;
 
         public ConfigCall(String sourceId, String domainMin,
-                          String domainMax) {
+                          String domainMax, Validity valid) {
             this.sourceId = sourceId == null ? "" : sourceId;
             this.domainMin = domainMin == null ? "" : domainMin;
             this.domainMax = domainMax == null ? "" : domainMax;
+            this.valid = valid == null ? Validity.ANY : valid;
         }
     }
 
@@ -955,6 +959,7 @@ public final class StaticScopeMap {
                     row.addProperty("domainMin", config.domainMin);
                     row.addProperty("domainMax", config.domainMax);
                 }
+                config.valid.write(row);
             }
         }
         JsonArray guards = new JsonArray();
@@ -1318,7 +1323,8 @@ public final class StaticScopeMap {
                                     : null,
                             new ConfigCall(optionalString(row, "sourceId"),
                                     optionalString(row, "domainMin"),
-                                    optionalString(row, "domainMax")),
+                                    optionalString(row, "domainMax"),
+                                    Validity.read(row)),
                             optionalString(row, "marker"));
             sites.add(new Site(optionalString(row, "role"),
                     optionalString(row, "regionId"),

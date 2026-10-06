@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
+import edu.uva.liftlab.graphchecker.contract.WorldRefutation;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,6 +20,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
@@ -211,7 +214,10 @@ public final class FocusedReplay {
         for (Obligation obligation : OBLIGATIONS) {
             if (obligation.answers() == null) continue;
             String value = obligation.answers().get(id);
-            if (value != null) return value;
+            if (value != null) {
+                worldActed();
+                return value;
+            }
         }
         return "";
     }
@@ -484,8 +490,11 @@ public final class FocusedReplay {
         // Asked outside this class's lock: Confirmation reads its rows under
         // its own, and asks this class whether it confirms.
         List<String> untaken = Confirmation.close();
+        Confirmation.Held held = OPEN_ARMS.isEmpty() ? null
+                : Confirmation.held();
         synchronized (LOCK) {
-            for (ObligationResult result : settled(sessionId, untaken)) {
+            for (ObligationResult result : settled(sessionId, untaken,
+                    held)) {
                 results.add(refusedAt.isEmpty() ? result
                         : ObligationResult.of(result.obligationId(),
                                 result.verdict(), result.sessionId(),
@@ -507,7 +516,8 @@ public final class FocusedReplay {
 
     /** What each obligation settled; called under {@link #LOCK}. */
     private static List<ObligationResult> settled(String sessionId,
-                                                  List<String> untaken) {
+                                                  List<String> untaken,
+                                                  Confirmation.Held held) {
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         for (Obligation obligation : OBLIGATIONS) {
             String id = Text.safe(obligation.obligationId());
@@ -547,14 +557,168 @@ public final class FocusedReplay {
                         + obligation.ordinal() + " is addressed at no "
                         + "occurrence of this replay"));
             } else {
-                results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                        sessionId, "occurrence "
-                        + Text.safe(FOCUS.get(id)) + " never reached "
-                        + Text.safe(obligation.siteId()) + "#"
-                        + obligation.ordinal() + " in this replay"));
+                String detail = "occurrence " + Text.safe(FOCUS.get(id))
+                        + " never reached " + Text.safe(obligation.siteId())
+                        + "#" + obligation.ordinal() + " in this replay";
+                WorldRefutation refutation = OPEN_ARMS.contains(id)
+                        ? refuted(obligation, held) : null;
+                results.add(refutation == null
+                        ? ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                        sessionId, detail)
+                        : ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                        sessionId, WORLD_REFUTED + ": " + detail + ", and the"
+                        + " world it ran, faithfully, never entered it: "
+                        + String.join("; ", refutation.conditions()),
+                        refutation));
             }
         }
         return results;
+    }
+
+    /** The reason a verdict opens with when the replay refuted its world. */
+    static final String WORLD_REFUTED = "WORLD_REFUTED";
+
+    /**
+     * Why this replay's world is no world of an open decider arm's flip
+     * (TargetRow.OpenArm), or null: it ran the world faithfully and never
+     * entered the flip's occurrence.  Faithful is all four, each named as
+     * it held:
+     * <ol type="a">
+     *   <li>every assigned root and clock skew was minted at its value
+     *       ({@link #unstated}, no assignment left unplanted) and no prefix
+     *       was abandoned;</li>
+     *   <li>no order hold gave way ({@link Confirmation#held}: none waited
+     *       out its timeout, no read observed another writer than its
+     *       pairing's), and a hold still in force at the end waits only on
+     *       the never-entered occurrence;</li>
+     *   <li>the recorded order held until the world first acted: no slot was
+     *       given up before the first plant, answer or hold
+     *       ({@link #worldActed}, {@link #departed});</li>
+     *   <li>the workload ended by itself ({@link #workloadEnded}), not at a
+     *       bound, a witness or a refusal.</li>
+     * </ol>
+     * Anything short of them stays a plain NOT_ADMITTED.  Called under
+     * {@link #LOCK}.
+     */
+    private static WorldRefutation refuted(Obligation obligation,
+                                           Confirmation.Held held) {
+        String at = Text.safe(FOCUS.get(Text.safe(obligation.obligationId())));
+        if (at.isEmpty() || ENTERED.contains(at) || !workloadEnded) {
+            return null;
+        }
+        if (!unstated(obligation).isEmpty() || !unplantedLocked().isEmpty()) {
+            return null;
+        }
+        if (held == null || !held.gaveWay.isEmpty()
+                || !held.misread.isEmpty()) {
+            return null;
+        }
+        Set<String> occurrence = new LinkedHashSet<String>();
+        occurrence.add(at);
+        if (task != null && task.focused() != null
+                && task.focused().id().equals(at)) {
+            occurrence.add(task.focused().anyDelivery().id());
+        }
+        List<String> holds = new ArrayList<String>();
+        for (Map.Entry<String, Set<String>> hold : held.waiting.entrySet()) {
+            for (String before : hold.getValue()) {
+                int bar = before.indexOf('|');
+                if (!occurrence.contains(bar < 0 ? before
+                        : before.substring(0, bar))) {
+                    return null;
+                }
+            }
+            holds.add(hold.getKey() + " for " + hold.getValue());
+        }
+        long acted = FIRST_ACT.get();
+        long departed = FIRST_DEPARTURE.get();
+        if (departed != 0L && (acted == 0L || departed < acted)) return null;
+        List<String> conditions = new ArrayList<String>();
+        conditions.add("(a) every assigned root and clock skew was minted at"
+                + " its value and no prefix was abandoned");
+        conditions.add("(b) no order hold gave way" + (holds.isEmpty() ? ""
+                : ", and " + holds.size() + " still in force at the end"
+                + " waited only on occurrence " + at + ": "
+                + String.join(", ", holds)));
+        conditions.add("(c) the recorded order held until the world first"
+                + " acted" + (departed == 0L ? ": no slot was given up"
+                : ": the first slot given up came after it"));
+        conditions.add("(d) the workload ended by itself"
+                + (endedBy.isEmpty() ? ", its method returning"
+                : ": " + endedBy + " thrown at " + endedAt
+                + (endedInTest.isEmpty() ? "" : ", through " + endedInTest)));
+        return WorldRefutation.of(conditions, endedBy, endedAt, endedInTest);
+    }
+
+    /** Obligation ids whose flip asks an open decider arm (focus row
+     *  {@code openArm}): only these refute a world ({@link #refuted}). */
+    private static final Set<String> OPEN_ARMS = new LinkedHashSet<String>();
+
+    /** Every occurrence an activation of this run began, by its id and its
+     *  any-delivery id ({@link #entered}). */
+    private static final Set<String> ENTERED = ConcurrentHashMap.newKeySet();
+
+    /** Notes that an activation of {@code occurrence} began
+     *  ({@code RowRuntime#beginActivation}). */
+    static void entered(OccurrenceAddress occurrence) {
+        if (occurrence == null) return;
+        ENTERED.add(occurrence.id());
+        ENTERED.add(occurrence.anyDelivery().id());
+    }
+
+    /** One tick per first act and first departure, so the two are ordered
+     *  without a lock (ScheduleLog and Confirmation call under their own). */
+    private static final AtomicLong TICKS = new AtomicLong();
+    private static final AtomicLong FIRST_ACT = new AtomicLong();
+    private static final AtomicLong FIRST_DEPARTURE = new AtomicLong();
+
+    /** The world acted on the run: a root or skew planted ({@link #planted}),
+     *  a handoff answered ({@link #answer}), an order hold waiting
+     *  ({@code Confirmation#entering}).  The first one counts. */
+    static void worldActed() {
+        if (FIRST_ACT.get() == 0L) {
+            FIRST_ACT.compareAndSet(0L, TICKS.incrementAndGet());
+        }
+    }
+
+    /** The run departed from the recorded order: a slot was given up
+     *  ({@code ScheduleLog#giveUpLocked}).  The first one counts. */
+    static void departed() {
+        if (FIRST_DEPARTURE.get() == 0L) {
+            FIRST_DEPARTURE.compareAndSet(0L, TICKS.incrementAndGet());
+        }
+    }
+
+    /** Whether the workload ended by itself ({@link #workloadEnded}). */
+    private static volatile boolean workloadEnded;
+    /** Its terminating throwable, its innermost frame and the test
+     *  method's frame it passed; "" where none. */
+    private static volatile String endedBy = "";
+    private static volatile String endedAt = "";
+    private static volatile String endedInTest = "";
+
+    /**
+     * The workload's method ended by itself ({@code JUnitMethodRunner#main}):
+     * returned, or threw {@code failure}.  Not called when a bound, a witness
+     * or a refusal ends the run.
+     */
+    static void workloadEnded(Throwable failure, String testClass) {
+        if (failure != null) {
+            String message = failure.getMessage() == null ? ""
+                    : failure.getMessage().split("\\R", 2)[0];
+            endedBy = failure.getClass().getName() + (message.isEmpty()
+                    ? "" : ": " + (message.length() > 240
+                    ? message.substring(0, 240) + "..." : message));
+            StackTraceElement[] frames = failure.getStackTrace();
+            endedAt = frames.length == 0 ? "" : frames[0].toString();
+            for (StackTraceElement frame : frames) {
+                if (frame.getClassName().equals(Text.safe(testClass))) {
+                    endedInTest = frame.toString();
+                    break;
+                }
+            }
+        }
+        workloadEnded = true;
     }
 
     /**
@@ -663,6 +827,10 @@ public final class FocusedReplay {
                 }
                 FOCUS.put(obligationId,
                         optionalString(row, "focusedOccurrenceId"));
+                if (row.has(OPEN_ARM) && !row.get(OPEN_ARM).isJsonNull()
+                        && row.get(OPEN_ARM).getAsBoolean()) {
+                    OPEN_ARMS.add(obligationId);
+                }
                 pairs |= !strings(row, "pairings").isEmpty();
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
                 // Each assigned root's mint is focused too.
@@ -812,6 +980,7 @@ public final class FocusedReplay {
         load();
         String id = Text.safe(rootId);
         if (id.isEmpty()) return;
+        worldActed();
         synchronized (LOCK) {
             PLANTED.add(id);
         }
@@ -841,23 +1010,28 @@ public final class FocusedReplay {
      */
     public static Map<String, String> unplantedAssignments() {
         load();
-        Map<String, String> unplanted = new LinkedHashMap<String, String>();
         synchronized (LOCK) {
-            List<Map<String, String>> asked =
-                    new ArrayList<Map<String, String>>();
-            for (Obligation obligation : OBLIGATIONS) {
-                if (obligation.rootAssignments() != null) {
-                    asked.add(obligation.rootAssignments());
-                }
+            return unplantedLocked();
+        }
+    }
+
+    /** {@link #unplantedAssignments}; called under {@link #LOCK}. */
+    private static Map<String, String> unplantedLocked() {
+        Map<String, String> unplanted = new LinkedHashMap<String, String>();
+        List<Map<String, String>> asked =
+                new ArrayList<Map<String, String>>();
+        for (Obligation obligation : OBLIGATIONS) {
+            if (obligation.rootAssignments() != null) {
+                asked.add(obligation.rootAssignments());
             }
-            asked.add(CLOCK_DELTAS);
-            for (Map<String, String> roots : asked) {
-                for (Map.Entry<String, String> assigned : roots.entrySet()) {
-                    String id = Text.safe(assigned.getKey());
-                    if (id.isEmpty() || PLANTED.contains(id)) continue;
-                    if (!reachedLocked(id)) continue;
-                    unplanted.put(id, assigned.getValue());
-                }
+        }
+        asked.add(CLOCK_DELTAS);
+        for (Map<String, String> roots : asked) {
+            for (Map.Entry<String, String> assigned : roots.entrySet()) {
+                String id = Text.safe(assigned.getKey());
+                if (id.isEmpty() || PLANTED.contains(id)) continue;
+                if (!reachedLocked(id)) continue;
+                unplanted.put(id, assigned.getValue());
             }
         }
         return unplanted;
@@ -870,6 +1044,10 @@ public final class FocusedReplay {
     private static boolean reachedLocked(String id) {
         return REACHED.contains(id) || MINTED.contains(id);
     }
+
+    /** The focus row's mark of a flip that asks an open decider arm
+     *  ({@code explore.ObligationFactory.Candidate#openArm}). */
+    public static final String OPEN_ARM = "openArm";
 
     /** Where the focus row is, or null when this replay was handed none. */
     private static Path focusRow() {
@@ -963,6 +1141,14 @@ public final class FocusedReplay {
             INHERITED.clear();
             INHERITED_OCCURRENCES.clear();
             SHORTFALLS.clear();
+            OPEN_ARMS.clear();
+            ENTERED.clear();
+            FIRST_ACT.set(0L);
+            FIRST_DEPARTURE.set(0L);
+            workloadEnded = false;
+            endedBy = "";
+            endedAt = "";
+            endedInTest = "";
         }
     }
 }

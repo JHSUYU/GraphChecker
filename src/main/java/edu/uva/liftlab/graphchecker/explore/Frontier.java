@@ -125,11 +125,16 @@ public final class Frontier {
     }
 
     /** Takes earlier rounds' verdicts; a recording, if any, stays the stated
-     *  reason. */
+     *  reason.  A replay that refuted its world (an open decider arm's flip,
+     *  {@code ObligationResult#refutation}) answers nothing of the arm: it
+     *  stays owed, asked again without that world. */
     public void consume(Collection<ObligationResult> results) {
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
-            if (result.verdict() == Verdict.SAT_MODEL_READY) continue;
+            if (result.verdict() == Verdict.SAT_MODEL_READY
+                    || result.refutation() != null) {
+                continue;
+            }
             settle(result.obligationId(), "arm already answered "
                     + result.verdict() + " by an earlier round"
                     + (result.sessionId().isEmpty() ? ""

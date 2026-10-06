@@ -75,14 +75,14 @@ Validate each by probes (seed give-ups, target reached, two runs each), then 178
 If a check still cannot reach its target after that round, swap it (only 04 is left as an alternate; RULES).
 
 ### 3. The other open checks
-- **39** (RUN_DEFECT, `OPEN_ARM_UNANSWERED`): its bug's arm `uc != null` (`BlockInfo` under construction, COMMITTED) was
-  asked six times and every replay was NOT_ADMITTED ("occurrence 844c… never reached"). Find why the flipped replay
-  loses the anchor occurrence (DO2's 291 obligations vs DO1's 125 may come from the decider's re-pairable reads:
-  check). Evidence `/bigtemp/vnr3ne/gc-out/hdfs-decider-open/accept-DO{1,2}-39`.
+- **39** (RUN_DEFECT, `OPEN_ARM_UNANSWERED`) and **40** (an UNSAT resting on `dfs.namenode.replication.min`'s [1,1]):
+  on `hdfs-open-arms` (agent S, approved designs A and B): a faithful replay that never entered the open arm's
+  occurrence refutes its world (`WORLD_REFUTED`) and the flip is asked again without it; an integral configuration's
+  domain takes every literal a recorded decision compares it with, within its own validation. In testAppendTwice the
+  arm `uc != null` is unreachable (the append runs after `close()`, which needs the block COMPLETE: replication 1,
+  minReplication >= 1), so 39 is expected to close UNSAT on refuted worlds; 40's flip `minReplication >= 2` fails the
+  workload's create. Owed: the offline gate on HI2 corpora, live 39 40 15 16 38 17960, a review agent on A.
 - **07**: codec capture (§1.6); its UNSAT has 6 unbound relayed-segment handoffs today.
-- **40**: the configuration root `dfs.namenode.replication.min` has domain [1,1] (SYMBOL-SCOPE §4.3's hull ignores a
-  comparison through a field): a general domain for an integral compared with a non-constant is owed, with CONFIRM to
-  refute what it over-approximates; 40's open arm is closed only by that domain.
 - **Scope (B)**, after the 46 (right formulas that widening would only make more flippable): 29/30 recoveryId (the
   block-pool map written at DN startup; `bpServiceToActive`'s in-window writer gated by HA state); 17's lease and 39's
   IBR ordering (turns on threads with no schedule events); an identity compare of a tracked reference with an enum

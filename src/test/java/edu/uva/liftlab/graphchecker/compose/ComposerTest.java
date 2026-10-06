@@ -7292,10 +7292,7 @@ public class ComposerTest {
                                                 StaticScopeMap scope)
             throws IOException {
         Composer.Composition composition = Composer.compose(
-                Corpus.read(iteration, null), anchor,
-                Collections.<String,
-                        edu.uva.liftlab.graphchecker.contract.RootDomain>
-                        emptyMap(), maxValuations, scope);
+                Corpus.read(iteration, null), anchor, maxValuations, scope);
         // Every composition: one name, one assertion (z3 answers a name
         // defined twice with an error, hdfs-11741 m1).
         java.util.regex.Matcher named = java.util.regex.Pattern.compile(

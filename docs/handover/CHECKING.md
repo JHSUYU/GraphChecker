@@ -68,10 +68,14 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
    guard reads tracked state is a scope hole until shown otherwise (fixed by the decider rule, b650a0f6d).
 5. **The arm where the bug lives never ran** (39, DO2): the open arm `uc != null` was asked as a flip six times and
    every replay came back NOT_ADMITTED, yet the case said UNSAT. Now named `OPEN_ARM_UNANSWERED` (RUN_DEFECT); read
-   `result.json` `openArms` / `defects`.
-6. **A root whose domain is one value** (40): `dfs.namenode.replication.min` has domain [1,1] (the hull ignores a
-   comparison through a field), so the UNSAT says nothing about other values. Read the root's bounds in the file
-   (the `r_CONFIG_*` declarations and their range asserts) before reading an UNSAT as covering a configuration.
+   `result.json` `openArms` / `defects`. An arm closed UNSAT after refuted worlds (`WORLD_REFUTED`) names each on its
+   row (`refutedWorlds`) and in `restsOnRefutations`: read each world's conditions and the workload's exception
+   against the code before counting the UNSAT (39: the append runs only after `close()`, TestFileAppend.java:339).
+6. **A root whose domain is one value** (40): `dfs.namenode.replication.min` had domain [1,1] (the hull ignored a
+   comparison through a field), so the UNSAT said nothing about other values. The domain now takes every literal a
+   recorded decision compares the root with, within its own validation (`validMin`/`validMax` on the mint row). Read
+   the root's bounds in the file (the `r_CONFIG_*` declarations and their range asserts) before reading an UNSAT as
+   covering a configuration.
 7. **A value frozen at its recording (HELD)**: three causes seen. The producer exported nothing (12's
    `NNHAStatusHeartbeatProto.Txid`, legend `<- ?`); the producer's occurrence was never planned (14, fixed by (b2):
    EXPLORE demands what COMPOSE keeps); the "state" was the engine's own carrier field read back after an attach
