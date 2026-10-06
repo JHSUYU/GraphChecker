@@ -82,6 +82,11 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
   attached from jn1's prepareRecovery response into its acceptRecovery request (`setStateToAccept`), so jn0 pairs by
   HANDLE instead of an unattested arrival.
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
+- A configuration root's domain ignores comparisons through a field (SYMBOL-SCOPE §4.3's hull: defaults, compared
+  literals ±1, the mint's value): hdfs-adhoc-40's `dfs.namenode.replication.min` has domain [1,1], since
+  `liveReplicas >= minReplication` compares it with no literal, so 40's UNSAT says nothing about a minimum of 2 or more
+  (found by the decider review, 2026-10-06; it predates that branch). A general domain for an integral compared with a
+  non-constant is owed, with CONFIRM to refute what it over-approximates.
 - **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate,
   in this order: 05 or 06 (QJM output stream, NN->JN; clean UNSAT in HG2), then 04 (client ack timeout, CLOCK), then 38
   or 45. Never 42, 44, 46, 47. Used (owner 2026-10-05): 05 for 32; 06, 38, 45 for 01, 17, 43; only 04 is left. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
