@@ -1170,7 +1170,7 @@ public final class Composer {
         placeClocks();
         List<Disjunct> disjuncts = new ArrayList<Disjunct>();
         List<PathEntry> entries = new ArrayList<PathEntry>();
-        List<Corpus.RecordedPath> admitted = admit();
+        List<Corpus.RecordedPath> admitted = restsOn.admitted(gaps);
         int ordinal = 0;
         int done = 0;
         long started = System.nanoTime();
@@ -1284,86 +1284,6 @@ public final class Composer {
     // ------------------------------------------------------------------
     // Admission.
     // ------------------------------------------------------------------
-
-    /**
-     * Every session's path that reached the anchor, or, where none did,
-     * every session's path that ran the occurrence and left the way to the
-     * throw (its fatal arm the constant healthy decision).  The declared
-     * occurrence is always the anchor; a corpus without a target row for it
-     * never ran it, a defect, never a reason to elect another occurrence.
-     */
-    private List<Corpus.RecordedPath> admit() {
-        List<Corpus.RecordedPath> admitted =
-                new ArrayList<Corpus.RecordedPath>();
-        List<TargetRow> targets = corpus.targetsOn(anchor);
-        if (targets.isEmpty()) {
-            gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
-                    anchor.render(), "the declared occurrence never ran: no "
-                            + "session of this corpus published a target row "
-                            + "for it");
-            return admitted;
-        }
-        // Where no session reached the anchor, each that ran the occurrence
-        // and left the way to the throw at a guard is a path: its fatal arm
-        // is the constant healthy decision ({@link #compose}).  Beside a
-        // path that reached it, such a disjunct adds nothing.
-        boolean reached = false;
-        for (TargetRow target : targets) reached |= target.reachedAnchor();
-        for (TargetRow target : targets) {
-            Corpus.RecordedPath path = corpus.path(target.sessionId(),
-                    anchor);
-            if (reached && !target.reachedAnchor()) {
-                gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session ran the occurrence "
-                                + "and did not reach the anchor");
-                continue;
-            }
-            if (path == null) {
-                gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session ran the occurrence "
-                                + "and published no path at it");
-                continue;
-            }
-            if (!settled(target.sessionId())) continue;
-            admitted.add(path);
-        }
-        return admitted;
-    }
-
-    /**
-     * Whether this session's OWN rows admit the obligation it ran (the
-     * replay owns the verdict).  A refused obligation's path is the
-     * recording again under a valuation the run did not take, so it is no
-     * disjunct.  A SEED admits itself; an obligation the manifest names and
-     * no row settles is BLOCKING.
-     */
-    private boolean settled(String session) {
-        SessionReader reader = corpus.session(session);
-        if (reader == null || reader.seed()) return true;
-        Set<String> stated = new LinkedHashSet<String>();
-        // {@link SessionReader#admitted} decides; this only names refusals.
-        boolean admitted = reader.admitted();
-        for (ObligationResult result : reader.obligations()) {
-            stated.add(result.obligationId());
-            if (result.verdict() == Verdict.ADMITTED) continue;
-            gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
-                    "this replay states " + result.verdict() + " for the "
-                            + "obligation it ran (" + result.obligationId()
-                            + "): " + result.detail());
-        }
-        List<String> asked = reader.manifest() == null
-                ? Collections.<String>emptyList()
-                : reader.manifest().obligationIds();
-        for (String obligation : asked) {
-            if (stated.contains(obligation)) continue;
-            admitted = false;
-            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
-                    "session " + session + " states it ran this obligation "
-                            + "and publishes no verdict for it, so what it "
-                            + "settled is not in this corpus");
-        }
-        return admitted;
-    }
 
     // ------------------------------------------------------------------
     // One path.

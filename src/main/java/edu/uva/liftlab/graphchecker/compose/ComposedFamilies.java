@@ -1144,7 +1144,7 @@ final class ComposedFamilies {
      * see ({@link SmtLowering#stateChoices}) was written by an occurrence the
      * arm's closure need not reach, under decisions of its own.  Under that
      * state's selector, the closure its write adds to the store producer's
-     * ({@link Composer#closure} seeded with it; EXPLORE demands the same
+     * ({@link RestsOn#closure} seeded with it; EXPLORE demands the same
      * writers, {@code Corpus#referentStates}): each added occurrence's
      * decisions before its cutoff, and the reads they rest on joined.  A
      * state whose added closure the recording does not state is no option

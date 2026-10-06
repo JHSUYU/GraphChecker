@@ -961,7 +961,7 @@ kind (`#stores`): a field store, or an atomic's write of its value, a field -- a
 class's location, an instance one an object's; any other mutator call
 the state of the container its carrier holds; a read its field or, of a container field, that
 container's state; and no site of the map an array element, whose write joins no carrier. COMPOSE joins a store to its carriers
-by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
+by the same rule (`RestsOn#constructionGuards`). A read of a reference also rests on the container
 each eligible store of it delivered: the closure demands the writers of every state of it the read
 could have seen through that store (`Corpus#referentStates`), the states COMPOSE answers a query
 through the read from.

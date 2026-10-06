@@ -698,8 +698,11 @@ public final class ClosurePlanner {
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(demand.occurrence);
         group.addAll(stateConnected(corpus, demand.occurrence));
-        Set<String> demanded = demanded(walk, demand, group);
+        Map<String, Set<String>> kept = new LinkedHashMap<String,
+                Set<String>>();
+        Set<String> demanded = demanded(walk, demand, group, kept);
         List<Demand> next = new ArrayList<Demand>();
+        Set<String> paired = new LinkedHashSet<String>();
         for (OccurrenceAddress member : group) {
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
@@ -707,7 +710,9 @@ public final class ClosurePlanner {
                             "handoff");
                     continue;
                 }
-                producers(walk, attach, next);
+                if (paired.add(attach.sessionId() + "|" + attach.symbol())) {
+                    producers(walk, attach, next);
+                }
             }
             for (ReadRow row : corpus.readsOn(member)) {
                 if (!demanded.contains(row.symbol())) {
@@ -718,9 +723,29 @@ public final class ClosurePlanner {
                 writers(walk, row, next);
             }
         }
+        // A handoff what COMPOSE keeps names, whoever received it: the
+        // producer of the value a reached occurrence decided on, however many
+        // joins from the group (two hops: the anchor reads a location W1
+        // wrote, W1 read one W2 wrote, and W2 decided on v_H).
+        for (Map.Entry<String, Set<String>> session : kept.entrySet()) {
+            for (String symbol : session.getValue()) {
+                AttachRow attach = corpus.attach(session.getKey(), symbol);
+                if (attach != null
+                        && paired.add(session.getKey() + "|" + symbol)) {
+                    producers(walk, attach, next);
+                }
+            }
+        }
         statedReads(walk, demand, next);
         controlProducer(walk, demand, next);
         return next;
+    }
+
+    /** What COMPOSE keeps of one session's path or delivery, joined. */
+    private static void keep(Map<String, Set<String>> kept, String session,
+                             Set<String> symbols) {
+        kept.computeIfAbsent(session, key -> new LinkedHashSet<String>())
+                .addAll(symbols);
     }
 
     /** A door of the message a demanded occurrence served -- its sender or
@@ -764,7 +789,7 @@ public final class ClosurePlanner {
      * closure like a read row (writer of that version, static write sites on
      * the producer's node, N1); writers recurse the same way. {@link
      * Corpus#expressionStateReads} is the one resolution, shared with {@code
-     * ComposedFamilies.expressionWrites}. Never the anchor (it contributes no
+     * compose.RestsOn#seedWrites}. Never the anchor (it contributes no
      * delivery).</p>
      */
     private static void statedReads(Walk walk, Demand demand,
@@ -800,7 +825,8 @@ public final class ClosurePlanner {
      *  and demands nothing here. Terms are EXPR references, asked of their
      *  expressions' DAG ({@link Corpus#termSymbols}), never rendered. */
     private static Set<String> demanded(Walk walk, Demand demand,
-                                        List<OccurrenceAddress> group) {
+                                        List<OccurrenceAddress> group,
+                                        Map<String, Set<String>> kept) {
         Corpus corpus = walk.corpus;
         Set<String> named = new LinkedHashSet<String>();
         GroupReads reads = new GroupReads(corpus, group);
@@ -829,20 +855,22 @@ public final class ClosurePlanner {
                     contributed.substring(split + 1)));
         }
         if (demand.anchor) {
-            for (Corpus.RecordedPath path
-                    : corpus.pathsOf(demand.occurrence)) {
+            // COMPOSE's disjuncts, by its one admission rule.
+            for (Corpus.RecordedPath path : walk.restsOn.admitted(
+                    new ArrayList<GapRow>())) {
                 TargetRow target = corpus.target(path.sessionId,
                         demand.occurrence);
                 if (target == null) continue;
-                named.addAll(walk.restsOn.ofPath(path.sessionId, target,
-                        path.decisions));
+                keep(kept, path.sessionId, walk.restsOn.ofPath(
+                        path.sessionId, target, path.decisions));
             }
         }
         for (Map.Entry<String, Long> cutoff : demand.cutoffs.entrySet()) {
-            named.addAll(walk.restsOn.ofDelivery(cutoff.getKey(),
-                    demand.occurrence, cutoff.getValue(),
+            keep(kept, cutoff.getKey(), walk.restsOn.ofDelivery(
+                    cutoff.getKey(), demand.occurrence, cutoff.getValue(),
                     demand.delivered(cutoff.getKey())));
         }
+        for (Set<String> symbols : kept.values()) named.addAll(symbols);
         Set<String> settled = new LinkedHashSet<String>();
         boolean grew = true;
         while (grew) {
