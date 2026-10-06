@@ -887,9 +887,10 @@ public final class ObligationFactory {
         // The named valve: an open arm's flip is not asked again past
         // MAX_REFUTED_WORLDS refuted worlds (a clock or a wide integral may
         // offer one world per value); result.json `bounded` names it.
-        if (refuted.size() >= MAX_REFUTED_WORLDS) {
+        int distinct = Corpus.distinctWorlds(refuted);
+        if (distinct >= MAX_REFUTED_WORLDS) {
             return refused(candidate, Verdict.NOT_ADMITTED, REFUTED_BOUND
-                    + ": " + refuted.size() + " world(s) its replays"
+                    + ": " + distinct + " distinct world(s) its replays"
                     + " refuted, and the flip is not asked again past "
                     + MAX_REFUTED_WORLDS, "", gaps, question, false);
         }
@@ -1090,11 +1091,13 @@ public final class ObligationFactory {
      * moved it to, else at the recording's ({@link
      * FlipQuery.WriterChoice#recorded}); each root at the world's value,
      * else at the reading its path's session ran; each clock at the instant
-     * the world's skew put it at, else at its host reading; each answered
-     * handoff at its answer -- as the claim loop excludes a refuted model
-     * ({@code compose.Composer#refutations}).  A choice the query cannot
-     * state (an unanswered control, a reading no literal spells) is left
-     * out, and a world of which it can state nothing is a comment only.
+     * the world's skew put it at, else at its host reading; each control at
+     * the world's answer -- as the claim loop excludes a refuted model
+     * ({@code compose.Composer#refutations}).  A world of which the query
+     * cannot state every choice (no recorded selector, no value or reading,
+     * no mint row, an unanswered control) is a comment only: a conjunction
+     * missing one would exclude worlds no replay ran.  {@link #solve}'s
+     * digest refusal holds it then.
      */
     private static List<String> excluded(Corpus corpus, Candidate candidate,
                                          FlipQuery.Built built,
@@ -1103,6 +1106,7 @@ public final class ObligationFactory {
         List<String> assertions = new ArrayList<String>();
         for (Corpus.Refuted world : refuted) {
             List<String> chosen = new ArrayList<String>();
+            List<String> unstated = new ArrayList<String>();
             for (FlipQuery.WriterChoice choice : built.choices) {
                 String selector = choice.recorded;
                 for (ReadRow read : choice.reads) {
@@ -1117,8 +1121,10 @@ public final class ObligationFactory {
                         }
                     }
                 }
-                if (!selector.isEmpty()
-                        && built.modelSymbols.contains(selector)) {
+                if (selector.isEmpty()
+                        || !built.modelSymbols.contains(selector)) {
+                    unstated.add("writer choice " + choice.key);
+                } else {
                     chosen.add(selector);
                 }
             }
@@ -1129,33 +1135,33 @@ public final class ObligationFactory {
                 if (value == null) {
                     value = corpus.rootValue(session, variable.getValue());
                 }
-                equal(chosen, variable.getKey(), value,
+                equal(chosen, unstated, variable.getKey(), value,
                         built.sorts.get(variable.getKey()));
             }
             for (Map.Entry<String, String> variable
                     : built.clockVariables.entrySet()) {
                 RootMintRow read = corpus.rootOf(session,
                         variable.getValue());
-                if (read == null) continue;
                 String delta = world.world.clockDeltas.get(
                         variable.getValue());
-                equal(chosen, variable.getKey(), delta == null
-                        ? read.hostReading().trim()
+                equal(chosen, unstated, variable.getKey(), read == null ? ""
+                        : delta == null ? read.hostReading().trim()
                         : instant(read.hostReading(), delta),
                         built.sorts.get(variable.getKey()));
             }
             for (FlipQuery.Control control : built.controls) {
-                String answered = world.world.answers.get(
-                        control.attachEndpointId);
-                if (answered != null) {
-                    equal(chosen, control.variable, answered, control.sort);
-                }
+                equal(chosen, unstated, control.variable,
+                        world.world.answers.get(control.attachEndpointId),
+                        control.sort);
             }
             String named = "; refuted world " + world.digest
                     + " (obligation " + world.obligationId + ", session "
                     + world.sessionId + ")";
-            assertions.add(chosen.isEmpty() ? named
-                    + ": this query names none of its choices"
+            assertions.add(!unstated.isEmpty() || chosen.isEmpty()
+                    ? named + ": this query cannot state "
+                    + (unstated.isEmpty() ? "any of its choices"
+                    : String.join(", ", unstated))
+                    + ", so only its digest is refused"
                     : named + "\n(assert (not (and "
                     + String.join(" ", chosen) + ")))");
         }
@@ -1163,12 +1169,15 @@ public final class ObligationFactory {
     }
 
     /** {@code (= variable value)} into {@code chosen}, where the value is a
-     *  literal of the variable's sort. */
-    private static void equal(List<String> chosen, String variable,
-                              String value, String sort) {
+     *  literal of the variable's sort; else the variable into
+     *  {@code unstated}. */
+    private static void equal(List<String> chosen, List<String> unstated,
+                              String variable, String value, String sort) {
         String literal = value == null || value.isEmpty() ? ""
                 : SmtText.literal(value, sort);
-        if (!literal.isEmpty()) {
+        if (literal.isEmpty()) {
+            unstated.add(variable);
+        } else {
             chosen.add("(= " + variable + " " + literal + ")");
         }
     }

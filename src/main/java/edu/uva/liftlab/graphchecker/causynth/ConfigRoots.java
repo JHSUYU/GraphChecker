@@ -822,8 +822,10 @@ final class ConfigRoots {
     }
 
     /** A root read at {@code cells}, its domain from its defaults and the
-     *  literals the slice compares those cells with, through its clamps,
-     *  within what its validation admits. */
+     *  literals the slice compares those cells with, through its clamps;
+     *  what its validation admits rides along, and clips the domain only
+     *  where a run's reading passes it ({@code
+     *  runtime.ActiveRegion#configDomain}). */
     private Source source(String sourceId, String javaType,
                           List<BigInteger> defaults, List<Clamp> clamps,
                           Validity valid, Collection<String> cells,
@@ -851,9 +853,8 @@ final class ConfigRoots {
             min = clamp.apply(min);
             max = clamp.apply(max);
         }
-        // A value its own validation rejects is no cluster's.
-        return new Source(sourceId, javaType, valid.clip(min).toString(),
-                valid.clip(max).toString(), valid);
+        return new Source(sourceId, javaType, min.toString(), max.toString(),
+                valid);
     }
 
     /** How many units an arm may run, straight, before its throw. */
@@ -870,7 +871,9 @@ final class ConfigRoots {
      * arm ({@code if (minR <= 0) throw}: {@code >= 1}).  An equality admits
      * no interval and bounds nothing; a check this rule does not recognise
      * ({@code Preconditions.checkArgument}, one in another method) bounds
-     * nothing either, and CONFIRM refutes a world past it.
+     * nothing either: a domain past it may hold a value the cluster rejects,
+     * which can confirm a configuration-only SAT (triage names it
+     * CONFIG_ONLY).
      */
     private static Validity validation(Body body, Set<Local> values,
                                        String method, Unit use) {

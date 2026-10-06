@@ -271,11 +271,13 @@ field=<f> <subject>`.
   the only place that syntax is read), else the mint's bounds, which are absolute (a configuration's
   `domainMin` `-2` is minus two), with the mint's kind and recorded value; an integral `CONFIG`
   root's hull also takes its reading and `c - 1, c, c + 1` of each literal `c` a recorded decision
-  compares its symbol with (`compared`), and is kept within its `Validity`.
+  compares its symbol with (`compared`), and is kept within its `Validity` where its reading passes it.
 - `Validity(min?, max?, by)`: what a configuration's own validation admits (a branch of its wrapper
-  or field writer comparing the value with a literal, one arm of which only throws; SYMBOL-SCOPE
-  §4.3), stated as `validMin`, `validMax`, `validBy` on its static declaration, its plan row and its
-  `RootMintRow`; absent = unbounded.
+  or field writer comparing the value with a literal, one arm of which only throws, that every path
+  to the store or return passes; SYMBOL-SCOPE §4.3), stated as `validMin`, `validMax`, `validBy` on
+  its static declaration and its plan row (beside the unclipped static hull) and on its `RootMintRow`
+  where the value the mint read passes it (the mint row's domain then clipped to it); absent =
+  unbounded.
 - `ClaimKind`: `MARKER_FLIPPED`, `CLOCK_SKEW`, `MESSAGE_PAIRING_FLIPPED`, `STATE_PAIRING_FLIPPED`,
   `FORMULA_SAT`, `NO_SUPPORTED_WITNESS` ([PIPELINE.md §9](PIPELINE.md)).
 - `Claim(kind, valuationOrdinal, movedRoots, polarityDecides, gaps)`: `valuationOrdinal` 0 is the

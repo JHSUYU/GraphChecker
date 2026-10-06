@@ -421,7 +421,8 @@ public final class ExploreMain {
                 if (frontier.inFlight(id) || proposed.contains(id)) {
                     return "PENDING";
                 }
-                if (worlds.size() >= ObligationFactory.MAX_REFUTED_WORLDS) {
+                if (Corpus.distinctWorlds(worlds)
+                        >= ObligationFactory.MAX_REFUTED_WORLDS) {
                     return BOUNDED;
                 }
                 return verdict != null ? "UNANSWERED" : "NOT_ASKED";

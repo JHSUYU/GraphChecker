@@ -489,6 +489,29 @@ public class ConfirmationTest {
                     && run.waiting.containsKey(reader));
             assertEquals(what, (Boolean) row[3], !run.misread.isEmpty());
         }
+        // Two holds an interrupt ended on one thread both stand: the later
+        // one never hides the earlier.
+        reset();
+        String second = Endpoint.activation(OccurrenceAddress.parse(MINT),
+                ExecutionIndex.empty());
+        handed("", Arrays.asList(
+                "{\"kind\":\"ORDER\",\"before\":\"" + never
+                        + "\",\"after\":\"" + reader + "\"}",
+                "{\"kind\":\"ORDER\",\"before\":\"" + never
+                        + "\",\"after\":\"" + second + "\"}"));
+        assertTrue(Confirmation.ordering());
+        Thread both = new Thread(() -> {
+            Thread.currentThread().interrupt();
+            Confirmation.entering(reader);
+            Thread.currentThread().interrupt();
+            Confirmation.entering(second);
+        });
+        both.start();
+        both.join(5000L);
+        Confirmation.Held twice = Confirmation.held();
+        assertTrue(twice.waiting.toString(), twice.gaveWay.isEmpty()
+                && twice.waiting.containsKey(reader)
+                && twice.waiting.containsKey(second));
         reset();
         Path worker = folder.newFolder().toPath();
         Files.write(worker.resolve("focused_task.jsonl"), ("{\"taskId\":"

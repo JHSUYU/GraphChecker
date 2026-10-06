@@ -990,15 +990,18 @@ public class ManualMintStatesItsValueTest {
             assertEquals((String) domain[0], domain[5], gaps().size());
         }
         assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
-        // Its validation is named while the value read passes it, and is
-        // dropped, named, where the value read fails it.
+        // Its validation is named, and clips the static hull, while the
+        // value read passes it; it is dropped, named, and clips nothing
+        // where the value read fails it.
         Validity atLeastSix = Validity.of(java.math.BigInteger.valueOf(6),
                 null, "a.B#u3");
         for (String read : new String[] {"7", "5"}) {
             JsonObject row = new JsonObject();
             row.addProperty("sourceId", "CONFIG:k");
-            ActiveRegion.configDomain(row, "6", "10", atLeastSix, read);
+            ActiveRegion.configDomain(row, "4", "10", atLeastSix, read);
             assertEquals(read, "7".equals(read), row.has(Validity.MIN));
+            assertEquals(read, "7".equals(read) ? "6" : "4",
+                    row.get("domainMin").getAsString());
         }
         assertEquals(4, gaps().size());
         assertTrue(gap().detail(), gap().detail().contains("(5) lies outside"

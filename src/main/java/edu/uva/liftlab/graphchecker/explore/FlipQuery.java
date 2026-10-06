@@ -237,7 +237,7 @@ final class FlipQuery {
          *  what they saw. */
         String recorded = "";
         /** (reader occurrence, location), the reader and the location. */
-        private final String key;
+        final String key;
         private final OccurrenceAddress reader;
         private final LocationId location;
         private final List<Choice> alternatives = new ArrayList<Choice>();

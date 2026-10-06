@@ -560,11 +560,13 @@ getter call of the shape of its first call (by site), a `DECLARED_SITE` `CALL_RE
   `ConfigRoots#validation`; `initMinReplication`'s `minR <= 0` throws, so `>= 1`); a wrapper's
   returns join their validities, so one return that bypasses the check bounds nothing. A cluster
   holding such a value refuses to start, and a plant at the window's reads would never meet the
-  check, so CONFIRM could not refute it. A validation the value the mint read itself fails is no
-  validation of it: dropped, named (`DECLARATION_MISSING` DIAGNOSTIC), and the domain is not clipped
-  (`ActiveRegion#configDomain`, `RootDomain#resolved`). A check this rule does not recognise --
-  `Preconditions.checkArgument`, one in another method, an equality -- bounds nothing: the domain
-  may then hold a value the cluster rejects, and CONFIRM refutes a world planted there. The
+  check. The declaration and the plan row carry the static hull unclipped with the validity beside
+  it; the mint clips the domain to it only where the value it read passes it
+  (`ActiveRegion#configDomain`, `RootDomain#resolved`): a validation that value fails is no
+  validation of it, dropped and named (`DECLARATION_MISSING` DIAGNOSTIC), nothing clipped. A check
+  this rule does not recognise -- `Preconditions.checkArgument`, one in another method, an equality
+  -- bounds nothing: the domain may then hold a value the cluster rejects, which can confirm a
+  configuration-only SAT (`result.json` `configurationOnly`, which triage names CONFIG_ONLY). The
   declaration, the plan row and the mint row state it (`validMin`, `validMax`, `validBy`).
   A declaration stating half a domain or a bound that is no integer states none, named, and the root
   is pinned.

@@ -430,9 +430,10 @@ final class ActiveRegion {
     /**
      * A configuration root's domain (SYMBOL-SCOPE §4.3): the hull of its
      * static anchors ({@code causynth.ConfigRoots}) and the value this mint
-     * read, with what its own validation admits ({@link Validity}), which
-     * the mint row names -- unless the value read lies outside it, when the
-     * validation is no validation of this value: dropped, named.  None
+     * read, clipped to what its own validation admits ({@link Validity}),
+     * which the mint row names -- unless the value read lies outside it,
+     * when the validation is no validation of this value: dropped, named,
+     * nothing clipped.  None
      * stated: a boolean, or no anchor, and the root is pinned.  A
      * declaration stating half a domain, or a bound that is no integer,
      * states none either, named.
@@ -443,6 +444,7 @@ final class ActiveRegion {
         String min = safe(staticMin).trim();
         String max = safe(staticMax).trim();
         String value = safe(recordedValue).trim();
+        Validity kept = Validity.ANY;
         if (valid != null && valid != Validity.ANY
                 && INTEGER.matcher(value).matches()
                 && !valid.admits(new BigInteger(value))) {
@@ -456,6 +458,7 @@ final class ActiveRegion {
                             + " bounds nothing");
         } else if (valid != null) {
             valid.write(row);
+            kept = valid;
         }
         if (min.isEmpty() && max.isEmpty()) return;
         if (!INTEGER.matcher(min).matches()
@@ -469,11 +472,13 @@ final class ActiveRegion {
                             + " and is pinned");
             return;
         }
+        // The static hull and the reading, within the validation the
+        // reading passed (a value it rejects is no cluster's).
         BigInteger read = new BigInteger(value);
         row.addProperty("domainMin",
-                read.min(new BigInteger(min)).toString());
+                kept.clip(read.min(new BigInteger(min))).toString());
         row.addProperty("domainMax",
-                read.max(new BigInteger(max)).toString());
+                kept.clip(read.max(new BigInteger(max))).toString());
     }
 
     private static final java.util.regex.Pattern INTEGER =

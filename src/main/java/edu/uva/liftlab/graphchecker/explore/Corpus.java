@@ -453,6 +453,14 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
+    /** How many distinct worlds (by digest) replays refuted for one flip:
+     *  what the valve {@link ObligationFactory#MAX_REFUTED_WORLDS} counts. */
+    public static int distinctWorlds(List<Refuted> refuted) {
+        Set<String> digests = new LinkedHashSet<String>();
+        for (Refuted world : refuted) digests.add(world.digest);
+        return digests.size();
+    }
+
     /** The worlds replays refuted for one flip ({@link ObligationFactory
      *  #flip}); empty for any flip but an open decider arm's. */
     public List<Refuted> refutedWorlds(String flip) {

@@ -402,8 +402,9 @@ public final class Confirmation {
                         // An interrupt (a cluster's shutdown) ended the
                         // wait: the hold stood until then, unless the
                         // activation goes on to do tracked work (#ranOn).
-                        ENDED_WAITING.put(thread, new Hold(activation,
-                                before));
+                        ENDED_WAITING.computeIfAbsent(thread,
+                                key -> new ArrayList<Hold>()).add(new Hold(
+                                activation, before));
                         Thread.currentThread().interrupt();
                         return;
                     }
@@ -428,20 +429,21 @@ public final class Confirmation {
 
     /** Thread -> its hold, while it waits. */
     private static final Map<Long, Hold> WAITING = new HashMap<Long, Hold>();
-    /** Thread -> its hold, where an interrupt ended the wait. */
-    private static final Map<Long, Hold> ENDED_WAITING =
-            new HashMap<Long, Hold>();
+    /** Thread -> every hold of it an interrupt ended, in order: a later
+     *  hold on the thread never hides an earlier one. */
+    private static final Map<Long, List<Hold>> ENDED_WAITING =
+            new HashMap<Long, List<Hold>>();
     /** The activations whose interrupted hold then ran on into tracked
      *  work: their order gave way. */
     private static final Set<String> RAN_ON = new LinkedHashSet<String>();
 
     /** A tracked read, write or attach on this thread: if an interrupt
-     *  ended its hold, the held activation ran on.  Called under
-     *  {@link #LOCK}. */
+     *  ended a hold of it, the activation of the latest such hold ran on.
+     *  Called under {@link #LOCK}. */
     private static void ranOn() {
         if (ENDED_WAITING.isEmpty()) return;
-        Hold ended = ENDED_WAITING.get(Thread.currentThread().getId());
-        if (ended != null) RAN_ON.add(ended.activation);
+        List<Hold> ended = ENDED_WAITING.get(Thread.currentThread().getId());
+        if (ended != null) RAN_ON.add(ended.get(ended.size() - 1).activation);
     }
 
     /**
@@ -475,7 +477,8 @@ public final class Confirmation {
             List<String> gaveWay = new ArrayList<String>(UNREALIZED);
             Map<String, Set<String>> waiting =
                     new LinkedHashMap<String, Set<String>>();
-            List<Hold> holds = new ArrayList<Hold>(ENDED_WAITING.values());
+            List<Hold> holds = new ArrayList<Hold>();
+            for (List<Hold> ended : ENDED_WAITING.values()) holds.addAll(ended);
             holds.addAll(WAITING.values());
             for (Hold hold : holds) {
                 Set<String> missing = new LinkedHashSet<String>(hold.before);

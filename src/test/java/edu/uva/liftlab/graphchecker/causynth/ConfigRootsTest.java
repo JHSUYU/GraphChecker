@@ -103,9 +103,9 @@ public class ConfigRootsTest {
                         + CONF + ")>")) + " " + source(roots.call(
                         "<t.Manager: int limitOf(" + CONF + ")>", 1,
                         getInt))},
-            {"a wrapper's own validation bounds the domain: a value it"
-                    + " throws on is no cluster's, and the root names it",
-                "CONFIG:k.min int [2,6] [2,] by <t.Manager: int minOf("
+            {"a wrapper's own validation rides beside the static hull, which"
+                    + " it clips only where a run's reading passes it",
+                "CONFIG:k.min int [1,6] [2,] by <t.Manager: int minOf("
                         + CONF + ")>#u2", source(roots.field(field(
                         "int min"))) + " " + roots.field(field("int min"))
                         .valid},
