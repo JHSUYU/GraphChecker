@@ -741,15 +741,15 @@ public class ContractTest {
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
         // A clock states the instant its node's clock ran it at and how far
-        // that ran off the base reading, the reading a skew is off; a
-        // reading at the base reading's own instant states no skew.
+        // that ran off the host's reading, the reading a skew is off; a
+        // reading at the host's own instant states no skew.
         RootMintRow ranOn = RootMintRow.of("s-17897-1", 16067L, producer,
                 "CLOCK.nn0", "M_J_clock", RootKind.CLOCK, RootCategory.CLOCK,
                 "1790775789773", null, null, true,
                 Clock.of(1_000_000L, Clock.WALL), 3_600_000L);
         assertEquals(ranOn, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(ranOn))));
-        assertEquals("1790772189773", ranOn.baseReading());
+        assertEquals("1790772189773", ranOn.hostReading());
         assertFalse(RowCodec.writeRootMint(minted).has(
                 RootMintRow.CLOCK_SKEW));
         assertEquals(target, RowCodec.readTarget(

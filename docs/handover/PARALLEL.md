@@ -71,6 +71,10 @@ host, and it is why isolation must be strict.
 9. **After two large merges, a small live check of their combination** (HG10V: 17897, 11741, 14, 15, 10 from one
    snapshot, one head per host) before the next merge, while agents keep their own gates running.
 
+10. **Reasonable, not maximal** (owner 2026-10-06 afternoon: "你也不要过分并行哈。合理的并行。要不然反而会让速度变慢"): about 8-10
+   live campaigns in all, each agent at most 2 at once, critical path first; past that every case slows (2026-10-06:
+   ~18 live, 17897 took 4387 s against 578 s) and nothing ends sooner.
+
 ## 4. What does not parallelize, and how it gets faster
 
 - **One seed replay is one JVM**, held to the recorded order. More lifts do not shorten it; replay fidelity does:

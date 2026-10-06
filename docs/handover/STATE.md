@@ -8,6 +8,39 @@ Read this file, then [TODO.md](TODO.md), [RULES.md](RULES.md), [CHECKING.md](CHE
 every check with its live state is in [../checks/README.md](../checks/README.md); done / partial / missing per
 requirement in [../STATUS.md](../STATUS.md).
 
+## 0. Since the handover (lead session 2026-10-06 afternoon; supersedes §2-§4 where they differ)
+
+- **Integration branch `hdfs-int`** (sparse worktree `/bigtemp/vnr3ne/wt/gc-hdfs-int`, from system/hdfs ff7daed0e), each
+  merge built and shell-tested: export-weave, frontier-depth, solver-fallback (gate HI1 on `~/gc-run/int1`: 17897 PASS,
+  12 SAT clean 10/10, 05 08 14 UNSAT clean, 11741 WITNESSED with a confirmed CLOCK_SKEW but cut by the 3 h limit in its
+  final stages under a crowded cluster, 07 needs codec capture); time-model (fafd89f40; see below); CONFIRM strictness
+  (a world planting a root beyond the model's moved ones is no realization); the seed replay charged 2x the recording's
+  peak (was 7x) and a warm-host question 512 MB (was 1 GB); `fanout.sh` holds room for a waiting job (one hold per host,
+  ties broken by name) and resumes a finished jobs file cleanly; the shim's inert `outboundOp(Object)`; the IPC hand-off
+  naming with every case.sh on the r6 trees (gate HO1 on r6: 17897, bug1, 17960 PASS 10/10, 12 SAT clean 10/10, 20 UNSAT).
+  `system/hdfs` is not fast-forwarded yet: it takes `hdfs-int` once the time-model decision lands.
+- **r6 trees built** (study-r6 7e81b3a588c with the DataTransfer door calls, 11741-r6 6c86fca9a2b; Maven repos
+  m2/hdfs-study-r6, m2/hdfs-11741-r6); **r7** (`gc/hdfs-study-r7` bd72fcc1a13, on r6, repo m2/hdfs-study-r7): the
+  time-family workarounds (no `ls`/`chmod`/`df` forks; `fs.getspaceused.classname` without `du`;
+  `dfs.namenode.edits.asynclogging=false`; a settle of every DataNode before an automatic cluster's window).
+- **The time model regresses non-clock cases**: 19, 26, 37 never reach their target on its body (UNSAT/fine without
+  it). Root cause (thread dump, `/bigtemp/vnr3ne/gc-out/hdfs-open-arms/diag/rerun-5c42/`): a timed-out monitor wait
+  waits for its WAKE turn while holding the program's monitor (`TimedWaits.monitorWait`), so
+  `IncrementalBlockReportManager.waitTillNextIBR` blocks `DataXceiver`. Body choice (agent T, rounds P1A/P1B/P3C under
+  `/bigtemp/vnr3ne/gc-out/hdfs-time-r6`): B, the time model REVERTED on hdfs-int (8f9acc7c4), reaches the anchor on every
+  probed case but 21; the time family runs on the r7 workarounds (owner: the time model by workarounds only).
+- **Agents** (briefs `/bigtemp/vnr3ne/analysis/study-2026-10-06b/`): T time family (r7, body choice, 21's thread-rename
+  workaround); C codec capture by builder-bound exports (`hdfs-codec-capture` 53e1e2ce7: 17897 PASS with its key-id chain
+  closed; 07, 11741 next), then concrete exports as constant arms and a retried call's own occurrence (14); R rule 1's
+  refinement (`hdfs-container-writers`), judged against the merged body's ask counts; S open arms (`hdfs-open-arms`:
+  WORLD_REFUTED for faithful open-arm replays, configuration domains from recorded comparisons; 40 UNSAT closed, review
+  blockers being fixed).
+- **Rounds** (`/bigtemp/vnr3ne/gc-out/hdfs-study`): HI1 (int1), HI2 (int2, all 46), HI3 (int3, HI2's queue; paused),
+  HO1 (r6). Clean on the new bodies per CHECKING §1: 05 06 08 09 10 11 12 14 15 16 20 23 27 28 29 30 31 33 34 38, 17897,
+  bug1, 17960 (and 40 on `hdfs-open-arms`). Open: 07 (codec), 14 on the time-model body (retried call identity), 19 26 37
+  (time model), 21 (thread rename), 22 24 25 35 52 (time family), 39 (the monitor defect), the rest of the named bugs to
+  rerun. Readings: `/bigtemp/vnr3ne/analysis/study-2026-10-06b/smt-checks.md`.
+
 ## 1. The goals (verbatim) and what they mean
 
 The 2026-10-04 goal (the four systems):

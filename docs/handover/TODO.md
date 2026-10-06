@@ -31,10 +31,10 @@ gated, then the next.
    unfinished at the handover).
 3. **`hdfs-solver-fallback`** (D1): a host solver killed at its memory hold is placed through the ledger by its
    measured peak, or fails by name at once (it asked 16 GB on its pinned host and waited 3900 s). Owed: one live case.
-4. **`hdfs-time-model`** (A2, reviewed, review fixes in): the tm16 gate passed (no 120 s stand; 11741 PASS CLOCK_SKEW
-   in 3004 s; 17897, bug1, 17960 PASS); its head 49f502302 (system/hdfs merged) needs one live check. Owed, not
-   blocking: 11741's admitted replays take a median 258 s vs 165-207 s before (two 15 s stalls: the window opens 65 s
-   late in model time). Delete `hdfs-clock-replay` with the merge.
+4. **`hdfs-time-model`**: merged, then REVERTED on hdfs-int (8f9acc7c4, 2026-10-06): its body made 19, 26 and 37 miss
+   their declared occurrence (a timed-out monitor wait waiting for its WAKE turn with the program's monitor held); the
+   time family runs on the r7 tree's workarounds instead (owner: the time model by workarounds only). Delete
+   `hdfs-clock-replay` and `hdfs-time-model` once HDFS is done.
 5. **The r6 trees + `hdfs-ipc-handoff-name`** (A2, stacked on the time model): build both r6 trees properly
    (OPERATIONS §1 "HDFS trees (next)"), javap the hooks on a case's classpath, rerun every HDFS workload test on r6,
    switch every `case.sh` in one commit; gate: 21's and 52's stalls by blocking slot before/after (`probe/stalls.py`),

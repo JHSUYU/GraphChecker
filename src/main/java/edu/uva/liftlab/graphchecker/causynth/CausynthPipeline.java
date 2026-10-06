@@ -1754,7 +1754,6 @@ public final class CausynthPipeline {
                     if (last != null) waited++;
                     else last = stmt;
                     replaceRandom(body, stmt, site);
-                    replaceClock(stmt);
                     replaceListing(stmt);
                     if (claims && last instanceof AssignStmt
                             && ((AssignStmt) last).getLeftOp()
@@ -1916,32 +1915,6 @@ public final class CausynthPipeline {
                 invoke.setArg(index, randomAt(body, stmt, site, randoms));
             }
         }
-    }
-
-    /** The runtime's application clocks. */
-    private static final String CLOCKS_CLASS =
-            "edu.uva.liftlab.graphchecker.runtime.Clocks";
-
-    /**
-     * Makes one JVM clock read the application's ({@code runtime.Clocks}),
-     * in both passes: {@code System.nanoTime()} becomes {@code
-     * Clocks.nanos()}, {@code System.currentTimeMillis()} {@code
-     * Clocks.millis()} ({@link WorkStartSites#readsClock}).  A replay's
-     * clocks follow its order's timeline; a recording's read the host.
-     */
-    private static void replaceClock(Stmt stmt) {
-        SootMethodRef callee = stmt.getInvokeExpr().getMethodRef();
-        if (!WorkStartSites.readsClock(
-                callee.declaringClass().getName().replace('.', '/'),
-                callee.getName(),
-                soot.AbstractJasminClass.jasminDescriptorOf(callee))) {
-            return;
-        }
-        stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
-                Scene.v().makeMethodRef(phantomClass(CLOCKS_CLASS),
-                        Clock.MONOTONIC.equals(callee.getName()) ? "nanos"
-                                : "millis",
-                        Collections.<Type>emptyList(), LongType.v(), true)));
     }
 
     /** The runtime's stand-ins for directory listings, sorted by name. */

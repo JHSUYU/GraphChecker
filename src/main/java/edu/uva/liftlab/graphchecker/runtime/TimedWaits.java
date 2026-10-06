@@ -163,22 +163,14 @@ public final class TimedWaits {
         WakeScopes.waiting();
         // Thread.sleep throws on a pending interrupt, even sleep(0).
         interruptedAtEntry(site);
-        long[] began = Clocks.waitBegins(
-                TimeUnit.MILLISECONDS.toNanos(millis) + nanos);
-        try {
-            long deadline = System.nanoTime()
-                    + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
-            if (ScheduleLog.enforcing() || freeSleep(deadline, site)) {
-                // Held: its turn, or the wall clock once no slot holds it.
-                takeTurn(site, false, sleepQuantum(), deadline);
-            } else {
-                wake(site);
-            }
-            // Nothing signals a sleep: it ran its time out.
-            Clocks.timedOut(began);
-        } finally {
-            Clocks.waited(began);
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
+        if (ScheduleLog.enforcing() || freeSleep(deadline, site)) {
+            // Held: its turn, or the wall clock once no slot holds it.
+            takeTurn(site, false, sleepQuantum(), deadline);
+            return;
         }
+        wake(site);
     }
 
     /** A sleep's quantum: only time or an interrupt ends it. */
@@ -245,40 +237,32 @@ public final class TimedWaits {
             WakeScopes.woke(site);
             return;
         }
-        long[] began = Clocks.waitBegins(nanos);
-        try {
-            long deadline = System.nanoTime() + nanos;
-            boolean signalled = false;
-            if (!ScheduleLog.enforcing()) {
-                Thread self = Thread.currentThread();
-                WINDOW_WOKEN.remove(self);
-                WAITING.put(self, PARKED);
-                long before = System.nanoTime();
-                try {
-                    LockSupport.parkNanos(blocker, nanos);
-                } finally {
-                    WAITING.remove(self);
-                }
-                boolean byWindow = WINDOW_WOKEN.remove(self);
-                if (self.isInterrupted()) {
-                    // Interrupted while parked: its WAKE is written in place.
-                    interruptedWake(site);
-                    WakeScopes.woke(site);
-                    return;
-                }
-                signalled = !byWindow && System.nanoTime() - before < nanos;
-            }
+        long deadline = System.nanoTime() + nanos;
+        boolean signalled = false;
+        if (!ScheduleLog.enforcing()) {
+            Thread self = Thread.currentThread();
+            WINDOW_WOKEN.remove(self);
+            WAITING.put(self, PARKED);
+            long before = System.nanoTime();
             try {
-                if (!takeTurn(site, signalled, parkQuantum(blocker),
-                        deadline)) {
-                    Clocks.timedOut(began);
-                }
-            } catch (InterruptedException impossible) {
-                // A park is never interrupted by throwing; its quantum is not.
-                Thread.currentThread().interrupt();
+                LockSupport.parkNanos(blocker, nanos);
+            } finally {
+                WAITING.remove(self);
             }
-        } finally {
-            Clocks.waited(began);
+            boolean byWindow = WINDOW_WOKEN.remove(self);
+            if (self.isInterrupted()) {
+                // Interrupted while parked: its WAKE is written in place.
+                interruptedWake(site);
+                WakeScopes.woke(site);
+                return;
+            }
+            signalled = !byWindow && System.nanoTime() - before < nanos;
+        }
+        try {
+            takeTurn(site, signalled, parkQuantum(blocker), deadline);
+        } catch (InterruptedException impossible) {
+            // A park is never interrupted by throwing; its quantum is not.
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -365,21 +349,16 @@ public final class TimedWaits {
         interruptedAtEntry(site);
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
-        long[] began = Clocks.waitBegins(
-                TimeUnit.MILLISECONDS.toNanos(millis) + nanos);
         Waiter self = enter(monitor);
         try {
             boolean signalled = false;
             if (!ScheduleLog.enforcing()) {
                 signalled = freeMonitorWait(monitor, self, deadline, site);
             }
-            if (!takeTurn(site, signalled, monitorQuantum(monitor, self),
-                    deadline)) {
-                Clocks.timedOut(began);
-            }
+            takeTurn(site, signalled, monitorQuantum(monitor, self),
+                    deadline);
         } finally {
             leave(monitor, self);
-            Clocks.waited(began);
         }
     }
 
@@ -532,19 +511,16 @@ public final class TimedWaits {
         WakeScopes.waiting();
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + nanos;
-        long[] began = Clocks.waitBegins(nanos);
         Waiter self = enter(condition);
         try {
             boolean signalled =
                     freeConditionWait(condition, self, deadline, site);
             boolean outcome = takeTurn(site, signalled,
                     conditionQuantum(condition, self), deadline);
-            if (!outcome) Clocks.timedOut(began);
             // Virtual time: the caller re-checks its condition.
             return outcome ? Math.max(1L, deadline - System.nanoTime()) : 0L;
         } finally {
             leave(condition, self);
-            Clocks.waited(began);
         }
     }
 
@@ -556,18 +532,14 @@ public final class TimedWaits {
         WakeScopes.waiting();
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(time);
-        long[] began = Clocks.waitBegins(unit.toNanos(time));
         Waiter self = enter(condition);
         try {
             boolean signalled =
                     freeConditionWait(condition, self, deadline, site);
-            boolean outcome = takeTurn(site, signalled,
+            return takeTurn(site, signalled,
                     conditionQuantum(condition, self), deadline);
-            if (!outcome) Clocks.timedOut(began);
-            return outcome;
         } finally {
             leave(condition, self);
-            Clocks.waited(began);
         }
     }
 
@@ -723,19 +695,6 @@ public final class TimedWaits {
         // The JDK's timed poll takes its lock interruptibly.
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(timeout);
-        long[] began = Clocks.waitBegins(unit.toNanos(timeout));
-        try {
-            Object taken = timedPoll(queue, deadline, site);
-            if (taken == null) Clocks.timedOut(began);
-            return taken;
-        } finally {
-            Clocks.waited(began);
-        }
-    }
-
-    /** A timed poll's wait: free in quanta, then held to its turn. */
-    private static Object timedPoll(BlockingQueue<?> queue, long deadline,
-                                    String site) throws InterruptedException {
         // Free, in quanta.  A returned element is a CLAIM, not a WAKE.
         while (!ScheduleLog.enforcing()) {
             long left = deadline - System.nanoTime();
