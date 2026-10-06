@@ -1858,7 +1858,9 @@ with it is a `RUN_DEFECT`.
   a target row of it at the anchor reached it and observed the fatal, every selected arm is the session's own
   delivery, every write the model chose for a read of the join closure at a location the fatal
   rests on (`restsOn`, below) is the one that read saw (`StateClosure#ran`), the session minted
-  every moved non-clock root at the model's value, and its clocks are the model's (on every cell
+  every moved non-clock root at the model's value, its world planted no other root at a value other
+  than the recording's (a world planting more than the model moved ran another model: a replay of
+  the claim's decides), and its clocks are the model's (on every cell
   the composition anchors, the skews its world planted are exactly the claim's jumps; skews compare,
   each off its own run's host), the session is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
