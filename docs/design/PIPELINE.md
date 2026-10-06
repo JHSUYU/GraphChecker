@@ -1000,7 +1000,9 @@ told apart from a crash) -- the seed
 replay (`campaign_session_replay`), before any replay of the campaign was measured, needing seven
 times the recording's measured peak (`workload_rss_mb`; a concolic replay outgrows its native
 recording, up to 6.94 times in round x1; a recording that measured none, or a seed replay that
-states no peak, fails REPLAY by name), and the final CONFIRM replay (`campaign_confirm_claim`),
+states no peak, fails REPLAY by name; it is charged only `campaign_seed_charge_factor` (2) times the
+recording's peak at its start: HDFS seed replays peaked at 0.5-1.4 times their recording, HG9/HI2), and the final
+CONFIRM replay (`campaign_confirm_claim`),
 needing the measured replay need (above), each charged at most half a host's ceiling at its start
 (`campaign_replay_charge_mb`: a charge only an idle host can hold waited 75 minutes in round HG1;
 past its charge the replay grows while its host has room) and its heap sized by the whole need

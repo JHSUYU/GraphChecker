@@ -38,7 +38,9 @@ running out of memory, and a single case alone takes the whole cluster.
   for the excess and gets it unless the host's REAL use would pass the ceiling.
 - **Measured charges** (2026-10-05): a replay is charged the campaign's measured replay need (the largest resident
   peak its replays stated so far x1.5, at least 512 MB); only the seed replay, before anything is measured, is charged
-  seven times the recording's measured peak (capped at half a host). Obligation replays peak within +-10 % of their own
+  twice the recording's measured peak at its start (its heap sized for seven times it; capped at half a host), and
+  grows past that while its host has real room: charged seven times, four HI2 seed replays held 44 GB of the ledger
+  over less than 4 GB of real use (HDFS seed replays peak at 0.5-1.4 times their recording). Obligation replays peak within +-10 % of their own
   seed replay (HG4: 11741 674 / 662-715 MB; adhoc-07 238 / 194-257; outlier adhoc-15 514 / up to 2003, which grows
   through the ledger).
 - **An obligation is two starts**: its SOLVE (charged what a solver starts at, 1 GB; answered by its host's warm solver
