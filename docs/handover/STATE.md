@@ -46,7 +46,8 @@ when the owner asks.
 | `hdfs-seed-speed` | merged (093c8918b) | | deletable (its worktree became `gc-hdfs-native-plant`) |
 | `hdfs-native-plant` | merged (0b4a30720) | | deletable (its worktree became `gc-hdfs-clock-place`) |
 | `hdfs-clock-place` | merged (bd71f7490) | | deletable (its worktree became `gc-hdfs-bound-scope`) |
-| `hdfs-bound-scope` | this row's commit | `/bigtemp/vnr3ne/wt/gc-hdfs-bound-scope` | A4: `result.json` `bounded` names each declared bound that cut the search (`campaign_bounds`), shown by report.py, triage.py, round-verify.sh. Next on it: the symbolic-scope batch 2 design. |
+| `hdfs-bound-scope` | merged (d2678f203) | | deletable (its worktree became `gc-hdfs-decider-open`) |
+| `hdfs-decider-open` | this row's commit | `/bigtemp/vnr3ne/wt/gc-hdfs-decider-open` | A4: a guard on a helper's return is `ite(decider, its arm's verdict, the other arm)`, enum constants and `h2().equals(c)` included, an open arm the run took its own condition and one it did not a flip site of the reached anchor (`BooleanReturns`, `RowPublication#decided`, `Site#openDeciderSites`); for 15, 17, 39, 16, 40. Review agent before merge. |
 | `hdfs-time-model` | (A2, coding) | `/bigtemp/vnr3ne/wt/gc-hdfs-time-model` | Design approved 2026-10-05: application clock reads in a replay follow the recording's timeline re-anchored at every move of the order (v = max(last, min(hi, lo + elapsed))), a CLOCK root's skew on top, no keyed reads. Probes of 01 17 21 22 23 25 34 35 43 52, then a review agent. |
 | `hdfs-draw-sites2` | `2d84363cd` | `/bigtemp/vnr3ne/wt/gc-hdfs-draw-sites` | HG6, merged (825f190a7) via hdfs-address-shared; its later commits only merge system/hdfs into it. Deletable. |
 | `hdfs-clock-replay` | `22520bf02` | none | C1 (keyed clock replay), parked; its commit message holds the C1 findings the time model starts from. |

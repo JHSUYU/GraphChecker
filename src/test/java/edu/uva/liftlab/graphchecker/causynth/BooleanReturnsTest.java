@@ -12,6 +12,7 @@ import soot.Modifier;
 import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
+import soot.SootField;
 import soot.SootMethod;
 import soot.Type;
 import soot.Unit;
@@ -29,11 +30,15 @@ import static org.junit.Assert.assertEquals;
 
 /**
  * The deciders of a guard on a helper's constant return (SYMBOL-SCOPE §3):
- * every helper branch arm that runs straight to a constant return of the
- * guard's kind, each with the deciders of the nested helper return it
- * tests.  hdfs-adhoc-40's {@code !isSufficientlyReplicated(b)}: the helper
- * returns true on one arm of its test of {@code hasMinStorage}'s return and
- * a comparison's outcome on the other.
+ * both arms of every helper branch with an arm that runs straight to a
+ * constant return of the guard's kind -- an int, null or an enum constant
+ * -- each with its verdict (open where it runs on), and the deciders of the
+ * nested helper return it tests.  hdfs-adhoc-40's {@code
+ * !isSufficientlyReplicated(b)}: the helper returns true on one arm of its
+ * test of {@code hasMinStorage}'s return and a comparison's outcome on the
+ * other.  hdfs-adhoc-15's {@code isComplete()}: {@code
+ * getBlockUCState().equals(COMPLETE)}, which returns {@code COMPLETE} where
+ * {@code uc} is null and the feature's state otherwise.
  */
 public class BooleanReturnsTest {
     private static final String OWNER = "a.Helpers";
@@ -52,48 +57,90 @@ public class BooleanReturnsTest {
         Scene.v().addClass(library);
         library.setLibraryClass();
 
+        SootClass state = new SootClass("a.State", Modifier.PUBLIC
+                | Modifier.ENUM);
+        Scene.v().addClass(state);
+        state.setApplicationClass();
+        SootClass object = new SootClass("java.lang.Object",
+                Modifier.PUBLIC);
+        Scene.v().addClass(object);
+        object.setLibraryClass();
+        for (String value : new String[]{"COMPLETE", "COMMITTED"}) {
+            state.addField(new SootField(value, state.getType(),
+                    Modifier.PUBLIC | Modifier.STATIC | Modifier.FINAL
+                            | Modifier.ENUM));
+        }
+
         SootMethod min = twoConstants(owner, "hasMinStorage", 1, 0);
         SootMethod alike = twoConstants(owner, "alike", 1, 1);
         SootMethod outside = twoConstants(library, "outside", 1, 0);
         SootMethod sufficient = sufficient(owner, min);
         SootMethod lookup = lookup(owner);
         SootMethod switched = switched(owner);
+        SootMethod uc = ucState(owner, state, min);
+        SootMethod complete = complete(owner, state, uc, object);
 
         String suff = sig(sufficient);
         String has = sig(min);
+        String hasArms = "[" + has + "#u1=true:true[], " + has
+                + "#u1=false:false[]]";
+        // getState tests min's return with != 0: the verdicts turn.
+        String notHasArms = "[" + has + "#u1=true:false[], " + has
+                + "#u1=false:true[]]";
         Object[][] rows = {
-            {"one branch, two constant arms: both arms", min, null,
-                Arrays.asList(has + "#u1=true[]", has + "#u1=false[]")},
+            {"one branch, two constant arms: both arms", min, null, true,
+                Arrays.asList(has + "#u1=true:true[]",
+                        has + "#u1=false:false[]")},
             {"a branch of a nested helper's return carries its deciders, a"
-                    + " comparison both of its arms", sufficient, null,
-                Arrays.asList(suff + "#u2=false[" + has + "#u1=true[], "
-                        + has + "#u1=false[]]",
-                    suff + "#u4=true[]", suff + "#u4=false[]")},
-            {"a null return decides a null test: the null arm only", lookup,
-                NullConstant.v(), Collections.singletonList(
-                        sig(lookup) + "#u1=false[]")},
+                    + " comparison both of its arms; the arm that runs on to"
+                    + " the comparison is open", sufficient, null, true,
+                Arrays.asList(suff + "#u2=true:open" + hasArms,
+                    suff + "#u2=false:false" + hasArms,
+                    suff + "#u4=true:true[]", suff + "#u4=false:false[]")},
+            {"a null return decides a null test, the other arm open",
+                lookup, NullConstant.v(), true,
+                Arrays.asList(sig(lookup) + "#u1=true:open[]",
+                        sig(lookup) + "#u1=false:true[]")},
+            {"an enum constant decides a test of another, the arm that"
+                    + " reads the state open", uc, "COMMITTED", true,
+                Arrays.asList(sig(uc) + "#u2=true:open" + notHasArms,
+                        sig(uc) + "#u2=false:false" + notHasArms)},
+            {"a helper returning h2().equals(c) is the guard h2() == c, its"
+                    + " verdicts read through what it returns", complete,
+                null, false,
+                Arrays.asList(sig(uc) + "#u2=true:open" + notHasArms,
+                        sig(uc) + "#u2=false:true" + notHasArms)},
             {"two arms the guard takes alike decide nothing", alike, null,
-                Collections.emptyList()},
-            {"a helper with a switch has none", switched, null,
+                true, Collections.emptyList()},
+            {"a helper with a switch has none", switched, null, true,
                 Collections.emptyList()},
             {"a library helper's branches are no application's",
-                outside, null, Collections.emptyList()},
+                outside, null, true, Collections.emptyList()},
         };
         for (Object[] row : rows) {
-            Body caller = caller(owner, (SootMethod) row[1], (Value) row[2]);
+            Object compared = row[2];
+            Body caller = caller(owner, (SootMethod) row[1],
+                    compared instanceof String ? Jimple.v().newStaticFieldRef(
+                            state.getFieldByName((String) compared).makeRef())
+                            : (Value) compared, (Boolean) row[3]);
             Unit guard = null;
             for (Unit unit : caller.getUnits()) {
                 if (unit instanceof soot.jimple.IfStmt) guard = unit;
             }
-            assertEquals((String) row[0], row[3],
-                    render(BooleanReturns.deciders(caller, guard)));
+            List<StaticScopeMap.Guard> found =
+                    BooleanReturns.deciders(caller, guard);
+            assertEquals((String) row[0], row[4], render(found));
+            // The plan states them as the map does, verdicts included.
+            assertEquals((String) row[0], row[4], render(
+                    StaticScopeMap.guardsOf(StaticScopeMap.guardsJson(found))));
         }
     }
 
     private static List<String> render(List<StaticScopeMap.Guard> guards) {
         List<String> rendered = new ArrayList<String>();
         for (StaticScopeMap.Guard guard : guards) {
-            rendered.add(guard + render(guard.deciders()).toString());
+            rendered.add(guard + ":" + (guard.verdict() == null ? "open"
+                    : guard.verdict()) + render(guard.deciders()));
         }
         return rendered;
     }
@@ -102,9 +149,10 @@ public class BooleanReturnsTest {
         return method.getSignature();
     }
 
-    /** {@code if (h(i0) == c) return}: the guard, c 0 or {@code null}. */
+    /** {@code if (h(i0) == c) return} (or {@code !=}): the guard, c 0,
+     *  {@code null} or an enum constant read into a local first. */
     private static Body caller(SootClass owner, SootMethod helper,
-                               Value compared) {
+                               Value compared, boolean equal) {
         SootMethod method = method(owner, "caller" + owner.getMethodCount(),
                 soot.VoidType.v());
         Body body = method.getActiveBody();
@@ -113,8 +161,14 @@ public class BooleanReturnsTest {
         body.getUnits().add(Jimple.v().newAssignStmt(result,
                 Jimple.v().newStaticInvokeExpr(helper.makeRef(),
                         body.getParameterLocal(0))));
-        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newEqExpr(result,
-                compared == null ? IntConstant.v(0) : compared), end));
+        Value against = compared == null ? IntConstant.v(0) : compared;
+        if (compared instanceof soot.jimple.StaticFieldRef) {
+            against = local(body, "$c", compared.getType());
+            body.getUnits().add(Jimple.v().newAssignStmt(against, compared));
+        }
+        body.getUnits().add(Jimple.v().newIfStmt(equal
+                ? Jimple.v().newEqExpr(result, against)
+                : Jimple.v().newNeExpr(result, against), end));
         body.getUnits().add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(helper.makeRef(),
                         IntConstant.v(1))));
@@ -159,6 +213,61 @@ public class BooleanReturnsTest {
         body.getUnits().add(Jimple.v().newGotoStmt(done));
         body.getUnits().add(low);
         body.getUnits().add(done);
+        return method;
+    }
+
+    /** {@code if (min(i0)) return state(i0); return State.COMPLETE;}, as
+     *  {@code getBlockUCState}'s {@code uc == null ? COMPLETE :
+     *  uc.getBlockUCState()} compiles. */
+    private static SootMethod ucState(SootClass owner, SootClass state,
+                                      SootMethod min) {
+        SootMethod read = new SootMethod("state",
+                Collections.<Type>singletonList(IntType.v()),
+                state.getType(), Modifier.PUBLIC | Modifier.STATIC);
+        owner.addMethod(read);
+        SootMethod method = method(owner, "getState", state.getType());
+        Body body = method.getActiveBody();
+        Local has = local(body, "$z0", BooleanType.v());
+        Local held = local(body, "$r1", state.getType());
+        Unit open = Jimple.v().newAssignStmt(held,
+                Jimple.v().newStaticInvokeExpr(read.makeRef(),
+                        body.getParameterLocal(0)));
+        Unit done = Jimple.v().newReturnStmt(held);
+        body.getUnits().add(Jimple.v().newAssignStmt(has,
+                Jimple.v().newStaticInvokeExpr(min.makeRef(),
+                        body.getParameterLocal(0))));
+        body.getUnits().add(Jimple.v().newIfStmt(Jimple.v().newNeExpr(has,
+                IntConstant.v(0)), open));
+        body.getUnits().add(Jimple.v().newAssignStmt(held,
+                Jimple.v().newStaticFieldRef(state.getFieldByName("COMPLETE")
+                        .makeRef())));
+        body.getUnits().add(Jimple.v().newGotoStmt(done));
+        body.getUnits().add(open);
+        body.getUnits().add(done);
+        return method;
+    }
+
+    /** {@code return getState(i0).equals(State.COMPLETE);}, as {@code
+     *  isComplete} compiles. */
+    private static SootMethod complete(SootClass owner, SootClass state,
+                                       SootMethod uc, SootClass object) {
+        SootMethod method = method(owner, "isComplete", BooleanType.v());
+        Body body = method.getActiveBody();
+        Local held = local(body, "$r1", state.getType());
+        Local constant = local(body, "$r2", state.getType());
+        Local equal = local(body, "$z0", BooleanType.v());
+        body.getUnits().add(Jimple.v().newAssignStmt(held,
+                Jimple.v().newStaticInvokeExpr(uc.makeRef(),
+                        body.getParameterLocal(0))));
+        body.getUnits().add(Jimple.v().newAssignStmt(constant,
+                Jimple.v().newStaticFieldRef(state.getFieldByName("COMPLETE")
+                        .makeRef())));
+        body.getUnits().add(Jimple.v().newAssignStmt(equal,
+                Jimple.v().newVirtualInvokeExpr(held, Scene.v().makeMethodRef(
+                        object, "equals", Collections.<Type>singletonList(
+                                RefType.v("java.lang.Object")),
+                        BooleanType.v(), false), constant)));
+        body.getUnits().add(Jimple.v().newReturnStmt(equal));
         return method;
     }
 

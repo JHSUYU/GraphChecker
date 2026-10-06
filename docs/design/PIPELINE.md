@@ -134,9 +134,10 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
    target's `guards` with their fatal arms, the helper branch arms deciding a guard on a helper's
-   constant return, nested (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards
-   before them; `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders at every
-   depth. Loop-bound
+   constant return, each with its verdict or open, nested (`guardDeciders`,
+   `causynth.BooleanReturns`) and the `chain` of guards before them; `StaticScopeMap.Site.pathSites`
+   = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
+   every decider of a guard with an open decider arm (`Site#openDeciderSites`). Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
@@ -316,11 +317,13 @@ which COMPOSE pins (§8, *A query's stated answer*).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
-the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on a constant
-a helper returned, the predicate of the decision that chose it (`RowPublication#decidedBy`: the latest
-decision in the helper's method before the target, when it is one of its `guardDeciders` arms; a
-concrete one there is decided by its nested helper's in turn; none: the target's constant) in the
-polarity of the arm the target took, the target standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
+the fatal polarity (`RowRuntime.fatalTerm`); when the target branch tests what a helper returned,
+its condition from the decision that chose the return (`RowPublication#decided`: the latest decision
+in the helper's method before the target, when it is one of its `guardDeciders` branches, as
+`ite(that decision as it held, the arm it took, the other arm)`, an arm its verdict or, open and
+taken, the target's own condition; a concrete one there takes its condition from its nested helper's
+deciders in turn; none -- the target's own condition -- where the other arm is open and never ran)
+in the fatal polarity, the target standing at the earliest decision it rests on; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
 evaluation decided, from the test it reached the target at, with `observedFatal` = one
 test took its fatal arm. A decision that states no predicate (the VM decided it concretely) is the
 constant of the arm it took: `true` on the fatal arm, `false` on the healthy one, so a concrete

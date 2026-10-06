@@ -162,10 +162,15 @@ public final class StaticScopeMap {
     /** One branch a site is control-dependent on, with the arm that reaches it
      *  (for the declared throw, the fatal polarity). {@code null} outcome: not
      *  binary (a switch).  A decider (causynth.BooleanReturns) is one too:
-     *  a helper's branch and the arm of it that runs to a constant return. */
+     *  one arm of a helper's branch, with its {@link #verdict}. */
     public static final class Guard {
         private final String siteId;
         private final Boolean outcome;
+        /** A decider arm's: whether the condition of the guard it decides
+         *  holds when this arm runs to the helper's constant return; null
+         *  for an OPEN arm, one that runs on to a value no constant states
+         *  (and for a guard that is no decider). */
+        private final Boolean verdict;
         /** The helper branch arms that decide this guard's arm when the
          *  guard tests the constant a helper returned
          *  (causynth.BooleanReturns), each with its own; none for another
@@ -177,14 +182,37 @@ public final class StaticScopeMap {
         }
 
         public Guard(String siteId, Boolean outcome, List<Guard> deciders) {
+            this(siteId, outcome, null, deciders);
+        }
+
+        public Guard(String siteId, Boolean outcome, Boolean verdict,
+                     List<Guard> deciders) {
             this.siteId = siteId == null ? "" : siteId;
             this.outcome = outcome;
+            this.verdict = verdict;
             this.deciders = Collections.unmodifiableList(
                     new ArrayList<Guard>(deciders));
         }
 
         public List<Guard> deciders() {
             return deciders;
+        }
+
+        public Boolean verdict() {
+            return verdict;
+        }
+
+        /** Whether some decider arm under these guards is open: the run
+         *  that took its constant sibling states nothing of what the open
+         *  arm would have returned. */
+        public static boolean anyOpen(Collection<Guard> deciders) {
+            Deque<Guard> pending = new ArrayDeque<Guard>(deciders);
+            while (!pending.isEmpty()) {
+                Guard decider = pending.pop();
+                if (decider.verdict == null) return true;
+                pending.addAll(decider.deciders);
+            }
+            return false;
         }
 
         /** Every decider site under these guards, theirs too. */
@@ -392,6 +420,23 @@ public final class StaticScopeMap {
             Set<String> sites = new LinkedHashSet<String>(guards);
             for (Guard guard : chain) sites.add(guard.siteId());
             sites.addAll(Guard.decidingSites(chain));
+            return sites;
+        }
+
+        /**
+         * The deciders a reached anchor asks (causynth.BooleanReturns): every
+         * decider site of a guard whose deciders hold an open arm.  A run
+         * that took the constant arm states nothing of what the open one
+         * returns, and the open one only runs where a decision below it
+         * turns.
+         */
+        public Set<String> openDeciderSites() {
+            Set<String> sites = new LinkedHashSet<String>();
+            for (List<Guard> deciders : guardDeciders.values()) {
+                if (!Guard.anyOpen(deciders)) continue;
+                for (Guard decider : deciders) sites.add(decider.siteId());
+                sites.addAll(Guard.decidingSites(deciders));
+            }
             return sites;
         }
 
@@ -983,6 +1028,9 @@ public final class StaticScopeMap {
         JsonObject json = new JsonObject();
         json.addProperty("siteId", guard.siteId());
         json.addProperty("outcome", guard.outcome());
+        if (guard.verdict() != null) {
+            json.addProperty("verdict", guard.verdict());
+        }
         if (!guard.deciders().isEmpty()) {
             json.add("deciders", guardsJson(guard.deciders()));
         }
@@ -1008,11 +1056,14 @@ public final class StaticScopeMap {
     }
 
     private static Guard guardOf(JsonObject json) {
-        JsonElement outcome = json.get("outcome");
         return new Guard(optionalString(json, "siteId"),
-                outcome == null || outcome.isJsonNull() ? null
-                        : Boolean.valueOf(outcome.getAsBoolean()),
+                flag(json.get("outcome")), flag(json.get("verdict")),
                 guardsOf(json.get("deciders")));
+    }
+
+    private static Boolean flag(JsonElement value) {
+        return value == null || value.isJsonNull() ? null
+                : Boolean.valueOf(value.getAsBoolean());
     }
 
     /** ROOT_SITE rows of an edge defining a local of its own method from a

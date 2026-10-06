@@ -2665,43 +2665,65 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A concrete target testing a helper's constant return is decided by the
-     * latest decision in the helper's method before it, when that is a
-     * decider arm (causynth.BooleanReturns); a concrete one testing a
-     * nested helper's return by that helper's in turn (hdfs-adhoc-40:
-     * {@code isSufficientlyReplicated}'s concrete test of {@code
-     * hasMinStorage}'s return, chosen by {@code liveNum >= min}).  Never an
-     * earlier call's: a latest decision at an arm that runs on, or concrete
-     * with nothing below it, decides nothing.
+     * A target testing a helper's return is decided by the latest decision
+     * in the helper's method before it, when that is a decider's
+     * (causynth.BooleanReturns): its condition is {@code ite(the decision as
+     * it held, the arm it took, the other arm)}, an arm its verdict or,
+     * open and taken, the guard's own condition; a concrete decision tests a
+     * nested helper's return, whose deciders give its condition (hdfs-adhoc
+     * 40: {@code isSufficientlyReplicated}'s concrete test of {@code
+     * hasMinStorage}'s return, chosen by {@code liveNum >= min}).  None --
+     * the guard its own, the decision on the path -- where the other arm is
+     * open and never ran, the constant arm taken is not what the guard
+     * observed, or the latest decision is no decider's: never an earlier
+     * call's, nor one after the target.
      */
     @Test
     public void aHelpersReturnIsDecidedByTheLatestArmInItsMethod() {
         String helper = "<a.H: boolean sufficient(int)>";
         String nested = "<a.H: boolean hasMin(int)>";
+        List<StaticScopeMap.Guard> hasMin = Arrays.asList(
+                new StaticScopeMap.Guard(nested + "#u1", true, true,
+                        Collections.<StaticScopeMap.Guard>emptyList()),
+                new StaticScopeMap.Guard(nested + "#u1", false, false,
+                        Collections.<StaticScopeMap.Guard>emptyList()));
         List<StaticScopeMap.Guard> deciders = Arrays.asList(
-                new StaticScopeMap.Guard(helper + "#u2", false, Arrays.asList(
-                        new StaticScopeMap.Guard(nested + "#u1", true),
-                        new StaticScopeMap.Guard(nested + "#u1", false))),
-                new StaticScopeMap.Guard(helper + "#u4", true),
-                new StaticScopeMap.Guard(helper + "#u4", false));
-        JsonObject m = predicate("m"), h = predicate("h");
+                new StaticScopeMap.Guard(helper + "#u2", true, null, hasMin),
+                new StaticScopeMap.Guard(helper + "#u2", false, true, hasMin),
+                new StaticScopeMap.Guard(helper + "#u4", true, false,
+                        Collections.<StaticScopeMap.Guard>emptyList()),
+                new StaticScopeMap.Guard(helper + "#u4", false, true,
+                        Collections.<StaticScopeMap.Guard>emptyList()));
+        JsonObject m = predicate("m"), h = predicate("h"), o = predicate("o");
+        String refM = RowRuntime.expressionRef(m);
+        String refH = RowRuntime.expressionRef(h);
+        String refO = RowRuntime.expressionRef(o);
         Object[][] rows = {
-            // the decisions before the target at 12, which one decided it
-            {"the nested helper's comparison", new Object[][]{
-                    {nested + "#u1", 10L, false, m},
-                    {helper + "#u2", 11L, false, null}}, 10L},
-            {"the helper's own comparison", new Object[][]{
-                    {nested + "#u1", 9L, true, m},
-                    {helper + "#u2", 10L, true, null},
-                    {helper + "#u4", 11L, true, h}}, 11L},
-            {"an arm that runs on decides nothing", new Object[][]{
+            // the decisions before the target at 12, what the guard
+            // observed, and the condition with the event it stands at
+            {"two constant arms: the decision at the arm it took",
+                new Object[][]{{helper + "#u4", 11L, true, h}}, false,
+                "(not " + refH + ")", 11L},
+            {"the constant arm taken must be what the guard observed",
+                new Object[][]{{helper + "#u4", 11L, true, h}}, true,
+                null, null},
+            {"an open arm taken is the guard's own condition beside the"
+                    + " constant one", new Object[][]{
+                    {helper + "#u2", 11L, true, m}}, true,
+                "(ite " + refM + " " + refO + " true)", 11L},
+            {"a constant arm taken beside an open one that never ran:"
+                    + " none", new Object[][]{
+                    {helper + "#u2", 11L, false, m}}, true, null, null},
+            {"concrete, the nested helper's comparison decides it",
+                new Object[][]{
                     {nested + "#u1", 10L, true, m},
-                    {helper + "#u2", 11L, true, null}}, null},
+                    {helper + "#u2", 11L, true, null}}, true,
+                "(ite " + refM + " " + refO + " true)", 10L},
             {"never an earlier call's", new Object[][]{
                     {helper + "#u4", 5L, true, h},
-                    {helper + "#u4", 11L, false, null}}, null},
+                    {helper + "#u4", 11L, false, null}}, true, null, null},
             {"nor one after the target", new Object[][]{
-                    {helper + "#u4", 13L, true, h}}, null}};
+                    {helper + "#u4", 13L, true, h}}, false, null, null}};
         for (Object[] row : rows) {
             List<JsonObject> mappings = new ArrayList<>();
             for (Object[] each : (Object[][]) row[1]) {
@@ -2710,10 +2732,12 @@ public class RowRuntimeTest {
                 mapping.addProperty("vmEventId", (Long) each[1]);
                 mappings.add(mapping);
             }
-            JsonObject found = RowPublication.decidedBy(mappings, deciders,
-                    12L);
-            assertEquals((String) row[0], row[2], found == null ? null
-                    : found.get("vmEventId").getAsLong());
+            RowPublication.Decided found = RowPublication.decided(mappings,
+                    deciders, 12L, refO, (Boolean) row[2]);
+            assertEquals((String) row[0], row[3],
+                    found == null ? null : found.condition);
+            assertEquals((String) row[0], row[4],
+                    found == null ? null : Long.valueOf(found.at));
         }
     }
 

@@ -162,8 +162,9 @@ public final class ClosurePlanner {
         // The anchor flips only the decisions on its way to the throw: the
         // target's guard set (PIPELINE §7.2) and, when no run of it reached
         // the throw, the chain its path left by; flipping a chain guard of a
-        // path that went on to the throw only leaves it.  The throw itself is
-        // no branch.
+        // path that went on to the throw only leaves it.  A reached one asks
+        // the deciders with an open arm too (StaticScopeMap.Site
+        // #openDeciderSites).  The throw itself is no branch.
         boolean reached = false;
         for (TargetRow row : corpus.targetsOn(anchor)) {
             reached |= row.reachedAnchor();
@@ -171,6 +172,7 @@ public final class ClosurePlanner {
         for (StaticScopeMap.Site target : scope.targetSites()) {
             start.flipSites.addAll(reached ? target.guards
                     : target.pathSites());
+            if (reached) start.flipSites.addAll(target.openDeciderSites());
         }
         Concrete concrete = concrete(corpus, anchor, start.flipSites, scope);
         if (concrete != null) {
