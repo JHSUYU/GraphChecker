@@ -869,8 +869,9 @@ anything else is `NOT_ADMITTED` naming why. **A refuted world** (`WORLD_REFUTED`
 `FocusedReplay#refuted`, an open decider arm's flip only, never CONFIRM's): a replay that never
 entered the flip's occurrence and ran its world faithfully -- (a) every assigned root and skew
 minted at its value, no prefix abandoned; (b) no order hold gave way (`Confirmation#held`: none
-waited out its timeout, no paired read observed another writer) and a hold still in force at the
-end waits only on that occurrence; (c) no slot was given up (`ScheduleLog#giveUpLocked`) before
+waited out its timeout, no paired read observed another writer) and a hold in force at the end --
+still waiting, or until an interrupt of the run's own end (a cluster's shutdown) let it go -- waits
+only on that occurrence; (c) no slot was given up (`ScheduleLog#giveUpLocked`) before
 the world first acted (a plant, an answer, a hold waiting: `FocusedReplay#worldActed`); (d) the
 workload ended by itself (`JUnitMethodRunner#main`, not a bound, a witness or a refusal) -- is
 NOT_ADMITTED with a `refutation` (the conditions, the workload's exception, where it was thrown and

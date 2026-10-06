@@ -395,6 +395,9 @@ public final class Confirmation {
                     try {
                         LOCK.wait(Math.min(left, 200L));
                     } catch (InterruptedException interrupted) {
+                        // The run's own end (a cluster's shutdown) ended
+                        // the wait: the hold stood until then.
+                        ENDED_WAITING.put(activation, before);
                         Thread.currentThread().interrupt();
                         return;
                     }
@@ -409,13 +412,19 @@ public final class Confirmation {
     /** Activation -> those ordered before it, while its hold waits. */
     private static final Map<String, Set<String>> WAITING =
             new HashMap<String, Set<String>>();
+    /** The same, for a hold whose wait an interrupt ended: the run's own
+     *  end (a cluster shutting down) let it go, the order never did. */
+    private static final Map<String, Set<String>> ENDED_WAITING =
+            new HashMap<String, Set<String>>();
 
     /**
      * How this run held its world's order, read at the close
      * ({@code FocusedReplay#refuted}): the holds that gave way (an order
-     * waited out its timeout), each hold still in force with the
-     * activations it waits for, and each STATE read that observed another
-     * writer than the model's.  A read that never happened is none of them.
+     * waited out its timeout), each hold in force until the end -- still
+     * waiting, or until an interrupt of the run's own end let it go -- with
+     * the activations it waits for, and each STATE read that observed
+     * another writer than the model's.  A read that never happened is none
+     * of them.
      */
     static final class Held {
         final List<String> gaveWay;
@@ -435,7 +444,10 @@ public final class Confirmation {
         synchronized (LOCK) {
             Map<String, Set<String>> waiting =
                     new LinkedHashMap<String, Set<String>>();
-            for (Map.Entry<String, Set<String>> hold : WAITING.entrySet()) {
+            Map<String, Set<String>> held =
+                    new LinkedHashMap<String, Set<String>>(ENDED_WAITING);
+            held.putAll(WAITING);
+            for (Map.Entry<String, Set<String>> hold : held.entrySet()) {
                 Set<String> missing =
                         new LinkedHashSet<String>(hold.getValue());
                 missing.removeAll(EXITED);
@@ -666,6 +678,7 @@ public final class Confirmation {
             EXITED.clear();
             UNREALIZED.clear();
             WAITING.clear();
+            ENDED_WAITING.clear();
             unread = "";
             WIRE.clear();
             STATE.clear();
