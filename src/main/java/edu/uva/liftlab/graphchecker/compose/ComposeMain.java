@@ -242,6 +242,7 @@ public final class ComposeMain {
         String reason;
         JsonArray restsOnRefutations = new JsonArray();
         JsonArray openChain = new JsonArray();
+        JsonArray offWitness = new JsonArray();
         // An UNSAT left no verdict by a model CONFIRM gave none on.
         boolean besideRefused = false;
         if (blockers > 0) {
@@ -259,10 +260,14 @@ public final class ComposeMain {
                     : "");
             // A claim never stands on a value no attested producer made: the
             // witness's chain is closed first (EXPLORE grows its producers,
-            // PIPELINE §7.9), else no verdict, named.
-            for (JsonObject link : composition.openChain(
-                    witness(decision))) {
+            // PIPELINE §7.9), else no verdict, named.  A SAT is judged on the
+            // path it claims; the other paths' open links are stated.
+            ClaimPolicy.Outcome witness = witness(decision);
+            for (JsonObject link : composition.openChain(witness)) {
                 openChain.add(link);
+            }
+            for (JsonObject link : composition.offWitness(witness)) {
+                offWitness.add(link);
             }
             if (openChain.size() == 0) {
                 kind = "SAT_CANDIDATE";
@@ -309,7 +314,18 @@ public final class ComposeMain {
                 }
             }
             restsOnRefutations = rests;
-            if (refused > 0) {
+            // An UNSAT rests on every path: each one's fatal condition is
+            // closed, or there is no verdict, its open links named.
+            for (JsonObject link : composition.openChain(null)) {
+                openChain.add(link);
+            }
+            if (openChain.size() > 0) {
+                kind = "RUN_DEFECT";
+                reason = "the composed formula is unsat, but the fatal"
+                        + " conditions it rests on name " + openChain.size()
+                        + " handoff value(s) no producer the corpus attests"
+                        + " made (openChain): no verdict";
+            } else if (refused > 0) {
                 kind = "RUN_DEFECT";
                 besideRefused = true;
                 reason = "the composed formula is unsat only beside " + refused
@@ -342,6 +358,7 @@ public final class ComposeMain {
         // Named only where it holds: EMIT lists it as a defect.
         if (besideRefused) row.addProperty("unsatBesideRefused", true);
         if (openChain.size() > 0) row.add("openChain", openChain);
+        if (offWitness.size() > 0) row.add("unboundOffWitness", offWitness);
         JsonArray refused = new JsonArray();
         for (JsonObject path : composition.refusedPaths()) refused.add(path);
         row.add("refusedPaths", refused);

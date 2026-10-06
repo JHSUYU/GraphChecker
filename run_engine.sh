@@ -6836,10 +6836,13 @@ campaign_emit() {
           then [{stage: "COMPOSE", code: "UNSAT_BESIDE_REFUSED",
                  subject: "", detail: $decided.claimReason}]
           else [] end)
-       # A witness whose causal chain EXPLORE could not close: a value the
-       # fatal condition of its path rests on that no attested producer made.
-       + [($decided.openChain // [])[]
-          | {stage: "COMPOSE", code: "WITNESS_CHAIN_OPEN", subject: .symbol,
+       # A causal chain EXPLORE could not close: a value a fatal condition the
+       # verdict rests on names that no attested producer made -- the witness
+       # path for a SAT, every path for an UNSAT.
+       + [($decided.findingKind // "") as $kind | ($decided.openChain // [])[]
+          | {stage: "COMPOSE", code: (if $kind == "NO_SUPPORTED_WITNESS"
+               then "UNSAT_CHAIN_OPEN" else "WITNESS_CHAIN_OPEN" end),
+             subject: .symbol,
              detail: ("no producer the corpus attests made this value"
                + (if .producer == "" then "" else "; its arrival names "
                   + .producer + ", which EXPLORE did not grow" end))}]),

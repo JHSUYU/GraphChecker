@@ -847,6 +847,78 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A VERDICT IS JUDGED ON THE PATHS IT RESTS ON (PIPELINE §8, the claim;
+     * compose.Cone, cone.py): a SAT on the path it claims -- another path
+     * whose fatal condition rests on a value no attested producer made is
+     * stated (unboundOffWitness) and gates nothing -- an UNSAT on every path:
+     * one such path leaves no verdict, its open link named (openChain) with
+     * the producer GROW would plan.
+     */
+    @Test
+    public void aClaimIsJudgedOnThePathsItRestsOn() throws Exception {
+        Path iteration = folder.newFolder("judged-on-its-paths").toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        String vh = "M_Z_field_HOFF.key";
+        session(iteration, "s0", false, "false", producer, consumer, vh,
+                "false", null, true, false, "EXPR.v1.marker");
+        session(iteration, "s1", true, "true", producer, consumer, vh,
+                "true", null, true, true, "EXPR.v1.marker");
+        // A replay paired with another export of the producer, which no
+        // session attests (it ran concretely): its arrival is held.
+        Endpoint unattested = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#2", 0), 0);
+        session(iteration, "s2", true, "false", unattested, consumer, vh,
+                "false", null, false, false, "EXPR.v1.marker");
+        Composer.Composition composition = compose(iteration, 8);
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        JsonObject sat = ComposeMain.campaignClaim(composition, decision);
+        assertEquals(sat.toString(), "SAT_CANDIDATE",
+                sat.get("claim").getAsString());
+        assertFalse("the witness's own chain is closed: " + sat,
+                sat.has("openChain"));
+        JsonArray off = sat.getAsJsonArray("unboundOffWitness");
+        assertEquals("s2's open link is stated: " + sat, 1, off.size());
+        assertEquals(vh, off.get(0).getAsJsonObject().get("symbol")
+                .getAsString());
+
+        // The witness's model refuted: the formula is unsat, and rests on
+        // s2's path too, whose fatal condition names the held arrival.
+        ClaimPolicy.Outcome claimed = decision.outcomes().get(
+                decision.claim().valuationOrdinal());
+        JsonObject model = new JsonObject();
+        model.addProperty("pathId", claimed.selected().path().pathId);
+        JsonArray arms = new JsonArray();
+        for (String arm : claimed.selectedArms().keySet()) arms.add(arm);
+        model.add("arms", arms);
+        JsonObject assignment = new JsonObject();
+        for (Map.Entry<String, String> root
+                : claimed.valuation().assignment().entrySet()) {
+            assignment.addProperty(root.getKey(), root.getValue());
+        }
+        model.add("assignment", assignment);
+        JsonObject refuted = new JsonObject();
+        refuted.add("model", model);
+        refuted.addProperty("reason", "the replay took the healthy arm");
+        RowCodec.writeJsonl(iteration.resolve("refuted_claims.jsonl"),
+                Collections.singletonList(refuted));
+        Composer.Composition next = compose(iteration, 8);
+        ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
+        assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
+        JsonObject unsat = ComposeMain.campaignClaim(next, again);
+        assertEquals(unsat.toString(), "RUN_DEFECT",
+                unsat.get("claim").getAsString());
+        JsonObject link = unsat.getAsJsonArray("openChain").get(0)
+                .getAsJsonObject();
+        assertEquals(vh, link.get("symbol").getAsString());
+        assertEquals("the producer GROW would plan", PRODUCER.render(),
+                link.get("producer").getAsString());
+    }
+
     /** A z3 whose every core run answers unknown, and every other run as
      *  z3 does. */
     private Z3 corelessSolver() throws IOException {

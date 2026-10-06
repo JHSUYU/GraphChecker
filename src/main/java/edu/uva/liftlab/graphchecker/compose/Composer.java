@@ -542,32 +542,57 @@ public final class Composer {
         }
 
         /**
-         * THE WITNESS'S OPEN CHAIN: each value its path's fatal condition
-         * rests on that no producer the corpus attests made -- the set
-         * {@code experiments/accept/cone.py} reads off this formula for the
-         * claimed path ({@link Cone}) -- each with the producer occurrence
-         * its arrival names where no attested export delivered it, the one
-         * GROW can plan (PIPELINE §7.9); none where nothing could (a value
-         * whose attested producer's export did not lower, an attach naming
-         * no producer).  Empty for an outcome that selects no path.
+         * THE OPEN LINKS of the paths a verdict rests on: each value a path's
+         * fatal condition rests on that no producer the corpus attests made
+         * -- the set {@code experiments/accept/cone.py} reads off this
+         * formula ({@link Cone}) -- each with the producer occurrence its
+         * arrival names where no attested export delivered it, the one GROW
+         * can plan (PIPELINE §7.9); none where nothing could (a value whose
+         * attested producer's export did not lower, an attach naming no
+         * producer).  A SAT is judged on the path it claims ({@code
+         * witness}, with the arms it chose), an UNSAT on every path it rests
+         * on ({@code witness} null).
          */
         public List<JsonObject> openChain(ClaimPolicy.Outcome witness) {
             List<JsonObject> open = new ArrayList<JsonObject>();
-            if (witness == null || witness.selected() == null) return open;
-            Disjunct path = witness.selected();
+            if (witness != null) {
+                if (witness.selected() != null) {
+                    links(witness.selected(),
+                            witness.selectedArms().keySet(), open);
+                }
+                return open;
+            }
+            for (Disjunct path : disjuncts) {
+                links(path, Collections.<String>emptySet(), open);
+            }
+            return open;
+        }
+
+        /** The open links of the paths a SAT does not take: information
+         *  ({@code cone.py}'s {@code unboundOffWitness}), never gating. */
+        public List<JsonObject> offWitness(ClaimPolicy.Outcome witness) {
+            List<JsonObject> open = new ArrayList<JsonObject>();
+            for (Disjunct path : disjuncts) {
+                if (witness != null && path == witness.selected()) continue;
+                links(path, Collections.<String>emptySet(), open);
+            }
+            return open;
+        }
+
+        private void links(Disjunct path, Set<String> arms,
+                           List<JsonObject> open) {
             for (String symbol : Cone.unbound(body, path.selector(),
-                    path.path().pathId, witness.selectedArms().keySet(),
-                    concrete)) {
+                    path.path().pathId, arms, concrete)) {
                 Endpoint producer = unattestedArrivals.get(symbol);
                 JsonObject row = new JsonObject();
                 row.addProperty("symbol", symbol);
+                row.addProperty("pathId", path.path().pathId);
                 row.addProperty("producer", producer == null ? ""
                         : producer.occurrence().render());
                 row.addProperty("producerEndpointId",
                         producer == null ? "" : producer.id());
                 open.add(row);
             }
-            return open;
         }
 
         public List<RootDomain> roots() {

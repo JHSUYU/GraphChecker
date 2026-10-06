@@ -1716,7 +1716,17 @@ kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's 
 exactly: no world of the explored corpus reaches the fatal -- each admitted path under the marker
 valuation its own run ran (`valuationOf`), every declared root free over its domain, every clock
 over its window, and the values `concrete[]` holds (HELD, producer unstated) -- and nothing about a
-path the exploration did not admit. EMIT publishes
+path the exploration did not admit. A VERDICT IS JUDGED ON THE PATHS IT RESTS ON (owner 2026-10-06):
+a SAT on the path it claims, an UNSAT on every path. Each value the fatal condition of such a path
+names that no message family under its selector binds -- or that an arm the witness chose holds FREE
+or HELD -- is an open link of the chain (`compose.Cone`, the set `experiments/accept/cone.py` reads
+off the same formula; `Composition#openChain`, each with the producer occurrence its arrival names):
+an open link leaves no verdict, `RUN_DEFECT` with `openChain` (EMIT: `WITNESS_CHAIN_OPEN` for a
+SAT, `UNSAT_CHAIN_OPEN` for an UNSAT). A SAT's other paths' open links are stated, never gating
+(`unboundOffWitness`, cone.json's too). EXPLORE closes a witness's chain before it ends (§7.9); an
+UNSAT's paths are closed by the exploration's own growth, which plans each demanded producer an
+admitted session exposes (§7.2, §7.8), so a link still open at the fixed point is one growing could
+not close. EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
 when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
@@ -1728,7 +1738,8 @@ which a standalone z3 re-solves to the same verdict, SAT or UNSAT). The manifest
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
 root's category, `contract.RootCategory`), `configurationOnly` (the claim moves configuration only:
-the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`).
+the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`,
+`openChain` and `unboundOffWitness` where they hold a link).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
