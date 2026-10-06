@@ -392,7 +392,9 @@ public final class ObligationFactory {
      * Branches#parents}): a child inherits the parent's world (PIPELINE
      * §7.5), a NOT_ADMITTED replay ran no world, and one whose branch
      * stopped ran none the question is asked in. Such sessions still attest
-     * arms ({@link Frontier}).</p>
+     * arms ({@link Frontier}).  Every path is keyed; {@code
+     * maxPathsPerTask} bounds the paths that offer an owed arm, so it cuts
+     * new work only.</p>
      *
      * @param flipSites site ids this task's demand names; null = none
      * @param branches  which sessions a path may be cut from
@@ -420,22 +422,14 @@ public final class ObligationFactory {
                 tooDeep++;
                 continue;
             }
-            // A bound that drops work says so (gap below). Smallest-world-first
-            // means the cap keeps the paths closest to the recording.
-            if (paths >= bounds.maxPathsPerTask) {
-                unread++;
-                continue;
-            }
-            paths++;
-            int flips = 0;
+            // Its owed arms: each arm once (the same arm from another path is
+            // the same obligation; the first path -- smallest world, fewest
+            // inherited constraints -- is its prefix), fault flips first
+            // (PIPELINE §7.4: cheap, and they grow the graph), at most
+            // maxFlipsPerPath of them.
+            List<Candidate> owedHere = new ArrayList<Candidate>();
             int unflipped = 0;
-            // Fault flips first (PIPELINE §7.4): cheap, and they grow the
-            // graph.
             for (int index : faultFirst(corpus, path)) {
-                if (flips >= bounds.maxFlipsPerPath) {
-                    unflipped++;
-                    continue;
-                }
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(decision)) {
                     continue;
@@ -446,30 +440,46 @@ public final class ObligationFactory {
                 }
                 Candidate candidate =
                         new Candidate(corpus, task, path, index);
-                // The same arm from another path is the same obligation; the
-                // first path (smallest world, fewest inherited constraints) is
-                // its prefix.
-                if (!offered.add(candidate.obligationId)) continue;
+                if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
                 if (!reason.isEmpty()) {
+                    offered.add(candidate.obligationId);
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             decision.siteId() + "#" + decision.ordinal()
                                     + " -> " + !decision.outcome(), reason));
                     continue;
                 }
+                if (owedHere.size() >= bounds.maxFlipsPerPath) {
+                    unflipped++;
+                    continue;
+                }
+                owedHere.add(candidate);
+            }
+            // The path bound counts new work, never repetition: a path whose
+            // arms are all settled or offered by a path before it is no path
+            // to cut from (hdfs-adhoc-08 HG8F: of 15995 paths past the
+            // bound, 15670 offered nothing owed).  Smallest-world-first means
+            // the bound keeps the paths closest to the recording; one that
+            // drops work says so (gap below).
+            if (owedHere.isEmpty()) continue;
+            if (paths >= bounds.maxPathsPerTask) {
+                unread++;
+                continue;
+            }
+            paths++;
+            for (Candidate candidate : owedHere) {
+                offered.add(candidate.obligationId);
                 candidates.add(candidate);
-                flips++;
             }
             if (unflipped > 0) {
                 gaps.add(GapRow.of(path.sessionId,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         task.taskId() + " max-flips-per-path="
                                 + bounds.maxFlipsPerPath,
-                        "this path offered more flippable decisions than one "
-                                + "round takes from it: " + unflipped
-                                + " decision(s) after the "
-                                + bounds.maxFlipsPerPath
+                        "this path offered more owed arms than one round "
+                                + "takes from it: " + unflipped
+                                + " after the " + bounds.maxFlipsPerPath
                                 + " this round cut, left unasked"));
             }
         }
@@ -488,11 +498,11 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     task.taskId() + " max-paths-per-region="
                             + bounds.maxPathsPerTask,
-                    "this task has " + (paths + unread) + " cuttable "
-                            + "recorded path(s) and this round planned from "
-                            + paths + ": " + unread + " path(s), the "
-                            + "ones carrying the largest worlds, were not "
-                            + "read at all"));
+                    "this task has " + (paths + unread) + " recorded "
+                            + "path(s) that offer an owed arm and this round "
+                            + "planned from " + paths + ": " + unread
+                            + " path(s), the ones carrying the largest "
+                            + "worlds, were not cut from"));
         }
         return candidates;
     }

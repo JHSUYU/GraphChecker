@@ -766,6 +766,49 @@ public class ExploreTest {
                     && gap.subject().endsWith("max-world-depth=0");
         }
         assertTrue("and the bound states what it left unread", stated);
+
+        // THE PATH BOUND counts new work, never repetition: a path whose
+        // arms are all settled or offered by a path before it is skipped
+        // uncounted, so a bound of one cuts from the first path that offers
+        // an owed arm and names only the others that do.
+        Path every = out.resolve("obligations-0006");
+        plan(iteration, TARGET_SELECTOR, null, results, every, 6);
+        Set<String> owedPaths = new LinkedHashSet<String>();
+        for (Obligation obligation : obligations(every)) {
+            if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
+                owedPaths.add(obligation.pathId());
+            }
+        }
+        assertEquals("two of the target's paths offer an owed arm: "
+                + owedPaths, 2, owedPaths.size());
+        assertEquals("of eight", 8,
+                Corpus.read(iteration, null).pathsOf(target).size());
+        Path one = out.resolve("obligations-0007");
+        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, null,
+                iteration.resolve(StaticScopeMap.FILE), one, 7, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                new ObligationFactory.Bounds(1,
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
+                        ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
+        Set<String> cut = new LinkedHashSet<String>();
+        for (Obligation obligation : obligations(one)) {
+            if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
+                cut.add(obligation.pathId());
+            }
+        }
+        assertEquals("one path cut from, the first that offers an owed arm",
+                1, cut.size());
+        String named = "";
+        for (GapRow gap : RowCodec.readAll(one.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            if (gap.subject().equals(ClosurePlanner.taskId(target)
+                    + " max-paths-per-region=1")) {
+                named = gap.detail();
+            }
+        }
+        assertTrue("and the bound names only the two that offer an owed "
+                        + "arm: " + named, named.startsWith("this task has 2 "
+                + "recorded path(s) that offer an owed arm"));
     }
 
     /**

@@ -75,7 +75,12 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
 - The owner's bound rule (RULES): every BOUNDED case of a round (`round-verify.sh`'s count, `result.json` `bounded`)
   is read: a large closure gets the cluster and a longer budget, a redundant one is an engine defect. HG8F/HG8W: 05,
   06, 08, 09 and 11741 read only `region_path_max_paths_per_region` (32) recorded paths of some tasks (17-194 task
-  rounds each).
+  rounds each); `hdfs-frontier-depth` makes the bound count only paths that offer an owed arm (gate pending).
+- An arm's key, its world part (`hdfs-frontier-depth`, parked until A1's `compose.RestsOn` merges): keyed by the
+  handoffs the closure's demand names, 11's offers fell 54 % and 07's 34 %, but 11 merged an arm ADMITTED on one
+  path and UNSAT on another (`Client#getRpcResponse` u18#3): the UNSAT comes from a writer arm's prefix condition
+  (`r_in_19` at DataNode startup) the key does not see. The world part has to be the reached occurrences' kept
+  conditions (`RestsOn`), not handoff sites.
 - Scope batch 2 (the owner's top priority "让更多的都可翻转"): 29/30 recoveryId (a SCOPE boundary for system callees
   out of scope; growth spends on demanded rows; follow receivers built by calls); 17 the lease grant state; 15/39 a
   turn for tracked-write ordering (complete vs IBR); 07 an export capture where the QJM client sets the segment it

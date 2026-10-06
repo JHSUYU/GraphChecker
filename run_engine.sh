@@ -5551,9 +5551,9 @@ explore_manifest.json 2>/dev/null) \
          | {by: "region_path_max_waves", detail: $exploration[0].detail}),
         (select(($paths | length) > 0)
          | {by: "region_path_max_paths_per_region",
-            detail: ("\($paths | length) task round(s) read only"
-              + " \($paths[0].subject | sub(".* "; "")) recorded paths, the"
-              + " rest unread")}),
+            detail: ("\($paths | length) task round(s) cut from only"
+              + " \($paths[0].subject | sub(".* "; "")) of the recorded"
+              + " paths that offer an owed arm, the rest uncut")}),
         (select(($depth | length) > 0)
          | {by: "region_path_max_world_depth",
             detail: ("\($depth | length) task round(s) cut from no path"

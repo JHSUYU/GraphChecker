@@ -569,9 +569,14 @@ difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
-`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
-`--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
-a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. The planner builds no query;
+`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
+arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is
+keyed, and the path bound counts only the paths that offer an OWED arm -- one no ledger settles and
+no path before it offers: a path whose arms are all settled or already offered is no path to cut
+from and is skipped uncounted, so the bound cuts new work, never repetition (hdfs-adhoc-08 HG8F: of
+15995 paths past the bound, 15670 offered nothing owed; the 325 others held 86 owed arms). Every
+bound that drops work files a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too,
+each arm once per task round. The planner builds no query;
 an arm in flight is held by its flip (`ObligationFactory#flip`, §7.3), the first half of its
 question.
 
