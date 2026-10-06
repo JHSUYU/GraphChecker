@@ -73,6 +73,10 @@ hold_room() {
   release_hold
   for host in "${hosts[@]}"; do
     (( running[$host] < slots )) || continue
+    # Another sweep's job holds this host: two holds on one host each count
+    # the other's, and neither job could ever start there.
+    dir="${campaign_host_gate_root}/$(campaign_host_key "${host}")/heads"
+    ! compgen -G "${dir}/fanout.*.hold" >/dev/null || continue
     room=$(campaign_host_room "${host}") || continue
     [[ -z "${best_room}" ]] || (( room > best_room )) || continue
     best=${host}; best_room=${room}

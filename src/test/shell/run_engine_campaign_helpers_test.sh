@@ -5214,8 +5214,18 @@ hold_file=$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" | head -n 1)
     && ! -e "${hold_dir}/0.out" ]] \
   || fail "a job with no room held nothing while it waited: \
 $(ls -R "${hold_dir}/ledger") $(cat "${hold_dir}/fanout.out")"
+# A host another sweep's waiting job holds is not held again.
+( LIFTS=localhost CAUSYNTH_HOST_LEDGER="${hold_dir}/ledger" \
+    bash "${repo}/tools/adhoc/fanout.sh" "${hold_dir}/jobs" \
+    "${hold_dir}/logs2" >"${hold_dir}/fanout2.out" 2>&1 ) &
+hold_second=$!
+sleep 12
+[[ "$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" | wc -l)" -eq 1 ]] \
+  || fail "two waiting sweeps both held one host: \
+$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold")"
 rm -f -- "${hold_block}"
 wait "${hold_fanout}" || fail "fanout failed a held job: $(cat "${hold_dir}/fanout.out")"
+wait "${hold_second}" || fail "the second fanout failed: $(cat "${hold_dir}/fanout2.out")"
 [[ -s "${hold_dir}/0.out" ]] \
   && ! compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" >/dev/null \
   || fail "the held job did not start, or its hold outlived it"
