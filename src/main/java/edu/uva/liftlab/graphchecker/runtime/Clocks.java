@@ -255,11 +255,7 @@ public final class Clocks {
         if (began == null || at == null) return;
         long nanos = began[0] + 1L;
         long millis = Long.MIN_VALUE;
-        if (began[3] != 0L) {
-            // Uncapped too: a turn that let the wait end may have moved the
-            // frontier off a standing line (hdfs-adhoc-17, round TM10: with
-            // only a standing cap honoured, every DataNode's turn #1 found
-            // its heartbeat not due again).
+        if (began[3] != 0L && at.cap != null) {
             nanos = Math.max(nanos, upTo(began[0], began[2], at.hiNanos));
             millis = upTo(began[1], TimeUnit.NANOSECONDS.toMillis(began[2]),
                     at.hiMillis);
@@ -270,11 +266,9 @@ public final class Clocks {
         own[0] = Math.max(own[0], began[1] + 1L);
     }
 
-    /** {@code from + by}, at most {@code cap}; with no cap, none past
-     *  overflow ({@code by} a wait that never runs out). */
+    /** {@code from + by}, at most {@code cap}. */
     private static long upTo(long from, long by, long cap) {
-        if (by < cap - from) return from + by;
-        return cap == Long.MAX_VALUE ? Long.MIN_VALUE : cap;
+        return by >= cap - from ? cap : from + by;
     }
 
     /**
