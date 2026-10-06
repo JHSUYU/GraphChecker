@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.explore.Moved;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -214,12 +215,16 @@ public final class Composer {
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
-        /** refuted_claim__k -> the refuted model it excludes. */
+        /** refuted_claim__k, refused_claim__k -> the model it excludes. */
         private final Map<String, Refutations.Refuted> refutations;
         private final List<JsonObject> refusedPaths;
         private final Map<String, List<String>> ownArms;
         private final Map<String, List<String>> recordedAtPlants;
         private final String seedSessionId;
+        /** The sessions, their worlds and rows ({@link #ranModel}). */
+        private final Corpus corpus;
+        /** Every CLOCK root this composition anchors -> its reading. */
+        private final Map<String, String> clockRootReadings;
         /** Where each top-level command of the body ends, the path
          *  selector it is guarded by (null: every path's; #pathQuery), and
          *  whether it asserts a refuted claim (#withoutFatalArm). */
@@ -300,6 +305,14 @@ public final class Composer {
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
             this.seedSessionId = composed.seed();
+            this.corpus = composed.corpus;
+            Map<String, String> readings = new LinkedHashMap<String, String>();
+            for (RootDomain root : roots) {
+                if (root.kind() == RootKind.CLOCK) {
+                    readings.put(root.rootId(), root.recordedValue());
+                }
+            }
+            this.clockRootReadings = Collections.unmodifiableMap(readings);
             List<Integer> ends = new ArrayList<Integer>();
             List<String> guards = new ArrayList<String>();
             commands(body, new LinkedHashSet<String>(
@@ -401,16 +414,17 @@ public final class Composer {
         }
 
         /**
-         * Whether the command between these offsets asserts a refuted claim
-         * ({@link Composer#refutations}): its name closes it, so only its
-         * last characters are read.  An unbounded search from there read the
-         * rest of the body per command and per path (HR1 hdfs-adhoc-07: 556
-         * sessions, and the self-check of an UNSAT ran past the case's
-         * limit).
+         * Whether the command between these offsets excludes a model CONFIRM
+         * refuted or gave no verdict on ({@link Composer#refutations}): its
+         * name closes it, so only its last characters are read.  An
+         * unbounded search from there read the rest of the body per command
+         * and per path (HR1 hdfs-adhoc-07: 556 sessions, and the self-check
+         * of an UNSAT ran past the case's limit).
          */
         private static boolean refutation(String body, int start, int end) {
-            return body.substring(Math.max(start, end - 64), end)
-                    .contains(":named " + REFUTED_CLAIM);
+            String tail = body.substring(Math.max(start, end - 64), end);
+            return tail.contains(":named " + REFUTED_CLAIM)
+                    || tail.contains(":named " + REFUSED_CLAIM);
         }
 
         private boolean kept(int command, String selector) {
@@ -757,6 +771,35 @@ public final class Composer {
             return seedSessionId;
         }
 
+        /**
+         * Whether {@code selected}'s session is itself the run of a model
+         * moving {@code movedRoots} (a claim's: a root id, or a clock cell
+         * at the model's instant): it ran the model's world ({@link
+         * Moved#ranBy}, the test CONFIRM's realizedBy applies to a claim).
+         */
+        public boolean ranModel(Disjunct selected,
+                                Map<String, String> movedRoots) {
+            return ran(selected, movedRoots, true);
+        }
+
+        /** {@link #ranModel} but its clocks ({@link Moved#ranRootsBy}). */
+        public boolean ranRoots(Disjunct selected,
+                                Map<String, String> movedRoots) {
+            return ran(selected, movedRoots, false);
+        }
+
+        private boolean ran(Disjunct selected, Map<String, String> movedRoots,
+                            boolean clocks) {
+            String session = selected.path().sessionId;
+            SessionReader rows = corpus.session(session);
+            SessionReader seed = corpus.session(seedSessionId);
+            if (rows == null || seed == null) return false;
+            Moved moved = Moved.of(movedRoots, clockRootReadings, rows, seed);
+            Corpus.World world = corpus.world(session);
+            return clocks ? moved.ranBy(world, rows)
+                    : moved.ranRootsBy(world, rows);
+        }
+
         /** The admitted paths the composition refused by name, each with
          *  its first refusal: no disjunct of the formula, so an UNSAT says
          *  nothing about them ({@code refusedPaths}). */
@@ -764,17 +807,26 @@ public final class Composer {
             return refusedPaths;
         }
 
-        /** Whether this formula asserts a refuted claim ({@link
-         *  Composer#refutations}): an UNSAT may then rest on one, which
-         *  only an unsat core shows. */
+        /** Whether this formula excludes a model CONFIRM refuted or gave
+         *  no verdict on ({@link Composer#refutations}): an UNSAT may then
+         *  rest on one, which only an unsat core shows. */
         public boolean assertsRefutations() {
             return !refutations.isEmpty();
         }
 
+        /** Whether it excludes a model CONFIRM gave no verdict on. */
+        public boolean excludesRefused() {
+            for (String name : refutations.keySet()) {
+                if (name.startsWith(REFUSED_CLAIM)) return true;
+            }
+            return false;
+        }
+
         /**
-         * The refutations an unsat core names (its {@code refuted_claim__k}
-         * labels), each as the model it excludes: what an UNSAT rests on
-         * beside the corpus ({@code restsOnRefutations}).
+         * The exclusions an unsat core names (its {@code refuted_claim__k}
+         * and {@code refused_claim__k} labels), each as the model it
+         * excludes: what an UNSAT rests on beside the corpus ({@code
+         * restsOnRefutations}).
          */
         public List<JsonObject> restsOn(List<String> core) {
             List<JsonObject> rows = new ArrayList<JsonObject>();
@@ -3318,8 +3370,11 @@ public final class Composer {
     }
 
     /**
-     * Every claim CONFIRM refuted ({@link Refutations}), excluded: its path,
-     * the arms it chose there, its valuation and its clocks' region are,
+     * Every claim CONFIRM refuted or gave no verdict on ({@link
+     * Refutations}), excluded -- {@code refuted_claim__k} and {@code
+     * refused_claim__k} -- its path, the arms it chose there (by their
+     * digest: a selector's path ordinal is this composition's, {@link
+     * Refutations#atPath}), its valuation and its clocks' region are,
      * together, no model of this formula, so a claim over it is another
      * model or none.  A clock is the claim's region, not its instant: each
      * cell the claim moved jumped the way it did, by any amount, and every
@@ -3339,12 +3394,13 @@ public final class Composer {
             refuted = Refutations.read(corpus.iteration());
         } catch (java.io.IOException | RuntimeException unreadable) {
             gap(GapKind.CLAIM_REFUTED, GapClass.BLOCKING, Refutations.FILE,
-                    "this iteration's refuted claims could not be read, so "
-                            + "a claim over it may be one CONFIRM refuted: "
-                            + unreadable);
+                    "this iteration's refuted claims and refused models "
+                            + "could not be read, so a claim over it may be "
+                            + "one CONFIRM decided against: " + unreadable);
             return;
         }
         int ordinal = 0;
+        int refused = 0;
         for (Refutations.Refuted model : refuted) {
             String path = null;
             for (Disjunct disjunct : disjuncts) {
@@ -3406,12 +3462,16 @@ public final class Composer {
                 conjuncts.add(clockStep(cell, clockReadings, clockBefore,
                         Long.signum(skew - previous)));
             }
-            String name = REFUTED_CLAIM + ordinal++;
+            String name = model.refused ? REFUSED_CLAIM + refused++
+                    : REFUTED_CLAIM + ordinal++;
             lowering.assertNamed(name,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
             refutationNames.put(name, model);
-            gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
-                    "CONFIRM refuted the model on this path with arms "
+            gap(model.refused ? GapKind.CLAIM_REFUSED
+                            : GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC,
+                    model.pathId, "CONFIRM "
+                            + (model.refused ? "gave no verdict on" : "refuted")
+                            + " the model on this path with arms "
                             + model.arms + " at " + model.assignment
                             + (model.moved.isEmpty() ? ""
                             : " moving " + model.moved)
@@ -3723,9 +3783,18 @@ public final class Composer {
     /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";
 
-    /** The name prefix of a refuted claim's assertion ({@link
-     *  #refutations}), which an unsat core names. */
+    /** The name prefixes of the assertions excluding a model CONFIRM
+     *  refuted, and one it gave no verdict on ({@link #refutations}), which
+     *  an unsat core names. */
     static final String REFUTED_CLAIM = "refuted_claim__";
+    static final String REFUSED_CLAIM = "refused_claim__";
+
+    /** Whether a name is an exclusion of a model CONFIRM decided against:
+     *  refuted or refused. */
+    static boolean excludesAModel(String name) {
+        return name != null && (name.startsWith(REFUTED_CLAIM)
+                || name.startsWith(REFUSED_CLAIM));
+    }
 
     void gap(GapKind kind, GapClass cls, String subject,
                      String detail) {
