@@ -10,23 +10,28 @@ Numbering stays the study numbering (hdfs-adhoc-NN, solr-adhoc-NN, ...): ids nev
 
 ## HDFS: 38 points, 36 checked (+ 10 named bug checks)
 
-Checked (36): 01, 05, 07, 08, 09, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-33, 34, 35, 37, 39, 40, 43, 48, 49, 50, 52.
+Checked (36): 05, 06, 07, 08, 09, 10, 11, 12, 14, 15, 16, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+33, 34, 35, 37, 38, 39, 40, 45, 48, 49, 50, 52.
 Swapped (owner 2026-10-05, "32直接换成05吧"): 32 out, 05 in. 32's removal of the block pool from
 `bpByBlockPoolId` runs in the exiting actor thread, which started before the window (unnamed work), so no explored
 world can reach the throw; the startup window (rounds HG8W) diverged in cluster start-up. 05 (the QJM output stream's
 buffer flush, NN->JN, `TestQuorumJournalManager#testSingleWriter`) is the first alternate of the swap rule: UNSAT at
 its fixed point in round HG8W.
+Swapped (owner 2026-10-05, "可以把个别特别challenging的换成我们能处理的"): 01, 17, 43 out; 06, 38, 45 in. Their seed
+replays never reached the target, with or without the time model (01: client polling and IBR waits, 30-61 give-ups;
+17: every DataNode's first heartbeat not due after the NameNode restart, 18-122; 43: the truncate's recovery waits, 96).
+06 (the flushed buffer's backing array, QJM), 38 (append to a LAZY_PERSIST file) and 45 (endCurrentLogSegment with
+no open segment) are the swap rule's alternates; each reached its target and closed UNSAT at its fixed point (SW1).
 - QJM writer/journal epochs 07-10; block-token keys 11, 12, 14 (11 carries hdfs-17897, 17899-bug1/2/3, 17967-pathA/B/C,
-  11741); NN block state vs commit 15-17; NN commands and HA txid at the DN 19, 20; NN/DN version handshake 21; DN
+  11741); NN block state vs commit 15, 16; NN commands and HA txid at the DN 19, 20; NN/DN version handshake 21; DN
   storage vs NN namespace at registration, upgrade and rollback 22-27, 34, 35, 37; block recovery vs block-pool
-  shutdown 28-31; hot swap 33; QJM output stream 05; append vs IBR 39, 40; truncate vs recovery 43; rename / snapshots 48-50,
-  52 (52 carries hdfs-17960); client located blocks vs NN 01.
+  shutdown 28-31; hot swap 33; QJM output stream 05, 06; append vs IBR 39, 40; rename / snapshots 48-50,
+  52 (52 carries hdfs-17960); append policy 38; edit-log segment state 45.
 Points without a check (2): 13 (4-argument token password check: no cluster test), 18 (PROVIDED storage injection:
 no hadoop-hdfs cluster test reaches it inside the window).
-Dropped (15): 02, 03, 04 (client-local DataStreamer state / ack timeout), 06 (local double buffer), 32 (swapped out), 36 (no test),
-38, 41, 42, 44 (request validation / file policy), 45, 46, 47 (local state machine, format, fsimage load), 51, 53
-(debug dumps).
+Dropped (15): 01, 17, 43 (swapped out: start-up/clock seeds), 02, 03, 04 (client-local DataStreamer state / ack
+timeout), 32 (swapped out), 36 (no test), 41, 42, 44 (request validation / file policy), 46, 47 (format, fsimage load),
+51, 53 (debug dumps).
 Named bug checks (10): hdfs-11741, hdfs-17897, hdfs-17899-bug1/2/3, hdfs-17960, hdfs-17967-pathA/B/C,
 hdfs-bugs-slowdisk-zero (its own point, RoundRobinVolumeChoosingPolicy:84).
 

@@ -56,6 +56,8 @@ emit_fixture() {
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${emit_root}/stage_metrics.tsv"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+  # The one declared bound EMIT reads from the configuration (campaign_bounds).
+  campaign_max_claims=8
 
   mkdir -p "${campaign_final}" "${emit_classes}" \
     "${emit_iteration}/seed-result" \
@@ -206,9 +208,44 @@ run_emit
   || fail "the result names a different frozen config"
 jq -e '.evidence.symbolicPropagationComplete == false
   and .gapCount == 0
-  and .telemetryCount >= 2' \
+  and .telemetryCount >= 2
+  and .bounded == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+
+# BOUND-1: every declared bound that cut the search is named in result.json
+# by its configuration key (campaign_bounds), whatever the claim; a round's
+# max-flips-per-path, asked again by the next round, is none, nor is a
+# closure an earlier round truncated and the last planned whole.
+emit_fixture
+mkdir -p "${campaign_final}/refuted/0000" "${campaign_final}/refuted/0001" \
+  "${emit_iteration}/obligations-0000" "${emit_iteration}/obligations-0001"
+campaign_max_claims=2
+jq '.refutes = true' "${campaign_final}/confirm.json" \
+  >"${campaign_final}/confirm.json.tmp"
+mv "${campaign_final}/confirm.json.tmp" "${campaign_final}/confirm.json"
+jq -n '{stop: "REGION_PATH_WAVE_BUDGET_REACHED", detail: "wave 3"}' \
+  >"${emit_iteration}/exploration.json"
+jq -n '{closureCut: {occurrences: 5, keptDepth: 1}}' \
+  >"${emit_iteration}/runtime_workflow_schedule_index.json"
+echo '{"truncated": 4}' \
+  >"${emit_iteration}/obligations-0000/explore_manifest.json"
+echo '{"truncated": 2}' \
+  >"${emit_iteration}/obligations-0001/explore_manifest.json"
+for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
+    'T max-flips-per-path=4'; do
+  jq -n -c --arg subject "${subject}" '{schemaVersion: 1,
+    sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
+    subject: $subject, detail: "cut"}'
+done >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+run_emit
+jq -e '.bounded.by == ["region_path_max_waves",
+    "region_path_max_paths_per_region", "region_path_max_world_depth",
+    "region_path_max_tasks", "schedule_max_jobs", "campaign_max_claims"]
+  and (.bounded.detail | test("wave 3; 1 task round.*without 2 occ"))' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the declared bounds the search touched were not named: \
+$(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"
 # EMIT-1: the artifacts are published at ${campaign_root}/final, which is the
 # one path every later reader and the harness open.
 [[ -s "${campaign_root}/final/result.json" ]] \
@@ -577,7 +614,9 @@ triage_case() {
 }
 triage_case 1 case-unsat '{"claim": "UNSAT_CLOSED", "concrete": [{"kind":
   "ANCHOR", "decided": 1, "paths": 1, "reads": 2}],
-  "restsOnRefutations": [{"name": "refuted_claim__0", "pathId": "P1"}]}'
+  "restsOnRefutations": [{"name": "refuted_claim__0", "pathId": "P1"}],
+  "bounded": {"by": ["region_path_max_waves", "schedule_max_jobs"],
+    "detail": "wave 3"}}'
 triage_case 2 case-defect '{"claim": "RUN_DEFECT", "defects": [{"code":
   "ADMISSION_GAP", "detail": "no session reached the declared occurrence"}]}'
 triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
@@ -588,13 +627,16 @@ triage_case 5 case-noverdict '{"claim": "SAT_UNCONFIRMED",
   "confirmation": {"confirmed": false, "refutes": false,
     "reason": "the confirmation replay published no verdict"}}'
 triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
-  2>/dev/null | tr -d '\r' | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $NF}')
-[[ "${triage_rows}" == "case-unsat=UNSAT|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
-case-defect=RUN_DEFECT|ADMISSION_GAP no session reached the declared occurrence
-case-sat=CONFIRMED|
-case-refuted=REFUTED|WIRE e1
-case-noverdict=RUN_DEFECT|CONFIRM_NO_VERDICT the confirmation replay published no verdict" ]] \
-  || fail "triage did not class the verdicts: ${triage_rows}"
+  2>"${triage_out}/counts" | tr -d '\r' \
+  | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $8 "|" $NF}')
+[[ "${triage_rows}" == "case-unsat=UNSAT|region_path_max_waves,schedule_max_jobs|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
+case-defect=RUN_DEFECT||ADMISSION_GAP no session reached the declared occurrence
+case-sat=CONFIRMED||
+case-refuted=REFUTED||WIRE e1
+case-noverdict=RUN_DEFECT||CONFIRM_NO_VERDICT the confirmation replay published no verdict" ]] \
+  && grep -q ' BOUNDED=1$' "${triage_out}/counts" \
+  || fail "triage did not class the verdicts: ${triage_rows} \
+$(<"${triage_out}/counts")"
 
 # DECISIVE-3: report.py names a defect run's claim and its defects, and the
 # concrete anchor beside an UNSAT, and passes neither.
@@ -604,7 +646,8 @@ mkdir -p "${report_case}/schedule/final" "${report_work}"
 printf '%s\n' '{"claim": "RUN_DEFECT", "finalStatus": "FINAL_READY",
   "findingKind": "NO_SUPPORTED_WITNESS", "accepted": false,
   "concrete": [{"kind": "ANCHOR", "anchor": "REGION.T#1", "paths": 1,
-    "decided": 1, "reads": 2, "locations": ["INSTANCE/1#2"], "offCone": 0}]}' \
+    "decided": 1, "reads": 2, "locations": ["INSTANCE/1#2"], "offCone": 0}],
+  "bounded": {"by": ["region_path_max_waves"], "detail": "wave 3"}}' \
   >"${report_case}/schedule/final/result.json"
 printf '%s\n' '{"gaps": [{"stage": "EXPLORE", "code": "ADMISSION_GAP",
   "class": "BLOCKING", "subject": "REGION.T#1",
@@ -613,11 +656,14 @@ printf '%s\n' '{"gaps": [{"stage": "EXPLORE", "code": "ADMISSION_GAP",
 python3 "${repo}/experiments/accept/report.py" case-x "${report_case}" \
   "${report_work}" >/dev/null
 awk -F'\t' '{exit !($4 == "RUN_DEFECT" && $6 == "1 BLOCKING" &&
-  $11 == "FAIL" && index($12, "claim=RUN_DEFECT") > 0)}' \
+  $11 == "FAIL" && index($12, "claim=RUN_DEFECT") > 0 &&
+  index($13, "BOUNDED by region_path_max_waves") > 0)}' \
   "${report_work}/row.tsv" \
   || fail "report.py did not fail the defect run by name: \
 $(<"${report_work}/row.tsv")"
 grep -q '^## Defects' "${report_work}/report.md" \
+  && grep -q '^\* `region_path_max_waves` -- wave 3$' \
+    "${report_work}/report.md" \
   && grep -q 'anchor `REGION.T#1` decided on no symbol: 1 of 1 path(s)' \
     "${report_work}/report.md" \
   || fail "report.md did not name the defects and the concrete anchor: \
@@ -4572,6 +4618,35 @@ grep -q 'the memory of host lift13 could not be read for 1s' \
   || fail "the unreadable host is not named: $(cat "${memory_dir}/gate.log")"
 unset -f hostname campaign_host_available_mb campaign_host_total_mb
 eval "${real_campaign_log}"
+reset_config
+
+# MEMORY-READ: one shell refreshes a host's reading.  While another holds the
+# refresh, a reading younger than campaign_host_reading_keep_s is kept and
+# the host is not read; an older one is read but not published; a refresh a
+# dead shell left is broken and the reading published.
+reading_dir="${memory_dir}/reading/lift14"
+mkdir -p "${reading_dir}/refresh"
+reading_calls="${memory_dir}/reading-calls"
+: >"${reading_calls}"
+campaign_host_available_mb() { echo read >>"${reading_calls}"; echo 12000; }
+campaign_host_poll_s=5
+reading_now=$(date +%s)
+printf '%s 9000\n' "$(( reading_now - 10 ))" >"${reading_dir}/available"
+[[ "$(campaign_host_memory_reading lift14 "${reading_dir}" "${reading_now}")" \
+    -eq 9000 && ! -s "${reading_calls}" ]] \
+  || fail "a waiter read the host while another refreshed a 10 s reading"
+printf '%s 9000\n' "$(( reading_now - 40 ))" >"${reading_dir}/available"
+[[ "$(campaign_host_memory_reading lift14 "${reading_dir}" "${reading_now}")" \
+    -eq 12000 && "$(cat "${reading_dir}/available")" \
+    == "$(( reading_now - 40 )) 9000" ]] \
+  || fail "a 40 s reading was kept, or published by a shell not refreshing it"
+touch -d '10 minutes ago' "${reading_dir}/refresh"
+[[ "$(campaign_host_memory_reading lift14 "${reading_dir}" "${reading_now}")" \
+    -eq 12000 && "$(cat "${reading_dir}/available")" \
+    == "${reading_now} 12000" && ! -e "${reading_dir}/refresh" ]] \
+  || fail "a refresh a dead shell left was not broken: \
+$(cat "${reading_dir}/available"), $(ls "${reading_dir}")"
+unset -f campaign_host_available_mb
 reset_config
 
 # MEMORY-3: a charge is named by its need and released by its id; a head's

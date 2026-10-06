@@ -3398,6 +3398,9 @@ ${campaign_host_max_used_pct}"
 # How often a waiting start asks again, and how old a MemAvailable reading
 # may be before it is read again.
 campaign_host_poll_s=5
+# How old a reading the shells that do not refresh it may still use
+# (campaign_host_memory_reading: one shell per host refreshes).
+campaign_host_reading_keep_s=30
 # How long a host may stay unreachable over ssh -- its memory unreadable, a
 # worker's connection refused before it started -- before the obligation
 # fails by name.  sshd refuses connections under a round's burst of them.
@@ -3493,21 +3496,38 @@ campaign_host_memory_total() {
 
 # The host's MemAvailable, from the ledger when it is fresh enough.
 campaign_host_memory_reading() {
-  local host=$1 dir=$2 now=$3 at mb fresh
-  if read -r at mb 2>/dev/null <"${dir}/available" \
-      && [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] \
-      && (( now - at < campaign_host_poll_s )); then
+  local host=$1 dir=$2 now=$3 at=0 mb="" fresh refresh=${2}/refresh
+  read -r at mb 2>/dev/null <"${dir}/available" || true
+  [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] || at=0
+  if (( now - at < campaign_host_poll_s )); then
     printf '%s\n' "${mb}"
     return 0
   fi
-  mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1) \
-    || return 1
-  [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
+  # One shell refreshes a host's reading, the one holding ${refresh}; the
+  # others keep the last reading while it is younger than
+  # campaign_host_reading_keep_s.  Every waiter refreshing every host at
+  # once (an ssh each, then a rename into this NFS directory) held 254
+  # processes in D state on one lift (2026-10-06).  Past that age a waiter
+  # reads the host itself and publishes nothing.
+  if ! mkdir "${refresh}" 2>/dev/null; then
+    if (( now - at < campaign_host_reading_keep_s )); then
+      printf '%s\n' "${mb}"
+      return 0
+    fi
+    (( now - $(stat -c %Y "${refresh}" 2>/dev/null || echo "${now}") \
+      < campaign_host_lock_stale_s )) || rmdir "${refresh}" 2>/dev/null
+    mkdir "${refresh}" 2>/dev/null || refresh=""
+  fi
+  mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1)
   # A name of its own: the campaign's subshells share $$, and
   # every campaign on every lift writes this ledger.
-  fresh=$(mktemp "${dir}/available.XXXXXX") || return 1
-  printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
-  mv -f -- "${fresh}" "${dir}/available"
+  if [[ "${mb}" =~ ^[0-9]+$ && -n "${refresh}" ]] \
+      && fresh=$(mktemp "${dir}/available.XXXXXX"); then
+    printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
+    mv -f -- "${fresh}" "${dir}/available"
+  fi
+  [[ -z "${refresh}" ]] || rmdir "${refresh}" 2>/dev/null
+  [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "${mb}"
 }
 
@@ -5510,6 +5530,72 @@ campaign_stream_manifest() {
     >"${iteration_dir}/exploration.json"
 }
 
+# The declared bounds this campaign's search touched, as result.json's
+# `bounded` (the owner's bound rule, RULES: a generous declared bound may cut
+# the search only as a named, rare last resort, counted every round): null
+# when none did, else {by: [the configuration key of each], detail}.  They
+# are the wave budget (region_path_max_waves, the stop
+# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round reads of one task
+# (region_path_max_paths_per_region) and the world depth it cuts from
+# (region_path_max_world_depth), ObligationFactory's rows naming the bound in
+# their subject; the tasks one anchor's closure plans (region_path_max_tasks:
+# the last round's `truncated`, as campaign_stream_truncation judges it, since
+# a later round plans what an earlier one left); the occurrences PLAN plans
+# (schedule_max_jobs, the schedule index's `closureCut`); and the claims
+# decided again after CONFIRM refuted one (campaign_max_claims).  A round's
+# max-flips-per-path is no such bound -- the next round asks the decisions it
+# left -- nor is the time budget (campaign_exploration_cut).
+campaign_bounds() {
+  local iteration_dir=$1 decided refutes=false
+  decided=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
+    2>/dev/null | grep -c '' || true)
+  [[ ! -s "${campaign_final}/confirm.json" ]] \
+    || refutes=$(jq '.refutes == true' "${campaign_final}/confirm.json")
+  jq -n -c \
+    --slurpfile exploration <(cat "${iteration_dir}/exploration.json" \
+      2>/dev/null) \
+    --slurpfile index <(cat \
+      "${iteration_dir}/runtime_workflow_schedule_index.json" 2>/dev/null) \
+    --slurpfile rounds <(cat "${iteration_dir}"/obligations-*/\
+explore_manifest.json 2>/dev/null) \
+    --slurpfile gaps "${campaign_final}/gaps.json" \
+    --argjson decided "${decided}" --argjson refutes "${refutes}" \
+    --argjson maxClaims "${campaign_max_claims}" '
+    def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
+      | select(.subject | test(" " + $bound + "=[0-9]+$"))];
+    rows("max-paths-per-region") as $paths
+    | rows("max-world-depth") as $depth
+    | ($rounds | last | .truncated // 0) as $truncated
+    | ($index[0].closureCut // null) as $cut
+    | [ (select($exploration[0].stop == "REGION_PATH_WAVE_BUDGET_REACHED")
+         | {by: "region_path_max_waves", detail: $exploration[0].detail}),
+        (select(($paths | length) > 0)
+         | {by: "region_path_max_paths_per_region",
+            detail: ("\($paths | length) task round(s) read only"
+              + " \($paths[0].subject | sub(".* "; "")) recorded paths, the"
+              + " rest unread")}),
+        (select(($depth | length) > 0)
+         | {by: "region_path_max_world_depth",
+            detail: ("\($depth | length) task round(s) cut from no path"
+              + " in a world deeper than"
+              + " \($depth[0].subject | sub(".* "; ""))")}),
+        (select($truncated > 0)
+         | {by: "region_path_max_tasks",
+            detail: ("the last round planned its closure without"
+              + " \($truncated) occurrence(s), at the task bound")}),
+        (select($cut != null)
+         | {by: "schedule_max_jobs",
+            detail: ("PLAN planned the closure only to demand depth"
+              + " \($cut.keptDepth): \($cut.occurrences) deeper"
+              + " occurrence(s) not planned")}),
+        (select($refutes and $decided >= $maxClaims)
+         | {by: "campaign_max_claims",
+            detail: ("the claim was decided again \($decided) time(s) and"
+              + " the refuted claim is published")}) ]
+    | if length == 0 then null
+      else {by: map(.by), detail: (map(.detail) | join("; "))} end'
+}
+
 # THE ONE PLACE an end of the exploration is judged a cut, at EMIT, off
 # exploration.json and the claim the final stages reached (owner 2026-10-04,
 # only SAT or UNSAT: an UNSAT over a corpus missing arms says nothing about
@@ -6493,9 +6579,14 @@ campaign_emit() {
   local formula_path
   formula_path=$(realpath --relative-to="${causynth_output_dir}" \
     "${campaign_final}/candidate.smt2")
+  local bounded
+  bounded=$(campaign_bounds "${iteration_dir}") \
+    || campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
+      "the declared bounds the search touched could not be read"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
+    --argjson bounded "${bounded}" \
     --arg formula "${formula_path}" \
     --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
@@ -6573,6 +6664,10 @@ campaign_emit() {
      # The admitted paths COMPOSE refused by name, each with its first
      # refusal: no disjunct of the formula, never silent.
      refusedPaths: ($decided.refusedPaths // []),
+     # The declared bounds the search touched (campaign_bounds): null, or
+     # {by, detail}.  A verdict over a search a bound cut is named, never
+     # read as the end of the closure itself.
+     bounded: $bounded,
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it
