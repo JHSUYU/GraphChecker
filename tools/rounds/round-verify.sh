@@ -3,10 +3,12 @@
 # the blocking gaps, whether a SAT moved roots, and the formula's leaf symbols (roots, reads, handoffs: every declared
 # constant but the formula's own selectors and named identities); an UNSAT over none (NO-SYMBOL) decided nothing that
 # moves, a scope hole to read before it counts. BOUNDED:<keys> names the declared bounds that cut the case's search
-# (result.json's `bounded`, RULES: a named, rare last resort), and the round's last line counts those cases. No case:
-# every finished case of the round.
+# (result.json's `bounded`, RULES: a named, rare last resort), and the round's last line counts those cases.
+# UNBOUND:<n> counts the distinct boundary variables a fatal condition names that no message family binds (cone.py's
+# `unbound`: a broken causal chain, so the case is not done whatever its verdict); the last line counts those cases
+# too. No case: every finished case of the round.
 out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}; round=$1; shift
-want=" $* "; cases=0; bounded=0
+want=" $* "; cases=0; bounded=0; unbound=0
 while IFS=$'\t' read -r n c; do
   [[ $# -eq 0 || "$want" == *" $c "* ]] || continue
   d=$out/accept-$round-$n; s=$d/summary.tsv
@@ -15,12 +17,16 @@ while IFS=$'\t' read -r n c; do
   stop=$(grep -ho 'exploration stopped ([A-Z_]*)' "$d/logs/$c.log" 2>/dev/null | head -1 | sed 's/exploration stopped //')
   claim=$(tail -1 "$s" | cut -f4); secs=$(tail -1 "$s" | cut -f3)
   z=$( [[ -f $f/candidate.smt2 ]] && timeout 300 ~/.local/bin/z3 -smt2 "$f/candidate.smt2" 2>/dev/null | head -1)
-  extra=$(python3 - "$f" <<'PY'
+  extra=$(python3 - "$f" "$d/report/$c" <<'PY'
 import json,sys,os
 f=sys.argv[1]; out=[]
 try:
     b=json.load(open(os.path.join(f,'result.json'))).get('bounded')
     if b: out.append('BOUNDED:'+','.join(b['by']))
+except Exception: pass
+try:
+    u=set(json.load(open(os.path.join(sys.argv[2],'cone.json'))).get('unbound') or [])
+    if u: out.append(f'UNBOUND:{len(u)}')
 except Exception: pass
 try:
     g=json.load(open(os.path.join(f,'gaps.json')))
@@ -57,5 +63,6 @@ PY
 )
   printf "%-24s %-15s %6ss  end=%-24s z3=%-6s %s\n" "$c" "$claim" "$secs" "${stop:--}" "${z:--}" "$extra"
   cases=$((cases + 1)); [[ $extra != BOUNDED:* ]] || bounded=$((bounded + 1))
+  [[ $extra != *UNBOUND:* ]] || unbound=$((unbound + 1))
 done < "$out/sweep-$round-cases.tsv"
-echo "# $round: $cases case(s), $bounded BOUNDED"
+echo "# $round: $cases case(s), $bounded BOUNDED, $unbound UNBOUND"
