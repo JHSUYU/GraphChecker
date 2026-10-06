@@ -112,6 +112,12 @@ recommendation.
   (TODO HDFS §5 (B)).
 - **Swaps used** ("32直接换成05吧"; "可以把个别特别challenging的换成我们能处理的"): 32 -> 05; 01, 17, 43 -> 06, 38, 45 (their seed
   replays never reached the target, with or without the time model). Of the swap rule's alternates only 04 is left.
+- **The time-model family is relaxed** (owner 2026-10-06: "我要大幅放宽时间模型的那几个case。我允许为了跑通这几个case依赖
+  workaround/只要差不多能跑通.smt就行了"): for 21 22 23 24 25 34 35 52 only, workarounds in the test cluster's
+  configuration, the HDFS adapter or the system code are allowed to get a run through (TODO HDFS §2), and an
+  approximately right `.smt` is enough: a `candidate.smt2` z3 decides, with the main causal chain in it; residual
+  gaps (some seed give-ups, a few HELD values, a bounded round) are acceptable when named in STATUS. Still: no
+  fabricated result, every workaround listed in STATUS, and no regression of the other 38 cases.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.

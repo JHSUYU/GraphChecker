@@ -60,7 +60,8 @@ addBlock meets NotReplicatedYet (25: 89, 22); 22 varies 0-66 between runs (a Dat
 window: a recorded 2999.2 ms gap; its recordings' start-up took 9-283 s); 21: 14 of 17 stalls are the IPC Reader's
 hand-off naming (fixed by `hdfs-ipc-handoff-name`), its first a heartbeat SEND that never happened; 23: 0 give-ups on
 tm13; 52: a late `FSEditLogAsync` claim at slot 1710 (open), then the NameNode restart phase; 24 not probed yet.
-**Quick workarounds to try first** (owner 2026-10-06 asked for fast ones; RULES "Workarounds, with measure": one general
+**Relaxed by the owner (2026-10-06, RULES):** for these eight, workarounds are allowed and an approximately right
+`.smt` is enough (residual gaps named in STATUS). **Quick workarounds to try first** (owner 2026-10-06 asked for fast ones; RULES "Workarounds, with measure": one general
 point in the HDFS adapter/test configuration, listed in STATUS, never chosen by a case's expected mechanism; check that
 no selected check's guard reads the setting it changes):
 - **Quiesce before the window** (21 22 23): in `CausynthCluster`'s automatic mode, before opening the recording window,
