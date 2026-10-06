@@ -4620,6 +4620,35 @@ unset -f hostname campaign_host_available_mb campaign_host_total_mb
 eval "${real_campaign_log}"
 reset_config
 
+# MEMORY-READ: one shell refreshes a host's reading.  While another holds the
+# refresh, a reading younger than campaign_host_reading_keep_s is kept and
+# the host is not read; an older one is read but not published; a refresh a
+# dead shell left is broken and the reading published.
+reading_dir="${memory_dir}/reading/lift14"
+mkdir -p "${reading_dir}/refresh"
+reading_calls="${memory_dir}/reading-calls"
+: >"${reading_calls}"
+campaign_host_available_mb() { echo read >>"${reading_calls}"; echo 12000; }
+campaign_host_poll_s=5
+reading_now=$(date +%s)
+printf '%s 9000\n' "$(( reading_now - 10 ))" >"${reading_dir}/available"
+[[ "$(campaign_host_memory_reading lift14 "${reading_dir}" "${reading_now}")" \
+    -eq 9000 && ! -s "${reading_calls}" ]] \
+  || fail "a waiter read the host while another refreshed a 10 s reading"
+printf '%s 9000\n' "$(( reading_now - 40 ))" >"${reading_dir}/available"
+[[ "$(campaign_host_memory_reading lift14 "${reading_dir}" "${reading_now}")" \
+    -eq 12000 && "$(cat "${reading_dir}/available")" \
+    == "$(( reading_now - 40 )) 9000" ]] \
+  || fail "a 40 s reading was kept, or published by a shell not refreshing it"
+touch -d '10 minutes ago' "${reading_dir}/refresh"
+[[ "$(campaign_host_memory_reading lift14 "${reading_dir}" "${reading_now}")" \
+    -eq 12000 && "$(cat "${reading_dir}/available")" \
+    == "${reading_now} 12000" && ! -e "${reading_dir}/refresh" ]] \
+  || fail "a refresh a dead shell left was not broken: \
+$(cat "${reading_dir}/available"), $(ls "${reading_dir}")"
+unset -f campaign_host_available_mb
+reset_config
+
 # MEMORY-3: a charge is named by its need and released by its id; a head's
 # start is charged while its command runs and released when it returns, so
 # a head's JVMs, one after another, are never charged twice.

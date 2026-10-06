@@ -3398,6 +3398,9 @@ ${campaign_host_max_used_pct}"
 # How often a waiting start asks again, and how old a MemAvailable reading
 # may be before it is read again.
 campaign_host_poll_s=5
+# How old a reading the shells that do not refresh it may still use
+# (campaign_host_memory_reading: one shell per host refreshes).
+campaign_host_reading_keep_s=30
 # How long a host may stay unreachable over ssh -- its memory unreadable, a
 # worker's connection refused before it started -- before the obligation
 # fails by name.  sshd refuses connections under a round's burst of them.
@@ -3493,21 +3496,38 @@ campaign_host_memory_total() {
 
 # The host's MemAvailable, from the ledger when it is fresh enough.
 campaign_host_memory_reading() {
-  local host=$1 dir=$2 now=$3 at mb fresh
-  if read -r at mb 2>/dev/null <"${dir}/available" \
-      && [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] \
-      && (( now - at < campaign_host_poll_s )); then
+  local host=$1 dir=$2 now=$3 at=0 mb="" fresh refresh=${2}/refresh
+  read -r at mb 2>/dev/null <"${dir}/available" || true
+  [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] || at=0
+  if (( now - at < campaign_host_poll_s )); then
     printf '%s\n' "${mb}"
     return 0
   fi
-  mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1) \
-    || return 1
-  [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
+  # One shell refreshes a host's reading, the one holding ${refresh}; the
+  # others keep the last reading while it is younger than
+  # campaign_host_reading_keep_s.  Every waiter refreshing every host at
+  # once (an ssh each, then a rename into this NFS directory) held 254
+  # processes in D state on one lift (2026-10-06).  Past that age a waiter
+  # reads the host itself and publishes nothing.
+  if ! mkdir "${refresh}" 2>/dev/null; then
+    if (( now - at < campaign_host_reading_keep_s )); then
+      printf '%s\n' "${mb}"
+      return 0
+    fi
+    (( now - $(stat -c %Y "${refresh}" 2>/dev/null || echo "${now}") \
+      < campaign_host_lock_stale_s )) || rmdir "${refresh}" 2>/dev/null
+    mkdir "${refresh}" 2>/dev/null || refresh=""
+  fi
+  mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1)
   # A name of its own: the campaign's subshells share $$, and
   # every campaign on every lift writes this ledger.
-  fresh=$(mktemp "${dir}/available.XXXXXX") || return 1
-  printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
-  mv -f -- "${fresh}" "${dir}/available"
+  if [[ "${mb}" =~ ^[0-9]+$ && -n "${refresh}" ]] \
+      && fresh=$(mktemp "${dir}/available.XXXXXX"); then
+    printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
+    mv -f -- "${fresh}" "${dir}/available"
+  fi
+  [[ -z "${refresh}" ]] || rmdir "${refresh}" 2>/dev/null
+  [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "${mb}"
 }
 
