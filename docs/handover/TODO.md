@@ -87,6 +87,11 @@ If a check still cannot reach its target after that round, swap it (only 04 is l
   block-pool map written at DN startup; `bpServiceToActive`'s in-window writer gated by HA state); 17's lease and 39's
   IBR ordering (turns on threads with no schedule events); an identity compare of a tracked reference with an enum
   constant states no VM term (VM.md §5.2); 05's thread-local buffer invariant.
+  Owner 2026-10-06: Scope (B) is NOT done now, only kept here. Added the same day (each a named gap in STATUS, none
+  changing a current verdict): String fields as tracked cells (STATUS defect 34: the blockpoolID/clusterID/namespaceID
+  compares of 22 23 27 34 35 are constants); a retried IPC call's handler and response with their own occurrence and a
+  concrete export as a constant arm (14's faulted-registration worlds); the obligation key's u18#3 merge on 11 (every key
+  change tried cost 2-3x the asks: hdfs-rule1, hdfs-u18-fix parked); 20's heartbeat txid as a handoff.
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 - **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate.
   Used (owner 2026-10-05): 05 for 32; 06, 38, 45 for 01, 17, 43; only 04 (client ack timeout, CLOCK) is left; never
