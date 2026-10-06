@@ -2599,7 +2599,15 @@ campaign_replay_min_need_mb=512
 # 939-2003).  The need sizes the replay JVM's heap (CAUSYNTH_HEAP_BASIS_MB,
 # execute.sh); the charge it starts with is campaign_replay_charge_mb's.
 campaign_replay_need_mb() {
-  local need=$(( (campaign_replay_peak_mb * 3 + 255) / 256 * 128 ))
+  campaign_need_of_peak_mb "${campaign_replay_peak_mb}"
+}
+
+# The need, in MB, of a JVM whose measured resident peak was <peak_mb>: the
+# peak times 1.5, rounded up to 128 MB, at least campaign_replay_min_need_mb
+# -- a replay's (campaign_replay_need_mb), and a solver's asked again after
+# one died (campaign_obligation_worker).
+campaign_need_of_peak_mb() {
+  local need=$(( ($1 * 3 + 255) / 256 * 128 ))
   (( need >= campaign_replay_min_need_mb )) \
     || need=${campaign_replay_min_need_mb}
   printf '%s\n' "${need}"
@@ -2905,7 +2913,7 @@ campaign_solver_idle_s=300
 # The solver's heap, in MB: the 8 GB every solver JVM has had, which no
 # solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  A
 # question it cannot answer is asked once more of a solver of its own at the
-# case's engine heap (campaign_obligation_worker).
+# case's engine heap, placed by what the first held (campaign_obligation_worker).
 campaign_solver_heap_mb=8192
 
 # What a solver is charged at its start, in MB; the rest of what it holds is
@@ -3085,28 +3093,73 @@ campaign_solver_jvm() {
 }
 
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
-# <worker> [charged_mb]: the question in a solver JVM of its own at the
-# case's engine heap, its files straight into <worker>, its status the JVM's.
-# <charged_mb>: at once, under the obligation's own charge of that many MB
-# (a solver's start), for a question whose host had no room for its solver
-# -- what the JVM grows past that charge is asked of the host as it grows.
-# Otherwise once the host has room for the engine heap, charged that while it
-# runs: for a question the host's solver, or a JVM of its own, could not
-# answer (it ran out of heap or died), never the obligation's answer.
+# <worker> <charged_mb>: the question in a solver JVM of its own at the
+# case's engine heap, its files straight into <worker>, its status the JVM's,
+# on this host under a charge of <charged_mb> its caller holds here: the
+# obligation's own (a solver's start) for a question whose host had no room
+# for its solver, or the one campaign_solve_obligation_placed took.  What
+# the JVM grows past it is asked of the host as it grows
+# (campaign_watch_workload).
 campaign_solve_obligation_alone() {
-  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=${5:-}
-  local heap=${engine_memory_mb:-8192} charge="" status=0
-  if [[ -z "${charged}" ]]; then
-    campaign_await_host_memory localhost "${heap}" || return 1
-    charge=${campaign_host_charge_id}
-    charged=${heap}
-  fi
-  run_capturing_status campaign_solver_jvm "${heap}" "${charged}" \
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
+  local status=0
+  run_capturing_status campaign_solver_jvm "${engine_memory_mb:-8192}" \
+    "${charged}" \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
     --output-dir "${worker}"
-  [[ -z "${charge}" ]] || campaign_host_release localhost "${charge}"
+  return "${status}"
+}
+
+# How long a solver asked again waits for a host with room for its measured
+# need (campaign_solve_obligation_placed) before its obligation fails by
+# name: a few polls, never the worker's whole bound (hdfs-adhoc-11 CW4b/CW5:
+# workers waited 3900 s for 16384 MB on the one host they ran on, and were
+# killed unanswered).
+campaign_solver_place_patience_s=60
+
+# campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
+# <worker> <need_mb>: a question asked again of a solver of its own, placed
+# as any start is: on the pool's host with the most room for <need_mb>
+# (campaign_host_room), charged there while it runs -- this host or a peer
+# (--run-placed, from a directory under <worker>).  4, with why in
+# campaign_host_wait_reason, when no host has the room within
+# campaign_solver_place_patience_s; else the JVM's status.
+campaign_solve_obligation_placed() {
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 need=$5
+  local host room best best_room since=${SECONDS} charge status=0
+  while true; do
+    best=""
+    best_room=-1
+    while IFS= read -r host; do
+      room=$(campaign_host_room "${host}") || continue
+      (( room >= need && room > best_room )) || continue
+      best=${host}
+      best_room=${room}
+    done < <(campaign_worker_host_list)
+    if [[ -n "${best}" ]]; then
+      campaign_host_try_charge "${best}" "${need}"
+      (( status != 0 )) || break
+    else
+      campaign_host_wait_reason="no host of the pool has ${need} MB of room"
+    fi
+    (( SECONDS - since < campaign_solver_place_patience_s )) || return 4
+    sleep "${campaign_host_poll_s}"
+  done
+  charge=${campaign_host_charge_id}
+  status=0
+  if campaign_host_is_local "${best}"; then
+    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" "${need}"
+  else
+    # Its placed directory under the worker: a peer has no campaign root.
+    local campaign_root=${worker}
+    run_capturing_status campaign_run_placed "${best}" \
+      campaign_solve_obligation_alone "${obligation_id}" "${obligations}" \
+      "${sessions}" "${worker}" "${need}" >&2
+  fi
+  campaign_host_release "${best}" "${charge}"
   return "${status}"
 }
 
@@ -3129,10 +3182,11 @@ campaign_solve_obligation_alone() {
 # its solver.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local outcome status=0
+  local outcome status=0 peak need
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
+  campaign_watch_peak_mb=0
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
     "${obligations}" "${sessions}" "${worker}"
@@ -3145,21 +3199,34 @@ to start its solver now; answered in a solver JVM of its own"
       "${obligations}" "${sessions}" "${worker}" "${charged}"
   fi
   if [[ "${status}" -ne 0 ]]; then
-    # A solver that ran out of heap or died answered nothing about the
-    # obligation, and settles no question, whatever it left: asked once
-    # more, of a solver of its own.  Twice: the worker did not finish
-    # (campaign_obligation_unfinished), never an answer.
+    # A solver that ran out of heap, died, or was ended at what its host
+    # could hold answered nothing about the obligation, and settles no
+    # question, whatever it left: asked once more, of a solver of its own,
+    # placed as any start by what the first one measurably held (its peak,
+    # or the host's solver's heap) with the usual margin
+    # (campaign_need_of_peak_mb), on any host with that room
+    # (campaign_solve_obligation_placed).  Twice, or no host with the room:
+    # the worker did not finish (campaign_obligation_unfinished), by name,
+    # never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
-    campaign_log "obligation ${obligation_id}: its host's solver did not \
-answer ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
-      | tail -n 1)); asked again of a solver of its own at \
-${engine_memory_mb:-8192} MB"
-    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}"
-    if [[ "${status}" -ne 0 ]]; then
+    peak=${campaign_watch_peak_mb}
+    (( peak > 0 )) || peak=${campaign_solver_heap_mb}
+    need=$(campaign_need_of_peak_mb "${peak}")
+    campaign_log "obligation ${obligation_id}: its solver did not answer \
+($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
+      | tail -n 1)); asked again of a solver of its own, ${need} MB for a \
+first that held ${peak} MB, on any host with the room"
+    run_capturing_status campaign_solve_obligation_placed "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" "${need}"
+    if [[ "${status}" -eq 4 ]]; then
+      die "obligation ${obligation_id}: its solver did not answer, and no \
+host has room for a solver of its own of ${need} MB (the first held \
+${peak} MB) within ${campaign_solver_place_patience_s}s: \
+${campaign_host_wait_reason}"
+    elif [[ "${status}" -ne 0 ]]; then
       rm -f -- "${worker}/question.txt" "${worker}/question.asked"
       die "obligation ${obligation_id}: its solver failed twice, its \
-host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
+host's and one of its own of ${need} MB: $(grep -v -E \
         '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)"
     fi
   fi
@@ -3817,10 +3884,13 @@ campaign_recording_bound_marker=RECORDING_BOUND
 # and one refused 6 MB on a host with 16 GB free, all of it promised to
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
-# released when it ends.  A recording given <max_trace_mb> whose trace
+# released when it ends; its peak is campaign_watch_peak_mb once it has
+# (a solver asked again places its JVM by it, campaign_obligation_worker).
+# A recording given <max_trace_mb> whose trace
 # (<dir>/runtime_trace.jsonl) passes it is ended there, RECORDING_BOUND, said
 # in <dir>/${campaign_recording_bound_marker}: never a trace cut short and
 # aggregated as if whole.
+campaign_watch_peak_mb=0
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
   local status=0 refused="" written=0 bounded=""
@@ -3859,6 +3929,7 @@ campaign_watch_workload() {
   for id in "${grants[@]}"; do
     campaign_host_release localhost "${id}"
   done
+  campaign_watch_peak_mb=${peak}
   if [[ -n "${bounded}" ]]; then
     echo "RECORDING_BOUND: the recording's trace passed \
 recording_max_trace_mb (${max_mb} MB) at ${bounded} MB, more rows than SEED's \
@@ -4026,48 +4097,6 @@ campaign_run_placed() {
   cat -- "${dir}/stderr.log" "${dir}/ssh.log" >&2 2>/dev/null
   rm -rf -- "${dir}"
   return "${status}"
-}
-
-# campaign_await_host_memory <host> <need_mb>: blocks until one
-# start fits on the host, then charges it there: 0.  2 when the host's
-# memory cannot be read for campaign_ssh_patience_s, the waiter's named
-# failure.  What starts on the host that runs it waits here: a host's
-# solver (campaign_start_solver) and a question asked again of a solver of
-# its own (campaign_solve_obligation_alone).  A head's step goes to any host
-# with room (campaign_head_place), and an obligation's start is the pool's
-# (campaign_stream_admit_host): neither waits on one host while another
-# has room.
-campaign_await_host_memory() {
-  local host=$1 need=$2
-  local said=false status=0 unread_since="" since=${SECONDS}
-  while true; do
-    campaign_host_try_charge "${host}" "${need}"
-    case "${status}" in
-      0)
-        [[ "${said}" == false ]] || campaign_log "room for ${need} MB on \
-${host} after $(( SECONDS - since ))s"
-        return 0 ;;
-      2)
-        # Unreadable is not "no room": sshd refuses some connections while a
-        # round opens hundreds.  Waited out, stated, within the patience.
-        [[ -n "${unread_since}" ]] || unread_since=${SECONDS}
-        if (( SECONDS - unread_since >= campaign_ssh_patience_s )); then
-          campaign_log "the memory of host ${host} could not be read for \
-${campaign_ssh_patience_s}s"
-          return 2
-        fi
-        campaign_host_wait_reason="the memory of ${host} could not be read"
-        ;;
-      *) unread_since="" ;;
-    esac
-    if [[ "${said}" == false ]]; then
-      campaign_log "waiting for memory on ${host}: \
-${campaign_host_wait_reason}"
-      said=true
-    fi
-    campaign_head_heartbeat
-    sleep "${campaign_host_poll_s}"
-  done
 }
 
 # campaign_stream_job <kind> <host> <charge> <id> <worker> <args...>: one
