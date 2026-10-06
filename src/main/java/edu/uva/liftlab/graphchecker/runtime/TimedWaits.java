@@ -107,7 +107,7 @@ public final class TimedWaits {
 
     /**
      * The window opened under an order: every free wait is woken (marked first,
-     * so it is no signal) and converts to virtual time.  Called with no lock of
+     * so it is no signal) and is held to its turn.  Called with no lock of
      * this runtime held.
      */
     static void windowOpened() {
@@ -517,7 +517,7 @@ public final class TimedWaits {
                     freeConditionWait(condition, self, deadline, site);
             boolean outcome = takeTurn(site, signalled,
                     conditionQuantum(condition, self), deadline);
-            // Virtual time: the caller re-checks its condition.
+            // The caller re-checks its condition.
             return outcome ? Math.max(1L, deadline - System.nanoTime()) : 0L;
         } finally {
             leave(condition, self);
@@ -737,6 +737,7 @@ public final class TimedWaits {
             if (element != null) return element;
             ScheduleLog.Turn turn = ScheduleLog.turn(wake);
             if (turn == ScheduleLog.Turn.ADMITTED) {
+                outlast(sleepQuantum(), deadline);
                 WakeScopes.woke(site);
                 return null;
             }
@@ -803,7 +804,8 @@ public final class TimedWaits {
      * for one that may never come.</p>
      *
      * <p>Held, the wait asks every quantum (which also drives the watchdog) and
-     * ends at a signal or when its WAKE slot is due.  With no slot left it is
+     * ends at a signal or when its WAKE slot is due, but never sooner than its
+     * own deadline ({@link #outlast}).  With no slot left it is
      * held for as long as the order holds it (a poll past its recorded count
      * waits for the order to move, {@code ScheduleLog#waitsAtLocked}), then
      * waits out its own deadline on the wall clock ({@code ScheduleLog.turn},
@@ -840,6 +842,7 @@ public final class TimedWaits {
             }
             ScheduleLog.Turn turn = ScheduleLog.turn(wake);
             if (turn == ScheduleLog.Turn.ADMITTED) {
+                outlast(quantum, deadline);
                 WakeScopes.woke(site);
                 return false;
             }
@@ -877,13 +880,50 @@ public final class TimedWaits {
     private static void timedOut(Quantum quantum, ScheduleLog.Wake wake) {
         boolean interrupted = false;
         while (!ScheduleLog.timedOut(wake)) {
-            try {
-                quantum.await(QUANTUM_MS);
-            } catch (InterruptedException interrupt) {
-                interrupted = true;
-            }
+            interrupted |= pause(quantum, QUANTUM_MS);
         }
         if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    /**
+     * A wait whose WAKE was admitted at its slot returns no sooner than its
+     * own deadline: a WAKE is a timeout, so the recording's wait ran its whole
+     * time, and the rule that a WAKE is never sooner than recorded holds for
+     * the wait's own duration too.  Code that reads the clock after it (a
+     * heartbeat's due time, a lease's or a retry's back-off) then sees at
+     * least the time the recording saw (hdfs-adhoc-29: a DataNode actor's
+     * waitTillNextIBR ended at its slot before its deadline, the next tick
+     * found its heartbeat not due and sent none, and the NameNode made the
+     * other DataNode the recovery's primary).  The order moved on at the
+     * slot; the rest is spent in the wait's own primitive, so what it
+     * released stays released.  The wait is out of a signal's choice, as one
+     * its clock ended (a notify meanwhile chooses another waiter), and an
+     * interrupt is kept pending, as {@link #timedOut} keeps one.
+     */
+    private static void outlast(Quantum quantum, long deadline) {
+        quantum.onTheClock(System.nanoTime());
+        boolean interrupted = false;
+        for (long left = deadline - System.nanoTime(); left > 0L;
+                left = deadline - System.nanoTime()) {
+            interrupted |= pause(quantum, Math.max(1L,
+                    (left + 999999L) / 1000000L));
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    /**
+     * One quantum of a wait that has ended and may not return yet, in its own
+     * primitive; true when an interrupt came, which the caller keeps pending
+     * (cleared here, so the primitive waits rather than returning at once).
+     */
+    private static boolean pause(Quantum quantum, long millis) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            quantum.await(millis);
+        } catch (InterruptedException interrupt) {
+            interrupted = true;
+        }
+        return interrupted;
     }
 
     private static void wake(String site) {

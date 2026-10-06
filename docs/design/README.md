@@ -122,7 +122,8 @@ version it observed.
 *The schedule.* The recording's prefix is enforced: each event waits for its slot.
 - The stall rules release what the run will not make. A watchdog gives up after 15 s, and each
   give-up is logged as "did not happen".
-- WAKE turns are never sooner than recorded.
+- WAKE turns are never sooner than recorded, nor is a timed-out wait's return: it takes its WAKE
+  slot and returns no sooner than its own deadline.
 - The scope rules R1–R4 apply (anchors of unstated SENDs, the putter's scope, per-hop start
   frames, giving up own-context slots).
 - Random draws are replayed, keyed by the schedule context, the site and a count (stable under

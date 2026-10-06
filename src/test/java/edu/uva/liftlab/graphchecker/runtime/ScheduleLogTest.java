@@ -538,26 +538,6 @@ public class ScheduleLogTest {
         assertEquals(Arrays.asList("x", "<L: void loop()>#u2"), sites());
     }
 
-    /** A sleep's or a wait's WAKE the prefix states needs no signal. */
-    @Test
-    public void aTimedWaitUnderThePrefixDoesNotReadTheWallClock()
-            throws Exception {
-        ScheduleLog.enforceForTests(Arrays.asList(
-                event(ScheduleEvent.Kind.WAKE, "<L: void loop()>#u9"),
-                event(ScheduleEvent.Kind.WAKE, "<L: void loop()>#u4")));
-        long before = System.nanoTime();
-        TimedWaits.sleep(60000L, "<L: void loop()>#u9");
-        final Object monitor = new Object();
-        synchronized (monitor) {
-            TimedWaits.waitOn(monitor, 60000L, "<L: void loop()>#u4");
-        }
-        assertTrue("virtual time: the turns came, the minutes did not",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 5000L);
-        assertEquals(Arrays.asList("<L: void loop()>#u9",
-                "<L: void loop()>#u4"), sites());
-    }
-
     @Test
     public void aWaitBegunBeforeTheWindowConvertsWhenItOpens()
             throws Exception {
@@ -571,7 +551,7 @@ public class ScheduleLogTest {
             public void run() {
                 long before = System.nanoTime();
                 try {
-                    TimedWaits.sleep(60000L, site);
+                    TimedWaits.sleep(1500L, site);
                 } catch (InterruptedException interrupted) {
                     return;
                 }
@@ -587,7 +567,8 @@ public class ScheduleLogTest {
         TimedWaits.windowOpened();
         idle.join(5000L);
         assertFalse("the window's opening converts it", idle.isAlive());
-        assertTrue(took[0] < 5000L);
+        assertTrue("its turn, and no sooner than its own 1.5 s: " + took[0],
+                took[0] >= 1450L && took[0] < 5000L);
         assertEquals(Collections.singletonList(site), sites());
     }
 
@@ -696,6 +677,83 @@ public class ScheduleLogTest {
                         < 1000L);
         waiter.join();
         assertEquals(Collections.singletonList(site), sites());
+    }
+
+    /** A primitive's timed wait, for the table below. */
+    private interface TimedWait {
+        void run(String site) throws Exception;
+    }
+
+    /**
+     * A wait whose recorded WAKE slot is due before its own deadline takes
+     * the slot at once, so the order moves on (the next slot's event, made
+     * by another thread meanwhile, goes), and returns only once its deadline
+     * passed, whatever its primitive: a WAKE is a timeout, the recording's
+     * wait ran its whole time (hdfs-adhoc-29: a DataNode actor woken at its
+     * slot found its heartbeat not due).  Replaces the virtual-time test that
+     * ended a 60 s wait at its turn.
+     */
+    @Test(timeout = 30000L)
+    public void aWaitAdmittedAtItsSlotReturnsNoSoonerThanItsDeadline()
+            throws Exception {
+        final long waitMs = 800L;
+        final Object monitor = new Object();
+        final ReentrantLock lock = new ReentrantLock();
+        final Condition condition = lock.newCondition();
+        java.util.Map<String, TimedWait> table =
+                new java.util.LinkedHashMap<String, TimedWait>();
+        table.put("sleep", site -> TimedWaits.sleep(waitMs, site));
+        table.put("monitor", site -> {
+            synchronized (monitor) {
+                TimedWaits.waitOn(monitor, waitMs, site);
+            }
+        });
+        table.put("condition", site -> {
+            lock.lock();
+            try {
+                TimedWaits.await(condition, waitMs, TimeUnit.MILLISECONDS,
+                        site);
+            } finally {
+                lock.unlock();
+            }
+        });
+        table.put("park", site -> TimedWaits.parkNanos(
+                TimeUnit.MILLISECONDS.toNanos(waitMs), site));
+        table.put("poll", site -> TimedWaits.poll(
+                new LinkedBlockingQueue<Object>(), waitMs,
+                TimeUnit.MILLISECONDS, site));
+        for (java.util.Map.Entry<String, TimedWait> row : table.entrySet()) {
+            // Each row on a fresh runtime, as each test is.
+            tearDown();
+            written.clear();
+            reset();
+            String site = "<C: void " + row.getKey() + "()>#u18";
+            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+            order.add(event(ScheduleEvent.Kind.WAKE, site));
+            order.addAll(prefix("x"));
+            ScheduleLog.enforceForTests(order);
+            final long began = System.nanoTime();
+            final long[] moved = new long[1];
+            Thread next = new Thread(() -> {
+                try {
+                    Thread.sleep(200L);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+                moved[0] = System.nanoTime();
+            });
+            next.start();
+            row.getValue().run(site);
+            long returned = System.nanoTime();
+            next.join();
+            assertEquals(row.getKey(), Arrays.asList(site, "x"), sites());
+            assertTrue(row.getKey() + ": the order moved on at its slot",
+                    moved[0] - began < TimeUnit.MILLISECONDS.toNanos(waitMs));
+            assertTrue(row.getKey() + ": no sooner than its deadline",
+                    TimeUnit.NANOSECONDS.toMillis(returned - began)
+                            >= waitMs - 50L);
+        }
     }
 
     /**
@@ -1558,7 +1616,17 @@ public class ScheduleLogTest {
                 event(ScheduleEvent.Kind.WAKE, "tick.d"),
                 event(ScheduleEvent.Kind.WAKE, site)));
         long before = System.nanoTime();
-        Thread idle = waits(new Object(), site, 1, true).get(0);
+        final Object monitor = new Object();
+        Thread idle = new Thread(() -> {
+            synchronized (monitor) {
+                try {
+                    TimedWaits.waitOn(monitor, 1500L, site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        idle.start();
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         assertTrue("the rest's timeouts are still to come",
                 ScheduleLog.enforcing());
@@ -1573,9 +1641,9 @@ public class ScheduleLogTest {
         idle.join(5000L);
         assertFalse(daemon.isAlive());
         assertFalse(idle.isAlive());
-        assertTrue("virtual time, not its 60 s",
+        assertTrue("its own 1.5 s, no sooner",
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 10000L);
+                        >= 1450L);
         assertEquals(Arrays.asList("x", "a", "tick.d", site), sites());
         assertFalse("no timeout of the rest is still to come",
                 ScheduleLog.enforcing());

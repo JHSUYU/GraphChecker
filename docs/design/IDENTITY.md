@@ -707,8 +707,15 @@ order:
   item queued behind it: it is held at the send that started it, its anchor's producer
   (`Confirmation#submitter`), up the chain while that send is claimed work too;
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
-  runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
-  the longest-standing wait.
+  ends at a real signal, or takes its `WAKE` slot when the slot is due and then returns no sooner
+  than its own deadline (`TimedWaits#outlast`): a `WAKE` is a timeout, the recording's wait ran its
+  whole time, and a `WAKE` is never sooner than recorded, its wait's own duration included. The
+  order moves on at the slot; the rest is spent in the wait's own primitive, out of any signal's
+  choice, an interrupt kept pending. Code that reads the clock after the wait sees at least the time
+  the recording saw (hdfs-adhoc-29/30, round HL1: a DataNode actor's `waitTillNextIBR` (heartbeat
+  interval 1 s) ended at its slot before its deadline, the next tick found its heartbeat not due and
+  sent none, and the NameNode made the other DataNode the recovery's primary, so the declared
+  occurrence never ran). A woven notify marks the longest-standing wait.
 
 ## 9. Selectors
 

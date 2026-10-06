@@ -299,7 +299,12 @@ Correctness:
     (and dn0), so InterDatanodeProtocolTranslatorPB-88's `initReplicaRecovery` call and
     FsDatasetImpl-3234's local `updateReplicaUnderRecovery` ran on another node under a chain of
     another shape; of two hand seeds after it, one kept the recorded primary (answered by the
-    question, under another heartbeat) and one swapped it again.
+    question, under another heartbeat) and one swapped it again. One cause is fixed: a timed wait
+    that took its `WAKE` slot before its own deadline returned at once, so a DataNode actor's next
+    tick found its heartbeat not due and skipped it, and the other DataNode became the most
+    recently heartbeated (hdfs-adhoc-29/30, rounds HL1/HL1R: the recovery ran under dn0's
+    heartbeat anchors instead of the recorded dn1's); such a wait now returns no sooner than its
+    deadline (`TimedWaits#outlast`, IDENTITY.md §8).
 40. Which DataNode an upstream workload reads a replica from, or which one a pipeline recovery
     transfers from, is HDFS's `ThreadLocalRandom`: the NameNode resolves a reader on a host of
     several DataNodes to one of them at random (`Host2NodesMap#getDatanodeByHost`), orders
