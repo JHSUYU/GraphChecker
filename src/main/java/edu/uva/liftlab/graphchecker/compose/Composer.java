@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.Moved;
@@ -214,6 +215,7 @@ public final class Composer {
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
+        private final Map<String, Endpoint> unattestedArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         /** refuted_claim__k, refused_claim__k -> the model it excludes. */
         private final Map<String, Refutations.Refuted> refutations;
@@ -283,6 +285,9 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.observedArrivals);
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
+            this.unattestedArrivals = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Endpoint>(
+                            composed.unattestedArrivals));
             this.armChoices = composed.composedFamilies.armChoices();
             this.refutations = Collections.unmodifiableMap(
                     new LinkedHashMap<String, Refutations.Refuted>(
@@ -534,6 +539,60 @@ public final class Composer {
          *  a gap (result.json {@code concrete[]}). */
         public List<Concrete> concrete() {
             return concrete;
+        }
+
+        /**
+         * THE OPEN LINKS of the paths a verdict rests on: each value a path's
+         * fatal condition rests on that no producer the corpus attests made
+         * -- the set {@code experiments/accept/cone.py} reads off this
+         * formula ({@link Cone}) -- each with the producer occurrence its
+         * arrival names where no attested export delivered it, the one GROW
+         * can plan (PIPELINE §7.9); none where nothing could (a value whose
+         * attested producer's export did not lower, an attach naming no
+         * producer).  A SAT is judged on the path it claims ({@code
+         * witness}, with the arms it chose), an UNSAT on every path it rests
+         * on ({@code witness} null).
+         */
+        public List<JsonObject> openChain(ClaimPolicy.Outcome witness) {
+            List<JsonObject> open = new ArrayList<JsonObject>();
+            if (witness != null) {
+                if (witness.selected() != null) {
+                    links(witness.selected(),
+                            witness.selectedArms().keySet(), open);
+                }
+                return open;
+            }
+            for (Disjunct path : disjuncts) {
+                links(path, Collections.<String>emptySet(), open);
+            }
+            return open;
+        }
+
+        /** The open links of the paths a SAT does not take: information
+         *  ({@code cone.py}'s {@code unboundOffWitness}), never gating. */
+        public List<JsonObject> offWitness(ClaimPolicy.Outcome witness) {
+            List<JsonObject> open = new ArrayList<JsonObject>();
+            for (Disjunct path : disjuncts) {
+                if (witness != null && path == witness.selected()) continue;
+                links(path, Collections.<String>emptySet(), open);
+            }
+            return open;
+        }
+
+        private void links(Disjunct path, Set<String> arms,
+                           List<JsonObject> open) {
+            for (String symbol : Cone.unbound(body, path.selector(),
+                    path.path().pathId, arms, concrete)) {
+                Endpoint producer = unattestedArrivals.get(symbol);
+                JsonObject row = new JsonObject();
+                row.addProperty("symbol", symbol);
+                row.addProperty("pathId", path.path().pathId);
+                row.addProperty("producer", producer == null ? ""
+                        : producer.occurrence().render());
+                row.addProperty("producerEndpointId",
+                        producer == null ? "" : producer.id());
+                open.add(row);
+            }
         }
 
         public List<RootDomain> roots() {
@@ -984,6 +1043,10 @@ public final class Composer {
     /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
+    /** Each arrival no producer the corpus attests delivered, by symbol:
+     *  the producer its attach names, or null (Composer#arrival). */
+    private final Map<String, Endpoint> unattestedArrivals =
+            new LinkedHashMap<String, Endpoint>();
     /** This epoch's skeleton: which interactions have a slot (PIPELINE
      *  §7.1). */
     private SlotTable slots;
@@ -1889,6 +1952,9 @@ public final class Composer {
                     + attested.size() + " export(s) did not lower");
             return;
         }
+        // No producer the corpus attests delivered it: the one GROW could
+        // plan, where the attach names one (Composition#openChain).
+        unattestedArrivals.put(attach.symbol(), attach.producer());
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
         Term value = lowering.statedValue(received, attach.javaType());

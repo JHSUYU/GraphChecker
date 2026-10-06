@@ -654,6 +654,13 @@ if cone:
     out.append("* %d declared root(s) in the cone; %d unbound boundary"
                " variable(s)" % (len(cone.get("coneRoots") or []),
                                  len(cone.get("unbound") or [])))
+    # A SAT is judged on the path it claims: the other paths' open links
+    # are information, stated, never gating.
+    off = cone.get("unboundOffWitness") or []
+    if off:
+        out.append("* %d unbound boundary variable(s) on paths the witness"
+                   " does not take (information): %s"
+                   % (len(off), ", ".join("`%s`" % v for v in sorted(set(off)))))
     out.append("")
 
 

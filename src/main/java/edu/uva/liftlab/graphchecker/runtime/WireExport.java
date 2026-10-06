@@ -97,25 +97,12 @@ final class WireExport {
      */
     static void exportLeaf(String portId, Object carrier, String field,
                            String descriptor) {
-        CommunicationHandoffSpec site;
-        pauseObservation();
-        try {
-            site = site(portId, true);
-        } finally {
-            resumeObservation();
-        }
-        if (site == null) {
-            // Named, as for an attach.
-            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    Text.safe(portId),
-                    "a wire export ran for a port no task of this campaign "
-                            + "declares, so it staged nothing");
-            return;
-        }
-        if (carrier == null) return;
+        // The woven call is the declaration: every export of the program is
+        // woven (RuntimeRegionPlanner#exportSites), planned or not.
+        if (carrier == null || Text.safe(portId).isEmpty()) return;
         Export exported = export(carrier, field, descriptor);
         if (exported.handle < 0L) {
-            refused(site.portId(), "export", exported.handle,
+            refused(portId, "export", exported.handle,
                     GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     "the message carries no element for it, so its"
                             + " consumer's attach pairs with no export");
@@ -123,13 +110,13 @@ final class WireExport {
         }
         // The endpoint first: the message the leaf enters files it as its
         // own producer at its door (SymbolicMessageEnvelope#carriedBy).
-        Endpoint producer = publishExportRow(site, carrier, field,
+        Endpoint producer = publishExportRow(portId, carrier, field,
                 descriptor, exported.handle, exported.eventId);
-        if (!SymbolicMessageEnvelope.stage(site.portId(), exported.handle,
+        if (!SymbolicMessageEnvelope.stage(portId, exported.handle,
                 producer)) {
             // The row still states the endpoint; the loss is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    site.portId(),
+                    portId,
                     "the communication leaf could not enter the message");
         }
     }
@@ -172,7 +159,7 @@ final class WireExport {
      * (still keyable, IDENTITY §4): the endpoint, or null when no session
      * is open or the row could not be stated.
      */
-    private static Endpoint publishExportRow(CommunicationHandoffSpec site,
+    private static Endpoint publishExportRow(String portId,
                                          Object carrier, String field,
                                          String descriptor, long handle,
                                          long exportEventId) {
@@ -180,7 +167,7 @@ final class WireExport {
         try {
             if (!RowRuntime.open()) return null;
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            OccurrenceAddress producer = occurrenceHere(site.portId());
+            OccurrenceAddress producer = occurrenceHere(portId);
             JsonObject exported = null;
             String recordedValue = "";
             try {
@@ -200,17 +187,17 @@ final class WireExport {
                 }
             } catch (Throwable unreadable) {
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        site.portId(),
+                        portId,
                         "the exported leaf's expression could not be read: "
                                 + ConcolicRegionRuntime.rootCause(unreadable));
             }
             return RowRuntime.exported(producer, exportEventId,
-                    site.portId(), handle, attemptOf(view), exported,
+                    portId, handle, attemptOf(view), exported,
                     descriptor, recordedValue);
         } catch (Throwable unstated) {
             // Publishing never ends a run, and never fails silently.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    site.portId(),
+                    portId,
                     "the export of this port published no endpoint row, so"
                             + " no delivery can be paired to it: "
                             + ConcolicRegionRuntime.rootCause(unstated));
@@ -242,7 +229,7 @@ final class WireExport {
         long handle;
         pauseObservation();
         try {
-            site = site(portId, false);
+            site = attachSite(portId);
             // With no carrier nothing is taken: the element stays for the
             // message's end to name as unattached.
             handle = site == null || carrier == null ? 0L
@@ -305,25 +292,23 @@ final class WireExport {
     }
 
     /**
-     * The declared site of {@code portId}, whoever is running.
+     * The declared attach site of {@code portId}, whoever is running.
      *
      * <p>Propagation is a property of the value, not of the activation on
      * the stack, so the whole plan is asked, not just the active task.
      * Occurrences decide what gets published, never whether a value
      * propagates.</p>
      */
-    private static CommunicationHandoffSpec site(String portId,
-                                                 boolean exporting) {
+    private static CommunicationHandoffSpec attachSite(String portId) {
         if (safe(portId).isEmpty()) return null;
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (active != null) {
             CommunicationHandoffSpec declared =
-                    active.activation.communicationHandoff(portId, exporting);
+                    active.activation.attachSite(portId);
             if (declared != null) return declared;
         }
         for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
-            CommunicationHandoffSpec declared =
-                    task.communicationHandoff(portId, exporting);
+            CommunicationHandoffSpec declared = task.attachSite(portId);
             if (declared != null) return declared;
         }
         return null;

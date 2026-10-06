@@ -38,8 +38,8 @@ host, and it is why isolation must be strict.
   shared `~/.m2` (`onlift.sh ... env MAVEN_REPO_LOCAL=... cmd`).
 - **Host-dependent state is a hazard:** what differs between lifts or file systems (a directory's listing order, a
   temp path, a host name) makes a recording on one host and its replay on another disagree. The engine fixes such
-  orders in both passes (random draws: `runtime/Randoms`; directory listings: branch `hdfs-sorted-listings`, in
-  validation), never by pinning work to one host.
+  orders in both passes (random draws: `runtime/Randoms`; directory listings: `runtime/Listings`, merged), never by pinning work to
+  one host.
 
 ## 3. The loop: nothing waits in series
 
@@ -61,6 +61,16 @@ host, and it is why isolation must be strict.
    driver/SEED, scope) across packages, so independent problems advance together; designs that touch identity, the
    schedule, symbols or soundness are approved first, and a review agent reads such a batch before its merge.
 
+7. **A case's budget is a share of the cluster**: with 20 heads at once a case gets far fewer replay slots than alone;
+   HG9's 90-min default cut six cases that closed at 3 h. Give a full sweep `CASE_TIMEOUT_SECONDS=10800`; rerun a cut
+   case at once from its jobs-file line (OPERATIONS §4), beside the rest.
+8. **Shared services must not have a thundering herd**: the host ledger, NFS directories and `lift11` (the owner's
+   machine and the lead's shell) are shared by everything. Offline gates go through `onlift.sh` off lift11, a few cases
+   at a time; one shell per host refreshes the ledger's memory reading (b7c5dc99d); every background wait has a
+   timeout and an end condition that can happen.
+9. **After two large merges, a small live check of their combination** (HG10V: 17897, 11741, 14, 15, 10 from one
+   snapshot, one head per host) before the next merge, while agents keep their own gates running.
+
 ## 4. What does not parallelize, and how it gets faster
 
 - **One seed replay is one JVM**, held to the recorded order. More lifts do not shorten it; replay fidelity does:
@@ -72,10 +82,19 @@ host, and it is why isolation must be strict.
 - **Planned:** a SEED shared through NFS, keyed by the tree's commit, the static inputs' digest and the case, so
   repeated runs of one case (agents' probes, validation sweeps) reuse one recording instead of making their own.
 
-## 5. An example (2026-10-05 day)
+## 5. Examples
+
+**2026-10-05 day:**
 
 At one time: the lead's sweep HG7R (15 rerun cases, 2 heads per lift), HG7N (the 10 named bugs, the regression
 baseline), HG7D (QJM 08/09 with a 3 h budget); coding agents A1 (COMPOSE cost gate, offline), A2 (time model, up to
 four probes), A3 (r4 trees built on two lifts, then four validation runs), D1 (container writers, offline gate then
 live), A4 (SEED's static-pass gate); diagnosis agent D2 (the 24/26/37 give-up regression, found in 15 minutes while
 the runs were live). Each wrote only its own worktree and `GC_OUT`; the ledger kept every lift under 70 %.
+
+**2026-10-06 (night):** at one time the lead's HG9 (35 non-clock cases, 2 heads per lift) and, after cutting its queue,
+HG9B (the 10 named bugs, 3 h budget), six 3 h reruns (HG9L-*) and SW1 (the three swapped-in checks); coding agents A1
+((b2) offline gate over 42 corpora + live AR3, then export weave AW4/AW5), A2 (time model probes TM13-TM16), A4 (decider
+DO2 + offline A/B), D1 (frontier depth FD2/FD3 + container writers CW5); review agents on the time model, (b2) and the
+decider. 14 merges into `system/hdfs` that day, each validated beside the others. The cost of that load: lift11's NFS
+jam (fixed) and budget cuts (rerun at 3 h).

@@ -151,6 +151,13 @@ public final class Frontier {
         }
     }
 
+    /** Whether this candidate's arm is queued or running: by its id, or
+     *  by its flip, since its id may move while it flies. */
+    public boolean flying(ObligationFactory.Candidate candidate) {
+        return inFlightIds.contains(candidate.obligationId)
+                || inFlightFlips.contains(ObligationFactory.flip(candidate));
+    }
+
     /** How many arms are queued or running. */
     public int inFlightCount() {
         return inFlightIds.size();
@@ -189,9 +196,7 @@ public final class Frontier {
         int held = 0;
         for (ObligationFactory.Candidate candidate : candidates) {
             if (settled.containsKey(candidate.obligationId)) continue;
-            if (inFlightIds.contains(candidate.obligationId)
-                    || inFlightFlips.contains(
-                    ObligationFactory.flip(candidate))) {
+            if (flying(candidate)) {
                 held++;
                 continue;
             }

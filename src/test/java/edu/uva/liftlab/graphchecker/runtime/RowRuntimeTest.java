@@ -989,6 +989,67 @@ public class RowRuntimeTest {
         assertFalse(activations.get(0).instrumented());
     }
 
+    /**
+     * AN EXPORT NO TASK PLANS NAMES THE REGION IT RAN IN: every export is
+     * woven (RuntimeRegionPlanner#exportSites), so one that runs under no
+     * admitted activation states its endpoint at the occurrence its
+     * skeleton's entry opened -- a region the closure can grow once a
+     * demanded attach pairs with it -- never a ROLE, which nothing can grow,
+     * and no plan has to declare its port (hdfs-adhoc-12 HG9L: the
+     * NameNode's HA status txid).
+     */
+    @Test
+    public void anUnplannedExportNamesTheRegionItRanIn() throws Exception {
+        Field installed = ConcolicTaskPlan.class.getDeclaredField("plan");
+        installed.setAccessible(true);
+        installed.set(null, new ConcolicTaskPlan(null,
+                Collections.<ConcolicTaskPlan.RuntimeTask>emptyList()));
+        RowRuntime.configure(sessionFile());
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        Object nameNode = new Object();
+        RuntimeTraceContext.registerSource(nameNode, NN);
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        String convert = "<o.a.h.PBHelper: o.a.h.NNHAStatusHeartbeatProto"
+                + " convert(o.a.h.NNHAStatusHeartbeat)>";
+        String port = "XCH.53d59f95-3ee5-385f-a674-a07d58f5b75b"
+                + ".wire.auto:NNHAStatusHeartbeatProto.Txid";
+        long frame = Identity.enterFrame(convert + "#u0", null);
+        long entry = ConcolicRegionRuntime.enterRegionEntry(
+                "REGION.b9bd09cd", convert, nameNode);
+        OccurrenceAddress here;
+        try {
+            here = Identity.currentOccurrence(NN.key());
+            // No concolic VM runs these tests: the broker refuses the export.
+            WireExport.exportLeaf(port,
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
+        } finally {
+            ConcolicRegionRuntime.exitRegionEntry(entry);
+            Identity.exitFrame(frame);
+            installed.set(null, null);
+        }
+        RowRuntime.closeSession();
+
+        assertEquals("REGION.b9bd09cd", here.regionId());
+        assertFalse("a region, which the closure can grow", here.role());
+        List<GapRow> gaps = RowCodec.readAll(session().gaps(),
+                RowCodec::readGap);
+        GapRow refused = null;
+        for (GapRow gap : gaps) {
+            assertTrue("no plan declares an export: " + gap.detail(),
+                    gap.kind() != GapKind.DECLARATION_MISSING);
+            if (gap.kind() == GapKind.UNSTATED_VALUE) refused = gap;
+        }
+        assertNotNull("the refused export is named", refused);
+        assertEquals("at the occurrence it ran in", here.render(),
+                refused.subject());
+        List<ActivationRow> activations = RowCodec.readAll(
+                session().activations(), RowCodec::readActivation);
+        assertEquals("that occurrence is stated, unselected", here,
+                activations.get(0).occurrence());
+        assertFalse(activations.get(0).instrumented());
+    }
+
     /** Every row kind round-trips through the codec it is written with. */
     @Test
     public void theSessionRoundTripsEveryRowKind() throws Exception {

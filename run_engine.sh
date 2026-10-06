@@ -2599,7 +2599,15 @@ campaign_replay_min_need_mb=512
 # 939-2003).  The need sizes the replay JVM's heap (CAUSYNTH_HEAP_BASIS_MB,
 # execute.sh); the charge it starts with is campaign_replay_charge_mb's.
 campaign_replay_need_mb() {
-  local need=$(( (campaign_replay_peak_mb * 3 + 255) / 256 * 128 ))
+  campaign_need_of_peak_mb "${campaign_replay_peak_mb}"
+}
+
+# The need, in MB, of a JVM whose measured resident peak was <peak_mb>: the
+# peak times 1.5, rounded up to 128 MB, at least campaign_replay_min_need_mb
+# -- a replay's (campaign_replay_need_mb), and a solver's asked again after
+# one died (campaign_obligation_worker).
+campaign_need_of_peak_mb() {
+  local need=$(( ($1 * 3 + 255) / 256 * 128 ))
   (( need >= campaign_replay_min_need_mb )) \
     || need=${campaign_replay_min_need_mb}
   printf '%s\n' "${need}"
@@ -2905,7 +2913,7 @@ campaign_solver_idle_s=300
 # The solver's heap, in MB: the 8 GB every solver JVM has had, which no
 # solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  A
 # question it cannot answer is asked once more of a solver of its own at the
-# case's engine heap (campaign_obligation_worker).
+# case's engine heap, placed by what the first held (campaign_obligation_worker).
 campaign_solver_heap_mb=8192
 
 # What a solver is charged at its start, in MB; the rest of what it holds is
@@ -3085,28 +3093,73 @@ campaign_solver_jvm() {
 }
 
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
-# <worker> [charged_mb]: the question in a solver JVM of its own at the
-# case's engine heap, its files straight into <worker>, its status the JVM's.
-# <charged_mb>: at once, under the obligation's own charge of that many MB
-# (a solver's start), for a question whose host had no room for its solver
-# -- what the JVM grows past that charge is asked of the host as it grows.
-# Otherwise once the host has room for the engine heap, charged that while it
-# runs: for a question the host's solver, or a JVM of its own, could not
-# answer (it ran out of heap or died), never the obligation's answer.
+# <worker> <charged_mb>: the question in a solver JVM of its own at the
+# case's engine heap, its files straight into <worker>, its status the JVM's,
+# on this host under a charge of <charged_mb> its caller holds here: the
+# obligation's own (a solver's start) for a question whose host had no room
+# for its solver, or the one campaign_solve_obligation_placed took.  What
+# the JVM grows past it is asked of the host as it grows
+# (campaign_watch_workload).
 campaign_solve_obligation_alone() {
-  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=${5:-}
-  local heap=${engine_memory_mb:-8192} charge="" status=0
-  if [[ -z "${charged}" ]]; then
-    campaign_await_host_memory localhost "${heap}" || return 1
-    charge=${campaign_host_charge_id}
-    charged=${heap}
-  fi
-  run_capturing_status campaign_solver_jvm "${heap}" "${charged}" \
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
+  local status=0
+  run_capturing_status campaign_solver_jvm "${engine_memory_mb:-8192}" \
+    "${charged}" \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
     --output-dir "${worker}"
-  [[ -z "${charge}" ]] || campaign_host_release localhost "${charge}"
+  return "${status}"
+}
+
+# How long a solver asked again waits for a host with room for its measured
+# need (campaign_solve_obligation_placed) before its obligation fails by
+# name: a few polls, never the worker's whole bound (hdfs-adhoc-11 CW4b/CW5:
+# workers waited 3900 s for 16384 MB on the one host they ran on, and were
+# killed unanswered).
+campaign_solver_place_patience_s=60
+
+# campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
+# <worker> <need_mb>: a question asked again of a solver of its own, placed
+# as any start is: on the pool's host with the most room for <need_mb>
+# (campaign_host_room), charged there while it runs -- this host or a peer
+# (--run-placed, from a directory under <worker>).  4, with why in
+# campaign_host_wait_reason, when no host has the room within
+# campaign_solver_place_patience_s; else the JVM's status.
+campaign_solve_obligation_placed() {
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 need=$5
+  local host room best best_room since=${SECONDS} charge status=0
+  while true; do
+    best=""
+    best_room=-1
+    while IFS= read -r host; do
+      room=$(campaign_host_room "${host}") || continue
+      (( room >= need && room > best_room )) || continue
+      best=${host}
+      best_room=${room}
+    done < <(campaign_worker_host_list)
+    if [[ -n "${best}" ]]; then
+      campaign_host_try_charge "${best}" "${need}"
+      (( status != 0 )) || break
+    else
+      campaign_host_wait_reason="no host of the pool has ${need} MB of room"
+    fi
+    (( SECONDS - since < campaign_solver_place_patience_s )) || return 4
+    sleep "${campaign_host_poll_s}"
+  done
+  charge=${campaign_host_charge_id}
+  status=0
+  if campaign_host_is_local "${best}"; then
+    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" "${need}"
+  else
+    # Its placed directory under the worker: a peer has no campaign root.
+    local campaign_root=${worker}
+    run_capturing_status campaign_run_placed "${best}" \
+      campaign_solve_obligation_alone "${obligation_id}" "${obligations}" \
+      "${sessions}" "${worker}" "${need}" >&2
+  fi
+  campaign_host_release "${best}" "${charge}"
   return "${status}"
 }
 
@@ -3129,10 +3182,11 @@ campaign_solve_obligation_alone() {
 # its solver.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local outcome status=0
+  local outcome status=0 peak need
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
+  campaign_watch_peak_mb=0
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
     "${obligations}" "${sessions}" "${worker}"
@@ -3145,21 +3199,34 @@ to start its solver now; answered in a solver JVM of its own"
       "${obligations}" "${sessions}" "${worker}" "${charged}"
   fi
   if [[ "${status}" -ne 0 ]]; then
-    # A solver that ran out of heap or died answered nothing about the
-    # obligation, and settles no question, whatever it left: asked once
-    # more, of a solver of its own.  Twice: the worker did not finish
-    # (campaign_obligation_unfinished), never an answer.
+    # A solver that ran out of heap, died, or was ended at what its host
+    # could hold answered nothing about the obligation, and settles no
+    # question, whatever it left: asked once more, of a solver of its own,
+    # placed as any start by what the first one measurably held (its peak,
+    # or the host's solver's heap) with the usual margin
+    # (campaign_need_of_peak_mb), on any host with that room
+    # (campaign_solve_obligation_placed).  Twice, or no host with the room:
+    # the worker did not finish (campaign_obligation_unfinished), by name,
+    # never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
-    campaign_log "obligation ${obligation_id}: its host's solver did not \
-answer ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
-      | tail -n 1)); asked again of a solver of its own at \
-${engine_memory_mb:-8192} MB"
-    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}"
-    if [[ "${status}" -ne 0 ]]; then
+    peak=${campaign_watch_peak_mb}
+    (( peak > 0 )) || peak=${campaign_solver_heap_mb}
+    need=$(campaign_need_of_peak_mb "${peak}")
+    campaign_log "obligation ${obligation_id}: its solver did not answer \
+($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
+      | tail -n 1)); asked again of a solver of its own, ${need} MB for a \
+first that held ${peak} MB, on any host with the room"
+    run_capturing_status campaign_solve_obligation_placed "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" "${need}"
+    if [[ "${status}" -eq 4 ]]; then
+      die "obligation ${obligation_id}: its solver did not answer, and no \
+host has room for a solver of its own of ${need} MB (the first held \
+${peak} MB) within ${campaign_solver_place_patience_s}s: \
+${campaign_host_wait_reason}"
+    elif [[ "${status}" -ne 0 ]]; then
       rm -f -- "${worker}/question.txt" "${worker}/question.asked"
       die "obligation ${obligation_id}: its solver failed twice, its \
-host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
+host's and one of its own of ${need} MB: $(grep -v -E \
         '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)"
     fi
   fi
@@ -3817,10 +3884,13 @@ campaign_recording_bound_marker=RECORDING_BOUND
 # and one refused 6 MB on a host with 16 GB free, all of it promised to
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
-# released when it ends.  A recording given <max_trace_mb> whose trace
+# released when it ends; its peak is campaign_watch_peak_mb once it has
+# (a solver asked again places its JVM by it, campaign_obligation_worker).
+# A recording given <max_trace_mb> whose trace
 # (<dir>/runtime_trace.jsonl) passes it is ended there, RECORDING_BOUND, said
 # in <dir>/${campaign_recording_bound_marker}: never a trace cut short and
 # aggregated as if whole.
+campaign_watch_peak_mb=0
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
   local status=0 refused="" written=0 bounded=""
@@ -3859,6 +3929,7 @@ campaign_watch_workload() {
   for id in "${grants[@]}"; do
     campaign_host_release localhost "${id}"
   done
+  campaign_watch_peak_mb=${peak}
   if [[ -n "${bounded}" ]]; then
     echo "RECORDING_BOUND: the recording's trace passed \
 recording_max_trace_mb (${max_mb} MB) at ${bounded} MB, more rows than SEED's \
@@ -4026,48 +4097,6 @@ campaign_run_placed() {
   cat -- "${dir}/stderr.log" "${dir}/ssh.log" >&2 2>/dev/null
   rm -rf -- "${dir}"
   return "${status}"
-}
-
-# campaign_await_host_memory <host> <need_mb>: blocks until one
-# start fits on the host, then charges it there: 0.  2 when the host's
-# memory cannot be read for campaign_ssh_patience_s, the waiter's named
-# failure.  What starts on the host that runs it waits here: a host's
-# solver (campaign_start_solver) and a question asked again of a solver of
-# its own (campaign_solve_obligation_alone).  A head's step goes to any host
-# with room (campaign_head_place), and an obligation's start is the pool's
-# (campaign_stream_admit_host): neither waits on one host while another
-# has room.
-campaign_await_host_memory() {
-  local host=$1 need=$2
-  local said=false status=0 unread_since="" since=${SECONDS}
-  while true; do
-    campaign_host_try_charge "${host}" "${need}"
-    case "${status}" in
-      0)
-        [[ "${said}" == false ]] || campaign_log "room for ${need} MB on \
-${host} after $(( SECONDS - since ))s"
-        return 0 ;;
-      2)
-        # Unreadable is not "no room": sshd refuses some connections while a
-        # round opens hundreds.  Waited out, stated, within the patience.
-        [[ -n "${unread_since}" ]] || unread_since=${SECONDS}
-        if (( SECONDS - unread_since >= campaign_ssh_patience_s )); then
-          campaign_log "the memory of host ${host} could not be read for \
-${campaign_ssh_patience_s}s"
-          return 2
-        fi
-        campaign_host_wait_reason="the memory of ${host} could not be read"
-        ;;
-      *) unread_since="" ;;
-    esac
-    if [[ "${said}" == false ]]; then
-      campaign_log "waiting for memory on ${host}: \
-${campaign_host_wait_reason}"
-      said=true
-    fi
-    campaign_head_heartbeat
-    sleep "${campaign_host_poll_s}"
-  done
 }
 
 # campaign_stream_job <kind> <host> <charge> <id> <worker> <args...>: one
@@ -4267,6 +4296,10 @@ campaign_explore() {
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_solver_seen=() stream_confirming=()
+  # An open witness chain (campaign_stream_attempt): the producers it names,
+  # those already grown, and the witnesses attempted again once they are.
+  local -A stream_chain=() stream_chain_grown=()
+  local -a stream_chain_witnesses=()
   : >"${results}"
   : >"${attempts}"
   mkdir -p "$(dirname "${stream_plan}")"
@@ -4400,6 +4433,7 @@ campaign_stream_step_start() {
     (( ${#stream_pending[@]} == 0 )) || campaign_stream_land
     if campaign_stream_swap_due; then
       campaign_stream_swap
+      (( ${#stream_chain[@]} == 0 )) || campaign_stream_chain_reattempt
     fi
     (( ${#stream_staged[@]} == 0 )) || campaign_stream_move
     if [[ -z "${stream_stop}" ]] && campaign_stream_plan_due; then
@@ -4510,6 +4544,7 @@ campaign_stream_step_done() {
       "${iteration_dir}/witness-attempts/${id}/model")
     stream_queue=("CONFIRM - ${id}" "${stream_queue[@]}")
   fi
+  [[ ! -s "${dir}/chain" ]] || campaign_stream_open "${dir}"
   [[ ! -s "${dir}/deferred" ]] || mapfile -t -O "${#stream_deferred[@]}" \
     stream_deferred <"${dir}/deferred"
   if [[ -s "${dir}/decided" ]]; then
@@ -4532,6 +4567,47 @@ campaign_stream_step_done() {
   elif [[ -s "${dir}/round" ]]; then
     campaign_stream_take_round "${iteration_dir}/$(cat "${dir}/round")"
   fi
+}
+
+# The witness chain an attempt left open (<dir>/chain): its producers not
+# grown yet become the chain the rounds grow (campaign_stream_chain_round),
+# the queued obligations are cancelled, and its witnesses wait to be
+# attempted again once the GROW swaps in (campaign_stream_chain_reattempt).
+# A chain whose every producer was grown already cannot close: the
+# exploration goes on as before, and the claim it reaches names it
+# (WITNESS_CHAIN_OPEN).
+campaign_stream_open() {
+  local dir=$1 producer
+  local -a fresh=()
+  while read -r producer; do
+    [[ -n "${stream_chain_grown[${producer}]+x}" ]] || fresh+=("${producer}")
+  done <"${dir}/chain"
+  stream_chain=()
+  if (( ${#fresh[@]} == 0 )); then
+    campaign_log "the witness's chain is open, and every producer it names \
+was grown already: it cannot close"
+    return 0
+  fi
+  for producer in "${fresh[@]}"; do
+    stream_chain[${producer}]=1
+  done
+  mapfile -t stream_chain_witnesses <"${dir}/chain-witnesses"
+  campaign_stream_drop
+  campaign_log "the witness's chain is open: EXPLORE grows its \
+${#fresh[@]} producer(s) and attempts it again; the queued obligations are \
+cancelled"
+}
+
+# Once a GROW of an open chain swapped in: the chain's witnesses still in
+# the corpus are attempted again (a re-run lands as a witness of its own,
+# campaign_stream_move), and the chain is the attempt's to state anew.
+campaign_stream_chain_reattempt() {
+  local witness
+  for witness in "${stream_chain_witnesses[@]}"; do
+    [[ ! -d "${sessions}/${witness}" ]] || stream_witnesses+=("${witness}")
+  done
+  stream_chain_witnesses=()
+  stream_chain=()
 }
 
 # A planned round, taken -- in this order -- through the wave budget, and
@@ -4571,6 +4647,13 @@ not yet woven"
     stream_cancelled+=("${ids[@]}")
     return 0
   fi
+  # While a witness's chain is open, a round grows the exposures of that
+  # chain's producers and nothing else, and queues none of its obligations
+  # (PIPELINE §7.9).
+  if (( ${#stream_chain[@]} > 0 )); then
+    campaign_stream_chain_round "${round_dir}" "${ids[@]}"
+    return 0
+  fi
   # A round that exposes regions grows the corpus first: what it proposes is
   # asked again over the grown one, once GROW's re-runs have swapped in.
   if (( exposed > 0 )); then
@@ -4582,6 +4665,30 @@ not yet woven"
     stream_flying[${ids[${index}]}]=${rows[${index}]}
     stream_queue+=("OBLIGATION ${name} ${ids[${index}]}")
   done
+}
+
+# A round planned while a witness's chain is open: its exposures of the
+# chain's producers (growth-chain.jsonl) grown, each producer once, and its
+# obligations cancelled, named in exploration.json -- the exploration goes
+# on only to close that chain.
+campaign_stream_chain_round() {
+  local round_dir=$1 occurrence grow=0
+  shift
+  stream_cancelled+=("$@")
+  jq -c --argjson chain "$(printf '%s\n' "${!stream_chain[@]}" \
+      | jq -R . | jq -s -c .)" \
+    'select(.kind == "EXPOSED_REGION" and (.occurrence as $at
+       | any($chain[]; . == $at)))' "${round_dir}/growth.jsonl" \
+    >"${round_dir}/growth-chain.jsonl"
+  while read -r occurrence; do
+    stream_chain_grown[${occurrence}]=1
+    grow=$((grow + 1))
+  done < <(jq -r '.occurrence' "${round_dir}/growth-chain.jsonl" | sort -u)
+  campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
+${grow} of its producer(s) exposed here grow, and the round's $# \
+obligation(s) wait"
+  (( grow == 0 )) || campaign_stream_grow "${round_dir}" \
+    "${round_dir}/growth-chain.jsonl"
 }
 
 # One row of the exploration's own, <class> <subject> <detail>, as EMIT
@@ -4695,6 +4802,10 @@ campaign_stream_attempt() {
     >"${dir}/attempt.json"
   campaign_log "witness $*: COMPOSE over the corpus as it stands \
 (exit ${status}) claims ${claim:-nothing} ${kind} polarityDecides=${polarity}"
+  if [[ "${status}" -eq 0 && "${polarity}" == true ]] \
+      && campaign_stream_open_chain "${step}" "${dir}" "$@"; then
+    return 0
+  fi
   if [[ "${claim}" != SAT_CANDIDATE || "${polarity}" != true ]]; then
     campaign_stream_attempt_row "${dir}" null "" 0 false
   elif ! campaign_claim_room; then
@@ -4726,6 +4837,34 @@ that verdict lands" 0 false
     fi
     campaign_confirm_settle "${iteration_dir}" "${dir}"
     campaign_stream_confirmed "${step}" "${dir}" 0
+  fi
+}
+
+# A witness attempt whose COMPOSE names an open chain (ComposeMain
+# #campaignClaim: openChain, cone.py's open links of the claimed path) is
+# not confirmed -- a claim never stands on a value no attested producer
+# made: its row says so, and the producers its arrivals name, with its
+# witnesses, go to the head (<step>/chain, <step>/chain-witnesses), which
+# grows them and attempts the witnesses again (campaign_stream_open).  False
+# where the chain is closed.
+campaign_stream_open_chain() {
+  local step=$1 dir=$2 manifest=$2/candidate_composition_manifest.json open
+  shift 2
+  open=$(jq '.solver.campaignClaim.openChain // [] | length' \
+    "${manifest}" 2>/dev/null) || open=0
+  (( open > 0 )) || return 1
+  jq -r '.solver.campaignClaim.openChain[].producer | select(. != "")' \
+    "${manifest}" | LC_ALL=C sort -u >"${step}/chain"
+  printf '%s\n' "$@" >"${step}/chain-witnesses"
+  if [[ -s "${step}/chain" ]]; then
+    campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
+${open} value(s) its path's fatal condition rests on no attested producer \
+made (openChain); EXPLORE grows the $(grep -c '' "${step}/chain") \
+producer(s) they name and attempts its witnesses again" 0 false
+  else
+    campaign_stream_attempt_row "${dir}" null "its causal chain is open: \
+${open} value(s) its path's fatal condition rests on no attested producer \
+made (openChain), and none names a producer EXPLORE could grow" 0 false
   fi
 }
 
@@ -5358,7 +5497,7 @@ campaign_exposures() {
 # (campaign_stream_swap), no obligation starts and no round is planned.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
-  local growth="${round_dir}/growth.jsonl"
+  local growth=${2:-${round_dir}/growth.jsonl}
   local rows="${round_dir}/exposed_region_plan.jsonl"
   local worker file
   # An exposure names the obligation whose replay is re-run.  One that names
@@ -5551,10 +5690,12 @@ campaign_stream_manifest() {
 # the search only as a named, rare last resort, counted every round): null
 # when none did, else {by: [the configuration key of each], detail}.  They
 # are the wave budget (region_path_max_waves, the stop
-# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round reads of one task
-# (region_path_max_paths_per_region) and the world depth it cuts from
-# (region_path_max_world_depth), ObligationFactory's rows naming the bound in
-# their subject; the tasks one anchor's closure plans (region_path_max_tasks:
+# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round cuts from per task
+# (region_path_max_paths_per_region), only where the LAST round planned
+# deferred some -- an earlier round's deferral is work the rounds after it
+# read first, and a fixed point defers none -- and the world depth a round
+# cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
+# bound in their subject; the tasks one anchor's closure plans (region_path_max_tasks:
 # the last round's `truncated`, as campaign_stream_truncation judges it, since
 # a later round plans what an earlier one left); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
@@ -5575,11 +5716,14 @@ campaign_bounds() {
     --slurpfile rounds <(cat "${iteration_dir}"/obligations-*/\
 explore_manifest.json 2>/dev/null) \
     --slurpfile gaps "${campaign_final}/gaps.json" \
+    --slurpfile last <(cat "$(printf '%s\n' "${iteration_dir}"/obligations-* \
+      | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
     --argjson decided "${decided}" --argjson refutes "${refutes}" \
     --argjson maxClaims "${campaign_max_claims}" '
+    def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
-      | select(.subject | test(" " + $bound + "=[0-9]+$"))];
-    rows("max-paths-per-region") as $paths
+      | bound($bound)];
+    [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
@@ -5587,9 +5731,9 @@ explore_manifest.json 2>/dev/null) \
          | {by: "region_path_max_waves", detail: $exploration[0].detail}),
         (select(($paths | length) > 0)
          | {by: "region_path_max_paths_per_region",
-            detail: ("\($paths | length) task round(s) read only"
-              + " \($paths[0].subject | sub(".* "; "")) recorded paths, the"
-              + " rest unread")}),
+            detail: ("the last round deferred \($paths | length) task(s)"
+              + " past \($paths[0].subject | sub(".* "; "")) recorded paths"
+              + " that offer an owed arm")}),
         (select(($depth | length) > 0)
          | {by: "region_path_max_world_depth",
             detail: ("\($depth | length) task round(s) cut from no path"
@@ -6775,7 +6919,17 @@ campaign_emit() {
        + (if ($decided.unsatBesideRefused // false)
           then [{stage: "COMPOSE", code: "UNSAT_BESIDE_REFUSED",
                  subject: "", detail: $decided.claimReason}]
-          else [] end)),
+          else [] end)
+       # A causal chain EXPLORE could not close: a value a fatal condition the
+       # verdict rests on names that no attested producer made -- the witness
+       # path for a SAT, every path for an UNSAT.
+       + [($decided.findingKind // "") as $kind | ($decided.openChain // [])[]
+          | {stage: "COMPOSE", code: (if $kind == "NO_SUPPORTED_WITNESS"
+               then "UNSAT_CHAIN_OPEN" else "WITNESS_CHAIN_OPEN" end),
+             subject: .symbol,
+             detail: ("no producer the corpus attests made this value"
+               + (if .producer == "" then "" else "; its arrival names "
+                  + .producer + ", which EXPLORE did not grow" end))}]),
      # What the decision rested on concretely: each anchor every admitted
      # path decided on no symbol (EXPLORE), each open decider arm no run
      # took (EXPLORE, with its flip), and each value COMPOSE stated as a

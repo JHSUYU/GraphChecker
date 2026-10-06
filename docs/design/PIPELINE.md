@@ -215,6 +215,10 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
 (`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+The wire's captures (SYMBOL-SCOPE §6.3): each attach a planned occurrence declares, and every export
+of the program -- each OUT port of every region skeleton, its method and frame woven as a planned
+region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
+`runtime.RuntimeRegionPlanner#exportSites`).
 Each conditional of a woven method gets the VM's decision marker just before it and, on every
 arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolveBranch`,
 `#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the
@@ -602,9 +606,12 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
 outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
 share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
-(`Corpus.inputShape`): whether the task's occurrence and each factor member that writes state it reads
-ran, their handoff sites and producers, and those members' write counts at the locations the guard
-reads — never delivered values. Never the session. An arm is
+(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and, for
+each factor member that writes state it reads and that this session ran, the same and its write
+counts at the locations the guard reads — never delivered values, and a function of the session
+alone: the members as a set, and none the session never ran (the corpus finds feeders as sessions
+land, and such a member's line, the same in every session that did not run it, re-keyed every arm of
+the session). Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
@@ -619,7 +626,7 @@ byte-identical queries). Its **question** (`ObligationFactory#question`) does no
 answer rests on reads the same: `<flip>:<content>`, the flip (`#flip`: task, path, site, ordinal,
 flipped outcome), then a digest of the query as its solver is asked it (or the refusal that leaves
 none) and all its replay is given -- the world it plants (the path's world: roots, clock skews,
-answers, inherited flips), the focused occurrence, the factor and the seed session of the focus row
+answers, inherited flips), the focused occurrence, the factor (a set) and the seed session of the focus row
 (the schedule cut is the path's session cut at the focus and factor), the declared occurrence, and
 the plan generation (a digest of the iteration's task plan, which GROW appends to and re-weaves
 from). The solver builds it and looks it up in the questions this iteration's workers settled
@@ -652,9 +659,18 @@ difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
-`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
-`--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
-a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. The planner builds no query;
+`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
+arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is
+keyed, and the path bound counts only the paths that offer an OWED arm -- one no ledger settles, no
+round has in flight and no path before it offers: a path whose arms are all settled, in flight or
+already offered is no path to cut from and is skipped uncounted, so the bound cuts new work, never
+repetition (hdfs-adhoc-08 HG8F: of 15995 paths past the bound, 15670 offered nothing owed; the 325
+others held 86 owed arms). It DEFERS, never drops: every round reads the task's paths again, and
+once the paths before them are answered or in flight the deferred ones are the first that count, so
+a fixed point defers nothing; EMIT names the bound only where the last round deferred
+(`campaign_bounds`). Every
+bound that drops work files a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too,
+each arm once per task round. The planner builds no query;
 an arm in flight is held by its flip (`ObligationFactory#flip`, §7.3), the first half of its
 question.
 
@@ -684,11 +700,16 @@ solver says so after a minute and every ten minutes after (`campaign_solver_wait
 with no room to start a solver now answers the question in a solver JVM of its own at once
 (`campaign_solve_obligation_alone ... <charged_mb>`, `ObligationSolverMain --obligation-id`),
 under the solve's own charge (what a solver starts at, §7.7), what it grows past that asked of the
-host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it, or
-ended while answering it) is no answer: it is asked once more of a solver JVM of its own at
-`engine_memory_mb`, once the host has room for it (`campaign_solve_obligation_alone`, the offline
-gate's entry too); neither settles a question (`question.txt`/`question.asked` are removed), and
-a second failure fails the worker: an unfinished obligation (§7.7).
+host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it,
+died, or was ended at what its host could hold) is no answer: it is asked once more of a solver JVM of
+its own at `engine_memory_mb`, placed as any start (`campaign_solve_obligation_placed`): its need is
+what the first measurably held -- its watched peak, or the host's solver's heap -- with the usual
+margin (`campaign_need_of_peak_mb`, ×1.5), charged on the pool's host with the most room for it, this
+one or a peer (`--run-placed`); no host with the room within `campaign_solver_place_patience_s` (60)
+fails the worker at once, by name (hdfs-adhoc-11 CW4b/CW5: workers waited their whole 3900 s bound
+for 16384 MB on the one host they ran on). Neither settles a question
+(`question.txt`/`question.asked` are removed), and a second failure fails the worker: an unfinished
+obligation (§7.7).
 
 `ObligationFactory.locate` finds the published obligation's path in the corpus under its round's id
 (a path gone from the corpus is `NOT_ADMITTED`). `FlipQuery.build` asserts the path as its replay ran
@@ -1110,6 +1131,19 @@ cancelled or reaped, by id):
   left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
+  A witness ends the exploration only once its OWN chain is closed (owner 2026-10-06): an attempt
+  whose COMPOSE names an open chain (`ComposeMain#campaignClaim` `openChain`: each value the claimed
+  path's fatal condition rests on that no attested producer made -- the set
+  `experiments/accept/cone.py` reads off the formula, `compose.Cone` -- the claim RUN_DEFECT) is
+  not confirmed (`campaign_stream_open_chain`); the head cancels the queued obligations and grows the
+  producers those values' arrivals name (`campaign_stream_open`): each later round grows only its
+  exposures of them, each producer once, and queues none of its obligations
+  (`campaign_stream_chain_round`); once the GROW swaps in, the attempt's witnesses still in the
+  corpus are attempted again, a re-run landing as a witness of its own
+  (`campaign_stream_chain_reattempt`). A chain whose every producer was grown already cannot close,
+  and a fixed point ends a chain no exposure reaches: the final claim names each open value
+  (`WITNESS_CHAIN_OPEN`, EMIT's `defects[]`). hdfs-adhoc-12 AW2: the HA status txid's export at
+  nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
   the exploration has stopped otherwise, no attempt is made.
 - **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
@@ -1777,7 +1811,17 @@ kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's 
 exactly: no world of the explored corpus reaches the fatal -- each admitted path under the marker
 valuation its own run ran (`valuationOf`), every declared root free over its domain, every clock
 over its window, and the values `concrete[]` holds (HELD, producer unstated) -- and nothing about a
-path the exploration did not admit. EMIT publishes
+path the exploration did not admit. A VERDICT IS JUDGED ON THE PATHS IT RESTS ON (owner 2026-10-06):
+a SAT on the path it claims, an UNSAT on every path. Each value the fatal condition of such a path
+names that no message family under its selector binds -- or that an arm the witness chose holds FREE
+or HELD -- is an open link of the chain (`compose.Cone`, the set `experiments/accept/cone.py` reads
+off the same formula; `Composition#openChain`, each with the producer occurrence its arrival names):
+an open link leaves no verdict, `RUN_DEFECT` with `openChain` (EMIT: `WITNESS_CHAIN_OPEN` for a
+SAT, `UNSAT_CHAIN_OPEN` for an UNSAT). A SAT's other paths' open links are stated, never gating
+(`unboundOffWitness`, cone.json's too). EXPLORE closes a witness's chain before it ends (§7.9); an
+UNSAT's paths are closed by the exploration's own growth, which plans each demanded producer an
+admitted session exposes (§7.2, §7.8), so a link still open at the fixed point is one growing could
+not close. EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
 when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
@@ -1789,7 +1833,8 @@ which a standalone z3 re-solves to the same verdict, SAT or UNSAT). The manifest
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
 root's category, `contract.RootCategory`), `configurationOnly` (the claim moves configuration only:
-the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`).
+the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`,
+`openChain` and `unboundOffWitness` where they hold a link).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
@@ -2069,8 +2114,9 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `targetOccurrence`, `valuations`, `witnessFindings`; `bounded` (`campaign_bounds`), whatever the
    claim: null, or `{by, detail}` naming by configuration key each declared bound that cut the
    search -- the wave budget (`region_path_max_waves`, the stop REGION_PATH_WAVE_BUDGET_REACHED),
-   `region_path_max_paths_per_region` and `region_path_max_world_depth` (ObligationFactory's
-   DIAGNOSTIC rows, the bound in their subject, §7.4), `region_path_max_tasks` (the last round's
+   `region_path_max_paths_per_region` (the LAST round's deferral rows: an earlier round's the rounds
+   after it read, §7.4) and `region_path_max_world_depth` (ObligationFactory's DIAGNOSTIC rows, the
+   bound in their subject), `region_path_max_tasks` (the last round's
    `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a
@@ -2138,7 +2184,13 @@ and CONFIRM's planning — over private iterations that link the recorded sessio
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
 2 when one could not be checked; the static pass's summary is the slice's size (edges, the methods
 they lie in, scope rows, READ_SITEs, CONFIG_KEYs, chosen/all root-demand boundaries, skeletons,
-grown classes), and `AB_STAGES=SEED.static` runs that pass alone. The trace chain (aggregation,
+grown classes), and `AB_STAGES=SEED.static` runs that pass alone. `AB_STAGES=EXPLORE.drift`
+replays a run's landing order: each recorded round planned again over the sessions landed before
+its planner started (a session's directory ctime is its landing), the waves before it and the plan
+generation then current, with no answer, so every flip it offers is keyed; the summary counts the
+flips offered under more than one id (an arm the run asks again on the same path) and the ids per
+arm -- what a change to an arm's key does to re-asks, which the run's own answers, keyed by the
+recording jar, cannot show. The trace chain (aggregation,
 PLAN, EXPLORE round 0) of both sides reads one set of static artifacts, the recording's own;
 `AB_FRESH_SLICE=1` gives each side its own fresh static pass, to see what a slice change does to
 the region plan and the closure. It runs beside live rounds, so each of its engine JVMs is placed
@@ -2156,8 +2208,7 @@ comparison.
 - A campaign that died names its stage: `[campaign:error] stage=… component=… artifact=… reason=…`
   on stderr. A REPLAY death: `iteration-0000/seed-result/focused/replay.log` and the seed session's
   `gaps.jsonl`. A pool or a head that seems stalled logs `waiting for room: …` or `waiting for
-  memory for a head step of <mb> MB on any host: …` (a host's solver: `waiting for memory on
-  <host>: …`); a replay ended past its charge says why in its `replay.log`; the host ledger is
+  memory for a head step of <mb> MB on any host: …`; a replay ended past its charge says why in its `replay.log`; the host ledger is
   `$CAUSYNTH_HOST_LEDGER/<host>/{available,charges/,cores}`.
 - How EXPLORE ended: `iteration-0000/exploration.json` (the stop, every COMPOSE attempt at a
   witness, every obligation cancelled or reaped) and the log's `round N (wave W): …` lines.

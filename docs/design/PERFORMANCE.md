@@ -57,11 +57,12 @@ running out of memory, and a single case alone takes the whole cluster.
   HR1), never a fixed 8 GB; a host counts only its largest idle reservation.
 - **Sweeps** (`tools/adhoc/sweep.sh <snapshot> <round> <cases-file> <heads-per-host>`): one `fanout.sh` job per case,
   at most `heads-per-host` heads on each lift (2 for the HDFS group), each admitted for the room it reserves, every
-  case's obligations on all ten lifts; `CASE_TIMEOUT_SECONDS` (5400 s) per case is a convenience of a shared cluster,
-  not a verdict (a case cut there is rerun alone).
-- **Exclusive runs** (`tools/rounds/launch-run.sh <snapshot> <case> <suffix>`, or `launch-round.sh` with one case):
-  the final acceptance runs each case alone on the whole cluster; a deep closure gets up to ~120 replays in flight
-  (07 reached 121 with measured charges, against 15 under static charges).
+  case's obligations on all ten lifts; `CASE_TIMEOUT_SECONDS` (5400 s by default; 10800 for a full sweep) per case is a convenience of a shared
+  cluster, not a verdict (a case cut there is rerun with a longer budget).
+- **One case alone** (`tools/rounds/launch-run.sh <snapshot> <case> <suffix>`, or `launch-round.sh` with one case): a
+  deep closure gets up to ~120 replays in flight (07 reached 121 with measured charges, against 15 under static
+  charges). The final acceptance does not need it (owner 2026-10-05): cases run concurrently through the ledger with
+  `CASE_TIMEOUT_SECONDS=10800`.
 - **Agents' runs** go through the same ledger from their own snapshots and `GC_OUT`, so a lead's sweep and four
   agents' validation runs coexist; judge a crowded run by stage times and queue waits, not wall time.
 
@@ -85,6 +86,13 @@ running out of memory, and a single case alone takes the whole cluster.
 | a replay's answer row corrupted when written from another host (MCH1) | rewriting a file in place over NFS: a client's cached copy wrote past a truncate | answers are written as a new inode and renamed |
 | a branch window re-imported its whole closure per node (SB19 seed window 787 s) | O(n^2) re-import | stream the import, skip expanded nodes (183 s) |
 | Solr replays growing for minutes overcommitted lifts (SB11/SB13) | charges counted only during a 60 s ramp | life-long leased charges |
+| six cases cut at 90 min in a 35-case sweep (HG9, 2026-10-06), e.g. 05 at 61 min with 60 verdicts and 105 replays in flight (alone in HG8W: 226 verdicts in 39 min) | 20 heads share the replay slots; the sweep's default `CASE_TIMEOUT_SECONDS=5400` is a share of the cluster | rerun at 10800 (11 26 33 37 closed); give a full sweep 10800 from the start |
+| 11741 took 4.7-5.4 h though its witness landed after ~150 verdicts (AR1) | each solved obligation's REPLAY was put at the queue's front, ahead of the witness's CONFIRM: it waited behind 473 replays | a REPLAY goes behind a leading CONFIRM or RERUN (adffd6072) |
+| 254 processes in NFS D state on lift11, load 288 (2026-10-06) | dozens of `offline-ab.sh` waiters each refreshed every host's ledger reading (ssh + mktemp + rename into one NFS directory) whenever the 5 s cache was stale | one refresher per host, the others use a reading up to 30 s old (b7c5dc99d); gates via `onlift.sh` off lift11 |
+| a worktree took 45+ min to check out, a commit in it minutes | 99 % of the repository's files are `third_party/` (the VM's source) written to NFS | `tools/lib/worktree-add.sh`: sparse, 10 s |
+| 11 did not converge under the prefix span (CW5: 1267 asks vs WD3's 47) | six IPC arms re-asked ~110 times each over ~23 paths | rule 1 (an arm keyed by the kept conditions of its prefix closure), TODO §1.7 |
+| 11741's replays under the time model: median 258 s vs 165-207 s (TM16) | two 15 s stalls per replay: the window opens 65 s late in model time and time stands there until the order catches up | open (TODO §4) |
+| TM14-11741: 175 worker timeouts and solver OOMs | a diagnostic row whose name grew with every pre-window lift: 1.5 GB of `gaps.jsonl` per session | fixed on `hdfs-time-model` (511c8d049) |
 
 Older history is in `git log` of `run_engine.sh` and in PIPELINE §7.7's own examples.
 
@@ -121,3 +129,8 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 3. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
 4. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused
    growth.
+5. A host solver killed at its memory hold falls back to a 16 GB solver on its pinned host and waits 3900 s
+   (`hdfs-solver-fallback`, not merged).
+6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (A1's measurement branch
+   `hdfs-compose-perf-wip`).
+7. The time model's replay cost on 11741 (item above).

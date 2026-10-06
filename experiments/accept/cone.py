@@ -20,13 +20,17 @@ Two facts are published for report.py, which gates on both:
   moved      -- every root the witness moved, and whether it is in the cone of
                 the path the claim selected.  A mechanism whose root the fatal
                 does not depend on is a mechanism the formula cannot carry.
-  unbound    -- boundary variables some fatal condition names that no family
-                binds, and those an arm the witness chose holds FREE or HELD
-                (concrete[] rows naming the arm).  A v_H no family binds is a
-                broken causal chain, whatever COMPOSE stated of it
-                (concrete[]: FREE, or held at its recorded value because no
-                row states its producer): a value the engine invented or
-                held, not one a producer made.
+  unbound    -- boundary variables a fatal condition the verdict rests on
+                names that no family binds, and those an arm the witness chose
+                holds FREE or HELD (concrete[] rows naming the arm).  A v_H no
+                family binds is a broken causal chain, whatever COMPOSE stated
+                of it (concrete[]: FREE, or held at its recorded value because
+                no row states its producer): a value the engine invented or
+                held, not one a producer made.  A SAT is judged on the path it
+                claims, an UNSAT on every path it rests on (PIPELINE §8, the
+                claim): a SAT's other paths' unbound variables are reported in
+                unboundOffWitness, never hidden, and gate nothing.  COMPOSE
+                names the same set (compose.Cone, the claim's openChain).
 
 A root is named by its rootId in result.json and by its symbol in the
 formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
@@ -159,13 +163,6 @@ def main():
         elif name.startswith('message_family'):
             families.setdefault(selector, []).append(formula.names(body[2]))
 
-    for selector, own in sorted(fatal.items()):
-        bound = set()
-        for family in families.get(selector, []):
-            bound |= family
-        out['unbound'] += sorted(c for c in own
-                                 if is_boundary(c) and c not in bound)
-
     ordinal = result.get('valuationOrdinal')
     chosen = next((v for v in result.get('valuations') or []
                    if v.get('ordinal') == ordinal), {})
@@ -174,6 +171,18 @@ def main():
     selector = path.get('selector', '')
     out['selector'] = selector
     out['selectedPathId'] = chosen.get('selectedPathId', '')
+    # A SAT stands on its witness's path; an UNSAT on every path.
+    sat = result.get('claim') == 'SAT_CANDIDATE' and bool(selector)
+    out['unboundOffWitness'] = []
+    for each, own in sorted(fatal.items()):
+        bound = set()
+        for family in families.get(each, []):
+            bound |= family
+        open_links = sorted(c for c in own if is_boundary(c) and c not in bound)
+        if sat and each != selector:
+            out['unboundOffWitness'] += open_links
+        else:
+            out['unbound'] += open_links
     # A handoff an arm the witness chose holds FREE or HELD (concrete[], its
     # "arm") is no family's binding either: the family states it, but as a
     # value no producer made, so the chain breaks there as it does at a
