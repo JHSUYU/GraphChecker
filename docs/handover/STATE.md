@@ -109,13 +109,13 @@ agents' runs under `/bigtemp/vnr3ne/gc-out/<branch>/`.
 | R4A (A3) | r4 trees | 14 UNSAT at FIXED_POINT; bug1, 17897, 17960 PASS; 11741 confirmed CLOCK_SKEW |
 | HG8B | `hg8b` = 50b64875f | 24 26 37 with a 3 h budget (running at this commit) |
 
-Per check: [../checks/README.md](../checks/README.md). Summary (46 HDFS cases, 2026-10-05 day):
-- known bugs: 10/10 PASS by mandate on the current body (HG7N); on `hdfs-native-plant` 17960 (its configuration hook
-  root) and slowdisk-zero (its re-pairing, held as ORDER rows) reproduce natively 10/10, 11741 (clock) still owed
-  until the time model merges; 11741's key-id binding still timing-dependent (A3);
-- study: 18 right-shaped verdicts (10 12 SAT; 07 08 09 14 15 16 19 20 27 30 33 39 40 48 49 50 UNSAT at the fixed
-  point with symbols); 11 28 29 31 UNSAT with no symbol (container reads pinned: D1); 24 26 37 rerunning (HG8B); 52 and
-  32 swapped for 05 (owner 2026-10-05); 01 17 35 43 clock-driven (the time model, A2);
+Per check: [../checks/README.md](../checks/README.md). Summary (46 HDFS cases, 2026-10-06, rounds HG9/HG9B/HG9L/SW1):
+- known bugs: 9/10 PASS by mandate on the merged body (HG9B); 11741 is CLOCK_SKEW with both clocks moved and in the
+  cone, but two key-id handoffs are unbound (A1: the NameNode's data-encryption key id export is not woven);
+- study: done 16 (11 19 20 26 27 29 30 33 37 38 49 50 with symbols; 28 31 45 48 over a chain constant in the window)
+  and 10 SAT; owed 15 16 39 40 (decider: A4), 07 (relay: A4), 12 14 (unbound handoffs: A1), 05 06 08 09 (bounded
+  task rounds: D1), 21 22 23 24 25 34 35 52 (time model: A2). Swapped (owner 2026-10-05): 32 for 05, 01 17 43 for
+  06 38 45;
 - new bugs: none.
 
 ## 5. Where the analyses and evidence live

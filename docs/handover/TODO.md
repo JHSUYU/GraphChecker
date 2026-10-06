@@ -35,7 +35,7 @@ REGION.084d06ab stands on `Anchor:3093ec49939a753e@HADOOP_IPC/test` with index `
 its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, the time-model class); bug1, 17897,
 17960 PASS; 11741 confirmed CLOCK_SKEW, its key id the open binding of §4. r3 is never touched again.
 
-### 3. The time model (the start-up/clock family: 01 17 21 22 23 25 34 35 43)
+### 3. The time model (the start-up/clock family: 21 22 23 24 25 34 35 52)
 - The cause (HG6 probes, DW1-DW5a): a DataNode actor's turn decides by `monotonicNow` (heartbeat, block report due,
   `BPServiceActor.Scheduler`) and by state set on threads that make no schedule events (block-report leases, IBRs),
   while the VM replay runs slower than the recording; start-up state (a DataNode's next heartbeat) is set from the
@@ -49,7 +49,7 @@ its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, th
   reads); 21 and 01 partly.
 - C1's lessons (`hdfs-clock-replay` 22520bf02): replaying in-window reads alone mixes two timelines (state set before
   the window from the live clock); keying pre-window reads by node|handoffs handed threads each other's times.
-- Validation: probe 01 17 21 22 23 25 34 35 43 twice each (give-ups, target reached) against HG5A and DW5a; then
+- Validation: probe 21 22 23 24 25 34 35 52 twice each (give-ups, target reached) against HG5A and DW5a; then
   11741, 17897, bug1, 16, 17960 to verdict (CLOCK_SKEW in 11741 must still move its clocks). A schedule/time change:
   a review agent before the merge, then the next full round.
 - If after one reasonable round a check still cannot reach its target, swap it (below) rather than dragging on.
@@ -89,7 +89,7 @@ the clocks of nn0's `updateKeys` and dn1's `addKeys` moved and in the cone, the 
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 - **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate,
   in this order: 05 or 06 (QJM output stream, NN->JN; clean UNSAT in HG2), then 04 (client ack timeout, CLOCK), then 38
-  or 45. Never 42, 44, 46, 47. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
+  or 45. Never 42, 44, 46, 47. Used (owner 2026-10-05): 05 for 32; 06, 38, 45 for 01, 17, 43; only 04 is left. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
 
 ### 6. Speed (PERFORMANCE.md §5)
 - The ledger's remaining ~1.6x over real use is step charges at their start heap (kept: a refused growth would end a
