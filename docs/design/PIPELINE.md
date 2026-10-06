@@ -263,8 +263,8 @@ its pass, a DataNode set its next heartbeat 0.4 ms late and its turn #1 found it
 joined the recording did at once (17's first heartbeats fell in the millisecond of the last
 registration; run at host speed toward the opening instead, round TM1's replay set them half a second
 late and no turn #1 found its heartbeat due); nothing past the line, after the window closes, or with
-no order. A timed wait (`TimedWaits`) moves time a nanosecond past where it stood when the wait began, and
-to its deadline if the wait ran its time out, never past the cap, for every thread; the waiter's own
+no order. A timed wait (`TimedWaits`) moves time a nanosecond past where it stood when the wait began, and,
+while a cap stands, to its deadline if the wait ran its time out, never past the cap, for every thread; the waiter's own
 millisecond clock moves one millisecond (`Clocks#waited`). A wait that ran out saw its time pass (round
 TM7: DataNodes' waits for their next heartbeat ran out on the host while the order stood 0.6 s before
 them, and each turn #1 found its heartbeat not due), while a wait the recording ended by a signal before

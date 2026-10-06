@@ -35,24 +35,30 @@ REGION.084d06ab stands on `Anchor:3093ec49939a753e@HADOOP_IPC/test` with index `
 its task in every session); 21's PLAN as before (stopped at 80 seed give-ups, the time-model class); bug1, 17897,
 17960 PASS; 11741 confirmed CLOCK_SKEW, its key id the open binding of §4. r3 is never touched again.
 
-### 3. The time model (the start-up/clock family: 01 17 21 22 23 25 34 35 43)
-- The cause (HG6 probes, DW1-DW5a): a DataNode actor's turn decides by `monotonicNow` (heartbeat, block report due,
-  `BPServiceActor.Scheduler`) and by state set on threads that make no schedule events (block-report leases, IBRs),
-  while the VM replay runs slower than the recording; start-up state (a DataNode's next heartbeat) is set from the
-  live clock before or as the window opens. The total order (`ScheduleLog`) orders events but not clock VALUES.
-- The design proposed on `hdfs-time-model` (`ccbf0f8a0`'s commit message), to review before any code: the recording
-  stamps every schedule event and STARTUP mark with its clock readings; every application clock read goes through
-  `Clocks` (as the parked C1 did); in a replay the application sees the recording's timeline, never past the stamp of
-  the frontier slot (before the window: the next STARTUP mark), never backwards; a declared CLOCK root keeps its skew
-  on top (CLOCK_SKEW still works); no read is keyed (C1b's shared keys and C1's run cap avoided). Expected: 17 and 43
-  gain most; 22-25, 34, 35 where turns read the clock (their IPC-handler and monitor waits are timed waits, not clock
-  reads); 21 and 01 partly.
-- C1's lessons (`hdfs-clock-replay` 22520bf02): replaying in-window reads alone mixes two timelines (state set before
-  the window from the live clock); keying pre-window reads by node|handoffs handed threads each other's times.
-- Validation: probe 01 17 21 22 23 25 34 35 43 twice each (give-ups, target reached) against HG5A and DW5a; then
-  11741, 17897, bug1, 16, 17960 to verdict (CLOCK_SKEW in 11741 must still move its clocks). A schedule/time change:
-  a review agent before the merge, then the next full round.
-- If after one reasonable round a check still cannot reach its target, swap it (below) rather than dragging on.
+### 3. The time model (the start-up/clock family: 01 17 21 22 23 35 43, + 52; 25 34 regression canaries)
+- On `hdfs-time-model` (review, then merge; PIPELINE §5 "application clocks", STATUS row "A replay's application
+  time follows its order"): every application clock read goes through `Clocks`, every schedule row and STARTUP mark
+  is stamped, a replay reads its order's timeline (`max(last, min(hi, lo + elapsed))`), a CLOCK root's skew sits on
+  top of it (`RootMintRow#baseReading`). Seed give-up lines, model (rounds TM8-TM13, `gc-out/hdfs-time-model/probe/
+  runs.txt`) against no model (SL2, D2B; HG8F under load): 25 0-2 / 8, 87; 34 0 / 6, 91; 35 0 / 81, 85; 23 37-38 /
+  83, 86; 22 43 / 66, 32-85; 01 30-61 / 84, 85; 52 4 and 72 / 72, 84; 43 96 / 88, 90; 21 12-138 / 81, 89; 17 18-122
+  / 85, 87. Where the clock decided (25 34 35, 52's extra heartbeat) the give-ups are gone; the rest vary run to
+  run and are not the clock.
+- Left, not the clock, by first divergence: an IPC handler's `CallQueueManager.take` racing another (21, 52, 34 on
+  TM12, 17 after its NameNode restart; the lock turn below); a DataNode's IBR wait woken where the recording's was
+  not (`waitTillNextIBR` "unrecorded WAKE"), then NotReplicatedYet (22 23 01 43); client polling loops (01's 200
+  `getBlockLocations` slots, 22's `getDatanodeReport`/`create`).
+- Open, clock-shaped: in some recordings of 17 (TM10, TM12, TM13, not TM8 or TM13D) every DataNode's in-window turn
+  #1 finds its heartbeat not due though turn #0 ran before the window opened (no in-window #0 event) and time stood
+  at the last registration; the 3 s interval puts turn #1 within 7 ms of the recording's due time. Read the turn's
+  reads with a CLOCKDIAG-style probe of the actor thread from turn #0 through turn #1 (round TM13D's probe logged only
+  the first 40 reads).
+- Fidelity: a soft WAKE taken late is stamped up to seconds past the next slot's instant (52: 2480 events past the
+  next slot by more than 1 ms; LeaseRenewer, JvmPauseMonitor, GcTimeMonitor), since time runs on to the first
+  blocking slot's instant; `/bigtemp/vnr3ne/gc-out/hdfs-time-model/probe/drift.py` measures it per run.
+- D2's lock turn (answered, not built): hold an adapter-named lock's entry (FSNamesystem's write lock) as a slot,
+  keyed by the lock's location, like the store-write turn; build it when a case's first divergence is a lock race
+  (52's on r5 + the model is not).
 
 ### 4. hdfs-11741: the key id's binding across the wire
 The witness is confirmed CLOCK_SKEW and its allKeys reads are complete (PS3), but the SASL data-encryption key id
