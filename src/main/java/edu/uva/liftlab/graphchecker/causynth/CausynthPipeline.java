@@ -1283,9 +1283,14 @@ public final class CausynthPipeline {
                     + site.captureKind() + "\n" + site.argumentIndex(),
                     site);
         }
+        int exported = 0;
         for (CommunicationHandoffSpec site : sites.values()) {
             instrumentCommunicationHandoff(site, refs);
+            if (site.outgoing()) exported++;
         }
+        LOG.info("Wove {} export(s), every region skeleton's, and {} "
+                + "attach(es) the plan declares", exported,
+                sites.size() - exported);
         Map<String, Boolean> frames = new LinkedHashMap<>();
         for (CommunicationHandoffSpec site : sites.values()) {
             if (site.frameMethod().isEmpty()) continue;
