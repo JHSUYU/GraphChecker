@@ -144,6 +144,7 @@ public class ClocksTest {
         follow(time(ScheduleEvent.ORIGIN, 0L),
                 startup("register", "dn0", 50L),
                 startup("register", "dn1", 60L),
+                startup("register", "dn2", 70L),
                 time(ScheduleEvent.OPEN, 10_000L));
         Clocks.nanos();
         long first = RowCodec.scheduleNanos(marks(ScheduleEvent.ORIGIN)
@@ -151,35 +152,41 @@ public class ClocksTest {
         Thread.sleep(100L);
         atCap("time ran up to the first mark", first + 50L * MS,
                 Clocks.nanos());
-        // dn1's taker is held until dn0 passes: its hold bounds the wait.
+        ranOut(200L);
+        atCap("a mark not passed yet: its pass comes from the start-up's"
+                + " progress, no wait lifts it", first + 50L * MS,
+                Clocks.nanos() - 1L);
+
+        StartupOrder.done(StartupOrder.begin("register", "dn0"));
+        standAtCap(450L);
+        // dn2's taker is held until dn1 passes: its hold bounds the wait.
         Thread taker = new Thread(() -> StartupOrder.done(
-                StartupOrder.begin("register", "dn1")));
+                StartupOrder.begin("register", "dn2")));
         taker.start();
-        long until = System.nanoTime() + 2000L * MS;
+        long until = System.nanoTime() + 300L * MS;
         while (!StartupOrder.holding() && System.nanoTime() < until) {
             Thread.sleep(5L);
         }
-        assertTrue("dn1 is held", StartupOrder.holding());
+        assertTrue("dn2 is held", StartupOrder.holding());
         ranOut(200L);
-        atCap("a wait beside a held taker lifts nothing", first + 50L * MS,
-                Clocks.nanos() - 1L);
-        StartupOrder.done(StartupOrder.begin("register", "dn0"));
+        atCap("a wait beside a held taker lifts nothing, however long time"
+                + " stood", first + 50L * MS, Clocks.nanos() - 2L);
+        StartupOrder.done(StartupOrder.begin("register", "dn1"));
         taker.join();
-        atCap("every pass made: time stands at the last", first + 60L * MS,
+        atCap("every pass made: time stands at the last", first + 70L * MS,
                 Clocks.nanos());
         ranOut(200L);
         atCap("at a pass this run made, a wait lifts nothing at first",
-                first + 60L * MS, Clocks.nanos() - 1L);
-        Thread.sleep(450L);
-        Clocks.nanos();
+                first + 70L * MS, Clocks.nanos() - 1L);
+        standAtCap(450L);
         long[] signalled = Clocks.waitBegins(300L * MS);
         Clocks.waited(signalled);
-        atCap("nor one a signal ended", first + 60L * MS,
+        atCap("nor one a signal ended", first + 70L * MS,
                 Clocks.nanos() - 2L);
         long deadline = ranOut(200L);
         atCap("once it stood a timeout there, a wait that ran out lifts the"
                 + " cap to its deadline", deadline, Clocks.nanos());
-        assertTrue(deadline - (first + 260L * MS) < 10L);
+        assertTrue(deadline - (first + 270L * MS) < 10L);
         Thread.sleep(100L);
         atCap("and no further", deadline, Clocks.nanos());
         assertTrue(Clocks.progress(), Clocks.progress().contains(
@@ -193,8 +200,17 @@ public class ClocksTest {
         Thread.sleep(60L);
         Clocks.nanos();
         long far = ranOut(20_000L);
-        atCap("at a mark time ran up to, at once", far, Clocks.nanos());
+        atCap("at the opening time ran up to, at once", far, Clocks.nanos());
         assertTrue(far - (first + 10_000L * MS) > 0L);
+    }
+
+    /** Reads at the cap for {@code ms}, so time is seen standing there. */
+    private static void standAtCap(long ms) throws Exception {
+        long until = System.nanoTime() + ms * MS;
+        while (System.nanoTime() < until) {
+            Clocks.nanos();
+            Thread.sleep(20L);
+        }
     }
 
     /** A timed wait of {@code ms} begun now, ended by its timeout;
