@@ -439,6 +439,7 @@ public final class RowRuntime {
         String type = statedJavaType("version", location + "#" + version,
                 javaType, expression);
         if (type.isEmpty()) return;
+        WRITTEN.add(Confirmation.key(location, version));
         distinct(at, "write#" + location + "#" + version);
         long sequenced = sequence(seq);
         String ref = expressionRef(expression);
@@ -483,6 +484,12 @@ public final class RowRuntime {
         String type = statedJavaType("read", location + "#" + seq, javaType,
                 null);
         if (type.isEmpty()) return;
+        // A placeholder observes its mint's store, which is a read, no write.
+        if (mintVersion == ReadRow.UNKNOWN_VERSION && observedVersion >= 0L) {
+            READERS.computeIfAbsent(Confirmation.key(location,
+                    observedVersion), key -> new Readers(at, location,
+                    observedVersion)).count.incrementAndGet();
+        }
         distinct(at, "read#" + location + "#" + seq);
         session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
                 observedVersion, Text.safe(symbol), type,
@@ -508,6 +515,65 @@ public final class RowRuntime {
                 "two events of this site inside one occurrence stand on the"
                         + " same frames, so the site index cannot"
                         + " distinguish them: " + first + " and " + event);
+    }
+
+    /** Every (location, version) a write row of this session states. */
+    private static final Set<String> WRITTEN = ConcurrentHashMap.newKeySet();
+    /** (location, version) -> the reads of this session that observed it. */
+    private static final Map<String, Readers> READERS =
+            new ConcurrentHashMap<String, Readers>();
+    /** (location, version) -> where its store ran, of each version the VM
+     *  states was stored outside every region ({@link #storedOutside}). */
+    private static final Map<String, String> OUTSIDE =
+            new ConcurrentHashMap<String, String>();
+
+    /** The reads of one version: the first reader, and how many. */
+    private static final class Readers {
+        final Endpoint first;
+        final LocationId location;
+        final long version;
+        final AtomicInteger count = new AtomicInteger();
+
+        Readers(Endpoint first, LocationId location, long version) {
+            this.first = first;
+            this.location = location;
+            this.version = version;
+        }
+    }
+
+    /** A version the VM states no region stored ({@code
+     *  SharedStateCapture#unattributed}), and the site its store ran at
+     *  ("" unstated): no row, named at the close with its readers. */
+    static void storedOutside(LocationId location, long version,
+                              String site) {
+        if (location == null) return;
+        OUTSIDE.putIfAbsent(Confirmation.key(location, version),
+                Text.safe(site));
+    }
+
+    /**
+     * Each version reads of this session observed and no write row of it
+     * states, named once (UNATTRIBUTED_STORE, DIAGNOSTIC): never a silent
+     * skip.  No writer row is such a read's recorded arm, so the reads are
+     * held to what they read unless a writer choice forms ({@code
+     * explore.Corpus#outsideStore}).
+     */
+    private static void unattributedStores() {
+        for (Map.Entry<String, Readers> read : READERS.entrySet()) {
+            if (WRITTEN.contains(read.getKey())) continue;
+            Readers readers = read.getValue();
+            String site = OUTSIDE.get(read.getKey());
+            gap(GapKind.UNATTRIBUTED_STORE, GapClass.DIAGNOSTIC,
+                    read.getKey(), readers.count.get() + " read(s) of this"
+                            + " session observed version " + readers.version
+                            + " of " + readers.location + ", the first at "
+                            + readers.first.render() + ", and no write row"
+                            + " of the session states it: "
+                            + (site == null ? "no read-out of this run"
+                            + " states its store"
+                            : "its store ran outside every activation"
+                            + (site.isEmpty() ? "" : ", at " + site)));
+        }
     }
 
     /** The first event each read/write endpoint id was minted for. */
@@ -1095,6 +1161,7 @@ public final class RowRuntime {
             unnamed.put(entry.getKey(), entry.getValue().get());
         }
         session.atClose(unnamed, CONCRETE, DERIVED);
+        unattributedStores();
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.
         for (Map.Entry<String, String> unplanted
@@ -1182,6 +1249,9 @@ public final class RowRuntime {
             AMBIENT.clear();
             CLAIMED_EVENTS.clear();
             ENDPOINTS.clear();
+            WRITTEN.clear();
+            READERS.clear();
+            OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();
             CONCRETE.clear();

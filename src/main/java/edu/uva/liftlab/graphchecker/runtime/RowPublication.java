@@ -173,7 +173,15 @@ final class RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                if (!rowed(version, locationKey, mints)) continue;
+                if (!rowed(version, locationKey, mints)) {
+                    // No occurrence wrote it: no row, but its readers are
+                    // named at the close (RowRuntime#storedOutside).
+                    if (id >= 0L && SharedStateCapture.unattributed(version)) {
+                        RowRuntime.storedOutside(location, id,
+                                LoggedEventSites.statedSite(version));
+                    }
+                    continue;
+                }
                 if (!RowRuntime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }

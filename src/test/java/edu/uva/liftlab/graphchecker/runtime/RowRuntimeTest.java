@@ -2754,6 +2754,61 @@ public class RowRuntimeTest {
      * is the OR of their fatal arms as one evaluation decided them, from the
      * target branch on (adhoc reader-chunk's first-chunk offset check).
      */
+    /**
+     * A version reads observed and no write row of the session states is
+     * named at the close, once per location and version, with where its
+     * store ran when the VM stated it outside every region: never a silent
+     * skip (hdfs-adhoc-39 OA4: the append read BlockInfo.uc's completion,
+     * stored in no activation, and its flip had no variable).  A version a
+     * row wrote, and a placeholder's mint store, are no such version.
+     */
+    @Test
+    public void aReadOfAVersionNoRowWroteIsNamedAtTheClose() throws Exception {
+        RowRuntime.configure(sessionFile());
+        OccurrenceAddress occurrence = address("hdfs/nn0#epoch0",
+                "REGION.53092d3e", CausalContext.of("producer-endpoint-id",
+                        "HADOOP_IPC/test"),
+                ExecutionIndex.parse("Server.run()#u9@0"));
+        String reads = Endpoint.stateSite("a.BlockInfo", "getBlockUCState",
+                "()I", 48, false);
+        LocationId written = LocationId.of(LocationKind.INSTANCE, "22", "24");
+        LocationId lost = LocationId.of(LocationKind.INSTANCE, "23", "24");
+        LocationId outside = LocationId.of(LocationKind.INSTANCE, "152", "80");
+        LocationId minted = LocationId.of(LocationKind.INSTANCE, "24", "24");
+        RowRuntime.write(occurrence, 10L, Endpoint.stateSite("a.BlockInfo",
+                "set", "()V", 3, true), written, 5L, rmwExpression(), "",
+                "Caller.body()#u9@1", null, null, false);
+        RowRuntime.storedOutside(outside, 9L,
+                "a.BlockInfo#convertToCompleteBlock()V#214:WRITE");
+        RowRuntime.read(occurrence, 11L, reads, written, 5L, "s", "J", "9",
+                "", ReadRow.UNKNOWN_VERSION);
+        RowRuntime.read(occurrence, 12L, reads, lost, 7L, "t", "J", "9", "",
+                ReadRow.UNKNOWN_VERSION);
+        RowRuntime.read(occurrence, 13L, reads, outside, 9L, "u", "J", "9",
+                "", ReadRow.UNKNOWN_VERSION);
+        RowRuntime.read(occurrence, 14L, reads, outside, 9L, "u", "J", "9",
+                "", ReadRow.UNKNOWN_VERSION);
+        RowRuntime.read(occurrence, 15L, reads, minted, 11L, "v", "J", "9",
+                "", 11L);
+        RowRuntime.closeSession();
+        List<String> named = new java.util.ArrayList<String>();
+        for (GapRow gap : RowCodec.readAll(session().gaps(),
+                RowCodec::readGap)) {
+            if (gap.kind() != GapKind.UNATTRIBUTED_STORE) continue;
+            assertFalse(gap.blocking());
+            named.add(gap.subject() + " " + gap.detail());
+        }
+        java.util.Collections.sort(named);
+        assertEquals(named.toString(), 2, named.size());
+        assertTrue(named.get(0), named.get(0).startsWith("INSTANCE/152#80@9 2"
+                + " read(s)") && named.get(0).endsWith("its store ran outside"
+                + " every activation, at a.BlockInfo#convertToCompleteBlock()"
+                + "V#214:WRITE"));
+        assertTrue(named.get(1), named.get(1).startsWith("INSTANCE/23#24@7 1"
+                + " read(s)") && named.get(1).endsWith("no read-out of this"
+                + " run states its store"));
+    }
+
     @Test
     public void aReadTheVmNamedNothingIsNamedInItsOwnSession() {
         // Two replays that diverged hold two objects under one rid and

@@ -632,7 +632,7 @@ public final class Confirmation {
     }
 
     /** The one spelling a read's observed version and a write share. */
-    private static String key(LocationId location, long version) {
+    static String key(LocationId location, long version) {
         return location.kind() + "/" + location.owner() + "#"
                 + location.slot() + "@" + version;
     }
