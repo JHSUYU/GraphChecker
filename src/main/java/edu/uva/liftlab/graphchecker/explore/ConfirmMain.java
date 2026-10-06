@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.ComposeMain;
+import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -957,11 +958,12 @@ public final class ConfirmMain {
     }
 
     /**
-     * The anchor's join closure in the selected session (the Composer's P3
-     * rule): every read of each reached occurrence before its cutoff, the
-     * anchor's before where the path decided (its target row, or its way
-     * guard), with the write it joined; every write of the session, by
-     * location and by version.
+     * The anchor's join closure in the selected session, COMPOSE's P3
+     * closure ({@code compose.RestsOn#closure}, the anchor's reads cut where
+     * the path decided -- its target row, or its way guard): every read of
+     * each reached occurrence before its cutoff with the write it joined,
+     * the reads past it; every write of the session, by location and by
+     * version.
      */
     private static final class StateClosure {
         private final Map<String, WriteRow> writes =
@@ -1192,51 +1194,39 @@ public final class ConfirmMain {
                 readsOn.computeIfAbsent(read.endpoint().occurrence().id(),
                         key -> new ArrayList<ReadRow>()).add(read);
             }
-            // Occurrence id -> the seq its prefix reaches.
-            Map<String, Long> reached = new LinkedHashMap<String, Long>();
-            reached.put(anchor.id(), cutoff);
-            List<String> pending = new ArrayList<String>();
-            pending.add(anchor.id());
-            List<WriteRow> versions = new ArrayList<WriteRow>();
-            Set<String> handled = new LinkedHashSet<String>();
-            while (!pending.isEmpty() || !versions.isEmpty()) {
-                while (!pending.isEmpty()) {
-                    String at = pending.remove(0);
-                    long cut = reached.get(at);
-                    List<ReadRow> on = readsOn.get(at);
-                    if (on == null) continue;
-                    for (ReadRow read : on) {
-                        // The anchor's too, unlike Composer#closure, which
-                        // joins all its reads as its inputs: a run that takes
-                        // the fatal arm throws there, and no edge after it
-                        // can be taken (adhoc token-pw-expired: the key map
-                        // is read after the expiry check).
-                        if (read.seq() >= cut) {
-                            past.add(read.endpoint().id());
-                            continue;
-                        }
-                        if (read.observedVersion() < 0L) continue;
-                        WriteRow write = writes.get(version(read.location(),
-                                read.observedVersion()));
-                        // A version no row wrote (a store outside every
-                        // region) joins nothing; the model may still choose
-                        // its writer.
-                        readers.put(read.endpoint().id(), read);
-                        if (write == null) continue;
-                        joined.put(read.endpoint().id(), write);
-                        reach(write, anchor, reached, pending, versions,
-                                handled);
-                    }
+            // COMPOSE's closure over this session's rows, the anchor's own
+            // reads cut where the path decided (RestsOn#closure).
+            RestsOn.closure(new RestsOn.Log() {
+                @Override
+                public List<ReadRow> readsOn(String occurrenceId) {
+                    return readsOn.getOrDefault(occurrenceId,
+                            Collections.<ReadRow>emptyList());
                 }
-                if (versions.isEmpty()) continue;
-                WriteRow write = versions.remove(0);
-                for (WriteRow under : byLocation.get(SmtLowering.locationKey(
-                        write.location()))) {
-                    if (under.version() >= write.version()) continue;
-                    reach(under, anchor, reached, pending, versions,
-                            handled);
+
+                @Override
+                public WriteRow writeOf(String locationKey, long version) {
+                    return writes.get(locationKey + "@" + version);
                 }
-            }
+
+                @Override
+                public List<WriteRow> writesOf(String locationKey) {
+                    return byLocation.getOrDefault(locationKey,
+                            Collections.<WriteRow>emptyList());
+                }
+            }, anchor, anchor, cutoff, null, false, new RestsOn.Reads() {
+                @Override
+                public void joined(ReadRow read, WriteRow write) {
+                    // A version no row wrote (a store outside every region)
+                    // joins nothing; the model may still choose its writer.
+                    readers.put(read.endpoint().id(), read);
+                    if (write != null) joined.put(read.endpoint().id(), write);
+                }
+
+                @Override
+                public void past(ReadRow read) {
+                    past.add(read.endpoint().id());
+                }
+            });
         }
 
         /**
@@ -1520,23 +1510,6 @@ public final class ConfirmMain {
                     + " states no read at");
         }
         return stateEdges(closure, reads, chosen, true);
-    }
-
-    /** One write the path rests on: reach its writer, sweep older versions
-     *  (an INITIAL has neither). */
-    private static void reach(WriteRow write, OccurrenceAddress anchor,
-                              Map<String, Long> reached, List<String> pending,
-                              List<WriteRow> versions, Set<String> handled) {
-        String writer = write.endpoint().occurrence().id();
-        // Never the anchor: its cutoff is where the path decided.
-        if (write.initial() || anchor.id().equals(writer)) return;
-        if (handled.add(version(write.location(), write.version()))) {
-            versions.add(write);
-        }
-        Long held = reached.get(writer);
-        if (held != null && held.longValue() >= write.seq()) return;
-        reached.put(writer, write.seq());
-        pending.add(writer);
     }
 
     /** One version of one location. */

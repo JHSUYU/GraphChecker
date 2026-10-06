@@ -4,6 +4,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -46,7 +51,7 @@ public final class RestsOn {
     /** The occurrence whose prefix is the question's: never reached by a
      *  join, its reads all its own. */
     private final OccurrenceAddress anchor;
-    /** session|start|cutoff|seed terms -> the symbols it rests on
+    /** kind|session|start|cutoff|seed terms -> the symbols it rests on
      *  ({@link #named}): EXPLORE asks once per walk of a demand. */
     private final Map<String, Set<String>> cache =
             new LinkedHashMap<String, Set<String>>();
@@ -56,6 +61,96 @@ public final class RestsOn {
         this.corpus = corpus;
         this.scope = scope;
         this.anchor = anchor;
+    }
+
+    /**
+     * THE ADMITTED PATHS, COMPOSE's disjuncts and EXPLORE's demand alike
+     * (PIPELINE §7.2, §8), each refusal a row of {@code gaps}: every
+     * session's path that reached the anchor, or, where none did,
+     * every session's path that ran the occurrence and left the way to the
+     * throw (its fatal arm the constant healthy decision).  The declared
+     * occurrence is always the anchor; a corpus without a target row for it
+     * never ran it, a defect, never a reason to elect another occurrence.
+     */
+    public List<Corpus.RecordedPath> admitted(List<GapRow> gaps) {
+        List<Corpus.RecordedPath> admitted =
+                new ArrayList<Corpus.RecordedPath>();
+        List<TargetRow> targets = corpus.targetsOn(anchor);
+        if (targets.isEmpty()) {
+            gap(gaps, GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
+                    anchor.render(), "the declared occurrence never ran: no "
+                            + "session of this corpus published a target row "
+                            + "for it");
+            return admitted;
+        }
+        // Where no session reached the anchor, each that ran the occurrence
+        // and left the way to the throw at a guard is a path: its fatal arm
+        // is the constant healthy decision ({@link #compose}).  Beside a
+        // path that reached it, such a disjunct adds nothing.
+        boolean reached = false;
+        for (TargetRow target : targets) reached |= target.reachedAnchor();
+        for (TargetRow target : targets) {
+            Corpus.RecordedPath path = corpus.path(target.sessionId(),
+                    anchor);
+            if (reached && !target.reachedAnchor()) {
+                gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        target.sessionId(), "this session ran the occurrence "
+                                + "and did not reach the anchor");
+                continue;
+            }
+            if (path == null) {
+                gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        target.sessionId(), "this session ran the occurrence "
+                                + "and published no path at it");
+                continue;
+            }
+            if (!settled(target.sessionId(), gaps)) continue;
+            admitted.add(path);
+        }
+        return admitted;
+    }
+
+    /**
+     * Whether this session's OWN rows admit the obligation it ran (the
+     * replay owns the verdict).  A refused obligation's path is the
+     * recording again under a valuation the run did not take, so it is no
+     * disjunct.  A SEED admits itself; an obligation the manifest names and
+     * no row settles is BLOCKING.
+     */
+    private boolean settled(String session, List<GapRow> gaps) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null || reader.seed()) return true;
+        Set<String> stated = new LinkedHashSet<String>();
+        // {@link SessionReader#admitted} decides; this only names refusals.
+        boolean admitted = reader.admitted();
+        for (ObligationResult result : reader.obligations()) {
+            stated.add(result.obligationId());
+            if (result.verdict() == Verdict.ADMITTED) continue;
+            gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
+                    "this replay states " + result.verdict() + " for the "
+                            + "obligation it ran (" + result.obligationId()
+                            + "): " + result.detail());
+        }
+        List<String> asked = reader.manifest() == null
+                ? Collections.<String>emptyList()
+                : reader.manifest().obligationIds();
+        for (String obligation : asked) {
+            if (stated.contains(obligation)) continue;
+            admitted = false;
+            gap(gaps, GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
+                    "session " + session + " states it ran this obligation "
+                            + "and publishes no verdict for it, so what it "
+                            + "settled is not in this corpus");
+        }
+        return admitted;
+    }
+
+    /** One admission row, as COMPOSE names it ({@code Composer#gap}). */
+    private void gap(List<GapRow> gaps, GapKind kind, GapClass cls,
+                     String subject, String detail) {
+        gaps.add(GapRow.of(Composer.COMPOSITION, kind, cls,
+                subject == null || subject.trim().isEmpty()
+                        ? anchor.render() : subject, detail));
     }
 
     /** Where one path decided, and on what (Composer#compose). */
@@ -119,7 +214,8 @@ public final class RestsOn {
      */
     public Set<String> ofDelivery(String session, OccurrenceAddress start,
                                   long cutoff, List<String> delivered) {
-        return named(session, start, cutoff, delivered,
+        return named("delivery", session, start, cutoff, delivered,
+                seedWrites(session, delivered),
                 Collections.<DecisionRow>emptyList());
     }
 
@@ -131,31 +227,35 @@ public final class RestsOn {
     public Set<String> ofPath(String session, TargetRow target,
                               List<DecisionRow> decisions) {
         Decided at = decided(session, target, decisions);
-        return named(session, anchor, at.cutoff,
-                Collections.singletonList(at.fatalTerm),
+        // Unseeded, as COMPOSE's path closure (Composer#compose).
+        return named("path", session, anchor, at.cutoff,
+                Collections.singletonList(at.fatalTerm), null,
                 before(decisions, at.cutoff));
     }
 
     /**
-     * The symbols the decisions and reads a delivery rests on name: the
-     * closure from {@code start}'s prefix to {@code cutoff}, seeded by the
-     * writes its terms read ({@link #seedWrites}), its conditions -- the
-     * anchor's {@code own} decisions, which no join reaches, and every
-     * reached occurrence's before its cutoff -- kept over {@code seedTerms}
-     * and what moves.  No family binds anything here: the session's
-     * received values, roots and clocks move by the binding rule
-     * ({@link SmtLowering.SessionJoin#moves}).  Once per (session, start,
+     * The symbols the kept items name -- the decisions and reads a path or
+     * a delivery rests on: the closure from {@code start}'s prefix to
+     * {@code cutoff} ({@code seeds}: a delivery's, the writes its terms
+     * read, {@link #seedWrites}; a path's none, as COMPOSE's), its
+     * conditions -- the anchor's {@code own} decisions, which no join
+     * reaches, and every reached occurrence's before its cutoff -- and the
+     * reads of the reached occurrences, each kept over {@code seedTerms} and
+     * what moves; never a root the session minted that nothing kept reads.
+     * No family binds anything here: the session's received values, roots
+     * and clocks move by the binding rule ({@link
+     * SmtLowering.SessionJoin#moves}).  Once per (kind, session, start,
      * cutoff, terms).
      */
-    private Set<String> named(String session, OccurrenceAddress start,
-                              long cutoff, List<String> seedTerms,
+    private Set<String> named(String kind, String session,
+                              OccurrenceAddress start, long cutoff,
+                              List<String> seedTerms, List<WriteRow> seeds,
                               List<DecisionRow> own) {
-        String key = session + "|" + start.id() + "|" + cutoff + "|"
-                + seedTerms;
+        String key = kind + "|" + session + "|" + start.id() + "|" + cutoff
+                + "|" + seedTerms;
         Set<String> held = cache.get(key);
         if (held != null) return held;
-        Map<String, Long> reached = closure(session, start, cutoff,
-                seedWrites(session, seedTerms));
+        Map<String, Long> reached = closure(session, start, cutoff, seeds);
         List<DecisionRow> conditions = new ArrayList<DecisionRow>(own);
         conditions.addAll(reachedConditions(session, reached));
         Independence kept = independence(session, seedTerms,
@@ -166,10 +266,14 @@ public final class RestsOn {
                 symbols.addAll(corpus.termSymbols(session, decision.term()));
             }
         }
-        for (ReadRow read : statedRows(session, reached.keySet())) {
-            if (kept.keeps(read) && read.symbol() != null
-                    && !read.symbol().isEmpty()) {
-                symbols.add(read.symbol());
+        for (String occurrenceId : reached.keySet()) {
+            OccurrenceAddress at = corpus.occurrence(occurrenceId);
+            if (at == null) continue;
+            for (ReadRow read : corpus.readsOn(session, at)) {
+                if (kept.keeps(read) && read.symbol() != null
+                        && !read.symbol().isEmpty()) {
+                    symbols.add(read.symbol());
+                }
             }
         }
         cache.put(key, symbols);
@@ -251,6 +355,72 @@ public final class RestsOn {
      */
     Map<String, Long> closure(String session, OccurrenceAddress start,
                               long cutoff, List<WriteRow> seeds) {
+        return closure(log(session), anchor, start, cutoff, seeds, true,
+                null);
+    }
+
+    /** One session's rows as a closure reads them: this corpus's. */
+    private Log log(String session) {
+        return new Log() {
+            @Override
+            public List<ReadRow> readsOn(String occurrenceId) {
+                OccurrenceAddress at = corpus.occurrence(occurrenceId);
+                return at == null ? Collections.<ReadRow>emptyList()
+                        : corpus.readsOn(session, at);
+            }
+
+            @Override
+            public WriteRow writeOf(String locationKey, long version) {
+                return corpus.writeOf(session, locationKey, version);
+            }
+
+            @Override
+            public List<WriteRow> writesOf(String locationKey) {
+                return corpus.writesOf(session, locationKey);
+            }
+        };
+    }
+
+    /** One session's rows, as a closure reads them. */
+    public interface Log {
+        /** The reads one occurrence made, in order. */
+        List<ReadRow> readsOn(String occurrenceId);
+
+        /** The write of one version of one location, or null. */
+        WriteRow writeOf(String locationKey, long version);
+
+        /** Every write of one location. */
+        List<WriteRow> writesOf(String locationKey);
+    }
+
+    /** What a closure tells its reader of each read it met. */
+    public interface Reads {
+        /** A read before its occurrence's cutoff, and the write its version
+         *  was (null: a store outside every region, which joins nothing). */
+        void joined(ReadRow read, WriteRow write);
+
+        /** A read at or past its occurrence's cutoff: nothing joins it. */
+        void past(ReadRow read);
+    }
+
+    /**
+     * THE CLOSURE (P3), COMPOSE's, EXPLORE's and CONFIRM's alike: the
+     * occurrences {@code start}'s prefix to {@code cutoff} reaches through
+     * the writes its reads joined, each with the seq its own prefix runs to.
+     * The anchor's reads are taken whole where {@code anchorWhole} --
+     * COMPOSE joins all of them as its inputs -- and cut at its cutoff where
+     * not: a run that takes the fatal arm throws there, and no edge after it
+     * can be taken (CONFIRM's ORDER, adhoc token-pw-expired: the key map is
+     * read after the expiry check).  {@code reads}, when given, hears each
+     * read met.
+     */
+    public static Map<String, Long> closure(Log log,
+                                            OccurrenceAddress anchor,
+                                            OccurrenceAddress start,
+                                            long cutoff,
+                                            List<WriteRow> seeds,
+                                            boolean anchorWhole,
+                                            Reads reads) {
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
         reached.put(start.id(), cutoff);
         List<String> pending = new ArrayList<String>();
@@ -259,33 +429,36 @@ public final class RestsOn {
         Set<String> handled = new LinkedHashSet<String>();
         if (seeds != null) {
             for (WriteRow seed : seeds) {
-                reach(seed, start, reached, pending, versions, handled);
+                reach(seed, anchor, start, reached, pending, versions,
+                        handled);
             }
         }
         while (!pending.isEmpty() || !versions.isEmpty()) {
             while (!pending.isEmpty()) {
                 String at = pending.remove(0);
-                OccurrenceAddress occurrence = corpus.occurrence(at);
-                if (occurrence == null) continue;
-                boolean whole = anchor.id().equals(at);
+                boolean whole = anchorWhole && anchor.id().equals(at);
                 long cut = reached.get(at);
-                for (ReadRow read : corpus.readsOn(session, occurrence)) {
-                    if (!whole && read.seq() >= cut) continue;
+                for (ReadRow read : log.readsOn(at)) {
+                    if (!whole && read.seq() >= cut) {
+                        if (reads != null) reads.past(read);
+                        continue;
+                    }
                     if (read.observedVersion() < 0L) continue;
-                    WriteRow write = corpus.writeOf(session,
-                            SmtLowering.locationKey(read.location()),
-                            read.observedVersion());
+                    WriteRow write = log.writeOf(SmtLowering.locationKey(
+                            read.location()), read.observedVersion());
+                    if (reads != null) reads.joined(read, write);
                     if (write == null) continue;
-                    reach(write, start, reached, pending, versions,
+                    reach(write, anchor, start, reached, pending, versions,
                             handled);
                 }
             }
             if (versions.isEmpty()) continue;
             WriteRow write = versions.remove(0);
-            String key = SmtLowering.locationKey(write.location());
-            for (WriteRow under : corpus.writesOf(session, key)) {
+            for (WriteRow under : log.writesOf(SmtLowering.locationKey(
+                    write.location()))) {
                 if (under.version() >= write.version()) continue;
-                reach(under, start, reached, pending, versions, handled);
+                reach(under, anchor, start, reached, pending, versions,
+                        handled);
             }
         }
         return reached;
@@ -296,10 +469,11 @@ public final class RestsOn {
      * writer is reached and its location's earlier versions queued.  An
      * INITIAL has neither: no occurrence wrote it.
      */
-    private void reach(WriteRow write, OccurrenceAddress start,
-                       Map<String, Long> reached,
-                       List<String> pending, List<WriteRow> versions,
-                       Set<String> handled) {
+    private static void reach(WriteRow write, OccurrenceAddress anchor,
+                              OccurrenceAddress start,
+                              Map<String, Long> reached,
+                              List<String> pending, List<WriteRow> versions,
+                              Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
         // Never the anchor or the start: their cutoff is fixed.
         if (write.initial() || anchor.id().equals(writer)
