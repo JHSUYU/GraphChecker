@@ -196,6 +196,7 @@ public final class Composer {
         private final Map<String, String> recordedValues;
         private final OccurrenceAddress anchor;
         private final String body;
+        private Cone cone;
         private final List<Disjunct> disjuncts;
         private final List<PathEntry> paths;
         private final List<Family> families;
@@ -579,9 +580,15 @@ public final class Composer {
             return open;
         }
 
+        /** The body's {@link Cone}, read once for all its paths. */
+        private synchronized Cone cone() {
+            if (cone == null) cone = new Cone(body);
+            return cone;
+        }
+
         private void links(Disjunct path, Set<String> arms,
                            List<JsonObject> open) {
-            for (String symbol : Cone.unbound(body, path.selector(),
+            for (String symbol : cone().unbound(path.selector(),
                     path.path().pathId, arms, concrete)) {
                 Endpoint producer = unattestedArrivals.get(symbol);
                 JsonObject row = new JsonObject();
