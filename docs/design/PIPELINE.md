@@ -247,70 +247,6 @@ the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its
 `TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
 occurrence ran).
 
-**The application's clocks** (`runtime.Clocks`). The weave makes every `System.nanoTime()` and
-`System.currentTimeMillis()` of a woven class `Clocks.nanos()` / `Clocks.millis()` in both passes
-(`CausynthPipeline#replaceClock`; the lineage scan keeps every class that reads one, so Hadoop's `Time`,
-and everything that reads through it -- `Timer`, `StopWatch`, `BPServiceActor.Scheduler`,
-`SocketIOWithTimeout` -- reads the application's clock). The JDK's own reads, a library jar's, an unwoven
-test class's direct read and the engine's (the watchdog, a timed wait's deadline, `StartupOrder`'s hold)
-stay the host's. A recording reads the host and stamps with what the application's clocks read there
-(`ns`, `ms`) its first read (`ORIGIN`), each schedule event, each startup pass and the window's opening
-(`OPEN`); occurrence, `WITNESS` and `INVOCATION` marks carry no stamp. A schedule row with no stamp is
-refused by name (`RowCodec#PRE_CLOCK_CONTRACT`: a corpus recorded before stamps is re-recorded). A replay reads its order's timeline, moved to start at its own first read:
-`v = max(last, min(hi, lo + host time since lo moved))`. `lo` is the stamp of the furthest point the
-replay has reached -- its origin, each startup pass it completed (`StartupOrder#done`), its window's
-opening (`ScheduleLog#windowOpened`), each slot settled at or before the order's frontier
-(`ScheduleLog#publishTimeLocked`) -- and `hi` that of the next it has not, plus one millisecond tick
-(`Clocks#TICK_NANOS`: hdfs-adhoc-17's DataNodes set their next heartbeat 96 us before the recorded turn
-that sent it) inside the window, the frontier's slot while the line stands (IDENTITY.md §8); before it,
-with no tick, from the origin the first startup pass the order marks, and from a pass on the pass itself
--- time stands at the latest pass reached until the next pass or the opening (round TM6: one tick past
-its pass, a DataNode set its next heartbeat 0.4 ms late and its turn #1 found it not due), since what a node does once it
-joined the recording did at once (17's first heartbeats fell in the millisecond of the last
-registration; run at host speed toward the opening instead, round TM1's replay set them half a second
-late and no turn #1 found its heartbeat due); nothing past the line, after the window closes, or with
-no order. A timed wait (`TimedWaits`) moves time a nanosecond past where it stood when the wait began, and,
-while a cap stands, to its deadline if the wait ran its time out, never past the cap, for every thread; the waiter's own
-millisecond clock moves one millisecond (`Clocks#waited`). A wait that ran out saw its time pass (round
-TM7: DataNodes' waits for their next heartbeat ran out on the host while the order stood 0.6 s before
-them, and each turn #1 found its heartbeat not due), while a wait the recording ended by a signal before
-its timeout still finds its deadline past what the order reached; a real clock moves across a sleep and
-code divides by it (Hadoop's `GcTimeMonitor`, on `currentTimeMillis`, died in every replay of rounds
-TM1/TM2 on a run span of zero). Every thread's clock, since a value one thread sets another compares
-(round TM9: a step the waiter alone saw put a DataNode actor's `lastIBR` past what its DataXceiver read,
-the received block's report was not sent at once, and hdfs-adhoc-25's client met NotReplicatedYet where
-the recording logged its edit); a nanosecond, so a start-up's many waits move no decision made in
-milliseconds (time creeping on for every reader ran hdfs-adhoc-17's start-up 29 ms past its first
-registration, round TM5); the millisecond step the waiter's alone, from where every thread's stood, or
-every sleep would carry everyone's a millisecond on. So a slower replay waits at the cap where its
-recording's heartbeat was not yet due, a turn its slot released early reads at least its slot's instant,
-and no read goes back. The window's opening moves `lo` to the order's opening, and the order publishes
-its cap at once, under the schedule's lock, which owns the cap (`ScheduleLog#windowOpened`: the order is read
-there, round TM3 ran 2-12 s of model time free while a replay read it after the opening): its frontier's
-instant, or none for an order that holds no event, whatever the open window let in first; the window's
-close frees the clocks under the same lock. No read is keyed or written. A read never blocks; a cap is
-lifted by name (`SCHEDULE_DIVERGED`). Before the window a timed wait that ran its time out past the cap
-time stands at lifts it to its deadline and no further (`clock#<mark>`, `Clocks#waited`), never while a
-startup taker is held (`StartupOrder#holding`: its hold, at most one timeout, bounds that wait): at once
-at the window's opening time ran up to -- a start-up slower than its recording may need time to pass
-before its window (round TM13: hdfs-11741 has no startup mark before its opening, and its seed and every
-obligation replay stood two minutes there while a DataNode's heartbeat waits ran out and no heartbeat
-came due, until the old ceiling of eight timeouts lifted it); never at a startup mark this run has not
-passed, whose pass comes from the start-up's own progress (lifted, time ran past it on the NameNode
-daemons' sleeps and hdfs-adhoc-22 gave up 23 seed slots, round TM14; a stand there only waited for a slow
-start-up, round TM13W2); at a startup pass this run made only as a last-resort valve once time stood there
-the watchdog's ceiling of eight timeouts, since what a node does once it joined the recording did at once
-(17's first heartbeats) and a slow replay's stand there before its opening is its own slowness (round
-TM15: lifted after one timeout, 22 gave up 66). The price is
-named: such a start-up ends later in model time than its recording's, and inside the window time stands
-at that later instant until the order's stamps pass it (round TM1: lifted after a bare timeout, hdfs-11741's window opened 62 s of model time late). Inside the
-window a cap is lifted after a stall by the watchdog's own test (a timeout with nothing computing, or the
-ceiling: `ScheduleLog#stalledLocked`) and only when no thread waits on the order
-(`schedule-clock#<slot>`, `ScheduleLog#clockAtCap`), whose watchdog otherwise moves the frontier; a lift
-counts only when it moved the published cap. The millisecond clock derives from a nanosecond wall base,
-so no move floors a fraction off it. The
-replay log's exit line `Causynth clocks: ...` counts the reads that stood at a cap and the lifts.
-
 A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put
 first by `JUnitMethodRunner`; four pairs of exponent 65537 per size of 1024-4096 bits, in the jar's
 `replay-rsa-keys.txt`, one after another per size): the concolic VM has none of HotSpot's
@@ -718,14 +654,14 @@ its flipped decision (`Arms.conjunct`/`Arms.pathCondition` apply the recorded po
 lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets one rule:
 
 - ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
-  `[base reading, base reading + 30 days]` in its own ticks (`RootMintRow#baseReading`: the mint's
+  `[host reading, host reading + 30 days]` in its own ticks (`RootMintRow#hostReading`: the mint's
   instant less the skew its node's clock ran at there; `JavaPrimitiveSmtSemantics.clockDomain`/
   `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here), and its
   nearest world is the instant the session ran it at; within one session, a cell is no earlier
   than the cell before it (by seq) on the same clock of the same node, giving way where the session
   read the two the other way round (`FlipQuery#clockOrder`, COMPOSE's `clock_order__`), so no model
   jumps a clock forward and back, which a replay would plant as asked and no composed world is
-  (hdfs-11741 L1: `be888ea2` +10 h, the next cell at the base reading); any other root takes its domain from
+  (hdfs-11741 L1: `be888ea2` +10 h, the next cell at the host's reading); any other root takes its domain from
   `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
 - HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
   `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
@@ -796,7 +732,7 @@ the text streams (the later one would win); the query is never copied per engine
 of magnitude with the engine: SOLR-18413 r9's composed query ran past 30 minutes under 2 and is
 sat in a second under 6. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
-read back by root id, the flipped path's clocks as skews (`model − base reading`; one outside a Java
+read back by root id, the flipped path's clocks as skews (`model − host reading`; one outside a Java
 long refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
 control as its JSON string literal, which the replay plants verbatim; one whose model value is no
 string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
@@ -837,17 +773,17 @@ prefix is followed only up to the first event the pairings reorder) goes to
 `replay_timeout_s`. The replay runs the workload to its end, its witness or its deciding refusal
 (below); the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
-(`runtime.FocusedReplay`). A clock skew is planted at its mint (the base reading -- the application's clock, §5 -- plus the skew)
+(`runtime.FocusedReplay`). A clock skew is planted at its mint (the host's reading plus the skew)
 and is a jump of that node's clock (`runtime.NodeClocks`): a declared clock reading no skew is asked
-of reads the base plus the skew of the jump on its clock latest at or before it in the RECORDING's
+of reads the host plus the skew of the jump on its clock latest at or before it in the RECORDING's
 order (its place is the event the recording read it at, `SymbolizeAction#eventSeq`, the seq its mint
 row states), never this replay's order, so two threads that plant either way round run one clock.
 One clock is one node, one JVM clock and one tick (`contract.Clock#same`, COMPOSE's rule too: the
 source is the plan's `clockSource`, read off the wrapper's body, never a reading's value; a node's
 wall clock and monotonic clock are two, and a clock stating no source is on no order). A value carrying an expression is
 computed from a reading and is never moved again; an unattributed mint is on no node's clock and
-reads the base (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
-`clockSkew`, how far its clock ran off the base there; skews stay relative to the base reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
+reads the host (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
+`clockSkew`, how far its clock ran off the host there; skews stay relative to the host's reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
 `obligations.jsonl` and states the same rows to the worker's `replay_verdict.jsonl`. The worker is
 the one writer of the obligation's answer, `obligation_result.jsonl`, and writes it once the
 replay's process group is gone (`run_under_wall_clock_bound` ends it: whatever of it outlives the
@@ -932,10 +868,12 @@ lease, the file's mtime (`campaign_host_lease_s`, 120 s, beyond NFS's attribute 
 every `campaign_host_renew_s` (10 s) by a process of its own while the shell that took it lives
 (`campaign_host_hold`; `campaign_host_keep` for one handed on, the host's solver), and is removed
 when what it ran returns (`campaign_host_release`); a killed run's charges lapse, and one ten
-leases old is deleted. Every start states its measured need, with no default. A solve needs what
-a solver JVM starts at (`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its
-own under that charge when its host has no room for its solver; the host's solver is charged on its
-own, §7.5), never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+leases old is deleted. Every start states its measured need, with no default. A solve on a host
+where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
+(`campaign_question_mb`, 512 MB: the serving solver's JVM is charged on its own, §7.5; HI1/HI2's z3
+runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host what a solver JVM starts at
+(`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its own under that charge
+when its host has no room for its solver), either growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
@@ -1615,12 +1553,10 @@ same clock (`contract.Clock#same`: the JVM clock its row states and the same tic
 none is on no order, DIAGNOSTIC) (`clock_order__`); where the recording read the two the other way round, the link gives way by that
 much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
 order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
-Every session's instants are on that one timeline too: a replay's application clock runs on its
-order's timeline started at its own first read (§5, `runtime.Clocks`), so later than the
-recording's by that start (a plant is a skew off that base reading, `runtime.NodeClocks`), and an
-instant it computed outside every clock root -- a key's expiry from a startup reading -- is a constant
-on its own clock. A session's base at a cell is how far its base clock read the cell later than the
-recording (at the cell where the
+Every session's instants are on that one timeline too: a replay runs on its own host's clock, started
+later (a plant is a skew off that host, `runtime.NodeClocks`), so an instant it computed outside every
+clock root -- a key's expiry from a startup reading -- is a constant on its own clock. A session's
+base at a cell is how far its host read the cell later than the recording (at the cell where the
 recording read it, else at the nearest cell both read, as a placement anchors; `Composer#clockBases`),
 and an integral constant compared with an instant of that cell (the cell, or the cell plus or minus a
 constant span) in that session's terms is lowered that much earlier (`SmtLowering#clockBases`,

@@ -3246,11 +3246,15 @@ $(cat "${stream_dir}/explore.log")"
   [[ "${cap_ran}" == "${cap_ran_most}" ]] \
     || fail "a pool at a ${cap_peak} MB peak with ${cap_fresh} other \
 exploration(s) ran ${cap_ran} obligation(s) at once, not ${cap_ran_most}"
-  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged \
-      | sort -u)" == "${campaign_solver_start_mb}" ]] \
+  # One host: its first solve is cold, charged what a solver starts at; the
+  # others find its solver serving and are charged a question's z3 run.
+  [[ "$(cat "${stream_dir}"/obligations-0000/{A,B,C}/charged | sort -n \
+      | paste -sd ' ' -)" == "${campaign_question_mb} \
+${campaign_question_mb} ${campaign_solver_start_mb}" ]] \
     || fail "the pool's solves were charged $(cat \
       "${stream_dir}"/obligations-0000/{A,B,C}/charged | paste -sd ' ' -), \
-not what a solver starts at, ${campaign_solver_start_mb} MB"
+not a solver's start (${campaign_solver_start_mb} MB) for the cold one and \
+a question's (${campaign_question_mb} MB) for the warm ones"
   cap_said=$(grep -c 'waiting for a slot' "${stream_dir}/explore.log" \
     || true)
   if [[ "${cap_sharers}" == - ]]; then
@@ -3341,9 +3345,11 @@ stream_fixture stream-split
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "a split exploration did not finish: $(cat "${stream_dir}/explore.log")"
 split_round0="${stream_dir}/obligations-0000"
-[[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -u)" \
-    == "${campaign_solver_start_mb}" ]] \
-  || fail "a solve was not charged what a solver starts at: $(cat \
+[[ "$(cat "${split_round0}"/{A,B,C}/solve-charged | sort -n \
+    | paste -sd ' ' -)" == "${campaign_question_mb} \
+${campaign_question_mb} ${campaign_solver_start_mb}" ]] \
+  || fail "the solves were not charged a solver's start for the cold one and \
+a question's for the warm ones: $(cat \
     "${split_round0}"/{A,B,C}/solve-charged | paste -sd ' ' -)"
 split_plan="instrumented-classes generations/g0/execution_task_plan.jsonl"
 [[ "$(cat "${split_round0}/A/replay-args")" \
@@ -3763,7 +3769,7 @@ done
 $(cat "${stream_dir}/explore.log")"
 [[ "$(LC_ALL=C sort "${stream_dir}/ssh-calls.txt")" == "lift12 SOLVE A \
 ${campaign_solver_start_mb}
-lift12 SOLVE B ${campaign_solver_start_mb}
+lift12 SOLVE B ${campaign_question_mb}
 lift13 REPLAY A $(campaign_stream_charge_mb REPLAY) instrumented-classes \
 generations/g0/execution_task_plan.jsonl" ]] \
   || fail "the remote solves and REPLAY did not run where and as they \
@@ -5170,6 +5176,12 @@ grep -qE '^2 localhost exit=0 [0-9]+s$' "${fanout_dir}/fanout.out" \
 [[ -z "$(live_charges "${fanout_dir}/ledger")" ]] \
   || fail "a returned job is still charged: \
 $(live_charges "${fanout_dir}/ledger")"
+# Resumed once every job returned, it has nothing to run and ends cleanly.
+LIFTS=localhost CAUSYNTH_HOST_LEDGER="${fanout_dir}/ledger" JOB_MEMORY_MB=1 \
+  bash "${repo}/tools/adhoc/fanout.sh" "${fanout_dir}/jobs" \
+  "${fanout_dir}/logs" >"${fanout_dir}/fanout-again.out" 2>&1 \
+  || fail "a fanout resumed with every job returned failed: \
+$(cat "${fanout_dir}/fanout-again.out")"
 
 # FANOUT-2: an ADMIT_MB job starts only where the ledger has its room and
 # holds no charge while it runs (a campaign head reserves its own room).
@@ -5183,6 +5195,46 @@ LIFTS=localhost CAUSYNTH_HOST_LEDGER="${admit_dir}/ledger" \
   || fail "fanout failed an ADMIT_MB job: $(cat "${admit_dir}/fanout.out")"
 [[ "$(tr -d ' ' <"${admit_dir}/0.out")" == 0 ]] \
   || fail "an ADMIT_MB job held a charge while it ran: $(cat "${admit_dir}/0.out")"
+
+# FANOUT-3: a job no host has room for holds its need on the host with the
+# most room while it waits (a heads/ hold every other start counts), and the
+# hold goes once a job starts: a running campaign's pool no longer takes each
+# freed slot ahead of the queued campaigns (round HI3).
+hold_dir="${test_tmp}/fanout-hold"
+mkdir -p "${hold_dir}/logs"
+hold_host=$(campaign_host_key localhost)
+mkdir -p "${hold_dir}/ledger/${hold_host}/charges"
+hold_block="${hold_dir}/ledger/${hold_host}/charges/99999999.${hold_host}.1.1.1"
+: >"${hold_block}"
+printf '%s\n' "ADMIT_MB=1234 echo held >${hold_dir}/0.out" >"${hold_dir}/jobs"
+( LIFTS=localhost CAUSYNTH_HOST_LEDGER="${hold_dir}/ledger" \
+    bash "${repo}/tools/adhoc/fanout.sh" \
+    "${hold_dir}/jobs" "${hold_dir}/logs" >"${hold_dir}/fanout.out" 2>&1 ) &
+hold_fanout=$!
+for _ in $(seq 1 60); do
+  compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" >/dev/null && break
+  sleep 0.5
+done
+hold_file=$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" | head -n 1)
+[[ -n "${hold_file}" && "$(cat "${hold_file}")" == 1234 \
+    && ! -e "${hold_dir}/0.out" ]] \
+  || fail "a job with no room held nothing while it waited: \
+$(ls -R "${hold_dir}/ledger") $(cat "${hold_dir}/fanout.out")"
+# A host another sweep's waiting job holds is not held again.
+( LIFTS=localhost CAUSYNTH_HOST_LEDGER="${hold_dir}/ledger" \
+    bash "${repo}/tools/adhoc/fanout.sh" "${hold_dir}/jobs" \
+    "${hold_dir}/logs2" >"${hold_dir}/fanout2.out" 2>&1 ) &
+hold_second=$!
+sleep 12
+[[ "$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" | wc -l)" -eq 1 ]] \
+  || fail "two waiting sweeps both held one host: \
+$(compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold")"
+rm -f -- "${hold_block}"
+wait "${hold_fanout}" || fail "fanout failed a held job: $(cat "${hold_dir}/fanout.out")"
+wait "${hold_second}" || fail "the second fanout failed: $(cat "${hold_dir}/fanout2.out")"
+[[ -s "${hold_dir}/0.out" ]] \
+  && ! compgen -G "${hold_dir}/ledger/*/heads/fanout.*.hold" >/dev/null \
+  || fail "the held job did not start, or its hold outlived it"
 
 # HEADS-1: a round's heads are chosen at launch from the hosts' room
 # (tools/rounds/launch-round.sh, tools/lib/heads.sh heads_choose): the

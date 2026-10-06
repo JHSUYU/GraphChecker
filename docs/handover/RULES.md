@@ -118,6 +118,19 @@ recommendation.
   approximately right `.smt` is enough: a `candidate.smt2` z3 decides, with the main causal chain in it; residual
   gaps (some seed give-ups, a few HELD values, a bounded round) are acceptable when named in STATUS. Still: no
   fabricated result, every workaround listed in STATUS, and no regression of the other 38 cases.
+- **The time model is workarounds only, never ground on** (owner 2026-10-06, long-term: "好的，time model我现在全部workaround，
+  不必死磕，设为长期记忆"; "时间模型整个都不用死磕。.smt能跑出来即可，即使小有问题也可以接受"): replay clock fidelity, seed
+  give-ups from clock-driven turns (heartbeats, IBRs, the edit log's async claims) and the whole start-up/clock family
+  are handled by workarounds (test-cluster configuration, the HDFS adapter, small system-code patches, listed in
+  STATUS), never by engine work to perfect the time model; this also covers a non-clock case whose seed replay
+  stalls on that timing. An approximately right `.smt` is enough there; no fabricated result; no regression.
+- **Reasonable parallelism, not over-subscription** (owner 2026-10-06 afternoon: "你也不要过分并行哈。合理的并行。要不然反而会让速度
+  变慢"): at ~18 live campaigns (four agents' gates plus the lead's rounds) every case ran 3-5x slower and heads starved for
+  ledger room. Each agent runs at most 2 live campaigns at once (critical path first, offline gates where they answer);
+  the lead's rounds are what a gate or the final round needs; about 8-10 live campaigns in all; a queue is paused rather
+  than starved. Ten lifts pay most inside one case (its obligations fan out). The principle ("并行你要记住是让吞吐提升。而不是
+  单单为了并行"): parallelism serves throughput -- cases finished and fixes validated per hour -- measured by each case's
+  wall time against its solo history (round-slow.sh) and the ledger's waits, never by how full the lifts look.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.
@@ -131,6 +144,14 @@ recommendation.
 - **An arm the bug may live in is never closed silently** (lead, 2026-10-06, merged b650a0f6d): every open decider arm of
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
   back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
+- **A faithful run that never enters an open arm's occurrence refutes that world** (lead, 2026-10-06, after the
+  handover; agent S's design A for 39/40): for open-arm flips only, a replay that planted its whole world (every root
+  and skew minted at its value, no prefix abandoned), whose order holds never gave way (any still waiting wait only on
+  the never-entered occurrence), whose first skipped slot comes after the world first acted, and whose workload ended
+  by itself, answers that world: the program does not reach the occurrence there (39: a held block report makes
+  `complete()` fail, so the test never appends). The world is named (`WORLD_REFUTED`) and excluded from the arm's
+  re-ask, never the arm; anything short of faithful stays NOT_ADMITTED/UNANSWERED (a RUN_DEFECT at the end, as the
+  owner ruled for a run failure). Never applied to CONFIRM.
 - **The engine's own plumbing is never program state** (lead, 2026-10-06, codec-capture design): no field of the engine's
   runtime package and no field of a generated protobuf message or builder (immutable once built) is a STATE location or
   a READ_SITE; a read made by such code takes its observed version's value at import.

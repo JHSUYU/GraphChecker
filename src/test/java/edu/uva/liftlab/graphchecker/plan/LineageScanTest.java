@@ -14,7 +14,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** The lineage scope keeps every class that starts, hands off or runs work,
- *  waits, draws, reads a JVM clock, or lists a directory. */
+ *  waits, draws unseeded, or lists a directory. */
 public class LineageScanTest {
 
     /** The DataNode actor's shape: a command put at the head of a deque. */
@@ -81,13 +81,6 @@ public class LineageScanTest {
         }
     }
 
-    /** Hadoop's Time: the JVM clock every Hadoop clock reads through. */
-    static final class ClockReader {
-        long now() {
-            return System.nanoTime() / 1_000_000L;
-        }
-    }
-
     /** RawLocalFileSystem's and FileUtil's shape: a directory listed. */
     static final class Lister {
         String[] names(java.io.File directory) {
@@ -106,7 +99,6 @@ public class LineageScanTest {
         assertTrue(kept(Waiter.class));
         assertTrue(kept(Drawer.class));
         assertTrue(kept(Shuffler.class));
-        assertTrue(kept(ClockReader.class));
         assertTrue(kept(Lister.class));
         assertFalse(kept(ListWriter.class));
     }
