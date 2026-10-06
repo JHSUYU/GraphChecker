@@ -200,7 +200,7 @@ public final class ExposedRegionPlanMain {
             plan.put(LoopBoundPolicy.PLAN_FIELD, skeleton.retainedLoops);
         }
         List<Map<String, Object>> handoffs =
-                RuntimeRegionPlanner.communicationHandoffSites(region);
+                RuntimeRegionPlanner.attachSites(region);
         if (!handoffs.isEmpty()) {
             plan.put(CommunicationHandoffSpec.FIELD, handoffs);
         }

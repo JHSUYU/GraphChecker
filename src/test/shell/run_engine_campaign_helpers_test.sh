@@ -3341,6 +3341,75 @@ UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
 SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
 EOF
 
+# STREAM-CHAIN: a witness attempt whose COMPOSE names an open chain (its
+# path's fatal condition resting on a value no attested producer made) is not
+# confirmed; the head grows the producers its arrivals name -- each once,
+# from the rounds' exposures of them only, every other obligation cancelled
+# -- and attempts the witnesses again once the GROW swaps in.
+chain_dir="${test_tmp}/chain"
+mkdir -p "${chain_dir}/step" "${chain_dir}/attempt" "${chain_dir}/sessions/W1" \
+  "${chain_dir}/round"
+chain_said=$(
+  attempts="${chain_dir}/attempts.jsonl"
+  campaign_log() { printf '%s\n' "$*" >>"${chain_dir}/log"; }
+  jq -n -c '{witnesses: ["W1", "W2"]}' >"${chain_dir}/attempt/attempt.json"
+  manifest="${chain_dir}/attempt/candidate_composition_manifest.json"
+  jq -n -c '{solver: {campaignClaim: {openChain: []}}}' >"${manifest}"
+  ! campaign_stream_open_chain "${chain_dir}/step" "${chain_dir}/attempt" \
+    W1 W2 || echo "a closed chain opened"
+  jq -n -c '{solver: {campaignClaim: {openChain: [
+      {symbol: "M_J_field_HOFF.a", producer: "nn0/region/R.P1"},
+      {symbol: "M_J_field_HOFF.b", producer: ""},
+      {symbol: "M_J_field_HOFF.c", producer: "nn0/region/R.P1"}]}}}' \
+    >"${manifest}"
+  campaign_stream_open_chain "${chain_dir}/step" "${chain_dir}/attempt" W1 W2 \
+    || echo "an open chain read closed"
+  printf 'chain=%s witnesses=%s row=%s\n' \
+    "$(paste -sd, "${chain_dir}/step/chain")" \
+    "$(paste -sd, "${chain_dir}/step/chain-witnesses")" \
+    "$(jq -r '[.confirmed, .accepted, (.confirmReason | test("chain is open"))]
+      | map(tostring) | join(",")' "${attempts}")"
+  # The head takes it: queued obligations cancelled, a REPLAY kept.
+  declare -A stream_chain=() stream_chain_grown=()
+  stream_chain_witnesses=()
+  stream_cancelled=()
+  iteration_dir="${chain_dir}"
+  mkdir -p "${chain_dir}/obligations-0003/O1"
+  stream_queue=("REPLAY obligations-0002 R1 g0/c g0/p" \
+    "OBLIGATION obligations-0003 O1")
+  declare -A stream_flying=([O1]=row)
+  campaign_stream_open "${chain_dir}/step"
+  printf 'producers=%s queue=%s cancelled=%s\n' "${!stream_chain[*]}" \
+    "${stream_queue[*]%% *}" "${stream_cancelled[*]}"
+  # A round: only the chain's producer exposed grows; obligations wait.
+  jq -n -c '{kind: "EXPOSED_REGION", occurrence: "nn0/region/R.P1",
+      obligationId: "O7", sessionId: "S7"},
+    {kind: "EXPOSED_REGION", occurrence: "nn0/region/R.P9",
+      obligationId: "O8", sessionId: "S8"}' >"${chain_dir}/round/growth.jsonl"
+  campaign_stream_grow() { printf 'grew %s\n' "$(jq -r .occurrence "$2")"; }
+  stream_cancelled=()
+  campaign_stream_chain_round "${chain_dir}/round" O5 O6
+  printf 'cancelled=%s grown=%s\n' "${stream_cancelled[*]}" \
+    "${!stream_chain_grown[*]}"
+  # The same chain again: its producer was grown, so it cannot close.
+  campaign_stream_open "${chain_dir}/step"
+  printf 'reopened=%s\n' "${#stream_chain[@]}"
+  # After the swap: the witnesses still in the corpus are attempted again.
+  sessions="${chain_dir}/sessions"
+  stream_chain=([nn0/region/R.P1]=1)
+  stream_chain_witnesses=(W1 W2)
+  stream_witnesses=()
+  campaign_stream_chain_reattempt
+  printf 'again=%s open=%s\n' "${stream_witnesses[*]}" "${#stream_chain[@]}"
+)
+[[ "${chain_said}" == "chain=nn0/region/R.P1 witnesses=W1,W2 row=null,false,true
+producers=nn0/region/R.P1 queue=REPLAY cancelled=O1
+grew nn0/region/R.P1
+cancelled=O5 O6 grown=nn0/region/R.P1
+reopened=0
+again=W1 open=0" ]] || fail "the open witness chain was handled as: \
+${chain_said}"
+
 # STREAM-CONFIRM-FIRST: a solve's REPLAY goes first in the queue, behind only
 # the witness's confirmation and GROW's re-runs that lead it (hdfs-11741 AR1:
 # 473 later replays started ahead of the confirmation).  Per row: the queue's

@@ -1063,7 +1063,15 @@ turn keeps its own address. The op's own messages (`Op*Proto`) still derive no p
 
 ### 6.3 At run time
 
-The OUT capture exports the carrier leaf's expression through the VM (`runtime/WireExport`) and
+Every export of the program is woven, planned or not: INSTRUMENT captures each OUT port of every
+region skeleton (`runtime/RuntimeRegionPlanner#exportSites`), and a plan row declares only the ports
+its occurrence attaches (`#attachSites`, the innermost consumer). An export no admitted activation
+runs states its endpoint at the occurrence its skeleton's entry opened, stated unselected, so a
+delivery pairs with it and the closure can grow that producer when a demanded attach names it
+(PIPELINE §7.2); nothing is planned because an export exists (hdfs-adhoc-12 HG9L: the NameNode's
+`convert(NNHAStatusHeartbeat)` roots no planned region, its `setTxid` was never woven, and the
+DataNode's HA status txid reached the fatal unbound). The OUT capture exports the carrier leaf's
+expression through the VM (`runtime/WireExport`) and
 stages the handle on the thread's outbound envelope (`runtime/SymbolicMessageEnvelope`, schema
 `CSE5`, at most 64 entries and 64 frames per message), which the next outbound door of that thread
 carries (IDENTITY.md §7). The IN capture takes the element by (frame, port, ordinal), attaches it,

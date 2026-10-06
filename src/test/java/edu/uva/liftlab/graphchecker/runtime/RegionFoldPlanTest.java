@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.RuntimeWorkflowDiscovery;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -115,6 +116,64 @@ public class RegionFoldPlanTest {
      * folded region's PUBLISH phase went with it.  Both belong to the
      * occurrence that RAN them, and to no other.</p>
      */
+    /**
+     * THE WIRE'S TWO HALVES HAVE ONE SOURCE EACH: the weave captures every
+     * skeleton's exports, planned or not, and a plan row declares only what
+     * its occurrence attaches (hdfs-adhoc-12 HG9L: the NameNode's {@code
+     * convert(NNHAStatusHeartbeat)} roots no planned region, and its {@code
+     * setTxid} export was never woven).
+     */
+    @Test
+    public void everyExportIsWovenAndAPlanDeclaresItsAttachesOnly() {
+        String producer = "<o.a.h.PBHelper: o.a.h.NNHAStatusHeartbeatProto"
+                + " convert(o.a.h.NNHAStatusHeartbeat)>";
+        String txid = "XCH.53d59f95-3ee5-385f-a674-a07d58f5b75b"
+                + ".wire.auto:NNHAStatusHeartbeatProto.Txid";
+        Map<String, Object> port = new LinkedHashMap<>();
+        port.put("portId", txid);
+        port.put(RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "OUT");
+        port.put("sourceKind",
+                RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT);
+        port.put("dependencyRole", "VALUE_FRONTIER");
+        port.put("name", "auto:NNHAStatusHeartbeatProto.Txid");
+        port.put("javaType", "long");
+        port.put("exchangeSiteKey", "XCH.53d59f95-3ee5-385f-a674-a07d58f5b75b");
+        port.put("handoffLeafPath", txid);
+        port.put("callSiteId", producer + "#u8");
+        port.put("definitionMethod", producer);
+        port.put("outputCaptureKind", "CALL_ARGUMENT");
+        port.put("definitionUnitIndex", 8);
+        port.put("declaredCallee", "<o.a.h.NNHAStatusHeartbeatProto$Builder:"
+                + " o.a.h.NNHAStatusHeartbeatProto$Builder setTxid(long)>");
+        port.put("argumentIndex", 0);
+        Map<String, Object> unplanned = skeleton("REGION.b9bd09cd", producer,
+                Collections.singletonList(producer));
+        unplanned.put(RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS,
+                Collections.singletonList(port));
+        List<StaticProgram.RegionRow> skeletons =
+                new ArrayList<>(cutSkeletons());
+        skeletons.addAll(StaticProgram.regionRows(
+                Collections.singletonList(unplanned),
+                RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test"));
+
+        List<CommunicationHandoffSpec> exports =
+                RuntimeRegionPlanner.exportSites(skeletons);
+        assertEquals("the one export of the program, though no region"
+                + " holding it is planned; the leaf's attach is no export",
+                1, exports.size());
+        assertEquals(txid, exports.get(0).portId());
+        assertTrue(exports.get(0).outgoing());
+        assertEquals(producer + "#u8", exports.get(0).siteId());
+
+        Map<String, Object> region = new LinkedHashMap<>(unplanned);
+        region.put("outputs", Collections.singletonList(port));
+        assertTrue("a plan row of the producer declares no export",
+                RuntimeRegionPlanner.attachSites(StaticProgram.regionRows(
+                        Collections.singletonList(region),
+                        RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test")
+                        .get(0)).isEmpty());
+    }
+
     @Test
     public void anOccurrenceDeclaresWhatFoldedIntoIt() throws Exception {
         List<RuntimeRegionPlanner.MethodEvent> events = cutEvents(

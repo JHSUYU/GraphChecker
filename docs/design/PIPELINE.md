@@ -215,6 +215,10 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
 (`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+The wire's captures (SYMBOL-SCOPE §6.3): each attach a planned occurrence declares, and every export
+of the program -- each OUT port of every region skeleton, its method and frame woven as a planned
+region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
+`runtime.RuntimeRegionPlanner#exportSites`).
 Each conditional of a woven method gets the VM's decision marker just before it and, on every
 arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolveBranch`,
 `#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the
@@ -1046,6 +1050,19 @@ cancelled or reaped, by id):
   left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
+  A witness ends the exploration only once its OWN chain is closed (owner 2026-10-06): an attempt
+  whose COMPOSE names an open chain (`ComposeMain#campaignClaim` `openChain`: each value the claimed
+  path's fatal condition rests on that no attested producer made -- the set
+  `experiments/accept/cone.py` reads off the formula, `compose.Cone` -- the claim RUN_DEFECT) is
+  not confirmed (`campaign_stream_open_chain`); the head cancels the queued obligations and grows the
+  producers those values' arrivals name (`campaign_stream_open`): each later round grows only its
+  exposures of them, each producer once, and queues none of its obligations
+  (`campaign_stream_chain_round`); once the GROW swaps in, the attempt's witnesses still in the
+  corpus are attempted again, a re-run landing as a witness of its own
+  (`campaign_stream_chain_reattempt`). A chain whose every producer was grown already cannot close,
+  and a fixed point ends a chain no exposure reaches: the final claim names each open value
+  (`WITNESS_CHAIN_OPEN`, EMIT's `defects[]`). hdfs-adhoc-12 AW2: the HA status txid's export at
+  nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
   the exploration has stopped otherwise, no attempt is made.
 - **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
@@ -1711,7 +1728,17 @@ kind other than `NO_SUPPORTED_WITNESS` → `SAT_CANDIDATE`; else, the formula's 
 exactly: no world of the explored corpus reaches the fatal -- each admitted path under the marker
 valuation its own run ran (`valuationOf`), every declared root free over its domain, every clock
 over its window, and the values `concrete[]` holds (HELD, producer unstated) -- and nothing about a
-path the exploration did not admit. EMIT publishes
+path the exploration did not admit. A VERDICT IS JUDGED ON THE PATHS IT RESTS ON (owner 2026-10-06):
+a SAT on the path it claims, an UNSAT on every path. Each value the fatal condition of such a path
+names that no message family under its selector binds -- or that an arm the witness chose holds FREE
+or HELD -- is an open link of the chain (`compose.Cone`, the set `experiments/accept/cone.py` reads
+off the same formula; `Composition#openChain`, each with the producer occurrence its arrival names):
+an open link leaves no verdict, `RUN_DEFECT` with `openChain` (EMIT: `WITNESS_CHAIN_OPEN` for a
+SAT, `UNSAT_CHAIN_OPEN` for an UNSAT). A SAT's other paths' open links are stated, never gating
+(`unboundOffWitness`, cone.json's too). EXPLORE closes a witness's chain before it ends (§7.9); an
+UNSAT's paths are closed by the exploration's own growth, which plans each demanded producer an
+admitted session exposes (§7.2, §7.8), so a link still open at the fixed point is one growing could
+not close. EMIT publishes
 `SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
 when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
@@ -1723,7 +1750,8 @@ which a standalone z3 re-solves to the same verdict, SAT or UNSAT). The manifest
 session, `fatalObserved`, `selectedArms`, unsat core) and `campaignClaim` (`claim`, `claimReason`,
 `findingKind`, `valuationOrdinal`, `polarityDecides`, `movedRoots`, `movedRootCategories` (each moved
 root's category, `contract.RootCategory`), `configurationOnly` (the claim moves configuration only:
-the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`).
+the one rule, read by triage and findings), `blockers`, `whyNotAccepted`, `witnessFindings`,
+`openChain` and `unboundOffWitness` where they hold a link).
 
 ## 10. CONFIRM: `explore.ConfirmMain` and `runtime.Confirmation`
 
