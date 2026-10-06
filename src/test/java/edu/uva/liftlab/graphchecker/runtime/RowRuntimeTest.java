@@ -80,9 +80,10 @@ public class RowRuntimeTest {
 
     @After
     public void clear() {
-        // The exchange a test left its thread serving ends here: a later
-        // test's first receipt would end it under a reset context.
+        // A test's exchange and levels are its own: left standing, the
+        // thread's next test (SaslExchangeHalfTest) sent in them.
         MessageDoors.endInbound();
+        Identity.resetForTests();
         RuntimeTraceContext.resetForTests();
         RowRuntime.resetForTests();
     }
@@ -2668,56 +2669,128 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A concrete target testing a helper's constant return is decided by the
-     * latest decision in the helper's method before it, when that is a
-     * decider arm (causynth.BooleanReturns); a concrete one testing a
-     * nested helper's return by that helper's in turn (hdfs-adhoc-40:
-     * {@code isSufficientlyReplicated}'s concrete test of {@code
-     * hasMinStorage}'s return, chosen by {@code liveNum >= min}).  Never an
-     * earlier call's: a latest decision at an arm that runs on, or concrete
-     * with nothing below it, decides nothing.
+     * A target testing a helper's return is decided by the latest decision
+     * in the helper's method before it, when that is a decider's
+     * (causynth.BooleanReturns): its condition is {@code ite(the decision as
+     * it held, the arm it took, the other arm)}, an arm its verdict or,
+     * open and taken, the guard's own condition; a concrete decision tests a
+     * nested helper's return, whose deciders give its condition (hdfs-adhoc
+     * 40: {@code isSufficientlyReplicated}'s concrete test of {@code
+     * hasMinStorage}'s return, chosen by {@code liveNum >= min}).  Where the
+     * other arm is open and never ran, the result names it, with the
+     * decision whose flip runs it (that one, or the nested one under a
+     * concrete decision).  None -- the guard its own -- where the constant
+     * arm taken is not what the guard observed or the latest decision is no
+     * decider's: never an earlier call's, nor one after the target.  phi
+     * puts the condition in the fatal polarity, and leaves the run's own
+     * where an arm is open.
      */
     @Test
     public void aHelpersReturnIsDecidedByTheLatestArmInItsMethod() {
         String helper = "<a.H: boolean sufficient(int)>";
         String nested = "<a.H: boolean hasMin(int)>";
+        List<StaticScopeMap.Guard> hasMin = Arrays.asList(
+                new StaticScopeMap.Guard(nested + "#u1", true, true,
+                        Collections.<StaticScopeMap.Guard>emptyList()),
+                new StaticScopeMap.Guard(nested + "#u1", false, false,
+                        Collections.<StaticScopeMap.Guard>emptyList()));
         List<StaticScopeMap.Guard> deciders = Arrays.asList(
-                new StaticScopeMap.Guard(helper + "#u2", false, Arrays.asList(
-                        new StaticScopeMap.Guard(nested + "#u1", true),
-                        new StaticScopeMap.Guard(nested + "#u1", false))),
-                new StaticScopeMap.Guard(helper + "#u4", true),
-                new StaticScopeMap.Guard(helper + "#u4", false));
-        JsonObject m = predicate("m"), h = predicate("h");
+                new StaticScopeMap.Guard(helper + "#u2", true, null, hasMin),
+                new StaticScopeMap.Guard(helper + "#u2", false, true, hasMin),
+                new StaticScopeMap.Guard(helper + "#u4", true, false,
+                        Collections.<StaticScopeMap.Guard>emptyList()),
+                new StaticScopeMap.Guard(helper + "#u4", false, true,
+                        Collections.<StaticScopeMap.Guard>emptyList()));
+        JsonObject m = predicate("m"), h = predicate("h"), o = predicate("o");
+        String refM = RowRuntime.expressionRef(m);
+        String refH = RowRuntime.expressionRef(h);
+        String refO = RowRuntime.expressionRef(o);
         Object[][] rows = {
-            // the decisions before the target at 12, which one decided it
-            {"the nested helper's comparison", new Object[][]{
-                    {nested + "#u1", 10L, false, m},
-                    {helper + "#u2", 11L, false, null}}, 10L},
-            {"the helper's own comparison", new Object[][]{
-                    {nested + "#u1", 9L, true, m},
-                    {helper + "#u2", 10L, true, null},
-                    {helper + "#u4", 11L, true, h}}, 11L},
-            {"an arm that runs on decides nothing", new Object[][]{
-                    {nested + "#u1", 10L, true, m},
-                    {helper + "#u2", 11L, true, null}}, null},
+            // the decisions before the target at 12 (site, event, outcome,
+            // predicate, ordinal), what the guard observed, and the
+            // condition with the event it stands at, or the open arm named
+            {"two constant arms: the decision at the arm it took",
+                new Object[][]{{helper + "#u4", 11L, true, h, 1}}, false,
+                "(not " + refH + ")", 11L},
+            {"the constant arm taken must be what the guard observed",
+                new Object[][]{{helper + "#u4", 11L, true, h, 1}}, true,
+                null, null},
+            {"an open arm taken is the guard's own condition beside the"
+                    + " constant one", new Object[][]{
+                    {helper + "#u2", 11L, true, m, 1}}, true,
+                "(ite " + refM + " " + refO + " true)", 11L},
+            {"a constant arm taken beside an open one that never ran names"
+                    + " it, asked at itself", new Object[][]{
+                    {helper + "#u2", 11L, false, m, 2}}, true,
+                "open " + helper + "#u2#2=true asked at " + helper + "#u2#2",
+                null},
+            {"under a concrete decision, asked at the nested one",
+                new Object[][]{
+                    {nested + "#u1", 10L, false, m, 3},
+                    {helper + "#u2", 11L, false, null, 2}}, true,
+                "open " + helper + "#u2#2=true asked at " + nested + "#u1#3",
+                null},
+            {"concrete, the nested helper's comparison decides it",
+                new Object[][]{
+                    {nested + "#u1", 10L, true, m, 1},
+                    {helper + "#u2", 11L, true, null, 1}}, true,
+                "(ite " + refM + " " + refO + " true)", 10L},
             {"never an earlier call's", new Object[][]{
-                    {helper + "#u4", 5L, true, h},
-                    {helper + "#u4", 11L, false, null}}, null},
+                    {helper + "#u4", 5L, true, h, 1},
+                    {helper + "#u4", 11L, false, null, 2}}, true, null, null},
             {"nor one after the target", new Object[][]{
-                    {helper + "#u4", 13L, true, h}}, null}};
+                    {helper + "#u4", 13L, true, h, 1}}, false, null, null}};
         for (Object[] row : rows) {
-            List<JsonObject> mappings = new ArrayList<>();
-            for (Object[] each : (Object[][]) row[1]) {
-                JsonObject mapping = decided((String) each[0],
-                        (Boolean) each[2], (JsonObject) each[3]);
-                mapping.addProperty("vmEventId", (Long) each[1]);
-                mappings.add(mapping);
-            }
-            JsonObject found = RowPublication.decidedBy(mappings, deciders,
-                    12L);
-            assertEquals((String) row[0], row[2], found == null ? null
-                    : found.get("vmEventId").getAsLong());
+            List<JsonObject> mappings = mappings((Object[][]) row[1]);
+            RowPublication.Decided found = RowPublication.decided(mappings,
+                    deciders, 12L, refO, (Boolean) row[2]);
+            String stated = found == null ? null : found.open != null
+                    ? "open " + found.open : found.condition;
+            assertEquals((String) row[0], row[3], stated);
+            assertEquals((String) row[0], row[4], found == null
+                    || found.open != null ? null : Long.valueOf(found.at));
         }
+        // phi in the fatal polarity, where the target stands, and the arm
+        // left out, for a concrete guard at 12.
+        Object[][] phis = {
+            // the decisions, the arm the guard took, the fatal arm, phi, its
+            // event, the open arm
+            {new Object[][]{{helper + "#u4", 11L, true, h, 1}}, false, true,
+                "(not " + refH + ")", 11L, null},
+            {new Object[][]{{helper + "#u4", 11L, true, h, 1}}, false, false,
+                refH, 11L, null},
+            {new Object[][]{{helper + "#u2", 11L, false, m, 2}}, true, true,
+                "true", 12L, helper + "#u2#2=true asked at " + helper
+                    + "#u2#2"},
+            {new Object[][]{{helper + "#u2", 11L, false, m, 2}}, true, false,
+                "false", 12L, helper + "#u2#2=true asked at " + helper
+                    + "#u2#2"},
+            {new Object[][]{}, false, true, "false", 12L, null}};
+        for (Object[] row : phis) {
+            RowPublication.Phi phi = RowPublication.phi(
+                    mappings((Object[][]) row[0]), deciders, null,
+                    (Boolean) row[1], (Boolean) row[2], 12L);
+            String what = Arrays.deepToString((Object[][]) row[0])
+                    + " took=" + row[1] + " fatal=" + row[2];
+            assertEquals(what, row[3], phi.phi);
+            assertEquals(what, row[4], Long.valueOf(phi.at));
+            assertEquals(what, row[5], phi.openArm == null ? null
+                    : phi.openArm.toString());
+        }
+    }
+
+    /** Decision mappings as the VM publishes them: (site, event, outcome,
+     *  satisfied predicate or null, ordinal). */
+    private static List<JsonObject> mappings(Object[][] decisions) {
+        List<JsonObject> mappings = new ArrayList<>();
+        for (Object[] each : decisions) {
+            JsonObject mapping = decided((String) each[0],
+                    (Boolean) each[2], (JsonObject) each[3]);
+            mapping.addProperty("vmEventId", (Long) each[1]);
+            mapping.addProperty("occurrence", (Integer) each[4]);
+            mappings.add(mapping);
+        }
+        return mappings;
     }
 
     private static JsonObject predicate(String name) {

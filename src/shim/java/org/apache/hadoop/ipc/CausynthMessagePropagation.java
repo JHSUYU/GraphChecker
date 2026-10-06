@@ -84,6 +84,26 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * One IPC response leaving, with the response it carries ({@code
+   * response}, the server's return value). Inert until codec capture
+   * (hdfs-codec-capture) gives it its behaviour; the r6 trees call it.
+   */
+  public static Outbound outboundResponse(String transport,
+      String correlationId, String attemptId, Object localOwner,
+      Object response) {
+    return outbound(transport, correlationId, attemptId,
+        MessageDoors.RESPONSE, localOwner, null);
+  }
+
+  /**
+   * One IPC message parsed on this thread, inside its inbound exchange.
+   * Inert until codec capture (hdfs-codec-capture) gives it its behaviour;
+   * the r6 trees call it.
+   */
+  public static void received(Object message) {
+  }
+
+  /**
    * One IPC request starting on the caller's thread, at its RPC engine's
    * invoke point before the client's call ({@link
    * MessageDoors#requestStarting}): named by the operation it asks for

@@ -134,9 +134,10 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    A spec of more than one line is refused (`MULTI_TARGET_UNSUPPORTED`).
    The scope map is [SYMBOL-SCOPE.md §3](SYMBOL-SCOPE.md); its `TARGET_SITE` rows state the
    target's `guards` with their fatal arms, the helper branch arms deciding a guard on a helper's
-   constant return, nested (`guardDeciders`, `causynth.BooleanReturns`) and the `chain` of guards
-   before them; `StaticScopeMap.Site.pathSites` = guards + chain + the chain's deciders at every
-   depth. Loop-bound
+   constant return, each with its verdict or open, nested (`guardDeciders`,
+   `causynth.BooleanReturns`) and the `chain` of guards before them; `StaticScopeMap.Site.pathSites`
+   = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
+   the one decision each target row's open decider arm names (`TargetRow.OpenArm`). Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
@@ -380,11 +381,14 @@ which COMPOSE pins (§8, *A query's stated answer*).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
-the fatal polarity (`RowRuntime.fatalTerm`); when the target branch decided concretely on a constant
-a helper returned, the predicate of the decision that chose it (`RowPublication#decidedBy`: the latest
-decision in the helper's method before the target, when it is one of its `guardDeciders` arms; a
-concrete one there is decided by its nested helper's in turn; none: the target's constant) in the
-polarity of the arm the target took, the target standing at that decision; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
+the fatal polarity (`RowRuntime.fatalTerm`); when the target branch tests what a helper returned,
+its condition from the decision that chose the return (`RowPublication#decided`: the latest decision
+in the helper's method before the target, when it is one of its `guardDeciders` branches, as
+`ite(that decision as it held, the arm it took, the other arm)`, an arm its verdict or, open and
+taken, the target's own condition; a concrete one there takes its condition from its nested helper's
+deciders in turn; where the other arm is open and never ran, the target's own condition, and the row
+names the arm and the decision whose flip runs it, `openArm`) in the fatal polarity
+(`RowPublication#phi`), the target standing at the earliest decision it rests on; for a target with several guards (`a || b`), the OR of the fatal arms of the tests this
 evaluation decided, from the test it reached the target at, with `observedFatal` = one
 test took its fatal arm. A decision that states no predicate (the VM decided it concretely) is the
 constant of the arm it took: `true` on the fatal arm, `false` on the healthy one, so a concrete
@@ -464,12 +468,16 @@ schedule) and:
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
-   flight) | `FIXED_POINT`, and `concreteAnchors`). What only the seed ran is BLOCKING at the fixed
+   flight) | `FIXED_POINT`, `concreteAnchors` and `openArms`). What only the seed ran is BLOCKING at the fixed
    point alone: nothing proposed, exposed or in flight, and no witness. A concrete anchor (§7.2) is
    information, never a gap: its decision is a constant of the formula (§8, a `false` phi), and each
    round's manifest states it in `concreteAnchors` (`ExploreMain#concreteRow`: its admitted paths,
    how many decided it on the way to the throw, the reads its closure demands and their locations,
-   the earlier reads off the cone), which EMIT publishes in `result.json` `concrete[]`.
+   the earlier reads off the cone), which EMIT publishes in `result.json` `concrete[]`. So are the
+   open decider arms the anchor's reached, admitted runs left phi without (`TargetRow.OpenArm`) and
+   no run took (`ExploreMain#openArms`: per arm the state of its flip on each path that left it --
+   UNSAT, UNANSWERED (a flip that came to no verdict, a replay that never reached the decision),
+   PENDING, NOT_ASKED, NOT_FLIPPABLE -- an arm a path took is not listed), judged at EMIT (§11).
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -481,8 +489,22 @@ asked of their expressions' shared nodes, never of their lowered text (`Corpus#t
 a container read's state rows by the v_C rule, a read no write answers as its mint; each expression
 walked once per session): the anchor's `phiTerm` (a concrete fatal condition's constant names nothing), its own decisions at its flip sites (a factor
 member deciding the same site decides it on its own objects), and the values it contributed (the
-exports a demanded attach paired with, the write a demanded read could observe), closed over the
-reads those name and the writes they could observe. The occurrence and its state-connected factor are
+exports a demanded attach paired with, the write a demanded read could observe), and WHAT COMPOSE
+KEEPS of each (`compose.RestsOn`, the one notion of what a delivery rests on, COMPOSE's path and arm
+closures included): for each path COMPOSE admits at the anchor (`RestsOn#admitted`, COMPOSE's own
+admission: a replay that refused its obligation is no path) -- its closure unseeded, as COMPOSE's --
+and for each session the occurrence contributed in up to its last contribution's seq -- seeded by the
+writes its contributed expressions read (`RestsOn#seedWrites`) -- the decisions of every occurrence
+the row joins from its prefix reach (§8 P3) and the reads of those occurrences that rest on what
+moves (`Independence`: a root, a clock, a value the session received), the anchor's own prefix
+decisions among them, and no root the session minted that nothing kept reads; a handoff those name
+is resolved to its attach row whoever received it, however many joins away (`ClosurePlanner
+#successors`), and its producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL
+producer's closure, decides on the expiry dates of nn0's `updateBlockKeys@1` response, whose handler
+no session ran until it was demanded so); closed over the reads those name and the writes they could
+observe. Each (kind, session, occurrence, cutoff, terms) is asked once per walk. CONFIRM's ORDER
+reads the same closure (`RestsOn#closure`), the anchor's reads cut where its path decided. The occurrence and its state-connected
+factor are
 one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
 and a member joins the closure only through them, as a writer or a producer below, never for touching
 what the occurrence touches (two readers of one location pass each other nothing).
@@ -851,7 +873,9 @@ One pool for the whole exploration. An obligation is two starts: its SOLVE
 solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
 worker directory, on the model's focus row the solve left there), which the head queues first the
 moment the solve returns (`campaign_stream_ended`; between two starts of a dispatch too,
-`campaign_stream_collect_jobs`), not at the next step, on the class tree and
+`campaign_stream_collect_jobs`), not at the next step -- behind only a witness's `CONFIRM` and GROW's
+`RERUN`s queued first (`campaign_stream_queue_replay`; hdfs-11741 AR1: 473 replays of later solves
+started ahead of the witness's confirmation, four hours) -- on the class tree and
 plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
 since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
 `--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
@@ -1063,7 +1087,8 @@ cancelled or reaped, by id):
   (§10): its task is planned in the step (`campaign_confirm_plan`, its verdict
   `witness-attempts/NNNN/confirm.json`, its replay in `<campaign>/witness-confirm/NNNN/`, out of the
   iteration), a verdict known at once (a refusal, the selected session itself the run) decided there;
-  otherwise its replay is a job of the pool (`CONFIRM`, queued first, charged as the seed replay is,
+  otherwise its replay is a job of the pool (`CONFIRM`, queued first and kept first, no solve's REPLAY
+  queued ahead of it, charged as the seed replay is,
   on the class tree and plan of the generation current when it starts), so landing, planning and
   later attempts go on while it runs (hdfs-17967-pathB HG3: a refuted attempt held the head's only
   step for 31 min while the witness obligation waited, unlanded). Its return lands like any job's,
@@ -1161,7 +1186,7 @@ replace a slot (§7.1) give no arms.
 
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
 (beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
-session that ran the occurrence and left the way to the throw at a guard (`Composer#wayGuard`, the
+session that ran the occurrence and left the way to the throw at a guard (`RestsOn#wayGuard`, the
 last decision at a target site's path site), its prefix the decisions before that guard: at a
 SYMBOLIC guard its fatal arm is the guard's other arm, the way to the throw (a witness turns it,
 CONFIRM judges the rest), at a concrete one the constant healthy decision (`false`), the guard named
@@ -1211,11 +1236,13 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   say (`derivedRoots`, `Corpus#derived`) -- has no reading of its own, and none pins anything; a
   session whose manifest predates readings (schema 1) is named, DIAGNOSTIC; a declared root this
   session neither minted nor read refuses the path only when the path's terms name it;
-- anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
+- anchor handoffs, by the one arrival rule (`Composer#arrival`, a path's and an arm's alike):
+  bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
   an attach no session attests the producer of (or with no producer named) has a producer no row
-  states: HELD at the value its row states it received, conjoined with the path and named
-  (`Composer.Concrete` HELD, "producer unstated"); one whose producer is attested and no export of
+  states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
+  the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
+  body holds it, none on the path's own); one whose producer is attested and no export of
   it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
   it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
@@ -1270,10 +1297,15 @@ exactly one, each arm guarded by its replay's value of every root it holds under
 those its expression names, every varied root, every root its replay read and minted none -- the
 valuation its path would carry, never a clock nor a derived root; a guard symbol no row has
 declared yet is declared at its root's sort) and closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
-names, its delivery's and those its closure's conditions and joins read
-(`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
-refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once (one family,
+P3 closure, nested families to depth 16). Every handoff the arm's conjunction names, its delivery's
+and those its closure's conditions and joins read (`ComposedFamilies#handedOn`), goes by the path's
+own arrival rule in the arm's session (`Composer#reachedHandoffs`): an attested arrival is a nested
+family; one no producer this corpus attests is HELD at the value its row received, conjoined inside
+the arm and named in `concrete[]` with the arm; one whose attested producer's exports do not lower is
+FREE, named; only one its session minted no attach for refuses the arm. So an arm is never refused
+for a handoff its closure merely reads (hdfs-11741 PS1-PS3: the SASL sender's arms read, through the
+balancer's key-updater tick, the expiry dates of a refresh whose NameNode handler no session
+instrumented; refused, they took the key id's binding with them). A path closes each message once (one family,
 one name), under what rests on it: the path's own messages under the path selector; a message a
 delivery was itself handed under every arm (message or writer) whose conjunction names its
 handoffs, asserted once the path's arms are all known as `(=> <path> (=> (or <those arms>) F))`
@@ -1285,7 +1317,9 @@ arm selectors are the chain its path took. A level's messages are closed before 
 closes its own; an arm resting on a message the path closed already is one more thing resting on
 it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
 out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
-takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path.
+takes back what it stated (`ComposedFamilies#rollback`), its `concrete[]` rows included
+(`SmtLowering#unboundRollback`): a row is the arm's only while the arm is in the formula, one per
+value and arm. A message no session can send drops the path.
 Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
 into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
@@ -1296,7 +1330,8 @@ are stated as they are made and taken back with a refused path (`ComposedFamilie
 nothing twice.
 
 **State families** (`stateFamilies`), for the joined reads the stage re-pairs (`SessionJoin#repaired`,
-one rule, one entry point, `Composer#repairing`): the anchor's up to its cutoff, and every read the
+one rule, one entry point, `Composer#repairing`): the anchor's up to its cutoff and every read its phi
+names by read event (a target a helper decision decided stands at that decision), and every read the
 selected session's world planted a pairing on (`Corpus.World#pairings`, each with every read its
 occurrence made of the location, as the replay held them), each block of one occurrence's reads of
 one location by the same test -- a named owner, and a read of it that could have seen a writer
@@ -1386,7 +1421,7 @@ selector the path minted holds only under an arm of it that delivers a store its
 through (`nest_family__<N>__<digest>`, `ComposedFamilies#stateFamilies`), so with the observed
 store's arm, the pins' or no family, the run's object is the run's answer. A state rests on what
 made it: under its selector, the arm conjoins the decisions of the closure its write adds to the
-store producer's (`ComposedFamilies#stateClosure`, `Composer#closure` seeded with that write, the
+store producer's (`ComposedFamilies#stateClosure`, `RestsOn#closure` seeded with that write, the
 writers EXPLORE demands), each before its cutoff, and joins the reads they name; a state whose added
 closure the recording does not state is no option (`(not nest__…)`, its refusals named
 DIAGNOSTIC). An answer holds only where the
@@ -1495,7 +1530,7 @@ count is the `SIZE` and a match the `IS_EMPTY` of such a chain on a base no obje
 insertions above an exact base within `VIEW_CHAIN_LIMIT` (`ContainerSmtCodec#indexedBound`), each
 below the size -- and is refused by name otherwise (`ContainerRelation:INDEXED:CONTAINS:unbounded-chain`).
 
-**Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
+**Construction guards** (`RestsOn#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
 before it at the guard sites of the mutations its method made on a container it then published
 (`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, the carriers the
@@ -2021,7 +2056,11 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
 3. `final/result.json`: `claim` = the campaign claim; a `SAT_CANDIDATE` whose confirmation is not
    `confirmed` is `SAT_UNCONFIRMED` when the confirmation `refutes` it, else `RUN_DEFECT` with a
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
-   `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `findingKind`,
+   `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim; `concrete[]`
+   with the last round's `openArms` (kind OPEN_ARM) beside its concrete anchors, and
+   `evidence.unsatClosureComplete` true only where every such arm's flip came to UNSAT; an arm whose
+   flip came to no verdict is one `OPEN_ARM_UNANSWERED` row (`campaign_open_arms`), BLOCKING under any
+   claim but a `SAT_CANDIDATE`; `findingKind`,
    `polarityDecides`, `valuationOrdinal`, `movedRoots`, `movedRootCategories` (each moved root's
    category, `contract.RootCategory`), `configurationOnly`, `blockers`, `reachability`, `finalStatus`, `gapCount`,
    `telemetryCount`, `undeclaredHookCount` (an `UNSAT_CLOSED` claim's count of the tree hooks that

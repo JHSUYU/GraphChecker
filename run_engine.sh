@@ -5214,8 +5214,12 @@ campaign_stream_wait() {
 # answered SAT_MODEL_READY is owed its replay: its REPLAY goes first in the
 # queue at once, never waiting for a step -- still in flight, still within
 # the exploration's share and its host's cores -- on the class tree and plan
-# its solve started on, charged then.  Every other return waits in
-# stream_pending for the next step to land it.
+# its solve started on, charged then -- behind only a witness's confirmation
+# and GROW's re-runs queued first, which end the exploration or hold every
+# solve (hdfs-11741 AR1: 473 replays of solves that returned later started
+# ahead of the witness's confirmation, which ran four hours after the witness
+# landed).  Every other return waits in stream_pending for the next step to
+# land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker
   if [[ "${pid}" == "${stream_ticker}" ]]; then
@@ -5232,13 +5236,25 @@ campaign_stream_ended() {
         '.verdict // ""' "${worker}/obligation_result.jsonl" 2>/dev/null)" \
         == SAT_MODEL_READY ]]; then
       campaign_log "obligation ${id}: solved on ${host}, its replay queued"
-      stream_queue=("REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" \
-        "${stream_queue[@]}")
+      campaign_stream_queue_replay \
+        "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
     else
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
     fi
     unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' 'stream_job_tree[$pid]'
   fi
+}
+
+# Puts one REPLAY first in the queue, behind the CONFIRM and RERUN entries
+# that lead it (campaign_stream_ended).
+campaign_stream_queue_replay() {
+  local at=0
+  while (( at < ${#stream_queue[@]} )) \
+      && [[ "${stream_queue[at]}" == CONFIRM\ * \
+         || "${stream_queue[at]}" == RERUN\ * ]]; do
+    at=$((at + 1))
+  done
+  stream_queue=("${stream_queue[@]:0:at}" "$1" "${stream_queue[@]:at}")
 }
 
 # What returned since the last step began, landed: each obligation's
@@ -5637,6 +5653,34 @@ campaign_exploration_cut() {
             + "CONFIRM decides it"
             else "no UNSAT closes over a corpus missing those arms" end))}' \
     "${iteration_dir}/exploration.json" >>"${iteration_dir}/campaign_gaps.jsonl"
+}
+
+# The open decider arms the declared anchor's runs left phi without and no run
+# took (ExploreMain#openArms, the last round's manifest), judged once here: an
+# arm whose flip came to no verdict -- a replay that never reached the
+# decision -- leaves the UNSAT that closes over it none, one ADMISSION_GAP row
+# each, BLOCKING under any claim but a SAT_CANDIDATE (whose witness stands as
+# CONFIRM decides it).  Every arm is named in result.json concrete[] (OPEN_ARM)
+# and only an UNSAT one leaves unsatClosureComplete true.
+campaign_open_arms() {
+  local iteration_dir=$1 claim last="" round
+  for round in "${iteration_dir}"/obligations-*/explore_manifest.json; do
+    [[ -s "${round}" ]] && last=${round}
+  done
+  [[ -n "${last}" ]] || return 0
+  claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
+  jq -c --arg claim "${claim}" --arg epoch "$(basename "${iteration_dir}")" '
+    (.openArms // [])[] | select(.state == "UNANSWERED")
+    | {schemaVersion: 1, sessionId: "", stage: "EXPLORE",
+       kind: "ADMISSION_GAP",
+       cls: (if $claim == "SAT_CANDIDATE" then "DIAGNOSTIC" else "BLOCKING"
+             end),
+       subject: "OPEN_ARM_UNANSWERED", topologyEpoch: $epoch,
+       detail: ("the open arm \(.siteId)=\(.outcome) of \(.anchor) was left"
+         + " out of phi by the runs that reached it, and its flip (asked at"
+         + " \(.asked | join(", "))) came to no verdict on \(.paths.UNANSWERED)"
+         + " path(s): no run took the arm, so no UNSAT closes over it")}' \
+    "${last}" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
 # Gap rows this iteration's stages wrote outside a session live in one file,
@@ -6524,6 +6568,7 @@ campaign_emit() {
   # a row that states no class is blocking: a gap added to some stage
   # withholds the claim until its producer states why it cannot break a chain.
   campaign_exploration_cut "${iteration_dir}"
+  campaign_open_arms "${iteration_dir}"
   campaign_write_gaps \
     "${composition_manifest}" \
     "${iteration_dir}" \
@@ -6598,7 +6643,12 @@ campaign_emit() {
     $gapDocuments[0] as $gaps |
     ($r.campaignClaim) as $decided |
     ($r.reachability // "UNKNOWN") as $reachability |
-    ($r.unsatClosureComplete // false) as $unsatClosureComplete |
+    # An open decider arm no run took closes only by its UNSAT flip
+    # (campaign_open_arms).
+    (($r.unsatClosureComplete // false)
+     and ([($exploreDocuments[0].openArms // [])[]
+           | select(.state != "UNSAT")] | length == 0))
+      as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
@@ -6727,10 +6777,13 @@ campaign_emit() {
                  subject: "", detail: $decided.claimReason}]
           else [] end)),
      # What the decision rested on concretely: each anchor every admitted
-     # path decided on no symbol (EXPLORE), and each value COMPOSE stated
-     # as a constant or left free, with what it rests on (Composer.Concrete).
+     # path decided on no symbol (EXPLORE), each open decider arm no run
+     # took (EXPLORE, with its flip), and each value COMPOSE stated as a
+     # constant or left free, with what it rests on (Composer.Concrete).
      concrete: ([($exploreDocuments[0].concreteAnchors // [])[]
-                 | {kind: "ANCHOR"} + .] + ($c.concrete // [])),
+                 | {kind: "ANCHOR"} + .]
+                + [($exploreDocuments[0].openArms // [])[]
+                   | {kind: "OPEN_ARM"} + .] + ($c.concrete // [])),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it

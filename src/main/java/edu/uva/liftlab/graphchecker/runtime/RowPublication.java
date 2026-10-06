@@ -8,9 +8,11 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
@@ -615,22 +617,11 @@ final class RowPublication {
         }
         long at = reach == null ? 0L
                 : optionalLongInteger(reach, "vmEventId", 0L);
-        // A concrete target testing the constant a helper returned
-        // (causynth.BooleanReturns): the helper decision that chose the
-        // return is the predicate, at the arm the target took, and stands
-        // where that decision stands, so the prefix is cut before it and not
-        // after.
-        if (condition == null && reached && !task.targetDeciders.isEmpty()) {
-            JsonObject decided = decidedBy(active.branchMappings,
-                    task.targetDeciders, at);
-            if (decided != null) {
-                condition = object(decided, "witness")
-                        .getAsJsonObject("sourceSatisfiedPredicate");
-                at = optionalLongInteger(decided, "vmEventId", at);
-            }
-        }
-        String phi = reached
-                ? RowRuntime.fatalTerm(condition, observed == fatalArm) : "";
+        Phi stated = reached ? phi(active.branchMappings,
+                task.targetDeciders, condition, observed, fatalArm, at)
+                : new Phi("", at, null);
+        String phi = stated.phi;
+        at = stated.at;
         boolean observedFatal = reached && observed == fatalArm;
         if (reached && task.targetGuards.size() > 1) {
             List<String> arms = new ArrayList<>();
@@ -650,25 +641,92 @@ final class RowPublication {
                             + " before it cannot be cut");
         }
         RowRuntime.target(occurrence, at, anchor, phi, observedFatal,
-                reached);
+                reached, stated.openArm);
+    }
+
+    /** A reached target's phi, the event it stands at, and the open decider
+     *  arm it leaves out, if any. */
+    static final class Phi {
+        final String phi;
+        final long at;
+        final TargetRow.OpenArm openArm;
+
+        Phi(String phi, long at, TargetRow.OpenArm openArm) {
+            this.phi = phi;
+            this.at = at;
+            this.openArm = openArm;
+        }
     }
 
     /**
-     * The decision that chose the constant a target's helper returned
-     * (causynth.BooleanReturns): the latest decision before {@code before}
-     * in the helper's method -- the deciders' -- when it is one of their
-     * arms.  Symbolic, it is the one; concrete, it tested a nested helper's
-     * return, and the decision that chose that is, in turn; else null, and
-     * the target stays the constant of its arm (hdfs-adhoc-40: the target
-     * tests {@code isSufficientlyReplicated}, whose concrete test of {@code
-     * hasMinStorage}'s return was chosen by {@code liveNum >=
-     * getMinStorageNum(block)}).  This call's decisions, not an earlier
-     * call's: the latest in the helper's method is the one its return ran
-     * from, when it is an arm that runs straight to a return.
+     * A reached target's phi in the fatal polarity: the branch's own
+     * condition as the run stated it, the arm it took ({@code observed})
+     * against the fatal one; or, where it tests what a helper returned
+     * (causynth.BooleanReturns), the condition of the helper decision that
+     * chose the return ({@link #decided}), standing where the earliest
+     * decision that condition rests on stands, so the prefix is cut before
+     * it.  An open arm the run did not take leaves phi the run's own and the
+     * decision on the path, and is named on the row.
      */
-    static JsonObject decidedBy(List<JsonObject> mappings,
-                                List<StaticScopeMap.Guard> deciders,
-                                long before) {
+    static Phi phi(List<JsonObject> mappings,
+                   List<StaticScopeMap.Guard> deciders, JsonObject condition,
+                   boolean observed, boolean fatalArm, long at) {
+        String own = RowRuntime.fatalTerm(condition, observed == fatalArm);
+        if (deciders.isEmpty()) return new Phi(own, at, null);
+        String ref = Text.safe(RowRuntime.expressionRef(condition));
+        Decided decided = decided(mappings, deciders, at, ref.isEmpty()
+                ? String.valueOf(observed) : Arms.conjunct(ref, observed),
+                observed);
+        if (decided == null) return new Phi(own, at, null);
+        if (decided.open != null) return new Phi(own, at, decided.open);
+        return new Phi(fatalArm ? decided.condition
+                : not(decided.condition), decided.at, null);
+    }
+
+    /** A guard's condition as {@link #decided} states it, the event of the
+     *  earliest decision it rests on and that decision (what a flip of it
+     *  asks); or, instead, the open arm it could not state. */
+    static final class Decided {
+        final String condition;
+        final long at;
+        final String askedSiteId;
+        final int askedOrdinal;
+        final TargetRow.OpenArm open;
+
+        private Decided(String condition, long at, String askedSiteId,
+                        int askedOrdinal, TargetRow.OpenArm open) {
+            this.condition = condition;
+            this.at = at;
+            this.askedSiteId = askedSiteId;
+            this.askedOrdinal = askedOrdinal;
+            this.open = open;
+        }
+    }
+
+    /**
+     * The condition of a guard testing what a helper returned
+     * (causynth.BooleanReturns) -- a term over the VM's expressions, true
+     * where the guard's jump is taken -- from the decision that chose the
+     * return: the latest one before {@code before} in the helper's method,
+     * the deciders', when it is one of their branches.  It is {@code
+     * ite(the decision as it held, the arm it took, the other arm)}, an
+     * arm being its verdict, or, open and taken, {@code own}, the guard's
+     * condition as the run stated it.  The decision is its own predicate;
+     * concrete, it tested a nested helper's return, and its condition is the
+     * one that helper's deciders give, in turn.  Where the other arm is open
+     * the run states nothing of what it returns: the result names that arm
+     * ({@link Decided#open}), with the decision whose flip runs it -- this
+     * one where it states a predicate, else the nested one its condition
+     * rests on -- and the guard stays its own condition.  Null -- the guard
+     * is its own condition -- where the latest decision is no decider's, a
+     * constant arm it took is not what the guard observed ({@code observed}),
+     * or a concrete one has nothing below it.  This call's decisions, not an
+     * earlier call's: the latest in the helper's method is the one its return
+     * ran from.
+     */
+    static Decided decided(List<JsonObject> mappings,
+                           List<StaticScopeMap.Guard> deciders, long before,
+                           String own, boolean observed) {
         String method = SiteId.methodOf(deciders.get(0).siteId());
         JsonObject latest = null;
         long at = 0L;
@@ -682,20 +740,88 @@ final class RowPublication {
             at = seq;
         }
         if (latest == null) return null;
+        String site = optionalString(latest, "siteId");
+        int ordinal = optionalInteger(latest, "occurrence", -1);
+        boolean outcome = optionalBool(latest, "outcome", false);
+        StaticScopeMap.Guard took = arm(deciders, site, outcome);
+        StaticScopeMap.Guard other = arm(deciders, site, !outcome);
+        if (took == null || other == null || ordinal < 1
+                || took.verdict() != null
+                && took.verdict().booleanValue() != observed) {
+            return null;
+        }
+        String held = Text.safe(RowRuntime.expressionRef(
+                object(latest, "witness").get("sourceSatisfiedPredicate")));
+        Decided nested = !held.isEmpty() || took.deciders().isEmpty() ? null
+                : decided(mappings, took.deciders(), at,
+                String.valueOf(outcome), outcome);
+        // An open arm below leaves this decision's own condition unstated.
+        if (nested != null && nested.open != null) return nested;
+        String askedSite = !held.isEmpty() ? site
+                : nested == null ? "" : nested.askedSiteId;
+        int askedOrdinal = !held.isEmpty() ? ordinal
+                : nested == null ? 0 : nested.askedOrdinal;
+        if (other.verdict() == null) {
+            return new Decided("", at, askedSite, askedOrdinal,
+                    TargetRow.OpenArm.of(site, ordinal, !outcome, askedSite,
+                            askedOrdinal));
+        }
+        if (held.isEmpty() && nested == null) return null;
+        String predicate = !held.isEmpty() ? held
+                : outcome ? nested.condition : not(nested.condition);
+        String taken = took.verdict() == null ? own
+                : String.valueOf(observed);
+        return new Decided(ite(predicate, taken,
+                String.valueOf(other.verdict())),
+                !held.isEmpty() ? at : nested.at, askedSite, askedOrdinal,
+                null);
+    }
+
+    /** The decider arm of {@code site} at {@code outcome}, or null. */
+    private static StaticScopeMap.Guard arm(
+            List<StaticScopeMap.Guard> deciders, String site,
+            boolean outcome) {
         for (StaticScopeMap.Guard decider : deciders) {
-            Boolean arm = decider.outcome();
-            if (!decider.siteId().equals(optionalString(latest, "siteId"))
-                    || arm == null || arm.booleanValue()
-                    != optionalBool(latest, "outcome", !arm.booleanValue())) {
-                continue;
+            if (decider.siteId().equals(site) && decider.outcome() != null
+                    && decider.outcome().booleanValue() == outcome) {
+                return decider;
             }
-            JsonElement satisfied = object(latest, "witness")
-                    .get("sourceSatisfiedPredicate");
-            if (satisfied != null && satisfied.isJsonObject()) return latest;
-            return decider.deciders().isEmpty() ? null
-                    : decidedBy(mappings, decider.deciders(), at);
         }
         return null;
+    }
+
+    /** {@code (ite c a b)}, a constant arm pair spelled as {@code c} or its
+     *  negation. */
+    static String ite(String condition, String then, String otherwise) {
+        if (then.equals(otherwise)) return then;
+        if ("true".equals(then) && "false".equals(otherwise)) {
+            return condition;
+        }
+        if ("false".equals(then) && "true".equals(otherwise)) {
+            return not(condition);
+        }
+        return "(ite " + condition + " " + then + " " + otherwise + ")";
+    }
+
+    /** A term's negation, a negation's operand itself. */
+    static String not(String term) {
+        if ("true".equals(term)) return "false";
+        if ("false".equals(term)) return "true";
+        if (term.startsWith("(not ") && closes(term)) {
+            return term.substring(5, term.length() - 1);
+        }
+        return Arms.conjunct(term, false);
+    }
+
+    /** Whether a term's first parenthesis closes at its last character. */
+    private static boolean closes(String term) {
+        int depth = 0;
+        for (int index = 0; index < term.length(); index++) {
+            char c = term.charAt(index);
+            if (c == '(') depth++;
+            if (c == ')' && --depth == 0) return index == term.length() - 1;
+        }
+        return false;
     }
 
     /**

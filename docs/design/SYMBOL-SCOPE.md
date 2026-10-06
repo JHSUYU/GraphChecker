@@ -283,16 +283,38 @@ branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
-those callers (`Guards#callersOf`). A guard `v ==/!= c` (`c` an int or null) on the result of one
-call of an application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
-`guardDeciders`): every arm of a helper branch that runs straight (constant stores, jumps, at most
-16 units) to a return of a constant of `c`'s kind -- a branch whose two arms return constants the
-guard takes alike decides nothing, a helper with a switch has none -- each with the deciders of
-the nested helper return its branch tests, three helpers deep (hdfs-adhoc-40's
-`!isSufficientlyReplicated(b)`: the helper's first branch tests `hasMinStorage`'s return and
-returns true on one arm, its second compares the live count). At run time the decision that chose
-the return is the latest one in the helper's method before the guard, when it is a decider arm, and
-a concrete one is decided by its nested helper's in turn (`runtime.RowPublication#decidedBy`).
+those callers (`Guards#callersOf`). A guard `v ==/!= c` (`c` an int, null or an enum constant --
+a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
+application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
+`guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,
+jumps, at most 16 units) to a return of a constant of `c`'s kind, each with its `verdict` -- whether
+the guard's condition holds when it runs; none for an OPEN arm, one that runs on to a value no
+constant states -- and the deciders of the nested helper return its branch tests, three helpers
+deep; a branch whose two arms are open, or return constants the guard takes alike, decides
+nothing, a helper with a switch has none. A helper with no branch that returns `h2().equals(c)`
+(an enum's `equals` is identity) is the guard `h2() == c`, its verdicts read through the boolean it
+returns: hdfs-adhoc-15/17's `isComplete()` is `getBlockUCState().equals(COMPLETE)`, decided by
+`uc == null ? COMPLETE : uc.getBlockUCState()`, whose `uc != null` arm is open; hdfs-adhoc-40's
+`!isSufficientlyReplicated(b)`: the helper's first branch tests `hasMinStorage`'s return and returns
+true on one arm, open on the other, where its second compares the live count. At run time
+(`runtime.RowPublication#decided`) the guard's condition is `ite(the decision that chose the return,
+the arm it took, the other arm)` -- that decision the latest in the helper's method before the
+guard, an arm its verdict or, open and taken, the guard's own condition; a concrete decision's
+condition is its nested helper deciders', in turn -- and the target stands at the earliest decision
+it rests on; COMPOSE keeps every read the guard's condition names re-pairable, wherever it stands
+after that decision (`Composer#repairing`, by read event). In `h2().equals(c)` an arm returning null
+throws, so it is open. Where the other arm is open and never ran, the run states nothing of it: the
+guard is its own condition, the decision stays on the path, and the target row names the arm
+(`TargetRow.OpenArm`) with the one decision whose flip runs it -- that decision where it states a
+predicate, else the nested one its condition rests on; the reached anchor asks that decision alone,
+never every call of the helper (`explore.ClosurePlanner#plan`, `FlipQuery#asks`). At the fixed point
+each open arm no admitted run took is named with what its flips came to (`ExploreMain#openArms`,
+`result.json` `concrete[]` OPEN_ARM): an UNSAT flip closes it, any other leaves `unsatClosureComplete`
+false, and one whose flip came to no verdict (a replay that never reached the decision) leaves no
+verdict (`OPEN_ARM_UNANSWERED`, BLOCKING but under a SAT, `run_engine.sh` `campaign_open_arms`). The
+attribution reads the latest decision in the helper's method before the guard, by event order: a
+decision of another call of the same method in between (a recursion, a callback) would be taken for
+the one that chose the return.
 
 The slice (§2.2) and the map use two relations: the slice widens by may-reach, the map's guards
 are post-dominance.
@@ -962,7 +984,7 @@ kind (`#stores`): a field store, or an atomic's write of its value, a field -- a
 class's location, an instance one an object's; any other mutator call
 the state of the container its carrier holds; a read its field or, of a container field, that
 container's state; and no site of the map an array element, whose write joins no carrier. COMPOSE joins a store to its carriers
-by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
+by the same rule (`RestsOn#constructionGuards`). A read of a reference also rests on the container
 each eligible store of it delivered: the closure demands the writers of every state of it the read
 could have seen through that store (`Corpus#referentStates`), the states COMPOSE answers a query
 through the read from.

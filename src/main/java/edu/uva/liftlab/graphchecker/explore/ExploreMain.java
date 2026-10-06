@@ -6,6 +6,9 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -262,10 +265,134 @@ public final class ExploreMain {
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
                 witnesses, wave(iteration, corpus), branches, concrete);
+        manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
+                open));
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;
+    }
+
+    /**
+     * The open decider arms the declared anchor's reached, admitted runs left
+     * phi without (TargetRow.OpenArm, causynth.BooleanReturns) and no run
+     * took, each with what its flip came to on the paths that left it: a
+     * path's flip TAKEN where a replay ran it ({@code ADMITTED}) or another
+     * recorded path took it -- phi states the arm there, and an arm one path
+     * took is not listed -- {@code UNSAT} where no world of the corpus takes
+     * it, {@code UNANSWERED} where its flip came to anything else (a replay
+     * that never reached the decision, NOT_ADMITTED), {@code PENDING} while
+     * one is in flight, {@code NOT_ASKED} where no round cut it from that
+     * path, {@code NOT_FLIPPABLE} where no decision under it states a
+     * predicate.  The arm's state is the first of UNANSWERED, NOT_ASKED,
+     * PENDING, NOT_FLIPPABLE, UNSAT any of its paths is in.  EMIT names each
+     * (result.json concrete[] OPEN_ARM): an UNSAT closes over none but an
+     * UNSAT one, and an UNANSWERED one leaves no verdict.
+     */
+    static JsonArray openArms(Corpus corpus, List<OccurrenceAddress> roots,
+                              List<Task> tasks, Frontier frontier,
+                              Frontier.Round open) {
+        Set<String> proposed = new LinkedHashSet<String>();
+        for (Obligation obligation : open.obligations) {
+            proposed.add(obligation.obligationId());
+        }
+        String[] order = {"UNANSWERED", "NOT_ASKED", "PENDING",
+                "NOT_FLIPPABLE", "UNSAT"};
+        JsonArray arms = new JsonArray();
+        for (OccurrenceAddress root : roots) {
+            Task task = null;
+            for (Task candidate : tasks) {
+                if (candidate.focused().equals(root)) task = candidate;
+            }
+            Map<String, Map<String, Integer>> states =
+                    new LinkedHashMap<String, Map<String, Integer>>();
+            Map<String, Set<String>> asked =
+                    new LinkedHashMap<String, Set<String>>();
+            Set<String> taken = new LinkedHashSet<String>();
+            for (TargetRow row : corpus.targetsOn(root)) {
+                TargetRow.OpenArm arm = row.openArm();
+                SessionReader session = corpus.session(row.sessionId());
+                if (arm == null || !row.reachedAnchor() || session == null
+                        || !session.admitted()) {
+                    continue;
+                }
+                String key = arm.siteId() + "=" + arm.outcome();
+                String state = openArmState(corpus, task, root, row, arm,
+                        frontier, proposed);
+                if ("TAKEN".equals(state)) taken.add(key);
+                states.computeIfAbsent(key,
+                        k -> new LinkedHashMap<String, Integer>())
+                        .merge(state, 1, Integer::sum);
+                if (!arm.askedSiteId().isEmpty()) {
+                    asked.computeIfAbsent(key,
+                            k -> new LinkedHashSet<String>())
+                            .add(FlipQuery.asked(arm.askedSiteId(),
+                                    arm.askedOrdinal()));
+                }
+            }
+            for (Map.Entry<String, Map<String, Integer>> arm
+                    : states.entrySet()) {
+                if (taken.contains(arm.getKey())) continue;
+                String state = "";
+                for (String candidate : order) {
+                    if (arm.getValue().containsKey(candidate)) {
+                        state = candidate;
+                        break;
+                    }
+                }
+                int split = arm.getKey().lastIndexOf('=');
+                JsonObject row = new JsonObject();
+                row.addProperty("anchor", root.render());
+                row.addProperty("siteId", arm.getKey().substring(0, split));
+                row.addProperty("outcome", Boolean.parseBoolean(
+                        arm.getKey().substring(split + 1)));
+                row.addProperty("state", state);
+                JsonObject paths = new JsonObject();
+                for (Map.Entry<String, Integer> count
+                        : arm.getValue().entrySet()) {
+                    paths.addProperty(count.getKey(), count.getValue());
+                }
+                row.add("paths", paths);
+                row.add("asked", ExploreCodec.list(new ArrayList<String>(
+                        asked.getOrDefault(arm.getKey(),
+                                new LinkedHashSet<String>()))));
+                arms.add(row);
+            }
+        }
+        return arms;
+    }
+
+    /** What one path's flip of its open arm came to ({@link #openArms}). */
+    private static String openArmState(Corpus corpus, Task task,
+                                       OccurrenceAddress root, TargetRow row,
+                                       TargetRow.OpenArm arm,
+                                       Frontier frontier,
+                                       Set<String> proposed) {
+        if (arm.askedSiteId().isEmpty()) return "NOT_FLIPPABLE";
+        if (task == null) return "NOT_ASKED";
+        for (Corpus.RecordedPath path : corpus.pathsOf(root)) {
+            if (!path.sessionId.equals(row.sessionId())) continue;
+            for (int index = 0; index < path.decisions.size(); index++) {
+                DecisionRow decision = path.decisions.get(index);
+                if (!decision.siteId().equals(arm.askedSiteId())
+                        || decision.ordinal() != arm.askedOrdinal()) {
+                    continue;
+                }
+                String id = ObligationFactory.obligationId(task.taskId(),
+                        decision.siteId(), decision.ordinal(),
+                        !decision.outcome(), ObligationFactory.dependence(
+                                corpus, task, path, index));
+                Verdict verdict = frontier.verdict(id);
+                if (verdict == Verdict.ADMITTED || frontier.recorded(id)) {
+                    return "TAKEN";
+                }
+                if (verdict == Verdict.UNSAT) return "UNSAT";
+                if (verdict != null) return "UNANSWERED";
+                return frontier.inFlight(id) || proposed.contains(id)
+                        ? "PENDING" : "NOT_ASKED";
+            }
+        }
+        return "NOT_ASKED";
     }
 
     /**

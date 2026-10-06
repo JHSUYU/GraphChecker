@@ -1615,6 +1615,76 @@ public class ExploreTest {
         assertTrue("the obligation announces the control it invented", named);
     }
 
+    // ---- an open decider arm: asked at one decision, named until closed --
+
+    /**
+     * A reached anchor whose phi left out an open decider arm
+     * (TargetRow.OpenArm, causynth.BooleanReturns) asks the ONE decision
+     * the row names -- the call of the helper that fed the guard, never
+     * every call of its method -- and the round's manifest names the arm
+     * until a flip closes it: PENDING while asked, UNANSWERED once its only
+     * replay never reached the decision, UNSAT once no world takes it; an
+     * arm with no decision to ask is NOT_FLIPPABLE.
+     */
+    @Test
+    public void anOpenDeciderArmIsAskedAtTheCallThatFedTheGuard()
+            throws Exception {
+        String helper = "State#u2";
+        Object[][] rows = {
+            // the arm's asked decision, the answer, the arm's state
+            {helper, null, "PENDING"},
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED"},
+            {helper, Verdict.UNSAT, "UNSAT"},
+            {"", null, "NOT_FLIPPABLE"}};
+        for (Object[] row : rows) {
+            String asked = (String) row[0];
+            Path iteration = tree.newFolder("open-arm-" + row[2]).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                    "7", null, null, true);
+            // An earlier call of the helper, and the one that fed the guard.
+            seed.decision(TARGET, helper, 1, true, "(> M_SERIAL 3)");
+            seed.decision(TARGET, helper, 2, false, "(> M_SERIAL 10)");
+            seed.targets.add(TargetRow.of("s-seed", 99L, TARGET, "Throw#u30",
+                    "false", false, true, TargetRow.OpenArm.of(helper, 2,
+                            true, asked, 2)));
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u9"));
+            Path out = tree.newFolder("open-arm-out-" + row[2]).toPath();
+            Path results = out.resolve("results.jsonl");
+            Files.createDirectories(out);
+            Files.write(results, new byte[0]);
+            JsonObject first = plan(iteration, TARGET_SELECTOR, null, results,
+                    out.resolve("obligations-0000"), 0);
+            List<Obligation> proposed = obligations(
+                    out.resolve("obligations-0000"));
+            if (asked.isEmpty()) {
+                assertTrue("nothing to ask: " + proposed, proposed.isEmpty());
+            } else {
+                assertEquals("one flip, of the call that fed the guard: "
+                        + proposed, 1, proposed.size());
+                assertEquals(2, proposed.get(0).ordinal());
+            }
+            JsonObject named = first;
+            if (row[1] != null) {
+                record(results, ObligationResult.of(
+                        proposed.get(0).obligationId(), (Verdict) row[1],
+                        "s-flip", "answered"));
+                named = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve("obligations-0001"), 1);
+            }
+            JsonArray arms = named.getAsJsonArray("openArms");
+            assertEquals("the arm is named: " + arms, 1, arms.size());
+            JsonObject arm = arms.get(0).getAsJsonObject();
+            assertEquals(helper, arm.get("siteId").getAsString());
+            assertTrue(arm.get("outcome").getAsBoolean());
+            assertEquals("its state: " + arm, row[2],
+                    arm.get("state").getAsString());
+        }
+    }
+
     // ---- (4) a root with no domain is pinned, here as in the composer --
 
     @Test
@@ -4153,6 +4223,184 @@ public class ExploreTest {
                 ObligationFactory.Bounds.defaults());
     }
 
+    /**
+     * WHAT COMPOSE KEEPS, EXPLORE DEMANDS (compose.RestsOn): a handoff a kept
+     * decision of an occurrence some join reaches names is demanded, and its
+     * producer planned, whoever received it (hdfs-11741: the balancer's
+     * KeyManager decides on the expiry dates of nn0's updateBlockKeys@1
+     * response, whose handler no session ran).  Per row: whether nn0's
+     * handler, the producer of the value {@code keys} decided on, is planned.
+     */
+    @Test
+    public void whatComposeKeepsIsWhatExploreDemands() throws Exception {
+        Object[][] rows = {
+                // The anchor reads what keys wrote after deciding on v_H.
+                {"kept", true},
+                // keys decided on nothing that moves.
+                {"unmoved", false},
+                // keys decided on v_H only after its write: no prefix of it.
+                {"after", false},
+                // The anchor's fatal reads nothing keys wrote, but its own
+                // prefix does: only the path's closure (ofPath) reaches keys.
+                {"anchor-only", true},
+                // The anchor's prefix reads w1's write, w1 read keys's
+                // before it: two joins from the anchor, and keys in no
+                // demand's group (its fatal reads neither).
+                {"two-hops", true},
+                // The anchor's attach; its producer p read keys's write: only
+                // the delivery's closure (ofDelivery) reaches keys.
+                {"delivery", true},
+                // p's export reads a container keys put: the delivery's
+                // closure is seeded by that version's write (seedWrites).
+                {"container", true},
+                // The anchor-only chain in a replay that refused its
+                // obligation: no admitted path, so nothing is demanded.
+                {"refused", false},
+        };
+        for (Object[] row : rows) {
+            String kind = (String) row[0];
+            Path iteration = tree.newFolder("rests-on-" + kind).toPath();
+            ClosurePlanner.Plan plan = closure(restsOnCorpus(iteration, kind),
+                    REST_ANCHOR, StaticScopeMap.empty());
+            boolean planned = false;
+            for (Task task : plan.tasks) {
+                planned |= task.focused().id().equals(REST_HANDLER.id());
+            }
+            assertEquals(kind + ": " + plan.tasks + " " + plan.gaps,
+                    row[1], planned);
+        }
+    }
+
+    private static final OccurrenceAddress REST_ANCHOR = occurrence(
+            "hdfs-case/bal", "REGION.move", CausalContext.of(Role.CLIENT, "",
+                    1), "Dispatcher#move#3");
+    private static final OccurrenceAddress REST_KEYS = occurrence(
+            "hdfs-case/bal", "REGION.keys", CausalContext.of(Role.CLIENT, "",
+                    2), "KeyManager#update#5");
+    private static final OccurrenceAddress REST_HANDLER = occurrence(
+            "hdfs-case/nn0", "REGION.handler", CausalContext.of(Role.CLIENT,
+                    "", 3), "NameNodeRpc#getBlockKeys#9");
+    private static final OccurrenceAddress REST_W1 = occurrence(
+            "hdfs-case/bal", "REGION.w1", CausalContext.of(Role.CLIENT, "",
+                    4), "Dispatcher#plan#7");
+    private static final OccurrenceAddress REST_P = occurrence(
+            "hdfs-case/bal", "REGION.p", CausalContext.of(Role.CLIENT, "",
+                    5), "Dispatcher#source#8");
+
+    /** One row's corpus ({@link #whatComposeKeepsIsWhatExploreDemands}). */
+    private static Corpus restsOnCorpus(Path iteration, String kind)
+            throws IOException {
+        LocationId stored = LocationId.of(LocationKind.INSTANCE, "7", "24");
+        LocationId planned = LocationId.of(LocationKind.INSTANCE, "8", "25");
+        LocationId map = LocationId.of(LocationKind.MAP, "9", "allKeys");
+        boolean refused = "refused".equals(kind);
+        Session seed = new Session(iteration, "s-seed");
+        Session chain = refused ? new Session(iteration, "s-flip") : seed;
+        for (Session session : refused ? new Session[]{seed, chain}
+                : new Session[]{seed}) {
+            session.activation(REST_ANCHOR, session == chain && refused);
+            session.activation(REST_KEYS, false);
+            session.activation(REST_HANDLER, false);
+            session.activation(REST_W1, false);
+            session.activation(REST_P, false);
+        }
+        Endpoint sent = at(REST_HANDLER, "XCH.resp.expiry-date",
+                "PBHelper#convert#9");
+        chain.symbolic("e.expiry", "M_EXPIRY_OUT");
+        chain.export(sent, "e.expiry", 1L, "600");
+        chain.attach(at(REST_KEYS, "XCH.resp.expiry-date",
+                "PBHelper#convert#9"), "M_HOFF_EXPIRY", "600", sent);
+        chain.symbolic("EXPR.0000000000000001", "unmoved".equals(kind)
+                ? "M_UNMOVED" : "M_HOFF_EXPIRY");
+        Endpoint keysWrite = at(REST_KEYS, Endpoint.stateSite("KeyManager",
+                "update", 12, true), "KeyManager#update#12");
+        if (!"after".equals(kind)) {
+            chain.decision(REST_KEYS, "KeyManager#u4", 1, true,
+                    "EXPR.0000000000000001");
+        }
+        // keys writes a constant: what moves is only its decision.
+        chain.constant("e.key", "7");
+        if ("container".equals(kind)) {
+            chain.symbolic("e.map", "M_MAPV");
+            chain.write(keysWrite, map, 5L, "e.map", "L");
+        } else {
+            chain.write(keysWrite, "two-hops".equals(kind) ? planned
+                    : stored, 5L, "e.key");
+        }
+        if ("after".equals(kind)) {
+            chain.decision(REST_KEYS, "KeyManager#u4", 1, true,
+                    "EXPR.0000000000000001");
+        }
+        chain.symbolic("EXPR.0000000000000002", "M_READ_KEY");
+        chain.symbolic("EXPR.0000000000000003", "M_OTHER");
+        String phi = "(not EXPR.0000000000000002)";
+        switch (kind) {
+            case "two-hops":
+                // w1 reads keys's write, then writes what the anchor reads.
+                chain.read(at(REST_W1, Endpoint.stateSite("Dispatcher",
+                        "plan", 2, false), "Dispatcher#plan#2"), planned, 5L,
+                        "M_READ_PLANNED", "7");
+                chain.constant("e.c", "7");
+                chain.write(at(REST_W1, Endpoint.stateSite("Dispatcher",
+                        "plan", 6, true), "Dispatcher#plan#6"), stored, 6L,
+                        "e.c");
+                chain.read(at(REST_ANCHOR, Endpoint.stateSite("Dispatcher",
+                        "move", 3, false), "Dispatcher#move#3"), stored, 6L,
+                        "M_READ_KEY", "7");
+                // Its fatal reads neither: keys is in no demand's group.
+                phi = "(not EXPR.0000000000000003)";
+                break;
+            case "delivery":
+            case "container": {
+                // The anchor's fatal reads the value p delivered.
+                Endpoint delivered = at(REST_P, "XCH.source.value",
+                        "Dispatcher#source#8");
+                if ("delivery".equals(kind)) {
+                    chain.read(at(REST_P, Endpoint.stateSite("Dispatcher",
+                            "source", 4, false), "Dispatcher#source#4"),
+                            stored, 5L, "M_READ_SOURCE", "7");
+                    chain.symbolic("e.p", "M_P_OUT");
+                } else {
+                    chain.expression("e.p", guardedRead(map, 5L, "I",
+                            relation("ASSOCIATIVE", "READ", "I",
+                                    leaf("M_L'java/util/HashMap'_1",
+                                            "java/util/HashMap"),
+                                    literal(1)), 5L));
+                }
+                chain.export(delivered, "e.p", 2L, "7");
+                chain.attach(at(REST_ANCHOR, "XCH.source.value",
+                        "Dispatcher#source#8"), "M_HOFF_SOURCE", "7",
+                        delivered);
+                chain.symbolic("EXPR.0000000000000004", "M_HOFF_SOURCE");
+                phi = "(not EXPR.0000000000000004)";
+                break;
+            }
+            case "anchor-only":
+            case "refused":
+                chain.read(at(REST_ANCHOR, Endpoint.stateSite("Dispatcher",
+                        "move", 3, false), "Dispatcher#move#3"), stored, 5L,
+                        "M_READ_KEY", "7");
+                phi = "(not EXPR.0000000000000003)";
+                break;
+            default:
+                chain.read(at(REST_ANCHOR, Endpoint.stateSite("Dispatcher",
+                        "move", 3, false), "Dispatcher#move#3"), stored, 5L,
+                        "M_READ_KEY", "7");
+        }
+        chain.target(REST_ANCHOR, "Dispatcher#move#3", phi);
+        if (refused) {
+            seed.symbolic("EXPR.0000000000000003", "M_OTHER");
+            seed.target(REST_ANCHOR, "Dispatcher#move#3",
+                    "(not EXPR.0000000000000003)");
+            chain.answered(ObligationResult.of("OBL.refused",
+                    Verdict.NOT_ADMITTED, "s-flip",
+                    "the focused occurrence's own prefix did not match"));
+            seed.flush();
+        }
+        chain.flush();
+        return Corpus.read(iteration, null);
+    }
+
     /** One anchor's closure, every admitted session a parent of growth but
      *  those whose branch stopped ({@link Branches}). */
     private static ClosurePlanner.Plan closure(Corpus corpus,
@@ -4164,12 +4412,6 @@ public class ExploreTest {
                         new ArrayList<GapRow>()));
     }
 
-    /**
-     * The epoch's static scope map, as PLAN publishes it (SYMBOL-SCOPE §3).
-     *
-     * <p>Written as the artifact's own text, so what these cases exercise is
-     * the published shape and not a builder's idea of it.</p>
-     */
     /**
      * F2: a static site is found at the occurrence whose region HOLDS it.
      *

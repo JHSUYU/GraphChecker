@@ -448,6 +448,18 @@ public final class RowCodec {
         json.addProperty("phiTerm", row.phiTerm());
         json.addProperty("observedFatal", row.observedFatal());
         json.addProperty("reachedAnchor", row.reachedAnchor());
+        TargetRow.OpenArm open = row.openArm();
+        if (open != null) {
+            JsonObject arm = new JsonObject();
+            arm.addProperty("siteId", open.siteId());
+            arm.addProperty("ordinal", open.ordinal());
+            arm.addProperty("outcome", open.outcome());
+            if (!open.askedSiteId().isEmpty()) {
+                arm.addProperty("askedSiteId", open.askedSiteId());
+                arm.addProperty("askedOrdinal", open.askedOrdinal());
+            }
+            json.add(OPEN_ARM, arm);
+        }
         return json;
     }
 
@@ -456,11 +468,24 @@ public final class RowCodec {
     }
 
     static TargetRow readTarget(JsonObject json, RowPool pool) {
+        TargetRow.OpenArm open = null;
+        if (json.has(OPEN_ARM)) {
+            JsonObject arm = object(json, OPEN_ARM);
+            open = TargetRow.OpenArm.of(string(arm, "siteId"),
+                    (int) number(arm, "ordinal"), bool(arm, "outcome"),
+                    optionalString(arm, "askedSiteId"),
+                    arm.has("askedOrdinal")
+                            ? (int) number(arm, "askedOrdinal") : 0);
+        }
         return TargetRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "anchorSiteId"), string(json, "phiTerm"),
-                bool(json, "observedFatal"), bool(json, "reachedAnchor"));
+                bool(json, "observedFatal"), bool(json, "reachedAnchor"),
+                open);
     }
+
+    /** A target row's open decider arm (TargetRow.OpenArm). */
+    private static final String OPEN_ARM = "openArm";
 
     public static JsonObject writeGap(GapRow row) {
         JsonObject json = row(row.sessionId());

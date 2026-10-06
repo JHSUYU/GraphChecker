@@ -1134,9 +1134,9 @@ public class ComposerTest {
         // A STATE arm, which is where this rule still bites: the OBSERVED
         // writer is stated whatever it is (it is what the run did), so an
         // unattested one reaches the formula and carries the marker.  On a
-        // WIRE read the rule is now stronger and earlier -- a read no
-        // attested arm delivers is refused by name and its path never
-        // enters the disjunction at all (Composer.handoffRead) -- so the
+        // WIRE read the rule is stronger and earlier -- a read no attested
+        // arm delivers is held at the value it received (Composer#arrival),
+        // so nothing inside its producer reaches the formula -- and the
         // witness this test is about cannot be built there.
         for (String[] each : new String[][]{{"s0", "false", "false"},
                 {"s1", "true", "true"}}) {
@@ -1212,6 +1212,54 @@ public class ComposerTest {
                 composition.body().contains("vh_up"));
         assertTrue("the upstream delivery carries the root",
                 composition.body().contains(MARKER));
+
+        // ONE ARRIVAL RULE AT EVERY DEPTH (PIPELINE §8).  The same chain,
+        // and the upstream node ran concretely: no session attests the
+        // producer of what the middle node was handed.  The arm is not
+        // refused for it (hdfs-11741 PS1-PS3: the SASL sender's arms read
+        // the expiry dates of a refresh no session instrumented, and their
+        // refusal took the key id's binding with them): the handed value is
+        // HELD inside the arm at what its row received, named with the arm.
+        Path concrete = folder.newFolder("nested-concrete").toPath();
+        Session ran = new Session(concrete, "s0", false);
+        ran.activation(PRODUCER);
+        ran.activation(UPSTREAM, "thread#up", false, false);
+        ran.marker("false");
+        ran.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        ran.expression("EXPR.v1.forward", symbol("vh_up", "Z"));
+        ran.export(upstream, "EXPR.v1.marker", 1L, "false");
+        ran.attach(forwarded, "vh_up", "false", upstream);
+        ran.decision(PRODUCER, "nn#u1", "(or vh_up (not vh_up))");
+        ran.export(producer, "EXPR.v1.forward", 2L, "false");
+        ran.attach(consumer, "vh", "false", producer);
+        ran.target("vh", false, true);
+        ran.write();
+        Composer.Composition held = compose(concrete, 4);
+        assertEquals("the path stands: " + held.gaps(), 1,
+                held.disjuncts().size());
+        assertEquals("on the anchor's family alone", 1,
+                held.families().size());
+        String hold = "(= vh_up false)";
+        String inArm = "";
+        for (String line : held.body().split("\n")) {
+            assertFalse("the hold is no part of the path's own fatal",
+                    line.contains(":named path_fatal__")
+                            && line.contains(hold));
+            int arm = line.indexOf("(=> message_arm__");
+            if (line.contains(":named message_family__") && arm >= 0
+                    && line.indexOf(hold, arm) > arm) {
+                inArm = line.substring(arm + 4, line.indexOf(' ', arm + 4));
+            }
+        }
+        assertTrue("the handed value is held inside the arm's case: "
+                + held.body(), inArm.startsWith("message_arm__"));
+        boolean named = false;
+        for (Composer.Concrete row : held.concrete()) {
+            named |= "HELD".equals(row.kind) && "vh_up".equals(row.subject)
+                    && inArm.equals(row.arm);
+        }
+        assertTrue("and named HELD with that arm: " + held.concrete(),
+                named);
 
         // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (PIPELINE §8).  The
         // producer exports at TWO ports and the anchor attaches both; one
@@ -3334,6 +3382,10 @@ public class ComposerTest {
         // by name.  So does a cell copied through the very owner asking for
         // it ({@code new Block(b)} where b may be the copy: a40h2
         // FsDatasetImpl-1092), which once recursed until the heap was full.
+        // A target a helper decision decided stands at that decision, before
+        // the reads the guard then made (`f == null ? -1 : f.count`): they
+        // are still phi's, so the owner still moves -- 3 is still no
+        // witness, the run's cell kept under the other writer's flag.
         String commit = "org/apache/Commit";
         LocationId latest = LocationId.of(LocationKind.INSTANCE, "8", "48");
         LocationId flag = LocationId.of(LocationKind.INSTANCE, "8", "56");
@@ -3345,9 +3397,12 @@ public class ComposerTest {
                 {7L, "read", ClaimKind.STATE_PAIRING_FLIPPED},
                 {7L, "twice", ClaimKind.NO_SUPPORTED_WITNESS},
                 {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS},
-                {7L, "copied", ClaimKind.NO_SUPPORTED_WITNESS}}) {
+                {7L, "copied", ClaimKind.NO_SUPPORTED_WITNESS},
+                {3L, "decided", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "decided", ClaimKind.STATE_PAIRING_FLIPPED}}) {
             long generation = (Long) each[0];
             String row = generation + " " + each[1];
+            boolean decided = "decided".equals(each[1]);
             Path iteration = folder.newFolder("moved-owner-" + generation
                     + "-" + each[1]).toPath();
             OccurrenceAddress reader = occurrence("case/leader",
@@ -3377,7 +3432,7 @@ public class ComposerTest {
             long version = 0L;
             for (int index = 0; index < ("twice".equals(each[1]) ? 2
                     : "written".equals(each[1]) || "copied".equals(each[1])
-                    ? 1 : 0); index++) {
+                    || decided ? 1 : 0); index++) {
                 session.write(Endpoint.of(theirs, "Commit#init#3:WRITE",
                         at("generation#" + index, 0), 0), other, ++version,
                         "copied".equals(each[1]) ? "EXPR.v1.copied"
@@ -3428,8 +3483,15 @@ public class ComposerTest {
                     generationThroughOwner, integer("I", 4L)));
             session.expression("EXPR.00000000000000f2", read("INSTANCE_FIELD",
                     8L, 56L, flagged, "Z"));
-            session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
-                    false, true);
+            if (decided) {
+                session.targetAt(latestRead - 1,
+                        "(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                        false, true);
+            } else {
+                session.target(
+                        "(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                        false, true);
+            }
             session.write();
 
             Composer.Composition composition = compose(iteration, reader, 4, StaticScopeMap.empty());
@@ -7633,6 +7695,14 @@ public class ComposerTest {
 
         void target(String phi, boolean observedFatal, boolean reached) {
             targets.add(TargetRow.of(id, ++seq, occurrence, ANCHOR_SITE, phi,
+                    observedFatal, reached));
+        }
+
+        /** A target standing at an earlier event (a helper decision's,
+         *  runtime.RowPublication#decided). */
+        void targetAt(long at, String phi, boolean observedFatal,
+                      boolean reached) {
+            targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
                     observedFatal, reached));
         }
 

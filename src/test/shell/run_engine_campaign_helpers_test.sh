@@ -555,6 +555,34 @@ jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
 
+# OPEN-ARM: an open decider arm no run took (ExploreMain#openArms) is named in
+# concrete[]; only an UNSAT flip closes over it, and one whose flip came to no
+# verdict leaves the UNSAT none (OPEN_ARM_UNANSWERED, campaign_open_arms).
+for state in UNSAT UNANSWERED; do
+  emit_unsat_fixture
+  jq '.solver.unsatClosureComplete = true' "${composition_manifest}" \
+    >"${composition_manifest}.tmp"
+  mv "${composition_manifest}.tmp" "${composition_manifest}"
+  jq --arg state "${state}" '.openArms = [{anchor: "REGION.T#1",
+      siteId: "H#u2", outcome: true, state: $state, paths: {($state): 1},
+      asked: ["H#u2@1"]}]' \
+    "${emit_iteration}/obligations-0000/explore_manifest.json" \
+    >"${emit_root}/manifest.tmp"
+  mv "${emit_root}/manifest.tmp" \
+    "${emit_iteration}/obligations-0000/explore_manifest.json"
+  run_emit
+  jq -e --arg state "${state}" '
+    [.concrete[] | select(.kind == "OPEN_ARM") | .state] == [$state]
+    and .evidence.unsatClosureComplete == ($state == "UNSAT")
+    and .claim == (if $state == "UNSAT" then "UNSAT_CLOSED"
+                   else "RUN_DEFECT" end)
+    and ([.defects[].subject] | index("OPEN_ARM_UNANSWERED") != null)
+        == ($state != "UNSAT")' \
+    "${campaign_final}/result.json" >/dev/null \
+    || fail "an open arm ${state} was not judged: \
+$(jq -c '{claim, concrete, evidence, defects}' "${campaign_final}/result.json")"
+done
+
 # A model CONFIRM gave no verdict on (refused_models) is the composition's
 # to judge: excluded from it, an UNSAT resting on it is RUN_DEFECT there
 # (ComposeMain#campaignClaim); one that does not stands, the model named.
@@ -3312,6 +3340,29 @@ SAT_MODEL_READY|0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
 UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
 SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
 EOF
+
+# STREAM-CONFIRM-FIRST: a solve's REPLAY goes first in the queue, behind only
+# the witness's confirmation and GROW's re-runs that lead it (hdfs-11741 AR1:
+# 473 later replays started ahead of the confirmation).  Per row: the queue's
+# kinds before, and after.
+while IFS='|' read -r confirm_before confirm_after; do
+  confirm_said=$(
+    stream_queue=()
+    for confirm_kind in ${confirm_before}; do
+      stream_queue+=("${confirm_kind} r q")
+    done
+    campaign_stream_queue_replay "REPLAY obligations-0004 A g0/c g0/p"
+    printf '%s,' "${stream_queue[@]%% *}"
+  )
+  [[ "${confirm_said}" == "${confirm_after}" ]] \
+    || fail "a REPLAY queued over [${confirm_before}] gave ${confirm_said}, \
+not ${confirm_after}"
+done <<'ROWS'
+CONFIRM RERUN OBLIGATION|CONFIRM,RERUN,REPLAY,OBLIGATION,
+OBLIGATION REPLAY|REPLAY,OBLIGATION,REPLAY,
+CONFIRM|CONFIRM,REPLAY,
+|REPLAY,
+ROWS
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
 # exactly like `replay_timeout_s`.
