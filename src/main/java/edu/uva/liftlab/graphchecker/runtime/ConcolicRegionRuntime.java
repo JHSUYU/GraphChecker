@@ -1139,8 +1139,7 @@ public final class ConcolicRegionRuntime {
 
             @Override
             public boolean declaredBy(ActiveRegion region) {
-                return region.activation.communicationHandoff(portId, false)
-                        != null;
+                return region.activation.attachSite(portId) != null;
             }
         }
 

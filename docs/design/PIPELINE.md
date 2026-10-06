@@ -214,6 +214,10 @@ A loop-body root's controls are the branches leaving its loop, as the catalog's 
 throws); its frame opens on the outermost control edge into the body whose target dominates the
 demanded unit, and closes on every backedge and every exit of a control
 (`CausynthPipeline#loopBodyEntry`, `#loopBodyClosingEdges`).
+The wire's captures (SYMBOL-SCOPE §6.3): each attach a planned occurrence declares, and every export
+of the program -- each OUT port of every region skeleton, its method and frame woven as a planned
+region's are (`CausynthPipeline#instrumentConcolicCommunicationHandoffs`,
+`runtime.RuntimeRegionPlanner#exportSites`).
 Each conditional of a woven method gets the VM's decision marker just before it and, on every
 arm it can take, one observation of the arm taken (`ConcolicRegionRuntime#resolveBranch`,
 `#resolveSwitchBranch`; a switch gets one entry per case label), which never steers the run: the

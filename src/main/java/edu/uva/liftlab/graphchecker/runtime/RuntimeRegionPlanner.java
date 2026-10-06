@@ -1296,8 +1296,7 @@ public final class RuntimeRegionPlanner {
             if (!captures.isEmpty()) {
                 plan.put(DeclaredSiteCapture.PLAN_FIELD, captures);
             }
-            List<Map<String, Object>> handoffSites =
-                    communicationHandoffSites(region);
+            List<Map<String, Object>> handoffSites = attachSites(region);
             if (!handoffSites.isEmpty()) {
                 plan.put(CommunicationHandoffSpec.FIELD, handoffSites);
             }
@@ -1476,28 +1475,72 @@ public final class RuntimeRegionPlanner {
         return GSON.toJsonTree(value);
     }
 
-    /** The declared communication ports this region hands to the VM, and the
-     * site each is handed at. */
-    public static List<Map<String, Object>> communicationHandoffSites(
+    /**
+     * The declared ports this region ATTACHES, and the site each is handed
+     * at: the consumer half of a cut is the planned occurrence's, one
+     * boundary variable per wire value ({@link
+     * #retainInnermostCommunicationConsumers}).  The producer half is no
+     * plan's: the weave captures every skeleton's exports ({@link
+     * #exportSites}).
+     */
+    public static List<Map<String, Object>> attachSites(
             StaticProgram.RegionRow region) {
         Map<String, Map<String, Object>> byCapture = new LinkedHashMap<>();
-        for (boolean inbound : new boolean[]{true, false}) {
-            String regionSide = inbound ? "IN" : "OUT";
-            for (Map<String, Object> port : inbound
-                    ? region.symbolicInputs : region.outputs) {
-                if (!declaredCutPort(port) || !symbolicLeafPort(port,
-                        stringValue(port.get("javaType")))) {
-                    continue;
-                }
-                Map<String, Object> site = communicationHandoffSite(
-                        port, regionSide);
-                if (site != null) {
-                    byCapture.putIfAbsent(CommunicationCatalogContract
-                            .captureKey(regionSide, port), site);
-                }
+        for (Map<String, Object> port : region.symbolicInputs) {
+            Map<String, Object> site = handoffSite(port,
+                    CommunicationHandoffSpec.IN);
+            if (site != null) {
+                byCapture.putIfAbsent(CommunicationCatalogContract
+                        .captureKey(CommunicationHandoffSpec.IN, port), site);
             }
         }
         return new ArrayList<>(byCapture.values());
+    }
+
+    /**
+     * Every export the weave captures: each OUT port of every region
+     * skeleton, planned or not, so an unplanned producer's export is a row
+     * too -- ambient, at the occurrence it ran in -- that a delivery pairs
+     * with, and the closure can grow that producer when a demanded attach
+     * names it (PIPELINE §7.2); an export no demand reaches stays a row.
+     * hdfs-adhoc-12 HG9L: the NameNode's {@code
+     * PBHelper.convert(NNHAStatusHeartbeat)} roots no planned region, so
+     * {@code setTxid} was woven with no export, the DataNode's attach of the
+     * HA status txid paired with nothing, and the fatal held it unbound.
+     */
+    public static List<CommunicationHandoffSpec> exportSites(
+            Collection<StaticProgram.RegionRow> skeletons) {
+        Map<String, Map<String, Object>> byCapture = new LinkedHashMap<>();
+        for (StaticProgram.RegionRow skeleton : skeletons) {
+            for (Map<String, Object> port : skeleton.communicationPorts) {
+                if (!CommunicationHandoffSpec.OUT.equals(stringValue(port.get(
+                        RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE)))) {
+                    continue;
+                }
+                Map<String, Object> site = handoffSite(port,
+                        CommunicationHandoffSpec.OUT);
+                if (site != null) {
+                    byCapture.putIfAbsent(CommunicationCatalogContract
+                            .captureKey(CommunicationHandoffSpec.OUT, port),
+                            site);
+                }
+            }
+        }
+        JsonObject holder = new JsonObject();
+        holder.add(CommunicationHandoffSpec.FIELD,
+                toJsonTreeFast(new ArrayList<>(byCapture.values())));
+        return CommunicationHandoffSpec.decode(holder);
+    }
+
+    /** One declared cut port's handoff site on {@code side}, or {@code null}
+     *  for a port no leaf of which the VM carries. */
+    private static Map<String, Object> handoffSite(Map<String, Object> port,
+                                                   String side) {
+        if (!declaredCutPort(port) || !symbolicLeafPort(port,
+                stringValue(port.get("javaType")))) {
+            return null;
+        }
+        return communicationHandoffSite(port, side);
     }
 
     /** One declared port's handoff site, or {@code null}. */

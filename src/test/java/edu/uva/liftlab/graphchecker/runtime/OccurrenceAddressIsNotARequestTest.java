@@ -87,7 +87,7 @@ public class OccurrenceAddressIsNotARequestTest {
         SymbolicMessageEnvelope.clear();
 
         assertTrue("the planned occurrence has an IN handoff",
-                task.communicationHandoff(PORT, false) != null);
+                task.attachSite(PORT) != null);
         assertTrue("its own address answers it",
                 task.acceptsRootInvocation(balancerAddress(3)));
         assertFalse("another activation of it does not",

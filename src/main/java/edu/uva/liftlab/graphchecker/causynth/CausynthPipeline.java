@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import edu.uva.liftlab.graphchecker.plan.ScopeFrontier;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
+import edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -457,10 +458,26 @@ public final class CausynthPipeline {
         /** ONE plan per root hook group, the entry woven for all of them. */
         private final Map<String, InstrumentationPlan> rootHooks =
                 new LinkedHashMap<>();
+        /** Every skeleton's exports: woven whatever the plan
+         *  ({@link RuntimeRegionPlanner#exportSites}). */
+        private final List<CommunicationHandoffSpec> exports;
         private LoopBoundPolicy loopBound;
 
         private CampaignEnvelope(List<InstrumentationPlan> campaign) {
             this.campaign = campaign;
+            exports = RuntimeRegionPlanner.exportSites(
+                    RegionSkeletonInstrumentationSelection
+                            .skeletonsFromEnvironment());
+            // An export's method and frame are woven as a planned
+            // region's are: its leaves are addressed within them.
+            for (CommunicationHandoffSpec export : exports) {
+                methods.add(export.method());
+                loopBoundMethods.add(export.method());
+                if (!export.frameMethod().isEmpty()) {
+                    methods.add(export.frameMethod());
+                    loopBoundMethods.add(export.frameMethod());
+                }
+            }
             for (InstrumentationPlan plan : campaign) {
                 materializations.mergeFrom(plan.materializations());
                 methods.addAll(plan.envelopeMethods());
@@ -591,7 +608,8 @@ public final class CausynthPipeline {
         // The campaign's loops, bounded once under its one policy.
         instrumentConcolicLoopBounds(envelope.loopBoundMethods,
                 envelope.loopBound, envelope.fixedCountLoopSites, refs);
-        instrumentConcolicCommunicationHandoffs(campaign, refs);
+        instrumentConcolicCommunicationHandoffs(campaign, envelope.exports,
+                refs);
         envelope.freezeRootLoops();
         // ONE entry per root hook group, however many planned occurrences
         // share it, and one enclosing entry per loop root: the replay offers
@@ -1246,17 +1264,24 @@ public final class CausynthPipeline {
                 parameter, primitiveValue);
     }
 
+    /**
+     * The wire's captures: each attach a planned consumer declares, and
+     * every export of the program ({@code exports}), so a producer no task
+     * plans still states the endpoint its delivery pairs with.
+     */
     private void instrumentConcolicCommunicationHandoffs(
-            List<InstrumentationPlan> campaign, HookCatalog refs) {
+            List<InstrumentationPlan> campaign,
+            List<CommunicationHandoffSpec> exports, HookCatalog refs) {
         Map<String, CommunicationHandoffSpec> sites = new LinkedHashMap<>();
+        List<CommunicationHandoffSpec> declared = new ArrayList<>(exports);
         for (InstrumentationPlan plan : campaign) {
-            for (CommunicationHandoffSpec site
-                    : plan.communicationHandoffs()) {
-                sites.putIfAbsent(site.side() + "\n" + site.portId()
-                        + "\n" + site.siteId() + "\n"
-                        + site.captureKind() + "\n" + site.argumentIndex(),
-                        site);
-            }
+            declared.addAll(plan.communicationHandoffs());
+        }
+        for (CommunicationHandoffSpec site : declared) {
+            sites.putIfAbsent(site.side() + "\n" + site.portId()
+                    + "\n" + site.siteId() + "\n"
+                    + site.captureKind() + "\n" + site.argumentIndex(),
+                    site);
         }
         for (CommunicationHandoffSpec site : sites.values()) {
             instrumentCommunicationHandoff(site, refs);

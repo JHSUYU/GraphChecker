@@ -989,9 +989,10 @@ final class ConcolicTaskPlan {
         /** Every test of a disjunctive target guard and its fatal arm, the
          *  target branch first; empty for one guard. */
         final Map<String, Boolean> targetGuards = new LinkedHashMap<>();
-        /** One declared handoff site of each communication port role. */
+        /** One declared attach site of each communication port; an export
+         *  needs none (its woven call declares it). */
         final Map<String, CommunicationHandoffSpec>
-                communicationHandoffs = new LinkedHashMap<>();
+                attachSites = new LinkedHashMap<>();
         /** Exact baseline hook executions, in recorded event order. */
         final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
@@ -1091,23 +1092,17 @@ final class ConcolicTaskPlan {
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
-                // A port may have several captures per role here; replay
-                // asks only whether the role is declared and keys the rest
-                // on the port id.
-                communicationHandoffs.putIfAbsent(handoffKey(site.portId(),
-                        site.outgoing()), site);
+                // A port may have several captures here; replay asks only
+                // whether it is declared and keys the rest on the port id.
+                if (!site.outgoing()) {
+                    attachSites.putIfAbsent(safe(site.portId()), site);
+                }
             }
         }
 
-        /** A declared handoff site of one communication port role. */
-        CommunicationHandoffSpec communicationHandoff(
-                String portId, boolean exporting) {
-            return communicationHandoffs.get(handoffKey(portId, exporting));
-        }
-
-
-        static String handoffKey(String portId, boolean exporting) {
-            return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
+        /** The declared attach site of one communication port, or null. */
+        CommunicationHandoffSpec attachSite(String portId) {
+            return attachSites.get(safe(portId));
         }
 
         /** Files one refused candidate's facts. */
