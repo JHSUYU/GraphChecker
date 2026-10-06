@@ -417,8 +417,22 @@ asked of their expressions' shared nodes, never of their lowered text (`Corpus#t
 a container read's state rows by the v_C rule, a read no write answers as its mint; each expression
 walked once per session): the anchor's `phiTerm` (a concrete fatal condition's constant names nothing), its own decisions at its flip sites (a factor
 member deciding the same site decides it on its own objects), and the values it contributed (the
-exports a demanded attach paired with, the write a demanded read could observe), closed over the
-reads those name and the writes they could observe. The occurrence and its state-connected factor are
+exports a demanded attach paired with, the write a demanded read could observe), and WHAT COMPOSE
+KEEPS of each (`compose.RestsOn`, the one notion of what a delivery rests on, COMPOSE's path and arm
+closures included): for each path COMPOSE admits at the anchor (`RestsOn#admitted`, COMPOSE's own
+admission: a replay that refused its obligation is no path) -- its closure unseeded, as COMPOSE's --
+and for each session the occurrence contributed in up to its last contribution's seq -- seeded by the
+writes its contributed expressions read (`RestsOn#seedWrites`) -- the decisions of every occurrence
+the row joins from its prefix reach (§8 P3) and the reads of those occurrences that rest on what
+moves (`Independence`: a root, a clock, a value the session received), the anchor's own prefix
+decisions among them, and no root the session minted that nothing kept reads; a handoff those name
+is resolved to its attach row whoever received it, however many joins away (`ClosurePlanner
+#successors`), and its producer planned (hdfs-11741: the balancer's KeyManager, reached by the SASL
+producer's closure, decides on the expiry dates of nn0's `updateBlockKeys@1` response, whose handler
+no session ran until it was demanded so); closed over the reads those name and the writes they could
+observe. Each (kind, session, occurrence, cutoff, terms) is asked once per walk. CONFIRM's ORDER
+reads the same closure (`RestsOn#closure`), the anchor's reads cut where its path decided. The occurrence and its state-connected
+factor are
 one symbolic unit: every member's attaches and reads are asked whether a demanded value rests on them,
 and a member joins the closure only through them, as a writer or a producer below, never for touching
 what the occurrence touches (two readers of one location pass each other nothing).
@@ -1100,7 +1114,7 @@ replace a slot (§7.1) give no arms.
 
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
 (beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
-session that ran the occurrence and left the way to the throw at a guard (`Composer#wayGuard`, the
+session that ran the occurrence and left the way to the throw at a guard (`RestsOn#wayGuard`, the
 last decision at a target site's path site), its prefix the decisions before that guard: at a
 SYMBOLIC guard its fatal arm is the guard's other arm, the way to the throw (a witness turns it,
 CONFIRM judges the rest), at a concrete one the constant healthy decision (`false`), the guard named
@@ -1150,11 +1164,13 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   say (`derivedRoots`, `Corpus#derived`) -- has no reading of its own, and none pins anything; a
   session whose manifest predates readings (schema 1) is named, DIAGNOSTIC; a declared root this
   session neither minted nor read refuses the path only when the path's terms name it;
-- anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
+- anchor handoffs, by the one arrival rule (`Composer#arrival`, a path's and an arm's alike):
+  bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);
   an attach no session attests the producer of (or with no producer named) has a producer no row
-  states: HELD at the value its row states it received, conjoined with the path and named
-  (`Composer.Concrete` HELD, "producer unstated"); one whose producer is attested and no export of
+  states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
+  the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
+  body holds it, none on the path's own); one whose producer is attested and no export of
   it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
   it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
@@ -1209,10 +1225,15 @@ exactly one, each arm guarded by its replay's value of every root it holds under
 those its expression names, every varied root, every root its replay read and minted none -- the
 valuation its path would carry, never a clock nor a derived root; a guard symbol no row has
 declared yet is declared at its root's sort) and closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
-names, its delivery's and those its closure's conditions and joins read
-(`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
-refuses the arm, so no arm lowers a handoff as a free constant. A path closes each message once (one family,
+P3 closure, nested families to depth 16). Every handoff the arm's conjunction names, its delivery's
+and those its closure's conditions and joins read (`ComposedFamilies#handedOn`), goes by the path's
+own arrival rule in the arm's session (`Composer#reachedHandoffs`): an attested arrival is a nested
+family; one no producer this corpus attests is HELD at the value its row received, conjoined inside
+the arm and named in `concrete[]` with the arm; one whose attested producer's exports do not lower is
+FREE, named; only one its session minted no attach for refuses the arm. So an arm is never refused
+for a handoff its closure merely reads (hdfs-11741 PS1-PS3: the SASL sender's arms read, through the
+balancer's key-updater tick, the expiry dates of a refresh whose NameNode handler no session
+instrumented; refused, they took the key id's binding with them). A path closes each message once (one family,
 one name), under what rests on it: the path's own messages under the path selector; a message a
 delivery was itself handed under every arm (message or writer) whose conjunction names its
 handoffs, asserted once the path's arms are all known as `(=> <path> (=> (or <those arms>) F))`
@@ -1224,7 +1245,9 @@ arm selectors are the chain its path took. A level's messages are closed before 
 closes its own; an arm resting on a message the path closed already is one more thing resting on
 it. A copy per arm instead is a family per arm per level: hdfs-11741 i1's body ran an 8 GB heap
 out. A refused arm, or one whose body equals an earlier arm's (it rests on the same messages),
-takes back what it stated (`ComposedFamilies#rollback`). A message no session can send drops the path.
+takes back what it stated (`ComposedFamilies#rollback`), its `concrete[]` rows included
+(`SmtLowering#unboundRollback`): a row is the arm's only while the arm is in the formula, one per
+value and arm. A message no session can send drops the path.
 Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
 into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
@@ -1325,7 +1348,7 @@ selector the path minted holds only under an arm of it that delivers a store its
 through (`nest_family__<N>__<digest>`, `ComposedFamilies#stateFamilies`), so with the observed
 store's arm, the pins' or no family, the run's object is the run's answer. A state rests on what
 made it: under its selector, the arm conjoins the decisions of the closure its write adds to the
-store producer's (`ComposedFamilies#stateClosure`, `Composer#closure` seeded with that write, the
+store producer's (`ComposedFamilies#stateClosure`, `RestsOn#closure` seeded with that write, the
 writers EXPLORE demands), each before its cutoff, and joins the reads they name; a state whose added
 closure the recording does not state is no option (`(not nest__…)`, its refusals named
 DIAGNOSTIC). An answer holds only where the
@@ -1434,7 +1457,7 @@ count is the `SIZE` and a match the `IS_EMPTY` of such a chain on a base no obje
 insertions above an exact base within `VIEW_CHAIN_LIMIT` (`ContainerSmtCodec#indexedBound`), each
 below the size -- and is refused by name otherwise (`ContainerRelation:INDEXED:CONTAINS:unbounded-chain`).
 
-**Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
+**Construction guards** (`RestsOn#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
 before it at the guard sites of the mutations its method made on a container it then published
 (`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, the carriers the

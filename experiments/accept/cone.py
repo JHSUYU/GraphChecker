@@ -21,10 +21,12 @@ Two facts are published for report.py, which gates on both:
                 the path the claim selected.  A mechanism whose root the fatal
                 does not depend on is a mechanism the formula cannot carry.
   unbound    -- boundary variables some fatal condition names that no family
-                binds.  A v_H no family binds is a broken causal chain,
-                whatever COMPOSE stated of it (concrete[]: FREE, or held at
-                its recorded value because no row states its producer): a
-                value the engine invented or held, not one a producer made.
+                binds, and those an arm the witness chose holds FREE or HELD
+                (concrete[] rows naming the arm).  A v_H no family binds is a
+                broken causal chain, whatever COMPOSE stated of it
+                (concrete[]: FREE, or held at its recorded value because no
+                row states its producer): a value the engine invented or
+                held, not one a producer made.
 
 A root is named by its rootId in result.json and by its symbol in the
 formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
@@ -172,6 +174,16 @@ def main():
     selector = path.get('selector', '')
     out['selector'] = selector
     out['selectedPathId'] = chosen.get('selectedPathId', '')
+    # A handoff an arm the witness chose holds FREE or HELD (concrete[], its
+    # "arm") is no family's binding either: the family states it, but as a
+    # value no producer made, so the chain breaks there as it does at a
+    # fatal condition's unbound v_H.
+    arms = {arm.get('selector') for arm in chosen.get('selectedArms') or []}
+    out['unbound'] += sorted(
+        row.get('subject', '') for row in result.get('concrete') or []
+        if row.get('kind') in ('HELD', 'FREE') and row.get('arm') in arms
+        and row.get('pathId') == out['selectedPathId']
+        and is_boundary(row.get('subject', '')))
     cone = set(fatal.get(selector, set()))
     grew = True
     while grew:
