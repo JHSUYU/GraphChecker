@@ -690,7 +690,12 @@ order:
   again, a grace apart. A let-go does not restart the stall's clock for the waits that remain: a
   wait for a slot is held at most `CEILING` timeouts and a grace, and an event that never comes,
   with nothing computing toward it, costs a timeout and a grace. After two give-ups past the cut
-  the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row;
+  the rest is released. Each let-go and give-up is a `SCHEDULE_DIVERGED` DIAGNOSTIC row. A held
+  timed wait asks for its turn once a quantum and spends the quantum in its own wait, before its
+  deadline and after it (`ScheduleLog#timedOut` asks, never waits): the monitor or lock it waits on
+  stays released until its `WAKE` is written, as the JVM's wait returns only then (hdfs-adhoc-19:
+  a timed-out `waitTillNextIBR` WAKE held past its count kept the IBR manager's monitor, and the
+  DataXceiver whose block notify the order waited for blocked on it);
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
