@@ -77,6 +77,8 @@ public final class Frontier {
     /** Arms a round answered, for the manifest histogram. */
     private final Map<String, Verdict> answered =
             new LinkedHashMap<String, Verdict>();
+    /** Arms a recorded path already took. */
+    private final Set<String> recorded = new LinkedHashSet<String>();
     /** arm key -> proposing task, this round. */
     private final Map<String, String> proposedBy =
             new LinkedHashMap<String, String>();
@@ -99,15 +101,17 @@ public final class Frontier {
             for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
                 for (int index = 0; index < path.decisions.size(); index++) {
                     DecisionRow decision = path.decisions.get(index);
-                    if (!sites.contains(decision.siteId())
+                    if (!FlipQuery.asks(sites, decision)
                             || !FlipQuery.flippable(decision)) {
                         continue;
                     }
-                    settle(ObligationFactory.obligationId(task.taskId(),
-                                    decision.siteId(), decision.ordinal(),
-                                    decision.outcome(),
-                                    ObligationFactory.dependence(corpus,
-                                            task, path, index)),
+                    String arm = ObligationFactory.obligationId(
+                            task.taskId(), decision.siteId(),
+                            decision.ordinal(), decision.outcome(),
+                            ObligationFactory.dependence(corpus, task, path,
+                                    index));
+                    recorded.add(arm);
+                    settle(arm,
                             "arm already recorded by " + path.sessionId
                                     + ": this occurrence took that arm at "
                                     + "that site under what its guard "
@@ -147,9 +151,31 @@ public final class Frontier {
         }
     }
 
+    /** Whether this candidate's arm is queued or running: by its id, or
+     *  by its flip, since its id may move while it flies. */
+    public boolean flying(ObligationFactory.Candidate candidate) {
+        return inFlightIds.contains(candidate.obligationId)
+                || inFlightFlips.contains(ObligationFactory.flip(candidate));
+    }
+
     /** How many arms are queued or running. */
     public int inFlightCount() {
         return inFlightIds.size();
+    }
+
+    /** What a round answered for this arm, or null. */
+    public Verdict verdict(String obligationId) {
+        return answered.get(obligationId);
+    }
+
+    /** Whether a recorded path already took this arm. */
+    public boolean recorded(String obligationId) {
+        return recorded.contains(obligationId);
+    }
+
+    /** Whether this arm is queued or running. */
+    public boolean inFlight(String obligationId) {
+        return inFlightIds.contains(obligationId);
     }
 
     /** The first reason this arm is settled, or {@code ""} while it is owed. */
@@ -170,9 +196,7 @@ public final class Frontier {
         int held = 0;
         for (ObligationFactory.Candidate candidate : candidates) {
             if (settled.containsKey(candidate.obligationId)) continue;
-            if (inFlightIds.contains(candidate.obligationId)
-                    || inFlightFlips.contains(
-                    ObligationFactory.flip(candidate))) {
+            if (flying(candidate)) {
                 held++;
                 continue;
             }

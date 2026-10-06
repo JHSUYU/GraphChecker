@@ -436,23 +436,35 @@ public final class Corpus implements Arms.Rows {
      * almost every run), never the region's own reads or decisions
      * (behaviour, not input), never delivered VALUES (carried symbolically;
      * clock values differ every run).</p>
+     *
+     * <p>A function of the session alone, whatever the corpus has learned
+     * since: the members as a set (the order the corpus lists the factor
+     * in moves as sessions land), and none the session never ran -- it
+     * delivered nothing, and its line, the same in every session that did
+     * not run it, re-keyed every arm of the session once the corpus found
+     * it a feeder, and the arm was asked again on the path it was answered
+     * on.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
                              Set<String> locations) {
+        List<String> members = new ArrayList<String>();
+        for (OccurrenceAddress member : factor) {
+            if (member.equals(occurrence)) continue;
+            boolean ran = activation(sessionId, member) != null;
+            List<String> handoffs = attachSites(sessionId, member);
+            List<String> writes = writeSites(sessionId, member, locations);
+            if (!ran && handoffs.isEmpty() && writes.isEmpty()) continue;
+            members.add(member.id() + ':' + ran + handoffs
+                    + producers(sessionId, member) + writes);
+        }
+        Collections.sort(members);
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
                 .append(attachSites(sessionId, occurrence))
                 .append(producers(sessionId, occurrence));
-        for (OccurrenceAddress member : factor) {
-            if (member.equals(occurrence)) continue;
-            text.append('\n').append(member.id()).append(':')
-                    .append(activation(sessionId, member) != null)
-                    .append(attachSites(sessionId, member))
-                    .append(producers(sessionId, member))
-                    .append(writeSites(sessionId, member, locations));
-        }
+        for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(text.toString(), 16);
     }
 

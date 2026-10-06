@@ -1338,7 +1338,9 @@ public final class Composer {
         // a pin after a refused join, not a variable independence leaves
         // out.  ONE entry point: the anchor's reads and the world's planted
         // ones, less a location a reader mutated a container through.
-        Repairing repairing = repairing(session, reached, cutoff);
+        Repairing repairing = repairing(session, reached, cutoff,
+                target.reachedAnchor() ? corpus.readEvents(session,
+                        target.phiTerm()) : Collections.<Long>emptySet());
         Set<String> pinned = repairing.pinned;
         Set<String> moved = repairing.keys;
         SmtLowering.SessionJoin rows = SmtLowering.repairing(
@@ -2308,7 +2310,12 @@ public final class Composer {
     /**
      * THE READS A STATE FAMILY RE-PAIRS on one path ({@code
      * SmtLowering.SessionJoin#repaired}), ONE entry point: the anchor's,
-     * up to its cutoff, and every read the session's world planted a
+     * up to its cutoff and every read phi itself names ({@code phiReads},
+     * by read event: a target a helper decision decided stands at that
+     * decision, and what the guard read after it -- an open arm's {@code
+     * f.count} past its {@code f == null} -- is still phi's, as
+     * explore.ClosurePlanner#concrete reads it), and every read the
+     * session's world planted a
      * pairing on ({@code Corpus.World#pairings}: reader -> writer, as
      * {@code runtime.Confirmation} names them), with every read its
      * occurrence made of the location -- one choice per occurrence's
@@ -2331,7 +2338,7 @@ public final class Composer {
      * the session states no write of plants nothing.
      */
     private Repairing repairing(String session, Map<String, Long> reached,
-                                long cutoff) {
+                                long cutoff, Set<Long> phiReads) {
         Map<String, String> pairings = corpus.world(session).pairings;
         Map<String, String> planted = new LinkedHashMap<String, String>();
         Set<String> plantedBlocks = new LinkedHashSet<String>();
@@ -2358,7 +2365,8 @@ public final class Composer {
         for (ReadRow read : sessionReads) {
             boolean atAnchor = anchor.id().equals(
                     read.endpoint().occurrence().id())
-                    && read.seq() <= cutoff;
+                    && (read.seq() <= cutoff
+                    || phiReads.contains(Long.valueOf(read.seq())));
             if (atAnchor || plantedBlocks.contains(block(read))) {
                 blocks.computeIfAbsent(block(read),
                         key -> new ArrayList<ReadRow>()).add(read);
@@ -2875,11 +2883,11 @@ public final class Composer {
     }
 
     /**
-     * A clock row's host reading, or null (named) when it states no
+     * A clock row's base reading, or null (named) when it states no
      * instant.
      */
     private Long instant(RootMintRow row) {
-        Long reading = number(row.hostReading());
+        Long reading = number(row.baseReading());
         if (reading == null) {
             gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     row.rootId(), "the mint of this clock cell states no "
@@ -2890,9 +2898,9 @@ public final class Composer {
     }
 
     /**
-     * How far each session's host clock read a clock cell later than the
+     * How far each session's base clock read a clock cell later than the
      * recording read it (session -> cell symbol -> milliseconds or ticks of
-     * that clock; {@link SmtLowering#clockBases}): its host reading less the
+     * that clock; {@link SmtLowering#clockBases}): its base reading less the
      * recording's, at the cell itself where the recording read it, else at
      * the nearest cell (by seq) of the same clock of the same node that both
      * read -- the same anchor {@link #placed} puts a cell on the recording's
@@ -2922,9 +2930,9 @@ public final class Composer {
                     new LinkedHashMap<RootMintRow, Long>();
             for (RootMintRow row : session.getValue()) {
                 RootMintRow recorded = corpus.rootOf(seed, row.rootId());
-                Long host = number(row.hostReading());
+                Long host = number(row.baseReading());
                 Long reading = recorded == null ? null
-                        : number(recorded.hostReading());
+                        : number(recorded.baseReading());
                 if (host != null && reading != null) {
                     anchored.put(row, host - reading);
                 }
@@ -2961,7 +2969,7 @@ public final class Composer {
     /**
      * Every CLOCK root of the corpus on the recording's timeline, before any
      * path composes ({@link #clockTimeline}): a cell the seed read at the
-     * seed's host reading; one it never read (a region woven after it, an
+     * seed's base reading; one it never read (a region woven after it, an
      * occurrence a replay moved -- hdfs-17897 NP3: dn0's addKeys under the
      * command queue's anchor, not the heartbeat's) where {@link #placed} puts
      * it; one no session can place, every symbol of it into {@link
@@ -2975,7 +2983,7 @@ public final class Composer {
         Map<String, Long> readings = new LinkedHashMap<String, Long>();
         for (List<RootMintRow> rows : corpus.roots().values()) {
             RootMintRow row = seedRow(rows);
-            Long reading = number(row.hostReading());
+            Long reading = number(row.baseReading());
             if (row.kind() != RootKind.CLOCK || reading == null
                     || !row.sessionId().equals(seed)) {
                 continue;
@@ -2988,7 +2996,7 @@ public final class Composer {
             RootMintRow row = seedRow(rows);
             if (row.kind() != RootKind.CLOCK
                     || clockTimeline.containsKey(row.rootId())
-                    || number(row.hostReading()) == null) {
+                    || number(row.baseReading()) == null) {
                 continue;
             }
             Long reading = placed(rows, read, readings);
@@ -3013,7 +3021,7 @@ public final class Composer {
     private Long placed(List<RootMintRow> rows, List<RootMintRow> read,
                         Map<String, Long> readings) {
         for (RootMintRow cell : rows) {
-            Long host = number(cell.hostReading());
+            Long host = number(cell.baseReading());
             if (cell.kind() != RootKind.CLOCK || host == null) continue;
             RootMintRow nearest = null;
             long from = 0L;
@@ -3021,7 +3029,7 @@ public final class Composer {
                 RootMintRow same = corpus.rootOf(cell.sessionId(),
                         anchor.rootId());
                 Long sameHost = same == null ? null
-                        : number(same.hostReading());
+                        : number(same.baseReading());
                 if (sameHost == null || !anchor.occurrence().node().equals(
                         cell.occurrence().node())
                         || !cell.clock().same(same.clock())) {

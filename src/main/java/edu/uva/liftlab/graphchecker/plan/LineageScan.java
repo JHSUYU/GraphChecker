@@ -22,9 +22,13 @@ import java.util.stream.Stream;
  * WorkStartSites#draws}: the weave keys each draw by its site, so a replay
  * draws what its recording drew wherever the class sits; HDFS's
  * NetworkTopology, which places a pipeline's DataNodes by ThreadLocalRandom,
- * neither hands off work nor is analysed), or lists a directory ({@link
- * WorkStartSites#lists}: the weave sorts the listing, so every run walks a
- * directory in one order whatever file system it runs on).
+ * neither hands off work nor is analysed), reads a JVM clock ({@link
+ * WorkStartSites#readsClock}: the weave makes it the application's clock,
+ * which a replay holds to its order's timeline; Hadoop's {@code Time}, which
+ * every Hadoop clock reads through, is no analysed class), or lists a
+ * directory ({@link WorkStartSites#lists}: the weave sorts the listing, so
+ * every run walks a directory in one order whatever file system it runs
+ * on).
  * A lineage hole puts everything after it under
  * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
  * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
@@ -73,8 +77,8 @@ public final class LineageScan {
             }
         }
         System.out.println("lineage scope: " + kept + " of " + scanned
-                + " class(es) start, hand off, run, wait, signal or draw"
-                + " outside the analysis scope");
+                + " class(es) start, hand off, run, wait, signal, draw, read"
+                + " a clock or list a directory outside the analysis scope");
     }
 
     private static List<Path> classFiles(Path root) throws IOException {
@@ -121,6 +125,8 @@ public final class LineageScan {
                                         .length)
                                 || WorkStartSites.mayWait(callee)
                                 || WorkStartSites.draws(owner, callee,
+                                        calleeDescriptor)
+                                || WorkStartSites.readsClock(owner, callee,
                                         calleeDescriptor)
                                 || WorkStartSites.lists(owner, callee,
                                         calleeDescriptor)) {

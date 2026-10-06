@@ -42,7 +42,8 @@ running out of memory, and a single case alone takes the whole cluster.
   seed replay (HG4: 11741 674 / 662-715 MB; adhoc-07 238 / 194-257; outlier adhoc-15 514 / up to 2003, which grows
   through the ledger).
 - **An obligation is two starts**: its SOLVE (charged what a solver starts at, 1 GB; answered by its host's warm solver
-  when one serves) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once, on the class
+  when one serves) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once (behind only a
+  witness's confirmation and GROW's re-runs, which end the exploration or hold every solve), on the class
   tree and plan its solve started on. Until the replay lands the obligation is in flight (never re-proposed). Most
   obligations end at the solve (UNSAT, refused), so they never wait for replay memory.
 - **The shared pool** (a sweep, `stream_shared_pool=true`): the explorations running at once divide the pool's slots
@@ -56,11 +57,12 @@ running out of memory, and a single case alone takes the whole cluster.
   HR1), never a fixed 8 GB; a host counts only its largest idle reservation.
 - **Sweeps** (`tools/adhoc/sweep.sh <snapshot> <round> <cases-file> <heads-per-host>`): one `fanout.sh` job per case,
   at most `heads-per-host` heads on each lift (2 for the HDFS group), each admitted for the room it reserves, every
-  case's obligations on all ten lifts; `CASE_TIMEOUT_SECONDS` (5400 s) per case is a convenience of a shared cluster,
-  not a verdict (a case cut there is rerun alone).
-- **Exclusive runs** (`tools/rounds/launch-run.sh <snapshot> <case> <suffix>`, or `launch-round.sh` with one case):
-  the final acceptance runs each case alone on the whole cluster; a deep closure gets up to ~120 replays in flight
-  (07 reached 121 with measured charges, against 15 under static charges).
+  case's obligations on all ten lifts; `CASE_TIMEOUT_SECONDS` (5400 s by default; 10800 for a full sweep) per case is a convenience of a shared
+  cluster, not a verdict (a case cut there is rerun with a longer budget).
+- **One case alone** (`tools/rounds/launch-run.sh <snapshot> <case> <suffix>`, or `launch-round.sh` with one case): a
+  deep closure gets up to ~120 replays in flight (07 reached 121 with measured charges, against 15 under static
+  charges). The final acceptance does not need it (owner 2026-10-05): cases run concurrently through the ledger with
+  `CASE_TIMEOUT_SECONDS=10800`.
 - **Agents' runs** go through the same ledger from their own snapshots and `GC_OUT`, so a lead's sweep and four
   agents' validation runs coexist; judge a crowded run by stage times and queue waits, not wall time.
 
@@ -73,7 +75,9 @@ running out of memory, and a single case alone takes the whole cluster.
 | seed and CONFIRM replays charged 8-11 GB for 0.5-2 GB peaks | recording x7 for every replay | x7 only before anything is measured; CONFIRM on the measured need |
 | lifts 11-22 GB charged against 3-7 GB real use | the static charges above plus an idle 8 GB head reserve per lift | measured head need; remaining gap (~1.6x) is step charges at their start heap (kept: a refused growth would end a planner) |
 | SEED 192 -> 542 s, INSTRUMENT 49 -> 129 s in a sweep's first wave | Soot class lookups on NFS (197K failed stats per pass), 20 heads starting together | `IndexedSourceLocator` (a lookup's folder listed once per JVM, a listed name Soot's own lookup) and the pass's JVM on the jar alone: ~7K failed stats per pass; outputs byte-identical over 12 HDFS cases; on a loaded cluster with warm NFS caches the walls did not move |
-| a seed replay with 80-170 give-ups (start-up family) | DataNode actor turns decide by `monotonicNow` and the replay runs slower than the recording | the time model (TODO); a case at 80+ give-ups in a sweep is stopped, not waited out |
+| a seed replay with 80-170 give-ups (start-up family) | DataNode actor turns decide by `monotonicNow` and the replay runs slower than the recording | the time model (`Clocks`, PIPELINE §5): 25 34 35 at 0-2 (no model 6-91), 22 66 -> 0-43, 23 83 -> 37, 01 84 -> 30-61; 21 52 still vary run to run on causes that are not the clock (TODO §3); a case at 80+ give-ups in a sweep is stopped, not waited out |
+| hdfs-11741's seed and every obligation replay stood ~120 s before its window; 22 and 25's seeds as long at their first registration (round TM13); its obligation replays averaged 439 s against 165-207 s with no model, the case 6748 s | before the window time ran at host speed up to the next mark and stood there until the ceiling of eight timeouts: 11741 has no startup mark before its opening, and its start-up needs DataNode heartbeats, whose waits ran out with time standing (traced, TM13W); 22/25's stands only waited for a slow start-up (TM13W2) | a timed wait that runs out past the opening time ran up to lifts it to its deadline at once; at a pass only at the ceiling; never at an unpassed mark (`Clocks#waited`, PIPELINE §5). Round TM16: no 120 s stand in any replay; 11741 PASS in 3004 s, admitted obligation replays median 258 s (p90 320) against 165-207 s, the rest of the gap two 15 s in-window stalls per replay at the DataNode's IBR wait while time stands at its late opening (65 s of model time late, TODO §3) |
+| 11741's obligations met 175 worker timeouts and host-solver OOMs at 8 GB (round TM14, `Corpus.read`) | each pre-window lift wrote a SCHEDULE_DIVERGED row naming its cap after the previous one: 7253 rows, 1.5 GB of `gaps.jsonl` in one session, 13 GB over 62 sessions | one row per mark, every lift counted at exit (511c8d049) |
 | 17 and 24 "UNSAT" with 151 / 3 obligations owed (HG5A) | the budget's reserve owes twice the longest COMPOSE + max(CONFIRM, seed REPLAY); a 22-min seed replay reserved 44 min and left EXPLORE none | EXPLORATION_CUT: such an end leaves no UNSAT; the real fix is the seed replay's speed |
 | 16: PLAN_CLOSURE_CUT, 1542 occurrences over `schedule_max_jobs` | 1520 polling turns of `MarkedDeleteBlockScrubber` each planned as a task once control flow counted | E1: equivalent deciders planned once per class (1406 turns -> 55 classes) |
 | 07: rounds proposing 180, 136, 587 obligations | the same (task, site, flip) arm re-asked under ~7.8 dependence digests on average; 47 of 189 re-asked arms changed verdict, so most is real work | open: dependence-key granularity (TODO); give the case the cluster |
@@ -82,6 +86,13 @@ running out of memory, and a single case alone takes the whole cluster.
 | a replay's answer row corrupted when written from another host (MCH1) | rewriting a file in place over NFS: a client's cached copy wrote past a truncate | answers are written as a new inode and renamed |
 | a branch window re-imported its whole closure per node (SB19 seed window 787 s) | O(n^2) re-import | stream the import, skip expanded nodes (183 s) |
 | Solr replays growing for minutes overcommitted lifts (SB11/SB13) | charges counted only during a 60 s ramp | life-long leased charges |
+| six cases cut at 90 min in a 35-case sweep (HG9, 2026-10-06), e.g. 05 at 61 min with 60 verdicts and 105 replays in flight (alone in HG8W: 226 verdicts in 39 min) | 20 heads share the replay slots; the sweep's default `CASE_TIMEOUT_SECONDS=5400` is a share of the cluster | rerun at 10800 (11 26 33 37 closed); give a full sweep 10800 from the start |
+| 11741 took 4.7-5.4 h though its witness landed after ~150 verdicts (AR1) | each solved obligation's REPLAY was put at the queue's front, ahead of the witness's CONFIRM: it waited behind 473 replays | a REPLAY goes behind a leading CONFIRM or RERUN (adffd6072) |
+| 254 processes in NFS D state on lift11, load 288 (2026-10-06) | dozens of `offline-ab.sh` waiters each refreshed every host's ledger reading (ssh + mktemp + rename into one NFS directory) whenever the 5 s cache was stale | one refresher per host, the others use a reading up to 30 s old (b7c5dc99d); gates via `onlift.sh` off lift11 |
+| a worktree took 45+ min to check out, a commit in it minutes | 99 % of the repository's files are `third_party/` (the VM's source) written to NFS | `tools/lib/worktree-add.sh`: sparse, 10 s |
+| 11 did not converge under the prefix span (CW5: 1267 asks vs WD3's 47) | six IPC arms re-asked ~110 times each over ~23 paths | rule 1 (an arm keyed by the kept conditions of its prefix closure), TODO §1.7 |
+| 11741's replays under the time model: median 258 s vs 165-207 s (TM16) | two 15 s stalls per replay: the window opens 65 s late in model time and time stands there until the order catches up | open (TODO §4) |
+| TM14-11741: 175 worker timeouts and solver OOMs | a diagnostic row whose name grew with every pre-window lift: 1.5 GB of `gaps.jsonl` per session | fixed on `hdfs-time-model` (511c8d049) |
 
 Older history is in `git log` of `run_engine.sh` and in PIPELINE §7.7's own examples.
 
@@ -118,3 +129,8 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 3. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
 4. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused
    growth.
+5. A host solver killed at its memory hold falls back to a 16 GB solver on its pinned host and waits 3900 s
+   (`hdfs-solver-fallback`, not merged).
+6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (A1's measurement branch
+   `hdfs-compose-perf-wip`).
+7. The time model's replay cost on 11741 (item above).

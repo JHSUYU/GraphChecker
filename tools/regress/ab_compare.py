@@ -37,7 +37,9 @@ CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
           "IMPORT": ["IMPORT"], "EXPLORE.N": ["EXPLORE.N"],
           "COMPOSE": ["COMPOSE", "CONFIRM"],
           # SEED's static pass alone (offline-ab.sh AB_STAGES).
-          "SEED.static": ["SEED.static"]}
+          "SEED.static": ["SEED.static"],
+          # The landing order replayed (offline-ab.sh ab_stage_drift).
+          "EXPLORE.drift": ["EXPLORE.drift"]}
 STAGES = list(dict.fromkeys(stage for chain in CHAINS.values()
                             for stage in chain))
 SIDES = ("baseline", "candidate")
@@ -210,6 +212,31 @@ def wave_dir(stage_dir):
     return it
 
 
+def drift(d):
+    """EXPLORE.drift: per flip (task, path, site, ordinal, outcome), the ids
+    the replayed rounds offered it under -- every id past a flip's first is
+    one re-ask on the path it was cut from; per arm (task, site, ordinal,
+    outcome), the ids over all its paths."""
+    flips = collections.defaultdict(set)
+    arms = collections.defaultdict(set)
+    rounds = 0
+    for name in sorted(os.listdir(d)):
+        wave = os.path.join(d, name, "iteration-0000", name)
+        if not name.startswith("obligations-") or not os.path.isdir(wave):
+            continue
+        rounds += 1
+        for row in jsonl(os.path.join(wave, "obligations.jsonl")):
+            arm = (row["taskId"], row["siteId"], row["ordinal"],
+                   row["flippedOutcome"])
+            flips[arm + (row["pathId"],)].add(row["obligationId"])
+            arms[arm].add(row["obligationId"])
+    ids = sum(len(found) for found in flips.values())
+    return "rounds=%d flips=%d rekeyed=%d re-asks=%d arms=%d arm-ids=%d" % (
+        rounds, len(flips), sum(1 for found in flips.values()
+                                if len(found) > 1),
+        ids - len(flips), len(arms), sum(len(f) for f in arms.values()))
+
+
 def headline(stage, d, status):
     if status is None:
         return "not run"
@@ -228,6 +255,8 @@ def headline(stage, d, status):
         return "tasks=%s target=%s" % (
             rows(j(d, "execution_task_plan.jsonl")),
             sha8(target.encode()) if target else "-")
+    if stage == "EXPLORE.drift":
+        return drift(d)
     if stage in ("EXPLORE.0", "EXPLORE.N"):
         w = wave_dir(d)
         grown = [r for r in jsonl(j(w, "growth.jsonl"))

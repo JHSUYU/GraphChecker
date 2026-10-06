@@ -766,6 +766,71 @@ public class ExploreTest {
                     && gap.subject().endsWith("max-world-depth=0");
         }
         assertTrue("and the bound states what it left unread", stated);
+
+        // THE PATH BOUND counts new work, never repetition: a path whose
+        // arms are all settled or offered by a path before it is skipped
+        // uncounted, so a bound of one cuts from the first path that offers
+        // an owed arm and names only the others that do.
+        Path every = out.resolve("obligations-0006");
+        plan(iteration, TARGET_SELECTOR, null, results, every, 6);
+        Set<String> owedPaths = new LinkedHashSet<String>();
+        for (Obligation obligation : obligations(every)) {
+            if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
+                owedPaths.add(obligation.pathId());
+            }
+        }
+        assertEquals("two of the target's paths offer an owed arm: "
+                + owedPaths, 2, owedPaths.size());
+        assertEquals("of eight", 8,
+                Corpus.read(iteration, null).pathsOf(target).size());
+        Path one = out.resolve("obligations-0007");
+        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, null,
+                iteration.resolve(StaticScopeMap.FILE), one, 7, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                new ObligationFactory.Bounds(1,
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
+                        ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
+        Set<String> cut = new LinkedHashSet<String>();
+        for (Obligation obligation : obligations(one)) {
+            if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
+                cut.add(obligation.pathId());
+            }
+        }
+        assertEquals("one path cut from, the first that offers an owed arm",
+                1, cut.size());
+        String named = "";
+        for (GapRow gap : RowCodec.readAll(one.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            if (gap.subject().equals(ClosurePlanner.taskId(target)
+                    + " max-paths-per-region=1")) {
+                named = gap.detail();
+            }
+        }
+        assertTrue("and the bound names only the two that offer an owed "
+                        + "arm: " + named, named.startsWith("this task has 2 "
+                + "recorded path(s) that offer an owed arm"));
+        // It defers, never drops: with that path's arms in flight, the next
+        // round cuts from the path it left.
+        Path flying = out.resolve("in_flight-0008.jsonl");
+        RowCodec.writeAll(flying, obligations(one),
+                ExploreCodec::writeObligation);
+        Path later = out.resolve("obligations-0008");
+        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results, flying,
+                iteration.resolve(StaticScopeMap.FILE), later, 8, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                new ObligationFactory.Bounds(1,
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
+                        ObligationFactory.DEFAULT_MAX_WORLD_DEPTH));
+        Set<String> deferred = new LinkedHashSet<String>();
+        for (Obligation obligation : obligations(later)) {
+            if (obligation.taskId().equals(ClosurePlanner.taskId(target))) {
+                deferred.add(obligation.pathId());
+            }
+        }
+        Set<String> left = new LinkedHashSet<String>(owedPaths);
+        left.removeAll(cut);
+        assertEquals("the next round cuts from the path the bound left: "
+                + deferred, left, deferred);
     }
 
     /**
@@ -1185,6 +1250,33 @@ public class ExploreTest {
                 seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
         assertFalse("and so is one more write to the state it reads",
                 seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
+        List<OccurrenceAddress> reversed =
+                new ArrayList<OccurrenceAddress>(task.factor());
+        Collections.reverse(reversed);
+        Set<String> qopKey = Collections.singleton(
+                SmtLowering.locationKey(qop));
+        assertEquals("the factor is a set: the order the corpus lists it in "
+                        + "moves as sessions land",
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey));
+        // A session that runs a feeder no earlier session ran: the seed never
+        // ran it, so what the seed's guard depends on is unmoved.
+        Session late = new Session(iteration, "s-late");
+        OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
+                "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
+                        3), "o.a.h.h.s.d.DataXceiver#run#57");
+        late.activation(lateWriter, false);
+        late.symbolic("e.late", "M_A");
+        late.write(at(lateWriter, Endpoint.stateSite("BlockTokenSecretManager",
+                "addKeys", 12, true), "BlockTokenSecretManager#addKeys#12"),
+                ALL_KEYS, 9L, "e.late");
+        late.flush();
+        Corpus grown = Corpus.read(iteration, null);
+        Task later = ClosurePlanner.taskOf(grown, task.taskId());
+        assertTrue("the corpus found a feeder: " + later.factor(),
+                later.factor().contains(lateWriter));
+        assertEquals("one the seed never ran re-keys none of its arms", seed,
+                dependence(grown, later, "s-seed", "Guard#u8"));
         // The wave names an obligation once: a solver reading the corpus
         // mid-wave (a larger factor, another dependence) keeps that id.
         ObligationFactory.Candidate located = ObligationFactory.locate(corpus,
@@ -1615,6 +1707,76 @@ public class ExploreTest {
         assertTrue("the obligation announces the control it invented", named);
     }
 
+    // ---- an open decider arm: asked at one decision, named until closed --
+
+    /**
+     * A reached anchor whose phi left out an open decider arm
+     * (TargetRow.OpenArm, causynth.BooleanReturns) asks the ONE decision
+     * the row names -- the call of the helper that fed the guard, never
+     * every call of its method -- and the round's manifest names the arm
+     * until a flip closes it: PENDING while asked, UNANSWERED once its only
+     * replay never reached the decision, UNSAT once no world takes it; an
+     * arm with no decision to ask is NOT_FLIPPABLE.
+     */
+    @Test
+    public void anOpenDeciderArmIsAskedAtTheCallThatFedTheGuard()
+            throws Exception {
+        String helper = "State#u2";
+        Object[][] rows = {
+            // the arm's asked decision, the answer, the arm's state
+            {helper, null, "PENDING"},
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED"},
+            {helper, Verdict.UNSAT, "UNSAT"},
+            {"", null, "NOT_FLIPPABLE"}};
+        for (Object[] row : rows) {
+            String asked = (String) row[0];
+            Path iteration = tree.newFolder("open-arm-" + row[2]).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                    "7", null, null, true);
+            // An earlier call of the helper, and the one that fed the guard.
+            seed.decision(TARGET, helper, 1, true, "(> M_SERIAL 3)");
+            seed.decision(TARGET, helper, 2, false, "(> M_SERIAL 10)");
+            seed.targets.add(TargetRow.of("s-seed", 99L, TARGET, "Throw#u30",
+                    "false", false, true, TargetRow.OpenArm.of(helper, 2,
+                            true, asked, 2)));
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u9"));
+            Path out = tree.newFolder("open-arm-out-" + row[2]).toPath();
+            Path results = out.resolve("results.jsonl");
+            Files.createDirectories(out);
+            Files.write(results, new byte[0]);
+            JsonObject first = plan(iteration, TARGET_SELECTOR, null, results,
+                    out.resolve("obligations-0000"), 0);
+            List<Obligation> proposed = obligations(
+                    out.resolve("obligations-0000"));
+            if (asked.isEmpty()) {
+                assertTrue("nothing to ask: " + proposed, proposed.isEmpty());
+            } else {
+                assertEquals("one flip, of the call that fed the guard: "
+                        + proposed, 1, proposed.size());
+                assertEquals(2, proposed.get(0).ordinal());
+            }
+            JsonObject named = first;
+            if (row[1] != null) {
+                record(results, ObligationResult.of(
+                        proposed.get(0).obligationId(), (Verdict) row[1],
+                        "s-flip", "answered"));
+                named = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve("obligations-0001"), 1);
+            }
+            JsonArray arms = named.getAsJsonArray("openArms");
+            assertEquals("the arm is named: " + arms, 1, arms.size());
+            JsonObject arm = arms.get(0).getAsJsonObject();
+            assertEquals(helper, arm.get("siteId").getAsString());
+            assertTrue(arm.get("outcome").getAsBoolean());
+            assertEquals("its state: " + arm, row[2],
+                    arm.get("state").getAsString());
+        }
+    }
+
     // ---- (4) a root with no domain is pinned, here as in the composer --
 
     @Test
@@ -1792,6 +1954,23 @@ public class ExploreTest {
                 applied <= Long.MAX_VALUE - 700L);
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
                 applied > 300L);
+        // And it is off the BASE reading: a replay whose clock ran on a jump
+        // states the instant it ran at and the jump; the next model is owed
+        // its difference from what the clock read before the jump, and the
+        // plant of that skew states the same base again.
+        RootMintRow ranOn = RootMintRow.of("s-flip", 3L,
+                OccurrenceAddress.parse("hdfs/nn0#epoch1/region/R.1"
+                        + "/ctx:Root:CLIENT#1/idx:"), "CASE.NOW", "M_NOW",
+                RootKind.CLOCK, RootCategory.CLOCK, "3600700", null, null,
+                true, Clock.of(1_000_000L, Clock.WALL), 3_600_000L);
+        String owed = ObligationFactory.skew("1300", ranOn.baseReading());
+        assertEquals("600", owed);
+        RootMintRow replanted = RootMintRow.of("s-next", 3L,
+                OccurrenceAddress.parse("hdfs/nn0#epoch1/region/R.1"
+                        + "/ctx:Root:CLIENT#1/idx:"), "CASE.NOW", "M_NOW",
+                RootKind.CLOCK, RootCategory.CLOCK, "1300", null, null, true,
+                Clock.of(1_000_000L, Clock.WALL), Long.parseLong(owed));
+        assertEquals("700", replanted.baseReading());
         String tickedQuery = new String(Files.readAllBytes(ticked.directory
                 .resolve("obligation_query.smt2")), "UTF-8");
         assertTrue("because the query ceilings the clock a window above the"

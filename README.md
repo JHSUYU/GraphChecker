@@ -17,18 +17,43 @@ A SAT comes with a claim naming the roots that moved (`claim.json`) and one repl
 the program agrees (`confirm.json`). What the rows do not state is named, never silently
 defaulted.
 
+## Use all ten servers, in parallel -- mandatory for whoever takes over
+
+The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10个server配有nfs,你只要做好代码隔离等。可以大大加速的。这是你的
+长期记忆"; "我们一个case内oblication当然可以分配到多机"; "我们不必强行要求独占". **A lead or agent that takes over keeps
+`lift06`-`lift15` full at all times; nothing waits in series except on a real dependency.** How the last leads did it
+(details and lessons: [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md)):
+
+1. **Inside one case:** every obligation (a solve, then a replay), GROW re-run, CONFIRM and native reproduction is a
+   separate start on whichever lift has room (`CAUSYNTH_CAMPAIGN_WORKER_HOSTS` = all ten); one case alone can keep
+   ~100 replays in flight.
+2. **Across cases:** a round is a sweep of many cases at once (`tools/adhoc/sweep.sh <snapshot> <ROUND> <cases> 2`: 2
+   heads per lift, the cases sharing the replay slots); several sweeps side by side (the named-bug baseline, the reruns
+   of cut cases, newly added checks). Give a full sweep `CASE_TIMEOUT_SECONDS=10800`: under 20 heads the 90-min default
+   cut six cases that closed at 3 h.
+3. **Across development:** up to 4 coding agents, each on its own branch, sparse worktree, frozen snapshot and
+   `GC_OUT`, each running its offline gates and up to 4 live validation runs, beside the lead's rounds; review and
+   diagnosis agents read only. A landed fix is validated at once on the cases it touches, never by waiting for a round.
+4. **Isolation over NFS is what makes this safe:** worktrees and snapshots without `third_party/`
+   (`tools/lib/worktree-add.sh`, seconds instead of most of an hour); system trees, VM images and recorded corpora are
+   shared read-only; never rebuild a tree or snapshot a run reads; kill by pid only.
+5. **The one limit is memory:** every start is charged on the host ledger and no lift passes 70 %. Shared services must
+   not be flooded: offline gates go through `onlift.sh` off `lift11` (the owner's machine), a few cases at a time.
+6. **At every lull, look at the lifts** (memory and load on each) and fill them with whatever does not wait on a fix.
+
 ## Taking over: read these, in order
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
-[AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md) and
-[PARALLEL.md](docs/handover/PARALLEL.md) as its own long-term memory.
+[AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md),
+[PARALLEL.md](docs/handover/PARALLEL.md) and [CHECKING.md](docs/handover/CHECKING.md) as its own long-term memory.
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands at the 2026-10-05 handover: the goals (verbatim); every GraphChecker branch with its head, worktree and state; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and what must change; VM images and snapshots; the rounds (HG4, HG5A, HG7, the agents') and the state of each HDFS check; where the evidence lives. |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands at the 2026-10-06 handover: the goals (verbatim); every GraphChecker branch with its head, worktree and state; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and what must change; VM images and snapshots; the rounds (HG4, HG5A, HG7, the agents') and the state of each HDFS check; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the WIP to land, the r4 trees, the time model, 11741's binding, the open checks, speed, the next round and the end of HDFS, the cleanup still owed. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
+| 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the fifteen traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, ...). |
 | 4 | [docs/handover/AGENTS.md](docs/handover/AGENTS.md) | How to work with agents: at most 4 coding agents, reviews at key complex places, briefs, design gates, worktrees, merges, stopping; how each lead ran them and the lessons. |
 | 5 | [docs/handover/OPERATIONS.md](docs/handover/OPERATIONS.md) | Servers (ten lifts, the 70 % memory ledger), storage, trees, VM images, helper commands and round tools, build and test, rounds, sweeps and exclusive runs, the offline gate, reading and debugging a campaign, traps. |
 | 6 | [docs/handover/PARALLEL.md](docs/handover/PARALLEL.md) | How development keeps all ten lifts full: the three levels of parallelism (inside a case, across cases, across agents), isolation and sharing over NFS, the loop in which nothing waits in series, what does not parallelize and how it gets faster. |
@@ -151,7 +176,7 @@ a `target.yaml`, whose tree marks the bug's throw with `@CausynthExceptionTarget
 as one campaign. A list of case ids, one per line, runs through `tools/adhoc/sweep.sh`: one
 campaign per case, at most `heads-per-host` heads on each lift and every case's obligations on all
 of them, every start through `fanout.sh` and the host ledger ([OPERATIONS.md](docs/handover/OPERATIONS.md) §4); each case gets
-`CASE_TIMEOUT_SECONDS` (5400 s by default) and `PRUNE=1` (`PRUNE=0` keeps every artifact, for a measurement sweep, e.g. `CAUSYNTH_CAMPAIGN_STOP_AFTER=SEED`, which reaches each head on its job's command line), and a sweep started again resumes. Give
+`CASE_TIMEOUT_SECONDS` (5400 s by default; give a full sweep 10800) and `PRUNE=1` (`PRUNE=0` keeps every artifact, for a measurement sweep, e.g. `CAUSYNTH_CAMPAIGN_STOP_AFTER=SEED`, which reaches each head on its job's command line), and a sweep started again resumes. Give
 a sweep its own `GC_OUT`, so that `findings.py` reads that sweep's cases only (the host ledger
 stays the cluster's one):
 
@@ -220,7 +245,8 @@ experiments/accept/               accept.sh, report.py, cone.py, probe.sh
 experiments/{hadoop,solr,zookeeper}/  per-system scripts and cases (hadoop/hdfs-adhoc: the 36 HDFS study
                                   checks, checks.tsv; hadoop/hdfs-bugs, zookeeper/zk-bugs: the bug_study
                                   checks; HBase's harness is on branch hbase-startup)
-tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), alive.sh
+tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), worktree-add.sh (a
+                                  worktree or snapshot without third_party/), alive.sh
                                   (which runs a process on any lift still names), heads.sh (a
                                   case's configuration, its head's weight and
                                   room, and which host heads it)
@@ -237,5 +263,5 @@ docs/STATUS.md                    done / partial / not done, per requirement; op
 docs/design/                      the design (index and design at a glance: docs/design/README.md; speed and the
                                   cluster: PERFORMANCE.md)
 docs/checks/                      every ad hoc coordination check of HDFS, Solr, HBase and ZooKeeper, with its live state
-docs/handover/                    STATE, TODO, RULES, AGENTS, OPERATIONS: the handover (start here)
+docs/handover/                    STATE, TODO, RULES, CHECKING, AGENTS, OPERATIONS, PARALLEL: the handover (start here)
 ```

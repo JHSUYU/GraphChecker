@@ -2599,7 +2599,15 @@ campaign_replay_min_need_mb=512
 # 939-2003).  The need sizes the replay JVM's heap (CAUSYNTH_HEAP_BASIS_MB,
 # execute.sh); the charge it starts with is campaign_replay_charge_mb's.
 campaign_replay_need_mb() {
-  local need=$(( (campaign_replay_peak_mb * 3 + 255) / 256 * 128 ))
+  campaign_need_of_peak_mb "${campaign_replay_peak_mb}"
+}
+
+# The need, in MB, of a JVM whose measured resident peak was <peak_mb>: the
+# peak times 1.5, rounded up to 128 MB, at least campaign_replay_min_need_mb
+# -- a replay's (campaign_replay_need_mb), and a solver's asked again after
+# one died (campaign_obligation_worker).
+campaign_need_of_peak_mb() {
+  local need=$(( ($1 * 3 + 255) / 256 * 128 ))
   (( need >= campaign_replay_min_need_mb )) \
     || need=${campaign_replay_min_need_mb}
   printf '%s\n' "${need}"
@@ -2905,7 +2913,7 @@ campaign_solver_idle_s=300
 # The solver's heap, in MB: the 8 GB every solver JVM has had, which no
 # solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  A
 # question it cannot answer is asked once more of a solver of its own at the
-# case's engine heap (campaign_obligation_worker).
+# case's engine heap, placed by what the first held (campaign_obligation_worker).
 campaign_solver_heap_mb=8192
 
 # What a solver is charged at its start, in MB; the rest of what it holds is
@@ -3085,28 +3093,73 @@ campaign_solver_jvm() {
 }
 
 # campaign_solve_obligation_alone <obligation_id> <obligations> <sessions>
-# <worker> [charged_mb]: the question in a solver JVM of its own at the
-# case's engine heap, its files straight into <worker>, its status the JVM's.
-# <charged_mb>: at once, under the obligation's own charge of that many MB
-# (a solver's start), for a question whose host had no room for its solver
-# -- what the JVM grows past that charge is asked of the host as it grows.
-# Otherwise once the host has room for the engine heap, charged that while it
-# runs: for a question the host's solver, or a JVM of its own, could not
-# answer (it ran out of heap or died), never the obligation's answer.
+# <worker> <charged_mb>: the question in a solver JVM of its own at the
+# case's engine heap, its files straight into <worker>, its status the JVM's,
+# on this host under a charge of <charged_mb> its caller holds here: the
+# obligation's own (a solver's start) for a question whose host had no room
+# for its solver, or the one campaign_solve_obligation_placed took.  What
+# the JVM grows past it is asked of the host as it grows
+# (campaign_watch_workload).
 campaign_solve_obligation_alone() {
-  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=${5:-}
-  local heap=${engine_memory_mb:-8192} charge="" status=0
-  if [[ -z "${charged}" ]]; then
-    campaign_await_host_memory localhost "${heap}" || return 1
-    charge=${campaign_host_charge_id}
-    charged=${heap}
-  fi
-  run_capturing_status campaign_solver_jvm "${heap}" "${charged}" \
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
+  local status=0
+  run_capturing_status campaign_solver_jvm "${engine_memory_mb:-8192}" \
+    "${charged}" \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
     --output-dir "${worker}"
-  [[ -z "${charge}" ]] || campaign_host_release localhost "${charge}"
+  return "${status}"
+}
+
+# How long a solver asked again waits for a host with room for its measured
+# need (campaign_solve_obligation_placed) before its obligation fails by
+# name: a few polls, never the worker's whole bound (hdfs-adhoc-11 CW4b/CW5:
+# workers waited 3900 s for 16384 MB on the one host they ran on, and were
+# killed unanswered).
+campaign_solver_place_patience_s=60
+
+# campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
+# <worker> <need_mb>: a question asked again of a solver of its own, placed
+# as any start is: on the pool's host with the most room for <need_mb>
+# (campaign_host_room), charged there while it runs -- this host or a peer
+# (--run-placed, from a directory under <worker>).  4, with why in
+# campaign_host_wait_reason, when no host has the room within
+# campaign_solver_place_patience_s; else the JVM's status.
+campaign_solve_obligation_placed() {
+  local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 need=$5
+  local host room best best_room since=${SECONDS} charge status=0
+  while true; do
+    best=""
+    best_room=-1
+    while IFS= read -r host; do
+      room=$(campaign_host_room "${host}") || continue
+      (( room >= need && room > best_room )) || continue
+      best=${host}
+      best_room=${room}
+    done < <(campaign_worker_host_list)
+    if [[ -n "${best}" ]]; then
+      campaign_host_try_charge "${best}" "${need}"
+      (( status != 0 )) || break
+    else
+      campaign_host_wait_reason="no host of the pool has ${need} MB of room"
+    fi
+    (( SECONDS - since < campaign_solver_place_patience_s )) || return 4
+    sleep "${campaign_host_poll_s}"
+  done
+  charge=${campaign_host_charge_id}
+  status=0
+  if campaign_host_is_local "${best}"; then
+    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" "${need}"
+  else
+    # Its placed directory under the worker: a peer has no campaign root.
+    local campaign_root=${worker}
+    run_capturing_status campaign_run_placed "${best}" \
+      campaign_solve_obligation_alone "${obligation_id}" "${obligations}" \
+      "${sessions}" "${worker}" "${need}" >&2
+  fi
+  campaign_host_release "${best}" "${charge}"
   return "${status}"
 }
 
@@ -3129,10 +3182,11 @@ campaign_solve_obligation_alone() {
 # its solver.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local outcome status=0
+  local outcome status=0 peak need
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
+  campaign_watch_peak_mb=0
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status campaign_solve_obligation "${obligation_id}" \
     "${obligations}" "${sessions}" "${worker}"
@@ -3145,21 +3199,34 @@ to start its solver now; answered in a solver JVM of its own"
       "${obligations}" "${sessions}" "${worker}" "${charged}"
   fi
   if [[ "${status}" -ne 0 ]]; then
-    # A solver that ran out of heap or died answered nothing about the
-    # obligation, and settles no question, whatever it left: asked once
-    # more, of a solver of its own.  Twice: the worker did not finish
-    # (campaign_obligation_unfinished), never an answer.
+    # A solver that ran out of heap, died, or was ended at what its host
+    # could hold answered nothing about the obligation, and settles no
+    # question, whatever it left: asked once more, of a solver of its own,
+    # placed as any start by what the first one measurably held (its peak,
+    # or the host's solver's heap) with the usual margin
+    # (campaign_need_of_peak_mb), on any host with that room
+    # (campaign_solve_obligation_placed).  Twice, or no host with the room:
+    # the worker did not finish (campaign_obligation_unfinished), by name,
+    # never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
-    campaign_log "obligation ${obligation_id}: its host's solver did not \
-answer ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
-      | tail -n 1)); asked again of a solver of its own at \
-${engine_memory_mb:-8192} MB"
-    run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
-      "${obligations}" "${sessions}" "${worker}"
-    if [[ "${status}" -ne 0 ]]; then
+    peak=${campaign_watch_peak_mb}
+    (( peak > 0 )) || peak=${campaign_solver_heap_mb}
+    need=$(campaign_need_of_peak_mb "${peak}")
+    campaign_log "obligation ${obligation_id}: its solver did not answer \
+($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
+      | tail -n 1)); asked again of a solver of its own, ${need} MB for a \
+first that held ${peak} MB, on any host with the room"
+    run_capturing_status campaign_solve_obligation_placed "${obligation_id}" \
+      "${obligations}" "${sessions}" "${worker}" "${need}"
+    if [[ "${status}" -eq 4 ]]; then
+      die "obligation ${obligation_id}: its solver did not answer, and no \
+host has room for a solver of its own of ${need} MB (the first held \
+${peak} MB) within ${campaign_solver_place_patience_s}s: \
+${campaign_host_wait_reason}"
+    elif [[ "${status}" -ne 0 ]]; then
       rm -f -- "${worker}/question.txt" "${worker}/question.asked"
       die "obligation ${obligation_id}: its solver failed twice, its \
-host's and one of its own at ${engine_memory_mb:-8192} MB: $(grep -v -E \
+host's and one of its own of ${need} MB: $(grep -v -E \
         '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)"
     fi
   fi
@@ -3817,10 +3884,13 @@ campaign_recording_bound_marker=RECORDING_BOUND
 # and one refused 6 MB on a host with 16 GB free, all of it promised to
 # starts and heads (accept-x1-17960's).
 # What it was granted is held by the watcher (campaign_host_hold) and
-# released when it ends.  A recording given <max_trace_mb> whose trace
+# released when it ends; its peak is campaign_watch_peak_mb once it has
+# (a solver asked again places its JVM by it, campaign_obligation_worker).
+# A recording given <max_trace_mb> whose trace
 # (<dir>/runtime_trace.jsonl) passes it is ended there, RECORDING_BOUND, said
 # in <dir>/${campaign_recording_bound_marker}: never a trace cut short and
 # aggregated as if whole.
+campaign_watch_peak_mb=0
 campaign_watch_workload() {
   local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
   local status=0 refused="" written=0 bounded=""
@@ -3859,6 +3929,7 @@ campaign_watch_workload() {
   for id in "${grants[@]}"; do
     campaign_host_release localhost "${id}"
   done
+  campaign_watch_peak_mb=${peak}
   if [[ -n "${bounded}" ]]; then
     echo "RECORDING_BOUND: the recording's trace passed \
 recording_max_trace_mb (${max_mb} MB) at ${bounded} MB, more rows than SEED's \
@@ -4026,48 +4097,6 @@ campaign_run_placed() {
   cat -- "${dir}/stderr.log" "${dir}/ssh.log" >&2 2>/dev/null
   rm -rf -- "${dir}"
   return "${status}"
-}
-
-# campaign_await_host_memory <host> <need_mb>: blocks until one
-# start fits on the host, then charges it there: 0.  2 when the host's
-# memory cannot be read for campaign_ssh_patience_s, the waiter's named
-# failure.  What starts on the host that runs it waits here: a host's
-# solver (campaign_start_solver) and a question asked again of a solver of
-# its own (campaign_solve_obligation_alone).  A head's step goes to any host
-# with room (campaign_head_place), and an obligation's start is the pool's
-# (campaign_stream_admit_host): neither waits on one host while another
-# has room.
-campaign_await_host_memory() {
-  local host=$1 need=$2
-  local said=false status=0 unread_since="" since=${SECONDS}
-  while true; do
-    campaign_host_try_charge "${host}" "${need}"
-    case "${status}" in
-      0)
-        [[ "${said}" == false ]] || campaign_log "room for ${need} MB on \
-${host} after $(( SECONDS - since ))s"
-        return 0 ;;
-      2)
-        # Unreadable is not "no room": sshd refuses some connections while a
-        # round opens hundreds.  Waited out, stated, within the patience.
-        [[ -n "${unread_since}" ]] || unread_since=${SECONDS}
-        if (( SECONDS - unread_since >= campaign_ssh_patience_s )); then
-          campaign_log "the memory of host ${host} could not be read for \
-${campaign_ssh_patience_s}s"
-          return 2
-        fi
-        campaign_host_wait_reason="the memory of ${host} could not be read"
-        ;;
-      *) unread_since="" ;;
-    esac
-    if [[ "${said}" == false ]]; then
-      campaign_log "waiting for memory on ${host}: \
-${campaign_host_wait_reason}"
-      said=true
-    fi
-    campaign_head_heartbeat
-    sleep "${campaign_host_poll_s}"
-  done
 }
 
 # campaign_stream_job <kind> <host> <charge> <id> <worker> <args...>: one
@@ -5324,8 +5353,12 @@ campaign_stream_wait() {
 # answered SAT_MODEL_READY is owed its replay: its REPLAY goes first in the
 # queue at once, never waiting for a step -- still in flight, still within
 # the exploration's share and its host's cores -- on the class tree and plan
-# its solve started on, charged then.  Every other return waits in
-# stream_pending for the next step to land it.
+# its solve started on, charged then -- behind only a witness's confirmation
+# and GROW's re-runs queued first, which end the exploration or hold every
+# solve (hdfs-11741 AR1: 473 replays of solves that returned later started
+# ahead of the witness's confirmation, which ran four hours after the witness
+# landed).  Every other return waits in stream_pending for the next step to
+# land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker
   if [[ "${pid}" == "${stream_ticker}" ]]; then
@@ -5342,13 +5375,25 @@ campaign_stream_ended() {
         '.verdict // ""' "${worker}/obligation_result.jsonl" 2>/dev/null)" \
         == SAT_MODEL_READY ]]; then
       campaign_log "obligation ${id}: solved on ${host}, its replay queued"
-      stream_queue=("REPLAY ${round} ${id} ${stream_job_tree[${pid}]}" \
-        "${stream_queue[@]}")
+      campaign_stream_queue_replay \
+        "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
     else
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
     fi
     unset 'stream_jobs[$pid]' 'stream_job_worker[$pid]' 'stream_job_tree[$pid]'
   fi
+}
+
+# Puts one REPLAY first in the queue, behind the CONFIRM and RERUN entries
+# that lead it (campaign_stream_ended).
+campaign_stream_queue_replay() {
+  local at=0
+  while (( at < ${#stream_queue[@]} )) \
+      && [[ "${stream_queue[at]}" == CONFIRM\ * \
+         || "${stream_queue[at]}" == RERUN\ * ]]; do
+    at=$((at + 1))
+  done
+  stream_queue=("${stream_queue[@]:0:at}" "$1" "${stream_queue[@]:at}")
 }
 
 # What returned since the last step began, landed: each obligation's
@@ -5645,10 +5690,12 @@ campaign_stream_manifest() {
 # the search only as a named, rare last resort, counted every round): null
 # when none did, else {by: [the configuration key of each], detail}.  They
 # are the wave budget (region_path_max_waves, the stop
-# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round reads of one task
-# (region_path_max_paths_per_region) and the world depth it cuts from
-# (region_path_max_world_depth), ObligationFactory's rows naming the bound in
-# their subject; the tasks one anchor's closure plans (region_path_max_tasks:
+# REGION_PATH_WAVE_BUDGET_REACHED); the paths a round cuts from per task
+# (region_path_max_paths_per_region), only where the LAST round planned
+# deferred some -- an earlier round's deferral is work the rounds after it
+# read first, and a fixed point defers none -- and the world depth a round
+# cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
+# bound in their subject; the tasks one anchor's closure plans (region_path_max_tasks:
 # the last round's `truncated`, as campaign_stream_truncation judges it, since
 # a later round plans what an earlier one left); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
@@ -5669,11 +5716,14 @@ campaign_bounds() {
     --slurpfile rounds <(cat "${iteration_dir}"/obligations-*/\
 explore_manifest.json 2>/dev/null) \
     --slurpfile gaps "${campaign_final}/gaps.json" \
+    --slurpfile last <(cat "$(printf '%s\n' "${iteration_dir}"/obligations-* \
+      | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
     --argjson decided "${decided}" --argjson refutes "${refutes}" \
     --argjson maxClaims "${campaign_max_claims}" '
+    def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
-      | select(.subject | test(" " + $bound + "=[0-9]+$"))];
-    rows("max-paths-per-region") as $paths
+      | bound($bound)];
+    [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
@@ -5681,9 +5731,9 @@ explore_manifest.json 2>/dev/null) \
          | {by: "region_path_max_waves", detail: $exploration[0].detail}),
         (select(($paths | length) > 0)
          | {by: "region_path_max_paths_per_region",
-            detail: ("\($paths | length) task round(s) read only"
-              + " \($paths[0].subject | sub(".* "; "")) recorded paths, the"
-              + " rest unread")}),
+            detail: ("the last round deferred \($paths | length) task(s)"
+              + " past \($paths[0].subject | sub(".* "; "")) recorded paths"
+              + " that offer an owed arm")}),
         (select(($depth | length) > 0)
          | {by: "region_path_max_world_depth",
             detail: ("\($depth | length) task round(s) cut from no path"
@@ -5747,6 +5797,34 @@ campaign_exploration_cut() {
             + "CONFIRM decides it"
             else "no UNSAT closes over a corpus missing those arms" end))}' \
     "${iteration_dir}/exploration.json" >>"${iteration_dir}/campaign_gaps.jsonl"
+}
+
+# The open decider arms the declared anchor's runs left phi without and no run
+# took (ExploreMain#openArms, the last round's manifest), judged once here: an
+# arm whose flip came to no verdict -- a replay that never reached the
+# decision -- leaves the UNSAT that closes over it none, one ADMISSION_GAP row
+# each, BLOCKING under any claim but a SAT_CANDIDATE (whose witness stands as
+# CONFIRM decides it).  Every arm is named in result.json concrete[] (OPEN_ARM)
+# and only an UNSAT one leaves unsatClosureComplete true.
+campaign_open_arms() {
+  local iteration_dir=$1 claim last="" round
+  for round in "${iteration_dir}"/obligations-*/explore_manifest.json; do
+    [[ -s "${round}" ]] && last=${round}
+  done
+  [[ -n "${last}" ]] || return 0
+  claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
+  jq -c --arg claim "${claim}" --arg epoch "$(basename "${iteration_dir}")" '
+    (.openArms // [])[] | select(.state == "UNANSWERED")
+    | {schemaVersion: 1, sessionId: "", stage: "EXPLORE",
+       kind: "ADMISSION_GAP",
+       cls: (if $claim == "SAT_CANDIDATE" then "DIAGNOSTIC" else "BLOCKING"
+             end),
+       subject: "OPEN_ARM_UNANSWERED", topologyEpoch: $epoch,
+       detail: ("the open arm \(.siteId)=\(.outcome) of \(.anchor) was left"
+         + " out of phi by the runs that reached it, and its flip (asked at"
+         + " \(.asked | join(", "))) came to no verdict on \(.paths.UNANSWERED)"
+         + " path(s): no run took the arm, so no UNSAT closes over it")}' \
+    "${last}" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
 # Gap rows this iteration's stages wrote outside a session live in one file,
@@ -6634,6 +6712,7 @@ campaign_emit() {
   # a row that states no class is blocking: a gap added to some stage
   # withholds the claim until its producer states why it cannot break a chain.
   campaign_exploration_cut "${iteration_dir}"
+  campaign_open_arms "${iteration_dir}"
   campaign_write_gaps \
     "${composition_manifest}" \
     "${iteration_dir}" \
@@ -6708,7 +6787,12 @@ campaign_emit() {
     $gapDocuments[0] as $gaps |
     ($r.campaignClaim) as $decided |
     ($r.reachability // "UNKNOWN") as $reachability |
-    ($r.unsatClosureComplete // false) as $unsatClosureComplete |
+    # An open decider arm no run took closes only by its UNSAT flip
+    # (campaign_open_arms).
+    (($r.unsatClosureComplete // false)
+     and ([($exploreDocuments[0].openArms // [])[]
+           | select(.state != "UNSAT")] | length == 0))
+      as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
@@ -6847,10 +6931,13 @@ campaign_emit() {
                + (if .producer == "" then "" else "; its arrival names "
                   + .producer + ", which EXPLORE did not grow" end))}]),
      # What the decision rested on concretely: each anchor every admitted
-     # path decided on no symbol (EXPLORE), and each value COMPOSE stated
-     # as a constant or left free, with what it rests on (Composer.Concrete).
+     # path decided on no symbol (EXPLORE), each open decider arm no run
+     # took (EXPLORE, with its flip), and each value COMPOSE stated as a
+     # constant or left free, with what it rests on (Composer.Concrete).
      concrete: ([($exploreDocuments[0].concreteAnchors // [])[]
-                 | {kind: "ANCHOR"} + .] + ($c.concrete // [])),
+                 | {kind: "ANCHOR"} + .]
+                + [($exploreDocuments[0].openArms // [])[]
+                   | {kind: "OPEN_ARM"} + .] + ($c.concrete // [])),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it

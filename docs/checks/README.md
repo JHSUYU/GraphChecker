@@ -24,58 +24,58 @@ solr-18406) = 20; HBase 30 / 17 + 3 = 20; ZooKeeper 13 / 10 + 3 = 13.
 
 ## HDFS (the current system): 36 study checks
 
-State as of the 2026-10-05 handover. "HG7" = the round on the merged body `272afdef2` (stopped by the owner after
-7 study verdicts); "HG5A" = the round on the previous body `e76f6b4a8`. Every UNSAT listed was checked: its
-exploration reached FIXED_POINT and z3 re-solves the exported `candidate.smt2` to unsat
-(`tools/rounds/round-verify.sh`). Final acceptance still owes each case an exclusive run and a hand check of its
-`.smt` chain (TODO "The end of HDFS").
+State as of the 2026-10-06 handover. "HG9"/"HG9B"/"HG9L-<case>" = the rounds on `aaa2befe7` (clock placement + claim
+loop), SW1/SW1L the swapped-in checks; agents' rounds (AR3, AW4/AW5, DO2, FD2/FD3, TM*) on their branches (STATE §4).
+Every verdict listed was checked as [../handover/CHECKING.md](../handover/CHECKING.md) §1 says (how EXPLORE ended, z3
+on the exported `candidate.smt2`, BOUNDED, UNBOUND, moved roots, CONFIRM). Final acceptance owes one run of each case
+on the final body (concurrently, through the ledger) and the hand check of its `.smt` chain written into STATUS (TODO
+HDFS §5).
 
-| check | site (our tree) | guard | workload | window | state (2026-10-05) |
+| check | site (our tree) | guard | workload | window | state (2026-10-06) |
 | --- | --- | --- | --- | --- | --- |
-| hdfs-adhoc-05 | H/qjournal/client/QuorumOutputStream.java:106 | `bufToSend.getLength()==numReadyBytes` (the double buffer's flush) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG8W); swapped in for 32 (owner 2026-10-05: 32's map removal runs in unnamed pre-window work) |
-| hdfs-adhoc-06 | H/qjournal/client/QuorumOutputStream.java:112 | `data.length == bufToSend.getLength()` (the flushed buffer's backing array) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (SW1, 64 symbols, none unbound), but 51 task rounds read only 32 paths: owes the bound fix (TODO §5); swapped in for 01 (owner 2026-10-05) |
-| hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | UNSAT at FIXED_POINT (HG8A, 3 h budget, compose-cost merged): 129 obligations, 61 branches pruned by (r,c), 93 symbols |
-| hdfs-adhoc-08 | H/qjournal/server/Journal.java:487 | `reqInfo.epoch < lastPromisedEpoch` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG7D, 3 h budget): 417 obligations, 155 paths, 725 symbols |
-| hdfs-adhoc-09 | H/qjournal/server/Journal.java:504 | `reqInfo.committedTxId >= committedTxnId` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT (HG7D, 3 h budget): 477 obligations, 151 paths, 1068 symbols |
-| hdfs-adhoc-10 | H/qjournal/server/Journal.java:518 | `reqInfo.epoch != lastWriterEpoch` | TestQuorumJournalManager#testSingleWriter | up | SAT confirmed, reproduced 10/10 (HG7, SL1): a LOCAL_IO SYNC fault keeps lastWriterEpoch at 0 -> journal() epoch check; QJM designed tolerance, no new bug |
-| hdfs-adhoc-11 | H/security/token/block/BlockTokenSecretManager.java:582 (marked) | `allKeys.get(DEK keyId)==null` | TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] | up | UNSAT but NO-SYMBOL (HG7): allKeys.get(DEK keyId) pinned to an identity; the container writers (D1) and the one handoff rule (A3) owed |
-| hdfs-adhoc-12 | same file :541 | retrievePassword: `allKeys.get(token keyId)==null` | TestCausynthDataTransferRpcFailure#testUnencryptedReplicationAfterModeledKeyRefreshRpcFailure | up | SAT confirmed, reproduced 10/10 (HG7, SL1): a heartbeat RESPONSE fault loses the KeyUpdateCommand -> retrievePassword misses the token key id (the 17899/17967 root cause) |
-| hdfs-adhoc-14 | same file :441 | 6-argument: password from the DN's key != the token password from the NN's key | TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] | up | UNSAT at FIXED_POINT on the r4 tree (R4A): REGION.084d06ab on Anchor:<call> [doAs@0] |
-| hdfs-adhoc-15 | H/server/blockmanagement/BlockInfo.java:447 | commitBlock: `!isComplete()` | TestBlockToken#testBlockTokenInLastLocatedBlockLegacy | up | UNSAT (HG7) |
-| hdfs-adhoc-16 | H/server/blockmanagement/BlockInfo.java:428 | `uc != null && !isComplete()` | TestClientProtocolForPipelineRecovery#testUpdatePipeLineAfterDNReg | up | UNSAT (HG7; was RUN_DEFECT until E1) |
-| hdfs-adhoc-19 | H/server/datanode/BPOfferService.java:777 | the DNA_FINALIZE bpid equals the BPOS bpid | TestDFSFinalize#testFinalize | up | UNSAT (HG7) |
-| hdfs-adhoc-20 | H/server/datanode/BPOfferService.java:615 | `txid >= lastActiveClaimTxId` | TestClientProtocolForPipelineRecovery#testPipelineRecoveryOnOOB | up | UNSAT (HG7) |
-| hdfs-adhoc-21 | H/server/datanode/BPServiceActor.java:290 (throw at :293) | NN software version < the DN's minimum NN version | TestDFSInputStream#testSkipWithRemoteBlockReader | startup | open: clock-driven seed give-ups (80+ with sorted listings, SL2; R4A): time model (A2) |
-| hdfs-adhoc-22 | H/server/datanode/BlockPoolSliceStorage.java:393 | namespaceID: VERSION vs NN | TestDFSStartupVersions#testVersions | up | open: time-model class |
-| hdfs-adhoc-23 | same file :399 | blockpoolID: VERSION vs NN | TestDFSStartupVersions#testVersions | up | open: time-model class |
-| hdfs-adhoc-24 | same file :421 | stored LV/cTime newer than the namespace | TestDFSUpgrade#testUpgrade | up | rerun HG8B (3 h budget): SL1 cut by the budget (seed replay 21 min); listing fix merged (give-ups 84 -> 5) |
-| hdfs-adhoc-25 | same file :185 | cTime mismatch | TestDFSStartupVersions#testVersions | up | open: time-model class |
-| hdfs-adhoc-26 | same file :621 | cannot roll back to a newer state | TestDFSRollback#testRollback | up | rerun HG8B (3 h budget): SL1 cut by the budget; listing fix merged (give-ups 89 -> 12) |
-| hdfs-adhoc-27 | same file :510 | namespaceID equal during the upgrade | TestDatanodeLayoutUpgrade#testUpgradeToIdBasedLayout | startup | UNSAT at FIXED_POINT (HG7R, SL1) |
-| hdfs-adhoc-28 | H/server/datanode/BlockRecoveryWorker.java:565 | `bpos==null` in getDatanodeID | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT but NO-SYMBOL (HG7R): bpos lookup pinned; its writers ran before the window (a constant chain): to confirm after D1 |
-| hdfs-adhoc-29 | same file :604 | `bpos==null` in getActiveNamenodeForBP | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT but NO-SYMBOL (HG7R): bpos lookup pinned; writers before the window: to confirm after D1 |
-| hdfs-adhoc-30 | same file :609 | `activeNN==null` | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT at FIXED_POINT (HG7R): 4 roots; scope batch 2 (recoveryId) still owed |
-| hdfs-adhoc-31 | H/server/datanode/DataNode.java:1838 | `bpos==null` in getBPOSForBlock | TestDiskError#testDataTransferWhenBytesPerChecksumIsZero | up | UNSAT but NO-SYMBOL (HG7R): blockPoolManager.get pinned; the in-window addBlockPool unplanned -> container writers (D1) |
-| hdfs-adhoc-33 | H/server/datanode/DataStorage.java:259 | `bpStorage != null` (hot swap) | TestDataNodeHotSwapVolumes#testAddOneNewVolume | up | UNSAT at FIXED_POINT (HG7R, SL1) |
-| hdfs-adhoc-34 | same file :741 | namespaceIDs incompatible | TestDFSStartupVersions#testVersions | up | open: time-model class |
-| hdfs-adhoc-35 | same file :750 | clusterIDs incompatible | TestDFSStartupVersions#testVersions | up | open: time-model class |
-| hdfs-adhoc-37 | same file :942 | cannot roll back to a newer state | TestDFSRollback#testRollback | up | rerun HG8B (3 h budget): SL1 cut by the budget; listing fix merged (give-ups 80 -> 13) |
+| hdfs-adhoc-05 | H/qjournal/client/QuorumOutputStream.java:106 | `bufToSend.getLength()==numReadyBytes` (the double buffer's flush) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT with `bounded: null` on the owed-path bound (`hdfs-frontier-depth`, 2180 s); on the merged body some task rounds read only 32 paths (HG9L-05: 85 bounded rows): done when frontier-depth merges; swapped in for 32 (owner 2026-10-05) |
+| hdfs-adhoc-06 | H/qjournal/client/QuorumOutputStream.java:112 | `data.length == bufToSend.getLength()` (the flushed buffer's backing array) | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT with `bounded: null` on `hdfs-frontier-depth` (1961 s); on the merged body bounded (SW1: 51 rows, 64 symbols, none unbound); swapped in for 01 (owner 2026-10-05) |
+| hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | UNSAT at FIXED_POINT (HG9, 135 symbols) but UNBOUND 6: the QJM client relays jn1's prepareRecovery segment into acceptRecovery (`QuorumJournalManager.java:374/394`), and the response envelope stays on the executor thread, so jn0's StartTxId/EndTxId handoffs have no producer: codec capture (A4, TODO §1.6) |
+| hdfs-adhoc-08 | H/qjournal/server/Journal.java:487 | `reqInfo.epoch < lastPromisedEpoch` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT with `bounded: null` on `hdfs-frontier-depth` (3976 s); on the merged body cut by the 90-min sweep budget (HG9) and bounded (HG8F) |
+| hdfs-adhoc-09 | H/qjournal/server/Journal.java:504 | `reqInfo.committedTxId >= committedTxnId` | TestQuorumJournalManager#testSingleWriter | up | UNSAT at FIXED_POINT with `bounded: null` on `hdfs-frontier-depth` (3014 s); on the merged body as 08 |
+| hdfs-adhoc-10 | H/qjournal/server/Journal.java:518 | `reqInfo.epoch != lastWriterEpoch` | TestQuorumJournalManager#testSingleWriter | up | SAT confirmed again in HG9 (a FAULT root moved, polarityDecides, reproduced 10/10); SAT confirmed, reproduced 10/10 (HG7, SL1): a LOCAL_IO SYNC fault keeps lastWriterEpoch at 0 -> journal() epoch check; QJM designed tolerance, no new bug |
+| hdfs-adhoc-11 | H/security/token/block/BlockTokenSecretManager.java:582 (marked) | `allKeys.get(DEK keyId)==null` | TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] | up | UNSAT at FIXED_POINT (HG9L-11, 3 h budget; 14 symbols, none unbound) |
+| hdfs-adhoc-12 | same file :541 | retrievePassword: `allKeys.get(token keyId)==null` | TestCausynthDataTransferRpcFailure#testUnencryptedReplicationAfterModeledKeyRefreshRpcFailure | up | SAT confirmed (HG9L-12: a FAULT root moved, reproduced 4/10) but one unbound handoff on the merged body (`NNHAStatusHeartbeatProto.Txid`: the NN exported nothing): fixed on `hdfs-export-weave` (AW4-12: witness chain closed, unbound 0, 3 off-witness) |
+| hdfs-adhoc-14 | same file :441 | 6-argument: password from the DN's key != the token password from the NN's key | TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] | up | UNSAT at FIXED_POINT (HG9, 711 symbols) with UNBOUND 3 (the client's readBlock ExtendedBlockProto fields): fixed by (b2), merged 18f853467 (AR3-14: UNSAT, unbound 0, no HELD); the final round owed |
+| hdfs-adhoc-15 | H/server/blockmanagement/BlockInfo.java:447 | commitBlock: `!isComplete()` | TestBlockToken#testBlockTokenInLastLocatedBlockLegacy | up | UNSAT at FIXED_POINT for the stated reason (DO2, decider merged b650a0f6d): the fatal is `uc == null`, and three earlier reads of the same version found it non-null |
+| hdfs-adhoc-16 | H/server/blockmanagement/BlockInfo.java:428 | `uc != null && !isComplete()` | TestClientProtocolForPipelineRecovery#testUpdatePipeLineAfterDNReg | up | UNSAT at FIXED_POINT (HG9, 12 symbols; the decider adds only `uc == null`, already its first test) |
+| hdfs-adhoc-19 | H/server/datanode/BPOfferService.java:777 | the DNA_FINALIZE bpid equals the BPOS bpid | TestDFSFinalize#testFinalize | up | UNSAT at FIXED_POINT (HG9, 29 symbols) |
+| hdfs-adhoc-20 | H/server/datanode/BPOfferService.java:615 | `txid >= lastActiveClaimTxId` | TestClientProtocolForPipelineRecovery#testPipelineRecoveryOnOOB | up | UNSAT at FIXED_POINT (HG9, 7 symbols) |
+| hdfs-adhoc-21 | H/server/datanode/BPServiceActor.java:290 (throw at :293) | NN software version < the DN's minimum NN version | TestDFSInputStream#testSkipWithRemoteBlockReader | startup | open (time model): 14 of 17 stalls are the IPC Reader's hand-off naming (`hdfs-ipc-handoff-name`); the first a DataNode heartbeat SEND that never happened (TM13); quick workarounds to try: TODO §2 |
+| hdfs-adhoc-22 | H/server/datanode/BlockPoolSliceStorage.java:393 | namespaceID: VERSION vs NN | TestDFSStartupVersions#testVersions | up | open (time model): seed give-ups vary 0-66 between runs (a heartbeat turn not due in the window; the NameNode edit path meets NotReplicatedYet; start-up took 9-283 s); quick workarounds to try: TODO §2 |
+| hdfs-adhoc-23 | same file :399 | blockpoolID: VERSION vs NN | TestDFSStartupVersions#testVersions | up | open (time model): 0 seed give-ups on tm13 (TM13), no verdict on the current body yet; quick workarounds to try: TODO §2 |
+| hdfs-adhoc-24 | same file :421 | stored LV/cTime newer than the namespace | TestDFSUpgrade#testUpgrade | up | open (time-model family): not probed under the time model; UNSAT with a 3 h budget on an older body (HG8B) |
+| hdfs-adhoc-25 | same file :185 | cTime mismatch | TestDFSStartupVersions#testVersions | up | open (time model): 0-2 give-ups on tm10/tm13; 89 (NameNode edit path) and 238 under load (`Shell.runCommand` starts) on tm16; quick workarounds to try: TODO §2 |
+| hdfs-adhoc-26 | same file :621 | cannot roll back to a newer state | TestDFSRollback#testRollback | up | UNSAT at FIXED_POINT (HG9L-26, 3 h budget, 8 symbols) |
+| hdfs-adhoc-27 | same file :510 | namespaceID equal during the upgrade | TestDatanodeLayoutUpgrade#testUpgradeToIdBasedLayout | startup | UNSAT at FIXED_POINT (HG9, 5 symbols) |
+| hdfs-adhoc-28 | H/server/datanode/BlockRecoveryWorker.java:565 | `bpos==null` in getDatanodeID | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT at FIXED_POINT, NO-SYMBOL (HG9): the block-pool map is filled before the window and removed only after the target in unnamed work, a chain constant in the window |
+| hdfs-adhoc-29 | same file :604 | `bpos==null` in getActiveNamenodeForBP | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT at FIXED_POINT (HG9, 1 symbol): rests on the block-pool map, written at DataNode start-up and removed at shutdown (scope (B)) |
+| hdfs-adhoc-30 | same file :609 | `activeNN==null` | TestBlockRecovery2#testRecoveryTimeout | up | UNSAT at FIXED_POINT (HG9, 5 symbols): `bpServiceToActive` written before the window, its in-window writer gated by HA state (scope (B)) |
+| hdfs-adhoc-31 | H/server/datanode/DataNode.java:1838 | `bpos==null` in getBPOSForBlock | TestDiskError#testDataTransferWhenBytesPerChecksumIsZero | up | UNSAT at FIXED_POINT, NO-SYMBOL (HG9): as 28 |
+| hdfs-adhoc-33 | H/server/datanode/DataStorage.java:259 | `bpStorage != null` (hot swap) | TestDataNodeHotSwapVolumes#testAddOneNewVolume | up | UNSAT at FIXED_POINT (HG9L-33, 3 h budget) |
+| hdfs-adhoc-34 | same file :741 | namespaceIDs incompatible | TestDFSStartupVersions#testVersions | up | open (time model): 0 seed give-ups on tm13 (TM13), no verdict on the current body yet |
+| hdfs-adhoc-35 | same file :750 | clusterIDs incompatible | TestDFSStartupVersions#testVersions | up | open (time model): 0 seed give-ups on tm12 (TM12); never a verdict yet |
+| hdfs-adhoc-37 | same file :942 | cannot roll back to a newer state | TestDFSRollback#testRollback | up | UNSAT at FIXED_POINT (HG9L-37, 3 h budget) |
 | hdfs-adhoc-38 | H/server/namenode/FSDirAppendOp.java:123 | the file's storage policy is LAZY_PERSIST (append refused) | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (SW1, 13 symbols, none unbound, unbounded); swapped in for 17 (owner 2026-10-05) |
-| hdfs-adhoc-39 | same file :133 | the last block is COMMITTED, not COMPLETE | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (HG7R; 126 obligations, 8 paths); SL1 once OCCURRENCE_ADDRESS_SHARED (block-report ops, timing; A3 queue) |
-| hdfs-adhoc-40 | same file :139 | the last block is not sufficiently replicated | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (HG7R) |
+| hdfs-adhoc-39 | same file :133 | the last block is COMMITTED, not COMPLETE | TestFileAppend#testAppendTwice | up | RUN_DEFECT `OPEN_ARM_UNANSWERED` (DO2, decider merged b650a0f6d): the bug's arm `uc != null` was flipped six times and every replay was NOT_ADMITTED (TODO §3) |
+| hdfs-adhoc-40 | same file :139 | the last block is not sufficiently replicated | TestFileAppend#testAppendTwice | up | UNSAT at FIXED_POINT (DO2, decider merged): the open arm `isSufficientlyReplicated#u5` closed by UNSAT, only because `dfs.namenode.replication.min`'s domain is [1,1] (TODO §3) |
 | hdfs-adhoc-45 | H/server/namenode/FSEditLog.java:1471 | `!isSegmentOpen()` in endCurrentLogSegment | TestEditLog#testSimpleEditLog[1] | up | UNSAT at FIXED_POINT but NO-SYMBOL (SW1L-45): the edit log's segment state is the NameNode's own, set by its own thread (to read by hand); swapped in for 43 (owner 2026-10-05) |
-| hdfs-adhoc-48 | H/server/namenode/INodeDirectory.java:356 | `oldChild == children.get(i)` | TestRenameWithSnapshots#testRenameUndo_1 | up | UNSAT at FIXED_POINT (HG7R): children list modeled, the way left at a concrete guard |
-| hdfs-adhoc-49 | H/server/namenode/snapshot/DirectorySnapshottableFeature.java:189 | `n+1 > snapshotQuota` | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R; 209 obligations) |
-| hdfs-adhoc-50 | same file :198 | duplicate snapshot name | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG7R, SL1; 141 obligations, 3 paths) |
-| hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | UNSAT at FIXED_POINT (HG8Z): declared at the test thread's first image save (FSImageFormatProtobuf.Saver.save, one snapshot; `first` named a rebuilt cluster's format-time save, 0 snapshots, which made the check vacuous); 68 seed give-ups (clock class) |
+| hdfs-adhoc-48 | H/server/namenode/INodeDirectory.java:356 | `oldChild == children.get(i)` | TestRenameWithSnapshots#testRenameUndo_1 | up | UNSAT at FIXED_POINT, NO-SYMBOL (HG9): a single-thread operation under the namesystem lock |
+| hdfs-adhoc-49 | H/server/namenode/snapshot/DirectorySnapshottableFeature.java:189 | `n+1 > snapshotQuota` | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG9B) |
+| hdfs-adhoc-50 | same file :198 | duplicate snapshot name | TestNestedSnapshots#testNestedSnapshots | up | UNSAT at FIXED_POINT (HG9B) |
+| hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | open (time model): UNSAT at FIXED_POINT on an older body (HG8Z, declared at the first image save); on tm13 the first stall is a late FSEditLogAsync claim (slot 1710), then the NameNode restart phase |
 
-Summary (2026-10-06, rounds HG9/HG9B/HG9L/SW1 on the merged body; round-verify with UNBOUND): done -- UNSAT at the
-fixed point, z3 unsat on the file, unbounded, no unbound handoff -- 11 19 20 26 27 29 30 33 37 38 49 50, and 28 31 45 48
-over a chain constant in the window (28 31: the block-pool map filled before the window, removed only after the
-target in unnamed work; 48: a single-thread operation under the namesystem lock; 45: the edit log's own segment
-state); 10 SAT confirmed, reproduced 10/10. Owed: 15 16 39 40 (the guard's decider never in the fatal predicate: A4),
-07 (a relayed QJM segment: A4), 12 14 (unbound handoffs: A1), 05 06 08 09 (task rounds bounded at 32 paths: D1),
-21 22 23 24 25 34 35 52 (the time model: A2). Swapped: 32 for 05; 01 17 43 for 06 38 45 (owner 2026-10-05).
+Summary (2026-10-06 handover; CHECKING.md §1 on every verdict): done -- UNSAT at the fixed point, z3 unsat on the
+file, unbounded, no unbound handoff -- 11 15 16 19 20 26 27 29 30 33 37 38 40 49 50, and 28 31 45 48 over a chain
+constant in the window (reasons in their rows); 10 SAT confirmed, reproduced 10/10. Fixed on a branch, owed a merge
+and the final round: 12 (`hdfs-export-weave`), 14 ((b2), merged), 05 06 08 09 (`hdfs-frontier-depth`). In work: 07
+(codec capture), 39 (its bug's arm unreachable in replay). The time-model family: 21 22 23 24 25 34 35 52 (TODO §2).
+Swapped: 32 for 05; 01 17 43 for 06 38 45 (owner 2026-10-05).
 
 ## HDFS named bug checks (10)
 

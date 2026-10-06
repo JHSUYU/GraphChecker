@@ -34,6 +34,11 @@ public class SchedulePrefixTest {
         SessionDir session = SessionDir.of(iteration, "s1");
         Files.createDirectories(session.schedule().getParent());
         List<JsonObject> rows = new ArrayList<JsonObject>();
+        // Its timeline: where its clocks started, a startup pass, its
+        // window's opening.
+        rows.add(RowCodec.writeScheduleTime(ScheduleEvent.ORIGIN, 10L, 1L));
+        rows.add(RowCodec.writeScheduleStartup("register", "dn0", 20L, 2L));
+        rows.add(RowCodec.writeScheduleTime(ScheduleEvent.OPEN, 30L, 3L));
         rows.add(row(0, ScheduleEvent.Kind.SEND, "a", ""));
         rows.add(row(1, ScheduleEvent.Kind.WAKE, "tick.nn", ""));
         JsonObject mark = new JsonObject();
@@ -69,6 +74,17 @@ public class SchedulePrefixTest {
         assertEquals("the replay checks it runs the source's invocation",
                 "m[1](null)", SessionReader.readScheduleInvocation(out.resolve(
                         SchedulePrefix.REST_FILE)).get("of").getAsString());
+        assertEquals("each event keeps the instant it was made at", 1040L,
+                SessionReader.readSchedule(out.resolve(SchedulePrefix.FILE))
+                        .get(1).nanos());
+        List<String> timeline = new ArrayList<String>();
+        for (JsonObject timelineMark : SessionReader.readScheduleTimeline(
+                out.resolve(SchedulePrefix.REST_FILE))) {
+            timeline.add(timelineMark.get("mark").getAsString() + "@"
+                    + RowCodec.scheduleMillis(timelineMark));
+        }
+        assertEquals("and the replay's clocks follow the source's timeline",
+                Arrays.asList("ORIGIN@1", "STARTUP@2", "OPEN@3"), timeline);
         assertEquals("the replay reads the rest under the name it looks for",
                 edu.uva.liftlab.graphchecker.runtime.ScheduleLog.SUFFIX_FILE,
                 SchedulePrefix.REST_FILE);
@@ -86,7 +102,8 @@ public class SchedulePrefixTest {
     private static JsonObject row(long seq, ScheduleEvent.Kind kind,
                                   String site, String occurrence) {
         return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq, kind,
-                "node|Root:X", site, 0, occurrence));
+                "node|Root:X", site, 0, occurrence).stamped(1000L + 40L * seq,
+                4L + seq));
     }
 
     private static List<String> sites(Path file) throws Exception {

@@ -51,6 +51,9 @@ public final class RowCodec {
     private static final String CALL_SITE = "callSite";
     private static final String ITERATION = "iteration";
     private static final String SEQ = "seq";
+    /** The members a schedule row states the application's clocks in. */
+    private static final String NANOS = "ns";
+    private static final String MILLIS = "ms";
     private static final String JAVA_TYPE = "javaType";
 
     private RowCodec() {
@@ -445,6 +448,18 @@ public final class RowCodec {
         json.addProperty("phiTerm", row.phiTerm());
         json.addProperty("observedFatal", row.observedFatal());
         json.addProperty("reachedAnchor", row.reachedAnchor());
+        TargetRow.OpenArm open = row.openArm();
+        if (open != null) {
+            JsonObject arm = new JsonObject();
+            arm.addProperty("siteId", open.siteId());
+            arm.addProperty("ordinal", open.ordinal());
+            arm.addProperty("outcome", open.outcome());
+            if (!open.askedSiteId().isEmpty()) {
+                arm.addProperty("askedSiteId", open.askedSiteId());
+                arm.addProperty("askedOrdinal", open.askedOrdinal());
+            }
+            json.add(OPEN_ARM, arm);
+        }
         return json;
     }
 
@@ -453,11 +468,24 @@ public final class RowCodec {
     }
 
     static TargetRow readTarget(JsonObject json, RowPool pool) {
+        TargetRow.OpenArm open = null;
+        if (json.has(OPEN_ARM)) {
+            JsonObject arm = object(json, OPEN_ARM);
+            open = TargetRow.OpenArm.of(string(arm, "siteId"),
+                    (int) number(arm, "ordinal"), bool(arm, "outcome"),
+                    optionalString(arm, "askedSiteId"),
+                    arm.has("askedOrdinal")
+                            ? (int) number(arm, "askedOrdinal") : 0);
+        }
         return TargetRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "anchorSiteId"), string(json, "phiTerm"),
-                bool(json, "observedFatal"), bool(json, "reachedAnchor"));
+                bool(json, "observedFatal"), bool(json, "reachedAnchor"),
+                open);
     }
+
+    /** A target row's open decider arm (TargetRow.OpenArm). */
+    private static final String OPEN_ARM = "openArm";
 
     public static JsonObject writeGap(GapRow row) {
         JsonObject json = row(row.sessionId());
@@ -506,6 +534,8 @@ public final class RowCodec {
         if (!event.endpoint().isEmpty()) {
             json.addProperty(ENDPOINT, event.endpoint());
         }
+        json.addProperty(NANOS, event.nanos());
+        json.addProperty(MILLIS, event.millis());
         return json;
     }
 
@@ -533,20 +563,55 @@ public final class RowCodec {
 
     /** The mark of {@code who} completing startup {@code step} ({@link
      *  ScheduleEvent#STARTUP}). */
-    public static JsonObject writeScheduleStartup(String step, String who) {
-        JsonObject json = writeScheduleMark(ScheduleEvent.STARTUP, 0L);
+    public static JsonObject writeScheduleStartup(String step, String who,
+                                                  long nanos, long millis) {
+        JsonObject json = writeScheduleTime(ScheduleEvent.STARTUP, nanos,
+                millis);
         json.addProperty("step", step);
         json.addProperty("who", who);
         return json;
     }
 
+    /**
+     * A mark of the run's timeline ({@link ScheduleEvent#ORIGIN}, {@link
+     * ScheduleEvent#OPEN}, {@link ScheduleEvent#STARTUP}), stamped with the
+     * application's clocks there.
+     */
+    public static JsonObject writeScheduleTime(String mark, long nanos,
+                                               long millis) {
+        JsonObject json = writeScheduleMark(mark, 0L);
+        json.addProperty(NANOS, nanos);
+        json.addProperty(MILLIS, millis);
+        return json;
+    }
+
+    /** {@code System.nanoTime()} as a schedule row states it. */
+    public static long scheduleNanos(JsonObject row) {
+        return number(row, NANOS);
+    }
+
+    /** {@code System.currentTimeMillis()} as a schedule row states it. */
+    public static long scheduleMillis(JsonObject row) {
+        return number(row, MILLIS);
+    }
+
+    /** The refusal of a schedule row written before rows stated their
+     *  clock readings: such a corpus is re-recorded, never read. */
+    public static final String PRE_CLOCK_CONTRACT =
+            "schedule row predates the clock-stamp contract; re-record";
+
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
+        if (!json.has(NANOS) || !json.has(MILLIS)) {
+            throw new IllegalArgumentException(PRE_CLOCK_CONTRACT + ": "
+                    + json);
+        }
         return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
                 json.has(CONTEXT) ? string(json, CONTEXT) : "",
                 string(json, "site"), integer(json, "k"),
                 optionalString(json, OCCURRENCE),
-                optionalString(json, ENDPOINT));
+                optionalString(json, ENDPOINT))
+                .stamped(number(json, NANOS), number(json, MILLIS));
     }
 
     // ---- files ---------------------------------------------------------
