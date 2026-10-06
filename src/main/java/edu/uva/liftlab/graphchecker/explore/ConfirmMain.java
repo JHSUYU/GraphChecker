@@ -802,7 +802,8 @@ public final class ConfirmMain {
      *  has to make), a target row of it at the anchor reached it and
      *  observed the fatal ({@link #decide}'s rule), and it ran the model's
      *  world ({@link Moved#ranBy}: no pairing planted, every moved root at
-     *  the model's value, its clocks the model's jumps and nothing else). */
+     *  the model's value, no other root planted off its recorded value, its
+     *  clocks the model's jumps and nothing else). */
     static String realizedBy(Moved moved, JsonObject world, String sessionId,
                              List<JsonObject> arms, SessionReader session,
                              OccurrenceAddress anchor, boolean sawChosen) {

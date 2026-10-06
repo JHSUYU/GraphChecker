@@ -289,6 +289,16 @@ public final class CausynthMessagePropagation {
   }
 
   /**
+   * The same op leaving with the op message it carries ({@code
+   * DataTransferProtoUtil#withCausynth}).  Inert until codec capture
+   * (hdfs-codec-capture) gives it its behaviour; the r6 trees call it, and
+   * a DataNode's Receiver hands each parsed op to {@link #received}.
+   */
+  public static Outbound outboundOp(Object op) {
+    return outboundOp();
+  }
+
+  /**
    * A DataNode's turn received one op ({@code Receiver}, after its parse and
    * before any of its fields is read), into the turn's own context
    * ({@link MessageDoors#received}): the turn keeps its address, and the op
