@@ -216,7 +216,8 @@ jq -e '.evidence.symbolicPropagationComplete == false
 # BOUND-1: every declared bound that cut the search is named in result.json
 # by its configuration key (campaign_bounds), whatever the claim; a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
-# closure an earlier round truncated and the last planned whole.
+# closure an earlier round truncated and the last planned whole, nor paths an
+# earlier round deferred (the path bound counts the last round's).
 emit_fixture
 mkdir -p "${campaign_final}/refuted/0000" "${campaign_final}/refuted/0001" \
   "${emit_iteration}/obligations-0000" "${emit_iteration}/obligations-0001"
@@ -238,11 +239,17 @@ for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
     sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
     subject: $subject, detail: "cut"}'
 done >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+for round in 0000:U 0001:T; do
+  jq -n -c --arg subject "${round#*:} max-paths-per-region=32" \
+    '{schemaVersion: 1, sessionId: "exploration", kind: "ADMISSION_GAP",
+      cls: "DIAGNOSTIC", subject: $subject, detail: "deferred"}' \
+    >"${emit_iteration}/obligations-${round%:*}/gaps.jsonl"
+done
 run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
     "region_path_max_tasks", "schedule_max_jobs", "campaign_max_claims"]
-  and (.bounded.detail | test("wave 3; 1 task round.*without 2 occ"))' \
+  and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 occ"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
 $(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"

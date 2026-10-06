@@ -327,9 +327,9 @@ public final class ObligationFactory {
      * ({@link #flip}), then a digest of everything its answer rests on --
      * the query as its solver is asked it (or the refusal that leaves
      * none), and all its replay is given: the world it plants (its path's,
-     * inherited whole), the focused occurrence, the factor and the seed
-     * session (the focus row, whose factor grows as sessions land and no
-     * query reads), and {@code given} (the declared occurrence and the plan
+     * inherited whole), the focused occurrence, the factor (a set) and the
+     * seed session (the focus row, whose factor grows as sessions land and
+     * no query reads), and {@code given} (the declared occurrence and the plan
      * generation its class tree is woven from, which GROW moves); the
      * schedule cut is the path's session cut at the focus and factor.  An
      * obligation's id drifts as sessions land; its question does not while
@@ -356,9 +356,12 @@ public final class ObligationFactory {
         }
         text.append("\nfocused ").append(candidate.task.focused().id())
                 .append("\nseed ").append(candidate.task.seedSessionId());
+        // A set: the order the corpus lists it in moves as sessions land.
+        Set<String> factor = new TreeSet<String>();
         for (OccurrenceAddress member : candidate.task.factor()) {
-            text.append("\nfactor ").append(member.id());
+            factor.add(member.id());
         }
+        for (String member : factor) text.append("\nfactor ").append(member);
         text.append('\n').append(given);
         return flip(candidate) + ":" + ArtifactIO.digest(text.toString(), 16);
     }
@@ -389,7 +392,9 @@ public final class ObligationFactory {
      * Branches#parents}): a child inherits the parent's world (PIPELINE
      * §7.5), a NOT_ADMITTED replay ran no world, and one whose branch
      * stopped ran none the question is asked in. Such sessions still attest
-     * arms ({@link Frontier}).</p>
+     * arms ({@link Frontier}).  Every path is keyed; {@code
+     * maxPathsPerTask} bounds the paths that offer an owed arm no round has
+     * in flight, so it defers new work only, to the next round.</p>
      *
      * @param flipSites site ids this task's demand names; null = none
      * @param branches  which sessions a path may be cut from
@@ -417,22 +422,15 @@ public final class ObligationFactory {
                 tooDeep++;
                 continue;
             }
-            // A bound that drops work says so (gap below). Smallest-world-first
-            // means the cap keeps the paths closest to the recording.
-            if (paths >= bounds.maxPathsPerTask) {
-                unread++;
-                continue;
-            }
-            paths++;
-            int flips = 0;
+            // Its owed arms: each arm once (the same arm from another path is
+            // the same obligation; the first path -- smallest world, fewest
+            // inherited constraints -- is its prefix), fault flips first
+            // (PIPELINE §7.4: cheap, and they grow the graph), at most
+            // maxFlipsPerPath of them.
+            List<Candidate> owedHere = new ArrayList<Candidate>();
+            List<Candidate> flying = new ArrayList<Candidate>();
             int unflipped = 0;
-            // Fault flips first (PIPELINE §7.4): cheap, and they grow the
-            // graph.
             for (int index : faultFirst(corpus, path)) {
-                if (flips >= bounds.maxFlipsPerPath) {
-                    unflipped++;
-                    continue;
-                }
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(decision)) {
                     continue;
@@ -443,30 +441,58 @@ public final class ObligationFactory {
                 }
                 Candidate candidate =
                         new Candidate(corpus, task, path, index);
-                // The same arm from another path is the same obligation; the
-                // first path (smallest world, fewest inherited constraints) is
-                // its prefix.
-                if (!offered.add(candidate.obligationId)) continue;
+                if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
                 if (!reason.isEmpty()) {
+                    offered.add(candidate.obligationId);
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             decision.siteId() + "#" + decision.ordinal()
                                     + " -> " + !decision.outcome(), reason));
                     continue;
                 }
+                // Queued or running: owed, but not this round's to ask
+                // (Frontier#open holds it), so it holds no path slot.
+                if (owed.flying(candidate)) {
+                    flying.add(candidate);
+                    continue;
+                }
+                if (owedHere.size() >= bounds.maxFlipsPerPath) {
+                    unflipped++;
+                    continue;
+                }
+                owedHere.add(candidate);
+            }
+            for (Candidate candidate : flying) {
+                offered.add(candidate.obligationId);
                 candidates.add(candidate);
-                flips++;
+            }
+            // The path bound counts new work, never repetition: a path whose
+            // arms are all settled, in flight or offered by a path before it
+            // is no path to cut from (hdfs-adhoc-08 HG8F: of 15995 paths past
+            // the bound, 15670 offered nothing owed).  Smallest-world-first
+            // means the bound keeps the paths closest to the recording.  It
+            // DEFERS, never drops: every round reads the task's paths again,
+            // and once the paths before them are answered or in flight, the
+            // ones it left are the first that count (gap below).
+            if (owedHere.isEmpty()) continue;
+            if (paths >= bounds.maxPathsPerTask) {
+                unread++;
+                continue;
+            }
+            paths++;
+            for (Candidate candidate : owedHere) {
+                offered.add(candidate.obligationId);
+                candidates.add(candidate);
             }
             if (unflipped > 0) {
                 gaps.add(GapRow.of(path.sessionId,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         task.taskId() + " max-flips-per-path="
                                 + bounds.maxFlipsPerPath,
-                        "this path offered more flippable decisions than one "
-                                + "round takes from it: " + unflipped
-                                + " decision(s) after the "
-                                + bounds.maxFlipsPerPath
+                        "this path offered more owed arms than one round "
+                                + "takes from it: " + unflipped
+                                + " after the " + bounds.maxFlipsPerPath
                                 + " this round cut, left unasked"));
             }
         }
@@ -485,11 +511,11 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     task.taskId() + " max-paths-per-region="
                             + bounds.maxPathsPerTask,
-                    "this task has " + (paths + unread) + " cuttable "
-                            + "recorded path(s) and this round planned from "
-                            + paths + ": " + unread + " path(s), the "
-                            + "ones carrying the largest worlds, were not "
-                            + "read at all"));
+                    "this task has " + (paths + unread) + " recorded "
+                            + "path(s) that offer an owed arm and this round "
+                            + "planned from " + paths + ": " + unread
+                            + " path(s), the ones carrying the largest "
+                            + "worlds, wait for a later round"));
         }
         return candidates;
     }
