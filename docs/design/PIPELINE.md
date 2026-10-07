@@ -229,7 +229,9 @@ on 120, which a dispatch per label and successor took past the JVM's 64 KB metho
 
 `campaign_replay` runs `concolic_replay_command` (the adapter) with the plan, task ids, class tree,
 sessions directory, worker directory and `CAUSYNTH_SCHEDULE_PREFIX`; the seed replay is held to the
-recording's schedule (`recorded_schedule.jsonl`). A replay publishes one session under
+recording's schedule (`recorded_schedule.jsonl`); a timed wait held to it takes its `WAKE` slot when the
+slot is due and returns no sooner than its own deadline, since a `WAKE` is a timeout the recording's wait
+ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A replay publishes one session under
 `iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
 focus row its `manifest.json` states role `SEED`. The seed replay runs under a wall clock of
 `seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than
