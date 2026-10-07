@@ -2002,8 +2002,10 @@ $(live_charges "${solver_test}/hosts")"
 # what its host could hold) is no answer: it is asked once more of a solver
 # of its own, placed by what the first held -- its watched peak with the
 # usual margin, at least half a solver's heap (a peak a growing solver was
-# ended at is a lower bound); half the heap for a host's solver, which no
-# worker watched; never past the heap -- on any host with the room;
+# ended at is a lower bound) and at least the largest peak the campaign's host
+# solvers stated (measured: 6000 MB in solver-lift12.log beside the corpus);
+# half the heap for a host's solver, which no worker watched; never past the
+# heap -- on any host with the room;
 # a second failure, or no host with the room, fails the worker by name -- an
 # unfinished obligation (campaign_obligation_unfinished) -- never a bare
 # NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations "answered" by an
@@ -2014,6 +2016,9 @@ $(live_charges "${solver_test}/hosts")"
 retry_test=${test_tmp}/solver-retry
 while read -r alone retry_need; do
   mkdir -p "${retry_test}/${alone}"
+  [[ "${alone}" != measured ]] || printf 'causynth: the workload JVM'"'"'s \
+resident memory peaked at 6000 MB; its host was charged 1024 MB\n' \
+    >"${retry_test}/${alone}/solver-lift12.log"
   retry_status=0
   (
     campaign_solve_obligation() {
@@ -2039,8 +2044,8 @@ while read -r alone retry_need; do
         >"$4/obligation_result.jsonl"
       printf '(assert false)\n' >"$4/obligation_query.smt2"
     }
-    campaign_obligation_worker OB.1 obligations sessions \
-      "${retry_test}/${alone}" 1024
+    campaign_obligation_worker OB.1 obligations \
+      "${retry_test}/${alone}/sessions" "${retry_test}/${alone}" 1024
   ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
     || retry_status=$?
   [[ ! -e "${retry_test}/${alone}/question.asked" ]] \
@@ -2074,6 +2079,7 @@ fails 4096
 noroom 4096
 killed 4096
 nohost 4096
+measured 6000
 EOF_RETRY
 
 # SOLVER-PLACED: a solver asked again goes to the pool's host with the most

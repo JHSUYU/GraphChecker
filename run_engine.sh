@@ -3061,6 +3061,15 @@ campaign_solver_log() {
   printf '%s/solver-%s.log\n' "$(dirname "$1")" "$(hostname -s)"
 }
 
+# The largest resident peak, in MB, a host's solver of the corpus <sessions>
+# stated so far in its log (campaign_watch_workload's "peaked at" line), 0
+# before any: what a solver of this campaign measurably holds.
+campaign_solver_measured_peak_mb() {
+  cat "$(dirname "$1")"/solver-*.log 2>/dev/null \
+    | sed -n 's/.*resident memory peaked at \([0-9]*\) MB.*/\1/p' \
+    | sort -n | tail -n 1 | grep . || printf '0\n'
+}
+
 # Starts the host's solver of the corpus <sessions> in <dir> if the host has
 # room for its start (campaign_solver_start_mb) now, and names it in
 # <dir>/server: the pid of the shell that runs the JVM, which ends with it.
@@ -3215,7 +3224,7 @@ campaign_solve_obligation_placed() {
 # its solver.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local outcome status=0 peak need held=""
+  local outcome status=0 peak need held="" measured=0
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
@@ -3236,20 +3245,24 @@ to start its solver now; answered in a solver JVM of its own"
     # could hold answered nothing about the obligation, and settles no
     # question, whatever it left: asked once more, of a solver of its own,
     # placed as any start by what the first one measurably held (its watched
-    # peak) with the usual margin (campaign_need_of_peak_mb), at least
-    # campaign_solver_retry_mb and at most a solver's heap, on any host with
-    # that room
+    # peak) with the usual margin (campaign_need_of_peak_mb), at least what
+    # the campaign's host solvers measurably held and campaign_solver_retry_mb,
+    # at most a solver's heap, on any host with that room
     # (campaign_solve_obligation_placed).  Twice, or no host with the room:
     # the worker did not finish (campaign_obligation_unfinished), by name,
     # never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
     # A host's solver is no JVM this worker watched: its peak is unknown,
-    # and the floor stands for it.  Never past a solver's heap, which no
-    # JVM of its own outgrows (EX1-adhoc-07d: an NFS error ended a 16 GB
-    # host solver, the retry asked 24576 MB, more than any lift may hold).
+    # and the largest its campaign's host solvers stated stands for it.
+    # Never past a solver's heap, which no JVM of its own outgrows
+    # (EX1-adhoc-07d: an NFS error ended a 16 GB host solver and the retry
+    # asked 24576 MB, more than any lift may hold; retries charged 8 GB were
+    # ended growing to the 12-14 GB its host solvers held).
     peak=${campaign_watch_peak_mb}
     need=$(campaign_solver_retry_mb)
     (( peak <= 0 )) || need=$(campaign_need_of_peak_mb "${peak}")
+    measured=$(campaign_solver_measured_peak_mb "${sessions}")
+    (( need >= measured )) || need=${measured}
     (( need >= $(campaign_solver_retry_mb) )) || need=$(campaign_solver_retry_mb)
     (( need <= $(campaign_solver_heap_mb) )) || need=$(campaign_solver_heap_mb)
     held="held ${peak} MB"
