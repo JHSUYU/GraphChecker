@@ -917,6 +917,14 @@ public final class ObligationFactory {
             return refused(candidate, earlier.result.verdict(), detail, "",
                     gaps, question, false);
         }
+        if (built.notFlippable()) {
+            return refused(candidate, Verdict.UNSAT, built.refusal
+                    + ": no root, clock, handoff control or movable read"
+                    + " reaches the flipped predicate, and it rests on no"
+                    + " held fact: the recording's arm is the only one, so"
+                    + " no world of this corpus takes the other on this path",
+                    "", gaps, question);
+        }
         if (!built.ok()) {
             return refused(candidate, Verdict.NOT_ADMITTED,
                     "the query was refused: " + built.refusal, "", gaps,

@@ -93,6 +93,11 @@ final class FlipQuery {
         }
     }
 
+    /** How a flip whose predicate reaches no variable is named: UNSAT on its
+     *  path, the recording's arm the only one ({@code
+     *  ObligationFactory#solve}). */
+    static final String NOT_FLIPPABLE = "NOT_FLIPPABLE";
+
     /** One assembled query, or the reason there is none. */
     static final class Built {
         /** The formula: declarations and assertions, without a check-sat. */
@@ -140,6 +145,12 @@ final class FlipQuery {
 
         boolean ok() {
             return refusal.isEmpty();
+        }
+
+        /** Whether the flipped predicate reaches no variable and rests on no
+         *  held fact: its other arm is UNSAT on this path. */
+        boolean notFlippable() {
+            return refusal.startsWith(NOT_FLIPPABLE + ":");
         }
 
         /** This query with {@code assertions} after its own: the worlds
@@ -460,11 +471,16 @@ final class FlipQuery {
                         flipped);
             }
             // A query whose FLIPPED predicate reaches no variable of its own
-            // is not sent: whatever the other conjuncts bind, every name the
-            // predicate rests on is a definition or a recorded fact, so its
-            // arm is the recording's (UNSAT would be a false "no world", SAT
-            // the seed replay); a variable a prefix decision binds is no
-            // reason to ask it.
+            // is not sent: whatever the other conjuncts bind (a variable a
+            // prefix decision binds is no reason to ask it), every name the
+            // predicate rests on is a definition or a recorded fact.  By the
+            // owner's standing ruling -- only SAT or UNSAT; a concrete value
+            // is a constant, never a reason to refuse -- its other arm is
+            // UNSAT on this path, named NOT_FLIPPABLE.  Two kinds of fact keep
+            // the refusal, since the scope hole is real there: a frame's
+            // write freed on an arrival it refused (no plant reaches it), and
+            // a read of a version no row of the corpus wrote (HELD at what it
+            // read, its producer unstated, as COMPOSE holds it).
             Set<String> cone = flipCone();
             if (!moves(cone) && !framed(cone).isEmpty()) {
                 // A leaf a frame's write was freed to (its writer computed
@@ -481,16 +497,20 @@ final class FlipQuery {
                         flipped);
             }
             if (!moves(cone)) {
-                return refuse(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        ExploreCodec.EXPLORATION,
-                        flipped.siteId() + "#" + flipped.ordinal(),
-                        "this query declares no variable of its own: no "
-                                + "root, no clock, no handoff control and no "
-                                + "movable read reaches the flipped "
-                                + "predicate, so whichever arm it is the "
-                                + "answer is the recording's own facts and "
-                                + "not a world this corpus lacks",
-                        flipped);
+                List<String> held = heldReads();
+                if (!held.isEmpty()) {
+                    return refuse(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                            ExploreCodec.EXPLORATION,
+                            flipped.siteId() + "#" + flipped.ordinal(),
+                            "this query declares no variable of its own, and"
+                                    + " its occurrence read values no row of"
+                                    + " the corpus wrote " + held + ": held"
+                                    + " at what the recording read, their"
+                                    + " producer unstated, so no verdict",
+                            flipped);
+                }
+                return refused(NOT_FLIPPABLE + ":" + flipped.siteId() + "#"
+                        + flipped.ordinal(), flipped);
             }
             // One notion of reached for both read-back maps.
             Set<String> reached = reachedVariables();
@@ -1584,6 +1604,20 @@ final class FlipQuery {
                 if (sorts.containsKey(name)) return true;
             }
             return false;
+        }
+
+        /** The flipped occurrence's reads of a version no row of the
+         *  corpus wrote, as location@version: each HELD at what it read
+         *  ({@code Composer#statedReads}). */
+        private List<String> heldReads() {
+            List<String> held = new ArrayList<String>();
+            for (ReadRow row : ownReads.values()) {
+                if (corpus.writeOf(row.sessionId(), row.location(),
+                        row.observedVersion()) == null) {
+                    held.add(row.location() + "@" + row.observedVersion());
+                }
+            }
+            return held;
         }
 
         /** The framed leaves ({@link SmtLowering#framedLeaves}) in the

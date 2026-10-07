@@ -4126,8 +4126,10 @@ public class ExploreTest {
      * A flip is asked only where its own predicate reaches a variable: a
      * movable read a PREFIX decision names binds nothing the flipped
      * predicate rests on, and a predicate over a read only one writer wrote
-     * is the recording's arm whatever the prefix does -- refused by name,
-     * not asked to an UNSAT that claims no world takes it.
+     * is the recording's arm whatever the prefix does -- by the owner's
+     * ruling (only SAT or UNSAT; a concrete value is a constant), UNSAT on
+     * this path, named NOT_FLIPPABLE.  A read of a version no row wrote keeps
+     * the refusal ({@link #aReadOfAStoreOutsideEveryActivationIsMovedLikeAnyRead}).
      */
     @Test
     public void aFlipWhosePredicateReachesNoVariableIsNotAsked()
@@ -4173,9 +4175,9 @@ public class ExploreTest {
                 out.resolve("results.jsonl"), wave, 0);
         Worker worker = solve(iteration, wave,
                 named(obligations(wave), "Lookup#u8"), out, "w0");
-        assertEquals(detail(worker), Verdict.NOT_ADMITTED, worker.verdict);
+        assertEquals(detail(worker), Verdict.UNSAT, worker.verdict);
         assertTrue(detail(worker), detail(worker).contains(
-                "ADMISSION_GAP:Lookup#u8#1"));
+                "NOT_FLIPPABLE:Lookup#u8#1"));
     }
 
     // ---- (6b) a handoff nobody can answer moves only with its own run --
