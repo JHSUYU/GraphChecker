@@ -52,6 +52,9 @@ gated, then the next.
    WD3's 47). Safety: 11's `getRpcResponse` u18#3 (ADMITTED on one path, UNSAT on another: core `r_in_19=true`) must not
    merge. Build on `hdfs-container-writers` 4babe9a51 + frontier-depth; then container-writers merges (its canaries 19
    21 28 29 11741 passed on an older base).
+8. **`hdfs1-confirm-first`** (C; parked): no witness attempt starts while a confirmation is queued, running or returned
+   (`campaign_stream_confirm_owed`). Merges only if a round shows a confirmation waiting more than 10 min behind
+   attempts (CC7-11741: attempt 0001 started a second before attempt 0000's ADMITTED confirmation returned).
 
 ### 2. The time-model family (21 22 23 24 25 34 35 52) after the merges above
 A2's first divergences on tm13-tm16 (`/bigtemp/vnr3ne/gc-out/hdfs-time-model/probe/runs.txt`): 25 34 35 seed replays
