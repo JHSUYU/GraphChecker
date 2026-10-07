@@ -108,6 +108,21 @@ two spans" text go; (4) no key change. Offline (PS1-11, current key): the actor'
 never did. Still owed with it: an activation stranded at session end publishes CUT (no ADMITTED verdict over
 unpublished rows).
 
+### 3c. A stranded activation's rows (evidence: W21's 3 BLOCKING gaps)
+An activation whose root is still running when the session ends is stranded (`ConcolicResultPublisher#
+strandWithoutTerminal`, TERMINAL_NEVER_REACHED): its path is withheld, only its mints publish, yet the replay's
+verdict can stand ADMITTED (`FocusedReplay` saw the flipped arm taken). A nested path then cut from that session
+inherits a flip the session does not state: W21 (`/bigtemp/vnr3ne/gc-out/hdfs-21w/accept-W21`), BLOCKING EXPLORE
+`ADMISSION_GAP`s `updateActorStatesFromHeartbeat` u93#2/#3/#5 at the actor body occurrence 1bc6719160f7e094
+(obligations ce70720a45fc2503, 12f86ac9a0cf4a8a, 97207921c23d9e9c); 4 of W21's 5 sessions stranded that body
+(PS2-21: the same at u93#4). Fix, one of: (a) a stranded activation publishes CUT, as a bounded cut does: the VM
+region closes only on its own thread, so the strand asks the owner thread to end at its next hook (a held
+schedule wait released at session end) through `LoopAccounting#endAtCut`, the barrier waits for it under the same
+grace, and one that reaches no hook makes its replay's obligations admit nothing
+(`FocusedReplay#noteUnsettledPublication`), no new verdict; or (b) no nested path is cut from a session whose
+flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 29 30 40 (HF1) and 39 (WD3) hold
+no stranded activation, so either touches only perpetual bodies like 21's actor.
+
 ### 4. Speed (PERFORMANCE.md §5)
 - 11741's replays under the time model (258 s median vs 165-207 s); the ledger's ~1.6x over real use (step charges at
   their start heap).
