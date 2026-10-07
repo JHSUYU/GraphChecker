@@ -494,6 +494,9 @@ Correctness:
     1024-2816 MB peaked at 1.8-3.9 GB; 5 more found no host with room within 60 s). A retry is now charged at least
     half a solver's heap (`run_engine.sh` `campaign_solver_retry_mb`) and waits up to 600 s for a host of the pool
     with that room (`campaign_solver_place_patience_s`); a retry that still fails is a named `OBLIGATION_UNFINISHED`.
+    Every solver JVM, the host's included, runs at the case's engine heap (`campaign_solver_heap_mb` =
+    `engine_memory_mb`): the fixed 8 GB host solver was outgrown by 07's doubled closure (EX1-adhoc-07: lift09's
+    solver collected garbage for an hour with 24 questions queued, then OutOfMemoryError; 12 workers past bound).
 62. Fixed on `hdfs1-relay-plan`: hdfs-adhoc-07 HF3's 38 self-contradictory paths (of 235) were all paths whose own
     session ran jn1's `prepareRecovery` unwoven. The QJM client relays a journal node's `SegmentStateProto` into
     jn0's `acceptRecovery` request (codec capture stages the decoded element under its original producer,

@@ -2922,11 +2922,15 @@ names it; nothing withdrawn"
 # minutes.
 campaign_solver_idle_s=300
 
-# The solver's heap, in MB: the 8 GB every solver JVM has had, which no
-# solver of the i1 rounds outgrew (their solvers peaked at 7.0 GB RSS).  A
-# question it cannot answer is asked once more of a solver of its own at the
-# case's engine heap, placed by what the first held (campaign_obligation_worker).
-campaign_solver_heap_mb=8192
+# A solver's heap, in MB: the case's engine heap (engine_memory_mb), the heap
+# its planner and composer read the same corpus with, for the host's solver
+# as for a question's own.  A fixed 8 GB was outgrown once a closure doubled:
+# hdfs-adhoc-07 EX1 (33 planned occurrences, ~1500 sessions) had lift09's
+# solver collect garbage for an hour with 24 questions queued behind it, then
+# end in OutOfMemoryError, and 12 workers past their bound.
+campaign_solver_heap_mb() {
+  printf '%s\n' "${engine_memory_mb:-8192}"
+}
 
 # What a solver is charged at its start, in MB; the rest of what it holds is
 # charged as it grows (campaign_solver_jvm).  Its heap is the corpus it
@@ -3074,7 +3078,7 @@ campaign_start_solver() {
     # The solver outlives the obligation that started it: it holds its
     # charge itself.
     campaign_host_keep localhost "${charge}"
-    campaign_solver_jvm "${campaign_solver_heap_mb}" \
+    campaign_solver_jvm "$(campaign_solver_heap_mb)" \
       "${campaign_solver_start_mb}" --serve "${dir}" \
       --sessions "${sessions}" \
       --idle-seconds "${campaign_solver_idle_s}" \
@@ -3139,12 +3143,14 @@ campaign_solve_obligation_alone() {
 # hdfs-adhoc-07 HF3 five obligations unanswered beside ~120 replays).
 campaign_solver_place_patience_s=600
 
-# The least a solver asked again is charged, in MB: half a solver's heap.
-# What the first one held is a lower bound when it was ended growing at what
-# its host could hold, and a retry charged by it was ended again the same
-# way (hdfs-adhoc-07 HF3: 63 obligations, retries charged 1024-2816 MB
-# peaked at 1.8-3.9 GB).
-campaign_solver_retry_mb=$(( campaign_solver_heap_mb / 2 ))
+# The least a solver asked again is charged, in MB: half a solver's heap
+# (campaign_solver_heap_mb).  What the first one held is a lower bound when
+# it was ended growing at what its host could hold, and a retry charged by it
+# was ended again the same way (hdfs-adhoc-07 HF3: 63 obligations, retries
+# charged 1024-2816 MB peaked at 1.8-3.9 GB).
+campaign_solver_retry_mb() {
+  printf '%s\n' "$(( $(campaign_solver_heap_mb) / 2 ))"
+}
 
 # campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
 # <worker> <need_mb>: a question asked again of a solver of its own, placed
@@ -3238,9 +3244,9 @@ to start its solver now; answered in a solver JVM of its own"
     # never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
     peak=${campaign_watch_peak_mb}
-    (( peak > 0 )) || peak=${campaign_solver_heap_mb}
+    (( peak > 0 )) || peak=$(campaign_solver_heap_mb)
     need=$(campaign_need_of_peak_mb "${peak}")
-    (( need >= campaign_solver_retry_mb )) || need=${campaign_solver_retry_mb}
+    (( need >= $(campaign_solver_retry_mb) )) || need=$(campaign_solver_retry_mb)
     campaign_log "obligation ${obligation_id}: its solver did not answer \
 ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
       | tail -n 1)); asked again of a solver of its own, ${need} MB for a \

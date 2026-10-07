@@ -632,8 +632,10 @@ question starts it if its host has room for a start's worth now (`campaign_start
 `campaign_solver_start_mb` (1 GB) for as long as it runs (it holds the charge itself,
 `campaign_host_keep`, past the obligation that started it) and what its resident memory grows past
 that as it grows, by a running JVM's rule (`campaign_watch_workload`: refused only when the host's real use
-would pass the ceiling, and then the JVM is ended); its heap is capped at `campaign_solver_heap_mb`,
-8 GB. Charged that at its start, a solver waited for room it did not use, and every question of
+would pass the ceiling, and then the JVM is ended); its heap is capped at the case's engine heap
+(`campaign_solver_heap_mb` = `engine_memory_mb`, the heap COMPOSE reads the same corpus with; a fixed
+8 GB was outgrown by hdfs-adhoc-07's doubled closure: an hour of garbage collection with 24 questions
+queued, then OutOfMemoryError). Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
 questions in the order they came, each from the corpus as it stands when the question is taken:
 read again whenever a session landed in it or left it since (its session listing,
@@ -653,9 +655,11 @@ host as it grows. A question the host's solver, or that JVM, could not answer (i
 died, or was ended at what its host could hold) is no answer: it is asked once more of a solver JVM of
 its own at `engine_memory_mb`, placed as any start (`campaign_solve_obligation_placed`): its need is
 what the first measurably held -- its watched peak, or the host's solver's heap -- with the usual
-margin (`campaign_need_of_peak_mb`, ×1.5), charged on the pool's host with the most room for it, this
-one or a peer (`--run-placed`); no host with the room within `campaign_solver_place_patience_s` (60)
-fails the worker at once, by name (hdfs-adhoc-11 CW4b/CW5: workers waited their whole 3900 s bound
+margin (`campaign_need_of_peak_mb`, ×1.5), at least half a solver's heap (`campaign_solver_retry_mb`:
+a peak a growing solver was ended at is a lower bound; hdfs-adhoc-07 HF3's retries charged by it were
+ended again), charged on the pool's host with the most room for it, this
+one or a peer (`--run-placed`); no host with the room within `campaign_solver_place_patience_s` (600)
+fails the worker, by name (hdfs-adhoc-11 CW4b/CW5: workers waited their whole 3900 s bound
 for 16384 MB on the one host they ran on). Neither settles a question
 (`question.txt`/`question.asked` are removed), and a second failure fails the worker: an unfinished
 obligation (§7.7).
