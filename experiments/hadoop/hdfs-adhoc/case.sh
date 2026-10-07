@@ -25,6 +25,15 @@
 # (`startup`, the owner's opt-in for a guard that runs only while a cluster
 # starts: 21 the DataNode handshake, 27 a layout upgrade, 46 the format).
 repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7
+# hdfs-adhoc-21's per-case workarounds (STATUS): its tree (gc/hdfs-study-r7-21)
+# runs the DataNode handshake on a thread of its own, so the handshake, which
+# holds the guard, is an occurrence that ends rather than the prefix of the
+# actor's service loop; and its loop bounds declare the version check's
+# character loop.  No other check reads either.
+if [[ "$1" == 21 ]]; then
+  repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-21
+  loop_bounds=${here}/loop-bounds-21.jsonl
+fi
 row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.tsv")
 [[ -n "${row}" ]] || { echo "unknown HDFS ad hoc check: $1" >&2; return 2; }
 IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"${row}"

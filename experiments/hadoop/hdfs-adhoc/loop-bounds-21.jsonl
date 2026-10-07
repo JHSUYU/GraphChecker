@@ -1,0 +1,7 @@
+# hdfs-adhoc-21's own loop bounds (case.sh): the default of 8, except the one below.
+# ComparableVersion.parseVersion walks a version string one character per body
+# (`i < version.length()`): a String's length is no array cardinality, so the loop
+# is CONDITION_BOUNDED, and at 8 bodies it cut the DataNode handshake inside
+# checkNNVersion (the tree's "3.6.0-snapshot" is 14 characters, the default minimum
+# NameNode version "2.1.0-beta" 10), before hdfs-adhoc-21's anchor.
+{"loopSiteId":"<org.apache.hadoop.util.ComparableVersion: void parseVersion(java.lang.String)>#u21","loopBodyBound":24,"reason":"one body per character of a version string; covers the tree's version and the minimum NameNode version"}
