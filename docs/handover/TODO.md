@@ -52,6 +52,13 @@ gated, then the next.
    WD3's 47). Safety: 11's `getRpcResponse` u18#3 (ADMITTED on one path, UNSAT on another: core `r_in_19=true`) must not
    merge. Build on `hdfs-container-writers` 4babe9a51 + frontier-depth; then container-writers merges (its canaries 19
    21 28 29 11741 passed on an older base).
+8. **Reply-consumer identity (STATUS open defect 57; the general fix for 07's tree workaround, r8).** A decoded
+   element's consumer is indexed by the exchange its message belongs to, never by the order the code reads it: a
+   reply's consumer index is the send ordinal of the request it answers within the occurrence (`MessageDoors#send`
+   records correlation id -> ordinal; a client sends in its loggers' order, so the ordinal is the same every run), a
+   handler's own request is exchange 0, and a repeated read of one element takes a read sub-index under it
+   (`WireExport#attachLeaf`, `Identity#endpointAt`). HBase and ZooKeeper iterate `HashMap`s of replies too. Once it
+   lands, 07 goes back to r7 and r8 is deleted.
 
 ### 2. The time-model family (21 22 23 24 25 34 35 52) after the merges above
 A2's first divergences on tm13-tm16 (`/bigtemp/vnr3ne/gc-out/hdfs-time-model/probe/runs.txt`): 25 34 35 seed replays
