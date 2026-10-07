@@ -125,6 +125,10 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 
 ## 5. Open performance items (also in TODO.md)
 
+0. **Incremental planning** (TODO HDFS §6, first): every round's planner re-reads the whole corpus; in
+   EX1-adhoc-07d the 16 planners took 1h51m of EXPLORE's 2h25m (a round 2 s early, 19-22 min at ~640 sessions)
+   while the lifts ran 4-71 solves and replays at once, so more lifts would buy 10-20 % at most. Keep the
+   planner's corpus and indexes across rounds and read only the sessions landed since, as the host solver does.
 1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it; the 1 GB
    `slots.jsonl` (07: 314,758 slots) is rewritten by EXPLORE every round and is most of COMPOSE's remaining read;
    `Corpus#index` re-reads each session's schedule on one thread.

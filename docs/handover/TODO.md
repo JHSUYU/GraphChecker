@@ -112,6 +112,19 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 
 ### 6. Speed (PERFORMANCE.md §5)
+- **Incremental planning** (owner 2026-10-07: "这个优化记做todo吧"; the first speed item). Each EXPLORE round's planner
+  is a fresh `ExploreMain` JVM that reads the whole corpus from disk, builds every index (slot table, branches,
+  frontier, writer arms) and plans, then exits; only the sessions that landed since the last round are new. In
+  EX1-adhoc-07d (exclusive, 2h50m) the 16 rounds' planners took 1h51m of EXPLORE's 2h25m: a round grew from 2 s to
+  19-22 min as the corpus reached ~640 sessions (17 min of it waiting for memory beside 12-14 GB host solvers),
+  while the ten lifts ran 4-71 solves and replays at once. More lifts would save at most 10-20 %. Design: keep the
+  planner's corpus and indexes across rounds (a serving planner, as the host solver already reads only the
+  sessions that landed since its last question, `Corpus#read(Path, Path, Corpus)`), read only the new sessions,
+  update only the tasks and arms they touch, and stop rewriting `slots.jsonl` whole; gate: the incremental rounds'
+  outputs byte-identical to the full recomputation on recorded corpora (`offline-ab.sh` `EXPLORE.N`,
+  `EXPLORE.drift`), since dependence keys and the fixed point are corpus-wide.
+- **A host solver answers one question at a time** at 12-14 GB resident on 07's corpus: more answers per solver JVM
+  (or a smaller one) would lift the solve throughput and the memory every lift gives replays.
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
 - The ledger's ~1.6x over real use (step charges at their start heap).
 
