@@ -376,6 +376,16 @@ Correctness:
     producer in every JVM, `TOPOLOGY_DIVERGENCE`. hdfs-adhoc-07 runs on a tree whose QJM call maps
     follow the logger list (workaround, owner 2026-10-06). Fix: index a reply's consumer by the send
     ordinal of the request it answers (`MessageDoors#send` records correlation id -> ordinal).
+58. An obligation's id names no path and no world: `ObligationFactory#obligationId` is (task, site,
+    ordinal, outcome, dependence), so two paths' flips with one dependence share an id, and
+    `Frontier` keeps the last answer of an id (hdfs-adhoc-39 WD2: path a1426f9d's flip in world {}
+    and, round 13, path cb7b3c3a's flip in a fault world both ran as 0562399f). An open arm is
+    judged by its flip (`ExploreMain#openArmState`, over every answer of that flip), so the
+    collision no longer decides an arm; elsewhere an answer still settles every flip of its id.
+59. An obligation's id moves as the corpus grows: its dependence is recomputed each round, so one
+    flip's answers land under several ids (hdfs-adhoc-39 WD2: the re-ask of 0562399f's refuted
+    world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
+    under the next. The open-arm judgment reads answers by flip; the proposal side is unchanged.
 
 Scale and robustness:
 

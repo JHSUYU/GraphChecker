@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -30,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -267,7 +269,7 @@ public final class ExploreMain {
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
                 witnesses, wave(iteration, corpus), branches, concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
-                open));
+                open, answersByFlip(iteration)));
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -298,10 +300,13 @@ public final class ExploreMain {
      */
     static JsonArray openArms(Corpus corpus, List<OccurrenceAddress> roots,
                               List<Task> tasks, Frontier frontier,
-                              Frontier.Round open) {
+                              Frontier.Round open,
+                              Map<String, List<ObligationResult>> answers) {
         Set<String> proposed = new LinkedHashSet<String>();
         for (Obligation obligation : open.obligations) {
-            proposed.add(obligation.obligationId());
+            proposed.add(ObligationFactory.flip(obligation.taskId(),
+                    obligation.pathId(), obligation.siteId(),
+                    obligation.ordinal(), obligation.flippedOutcome()));
         }
         String[] order = {"UNANSWERED", "NOT_ASKED", "PENDING",
                 "NOT_FLIPPABLE", BOUNDED, "UNSAT"};
@@ -329,7 +334,7 @@ public final class ExploreMain {
                 Map<String, JsonObject> worlds = refuted.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, JsonObject>());
                 String state = openArmState(corpus, task, root, row, arm,
-                        frontier, proposed, worlds);
+                        frontier, proposed, answers, worlds);
                 if ("TAKEN".equals(state)) taken.add(key);
                 states.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, Integer>())
@@ -383,14 +388,26 @@ public final class ExploreMain {
      *  valve, result.json {@code bounded}. */
     static final String BOUNDED = "BOUNDED";
 
-    /** What one path's flip of its open arm came to ({@link #openArms});
-     *  the worlds its replays refuted are added to {@code refuted}, by
-     *  digest. */
+    /**
+     * What one path's flip of its open arm came to ({@link #openArms}),
+     * judged by the FLIP -- task, path, decision, outcome, the key {@link
+     * Corpus#refutedWorlds} uses -- over every answer that flip got, in wave
+     * order, never by one obligation id: an id names no path and no world, so
+     * two paths' flips share one, and it moves as the corpus grows, so one
+     * flip's answers land under several (hdfs-adhoc-39 WD2: the re-ask of a
+     * refuted flip came UNSAT under another id, while a later path's flip
+     * under the first id ran a fault world unfaithfully).  TAKEN where any
+     * answer admitted it or a recorded path took it; else what its last
+     * answer says.  The worlds its replays refuted are added to {@code
+     * refuted}, by digest.
+     */
     private static String openArmState(Corpus corpus, Task task,
                                        OccurrenceAddress root, TargetRow row,
                                        TargetRow.OpenArm arm,
                                        Frontier frontier,
                                        Set<String> proposed,
+                                       Map<String, List<ObligationResult>>
+                                               answers,
                                        Map<String, JsonObject> refuted) {
         if (arm.askedSiteId().isEmpty()) return "NOT_FLIPPABLE";
         if (task == null) return "NOT_ASKED";
@@ -402,33 +419,82 @@ public final class ExploreMain {
                         || decision.ordinal() != arm.askedOrdinal()) {
                     continue;
                 }
-                List<Corpus.Refuted> worlds = corpus.refutedWorlds(
-                        ObligationFactory.flip(task.taskId(), path.pathId,
-                                decision.siteId(), decision.ordinal(),
-                                !decision.outcome()));
+                String flip = ObligationFactory.flip(task.taskId(),
+                        path.pathId, decision.siteId(), decision.ordinal(),
+                        !decision.outcome());
+                List<Corpus.Refuted> worlds = corpus.refutedWorlds(flip);
                 for (Corpus.Refuted world : worlds) {
                     refuted.putIfAbsent(world.digest, refutedWorld(world));
                 }
-                String id = ObligationFactory.obligationId(task.taskId(),
-                        decision.siteId(), decision.ordinal(),
+                if (frontier.recorded(ObligationFactory.obligationId(
+                        task.taskId(), decision.siteId(), decision.ordinal(),
                         !decision.outcome(), ObligationFactory.dependence(
-                                corpus, task, path, index));
-                Verdict verdict = frontier.verdict(id);
-                if (verdict == Verdict.ADMITTED || frontier.recorded(id)) {
+                                corpus, task, path, index)))) {
                     return "TAKEN";
                 }
-                if (verdict == Verdict.UNSAT) return "UNSAT";
-                if (frontier.inFlight(id) || proposed.contains(id)) {
+                Verdict last = null;
+                for (ObligationResult answer : answers.getOrDefault(flip,
+                        Collections.<ObligationResult>emptyList())) {
+                    if (answer.verdict() == Verdict.ADMITTED) return "TAKEN";
+                    if (answer.verdict() != Verdict.SAT_MODEL_READY) {
+                        last = answer.verdict();
+                    }
+                }
+                if (last == Verdict.UNSAT) return "UNSAT";
+                if (frontier.flying(flip) || proposed.contains(flip)) {
                     return "PENDING";
                 }
                 if (Corpus.distinctWorlds(worlds)
                         >= ObligationFactory.MAX_REFUTED_WORLDS) {
                     return BOUNDED;
                 }
-                return verdict != null ? "UNANSWERED" : "NOT_ASKED";
+                return last != null ? "UNANSWERED" : "NOT_ASKED";
             }
         }
         return "NOT_ASKED";
+    }
+
+    /**
+     * Every answer this iteration's obligation workers wrote, by the flip
+     * each asked ({@link ObligationFactory#flip}), in wave and name order:
+     * its question names the flip ({@code <flip>:<content>},
+     * {@link ObligationFactory#question}), else its ask's row does.
+     */
+    static Map<String, List<ObligationResult>> answersByFlip(Path iteration)
+            throws IOException {
+        Map<String, List<ObligationResult>> byFlip =
+                new LinkedHashMap<String, List<ObligationResult>>();
+        for (Path worker : ObligationDir.workerDirs(iteration)) {
+            List<ObligationResult> results = RowCodec.readAll(
+                    worker.resolve(ObligationDir.RESULT),
+                    RowCodec::readObligationResult);
+            String flip = results.isEmpty() ? "" : flipOf(worker);
+            if (flip.isEmpty()) continue;
+            byFlip.computeIfAbsent(flip,
+                    key -> new ArrayList<ObligationResult>()).addAll(results);
+        }
+        return byFlip;
+    }
+
+    /** The flip one worker's obligation asked, or "" where it states
+     *  none. */
+    private static String flipOf(Path worker) throws IOException {
+        for (String file : new String[] {ObligationDir.QUESTION,
+                ObligationDir.QUESTION_ASKED}) {
+            Path question = worker.resolve(file);
+            if (!Files.isRegularFile(question)) continue;
+            String text = new String(Files.readAllBytes(question),
+                    StandardCharsets.UTF_8).trim();
+            int colon = text.indexOf(':');
+            if (colon > 0) return text.substring(0, colon);
+        }
+        List<Obligation> asked = RowCodec.readAll(
+                worker.resolve(ObligationDir.OBLIGATION),
+                ExploreCodec::readObligation);
+        if (asked.isEmpty()) return "";
+        Obligation ask = asked.get(0);
+        return ObligationFactory.flip(ask.taskId(), ask.pathId(),
+                ask.siteId(), ask.ordinal(), ask.flippedOutcome());
     }
 
     /** One refuted world as an open arm's row names it. */

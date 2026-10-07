@@ -163,24 +163,20 @@ public final class Frontier {
                 || inFlightFlips.contains(ObligationFactory.flip(candidate));
     }
 
+    /** Whether a flip ({@link ObligationFactory#flip}) is queued or
+     *  running, whatever id its obligation has. */
+    public boolean flying(String flip) {
+        return inFlightFlips.contains(flip);
+    }
+
     /** How many arms are queued or running. */
     public int inFlightCount() {
         return inFlightIds.size();
     }
 
-    /** What a round answered for this arm, or null. */
-    public Verdict verdict(String obligationId) {
-        return answered.get(obligationId);
-    }
-
     /** Whether a recorded path already took this arm. */
     public boolean recorded(String obligationId) {
         return recorded.contains(obligationId);
-    }
-
-    /** Whether this arm is queued or running. */
-    public boolean inFlight(String obligationId) {
-        return inFlightIds.contains(obligationId);
     }
 
     /** The first reason this arm is settled, or {@code ""} while it is owed. */

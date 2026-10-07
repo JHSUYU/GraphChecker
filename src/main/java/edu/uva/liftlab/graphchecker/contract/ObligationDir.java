@@ -64,16 +64,22 @@ public final class ObligationDir {
      */
     public static List<ObligationDir> workersIn(Path iteration)
             throws IOException {
+        List<ObligationDir> workers = new ArrayList<ObligationDir>();
+        for (ObligationDir worker : ParallelReads.each(workerDirs(iteration),
+                ObligationDir::new, iteration)) {
+            if (!worker.sessionId.isEmpty()) workers.add(worker);
+        }
+        return workers;
+    }
+
+    /** Every obligation worker's directory of one iteration, in wave and
+     *  name order, whatever it published. */
+    public static List<Path> workerDirs(Path iteration) throws IOException {
         List<Path> dirs = new ArrayList<Path>();
         for (Path wave : SessionDir.directories(iteration, WAVES)) {
             dirs.addAll(SessionDir.directories(wave, "*"));
         }
-        List<ObligationDir> workers = new ArrayList<ObligationDir>();
-        for (ObligationDir worker
-                : ParallelReads.each(dirs, ObligationDir::new, iteration)) {
-            if (!worker.sessionId.isEmpty()) workers.add(worker);
-        }
-        return workers;
+        return dirs;
     }
 
     /** One settled question's answer: the obligation that asked it, and

@@ -1737,22 +1737,28 @@ public class ExploreTest {
      * the row names -- the call of the helper that fed the guard, never
      * every call of its method -- and the round's manifest names the arm
      * until a flip closes it: PENDING while asked, UNANSWERED once its only
-     * replay never reached the decision, UNSAT once no world takes it; an
-     * arm with no decision to ask is NOT_FLIPPABLE.
+     * replay never reached the decision, UNSAT once no world takes it --
+     * under whatever obligation id the answer landed, since a flip is judged
+     * by itself, not by the id the corpus now computes (hdfs-adhoc-39 WD2:
+     * the UNSAT landed under another id); an arm with no decision to ask is
+     * NOT_FLIPPABLE.
      */
     @Test
     public void anOpenDeciderArmIsAskedAtTheCallThatFedTheGuard()
             throws Exception {
         String helper = "State#u2";
         Object[][] rows = {
-            // the arm's asked decision, the answer, the arm's state
-            {helper, null, "PENDING"},
-            {helper, Verdict.NOT_ADMITTED, "UNANSWERED"},
-            {helper, Verdict.UNSAT, "UNSAT"},
-            {"", null, "NOT_FLIPPABLE"}};
+            // the arm's asked decision, the answer, the arm's state, the id
+            // the answer landed under (null: the one proposed)
+            {helper, null, "PENDING", null},
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED", null},
+            {helper, Verdict.UNSAT, "UNSAT", null},
+            {helper, Verdict.UNSAT, "UNSAT", "drifted-id"},
+            {"", null, "NOT_FLIPPABLE", null}};
         for (Object[] row : rows) {
             String asked = (String) row[0];
-            Path iteration = tree.newFolder("open-arm-" + row[2]).toPath();
+            Path iteration = tree.newFolder("open-arm-" + row[2]
+                    + (row[3] == null ? "" : "-" + row[3])).toPath();
             Session seed = new Session(iteration, "s-seed");
             seed.activation(TARGET, false);
             seed.root(TARGET, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
@@ -1766,7 +1772,8 @@ public class ExploreTest {
             seed.flush();
             scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                     "Guard#u9"));
-            Path out = tree.newFolder("open-arm-out-" + row[2]).toPath();
+            Path out = tree.newFolder("open-arm-out-" + row[2]
+                    + (row[3] == null ? "" : "-" + row[3])).toPath();
             Path results = out.resolve("results.jsonl");
             Files.createDirectories(out);
             Files.write(results, new byte[0]);
@@ -1783,9 +1790,12 @@ public class ExploreTest {
             }
             JsonObject named = first;
             if (row[1] != null) {
-                record(results, ObligationResult.of(
-                        proposed.get(0).obligationId(), (Verdict) row[1],
-                        "s-flip", "answered"));
+                Obligation flip = proposed.get(0);
+                ObligationResult answer = ObligationResult.of(row[3] == null
+                        ? flip.obligationId() : (String) row[3],
+                        (Verdict) row[1], "s-flip", "answered");
+                record(results, answer);
+                land(iteration, flip, answer);
                 named = plan(iteration, TARGET_SELECTOR, null, results,
                         out.resolve("obligations-0001"), 1);
             }
@@ -1853,6 +1863,8 @@ public class ExploreTest {
         Files.createDirectories(landed);
         Files.copy(first.directory.resolve(ObligationDir.FOCUSED_TASK),
                 landed.resolve(ObligationDir.FOCUSED_TASK));
+        Files.copy(first.directory.resolve(ObligationDir.QUESTION_ASKED),
+                landed.resolve(ObligationDir.QUESTION_ASKED));
         record(landed.resolve(ObligationDir.RESULT), refuted);
         record(results, refuted);
         JsonObject again = plan(iteration, TARGET_SELECTOR, null, results,
@@ -1882,6 +1894,12 @@ public class ExploreTest {
                 "rests: " + worlds.get(0).getAsJsonObject().get("world")
                         .getAsString()));
         record(results, closed);
+        Path closing = iteration.resolve("obligations-0001")
+                .resolve(closed.obligationId());
+        Files.createDirectories(closing);
+        Files.copy(second.directory.resolve(ObligationDir.QUESTION),
+                closing.resolve(ObligationDir.QUESTION));
+        record(closing.resolve(ObligationDir.RESULT), closed);
         JsonObject last = plan(iteration, TARGET_SELECTOR, null, results,
                 out.resolve("obligations-0002"), 2);
         JsonObject named = last.getAsJsonArray("openArms").get(0)
@@ -4957,6 +4975,21 @@ public class ExploreTest {
         assertTrue("the query is published whatever the verdict",
                 Files.size(worker.resolve("obligation_query.smt2")) > 0);
         return new Worker(rows.get(0).verdict(), solved.get(0), worker);
+    }
+
+    /** Lands one answer in the iteration as a worker does: its directory
+     *  under the obligation id it ran as, the question naming the flip it
+     *  asked, its result row. */
+    private static void land(Path iteration, Obligation asked,
+                             ObligationResult answer) throws IOException {
+        Path worker = iteration.resolve("obligations-0000")
+                .resolve(answer.obligationId());
+        Files.createDirectories(worker);
+        Files.write(worker.resolve(ObligationDir.QUESTION), (ObligationFactory
+                .flip(asked.taskId(), asked.pathId(), asked.siteId(),
+                        asked.ordinal(), asked.flippedOutcome()) + ":asked")
+                .getBytes(StandardCharsets.UTF_8));
+        record(worker.resolve(ObligationDir.RESULT), answer);
     }
 
     private static void record(Path results, ObligationResult result)

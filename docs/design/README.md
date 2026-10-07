@@ -161,7 +161,8 @@ builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
   own predicate)`, enum constants and `equals` included); an open arm no run took is a flip site of the reached anchor
   and is named at the fixed point (`OPEN_ARM_UNANSWERED`, a RUN_DEFECT when its flips only came back NOT_ADMITTED);
   a replay that ran the arm's world faithfully and never entered its occurrence refutes that world (`WORLD_REFUTED`),
-  and the flip is asked again without it.
+  and the flip is asked again without it. Each path's flip of the arm is judged by the flip itself (task, path,
+  decision, outcome) over every answer it got, whatever obligation id each ran under (`ExploreMain#openArmState`).
 - An integral configuration's domain also takes every literal a recorded decision compares it with, within what its
   own validation admits (`contract.Validity`), through one reader (`explore.Corpus#domainOf`).
 - A solved obligation's REPLAY is queued first behind any witness CONFIRM or GROW re-run, never ahead of them.
