@@ -507,8 +507,12 @@ Correctness:
     relay (`RuntimeSelectedRegionFinalizer` `crossRelay`): a consumer capture no export of its leg pairs with crosses
     to the exports of the same port on the legs its message's sender received it on before sending
     (`RuntimeRegionPlanner` stamps each activation's sent legs, `SENT_EXCHANGE_LEGS`). 07's seed plan grows from 16
-    to 33 occurrences (jn1's `prepareRecovery` and the state writers on jn1); the recorded plans of 11741, 21, 29,
-    30, 39 and 40 are byte-identical under it (SEED.trace offline).
+    to 31 occurrences (jn1's `prepareRecovery` and the state writers on jn1); the recorded plans of 11741, 21, 29,
+    30, 39 and 40 are unchanged under it (SEED.trace offline). The walk plans no occurrence whose address several
+    activations share (a target excepted): one plan row cannot name one run of it, and what it stored stays as
+    recorded, its shared address DIAGNOSTIC. EX1-adhoc-07 had reached two of jn1's edit-log scans in unnamed work
+    (`JournalNode#getOrCreateJournal`, `FileJournalManager#getLogFile`, two activations at one address each),
+    planned them, and ended RUN_DEFECT on two BLOCKING `OCCURRENCE_ADDRESS_SHARED` rows.
 63. Fixed on `hdfs1-relay-plan`: the 4 `UNSTATED_VALUE` reads at jn0's `prepareRecovery` were `BestEffortLongFile.ch`
     (`lazyOpen`'s `if (ch != null)`, the file channel a heartbeat no region covers had opened), not the persisted
     long: a flip query held a read no write explains to its recorded value only when it had a literal, and an object

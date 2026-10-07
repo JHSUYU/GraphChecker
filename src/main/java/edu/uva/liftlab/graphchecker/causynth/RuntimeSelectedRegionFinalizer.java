@@ -627,8 +627,9 @@ public final class RuntimeSelectedRegionFinalizer {
                             + "made over it"
                             : "; DIAGNOSTIC: the closure this plan publishes "
                             + "does not retain this occurrence of " + regionId
-                            + ", so no plan row, no task and no session row "
-                            + "names it and no composition can rest on it"));
+                            + " (no rule plans a shared address), so no plan "
+                            + "row, no task and no session row names it and "
+                            + "no composition can rest on it"));
         }
     }
 
@@ -907,8 +908,24 @@ public final class RuntimeSelectedRegionFinalizer {
                             + "names no question; declare the throw one "
                             + "guard arm reaches");
         }
+        // An occurrence whose address names more than one recorded
+        // activation is no plan row a task can be held to (one occurrence,
+        // one row): no rule plans it either, and what it stored stays as the
+        // recording read it, its shared address stated DIAGNOSTIC
+        // (stateSharedAddressClasses).  hdfs-adhoc-07 EX1: the relay walk
+        // reached jn1's edit-log scans in work no lineage names, twice at
+        // one address each, and planned them: two BLOCKING rows.  A target
+        // stays a walk origin, and its shared address BLOCKING.
+        Set<String> unplannable = new LinkedHashSet<>(otherTargets);
+        for (Map.Entry<String, Map<String, Object>> held
+                : instances.entrySet()) {
+            if (held.getValue().containsKey(SHARED_ADDRESS_ROOT_CALLS)
+                    && !targets.contains(held.getKey())) {
+                unplannable.add(held.getKey());
+            }
+        }
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
-                cutPorts, otherTargets);
+                cutPorts, unplannable);
         List<Demand> seeds = new ArrayList<>();
         for (String target : targets) {
             // Stated once here; the plan builder publishes TARGET_REACH for
@@ -1243,7 +1260,8 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Map<String, String> nodes = new HashMap<>();
         /** The occurrences admitted, in admission order. */
         private final Set<String> reached = new LinkedHashSet<>();
-        /** The occurrences no rule may plan: targets not the question's. */
+        /** The occurrences no rule may plan: targets not the question's,
+         *  and occurrences whose address several activations share. */
         private final Set<String> excluded;
         /** Hop count of each admission: the shortest chain that reached it. */
         private final Map<String, Integer> depths = new HashMap<>();

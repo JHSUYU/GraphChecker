@@ -139,7 +139,10 @@ public class RegionGraphOccurrenceKeyTest {
      * handed on what it had received, so the walk plans the exports of the
      * port on the legs the sender's captures took it from before it sent,
      * never one it received after (hdfs-adhoc-07: the QJM client hands a
-     * journal node's segment to jn0's acceptRecovery).  A
+     * journal node's segment to jn0's acceptRecovery).  An occurrence whose
+     * address two activations share is planned by no rule: no plan row can
+     * name one run of it (hdfs-adhoc-07 EX1: two of jn1's edit-log scans in
+     * unnamed work, reached as writers, were planned and BLOCKING).  A
      * store writes its holder's field, so a writer holding what the reader
      * held through another holder is none (a40s ReindexCollectionCmd-369:
      * every lambda capturing one ZooKeeper client), where a mutation through
@@ -188,6 +191,11 @@ public class RegionGraphOccurrenceKeyTest {
                         "L4"},
                 {"late-export", "wl/dn1#epoch0", "REGION.send", 0, 0, "",
                         "L5"},
+                // two activations of one address, each a writer of EPOCH
+                {"shared-writer", "wl/nn0#epoch0", "REGION.bump", 7, 0, "",
+                        ""},
+                {"shared-writer-again", "wl/nn0#epoch0", "REGION.bump", 7, 0,
+                        "", ""},
         };
         List<Map<String, Object>> instances = new ArrayList<>();
         Map<String, String> addresses = new LinkedHashMap<>();
@@ -195,7 +203,9 @@ public class RegionGraphOccurrenceKeyTest {
             Object[] row = activations[index];
             String address = OccurrenceAddress.of(
                     NodeId.parse((String) row[1]), (String) row[2],
-                    CausalContext.of(Role.of("CLIENT"), "", index + 1),
+                    CausalContext.of(Role.of("CLIENT"), "",
+                            ((String) row[0]).startsWith("shared") ? 999
+                                    : index + 1),
                     ExecutionIndex.empty()).render();
             addresses.put((String) row[0], address);
             String method = "REGION.check".equals(row[2]) ? CHECK
