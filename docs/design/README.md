@@ -127,7 +127,9 @@ version it observed.
 - The scope rules R1–R4 apply (anchors of unstated SENDs, the putter's scope, per-hop start
   frames, giving up own-context slots).
 - Random draws are replayed, keyed by the schedule context, the site and a count (stable under
-  a GROW). Clock VALUES are not yet replayed: the start-up/clock family's time model (TODO).
+  a GROW). Clock VALUES are not replayed: the time model was reverted (it held a program monitor across a timed-out
+  wait's turn); the start-up/clock family runs on workarounds (RULES), and a held timed wait returns no sooner than
+  its own deadline (`TimedWaits#outlast`).
 
 *The wire.* A protobuf message field crosses with its message: it is exported at the builder's setter
 inside its region, bound to the builder, and handed to the message by its `build()`; the door that
@@ -221,7 +223,8 @@ fatal boundary variable is unbound).
 - The budget's reserve covers COMPOSE, EMIT, CONFIRM and REPRODUCE.
 - The host ledger's memory reading is refreshed by one shell per host (`<host>/refresh`); the others use a reading up
   to 30 s old.
-- In flight, not in the body (STATE §2, TODO §1): every static export site woven and a witness's own chain closed
-  before it is claimed (`hdfs-export-weave`), the time model (`hdfs-time-model`), the IPC hand-off naming
-  (`hdfs-ipc-handoff-name`, r6 trees), the owed-path bound (`hdfs-frontier-depth`).
+- In the body since the 10-06 handover: every static export site woven and a witness's own chain closed before it is
+  claimed, the IPC hand-off naming (r6/r7 trees), the owed-path bound, codec capture, open arms (`WORLD_REFUTED`,
+  configuration domains), the wait deadline and the open-arm keys (STATE §0). Parked: confirm-first, the loop prefix
+  as its own occurrence, the reply consumer by request ordinal (TODO HDFS §2-§5).
 - WIRE-CODEC (codec holes in opaque payloads) is not in the body: branch `wire-codec-p1`.

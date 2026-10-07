@@ -78,7 +78,7 @@ running out of memory, and a single case alone takes the whole cluster.
 | seed and CONFIRM replays charged 8-11 GB for 0.5-2 GB peaks | recording x7 for every replay | x7 only before anything is measured; CONFIRM on the measured need |
 | lifts 11-22 GB charged against 3-7 GB real use | the static charges above plus an idle 8 GB head reserve per lift | measured head need; remaining gap (~1.6x) is step charges at their start heap (kept: a refused growth would end a planner) |
 | SEED 192 -> 542 s, INSTRUMENT 49 -> 129 s in a sweep's first wave | Soot class lookups on NFS (197K failed stats per pass), 20 heads starting together | `IndexedSourceLocator` (a lookup's folder listed once per JVM, a listed name Soot's own lookup) and the pass's JVM on the jar alone: ~7K failed stats per pass; outputs byte-identical over 12 HDFS cases; on a loaded cluster with warm NFS caches the walls did not move |
-| a seed replay with 80-170 give-ups (start-up family) | DataNode actor turns decide by `monotonicNow` and the replay runs slower than the recording | the time model (TODO); a case at 80+ give-ups in a sweep is stopped, not waited out |
+| a seed replay with 80-170 give-ups (start-up family) | DataNode actor turns decide by `monotonicNow` and the replay runs slower than the recording | the time family's workarounds on r7 (no external forks, synced edits, a settle before the window) and the wait deadline; the time model was reverted; a case at 80+ give-ups in a sweep is stopped, not waited out |
 | 17 and 24 "UNSAT" with 151 / 3 obligations owed (HG5A) | the budget's reserve owes twice the longest COMPOSE + max(CONFIRM, seed REPLAY); a 22-min seed replay reserved 44 min and left EXPLORE none | EXPLORATION_CUT: such an end leaves no UNSAT; the real fix is the seed replay's speed |
 | 16: PLAN_CLOSURE_CUT, 1542 occurrences over `schedule_max_jobs` | 1520 polling turns of `MarkedDeleteBlockScrubber` each planned as a task once control flow counted | E1: equivalent deciders planned once per class (1406 turns -> 55 classes) |
 | 07: rounds proposing 180, 136, 587 obligations | the same (task, site, flip) arm re-asked under ~7.8 dependence digests on average; 47 of 189 re-asked arms changed verdict, so most is real work | open: dependence-key granularity (TODO); give the case the cluster |
@@ -92,8 +92,10 @@ running out of memory, and a single case alone takes the whole cluster.
 | 254 processes in NFS D state on lift11, load 288 (2026-10-06) | dozens of `offline-ab.sh` waiters each refreshed every host's ledger reading (ssh + mktemp + rename into one NFS directory) whenever the 5 s cache was stale | one refresher per host, the others use a reading up to 30 s old (b7c5dc99d); gates via `onlift.sh` off lift11 |
 | a worktree took 45+ min to check out, a commit in it minutes | 99 % of the repository's files are `third_party/` (the VM's source) written to NFS | `tools/lib/worktree-add.sh`: sparse, 10 s |
 | 11 did not converge under the prefix span (CW5: 1267 asks vs WD3's 47) | six IPC arms re-asked ~110 times each over ~23 paths | rule 1 (an arm keyed by the kept conditions of its prefix closure), TODO §1.7 |
-| 11741's replays under the time model: median 258 s vs 165-207 s (TM16) | two 15 s stalls per replay: the window opens 65 s late in model time and time stands there until the order catches up | open (TODO §4) |
-| TM14-11741: 175 worker timeouts and solver OOMs | a diagnostic row whose name grew with every pre-window lift: 1.5 GB of `gaps.jsonl` per session | fixed on `hdfs-time-model` (511c8d049) |
+| 11741's replays under the time model: median 258 s vs 165-207 s (TM16) | two 15 s stalls per replay: the window opens 65 s late in model time and time stands there until the order catches up | gone with the time model's revert; HF2-11741 (system/hdfs1, 2026-10-06): witness at ~60 min, confirmed at ~75 min, PASS in 5168 s |
+| TM14-11741: 175 worker timeouts and solver OOMs | a diagnostic row whose name grew with every pre-window lift: 1.5 GB of `gaps.jsonl` per session | on `hdfs-time-model` only (511c8d049), reverted with it |
+| 11741's witness attempt stuck for hours (CC7, 2026-10-06) | `Cone.read` searched every assertion of another selector to the end of a 150 MB body for every path | the Cone read once and indexed by selector (3e7becca7) |
+| a confirmed witness's verdict waiting behind a witness attempt | a returned confirmation is decided only by the next step, and steps run one at a time | minutes with the Cone fix (HF2: 15 min queue to accepted); `hdfs1-confirm-first` parked |
 
 Older history is in `git log` of `run_engine.sh` and in PIPELINE §7.7's own examples.
 
@@ -126,12 +128,12 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it; the 1 GB
    `slots.jsonl` (07: 314,758 slots) is rewritten by EXPLORE every round and is most of COMPOSE's remaining read;
    `Corpus#index` re-reads each session's schedule on one thread.
-2. The seed replay's give-ups: the time model (the start-up/clock family) -- also the biggest correctness item.
+2. The seed replay's give-ups in the start-up/clock family: handled by workarounds (RULES); no time model.
 3. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
 4. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused
    growth.
-5. A host solver killed at its memory hold falls back to a 16 GB solver on its pinned host and waits 3900 s
-   (`hdfs-solver-fallback`, not merged).
+5. A host solver killed at its memory hold is placed by its measured peak or fails by name (`hdfs-solver-fallback`,
+   in the body); 07's CC7 still lost 8 obligations to a full host (no host had room within the 60 s placement wait).
 6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (A1's measurement branch
    `hdfs-compose-perf-wip`).
-7. The time model's replay cost on 11741 (item above).
+7. The two-phase final run (TODO HDFS §1): short cases a few at a time, deep closures each with the whole cluster.
