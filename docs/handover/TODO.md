@@ -47,11 +47,9 @@ gated, then the next.
    (`Scene.forceResolve(owner, BODIES)`; else ASM). Fixes 07 (relayed segment) and 11741's HELD carrier read. Gate:
    07, 12, 11741 with cone unbound 0; producer growth on 07 and 11741 unchanged or explained (exports are stated at the
    door's occurrence); a review agent before the merge.
-7. **Rule 1** (D1; prototype `/bigtemp/vnr3ne/handover/2026-10-06/rule1-demanded-sites.patch`): an arm's key holds the
-   RestsOn kept conditions of its prefix closure, so 11's six IPC arms are not re-asked ~110 times (CW5: 1267 asks vs
-   WD3's 47). Safety: 11's `getRpcResponse` u18#3 (ADMITTED on one path, UNSAT on another: core `r_in_19=true`) must not
-   merge. Build on `hdfs-container-writers` 4babe9a51 + frontier-depth; then container-writers merges (its canaries 19
-   21 28 29 11741 passed on an older base).
+7. **Rule 1**: measured and not merged (the throughput bar): the kept conditions of the prefix closure as the key
+   (`hdfs-rule1` 7d2819214) asked 470 arms on 05 in 30 min against the merged key's 187 in all; the own-fault key
+   (`hdfs-u18-fix` 8ed56ddeb) 269 in 27 min. The merged key keeps the u18#3 gap (STATUS open defect 51).
 
 ### 2. The time-model family (21 22 23 24 25 34 35 52) after the merges above
 A2's first divergences on tm13-tm16 (`/bigtemp/vnr3ne/gc-out/hdfs-time-model/probe/runs.txt`): 25 34 35 seed replays
@@ -91,6 +89,39 @@ If a check still cannot reach its target after that round, swap it (only 04 is l
 - **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate.
   Used (owner 2026-10-05): 05 for 32; 06, 38, 45 for 01, 17, 43; only 04 (client ack timeout, CLOCK) is left; never
   42, 44, 46, 47. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
+
+### 3b. A loop root's prefix as its own occurrence (design; 21 runs on a tree workaround meanwhile)
+A LOOP_BODY_ROOT occurrence's activations are its loop's iterations, so what its root method runs before the loop
+is observed by none (21: `BPServiceActor.run`'s handshake, `checkNNVersion`). Merging the prefix into the first
+iteration (branch `hdfs1-prefix-span` 1f14e68c7) stretched the actor occurrence over the whole service loop: its
+offerService iteration never reaches a terminal, so an admitted replay's rows go unpublished (PS2-21: a BLOCKING
+nested cut on an unstated flip), and every arm is keyed by the heartbeats delivered after it (PS1-11: 1319 asks).
+Design: (1) the prefix's address is the loop-body occurrence's plus one index frame `<loopRuntimeId>:prefix@0`
+(`OccurrenceAddress#prefix`, one function for PLAN and the runtime); (2) PLAN gives a LOOP_BODY_ROOT region whose
+root method calls region work before the loop header a PREFIX task (same region, node and loop-root hook group,
+rootAuthority `LOOP_PREFIX`), and the declared anchor goes on it when the root-method call it is reached through
+lies outside the loop body; (3) `LoopAccounting#enterLoopRoot` opens the prefix task's activation, the first body
+entry ends it NORMAL (published) and admits the body's own as on the merged body, the root's exit ends it with no
+iteration, a cut ends it CUT; it counts against no loop-body budget; `PrefixSpan#atBody` and the "one activation,
+two spans" text go; (4) no key change. Offline (PS1-11, current key): the actor's (arm, key) pairs 17008 merged,
+7216 split (prefix 5327, body 1889); the prefix joins 11's closure as an `allKeys` writer, which the merged body
+never did. Still owed with it: an activation stranded at session end publishes CUT (no ADMITTED verdict over
+unpublished rows).
+
+### 3c. A stranded activation's rows (evidence: W21's 3 BLOCKING gaps)
+An activation whose root is still running when the session ends is stranded (`ConcolicResultPublisher#
+strandWithoutTerminal`, TERMINAL_NEVER_REACHED): its path is withheld, only its mints publish, yet the replay's
+verdict can stand ADMITTED (`FocusedReplay` saw the flipped arm taken). A nested path then cut from that session
+inherits a flip the session does not state: W21 (`/bigtemp/vnr3ne/gc-out/hdfs-21w/accept-W21`), BLOCKING EXPLORE
+`ADMISSION_GAP`s `updateActorStatesFromHeartbeat` u93#2/#3/#5 at the actor body occurrence 1bc6719160f7e094
+(obligations ce70720a45fc2503, 12f86ac9a0cf4a8a, 97207921c23d9e9c); 4 of W21's 5 sessions stranded that body
+(PS2-21: the same at u93#4). Fix, one of: (a) a stranded activation publishes CUT, as a bounded cut does: the VM
+region closes only on its own thread, so the strand asks the owner thread to end at its next hook (a held
+schedule wait released at session end) through `LoopAccounting#endAtCut`, the barrier waits for it under the same
+grace, and one that reaches no hook makes its replay's obligations admit nothing
+(`FocusedReplay#noteUnsettledPublication`), no new verdict; or (b) no nested path is cut from a session whose
+flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 29 30 40 (HF1) and 39 (WD3) hold
+no stranded activation, so either touches only perpetual bodies like 21's actor.
 
 ### 4. Speed (PERFORMANCE.md §5)
 - 11741's replays under the time model (258 s median vs 165-207 s); the ledger's ~1.6x over real use (step charges at
