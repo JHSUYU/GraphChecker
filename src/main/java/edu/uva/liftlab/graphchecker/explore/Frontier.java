@@ -180,6 +180,16 @@ public final class Frontier {
         return inFlightIds.size();
     }
 
+    /** What a round answered for this arm, by its id, or null. */
+    public Verdict verdict(String obligationId) {
+        return answered.get(obligationId);
+    }
+
+    /** Whether this arm, by its id, is queued or running. */
+    public boolean inFlight(String obligationId) {
+        return inFlightIds.contains(obligationId);
+    }
+
     /** Whether a recorded path already took this arm. */
     public boolean recorded(String obligationId) {
         return recorded.contains(obligationId);

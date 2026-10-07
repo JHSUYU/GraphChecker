@@ -423,7 +423,10 @@ schedule) and:
    BOUNDED (asked no more past `ObligationFactory#MAX_REFUTED_WORLDS` = 8 refuted worlds, the named
    valve for a clock or a wide integral that offers one world per value: `result.json` `bounded`
    `open_arm_max_refuted_worlds`), NOT_ASKED, NOT_FLIPPABLE -- an arm a path took is not listed -- and
-   `refutedWorlds`, each world a replay of its flip refuted, §7.6), judged at EMIT (§11).
+   `refutedWorlds`, each world a replay of its flip refuted, §7.6; `unrunWorlds`, the asked-once-more
+   replays that refuted nothing), judged at EMIT (§11). A path that asked its own flip is judged by
+   that flip's answers, a refuted world answering nothing; a path that never asked shares the
+   verdict of the obligation its id names (one arm per dependence, STATUS 58).
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 

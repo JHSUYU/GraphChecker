@@ -1755,6 +1755,9 @@ public class ExploreTest {
             {helper, Verdict.NOT_ADMITTED, "UNANSWERED", null, 0},
             {helper, Verdict.UNSAT, "UNSAT", null, 0},
             {helper, Verdict.UNSAT, "UNSAT", "drifted-id", 0},
+            // its own world refuted, the arm its id names answered UNSAT by
+            // a sibling path's flip
+            {helper, Verdict.UNSAT, "UNSAT", "shared", 0},
             {helper, Verdict.NOT_ADMITTED, "PENDING", "unrun-once", 1},
             {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "unrun-twice", 2},
             {"", null, "NOT_FLIPPABLE", null, 0}};
@@ -1793,7 +1796,28 @@ public class ExploreTest {
             }
             JsonObject named = first;
             int unrun = (Integer) row[4];
-            if (row[1] != null) {
+            if ("shared".equals(row[3])) {
+                Obligation flip = proposed.get(0);
+                ObligationResult own = ObligationResult.of(
+                        flip.obligationId(), Verdict.NOT_ADMITTED, "s-flip",
+                        "WORLD_REFUTED: never entered",
+                        edu.uva.liftlab.graphchecker.contract.WorldRefutation
+                                .of(Arrays.asList("(a)", "(b)", "(c)", "(d)"),
+                                        "", "", ""));
+                record(results, own);
+                land(iteration, "obligations-0000", flip, own);
+                ObligationResult sibling = ObligationResult.of(
+                        flip.obligationId(), Verdict.UNSAT, "", "sibling");
+                record(results, sibling);
+                Path worker = iteration.resolve("obligations-0001")
+                        .resolve(flip.obligationId());
+                Files.createDirectories(worker);
+                Files.write(worker.resolve(ObligationDir.QUESTION),
+                        "siblingflip:asked".getBytes(StandardCharsets.UTF_8));
+                record(worker.resolve(ObligationDir.RESULT), sibling);
+                named = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve("obligations-0001"), 1);
+            } else if (row[1] != null) {
                 Obligation flip = proposed.get(0);
                 for (int run = 0; run < Math.max(1, unrun); run++) {
                     ObligationResult answer = ObligationResult.of(

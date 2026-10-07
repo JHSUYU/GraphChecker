@@ -379,13 +379,24 @@ Correctness:
 58. An obligation's id names no path and no world: `ObligationFactory#obligationId` is (task, site,
     ordinal, outcome, dependence), so two paths' flips with one dependence share an id, and
     `Frontier` keeps the last answer of an id (hdfs-adhoc-39 WD2: path a1426f9d's flip in world {}
-    and, round 13, path cb7b3c3a's flip in a fault world both ran as 0562399f). An open arm is
-    judged by its flip (`ExploreMain#openArmState`, over every answer of that flip), so the
-    collision no longer decides an arm; elsewhere an answer still settles every flip of its id.
+    and, round 13, path cb7b3c3a's flip in a fault world both ran as 0562399f). By design an arm
+    is owed once per dependence, so a path that never asked its own flip shares its id's answer;
+    a path that did is judged by its own flip's answers (`ExploreMain#openArmState`, a refuted
+    world answering nothing), so the collision no longer overwrites one path's answer with
+    another's; elsewhere an answer still settles every flip of its id.
 59. An obligation's id moves as the corpus grows: its dependence is recomputed each round, so one
     flip's answers land under several ids (hdfs-adhoc-39 WD2: the re-ask of 0562399f's refuted
     world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
     under the next. The open-arm judgment reads answers by flip; the proposal side is unchanged.
+60. hdfs-adhoc-39's verdict varies run to run on one body: its open arm (`BlockInfo.getBlockUCState()`
+    `#u2=true` at nn0's append) closes only when every path's flip is answered, and which paths
+    the closure grows and which worlds they ask differ between runs (base: OA4 RUN_DEFECT, OA5
+    UNSAT; wait-deadline: WD2, WD3, HF1 RUN_DEFECT). A recurring unanswered form is a path whose
+    world faults the second append's `Client#sendRpcRequest` door (root
+    `REGION.763d087e...in.c2118041`): its replays never reach that door, so they mint no root and
+    refute nothing (asked once more, `WORLD_UNREFUTED`); another is a path whose refuted world's
+    re-ask is still pending. Each run's arm row names its paths (`openArms`: state counts,
+    `refutedWorlds`, `unrunWorlds`).
 
 Scale and robustness:
 

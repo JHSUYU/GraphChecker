@@ -302,8 +302,10 @@ public final class ExploreMain {
                               List<Task> tasks, Frontier frontier,
                               Frontier.Round open,
                               Map<String, List<ObligationResult>> answers) {
+        // Each proposed obligation by its id and by its flip.
         Set<String> proposed = new LinkedHashSet<String>();
         for (Obligation obligation : open.obligations) {
+            proposed.add(obligation.obligationId());
             proposed.add(ObligationFactory.flip(obligation.taskId(),
                     obligation.pathId(), obligation.siteId(),
                     obligation.ordinal(), obligation.flippedOutcome()));
@@ -395,16 +397,20 @@ public final class ExploreMain {
     static final String BOUNDED = "BOUNDED";
 
     /**
-     * What one path's flip of its open arm came to ({@link #openArms}),
-     * judged by the FLIP -- task, path, decision, outcome, the key {@link
-     * Corpus#refutedWorlds} uses -- over every answer that flip got, in wave
-     * order, never by one obligation id: an id names no path and no world, so
-     * two paths' flips share one, and it moves as the corpus grows, so one
-     * flip's answers land under several (hdfs-adhoc-39 WD2: the re-ask of a
-     * refuted flip came UNSAT under another id, while a later path's flip
-     * under the first id ran a fault world unfaithfully).  TAKEN where any
-     * answer admitted it or a recorded path took it; else what its last
-     * answer says.  The worlds its replays refuted are added to {@code
+     * What one path's flip of its open arm came to ({@link #openArms}).  Its
+     * own FLIP -- task, path, decision, outcome, the key {@link
+     * Corpus#refutedWorlds} uses -- decides where it was asked: every answer
+     * that flip got, in wave order, whatever id each ran under, since the id
+     * moves as the corpus grows and one flip's answers land under several
+     * (hdfs-adhoc-39 WD2: the re-ask of a refuted flip came UNSAT under
+     * another id).  A path that never asked its own flip shares the answer
+     * of the arm its id names, as the id is meant to (Frontier: an arm is
+     * owed once per dependence, not per path), and so does one whose only
+     * answers refuted worlds (a refutation answers nothing of the arm; the
+     * shared id's UNSAT may settle it before its own re-ask: hdfs-adhoc-39
+     * OK1-0).  TAKEN where any answer admitted it or a recorded path took
+     * it; else what its last answer says.  The worlds its replays refuted
+     * are added to {@code
      * refuted}, by digest; each replay that did not run its world ({@code
      * ObligationResult#worldUnrefuted}: asked once more, {@link
      * Frontier#consume}) to {@code unrun}, as obligation@session.
@@ -435,10 +441,12 @@ public final class ExploreMain {
                 for (Corpus.Refuted world : worlds) {
                     refuted.putIfAbsent(world.digest, refutedWorld(world));
                 }
-                if (frontier.recorded(ObligationFactory.obligationId(
-                        task.taskId(), decision.siteId(), decision.ordinal(),
+                String id = ObligationFactory.obligationId(task.taskId(),
+                        decision.siteId(), decision.ordinal(),
                         !decision.outcome(), ObligationFactory.dependence(
-                                corpus, task, path, index)))) {
+                                corpus, task, path, index));
+                Verdict shared = frontier.verdict(id);
+                if (frontier.recorded(id) || shared == Verdict.ADMITTED) {
                     return "TAKEN";
                 }
                 Verdict last = null;
@@ -449,12 +457,17 @@ public final class ExploreMain {
                         unrun.add(answer.obligationId() + "@"
                                 + answer.sessionId());
                     }
-                    if (answer.verdict() != Verdict.SAT_MODEL_READY) {
+                    // A refuted world answers nothing of the arm (Frontier
+                    // #consume): only its re-ask, or the shared id's, does.
+                    if (answer.verdict() != Verdict.SAT_MODEL_READY
+                            && answer.refutation() == null) {
                         last = answer.verdict();
                     }
                 }
+                if (last == null) last = shared;
                 if (last == Verdict.UNSAT) return "UNSAT";
-                if (frontier.flying(flip) || proposed.contains(flip)) {
+                if (frontier.flying(flip) || proposed.contains(flip)
+                        || frontier.inFlight(id) || proposed.contains(id)) {
                     return "PENDING";
                 }
                 if (Corpus.distinctWorlds(worlds)
