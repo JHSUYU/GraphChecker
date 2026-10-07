@@ -3215,7 +3215,7 @@ campaign_solve_obligation_placed() {
 # its solver.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 sessions=$3 worker=$4 charged=$5
-  local outcome status=0 peak need
+  local outcome status=0 peak need held=""
   # Its start charged the host <charged_mb>: a local one is a subshell of the
   # head, and its JVMs are not the head's; the host's solver charges its own.
   local campaign_head_charging=0
@@ -3235,28 +3235,35 @@ to start its solver now; answered in a solver JVM of its own"
     # A solver that ran out of heap, died, or was ended at what its host
     # could hold answered nothing about the obligation, and settles no
     # question, whatever it left: asked once more, of a solver of its own,
-    # placed as any start by what the first one measurably held (its peak,
-    # or the host's solver's heap) with the usual margin
-    # (campaign_need_of_peak_mb), at least campaign_solver_retry_mb, on any
-    # host with that room
+    # placed as any start by what the first one measurably held (its watched
+    # peak) with the usual margin (campaign_need_of_peak_mb), at least
+    # campaign_solver_retry_mb and at most a solver's heap, on any host with
+    # that room
     # (campaign_solve_obligation_placed).  Twice, or no host with the room:
     # the worker did not finish (campaign_obligation_unfinished), by name,
     # never an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
+    # A host's solver is no JVM this worker watched: its peak is unknown,
+    # and the floor stands for it.  Never past a solver's heap, which no
+    # JVM of its own outgrows (EX1-adhoc-07d: an NFS error ended a 16 GB
+    # host solver, the retry asked 24576 MB, more than any lift may hold).
     peak=${campaign_watch_peak_mb}
-    (( peak > 0 )) || peak=$(campaign_solver_heap_mb)
-    need=$(campaign_need_of_peak_mb "${peak}")
+    need=$(campaign_solver_retry_mb)
+    (( peak <= 0 )) || need=$(campaign_need_of_peak_mb "${peak}")
     (( need >= $(campaign_solver_retry_mb) )) || need=$(campaign_solver_retry_mb)
+    (( need <= $(campaign_solver_heap_mb) )) || need=$(campaign_solver_heap_mb)
+    held="held ${peak} MB"
+    (( peak > 0 )) || held="ran in its host's solver, unwatched"
     campaign_log "obligation ${obligation_id}: its solver did not answer \
 ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
       | tail -n 1)); asked again of a solver of its own, ${need} MB for a \
-first that held ${peak} MB, on any host with the room"
+first that ${held}, on any host with the room"
     run_capturing_status campaign_solve_obligation_placed "${obligation_id}" \
       "${obligations}" "${sessions}" "${worker}" "${need}"
     if [[ "${status}" -eq 4 ]]; then
       die "obligation ${obligation_id}: its solver did not answer, and no \
-host has room for a solver of its own of ${need} MB (the first held \
-${peak} MB) within ${campaign_solver_place_patience_s}s: \
+host has room for a solver of its own of ${need} MB (the first \
+${held}) within ${campaign_solver_place_patience_s}s: \
 ${campaign_host_wait_reason}"
     elif [[ "${status}" -ne 0 ]]; then
       rm -f -- "${worker}/question.txt" "${worker}/question.asked"

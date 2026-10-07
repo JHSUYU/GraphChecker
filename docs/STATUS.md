@@ -500,6 +500,9 @@ Correctness:
     A host holds at most `campaign_stream_solves_per_host` (2) of a campaign's solves at once: its solver answers one
     question at a time, and EX1-adhoc-07c's 13-18 questions waiting per lift, 512 MB each, held 7-9 GB of every
     lift's ledger beside 12 GB solvers, so no replay started for ten minutes; the rest wait uncharged in the queue.
+    A retry of a question a host's solver could not answer (no worker watched that JVM) is charged the floor, and no
+    retry is charged past a solver's heap (EX1-adhoc-07d: an NFS error ended a host solver and its retry asked
+    24576 MB, more than any lift may hold).
 62. Fixed on `hdfs1-relay-plan`: hdfs-adhoc-07 HF3's 38 self-contradictory paths (of 235) were all paths whose own
     session ran jn1's `prepareRecovery` unwoven. The QJM client relays a journal node's `SegmentStateProto` into
     jn0's `acceptRecovery` request (codec capture stages the decoded element under its original producer,

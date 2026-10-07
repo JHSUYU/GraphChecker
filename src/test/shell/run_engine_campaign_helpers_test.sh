@@ -2000,10 +2000,10 @@ $(live_charges "${solver_test}/hosts")"
 
 # A question its host's solver could not answer (out of heap, died, ended at
 # what its host could hold) is no answer: it is asked once more of a solver
-# of its own, placed by what the first held -- its watched peak, or the
-# host's solver's heap -- with the usual margin, at least half a solver's
-# heap (a peak a growing solver was ended at is a lower bound), on any host
-# with the room;
+# of its own, placed by what the first held -- its watched peak with the
+# usual margin, at least half a solver's heap (a peak a growing solver was
+# ended at is a lower bound); half the heap for a host's solver, which no
+# worker watched; never past the heap -- on any host with the room;
 # a second failure, or no host with the room, fails the worker by name -- an
 # unfinished obligation (campaign_obligation_unfinished) -- never a bare
 # NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations "answered" by an
@@ -2062,17 +2062,18 @@ while read -r alone retry_need; do
       || fail "the unfinished worker does not say why: \
 $(cat "${retry_test}/fails/stderr.log")" ;;
     nohost) grep -q "Error: obligation OB.1: its solver did not answer, and no \
-host has room for a solver of its own of 12288 MB (the first held 8192 MB).*no \
-host of the pool has 12288 MB" "${retry_test}/nohost/stderr.log" \
+host has room for a solver of its own of 4096 MB (the first ran in its host's \
+solver, unwatched).*no \
+host of the pool has 4096 MB" "${retry_test}/nohost/stderr.log" \
       || fail "a second ask no host could hold does not fail by name: \
 $(cat "${retry_test}/nohost/stderr.log")" ;;
   esac
 done <<'EOF_RETRY'
-answers 12288
-fails 12288
-noroom 12288
+answers 4096
+fails 4096
+noroom 4096
 killed 4096
-nohost 12288
+nohost 4096
 EOF_RETRY
 
 # SOLVER-PLACED: a solver asked again goes to the pool's host with the most
