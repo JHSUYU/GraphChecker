@@ -427,7 +427,10 @@ schedule) and:
    BOUNDED (asked no more past `ObligationFactory#MAX_REFUTED_WORLDS` = 8 refuted worlds, the named
    valve for a clock or a wide integral that offers one world per value: `result.json` `bounded`
    `open_arm_max_refuted_worlds`), NOT_ASKED, NOT_FLIPPABLE -- an arm a path took is not listed -- and
-   `refutedWorlds`, each world a replay of its flip refuted, §7.6), judged at EMIT (§11).
+   `refutedWorlds`, each world a replay of its flip refuted, §7.6; `unrunWorlds`, the asked-once-more
+   replays that refuted nothing), judged at EMIT (§11). A path that asked its own flip is judged by
+   that flip's answers, a refuted world answering nothing; a path that never asked shares the
+   verdict of the obligation its id names (one arm per dependence, STATUS 58).
 
 ### 7.2 The closure: `explore.ClosurePlanner.plan`
 
@@ -714,8 +717,12 @@ operator the lowering writes (the string operators `str.substr`, `str.indexof`, 
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
 and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
-none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked
-(`ADMISSION_GAP`), whatever variables a prefix decision binds; one that reaches only leaves a frame's
+none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked, whatever
+variables a prefix decision binds: by the owner's ruling (only SAT or UNSAT; a concrete value is a
+constant) its other arm is UNSAT on that path, named `NOT_FLIPPABLE` (`FlipQuery#NOT_FLIPPABLE`,
+`ObligationFactory#solve`), unless its occurrence read a version no row of the corpus wrote (held at
+what it read, its producer unstated, `FlipQuery#heldReads`): that refusal stays (`ADMISSION_GAP`,
+DIAGNOSTIC), the scope hole being real; one that reaches only leaves a frame's
 write was freed to (`SmtLowering#framedLeaves`: the writer computed on an arrival it refused, so no
 plant reaches them) is refused before it is solved (`UNPRODUCIBLE_ANSWER`, DIAGNOSTIC, named). A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays

@@ -4,9 +4,16 @@ package edu.uva.liftlab.graphchecker.contract;
  * CONTRACT-SPEC §3: what one obligation produced, and from which session.  A
  * NOT_ADMITTED open-arm flip whose replay refuted its world states why
  * ({@link WorldRefutation}): its arm stays owed, asked again without that
- * world ({@code explore.Frontier#consume}).
+ * world ({@code explore.Frontier#consume}).  One whose replay did not run
+ * its world faithfully says so first ({@link #WORLD_UNREFUTED}): it is asked
+ * once more.
  */
 public final class ObligationResult extends Value {
+    /** How a NOT_ADMITTED open-arm flip's detail opens when its replay never
+     *  reached the decision and did not run its world faithfully either
+     *  ({@code runtime.FocusedReplay#refuted}'s conditions failed). */
+    public static final String WORLD_UNREFUTED = "WORLD_UNREFUTED";
+
     private final String obligationId;
     private final Verdict verdict;
     private final String sessionId;
@@ -63,6 +70,13 @@ public final class ObligationResult extends Value {
     /** Why the replay refuted its world, or null. */
     public WorldRefutation refutation() {
         return refutation;
+    }
+
+    /** Whether this is an open-arm flip's replay that ran its world neither
+     *  into the decision nor faithfully ({@link #WORLD_UNREFUTED}). */
+    public boolean worldUnrefuted() {
+        return verdict == Verdict.NOT_ADMITTED && refutation == null
+                && detail.startsWith(WORLD_UNREFUTED + ":");
     }
 
     @Override

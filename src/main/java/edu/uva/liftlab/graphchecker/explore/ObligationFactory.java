@@ -896,8 +896,11 @@ public final class ObligationFactory {
         }
         ObligationDir.Answer earlier = answered.get(question);
         // A refuted world answers nothing of its question's arm: never
-        // reused (the corpus that excludes it may be one session behind).
-        if (earlier != null && earlier.result.refutation() == null) {
+        // reused (the corpus that excludes it may be one session behind);
+        // nor does a replay that did not run its world (asked once more,
+        // Frontier#consume).
+        if (earlier != null && earlier.result.refutation() == null
+                && !earlier.result.worldUnrefuted()) {
             String detail = "question " + question + " was settled "
                     + earlier.result.verdict() + " by obligation "
                     + earlier.obligationId
@@ -913,6 +916,14 @@ public final class ObligationFactory {
             // back, a reuse of a reuse would stand on nothing.
             return refused(candidate, earlier.result.verdict(), detail, "",
                     gaps, question, false);
+        }
+        if (built.notFlippable()) {
+            return refused(candidate, Verdict.UNSAT, built.refusal
+                    + ": no root, clock, handoff control or movable read"
+                    + " reaches the flipped predicate, and it rests on no"
+                    + " held fact: the recording's arm is the only one, so"
+                    + " no world of this corpus takes the other on this path",
+                    "", gaps, question);
         }
         if (!built.ok()) {
             return refused(candidate, Verdict.NOT_ADMITTED,

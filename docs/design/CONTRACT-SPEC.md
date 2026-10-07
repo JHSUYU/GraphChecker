@@ -214,7 +214,10 @@ field=<f> <subject>`.
   [PIPELINE.md §7.6](PIPELINE.md)). `refutation` (`WorldRefutation {conditions, exception, thrownAt,
   testFrame}`) only on a NOT_ADMITTED open decider arm's flip whose replay refuted its world
   (`WORLD_REFUTED`, §7.6): the four faithfulness conditions as they held, the workload's terminating
-  throwable ("" when its method returned), its innermost frame and the test method's frame.
+  throwable ("" when its method returned), its innermost frame and the test method's frame. Such a flip
+  whose replay never entered the decision and failed a faithfulness condition opens its `detail` with
+  `WORLD_UNREFUTED:` (`ObligationResult#worldUnrefuted`): its world was not run, so the flip is asked
+  once more (`explore.Frontier#consume`; no question reuse answers it) and a second such run settles it.
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl` (the answer, written once by the worker),
   `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer
