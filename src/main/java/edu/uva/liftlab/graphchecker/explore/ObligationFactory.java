@@ -896,8 +896,11 @@ public final class ObligationFactory {
         }
         ObligationDir.Answer earlier = answered.get(question);
         // A refuted world answers nothing of its question's arm: never
-        // reused (the corpus that excludes it may be one session behind).
-        if (earlier != null && earlier.result.refutation() == null) {
+        // reused (the corpus that excludes it may be one session behind);
+        // nor does a replay that did not run its world (asked once more,
+        // Frontier#consume).
+        if (earlier != null && earlier.result.refutation() == null
+                && !earlier.result.worldUnrefuted()) {
             String detail = "question " + question + " was settled "
                     + earlier.result.verdict() + " by obligation "
                     + earlier.obligationId

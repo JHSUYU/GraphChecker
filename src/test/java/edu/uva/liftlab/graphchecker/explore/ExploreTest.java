@@ -1749,12 +1749,15 @@ public class ExploreTest {
         String helper = "State#u2";
         Object[][] rows = {
             // the arm's asked decision, the answer, the arm's state, the id
-            // the answer landed under (null: the one proposed)
-            {helper, null, "PENDING", null},
-            {helper, Verdict.NOT_ADMITTED, "UNANSWERED", null},
-            {helper, Verdict.UNSAT, "UNSAT", null},
-            {helper, Verdict.UNSAT, "UNSAT", "drifted-id"},
-            {"", null, "NOT_FLIPPABLE", null}};
+            // the answer landed under (null: the one proposed), how many of
+            // its replays did not run their world (WORLD_UNREFUTED)
+            {helper, null, "PENDING", null, 0},
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED", null, 0},
+            {helper, Verdict.UNSAT, "UNSAT", null, 0},
+            {helper, Verdict.UNSAT, "UNSAT", "drifted-id", 0},
+            {helper, Verdict.NOT_ADMITTED, "PENDING", "unrun-once", 1},
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "unrun-twice", 2},
+            {"", null, "NOT_FLIPPABLE", null, 0}};
         for (Object[] row : rows) {
             String asked = (String) row[0];
             Path iteration = tree.newFolder("open-arm-" + row[2]
@@ -1789,15 +1792,27 @@ public class ExploreTest {
                 assertEquals(2, proposed.get(0).ordinal());
             }
             JsonObject named = first;
+            int unrun = (Integer) row[4];
             if (row[1] != null) {
                 Obligation flip = proposed.get(0);
-                ObligationResult answer = ObligationResult.of(row[3] == null
-                        ? flip.obligationId() : (String) row[3],
-                        (Verdict) row[1], "s-flip", "answered");
-                record(results, answer);
-                land(iteration, flip, answer);
+                for (int run = 0; run < Math.max(1, unrun); run++) {
+                    ObligationResult answer = ObligationResult.of(
+                            row[3] == null || unrun > 0 ? flip.obligationId()
+                                    : (String) row[3], (Verdict) row[1],
+                            "s-flip" + run, unrun == 0 ? "answered"
+                                    : ObligationResult.WORLD_UNREFUTED
+                                    + ": never reached; its world is not"
+                                    + " refuted: (a) no root mint row");
+                    record(results, answer);
+                    land(iteration, "obligations-000" + run, flip, answer);
+                }
                 named = plan(iteration, TARGET_SELECTOR, null, results,
                         out.resolve("obligations-0001"), 1);
+                if (unrun > 0) {
+                    assertEquals("asked once more, never a third time",
+                            unrun == 1 ? 1 : 0, obligations(
+                                    out.resolve("obligations-0001")).size());
+                }
             }
             JsonArray arms = named.getAsJsonArray("openArms");
             assertEquals("the arm is named: " + arms, 1, arms.size());
@@ -1806,6 +1821,8 @@ public class ExploreTest {
             assertTrue(arm.get("outcome").getAsBoolean());
             assertEquals("its state: " + arm, row[2],
                     arm.get("state").getAsString());
+            assertEquals("its unrun worlds named: " + arm, unrun,
+                    arm.getAsJsonArray("unrunWorlds").size());
         }
     }
 
@@ -4980,10 +4997,9 @@ public class ExploreTest {
     /** Lands one answer in the iteration as a worker does: its directory
      *  under the obligation id it ran as, the question naming the flip it
      *  asked, its result row. */
-    private static void land(Path iteration, Obligation asked,
+    private static void land(Path iteration, String wave, Obligation asked,
                              ObligationResult answer) throws IOException {
-        Path worker = iteration.resolve("obligations-0000")
-                .resolve(answer.obligationId());
+        Path worker = iteration.resolve(wave).resolve(answer.obligationId());
         Files.createDirectories(worker);
         Files.write(worker.resolve(ObligationDir.QUESTION), (ObligationFactory
                 .flip(asked.taskId(), asked.pathId(), asked.siteId(),

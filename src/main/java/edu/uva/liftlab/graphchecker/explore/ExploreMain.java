@@ -322,6 +322,8 @@ public final class ExploreMain {
                     new LinkedHashMap<String, Set<String>>();
             Map<String, Map<String, JsonObject>> refuted =
                     new LinkedHashMap<String, Map<String, JsonObject>>();
+            Map<String, Set<String>> unrun =
+                    new LinkedHashMap<String, Set<String>>();
             Set<String> taken = new LinkedHashSet<String>();
             for (TargetRow row : corpus.targetsOn(root)) {
                 TargetRow.OpenArm arm = row.openArm();
@@ -334,7 +336,9 @@ public final class ExploreMain {
                 Map<String, JsonObject> worlds = refuted.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, JsonObject>());
                 String state = openArmState(corpus, task, root, row, arm,
-                        frontier, proposed, answers, worlds);
+                        frontier, proposed, answers, worlds,
+                        unrun.computeIfAbsent(key,
+                                k -> new LinkedHashSet<String>()));
                 if ("TAKEN".equals(state)) taken.add(key);
                 states.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, Integer>())
@@ -377,6 +381,8 @@ public final class ExploreMain {
                     worlds.add(world);
                 }
                 row.add("refutedWorlds", worlds);
+                row.add("unrunWorlds", ExploreCodec.list(new ArrayList<String>(
+                        unrun.get(arm.getKey()))));
                 arms.add(row);
             }
         }
@@ -399,7 +405,9 @@ public final class ExploreMain {
      * under the first id ran a fault world unfaithfully).  TAKEN where any
      * answer admitted it or a recorded path took it; else what its last
      * answer says.  The worlds its replays refuted are added to {@code
-     * refuted}, by digest.
+     * refuted}, by digest; each replay that did not run its world ({@code
+     * ObligationResult#worldUnrefuted}: asked once more, {@link
+     * Frontier#consume}) to {@code unrun}, as obligation@session.
      */
     private static String openArmState(Corpus corpus, Task task,
                                        OccurrenceAddress root, TargetRow row,
@@ -408,7 +416,8 @@ public final class ExploreMain {
                                        Set<String> proposed,
                                        Map<String, List<ObligationResult>>
                                                answers,
-                                       Map<String, JsonObject> refuted) {
+                                       Map<String, JsonObject> refuted,
+                                       Set<String> unrun) {
         if (arm.askedSiteId().isEmpty()) return "NOT_FLIPPABLE";
         if (task == null) return "NOT_ASKED";
         for (Corpus.RecordedPath path : corpus.pathsOf(root)) {
@@ -436,6 +445,10 @@ public final class ExploreMain {
                 for (ObligationResult answer : answers.getOrDefault(flip,
                         Collections.<ObligationResult>emptyList())) {
                     if (answer.verdict() == Verdict.ADMITTED) return "TAKEN";
+                    if (answer.worldUnrefuted()) {
+                        unrun.add(answer.obligationId() + "@"
+                                + answer.sessionId());
+                    }
                     if (answer.verdict() != Verdict.SAT_MODEL_READY) {
                         last = answer.verdict();
                     }

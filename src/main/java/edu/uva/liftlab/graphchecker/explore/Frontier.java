@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -127,12 +128,17 @@ public final class Frontier {
     /** Takes earlier rounds' verdicts; a recording, if any, stays the stated
      *  reason.  A replay that refuted its world (an open decider arm's flip,
      *  {@code ObligationResult#refutation}) answers nothing of the arm: it
-     *  stays owed, asked again without that world. */
+     *  stays owed, asked again without that world.  One that did not run its
+     *  world ({@code ObligationResult#worldUnrefuted}) answers nothing
+     *  either: asked once more, and settled by a second such run. */
     public void consume(Collection<ObligationResult> results) {
+        Map<String, Integer> unrun = new HashMap<String, Integer>();
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
             if (result.verdict() == Verdict.SAT_MODEL_READY
-                    || result.refutation() != null) {
+                    || result.refutation() != null
+                    || result.worldUnrefuted() && unrun.merge(
+                            result.obligationId(), 1, Integer::sum) < 2) {
                 continue;
             }
             settle(result.obligationId(), "arm already answered "

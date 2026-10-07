@@ -564,9 +564,10 @@ public final class FocusedReplay {
                         ? refuted(obligation, held, unrefuted) : null;
                 results.add(refutation == null
                         ? ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                        sessionId, detail + (unrefuted.isEmpty() ? ""
-                        : "; its world is not refuted: "
-                        + String.join("; ", unrefuted)))
+                        sessionId, unrefuted.isEmpty() ? detail
+                        : ObligationResult.WORLD_UNREFUTED + ": " + detail
+                        + "; its world is not refuted: "
+                        + String.join("; ", unrefuted))
                         : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, WORLD_REFUTED + ": " + detail + ", and the"
                         + " world it ran, faithfully, never entered it: "
