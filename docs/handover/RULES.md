@@ -137,6 +137,13 @@ recommendation.
   change (codec capture, open arms, rule 1, the retried-call identity) and every case still open is worked on
   `system/hdfs1`, branched from the locked body. The end state is these two branches (owner: "最终就是两个分支，system/hdfs和
   system/hdfs1"): nothing merges back into `system/hdfs` or `main`; STATUS names the branch that closed each case.
+- **The last open cases close by workarounds** (owner 2026-10-06 ~20:00: "如果加点workaround，是不是小改动就能大大省去我们的很多
+  复杂改动"; "我要求你加点workaround"): where a general fix would be an identity, PLAN or runtime change gated on many cases,
+  a per-case workaround closes the case instead -- a case declaration (its own loop bounds, world depth), or one small
+  patch in a tree only that case reads, selected per case in its `case.sh` -- named in STATUS's per-system surface, with
+  the general design written into TODO. Used: 21 (its handshake on a joined thread, tree `gc/hdfs-study-r7-21`;
+  `parseVersion`'s loop bound 24), 07 (QJM's reply maps in logger order, tree `gc/hdfs-study-r8`; world depth 6). Never a
+  fabricated result; the residue a workaround leaves is named in the case's STATUS row.
 - **Parallelism is documented** ("你整个并行的思路要专门写到文档里去"): [PARALLEL.md](PARALLEL.md).
 - **Checking is documented** ("尤其是你检查.smt效果踩过的坑，也要说清楚"): [CHECKING.md](CHECKING.md) is how every verdict and
   `.smt` is checked, with every trap a lead fell into. Nothing counts as done before it passes CHECKING §1.

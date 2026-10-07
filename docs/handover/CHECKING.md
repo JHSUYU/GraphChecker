@@ -26,7 +26,7 @@ code, why the chain is constant inside the window.
 `movedRoots` names at least one root, `polarityDecides` is true, the claimed path's cone has no unbound handoff
 (`cone.json` `unbound`; other paths' are reported as `unboundOffWitness`, lead decision 2026-10-06, RULES), and the
 native reproduction ran (`final/reproduce.json`: `reproduced`/`runs`, record k/N; a race-dependent bug may reproduce
-4/10). A known bug also needs its mandated mechanism (RULES "Acceptance"; `report.py` PASS) with the mechanism's
+4/10; a clock-skew world names `NATIVE_PLANT_UNSUPPORTED` and rests on CONFIRM, trap 21). A known bug also needs its mandated mechanism (RULES "Acceptance"; `report.py` PASS) with the mechanism's
 roots in `movedRoots`.
 
 ## 2. Reading the formula by hand (the hand check written into STATUS)
@@ -104,3 +104,24 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     key-update occurrence that the old VM missed silently (2026-10-05). Read before reverting.
 15. **One run is not a verdict on a racy case** (11741, solr-18413; 22's seed varies 0-66 give-ups): rerun before
     blaming a branch, and compare with the base body under the same budget (D1's SH55).
+16. **A sweep's default budget cuts the deepest case** (HF1, 2026-10-06): `tools/adhoc/sweep.sh` gives each case
+    `CASE_TIMEOUT_SECONDS=5400` unless told otherwise; 11741 needs 1.5-3 h even alone. Launch it with
+    `CASE_TIMEOUT_SECONDS=14400` (HF2: PASS in 5168 s). Check `sweep-<round>-jobs.txt` before trusting a budget.
+17. **A slow run on an older jar** (CC7-11741, 2026-10-06): its witness's confirmation replay was ADMITTED at 19:37,
+    but the step that decides it sat 40 min behind a witness attempt stuck in the old quadratic `Cone.read` (fixed in
+    3e7becca7, not in that branch's jar). Before diagnosing a stall, compare the run's snapshot with HEAD; a
+    confirmation is decided only by the next step, and steps run one at a time (TODO: confirm-first, parked).
+18. **An open arm's closure varies run to run** (39, 2026-10-06): OA5 closed it on two refuted worlds while OA4, WD2 and
+    HF1-4 ended `OPEN_ARM_UNANSWERED` on the same body. Causes: an obligation id carries no path and no world, so a
+    later fault world's unfaithful replay replaced an earlier refutation (STATUS open defects 58/59), and a flip no
+    symbol reaches was refused instead of answered (now NOT_FLIPPABLE). Two runs before counting an open-arm UNSAT.
+19. **A blocking divergence that is only read order** (07 CC7, 2026-10-06): 86 `TOPOLOGY_DIVERGENCE` rows, every one a
+    client consumer of a quorum reply. QJM reads replies out of a `HashMap` keyed by identity hash, so the k-th read is
+    another journal node in every JVM (STATUS open defect 57). Read the consumer sites before suspecting the data.
+20. **A residue that cannot move the verdict** (21, time family, 2026-10-06): RUN_DEFECT on 3 BLOCKING gaps from a
+    stranded actor body, yet every one of the 5 fatal paths ends in the constant `false` (an untracked String
+    compare), so no unexplored path can change UNSAT. Such a case is accepted only under the time-family license, with
+    the gap ids and the reason in its STATUS row; outside that family it stays open.
+21. **A clock witness has no native reproduction** (11741): `reproduce.json` says `NATIVE_PLANT_UNSUPPORTED` (a native
+    run plants no clock). CONFIRM's replay, which planted the skewed clocks and reached the fatal, is its validation;
+    say so in its STATUS row instead of reporting a k/N.
