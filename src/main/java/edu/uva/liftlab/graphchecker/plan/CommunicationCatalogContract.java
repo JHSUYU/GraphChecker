@@ -46,8 +46,13 @@ public final class CommunicationCatalogContract {
     public static final String CAPTURE_METHOD_RETURN = "METHOD_RETURN";
     public static final String PORT_ARGUMENT_INDEX = "argumentIndex";
     public static final String PORT_DEFINITION_METHOD = "definitionMethod";
-    /** Method whose one call builds a value of the port; absent = RPC. */
-    public static final String PORT_FRAME_METHOD = "frameMethod";
+    /**
+     * The protobuf message field a derived port's value is carried in
+     * ({@code <M: T f>}), absent for a declared row: the door walks the
+     * message for it (SYMBOL-SCOPE §6.3).  Additive: a port's identity
+     * ({@link #exchangeSiteKey}) does not move with it.
+     */
+    public static final String PORT_CODEC_FIELD = "codecField";
     public static final String PORT_DEFINITION_UNIT_INDEX =
             "definitionUnitIndex";
 

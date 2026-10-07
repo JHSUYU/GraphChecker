@@ -62,7 +62,7 @@ public class DataTransferOpTest {
         RuntimeTraceContext.registerSource(client, CLIENT);
         long writing = RuntimeTraceContext.beginRequest(client, "write");
         CausynthMessagePropagation.Outbound op =
-                CausynthMessagePropagation.outboundOp();
+                CausynthMessagePropagation.outboundOp(null);
         RuntimeTraceContext.endRequest(writing);
         assertTrue("an op is a request on a correlation of its own: "
                 + op.correlationId, op.correlationId.startsWith("hdfs-dt-"));

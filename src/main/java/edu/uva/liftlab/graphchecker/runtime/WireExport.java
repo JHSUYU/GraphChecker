@@ -23,19 +23,39 @@ import java.lang.reflect.Field;
  * The wire's near half (SYMBOL-SCOPE §6.3): a value crossing one declared
  * communication port, and the endpoint row that says it crossed.
  *
- * <p>Out: export the carrier leaf's expression, stage the handle on the
- * outbound message, and state the producer endpoint whether or not a region
- * was live.  In: take the staged element, attach the producer's expression
- * onto the arrived leaf, and mint the consumer's boundary variable via
- * {@link HandoffMint}.</p>
+ * <p>Out: export a leaf's expression where the weave captured it -- a
+ * declared row's value, staged on the thread's next outbound message; a
+ * message field's value at its builder's setter, bound to the builder,
+ * which the door that carries the message stages ({@link MessageCodec}) --
+ * and state the producer endpoint whether or not a region was live.  In: take
+ * the element (a message field's from the message it was decoded into, a
+ * declared row's from the message the thread received), attach the
+ * producer's expression onto the arrived leaf, and mint the consumer's
+ * boundary variable via {@link HandoffMint}.</p>
  *
- * <p>The leaf is always a field of {@link
+ * <p>An arrived leaf is always a field of {@link
  * ConcolicRegionRuntime.HandoffLeafCarrier}, which stays there: woven
- * bytecode allocates it by binary name.  The runtime's own steps run with
+ * bytecode makes it by binary name.  The runtime's own steps run with
  * observation paused, so they land in no path condition.</p>
  */
 final class WireExport {
     private WireExport() {
+    }
+
+    /** One instance field a value crosses on: its holder, the class that
+     *  declares it, its name and descriptor. */
+    static final class Leaf {
+        private final Object holder;
+        private final String owner;
+        private final String field;
+        private final String descriptor;
+
+        Leaf(Object holder, String owner, String field, String descriptor) {
+            this.holder = holder;
+            this.owner = owner;
+            this.field = field;
+            this.descriptor = descriptor;
+        }
     }
 
     /**
@@ -53,55 +73,50 @@ final class WireExport {
         }
     }
 
-    /** Runs one step of the runtime's own, unobserved by the VM. */
-    private static void paused(Runnable step) {
+    /**
+     * Exports the live expression of one port where the weave captured it,
+     * read from the carrier leaf the instrumented frame made (a broker leaf
+     * must be a field): a declared row's, staged on the message this thread
+     * sends next; a message field's ({@code builder} its builder, the
+     * setter's receiver), bound to that builder for the door that carries
+     * the message it builds.  Every export is woven
+     * (RuntimeRegionPlanner#exportSites), planned or not.
+     */
+    static void exportLeaf(String portId, Object carrier, String field,
+                           String descriptor, Object builder) {
+        if (carrier == null || Text.safe(portId).isEmpty()) return;
+        Leaf leaf = new Leaf(carrier, CARRIER_CLASS, field, descriptor);
+        if (builder == null) {
+            export(portId, leaf);
+            return;
+        }
+        Export exported = export(leaf);
+        if (exported.handle < 0L) {
+            // Unbound: the door exports the field, a constant.
+            refused(portId, "export", exported.handle,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    "the message carries its field's value as a constant");
+            return;
+        }
+        Endpoint producer = publishExportRow(portId, leaf, exported.handle,
+                exported.eventId);
         pauseObservation();
         try {
-            step.run();
+            MessageCodec.set(builder, portId, exported.handle, producer);
         } finally {
             resumeObservation();
         }
     }
 
     /**
-     * Opens the frame around one message instance being serialized; leaves
-     * staged inside are addressed within it, so two same-shaped groups in one
-     * message stay apart.
+     * Exports one leaf of {@code portId} and stages it on the message this
+     * thread sends next; a refused one is counted there, carrying nothing,
+     * so the elements after it keep their ordinals.
      */
-    static void pushOutboundFrame() {
-        paused(SymbolicMessageEnvelope::pushOutboundFrame);
-    }
-
-    /** Closes the frame {@link #pushOutboundFrame} opened. */
-    static void popOutboundFrame() {
-        paused(SymbolicMessageEnvelope::popOutboundFrame);
-    }
-
-    /**
-     * Mirror of {@link #pushOutboundFrame}: the k-th frame means the same
-     * thing on both sides.
-     */
-    static void pushInboundFrame() {
-        paused(SymbolicMessageEnvelope::pushInboundFrame);
-    }
-
-    /** Closes the frame {@link #pushInboundFrame} opened. */
-    static void popInboundFrame() {
-        paused(SymbolicMessageEnvelope::popInboundFrame);
-    }
-
-    /**
-     * Exports the live expression of one declared communication port, read
-     * from the carrier leaf the instrumented frame stored into (a broker
-     * leaf must be a field).
-     */
-    static void exportLeaf(String portId, Object carrier, String field,
-                           String descriptor) {
-        // The woven call is the declaration: every export of the program is
-        // woven (RuntimeRegionPlanner#exportSites), planned or not.
-        if (carrier == null || Text.safe(portId).isEmpty()) return;
-        Export exported = export(carrier, field, descriptor);
+    static void export(String portId, Leaf leaf) {
+        Export exported = export(leaf);
         if (exported.handle < 0L) {
+            SymbolicMessageEnvelope.skip(portId);
             refused(portId, "export", exported.handle,
                     GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     "the message carries no element for it, so its"
@@ -110,10 +125,26 @@ final class WireExport {
         }
         // The endpoint first: the message the leaf enters files it as its
         // own producer at its door (SymbolicMessageEnvelope#carriedBy).
-        Endpoint producer = publishExportRow(portId, carrier, field,
-                descriptor, exported.handle, exported.eventId);
-        if (!SymbolicMessageEnvelope.stage(portId, exported.handle,
-                producer)) {
+        Endpoint producer = publishExportRow(portId, leaf, exported.handle,
+                exported.eventId);
+        stage(portId, exported.handle, producer);
+    }
+
+    /**
+     * Stages a decoded element again on the message this thread sends next,
+     * under its ORIGINAL producer: a relay hands on what it received, so the
+     * receiver pairs with the export that made the value (by its handle,
+     * else by the message it arrived in), never with the relay.
+     */
+    static void relay(String portId, MessageCodec.Element element) {
+        stage(portId, element.handle, Interactions.pairing(portId,
+                element.handle, element.correlationId, element.half)
+                .producer());
+    }
+
+    /** Stages one element on the message this thread sends next. */
+    static void stage(String portId, long handle, Endpoint producer) {
+        if (!SymbolicMessageEnvelope.stage(portId, handle, producer)) {
             // The row still states the endpoint; the loss is named.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     portId,
@@ -122,14 +153,13 @@ final class WireExport {
     }
 
     /**
-     * Exports one carrier leaf.  A concrete leaf is still a leaf the message
+     * Exports one leaf.  A concrete leaf is still a leaf the message
      * carried: handle 0.
      */
-    private static Export export(Object carrier, String field,
-                                 String descriptor) {
+    private static Export export(Leaf leaf) {
         pauseObservation();
         try {
-            if (!leafNamed(field, descriptor)) {
+            if (!leafNamed(leaf.field, leaf.descriptor)) {
                 return new Export(ConcolicVmBroker.MISSING_METADATA, 0L);
             }
             long handle;
@@ -137,8 +167,8 @@ final class WireExport {
             // row names the exact export.
             long[] exportEvent = new long[1];
             try {
-                handle = engine().exportExpression(carrier, CARRIER_CLASS,
-                        field, descriptor, exportEvent);
+                handle = engine().exportExpression(leaf.holder, leaf.owner,
+                        leaf.field, leaf.descriptor, exportEvent);
             } catch (Throwable refused) {
                 handle = ConcolicVmBroker.INVOCATION_FAILED;
             }
@@ -159,10 +189,9 @@ final class WireExport {
      * (still keyable, IDENTITY §4): the endpoint, or null when no session
      * is open or the row could not be stated.
      */
-    private static Endpoint publishExportRow(String portId,
-                                         Object carrier, String field,
-                                         String descriptor, long handle,
-                                         long exportEventId) {
+    private static Endpoint publishExportRow(String portId, Leaf leaf,
+                                             long handle,
+                                             long exportEventId) {
         pauseObservation();
         try {
             if (!RowRuntime.open()) return null;
@@ -171,16 +200,16 @@ final class WireExport {
             JsonObject exported = null;
             String recordedValue = "";
             try {
-                Field storage = declaredInstanceField(carrier, CARRIER_CLASS,
-                        field, descriptor);
+                Field storage = declaredInstanceField(leaf.holder,
+                        leaf.owner, leaf.field, leaf.descriptor);
                 if (storage != null) {
-                    Object value = storage.get(carrier);
+                    Object value = storage.get(leaf.holder);
                     recordedValue = ConcolicRegionRuntime.recordedScalar(value);
                     JsonElement expression =
                             ConcolicRegionRuntime.engineExpression(
-                                    engine().fieldExpression(carrier,
-                                            CARRIER_CLASS, field, descriptor,
-                                            value));
+                                    engine().fieldExpression(leaf.holder,
+                                            leaf.owner, leaf.field,
+                                            leaf.descriptor, value));
                     if (expression != null && expression.isJsonObject()) {
                         exported = expression.getAsJsonObject();
                     }
@@ -193,7 +222,7 @@ final class WireExport {
             }
             return RowRuntime.exported(producer, exportEventId,
                     portId, handle, attemptOf(view), exported,
-                    descriptor, recordedValue);
+                    leaf.descriptor, recordedValue);
         } catch (Throwable unstated) {
             // Publishing never ends a run, and never fails silently.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -219,21 +248,29 @@ final class WireExport {
     /**
      * Attaches the exported expression of one declared communication port;
      * the carrier leaf then denotes the sender's expression, which the
-     * instrumented frame reads back into its local.  The delivery is filed
-     * on the occurrence it arrived in, with the producer's handle in force
+     * instrumented frame reads back into its local.  A message field's
+     * element is the one bound to {@code receiver}, the message its getter
+     * was called on ({@link MessageCodec#bound}): a message no door decoded
+     * was built here, and its field, the program's own value, attaches
+     * nothing.  A declared row's element is taken from the message the
+     * thread received.  The delivery is filed on the occurrence it arrived
+     * in, with the producer's handle and the message it came in held
      * ({@link Interactions#delivering}) for the whole attach.
      */
     static void attachLeaf(String portId, Object carrier, String field,
-                           String descriptor) {
+                           String descriptor, Object receiver) {
         CommunicationHandoffSpec site;
-        long handle;
+        MessageCodec.Element element;
         pauseObservation();
         try {
             site = attachSite(portId);
             // With no carrier nothing is taken: the element stays for the
             // message's end to name as unattached.
-            handle = site == null || carrier == null ? 0L
-                    : SymbolicMessageEnvelope.take(site.portId());
+            element = site == null || carrier == null ? null
+                    : site.codecField().isEmpty()
+                    ? MessageCodec.Element.received(
+                            SymbolicMessageEnvelope.take(site.portId()))
+                    : MessageCodec.bound(receiver, site.portId());
         } finally {
             resumeObservation();
         }
@@ -245,8 +282,9 @@ final class WireExport {
                             + "declares, so it filed nothing");
             return;
         }
-        if (carrier == null) return;
-        Interactions.delivering(handle);
+        if (carrier == null || element == null) return;
+        long handle = element.handle;
+        Interactions.delivering(handle, element.correlationId, element.half);
         try {
             if (handle <= 0L) {
                 // No producer expression: still mint v_H on the arrived

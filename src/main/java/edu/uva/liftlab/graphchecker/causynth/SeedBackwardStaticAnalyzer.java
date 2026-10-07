@@ -23,6 +23,7 @@ import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
+import soot.jimple.InstanceFieldRef;
 import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
@@ -522,16 +523,27 @@ final class SeedBackwardStaticAnalyzer {
         seedPort(port);
     }
 
-    /** Port (M, F), named {@code auto:<M's simple name>.<F>}, with its
-     *  producers: every call of {@code M$Builder.setF(T)}, argument 0. */
+    /**
+     * Port (M, F), named {@code auto:<M's simple name>.<F>}, carried in the
+     * field of M the getter reads ({@link #messageField}), with its
+     * producers: every call of {@code M$Builder.setF(T)}, argument 0.  A
+     * getter whose body names no one field of its message derives a port
+     * with no producer, which derives nothing: no door could walk it.
+     */
     private WireFlowCatalog.WireFlow derivedPort(String identity,
                                                  MethodSig getter) {
         String message = getter.owner;
         String field = getter.name.substring(3);
+        String codecField = messageField(getter);
         WireFlowCatalog.WireFlow port = new WireFlowCatalog.WireFlow(
                 "auto:" + message.substring(Math.max(message.lastIndexOf('.'),
                         message.lastIndexOf('$')) + 1) + "." + field,
-                identity, getter.returnType);
+                identity, getter.returnType, codecField);
+        if (codecField.isEmpty()) {
+            LOG.info("{} reads no one field of its message: no port",
+                    getter.raw);
+            return port;
+        }
         String builder = message + "$Builder";
         String setter = "<" + builder + ": " + builder + " set" + field + "("
                 + getter.returnType + ")>";
@@ -545,6 +557,46 @@ final class SeedBackwardStaticAnalyzer {
             if (!wireFlows.captures(producer)) port.producers.add(producer);
         }
         return port;
+    }
+
+    /**
+     * The field of its own message a generated getter returns: the one
+     * instance field of the getter's class its body reads off {@code this}
+     * -- {@code return this.keyId_} for a scalar, the {@code Object} that
+     * holds a String or its bytes for a string ({@code poolId_}, whose
+     * decoded String the getter caches back) -- or "".  Read off the body,
+     * never the spelling: the generated classes are library classes, whose
+     * bodies the scene resolves on demand.
+     */
+    private static String messageField(MethodSig getter) {
+        SootClass owner;
+        try {
+            owner = Scene.v().forceResolve(getter.owner, SootClass.BODIES);
+        } catch (RuntimeException unresolved) {
+            return "";
+        }
+        SootMethod method = owner.isPhantom() ? null
+                : owner.getMethodUnsafe(getter.raw.substring(
+                        getter.raw.indexOf(": ") + 2,
+                        getter.raw.length() - 1));
+        Body body = method == null ? null : activeBody(method);
+        if (body == null || method.isStatic()) return "";
+        Local self = body.getThisLocal();
+        SootField read = null;
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof AssignStmt)) continue;
+            Value source = ((AssignStmt) unit).getRightOp();
+            if (!(source instanceof InstanceFieldRef)
+                    || ((InstanceFieldRef) source).getBase() != self) {
+                continue;
+            }
+            SootField field = ((InstanceFieldRef) source).getField();
+            if (read != null && !read.equals(field)) return "";
+            read = field;
+        }
+        return read == null
+                || !read.getDeclaringClass().getName().equals(getter.owner)
+                ? "" : read.getSignature();
     }
 
     /**

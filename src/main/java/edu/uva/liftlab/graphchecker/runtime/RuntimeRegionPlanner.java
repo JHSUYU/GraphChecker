@@ -1506,7 +1506,9 @@ public final class RuntimeRegionPlanner {
      * hdfs-adhoc-12 HG9L: the NameNode's {@code
      * PBHelper.convert(NNHAStatusHeartbeat)} roots no planned region, so
      * {@code setTxid} was woven with no export, the DataNode's attach of the
-     * HA status txid paired with nothing, and the fatal held it unbound.
+     * HA status txid paired with nothing, and the fatal held it unbound.  A
+     * message field's export is bound to its builder, and the door that
+     * carries the message stages it ({@code MessageCodec}).
      */
     public static List<CommunicationHandoffSpec> exportSites(
             Collection<StaticProgram.RegionRow> skeletons) {
@@ -1557,7 +1559,7 @@ public final class RuntimeRegionPlanner {
                 CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
                 CommunicationCatalogContract.PORT_JAVA_TYPE,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD,
-                CommunicationCatalogContract.PORT_FRAME_METHOD,
+                CommunicationCatalogContract.PORT_CODEC_FIELD,
                 CommunicationCatalogContract.DECLARED_CALLEE}) {
             String value = stringValue(port.get(field));
             if (!value.isEmpty()) site.put(field, value);

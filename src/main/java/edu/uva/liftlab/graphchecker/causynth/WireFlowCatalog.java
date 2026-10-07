@@ -30,12 +30,15 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
  * with every capture that writes it and every capture that reads it.  A
  * declared row states one of each; direction and transport are no part of
  * it, since the recording binds each capture to the exchange it ran in and
- * replay keys everything on the port id.
+ * replay keys everything on the port id.  A port derived from a protobuf
+ * message names the message field it is carried in ({@link
+ * WireFlow#codecField}): the IPC door walks the message for it
+ * (SYMBOL-SCOPE §6.3).
  */
 public final class WireFlowCatalog {
     static final String PROPERTY = "causynth.communication.mappings";
     static final String KIND = "WIRE_FLOW";
-    static final int SCHEMA_VERSION = 2;
+    static final int SCHEMA_VERSION = 3;
 
     private final List<WireFlow> flows;
 
@@ -67,22 +70,16 @@ public final class WireFlowCatalog {
     /**
      * Whether a declared flow is this program's: a system's mapping file
      * declares its protocol's flows once for every case, and a flow joins a
-     * producer and a consumer, so a program that does not hold every method
-     * a row names (producer, consumer, frame methods; concrete) carries
-     * none of its values end to end.  Such a row is skipped by name in the
-     * static pass's log; a row the program holds whole is parsed, and
-     * refused by name if it is malformed.
+     * producer and a consumer, so a program that does not hold both methods
+     * a row names (concrete) carries none of its values end to end.  Such a
+     * row is skipped by name in the static pass's log; a row the program
+     * holds whole is parsed, and refused by name if it is malformed.
      */
     static boolean applies(JsonObject row, Map<String, SootMethod> methods) {
-        List<String> named = new ArrayList<>();
         for (String side : new String[] {"producer", "consumer"}) {
             JsonElement capture = row.get(side);
-            if (capture != null && capture.isJsonObject()) {
-                named.add(string(capture.getAsJsonObject(), "method"));
-            }
-            named.add(string(row, side + "FrameMethod"));
-        }
-        for (String method : named) {
+            String method = capture != null && capture.isJsonObject()
+                    ? string(capture.getAsJsonObject(), "method") : "";
             if (method.isEmpty()) continue;
             SootMethod held = methods.get(method);
             if (held == null || !held.isConcrete()) return false;
@@ -175,36 +172,19 @@ public final class WireFlowCatalog {
                     "wire flow requires id and javaType");
         }
         CaptureSite producer = CaptureSite.parse(object(row, "producer"),
-                methods, frameMethod(row, "producerFrameMethod", methods));
+                methods);
         CaptureSite consumer = CaptureSite.parse(object(row, "consumer"),
-                methods, frameMethod(row, "consumerFrameMethod", methods));
+                methods);
         if (!javaType.equals(producer.javaType)
                 || !javaType.equals(consumer.javaType)) {
             throw new IllegalArgumentException("wire endpoint types differ for "
                     + id + ": " + producer.javaType + " -> "
                     + consumer.javaType + " (declared " + javaType + ")");
         }
-        WireFlow flow = new WireFlow(id, id, javaType);
+        WireFlow flow = new WireFlow(id, id, javaType, "");
         flow.producers.add(producer);
         flow.consumers.add(consumer);
         return flow;
-    }
-
-    /**
-     * One side's declared frame method, or "" (the RPC message is the frame).
-     * One call of it builds one value instance, so same-shaped groups in one
-     * message stay apart.
-     */
-    private static String frameMethod(JsonObject row, String name,
-                                      Map<String, SootMethod> methods) {
-        String declared = string(row, name);
-        if (declared.isEmpty()) return "";
-        SootMethod method = methods.get(declared);
-        if (method == null || !method.isConcrete()) {
-            throw new IllegalArgumentException(
-                    "frame method did not resolve: " + declared);
-        }
-        return declared;
     }
 
     private static JsonObject object(JsonObject row, String name) {
@@ -236,13 +216,23 @@ public final class WireFlowCatalog {
         final String javaType;
         final String exchangeSiteKey;
         final String portId;
+        /**
+         * The protobuf message field the value is carried in ({@code <M: T
+         * f>}), or "" for a declared row: a door walks the message for it,
+         * exporting from the field and binding the decoded element to the
+         * message, and its producer captures (the builder's setter calls)
+         * are the slice's and the regions', never woven.
+         */
+        final String codecField;
         final List<CaptureSite> producers = new ArrayList<>();
         final List<CaptureSite> consumers = new ArrayList<>();
 
         /** A port named {@code id}, keyed by {@code identity}. */
-        WireFlow(String id, String identity, String javaType) {
+        WireFlow(String id, String identity, String javaType,
+                 String codecField) {
             this.id = id;
             this.javaType = javaType;
+            this.codecField = codecField;
             exchangeSiteKey = CommunicationCatalogContract.exchangeSiteKey(
                     identity);
             portId = CommunicationCatalogContract.portId(exchangeSiteKey, id);
@@ -266,6 +256,10 @@ public final class WireFlowCatalog {
                     exchangeSiteKey);
             row.put(CommunicationCatalogContract.PORT_ID, portId);
             row.put(CommunicationCatalogContract.PORT_NAME, id);
+            if (!codecField.isEmpty()) {
+                row.put(CommunicationCatalogContract.PORT_CODEC_FIELD,
+                        codecField);
+            }
             row.put(CommunicationCatalogContract.PORT_PRODUCERS,
                     rows(producers));
             row.put(CommunicationCatalogContract.PORT_CONSUMERS,
@@ -296,31 +290,27 @@ public final class WireFlowCatalog {
         final String callee;
         final int unitIndex;
         final String javaType;
-        final String frameMethod;
 
         private CaptureSite(String method, String kind, int index,
-                            String callee, int unitIndex,
-                            String javaType, String frameMethod) {
+                            String callee, int unitIndex, String javaType) {
             this.method = method;
             this.kind = kind;
             this.index = index;
             this.callee = callee;
             this.unitIndex = unitIndex;
             this.javaType = javaType;
-            this.frameMethod = frameMethod;
         }
 
-        /** A call capture a rule found, framed by its RPC message. */
+        /** A call capture a rule found. */
         static CaptureSite call(String method, String kind, int index,
                                 String callee, int unitIndex,
                                 String javaType) {
             return new CaptureSite(method, kind, index, callee, unitIndex,
-                    javaType, "");
+                    javaType);
         }
 
         private static CaptureSite parse(JsonObject row,
-                                         Map<String, SootMethod> methods,
-                                         String frameMethod) {
+                                         Map<String, SootMethod> methods) {
             String methodName = string(row, "method");
             String kind = string(row, "kind").toUpperCase();
             int index = integer(row, "index", -1);
@@ -338,8 +328,7 @@ public final class WireFlowCatalog {
                             "METHOD_PARAMETER requires only a valid index");
                 }
                 return new CaptureSite(methodName, kind, index, "", -1,
-                        method.getParameterType(index).toString(),
-                        frameMethod);
+                        method.getParameterType(index).toString());
             }
             if (METHOD_RETURN.equals(kind)) {
                 if (index >= 0 || !callee.isEmpty() || occurrence >= 0
@@ -348,7 +337,7 @@ public final class WireFlowCatalog {
                             "METHOD_RETURN takes no selector");
                 }
                 return new CaptureSite(methodName, kind, -1, "", -1,
-                        method.getReturnType().toString(), frameMethod);
+                        method.getReturnType().toString());
             }
             if (!(CALL_ARGUMENT.equals(kind) || CALL_RETURN.equals(kind))
                     || callee.isEmpty() || occurrence < 0
@@ -392,7 +381,7 @@ public final class WireFlowCatalog {
                         + methodName + " -> " + callee + " #" + occurrence);
             }
             return new CaptureSite(methodName, kind, index, callee,
-                    unitIndex, type.toString(), frameMethod);
+                    unitIndex, type.toString());
         }
 
         String siteId() {
@@ -409,10 +398,6 @@ public final class WireFlowCatalog {
             row.put(CommunicationCatalogContract.CALL_SITE_ID, siteId());
             row.put(CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                     method);
-            if (!frameMethod.isEmpty()) {
-                row.put(CommunicationCatalogContract.PORT_FRAME_METHOD,
-                        frameMethod);
-            }
             row.put(CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
                     kind);
             if (unitIndex >= 0) {

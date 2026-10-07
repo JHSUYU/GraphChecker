@@ -92,7 +92,8 @@ public final class ConcolicRegionRuntime {
      * ids are session-wide, so one store serves every region.
      */
     static volatile VmExpressionTable.Store workloadExpressionStore =
-            new VmExpressionTable.Store();
+            new VmExpressionTable.Store(
+                    EnginePlumbing.VM_CLASSES);
     private ConcolicRegionRuntime() {
     }
 
@@ -260,7 +261,8 @@ public final class ConcolicRegionRuntime {
         // is selected, and an unpublished row reads as a site that never ran.
         RowRuntime.configure(configuration().resultFile);
         if (configuration().tasks.isEmpty()) {
-            workloadExpressionStore = new VmExpressionTable.Store();
+            workloadExpressionStore = new VmExpressionTable.Store(
+                    EnginePlumbing.VM_CLASSES);
             return "";
         }
         ConcolicVmBroker api = engine();
@@ -283,7 +285,8 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         SymbolicMessageEnvelope.clear();
-        workloadExpressionStore = new VmExpressionTable.Store();
+        workloadExpressionStore = new VmExpressionTable.Store(
+                    EnginePlumbing.VM_CLASSES);
         workloadSessionId = status;
         return "";
     }
@@ -299,7 +302,8 @@ public final class ConcolicRegionRuntime {
         ConcolicResultPublisher.awaitSelectedResultPublications();
         long sessionId = workloadSessionId;
         if (sessionId == 0L) {
-            workloadExpressionStore = new VmExpressionTable.Store();
+            workloadExpressionStore = new VmExpressionTable.Store(
+                    EnginePlumbing.VM_CLASSES);
             return "";
         }
         ConcolicVmBroker api = engine();
@@ -317,7 +321,8 @@ public final class ConcolicRegionRuntime {
         }
         SymbolicMessageEnvelope.clear();
         workloadSessionId = 0L;
-        workloadExpressionStore = new VmExpressionTable.Store();
+        workloadExpressionStore = new VmExpressionTable.Store(
+                    EnginePlumbing.VM_CLASSES);
         return "";
     }
 
@@ -1049,45 +1054,47 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Opens the frame around one message instance being serialized; it
-     * separates the many values that cross one declared port.
+     * Exports the live expression of one declared communication port;
+     * {@code builder} is the builder a message field's setter was called on
+     * (its export is that builder's), else null.
      */
-    public static void pushOutboundMessageFrame() {
-        WireExport.pushOutboundFrame();
-    }
-
-    /** Closes the frame {@link #pushOutboundMessageFrame} opened. */
-    public static void popOutboundMessageFrame() {
-        WireExport.popOutboundFrame();
-    }
-
-    /** Opens the frame around one message instance being decoded. */
-    public static void pushInboundMessageFrame() {
-        WireExport.pushInboundFrame();
-    }
-
-    /** Closes the frame {@link #pushInboundMessageFrame} opened. */
-    public static void popInboundMessageFrame() {
-        WireExport.popInboundFrame();
-    }
-
-    /** Exports the live expression of one declared communication port. */
     public static void exportCommunicationLeaf(String portId, Object carrier,
                                                String field,
-                                               String descriptor) {
-        WireExport.exportLeaf(portId, carrier, field, descriptor);
+                                               String descriptor,
+                                               Object builder) {
+        WireExport.exportLeaf(portId, carrier, field, descriptor, builder);
     }
 
-    /** Attaches the exported expression of one declared communication port. */
-    public static void attachCommunicationLeaf(String portId, Object carrier,
-                                               String field,
-                                               String descriptor) {
-        WireExport.attachLeaf(portId, carrier, field, descriptor);
+    /** {@code builder} built {@code message}: the message fields its
+     *  setters exported are the message's ({@link MessageCodec#built}). */
+    public static void builtMessage(Object builder, Object message) {
+        pauseObservation();
+        try {
+            MessageCodec.built(builder, message);
+        } finally {
+            resumeObservation();
+        }
     }
 
     /**
-     * The instance field a declared port crosses on.  Its binary name is
-     * woven by {@code CausynthPipeline}; do not move or rename.
+     * Attaches the exported expression of one declared communication port;
+     * {@code receiver} is the message a message field's getter was called on
+     * (its element is that message's), else null.
+     */
+    public static void attachCommunicationLeaf(String portId, Object carrier,
+                                               String field,
+                                               String descriptor,
+                                               Object receiver) {
+        WireExport.attachLeaf(portId, carrier, field, descriptor, receiver);
+    }
+
+    /**
+     * The instance field a declared port crosses on.  Woven code makes one
+     * by {@link #of} and reads its leaf back by the leaf's getter: the store
+     * and the read are the engine's code, so they are never a site of the
+     * frame the port is woven into, nor program state (RULES: the engine's
+     * own plumbing).  Its binary name, factories and getters are woven by
+     * {@code CausynthPipeline}; do not move or rename.
      */
     public static final class HandoffLeafCarrier {
         public boolean z;
@@ -1099,6 +1106,96 @@ public final class ConcolicRegionRuntime {
         public float f;
         public double d;
         public Object o;
+
+        public static HandoffLeafCarrier of(boolean value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.z = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(byte value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.b = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(short value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.s = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(char value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.c = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(int value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.i = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(long value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.j = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(float value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.f = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(double value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.d = value;
+            return carrier;
+        }
+
+        public static HandoffLeafCarrier of(Object value) {
+            HandoffLeafCarrier carrier = new HandoffLeafCarrier();
+            carrier.o = value;
+            return carrier;
+        }
+
+        public boolean z() {
+            return z;
+        }
+
+        public byte b() {
+            return b;
+        }
+
+        public short s() {
+            return s;
+        }
+
+        public char c() {
+            return c;
+        }
+
+        public int i() {
+            return i;
+        }
+
+        public long j() {
+            return j;
+        }
+
+        public float f() {
+            return f;
+        }
+
+        public double d() {
+            return d;
+        }
+
+        public Object o() {
+            return o;
+        }
     }
 
     static final String CARRIER_CLASS =

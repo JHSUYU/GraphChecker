@@ -12,11 +12,10 @@ public class WireFlowCatalogTest {
     @Test
     public void aFlowNamingAMethodTheProgramDoesNotHoldDoesNotApply() {
         assertFalse(WireFlowCatalog.applies(JsonParser.parseString(
-                "{\"schemaVersion\":2,\"kind\":\"WIRE_FLOW\",\"id\":\"block-key-id\","
+                "{\"schemaVersion\":3,\"kind\":\"WIRE_FLOW\",\"id\":\"key-id\","
                         + "\"javaType\":\"int\","
                         + "\"producer\":{\"method\":\"<a.P: int p()>\"},"
-                        + "\"consumer\":{\"method\":\"<a.C: void c(int)>\"},"
-                        + "\"producerFrameMethod\":\"<a.P: void f()>\"}")
+                        + "\"consumer\":{\"method\":\"<a.C: void c(int)>\"}}")
                 .getAsJsonObject(), Collections.emptyMap()));
     }
 }

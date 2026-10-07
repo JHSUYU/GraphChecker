@@ -443,11 +443,15 @@ it.
 
 `runtime/MessageDoors` is the transport-neutral API every system's transports call:
 
-- `outbound(transport, correlationId, attemptId, half, localOwner, scope)`: the sender's trace
-  header plus its symbolic header. The trace header is `1|span|epoch|kind|role|id|
+- `outbound(transport, correlationId, attemptId, half, localOwner, scope[, message])`: the
+  sender's trace header plus its symbolic header. The trace header is `1|span|epoch|kind|role|id|
   requestKey|requestApi` (`RuntimeTraceContext#header`); a send with no source or request flow goes
   without one and is named as a `MESSAGE_CONTEXT_REFUSED` DIAGNOSTIC row. The symbolic header is
-  `CSE5`: the `WIRE_FLOW` values the thread staged.
+  `CSE6`: the declared rows' values the thread staged, and the message fields of the protobuf
+  `message` the door is handed, which it walks (`MessageCodec#send`, SYMBOL-SCOPE §6.3).
+  `outboundRequest(..., verb, message)` is the same for a request naming its operation.
+- `parsed(message)`: a protobuf message parsed inside the exchange it arrived in; each of its
+  message fields' elements is bound to it for the getters that read it (`MessageCodec#receive`).
 - `inbound(trace, symbolic, ...)`: ends the exchange the thread served and installs this one until
   the next message or `endInbound`, with the values its symbolic header carried for the attaches
   the thread makes; `keepSymbolic` keeps a multi-message exchange's values.

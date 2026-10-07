@@ -13,30 +13,30 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The once-only-root rule and the message frame have one answer for what the
- * unit of a message is.
+ * The once-only-root rule's unit of work is never the build of one message.
  *
- * <p>A region rooted at a loop INSIDE a declared port's frame method leaves
- * every leaf the frame builds outside that loop with no activation at all.
- * On hdfs-11741 that leaf is the {@code currentKey} of an {@code
+ * <p>A region rooted at a loop that builds the repeated field of ONE message
+ * leaves every leaf built outside that loop with no activation at all.  On
+ * hdfs-11741 that leaf is the {@code currentKey} of an {@code
  * ExportedBlockKeys}, converted at {@code PBHelper} line 262 before the
- * {@code allKeys} loop: it exported under a degraded role occurrence, which
- * the VM can only hand a concrete typed constant, so its {@code ExportRow}
+ * {@code allKeys} loop: built under a degraded role occurrence, its value
  * carried no expression, {@code Arms.arm} refused the arm, and {@code
  * ComposedFamilies.eligibleSessions} emptied the whole six-leaf message --
  * the four good leaves beside it included.  Measured over campaign #8: every
  * one of 5,352 exports published under a live region carried an expression,
  * and every one of 55,397 published under a degraded role carried none.</p>
  *
- * <p>The rule reads the frame the port already declares, so it separates
- * the two shapes by the loop's OWNER: a loop in the frame method walks one
- * message's leaves, a loop anywhere else does not.</p>
+ * <p>A message field's producer capture (the builder's setter call) is no
+ * unit of a loop's work, since the door exports the message whole: a loop
+ * that calls it never qualifies by it.  Its consumer capture (the getter's
+ * attach) still is: a loop decoding one element per turn is the decode's
+ * service loop.</p>
  */
-public class ServiceLoopIsNotAMessageFrameTest {
+public class ServiceLoopIsNotAMessageBuildTest {
 
     // The encode side: PBHelper.convert(ExportedBlockKeys) converts
     // currentKey before its allKeys loop and each allKeys element inside it.
-    private static final String ENCODE_FRAME =
+    private static final String ENCODE_ROOT =
             "<org.apache.hadoop.hdfs.protocolPB.PBHelper: "
                     + "HdfsServerProtos$ExportedBlockKeysProto "
                     + "convert(ExportedBlockKeys)>";
@@ -44,9 +44,9 @@ public class ServiceLoopIsNotAMessageFrameTest {
             "<org.apache.hadoop.hdfs.protocolPB.PBHelper: "
                     + "HdfsServerProtos$BlockKeyProto convert(BlockKey)>";
 
-    // The decode side: the frame calls convertBlockKeys, whose own loop
-    // converts each element.  The loop is BELOW the frame, not in it.
-    private static final String DECODE_FRAME =
+    // The decode side: the root calls convertBlockKeys, whose own loop
+    // converts each element.
+    private static final String DECODE_ROOT =
             "<org.apache.hadoop.hdfs.protocolPB.PBHelper: ExportedBlockKeys "
                     + "convert(HdfsServerProtos$ExportedBlockKeysProto)>";
     private static final String DECODE_WALK =
@@ -56,50 +56,51 @@ public class ServiceLoopIsNotAMessageFrameTest {
             "<org.apache.hadoop.hdfs.protocolPB.PBHelper: BlockKey "
                     + "convert(HdfsServerProtos$BlockKeyProto)>";
 
-    private static final String REGION = "REGION.frame-vs-loop";
+    private static final String REGION = "REGION.build-vs-loop";
 
     // ------------------------------------------------------------------
     // The ruling
     // ------------------------------------------------------------------
 
-    /** Each shape, and the loop its region is rooted at (null: the frame). */
+    /** Each shape, and the loop its region is rooted at (null: its root). */
     @Test
     public void onlyALoopOutsideTheFrameOrDecidingItselfIsAServiceLoop() {
         Object[][] rows = {
-                // A loop in the port's own frame method walks ONE message's
-                // leaves, so no iteration of it is a wire value and the
-                // region stays at the frame.
-                {"a loop inside the port's frame",
-                        encodeRegion(ENCODE_FRAME,
+                // A loop building one message's repeated field: no iteration
+                // of it is a wire value (the door exports the message
+                // whole), so the region stays at its root.
+                {"a loop building a message field",
+                        encodeRegion(CODEC_FIELD,
                                 LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED),
                         null},
-                // The red line: a loop the frame CALLS is not a loop inside
-                // the frame.  This is hdfs-11741's IN region, rooted at
-                // convertBlockKeys's own loop, and it keeps that rooting.
-                {"a loop below the frame", decodeRegion(), DECODE_WALK},
+                // The decode attaches one element per turn: hdfs-11741's IN
+                // region, rooted at convertBlockKeys's own loop, keeps that
+                // rooting.
+                {"a loop decoding a message field", decodeRegion(),
+                        DECODE_WALK},
                 // SOLR-18406: a region entry folded into the root beside the
                 // loop (checkpoint's onCommit, beside decRef's loop over
                 // files) would be in no occurrence: the root stands.
                 {"a loop that a folded entry is beside",
-                        folded(decodeRegion(), DECODE_FRAME), null},
+                        folded(decodeRegion(), DECODE_ROOT), null},
                 {"a loop that a folded entry is inside",
                         folded(decodeRegion(), DECODE_WALK), DECODE_WALK},
-                // A port that names no frame method is addressed within its
-                // RPC message: the rule before this one still decides it.
-                {"a port that declares no frame",
+                // A declared row's capture is exported where it runs: one
+                // turn, one export.
+                {"a loop capturing a declared row",
                         encodeRegion("",
                                 LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED),
-                        ENCODE_FRAME},
+                        ENCODE_ROOT},
                 // A loop that decides its own continuation is a service loop
-                // wherever it stands: the frame bounds the indexed arm only.
-                {"a CONDITION_BOUNDED loop inside the frame",
-                        encodeRegion(ENCODE_FRAME,
+                // wherever it stands: the rule bounds the indexed arm only.
+                {"a CONDITION_BOUNDED loop building a message field",
+                        encodeRegion(CODEC_FIELD,
                                 LoopBoundPolicy.LOOP_CONDITION_BOUNDED),
-                        ENCODE_FRAME},
+                        ENCODE_ROOT},
                 // The root's own loop, when its first call into the region
                 // is in it: a thread's set-up before it is not work.
                 {"a root that only sets up before its loop",
-                        rootLoop(SET_UP), ENCODE_FRAME},
+                        rootLoop(SET_UP), ENCODE_ROOT},
                 // hdfs-11741's addKeys runs removeExpiredKeys, then its
                 // copy loop: one unit of work, rooted at its entry.
                 {"a root that works before its loop", rootLoop(ENCODE_LEAF),
@@ -108,7 +109,7 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 // the loop (INodesInPath.getExistingINodes returns it from
                 // inside the loop), so no iteration frame holds it and the
                 // root stands, however often the loop turned.
-                {"a loop below the frame whose call leaves the loop",
+                {"a decoding loop whose call leaves the loop",
                         unplaceable(decodeRegion()), null},
                 {"a root whose in-loop call leaves the loop",
                         unplaceable(rootLoop(SET_UP)), null}};
@@ -153,32 +154,34 @@ public class ServiceLoopIsNotAMessageFrameTest {
     }
 
     /**
-     * Root and frame {@code convert(ExportedBlockKeys)}, anchor {@code
-     * convert(BlockKey)}, one retained loop over {@code allKeys} owned by
-     * the frame itself and calling the anchor from inside it.
+     * Root {@code convert(ExportedBlockKeys)}, anchor {@code
+     * convert(BlockKey)}, one retained loop over {@code allKeys} in the root
+     * calling the anchor, whose capture of {@code codecField} ("" for a
+     * declared row) is an export.
      */
-    private static Case encodeRegion(String frameMethod,
+    private static Case encodeRegion(String codecField,
                                      String classification) {
-        return program(ENCODE_FRAME, ENCODE_LEAF,
-                Arrays.asList(ENCODE_FRAME, ENCODE_LEAF),
-                loop(ENCODE_FRAME, 14, 19, classification, 16),
-                port(ENCODE_LEAF, frameMethod),
+        return program(ENCODE_ROOT, ENCODE_LEAF,
+                Arrays.asList(ENCODE_ROOT, ENCODE_LEAF),
+                loop(ENCODE_ROOT, 14, 19, classification, 16),
+                port(ENCODE_LEAF, "OUT", codecField),
                 Collections.singletonList(
-                        callEdge(ENCODE_FRAME, 16, ENCODE_LEAF)));
+                        callEdge(ENCODE_ROOT, 16, ENCODE_LEAF)));
     }
 
     /**
-     * Root and frame {@code convert(ExportedBlockKeysProto)}, anchor {@code
-     * convert(BlockKeyProto)}, and the retained loop one method BELOW the
-     * frame, in {@code convertBlockKeys}.
+     * Root {@code convert(ExportedBlockKeysProto)}, anchor {@code
+     * convert(BlockKeyProto)}, and the retained loop one method below the
+     * root, in {@code convertBlockKeys}, calling the anchor, whose getter
+     * attaches a message field.
      */
     private static Case decodeRegion() {
-        return program(DECODE_FRAME, DECODE_LEAF,
-                Arrays.asList(DECODE_FRAME, DECODE_WALK, DECODE_LEAF),
+        return program(DECODE_ROOT, DECODE_LEAF,
+                Arrays.asList(DECODE_ROOT, DECODE_WALK, DECODE_LEAF),
                 loop(DECODE_WALK, 5, 9,
                         LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED, 7),
-                port(DECODE_LEAF, DECODE_FRAME),
-                Arrays.asList(callEdge(DECODE_FRAME, 3, DECODE_WALK),
+                port(DECODE_LEAF, "IN", CODEC_FIELD),
+                Arrays.asList(callEdge(DECODE_ROOT, 3, DECODE_WALK),
                         callEdge(DECODE_WALK, 7, DECODE_LEAF)));
     }
 
@@ -189,8 +192,8 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 : built.program.regionActivations(REGION)) {
             activation.put(RuntimeSelectedRegionFinalizer.FOLDED_ENTRY_CALLERS,
                     Collections.singletonList(DECODE_WALK.equals(caller)
-                            ? Arrays.asList(DECODE_WALK, DECODE_FRAME)
-                            : Collections.singletonList(DECODE_FRAME)));
+                            ? Arrays.asList(DECODE_WALK, DECODE_ROOT)
+                            : Collections.singletonList(DECODE_ROOT)));
         }
         return built;
     }
@@ -204,13 +207,13 @@ public class ServiceLoopIsNotAMessageFrameTest {
      * it.
      */
     private static Case rootLoop(String first) {
-        return program(ENCODE_FRAME, ENCODE_FRAME,
-                Arrays.asList(ENCODE_FRAME, ENCODE_LEAF),
-                loop(ENCODE_FRAME, 14, 19,
+        return program(ENCODE_ROOT, ENCODE_ROOT,
+                Arrays.asList(ENCODE_ROOT, ENCODE_LEAF),
+                loop(ENCODE_ROOT, 14, 19,
                         LoopBoundPolicy.LOOP_CONDITION_BOUNDED, 17),
-                port(ENCODE_LEAF, ""),
-                Arrays.asList(callEdge(ENCODE_FRAME, 3, first),
-                        callEdge(ENCODE_FRAME, 17, ENCODE_LEAF)));
+                port(ENCODE_LEAF, "OUT", ""),
+                Arrays.asList(callEdge(ENCODE_ROOT, 3, first),
+                        callEdge(ENCODE_ROOT, 17, ENCODE_LEAF)));
     }
 
     private static Case program(String rootMethod,
@@ -274,20 +277,26 @@ public class ServiceLoopIsNotAMessageFrameTest {
         return loop;
     }
 
-    /** One declared port, defined by the leaf converter. */
+    /** The message field a block key's id is carried in. */
+    private static final String CODEC_FIELD =
+            "<HdfsServerProtos$BlockKeyProto: int keyId_>";
+
+    /** One port's capture on {@code side} in the leaf converter: a message
+     *  field's ({@code codecField}) or, with "", a declared row's. */
     private static Map<String, Object> port(String definitionMethod,
-                                            String frameMethod) {
+                                            String side, String codecField) {
         Map<String, Object> port = new LinkedHashMap<>();
         port.put(CommunicationCatalogContract.PORT_ID,
                 "XCH.0.wire.block-key-id");
+        port.put(RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, side);
         port.put(CommunicationCatalogContract.PORT_NAME, "block-key-id");
         port.put(CommunicationCatalogContract.PORT_JAVA_TYPE, "int");
         port.put(CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                 definitionMethod);
         port.put(CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 9);
-        if (!frameMethod.isEmpty()) {
-            port.put(CommunicationCatalogContract.PORT_FRAME_METHOD,
-                    frameMethod);
+        if (!codecField.isEmpty()) {
+            port.put(CommunicationCatalogContract.PORT_CODEC_FIELD,
+                    codecField);
         }
         return port;
     }

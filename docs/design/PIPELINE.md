@@ -551,7 +551,7 @@ share a variable with the guard (`compose.Independence.ofGuard`), plus the input
 (`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and, for
 each factor member that writes state it reads and that this session ran, the same and its write
 counts at the locations the guard reads — never delivered values, and a function of the session
-alone: the members as a set, and none the session never ran (the corpus finds feeders as sessions
+alone: the members and each one's producers as sets (replies to one call arrive in any order), and none the session never ran (the corpus finds feeders as sessions
 land, and such a member's line, the same in every session that did not run it, re-keyed every arm of
 the session). Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it

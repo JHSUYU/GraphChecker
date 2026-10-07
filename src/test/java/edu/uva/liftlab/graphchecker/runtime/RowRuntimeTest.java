@@ -839,7 +839,8 @@ public class RowRuntimeTest {
         Endpoint attached = RowRuntime.attachedAt(
                 RowRuntime.nextEndpoint(consumer, "XCH.resp.block-key-id", 0),
                 62L, "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7",
-                "HOFF.5e10236f", "J", "119981", false, "");
+                MessageDoors.RESPONSE, "HOFF.5e10236f", "J", "119981", false,
+                "");
         RowRuntime.closeSession();
 
         List<AttachRow> rows = RowCodec.readAll(
@@ -948,12 +949,14 @@ public class RowRuntimeTest {
         try {
             // No concolic VM runs these tests: the broker refuses both steps.
             WireExport.exportLeaf(out,
-                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J",
+                    null);
             assertTrue(SymbolicMessageEnvelope.stage(in, 41L, null));
             SymbolicMessageEnvelope.installInbound(
                     SymbolicMessageEnvelope.takeOutbound());
             WireExport.attachLeaf(in,
-                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "i", "I");
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "i", "I",
+                    null);
             here = RowRuntime.occurrenceHere(NN.key(), in);
             RuntimeTraceContext.exitInbound(RuntimeTraceContext.enterInbound(
                     RuntimeTraceContext.outboundHeader(null, null),
@@ -1023,7 +1026,8 @@ public class RowRuntimeTest {
             here = Identity.currentOccurrence(NN.key());
             // No concolic VM runs these tests: the broker refuses the export.
             WireExport.exportLeaf(port,
-                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J");
+                    new ConcolicRegionRuntime.HandoffLeafCarrier(), "j", "J",
+                    null);
         } finally {
             ConcolicRegionRuntime.exitRegionEntry(entry);
             Identity.exitFrame(frame);
@@ -1089,8 +1093,8 @@ public class RowRuntimeTest {
                 true, null);
         RowRuntime.exported(occurrence, 4L, "XCH.port", 7L, 0,
                 expression, "J", "1");
-        RowRuntime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
-                "1", true, "2");
+        RowRuntime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1",
+                MessageDoors.REQUEST, "v_H", "J", "1", true, "2");
         // A CLASS THE JVM MINTS PER RUN IS NOT AN IDENTITY.  The site of a
         // state event carries the class the event stood in, and two of
         // those are named by the runtime with a counter that starts over in
@@ -1187,6 +1191,13 @@ public class RowRuntimeTest {
         RowRuntime.read(occurrence, 16L, waits,
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
+        // Nor does a generated message's builder (EnginePlumbing).
+        RowRuntime.write(occurrence, 17L, Endpoint.stateSite(
+                com.google.protobuf.Field.Builder.class.getName(),
+                "setNumber", "(I)Lcom/google/protobuf/Field$Builder;", 2,
+                true), LocationId.of(LocationKind.INSTANCE, "351", "16"),
+                6255L, rmwExpression(), "", "Caller.body()#u9@1", null, null,
+                false);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, RootCategory.HOOK, "3", "3", "6",
                 Validity.ANY, true, null, 0L);
@@ -1283,7 +1294,8 @@ public class RowRuntimeTest {
         assertEquals("2", attaches.get(0).answeredValue());
         List<WriteRow> writes = RowCodec.readAll(dir.writes(),
                 RowCodec::readWrite);
-        assertEquals("the tool's own wait set is no write", 3, writes.size());
+        assertEquals("neither the tool's own wait set nor a generated"
+                + " builder is a write", 3, writes.size());
         assertEquals(125L, writes.get(0).version());
         assertEquals(10L, writes.get(0).seq());
         assertEquals("java.util.concurrent.atomic.AtomicInteger"
