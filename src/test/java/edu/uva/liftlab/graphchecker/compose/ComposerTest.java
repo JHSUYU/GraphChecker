@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.Clock;
@@ -3777,6 +3778,31 @@ public class ComposerTest {
                         null), integer("I", 5L), value);
         return binary("==", relation("ASSOCIATIVE", "READ",
                 "java/util/ArrayList", put, integer("I", 5L)), vmNull());
+    }
+
+    /**
+     * What a read recorded, as a flip query holds it: a literal, else the
+     * object's identity, non-null and the one COMPOSE names it by
+     * (hdfs-adhoc-07 HF3: jn0's {@code BestEffortLongFile.ch} was no value
+     * and refused four flips); nothing for what is neither.
+     */
+    @Test
+    public void aRecordedValueIsItsLiteralElseItsObjectsIdentity() {
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        String channel = lowering.recordedValue(
+                "M_L'sun/nio/ch/FileChannelImpl'_860", "Ref");
+        assertTrue(channel, channel.startsWith("identity__"));
+        assertEquals(channel, lowering.recordedValue(
+                "M_L'sun/nio/ch/FileChannelImpl'_860", "Ref"));
+        assertTrue(lowering.facts(Collections.singletonList(channel))
+                .contains("(not (= " + channel + " nullRef))"));
+        assertEquals("nullRef", lowering.recordedValue(
+                VmExpressionIr.SYMBOLIC_NULL, "Ref"));
+        assertEquals("7", lowering.recordedValue("7", "Int"));
+        assertEquals("", lowering.recordedValue("some_symbol", "Ref"));
+        lowering.end();
     }
 
     /**

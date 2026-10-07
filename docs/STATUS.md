@@ -489,20 +489,28 @@ Correctness:
     refute nothing (asked once more, `WORLD_UNREFUTED`); another is a path whose refuted world's
     re-ask is still pending. Each run's arm row names its paths (`openArms`: state counts,
     `refutedWorlds`, `unrunWorlds`).
-61. A solver retried after it failed is charged by the first attempt's measured peak, a lower bound when the first
-    was ended at its hold (`run_engine.sh` `campaign_obligation_worker`, `campaign_need_of_peak_mb`): in hdfs-adhoc-07's
-    HF3 run 63 obligations failed twice this way (a retry charged 1024 MB whose solver peaked at 1973 MB) and 5 more
-    found no host with room within 60 s; each is a named `OBLIGATION_UNFINISHED` (NOT_ADMITTED), so the fixed point is
-    incomplete on their paths. Fix: charge a retry above the first attempt's peak (twice it, or the case's measured
-    solver peaks), or let a solver grow into free room before it is ended.
-62. hdfs-adhoc-07 (HF3, on system/hdfs1's final body and its workarounds): COMPOSE finds 38 of its 235 paths
-    contradicting their own run (`PATH_SELF_CONTRADICTORY`, at jn0's `acceptRecovery` occurrence), so its unsat is a
-    verdict about the formula, not the recording. Not diagnosed (the owner ended the work); first suspects: the relayed
-    segment's binding under codec capture with the r8 reply order, and the 69 unfinished obligations' paths.
-63. hdfs-adhoc-07 (HF3): a read in `BestEffortLongFile#lazyOpen` (a journal's persisted long, read from its own file
-    by jn0's `prepareRecovery`) joins no eligible write and the recording states no value for it (`UNSTATED_VALUE`,
-    BLOCKING, 4 sessions): the replays read that file where the recording did not. A file's value read by the system
-    is local IO on the traced flow (RULES): it needs a recorded value or a LOCAL_IO root.
+61. Fixed on `hdfs1-relay-plan`: a solver retried after it failed was charged by the first attempt's measured peak,
+    a lower bound when the first was ended growing (hdfs-adhoc-07 HF3: 63 obligations failed twice, retries charged
+    1024-2816 MB peaked at 1.8-3.9 GB; 5 more found no host with room within 60 s). A retry is now charged at least
+    half a solver's heap (`run_engine.sh` `campaign_solver_retry_mb`) and waits up to 600 s for a host of the pool
+    with that room (`campaign_solver_place_patience_s`); a retry that still fails is a named `OBLIGATION_UNFINISHED`.
+62. Fixed on `hdfs1-relay-plan`: hdfs-adhoc-07 HF3's 38 self-contradictory paths (of 235) were all paths whose own
+    session ran jn1's `prepareRecovery` unwoven. The QJM client relays a journal node's `SegmentStateProto` into
+    jn0's `acceptRecovery` request (codec capture stages the decoded element under its original producer,
+    `WireExport#relay`), but PLAN paired a consumer capture only with exports of its port on the same exchange leg,
+    so the relayed producer was planned only when a replay exposed it (GROW in round 3), after the obligations of
+    rounds 0-3 had run it unwoven: their own delivery was no attested arm, and the only senders `ComposedFamilies#
+    compatible` admitted ran in wider worlds whose guards pin a client fault marker the other way. PLAN now follows a
+    relay (`RuntimeSelectedRegionFinalizer` `crossRelay`): a consumer capture no export of its leg pairs with crosses
+    to the exports of the same port on the legs its message's sender received it on before sending
+    (`RuntimeRegionPlanner` stamps each activation's sent legs, `SENT_EXCHANGE_LEGS`). 07's seed plan grows from 16
+    to 33 occurrences (jn1's `prepareRecovery` and the state writers on jn1); the recorded plans of 11741, 21, 29,
+    30, 39 and 40 are byte-identical under it (SEED.trace offline).
+63. Fixed on `hdfs1-relay-plan`: the 4 `UNSTATED_VALUE` reads at jn0's `prepareRecovery` were `BestEffortLongFile.ch`
+    (`lazyOpen`'s `if (ch != null)`, the file channel a heartbeat no region covers had opened), not the persisted
+    long: a flip query held a read no write explains to its recorded value only when it had a literal, and an object
+    has none but null. It now holds it to the object's identity as COMPOSE lowers it (`SmtLowering#recordedValue`:
+    the literal, else the opaque identity, non-null and distinct; `FlipQuery#recorded`).
 
 Scale and robustness:
 

@@ -1281,8 +1281,7 @@ final class FlipQuery {
                         : choice.boundReads.entrySet()) {
                     String value = choice.observedDelivery.get(read.getKey());
                     if (value == null || value.isEmpty()) {
-                        value = SmtText.literal(read.getValue()
-                                .concreteValue(), sorts.get(read.getKey()));
+                        value = recorded(read.getValue(), read.getKey());
                     }
                     if (value.isEmpty()) {
                         refusal = "UNSTATED_VALUE:" + choice.key;
@@ -1363,8 +1362,7 @@ final class FlipQuery {
         /** The recorded value for a read nothing else explains, else a BLOCKING
          *  refusal. */
         private void stated(ReadRow row, String variable) {
-            String literal = SmtText.literal(row.concreteValue(),
-                    sorts.get(variable));
+            String literal = recorded(row, variable);
             if (!literal.isEmpty()) {
                 assertions.add("(= " + variable + " " + literal + ")");
                 return;
@@ -1376,6 +1374,21 @@ final class FlipQuery {
                             + "states no value for it"));
         }
 
+
+        /** What a read read, as a term of its variable's sort: a literal, or
+         *  the identity its session lowers the object to
+         *  ({@link SmtLowering#recordedValue}); "" when neither. */
+        private String recorded(ReadRow row, String variable) {
+            SmtLowering lowering = corpus.lowering(row.sessionId());
+            if (lowering == null) {
+                return SmtText.literal(row.concreteValue(),
+                        sorts.get(variable));
+            }
+            String value = lowering.recordedValue(row.concreteValue(),
+                    sorts.get(variable));
+            if (!value.isEmpty()) lowered.add(row.sessionId());
+            return value;
+        }
 
         /** Renames one recorded term into query variables, declaring and
          *  enqueueing its symbols. */

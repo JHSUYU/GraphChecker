@@ -135,6 +135,9 @@ public final class RuntimeSelectedRegionFinalizer {
     /** Exact IN/OUT cut captures observed inside one runtime activation. */
     public static final String OBSERVED_COMMUNICATION_CAPTURES =
             "observedCommunicationCaptures";
+    /** The exchange legs one runtime activation sent, each with the seq of
+     *  its SEND: {@code exchangeLeg}, {@code transportEventSeq}. */
+    public static final String SENT_EXCHANGE_LEGS = "sentExchangeLegs";
     /** Region-row member carrying the retained loops of its methods. */
     public static final String RETAINED_LOOPS = "retainedLoops";
     /** Schema every region skeleton row and its refined row are stated in. */
@@ -987,10 +990,13 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final class Attach {
         private final String port;
         private final String leg;
+        /** The capture's own event seq. */
+        private final long seq;
 
-        private Attach(String port, String leg) {
+        private Attach(String port, String leg, long seq) {
             this.port = port;
             this.leg = leg;
+            this.seq = seq;
         }
     }
 
@@ -1262,6 +1268,10 @@ public final class RuntimeSelectedRegionFinalizer {
         /** OUT port and exchange leg ({@link #wireKey}) -> the occurrences
          *  whose capture of that port the recording bound to that leg. */
         private final Map<String, List<String>> exporters = new HashMap<>();
+        /** Exchange leg -> the occurrences that sent it, each with its
+         *  SEND's seq ({@link #SENT_EXCHANGE_LEGS}). */
+        private final Map<String, Map<String, Long>> senders =
+                new HashMap<>();
         /** Consumer cell -> the ports of the occurrences it was demanded in
          *  whose recording paired no export with it. */
         private final Map<String, Set<String>> unpaired =
@@ -1324,6 +1334,13 @@ public final class RuntimeSelectedRegionFinalizer {
                     : program.activations.entrySet()) {
                 nodes.put(entry.getKey(), OccurrenceAddress.parse(
                         entry.getKey()).node().render());
+                for (Map<String, Object> sent : rows(entry.getValue().get(
+                        SENT_EXCHANGE_LEGS))) {
+                    senders.computeIfAbsent(text(sent.get("exchangeLeg")),
+                            ignored -> new LinkedHashMap<>())
+                            .put(entry.getKey(), longNumber(sent.get(
+                                    "transportEventSeq"), -1L));
+                }
                 for (Map<String, Object> capture : rows(entry.getValue().get(
                         OBSERVED_COMMUNICATION_CAPTURES))) {
                     String leg = text(capture.get("exchangeLeg"));
@@ -1552,7 +1569,8 @@ public final class RuntimeSelectedRegionFinalizer {
          * declares and whose capture names the cell, every occurrence that
          * captured the port's export on the same leg, whose handed-on cells
          * are demanded there.  A consumer no export is paired with is stated
-         * after the walk ({@link #stateUnpairedWires}).
+         * after the walk ({@link #stateUnpairedWires}), unless it is a relay
+         * ({@link #crossRelay}).
          */
         private void crossWire(String occurrence, String cell,
                                Consumer<Demand> work) throws IOException {
@@ -1570,7 +1588,8 @@ public final class RuntimeSelectedRegionFinalizer {
             boolean paired = false;
             for (Attach attach : attaches(occurrence)) {
                 if (ports.contains(attach.port)) {
-                    paired |= crossMessage(occurrence, attach, work);
+                    paired |= crossMessage(occurrence, attach, work)
+                            || crossRelay(occurrence, attach, work);
                 }
             }
             if (!paired) {
@@ -1588,7 +1607,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 String leg = text(capture.get("exchangeLeg"));
                 if ("IN".equals(text(capture.get("side")))
                         && !leg.isEmpty()) {
-                    held.add(new Attach(text(capture.get("portId")), leg));
+                    held.add(new Attach(text(capture.get("portId")), leg,
+                            longNumber(capture.get("eventSeq"), -1L)));
                 }
             }
             return held;
@@ -1602,18 +1622,65 @@ public final class RuntimeSelectedRegionFinalizer {
         private boolean crossMessage(String occurrence, Attach attach,
                                      Consumer<Demand> work)
                 throws IOException {
+            return crossExports(occurrence, attach, depth(occurrence) + 1,
+                    work);
+        }
+
+        /**
+         * A RELAY: a consumer capture no export of its port on its leg
+         * pairs with took a value its message's sender had received and
+         * handed on, a decoded field staged again under its ORIGINAL
+         * producer ({@code runtime.WireExport#relay}; hdfs-adhoc-07: the QJM
+         * client puts a journal node's prepareRecovery segment into the
+         * acceptRecovery request it sends jn0).  So the walk crosses to the
+         * exports of the same port on every other leg a sender of this leg
+         * received it on before sending it ({@link #SENT_EXCHANGE_LEGS}):
+         * which of them it hands on is its own decision in the world (a
+         * quorum's best reply), so each is a producer to plan.  Without it
+         * the producer was reached only when a replay exposed it, after
+         * every obligation already running had run it unwoven: their paths
+         * could state no delivery of their own (hdfs-adhoc-07 HF3, 38
+         * self-contradictory paths).  Whether there was one.
+         */
+        private boolean crossRelay(String occurrence, Attach attach,
+                                   Consumer<Demand> work)
+                throws IOException {
+            boolean paired = false;
+            for (Map.Entry<String, Long> sender : senders.getOrDefault(
+                    attach.leg, Collections.<String, Long>emptyMap())
+                    .entrySet()) {
+                if (sender.getKey().equals(occurrence)
+                        || excluded.contains(sender.getKey())) {
+                    continue;
+                }
+                for (Attach received : attaches(sender.getKey())) {
+                    if (received.port.equals(attach.port)
+                            && !received.leg.equals(attach.leg)
+                            && received.seq < sender.getValue()) {
+                        paired |= crossExports(sender.getKey(), received,
+                                depth(occurrence) + 1, work);
+                    }
+                }
+            }
+            return paired;
+        }
+
+        /** Reaches the occurrences that exported {@code attach}'s port on
+         *  its leg, other than {@code holder}, and demands there the cells
+         *  the export handed on; whether there was one. */
+        private boolean crossExports(String holder, Attach attach, int depth,
+                                     Consumer<Demand> work)
+                throws IOException {
             boolean paired = false;
             for (String producer : exporters.getOrDefault(wireKey(
                     attach.port, attach.leg),
                     Collections.<String>emptyList())) {
-                if (producer.equals(occurrence)
-                        || excluded.contains(producer)) {
+                if (producer.equals(holder) || excluded.contains(producer)) {
                     continue;
                 }
                 paired = true;
                 heldApart.add(producer);
-                reach(producer, depth(occurrence) + 1,
-                        WIRE_PRODUCER_ADMISSION);
+                reach(producer, depth, WIRE_PRODUCER_ADMISSION);
                 for (String handed : exportCells.getOrDefault(attach.port,
                         Collections.<String>emptySet())) {
                     work.accept(new Demand(producer, handed));

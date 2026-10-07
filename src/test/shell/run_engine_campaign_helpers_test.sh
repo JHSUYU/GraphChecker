@@ -2001,7 +2001,9 @@ $(live_charges "${solver_test}/hosts")"
 # A question its host's solver could not answer (out of heap, died, ended at
 # what its host could hold) is no answer: it is asked once more of a solver
 # of its own, placed by what the first held -- its watched peak, or the
-# host's solver's heap -- with the usual margin, on any host with the room;
+# host's solver's heap -- with the usual margin, at least half a solver's
+# heap (a peak a growing solver was ended at is a lower bound), on any host
+# with the room;
 # a second failure, or no host with the room, fails the worker by name -- an
 # unfinished obligation (campaign_obligation_unfinished) -- never a bare
 # NOT_ADMITTED (hdfs-17960 fast1: 29 of 35 obligations "answered" by an
@@ -2069,7 +2071,7 @@ done <<'EOF_RETRY'
 answers 12288
 fails 12288
 noroom 12288
-killed 2688
+killed 4096
 nohost 12288
 EOF_RETRY
 

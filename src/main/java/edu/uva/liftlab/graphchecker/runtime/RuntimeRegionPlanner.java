@@ -821,6 +821,18 @@ public final class RuntimeRegionPlanner {
             List<ProtocolEvent> protocol = new ArrayList<>(
                     protocolByActivationRoot.getOrDefault(rootCallId,
                             Collections.<ProtocolEvent>emptyList()));
+            // What it sent itself, its call tree's SENDs (not its lane's):
+            // the senders a relayed capture is traced back through.
+            List<Map<String, Object>> sent = new ArrayList<>();
+            for (ProtocolEvent event : protocol) {
+                if (!"SEND".equals(event.direction)) continue;
+                Map<String, Object> leg = new LinkedHashMap<>();
+                leg.put("exchangeLeg", event.exchangeLeg());
+                leg.put("transportEventSeq", event.seq);
+                sent.add(leg);
+            }
+            activation.put(RuntimeSelectedRegionFinalizer.SENT_EXCHANGE_LEGS,
+                    sent);
             long laneId = longNumber(activation.get("laneId"), -1L);
             for (ProtocolEvent event : protocolEvents) {
                 if (laneId > 0L && event.laneId == laneId

@@ -2942,6 +2942,26 @@ public final class SmtLowering {
     // ------------------------------------------------------------------
 
     /**
+     * The value a read recorded, as a term of the SMT sort {@code smt}: its
+     * literal, else -- an object the VM named or placed -- its identity
+     * ({@link #opaque}), the term the read's own value lowers to here; ""
+     * when it is neither.  A flip query holds a read no write explains to
+     * it as COMPOSE does: with a literal alone, a named object was no value
+     * and the query was refused (hdfs-adhoc-07 HF3: jn0's
+     * {@code BestEffortLongFile.ch}, opened by a heartbeat no region covers).
+     */
+    public String recordedValue(String raw, String smt) {
+        for (Sort sort : Sort.values()) {
+            if (sort == Sort.UNKNOWN || !sort.smt.equals(smt)) continue;
+            String literal = VmTermLowering.smtLiteral(raw, sort);
+            if (!literal.isEmpty() || sort != Sort.REF) return literal;
+            return VmRows.referencedObjectRid(raw) > 0L
+                    || VmRows.placedObject(raw) ? opaque(raw, sort) : "";
+        }
+        return "";
+    }
+
+    /**
      * One execution-local identity, opaque but not free: an object the VM
      * named (a rid) is non-null and distinct from other rids of its session,
      * and one it placed unnamed ({@link VmRows#placedObject}) is non-null,

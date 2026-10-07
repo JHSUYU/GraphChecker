@@ -3131,12 +3131,20 @@ campaign_solve_obligation_alone() {
   return "${status}"
 }
 
-# How long a solver asked again waits for a host with room for its measured
-# need (campaign_solve_obligation_placed) before its obligation fails by
-# name: a few polls, never the worker's whole bound (hdfs-adhoc-11 CW4b/CW5:
-# workers waited 3900 s for 16384 MB on the one host they ran on, and were
-# killed unanswered).
-campaign_solver_place_patience_s=60
+# How long a solver asked again waits for a host of the pool with room for
+# its need (campaign_solve_obligation_placed) before its obligation fails by
+# name: minutes, while the pool's replays end and give their room back, never
+# the worker's whole bound (hdfs-adhoc-11 CW4b/CW5: workers waited 3900 s for
+# 16384 MB on the one host they ran on, and were killed unanswered; 60 s left
+# hdfs-adhoc-07 HF3 five obligations unanswered beside ~120 replays).
+campaign_solver_place_patience_s=600
+
+# The least a solver asked again is charged, in MB: half a solver's heap.
+# What the first one held is a lower bound when it was ended growing at what
+# its host could hold, and a retry charged by it was ended again the same
+# way (hdfs-adhoc-07 HF3: 63 obligations, retries charged 1024-2816 MB
+# peaked at 1.8-3.9 GB).
+campaign_solver_retry_mb=$(( campaign_solver_heap_mb / 2 ))
 
 # campaign_solve_obligation_placed <obligation_id> <obligations> <sessions>
 # <worker> <need_mb>: a question asked again of a solver of its own, placed
@@ -3223,7 +3231,8 @@ to start its solver now; answered in a solver JVM of its own"
     # question, whatever it left: asked once more, of a solver of its own,
     # placed as any start by what the first one measurably held (its peak,
     # or the host's solver's heap) with the usual margin
-    # (campaign_need_of_peak_mb), on any host with that room
+    # (campaign_need_of_peak_mb), at least campaign_solver_retry_mb, on any
+    # host with that room
     # (campaign_solve_obligation_placed).  Twice, or no host with the room:
     # the worker did not finish (campaign_obligation_unfinished), by name,
     # never an answer.
@@ -3231,6 +3240,7 @@ to start its solver now; answered in a solver JVM of its own"
     peak=${campaign_watch_peak_mb}
     (( peak > 0 )) || peak=${campaign_solver_heap_mb}
     need=$(campaign_need_of_peak_mb "${peak}")
+    (( need >= campaign_solver_retry_mb )) || need=${campaign_solver_retry_mb}
     campaign_log "obligation ${obligation_id}: its solver did not answer \
 ($(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
       | tail -n 1)); asked again of a solver of its own, ${need} MB for a \

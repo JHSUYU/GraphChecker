@@ -134,7 +134,12 @@ public class RegionGraphOccurrenceKeyTest {
      * one exchange leg: an attach whose value reaches what is demanded plans
      * the occurrence that exported it on that leg, never an export of the
      * same port on another leg -- the unconditional admission of every
-     * capture planned 2673 occurrences for one ad-hoc check (a40h-5).  A
+     * capture planned 2673 occurrences for one ad-hoc check (a40h-5).  An
+     * attach no export of its leg pairs with is a RELAY: its message's sender
+     * handed on what it had received, so the walk plans the exports of the
+     * port on the legs the sender's captures took it from before it sent,
+     * never one it received after (hdfs-adhoc-07: the QJM client hands a
+     * journal node's segment to jn0's acceptRecovery).  A
      * store writes its holder's field, so a writer holding what the reader
      * held through another holder is none (a40s ReindexCollectionCmd-369:
      * every lambda capturing one ZooKeeper client), where a mutation through
@@ -172,6 +177,17 @@ public class RegionGraphOccurrenceKeyTest {
                 {"undecided", "wl/nn0#epoch0", "REGION.loop", 0, 0, "", ""},
                 {"toward", "wl/nn0#epoch0", "REGION.loop", 0, 0, "", ""},
                 {"fixed", "wl/nn0#epoch0", "REGION.loop", 0, 0, "", ""},
+                // + the leg it sent at seq 20, its attach's seq
+                {"relay-consumer", "wl/nn0#epoch0", "REGION.bump", 7, 0, "L3",
+                        "", "", 0L},
+                {"relay-sender", "wl/client0#epoch0", "REGION.send", 0, 0,
+                        "L4", "", "L3", 10L},
+                {"late-sender", "wl/client0#epoch0", "REGION.send", 0, 0,
+                        "L5", "", "L3", 30L},
+                {"relayed-export", "wl/dn1#epoch0", "REGION.send", 0, 0, "",
+                        "L4"},
+                {"late-export", "wl/dn1#epoch0", "REGION.send", 0, 0, "",
+                        "L5"},
         };
         List<Map<String, Object>> instances = new ArrayList<>();
         Map<String, String> addresses = new LinkedHashMap<>();
@@ -209,7 +225,13 @@ public class RegionGraphOccurrenceKeyTest {
             List<Map<String, Object>> captures = new ArrayList<>();
             if (!((String) row[5]).isEmpty()) {
                 captures.add(row("side", "IN", "portId", PORT,
-                        "exchangeLeg", row[5]));
+                        "exchangeLeg", row[5], "eventSeq",
+                        row.length > 8 ? row[8] : 0L));
+            }
+            if (row.length > 7 && !((String) row[7]).isEmpty()) {
+                activation.put(RuntimeSelectedRegionFinalizer
+                        .SENT_EXCHANGE_LEGS, Collections.singletonList(row(
+                        "exchangeLeg", row[7], "transportEventSeq", 20L)));
             }
             if (!((String) row[6]).isEmpty()) {
                 captures.add(row("side", "OUT", "portId", PORT,
@@ -255,7 +277,8 @@ public class RegionGraphOccurrenceKeyTest {
         }
         Collections.sort(planned);
         assertEquals(Arrays.asList("decider", "mutation", "no-access",
-                "paired-export", "same-object", "target"), planned);
+                "paired-export", "relay-consumer", "relayed-export",
+                "same-object", "target"), planned);
         List<String> fixed = new ArrayList<>();
         for (Map<String, Object> gap : closure.gaps) {
             if (String.valueOf(gap.get("detail")).contains("no world the "
