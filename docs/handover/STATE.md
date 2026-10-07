@@ -1,8 +1,8 @@
 # State at the end of the HDFS group (2026-10-06 night)
 
 The HDFS group is finished but for one case: 45 of its 46 cases have an exported `.smt` read by hand against the HDFS
-code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks"; 07's last run was stopped before its verdict (TODO
-HDFS §0). The owner then stopped the work ("这3个跑完就可以停。然后更新所有文档里要更新的位置…存在的问题也要写好"; "07不用跑了。
+code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks"; 07's final run ended RUN_DEFECT on 5 named BLOCKING
+gaps (TODO HDFS §0). The owner then stopped the work ("这3个跑完就可以停。然后更新所有文档里要更新的位置…存在的问题也要写好"; "07不用跑了。
 留个todo就行。39跑完就完了"): nothing runs on any lift and every agent has stopped. Read this file, then
 [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
 [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md);
@@ -93,7 +93,7 @@ VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both HDFS branches (sources
 `exportLeaf`/`mintLeaf` can go in the next VM build.
 
 Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): `hl1` (system/hdfs's locking round),
-`hf1` (system/hdfs1's code at c3e10284f: HF1, HF2), `cc8` (07's workaround), `w21` (21's), `oak1` (T's open-arm keys).
+`hf1` (system/hdfs1's code at c3e10284f: HF1, HF2), `hf3` (system/hdfs1 afd8db1b5: HF3, 07), `cc8` (07's workaround), `w21` (21's), `oak1` (T's open-arm keys).
 Every older one (`int1`-`int6`, `ho1`, `wd1`, `ps1`, `ps2`, `cc1`-`cc7`, `cc-base*`, `oa0`-`oa5`, `r1a`, `r1b`, `u18a`,
 `t7a`-`t7d`, `t8`, `hg9`, `sw1`, `aw4`, `aw5`, `ar3`, `fd2`, `cw3`, `tm16`, `a4base`) can go.
 
@@ -107,7 +107,8 @@ Outputs under `/bigtemp/vnr3ne/gc-out/<dir>/accept-<round>-<n>/` (`sweep-<round>
 | HF1 | `system/hdfs1` c3e10284f, `hdfs-study` | 29 30 40 (39 ran RUN_DEFECT there: CHECKING trap 18) |
 | HF2 | the same, 14400 s | 11741 PASS (CLOCK_SKEW, 5168 s) |
 | W21 | `hdfs1-21-workaround`, `hdfs-21w` | 21 (time family, residue named) |
-| CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | none: 07 reached its fixed point, stopped in COMPOSE by the owner's end (TODO HDFS §0) |
+| CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | none: stopped in COMPOSE after its fixed point |
+| HF3 | `system/hdfs1` afd8db1b5, `hdfs-study`, 10800 s | none: 07 RUN_DEFECT (FIXED_POINT, z3 unsat, no BOUNDED/UNBOUND; 38 self-contradictory paths, an unstated file read, 69 unfinished obligations; TODO HDFS §0) |
 | OK3, OK4, OK5 | `hdfs1-open-arm-keys` fd0b0cd8a, `hdfs1-open-arm-keys` | 39 twice (UNSAT, clean), 40 (UNSAT) |
 | agents' gates | own `GC_OUT`s | OA2-OA5 (open arms), WD1-WD3 (wait deadline; WD3: 17897 PASS), CC1-CC8 (codec capture), PS1-PS2 (prefix span), P1A-P3C (time family probes) |
 
