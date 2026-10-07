@@ -298,3 +298,18 @@ rounds HG8F, HG9, HG9B, HG9L, SW1, HG10V; four coding agents A1, A2, A4, D1 and 
   scripts) to `/bigtemp/vnr3ne/handover/<date>/` at the stop (D1's rule-1 prototype lived only there).
 - **The order of merges follows the dependencies the agents name**: export weave before codec capture; time model
   before hand-off naming; shim stubs before any r6 build.
+
+**Lessons from 2026-10-06 (the last HDFS session: agents T C R S, the two-branch end)**
+- **An agent that stops before coding saves a wrong rule.** T was told to let a world's refutation stand against a
+  later unfaithful replay of the same obligation id; it read the facts first and found the two asks were different
+  worlds sharing one id, so the rule would have closed an arm over a world no replay answered. Brief agents to
+  report the facts that contradict an order before carrying it out.
+- **Time-box the tail.** With the owner waiting for the end, every agent got a deadline and an acceptance line ("at
+  least one clean run on the final head, the variance named"); open questions past it went to TODO, not to more runs.
+- **Per-case workarounds are agent work too** (owner: the last open cases by workarounds): R's 21 workaround was one
+  tree hunk and two case files, no engine code, gated by one live run; C's 07 workaround one tree hunk plus a world
+  depth. Ask for the smallest one first and the general design into TODO.
+- **Two live runs per agent at most** (owner, RULES); a third case waits or replaces the least useful run.
+- **A run on an old jar misleads**: C's CC7-11741 stalled on a defect fixed in the merged body but not in its branch;
+  check a slow run's snapshot against HEAD before asking an agent to diagnose it (CHECKING trap 17).
+

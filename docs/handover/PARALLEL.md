@@ -74,6 +74,14 @@ host, and it is why isolation must be strict.
 10. **Reasonable, not maximal** (owner 2026-10-06 afternoon: "你也不要过分并行哈。合理的并行。要不然反而会让速度变慢"): about 8-10
    live campaigns in all, each agent at most 2 at once, critical path first; past that every case slows (2026-10-06:
    ~18 live, 17897 took 4387 s against 578 s) and nothing ends sooner.
+11. **Development and final runs overlap; gates that do not depend on each other never queue** (owner 2026-10-06
+   evening: "现在你足足有10个liftserver可以并行啊。你就是一起开发这些case，也不至于那么久啊"): the session's last hours
+   lost time to a serial chain -- agent gate, review, merge, then a separate final round. What worked instead: merge
+   the fixes that already passed their own cases into one integration head and start the final round on it at once
+   (HF1), while the next fix is still in development; run a review agent beside the runs, not after them; drop a
+   gate on cases another branch already closed; a long case (11741) gets its own run with its own budget as soon as
+   its code is final. A run that will certainly fail (07 before its tree workaround) is stopped at once to free its
+   slots.
 
 ## 4. What does not parallelize, and how it gets faster
 

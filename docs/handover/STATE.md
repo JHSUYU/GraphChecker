@@ -1,45 +1,39 @@
-# State at the handover of 2026-10-06
+# State at the end of the HDFS group (2026-10-06 night)
 
-The owner stopped the lead and every agent ("请你停止所有在做的agent任务，跟之前一样。把todo, design，agent合作方式，所有的长期记忆，
-开发踩过的坑…能让别的agent快速接手。同时，把commit push到远端"; "尤其是你检查.smt效果踩过的坑，也要说清楚"). Nothing runs on
-any lift: every agent stopped its runs and committed its WIP on its branch; the lead stopped its last check (HG10V).
-Read this file, then [TODO.md](TODO.md), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
+The HDFS group is finished: every one of its 46 cases has an exported `.smt` read by hand against the HDFS code, one
+row each in [../STATUS.md](../STATUS.md) "HDFS checks". The owner then stopped the work ("这3个跑完就可以停。然后更新所有
+文档里要更新的位置…存在的问题也要写好"): nothing runs on any lift and every agent has stopped. Read this file, then
+[TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
 [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md);
-every check with its live state is in [../checks/README.md](../checks/README.md); done / partial / missing per
-requirement in [../STATUS.md](../STATUS.md).
+every check's state is in [../checks/README.md](../checks/README.md); done / partial / missing per requirement in
+[../STATUS.md](../STATUS.md).
 
-## 0. Since the handover (lead session 2026-10-06 afternoon; supersedes §2-§4 where they differ)
+## 0. The end state: two branches (owner 2026-10-06)
 
-- **Integration branch `hdfs-int`** (sparse worktree `/bigtemp/vnr3ne/wt/gc-hdfs-int`, from system/hdfs ff7daed0e), each
-  merge built and shell-tested: export-weave, frontier-depth, solver-fallback (gate HI1 on `~/gc-run/int1`: 17897 PASS,
-  12 SAT clean 10/10, 05 08 14 UNSAT clean, 11741 WITNESSED with a confirmed CLOCK_SKEW but cut by the 3 h limit in its
-  final stages under a crowded cluster, 07 needs codec capture); time-model (fafd89f40; see below); CONFIRM strictness
-  (a world planting a root beyond the model's moved ones is no realization); the seed replay charged 2x the recording's
-  peak (was 7x) and a warm-host question 512 MB (was 1 GB); `fanout.sh` holds room for a waiting job (one hold per host,
-  ties broken by name) and resumes a finished jobs file cleanly; the shim's inert `outboundOp(Object)`; the IPC hand-off
-  naming with every case.sh on the r6 trees (gate HO1 on r6: 17897, bug1, 17960 PASS 10/10, 12 SAT clean 10/10, 20 UNSAT).
-  `system/hdfs` is not fast-forwarded yet: it takes `hdfs-int` once the time-model decision lands.
-- **r6 trees built** (study-r6 7e81b3a588c with the DataTransfer door calls, 11741-r6 6c86fca9a2b; Maven repos
-  m2/hdfs-study-r6, m2/hdfs-11741-r6); **r7** (`gc/hdfs-study-r7` bd72fcc1a13, on r6, repo m2/hdfs-study-r7): the
-  time-family workarounds (no `ls`/`chmod`/`df` forks; `fs.getspaceused.classname` without `du`;
-  `dfs.namenode.edits.asynclogging=false`; a settle of every DataNode before an automatic cluster's window).
-- **The time model regresses non-clock cases**: 19, 26, 37 never reach their target on its body (UNSAT/fine without
-  it). Root cause (thread dump, `/bigtemp/vnr3ne/gc-out/hdfs-open-arms/diag/rerun-5c42/`): a timed-out monitor wait
-  waits for its WAKE turn while holding the program's monitor (`TimedWaits.monitorWait`), so
-  `IncrementalBlockReportManager.waitTillNextIBR` blocks `DataXceiver`. Body choice (agent T, rounds P1A/P1B/P3C under
-  `/bigtemp/vnr3ne/gc-out/hdfs-time-r6`): B, the time model REVERTED on hdfs-int (8f9acc7c4), reaches the anchor on every
-  probed case but 21; the time family runs on the r7 workarounds (owner: the time model by workarounds only).
-- **Agents** (briefs `/bigtemp/vnr3ne/analysis/study-2026-10-06b/`): T time family (r7, body choice, 21's thread-rename
-  workaround); C codec capture by builder-bound exports (`hdfs-codec-capture` 53e1e2ce7: 17897 PASS with its key-id chain
-  closed; 07, 11741 next), then concrete exports as constant arms and a retried call's own occurrence (14); R rule 1's
-  refinement (`hdfs-container-writers`), judged against the merged body's ask counts; S open arms (`hdfs-open-arms`:
-  WORLD_REFUTED for faithful open-arm replays, configuration domains from recorded comparisons; 40 UNSAT closed, review
-  blockers being fixed).
-- **Rounds** (`/bigtemp/vnr3ne/gc-out/hdfs-study`): HI1 (int1), HI2 (int2, all 46), HI3 (int3, HI2's queue; paused),
-  HO1 (r6). Clean on the new bodies per CHECKING §1: 05 06 08 09 10 11 12 14 15 16 20 23 27 28 29 30 31 33 34 38, 17897,
-  bug1, 17960 (and 40 on `hdfs-open-arms`). Open: 07 (codec), 14 on the time-model body (retried call identity), 19 26 37
-  (time model), 21 (thread rename), 22 24 25 35 52 (time family), 39 (the monitor defect), the rest of the named bugs to
-  rerun. Readings: `/bigtemp/vnr3ne/analysis/study-2026-10-06b/smt-checks.md`.
+- **`system/hdfs`** (head 04b1f4110 = the locked body d6737d26b plus docs): 39 cases closed by round HL1 and its reruns
+  -- the nine named bugs other than 11741 (17897, 17899-bug1/2/3, 17967-pathA/B/C, 17960, slowdisk-zero) and 30 study
+  checks (05 06 08 09 10 11 12 14 15 16 19 20 22 23 24 25 26 27 28 31 33 34 35 37 38 45 48 49 50 52). Locked: only docs
+  land on it.
+- **`system/hdfs1`** (this branch): the other 7 cases -- 07, 11741, 21, 29, 30, 39, 40 -- and every engine change made
+  after the lock. Its STATUS carries all 46 rows, each naming the branch and run that closed it.
+- Nothing merges back into `system/hdfs` or `main` (owner: "最终就是两个分支，system/hdfs和system/hdfs1"). The next system
+  starts from `system/hdfs1`, the newer body (TODO).
+
+What `system/hdfs1` adds to the locked body, each merged with its gate (git log has the numbers):
+- **Open arms** (agent S, `hdfs-open-arms` 3bdf1ec4f): a faithful replay that never enters an open arm's occurrence
+  refutes that world (`WORLD_REFUTED`); configuration domains from the recorded comparisons; a version no activation
+  wrote is named (`UNATTRIBUTED_STORE`) and re-pairable through its own symbol. Closed 39 and 40 first.
+- **The Cone fix** (3e7becca7): a body's Cone read once and indexed by selector (11741's COMPOSE was quadratic).
+- **Wait deadline** (agent T, `hdfs-wait-deadline` 9565537f2): a timed wait that takes its WAKE slot returns no sooner
+  than its own deadline (29, 30: a DataNode skipped heartbeats and the NameNode chose the other recovery primary).
+- **Codec capture** (agent C, `hdfs-codec-capture` d502ddbc7): the IPC and DataTransfer doors walk the protobuf message
+  they carry; a field's value is exported at its builder's setter and staged by the door; the engine's plumbing is
+  never state; an arm's input shape names its deliverers as a sorted set. Reviewed: open defects 52-56.
+- **21's workaround** (agent R, `hdfs1-21-workaround` 085b9a9ed): tree `gc/hdfs-study-r7-21` and `loop-bounds-21.jsonl`.
+- **07's workaround** (agent C, `hdfs1-07-wa`): tree `gc/hdfs-study-r8` and world depth 6 for 07 only.
+- **Open-arm keys** (agent T, `hdfs1-open-arm-keys`): each path's open arm judged by its own flip's answers where it
+  has any, else the shared verdict; a replay that did not run its world is asked once more; a flip no variable reaches
+  is UNSAT on its path (`NOT_FLIPPABLE`) unless a HELD value or refused construct feeds it.
 
 ## 1. The goals (verbatim) and what they mean
 
@@ -47,143 +41,88 @@ The 2026-10-04 goal (the four systems):
 
 > 请你阅读graphchecker的source code和vm代码。先了解这个Tool在处理的adhoc coordinaiton。以及我们的处理方式。然后阅读graphchecker远端study分支上的study.txt。里面记录了4个system的adhoc coordianotin位置，以及他们对应的cluster based unit test。同时，~/bug_study下是一些可能是adhoc coordianot有关的bug。请你仔细阅读graphchecker的readme。给每一个系统上，adhoc coordiaont check都加上我们的annotation。并编号，然后去check他们。…最终我们的目的是，四个system。我们的graphchecker创建四个对应分支。这四个分支代码主体都是一样的。只是每个system可能有一些小适配，workaround。…总之每个系统上我们就要检查若干adhoc coordination。跑出他们的.smt。如果这个点包含我们已有的bug。那应该是.smt跑通。然后你最终跑完这4个system上所有adhoc check。
 
-The 2026-10-04 night goal (HDFS, the current system):
-
-> 跑通hdfs上的所有adhoc check点位。readme里有句话说的不对。我们并不是看small change。这个chagne是系统地探索符号分支，fault。闭包不断演进。最终融合到.smt里。代码可能现在有点臃肿。在你跑通hdfs的同时，你也要删除冗余，不用的代码。并重构非常ugly的代码。最终hdfs所有的点都跑通。能找到新bug最好，找不到也没关系。合理利用10个server并行提升开发速度。
-
-The 2026-10-05 goal (HDFS, the current one), its target and acceptance (verbatim):
+The 2026-10-05/06 goal (HDFS), its target and acceptance:
 
 > 跑通 HDFS 上全部 46 个 case：36 个 study 检查点 hdfs-adhoc-NN，加 10 个已知 bug 的 named case。完成标准： 1. 每个 case
 > 都导出 final/candidate.smt2， - SAT：CONFIRM 已确认，至少移动了一个根，polarityDecides 为真，并做了 native reproduction；
-> - UNSAT：exploration 正常到达 FIXED_POINT，并且单独用 z3 重解该文件得到 unsat。 被预算截断（EXPLORATION_CUT）、自相矛盾
-> 算 RUN_DEFECT，要修，不能算完成。 2. 10 个已知 bug 全部 PASS，且机制符合 mandate … cone.py 不带任何豁免也要通过。
-> 3. 每个 .smt 都人工对照 HDFS 代码核对因果链、符号变量和符号传播 … 每个 SAT 的因果链、每个 UNSAT 的一行解读，写进
-> docs/STATUS.md。 4. 最终每个 case … 各跑一遍，结果合并到 main。只有 owner 明确要求时才 push。 找到新 bug 最好，找不到也可以
-> 接受，前提是 .smt 正确。
+> - UNSAT：exploration 正常到达 FIXED_POINT，并且单独用 z3 重解该文件得到 unsat。 … 2. 10 个已知 bug 全部 PASS，且机制符合
+> mandate … 3. 每个 .smt 都人工对照 HDFS 代码核对因果链、符号变量和符号传播 … 写进 docs/STATUS.md。 找到新 bug 最好，
+> 找不到也可以接受，前提是 .smt 正确。
 
-(Exclusive runs were dropped by the owner the same day: "我们不必强行要求独占。一定要最大化10个集群的使用。我们的核心目标是46个
-adhoc check先跑通出有正确因果链的.smt".)
+The owner's later rulings that changed it (RULES has each verbatim): no exclusive runs; the time-model family (21 22
+23 24 25 34 35 52) by workarounds, an approximately right `.smt` enough; lock what is right on `system/hdfs`, the rest
+on `system/hdfs1`, two branches as the end state; the last open cases by per-case workarounds; reasonable parallelism
+that serves throughput.
 
-In short:
-- Four systems, one at a time: HDFS (now), then Solr, HBase, ZooKeeper. One GraphChecker branch per system
-  (`system/<sys>`): one engine body, small per-system adapters and workarounds.
-- Every selected point is marked `@CausynthExceptionTarget("<sys>-adhoc-NN")` in its tree and checked with its cluster
-  test; every check ends with an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point); every known
-  bug passes; no new bug is an acceptable outcome.
-- Delete redundant and unused code, refactor very ugly code, along the way. Use all ten lifts.
-- The method is systematic exploration (symbolic branches, faults, an evolving closure, everything fused into one
-  `.smt`), never "a small change" (README fixed).
-
-## 2. GraphChecker branches (repo `~/GraphChecker`, remote `origin` = github)
-
-`system/hdfs` is the newest engine body; pushed at this handover (the owner asked). Every in-flight branch below has a
-WIP or finished commit and its worktree; merge them in TODO §1's order.
+## 2. GraphChecker branches (repo `~/GraphChecker`, remote `origin` = github; nothing pushed since the 10-06 handover)
 
 | branch | head | worktree | state |
 | --- | --- | --- | --- |
-| `system/hdfs` | `176acc689` + this handover's docs | `/bigtemp/vnr3ne/wt/gc-hdfs` (full checkout) | **The HDFS body.** Built, unit- and shell-tested. Merged 2026-10-05/06: clock placement (bd71f7490), claim loop (aaa2befe7), bound mark (d2678f203), round-verify UNBOUND (851131dd6), `tools/lib/worktree-add.sh` (f4a50da3b), the host ledger's one refresher (b7c5dc99d), the 01/17/43 -> 06/38/45 swap (55ffd81f7), confirm-first (adffd6072), (b2) arm-rests-on with the handoff rule (18f853467), the guard decider (b650a0f6d), the shim's codec entry points (176acc689). |
-| `hdfs-export-weave` | `073e4a3af` | `/bigtemp/vnr3ne/wt/gc-hdfs-export-weave` | A1. Every static export site woven; a witness ends exploration only when its own chain is closed (chain mode, `WITNESS_CHAIN_OPEN`); a SAT judged on its claimed path, an UNSAT on every path (`unboundOffWitness`, `UNSAT_CHAIN_OPEN`; cone.py/report.py aligned). Units + shell pass; AW4-12/AW5-12 SAT unbound 0; AW4-11741 PASS (all 11 handoffs bound, the key id by `message_family__19__975186a47596`); AW5-17897 PASS. Owed: a second 11741 on `~/gc-run/aw5`, then merge. |
-| `hdfs-frontier-depth` | `b3b6885a4` | `/bigtemp/vnr3ne/wt/gc-hdfs-frontier-depth` | D1. Set-valued arm keys; `AB_STAGES=EXPLORE.drift`; the owed-path bound (paths beyond it deferred, never dropped). 05 06 08 09 FIXED_POINT `bounded: null`, 17897 PASS (snapshot `fd2` = 34e9d0cae). Owed: 11741 x2 with `CASE_TIMEOUT_SECONDS=10800` (FD3/FD3b stopped unfinished). |
-| `hdfs-solver-fallback` | `a0bacf303` | `/bigtemp/vnr3ne/wt/gc-hdfs-solver-fallback` | D1. A host solver killed at its memory hold is placed by its measured peak through the ledger, or fails by name at once. Units + shell pass; never run live. |
-| `hdfs-container-writers` | `4babe9a51` | `/bigtemp/vnr3ne/wt/gc-hdfs-container-writers` (sparse) | D1. The prefix span (a loop-body root's enclosing entry opens the region for the method prefix) + review fixes; system/hdfs b650a0f6d merged. Canaries 19 21 28 29 11741 passed on an older base; 11 does not converge (CW5: 1267 asks vs 47): needs rule 1 (TODO §1.7; prototype `/bigtemp/vnr3ne/handover/2026-10-06/rule1-demanded-sites.patch`). |
-| `hdfs-time-model` | `49f502302` | `/bigtemp/vnr3ne/wt/gc-hdfs-time-model` | A2. Reviewed; review fixes in (the pre-window rule, ScheduleLog the single owner of the cap, the named pre-contract refusal, docs, tests); system/hdfs 176acc689 merged. tm16 gate (5ce36a51e): no 120 s stand; 11741 PASS CLOCK_SKEW 3004 s; 17897, bug1, 17960 PASS. Owed: one live check on its head; 11741 replays median 258 s (TODO §4). |
-| `hdfs-ipc-handoff-name` | see git | `/bigtemp/vnr3ne/wt/gc-hdfs-ipc-handoff` | T (was A2), on `hdfs-int` 244f88d39 (the time model reverted, body B): a hand-off of a received call to the handler queue named by the call's request identity (the server twin of r5's per-verb naming); hdfs-adhoc-35 declares dn6; every study `case.sh` on r7 (the time-model family's workarounds), 11741 on 11741-r6; the timed-out WAKE's monitor release (body D; its 19/26 probe beat B's). Next: the family to verdicts. |
-| `hdfs-codec-capture` | (head) | `/bigtemp/vnr3ne/wt/gc-hdfs-codec-capture` | agent C, on `system/hdfs1` d6737d26b: a message field's value exported at its builder's setter, bound to the builder and handed to the message by its `build()`; the IPC and DataTransfer doors walk the message; the engine's plumbing never state; the study tree r7 holds the DataTransfer door calls (study-r6 7e81b3a588c); gates in progress (TODO §1.6). |
-| `hdfs1-21-workaround` | (head) | `/bigtemp/vnr3ne/wt/gc-hdfs1-21` | R, on `system/hdfs1` c3e10284f: hdfs-adhoc-21 on its own tree `gc/hdfs-study-r7-21` (the handshake on a thread of its own) and its own loop bounds (`parseVersion` K_L 24), both through `case.sh`; STATUS defect 51; TODO HDFS §3b (the general prefix design). Parked beside it: `hdfs1-prefix-span` (merged-span prefix, time-cut key; superseded), `hdfs-rule1`, `hdfs-u18-fix` (keys, not merged). |
-| `hdfs-compose-perf-wip` | `8509b431d` | `/bigtemp/vnr3ne/wt/a1-measure` | A1's measurement code (17897 COMPOSE: two z3 runs per sat ask, 16-56 s asks). Not for merge. |
-| `hdfs-refactor-compose` | `ac2f58490` | `/bigtemp/vnr3ne/wt/gc-hdfs-refactor-compose` | Behaviour-preserving COMPOSE refactor, steps 1-4 gated identical; step 5 not started; system/hdfs not merged into it since 2026-10-05 (TODO §6). |
-| `hdfs-clock-replay` | `22520bf02` | none | C1 (keyed clock replay), parked; delete when the time model merges. |
-| `hdfs-construction-only-values` | `ca50b8319` | | parked since 10-04 (needs an 11741 chain check). |
-| merged this session, deletable | | | `hdfs-clock-place`, `hdfs-claim-loop`, `hdfs-bound-scope`, `hdfs-swap-clock`, `hdfs-confirm-first`, `hdfs-arm-rests-on`, `hdfs-handoff-rule`, `hdfs-decider-open`, `hdfs-shim-codec-entries`, `hdfs-native-plant`, `hdfs-wire-decl`, `hdfs-request-door`, `hdfs-window-counts`, `hdfs-sorted-listings`, `hdfs-anchored-index`, `hdfs-compose-cost`, `hdfs-seed-speed`, `hdfs-draw-sites2`, `hdfs-address-shared` (remove their worktrees first: `git worktree list`). |
-| `main` | `fe3a5f1a0` | `~/GraphChecker` | the 2026-10-03 handover body (V25 14/14). `system/solr`, `system/hbase`, `system/zookeeper` = `main`. |
-| `solr-bug-reindex` | `12283e3f1` | `.claude/worktrees/agent-a6cdfa854234df67e` | Solr #04 + Solr replay fidelity; SBR26 13/14 (solr-18413 regressed). Parked for the Solr turn. |
-| `hb-schedule` + `hb-sync` | `1fb4a475a`, `53f16e8b6` | `.claude/worktrees/agent-aea16c87adafb5d81` | one per-session happens-before relation; reviewed; for the ZooKeeper turn. |
-| `hbase-startup` | `3afb27f13` | `/bigtemp/vnr3ne/wt/gc-hbase-startup` | HBase #14; blocked on two design questions (TODO HBase). |
-| `wire-codec-p1` | `3e9cb3182` | `.claude/worktrees/wire-codec-p1` | WIRE-CODEC, the only home of that feature. Resume only for a system that needs it. |
-| `study` | `b9da03fc1` | `/bigtemp/vnr3ne/wt/gc-study` | `study.txt` and `selection.txt` (HDFS-01/17/43 swapped out for 06/38/45, HDFS-32 for 05); the tables are also in `docs/checks/`. |
-
-How the system branches relate: the engine body moves on `system/hdfs` only; when HDFS is done it goes to `main`, and
-`main` is merged into `system/solr`, `system/hbase`, `system/zookeeper`, each then adding only its adapter, markers
-and cases. The HBase tree must drop a codec argument before any HBase run on the new body (§3).
+| `system/hdfs` | `04b1f4110` | `/bigtemp/vnr3ne/wt/gc-hdfs` (full checkout) | locked HDFS body d6737d26b + docs; 39 cases |
+| `system/hdfs1` | (head) | `/bigtemp/vnr3ne/wt/gc-hdfs1` | the newest body; 7 cases; §0 |
+| `main` | `fe3a5f1a0` | `~/GraphChecker` | the 2026-10-03 body (V25 14/14). `system/solr`, `system/hbase`, `system/zookeeper` = `main` |
+| `hdfs1-confirm-first` | `da913cd7c` | `/bigtemp/vnr3ne/wt/gc-hdfs1-confirm-first` | parked (TODO): no witness attempt starts while a confirmation is queued, running or returned; merge only if a confirmation is seen waiting > 10 min |
+| `hdfs1-prefix-span`, `hdfs-rule1`, `hdfs-u18-fix` | `40127e2b5`, `7d2819214`, `8ed56ddeb` | `/bigtemp/vnr3ne/wt/gc-hdfs1-prefix-span` | parked, not for merge: the merged-span prefix and the time-cut key (superseded by TODO §3b's design), rule 1 and the own-fault key (missed the throughput bar) |
+| `hdfs-time-model`, `hdfs-clock-replay` | `49f502302`, `22520bf02` | | the reverted time model and its predecessor: delete |
+| `hdfs-refactor-compose` | `ac2f58490` | `/bigtemp/vnr3ne/wt/gc-hdfs-refactor-compose` | behaviour-preserving COMPOSE refactor, steps 1-4; TODO cleanup |
+| `hdfs-compose-perf-wip`, `hdfs-construction-only-values`, `hdfs-container-writers` | | | measurement / parked / superseded: delete |
+| merged into `system/hdfs1`, deletable | | | `hdfs-int`, `hdfs-export-weave`, `hdfs-frontier-depth`, `hdfs-solver-fallback`, `hdfs-ipc-handoff-name`, `hdfs-open-arms`, `hdfs-wait-deadline`, `hdfs-codec-capture`, `hdfs1-21-workaround`, `hdfs1-07-wa`, `hdfs1-open-arm-keys`, and the older list of the 10-06 handover (git history); remove their worktrees first (`git worktree list`) |
+| `solr-bug-reindex` | `12283e3f1` | `.claude/worktrees/agent-a6cdfa854234df67e` | Solr #04 + Solr replay fidelity; SBR26 13/14 (solr-18413 regressed). For the Solr turn. |
+| `hb-schedule` + `hb-sync` | `1fb4a475a`, `53f16e8b6` | `.claude/worktrees/agent-aea16c87adafb5d81` | one per-session happens-before relation; reviewed; for the ZooKeeper turn |
+| `hbase-startup` | `3afb27f13` | `/bigtemp/vnr3ne/wt/gc-hbase-startup` | HBase #14; two design questions (TODO HBase) |
+| `wire-codec-p1` | `3e9cb3182` | `.claude/worktrees/wire-codec-p1` | WIRE-CODEC; superseded for HDFS by codec capture |
+| `study` | `b9da03fc1` | `/bigtemp/vnr3ne/wt/gc-study` | `study.txt`, `selection.txt`; the tables are also in `docs/checks/` |
 
 ## 3. System trees (the code under test)
 
-| tree (worktree) | branch, head | state, used by |
+| tree (worktree) | branch, head | used by |
 | --- | --- | --- |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r3` | `gc/hdfs-study-r3` `d03c1f9134a` | superseded by r4 (R4A, 2026-10-05); kept only for the runs that name it, never touched again. = `gc/hdfs-study-next` + `gc/hdfs-study-startup`. Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-next`. |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7` | `gc/hdfs-study-r7` `bd72fcc1a13` (on study-r6) | **every HDFS case but 11741** (`experiments/hadoop/*/case.sh repo=`). r6 + the time-model family's workarounds (STATUS "Per-system surface": no `ls`/`chmod`/`df`/`du` process, edits synced on the handler, an automatic cluster settled before its window). Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7`, built module by module (OPERATIONS §1); every workload passes natively there. `gc/hdfs-study-r7b` (r7 + the actor thread's kept name) served only round V1 and goes after it: the rename was not what kept hdfs-adhoc-21 from its anchor. |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r6`, `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-study-r6` `7e81b3a588c`, `gc/hdfs-11741-r6` `6c86fca9a2b` (on r5) | study-r6: the base of r7/r7b; **11741-r6: hdfs-11741**. r5 + A2's IPC hand-off hook (`Server#internalQueueCall` in `CausynthMessagePropagation.handingOff/handedOff`: 5e01e556b33 / 5a139fed92a) + A4's IPC door calls (`Server#setupResponse` -> `outboundResponse(..., rv)`; `received(msg)` after the client's and the server's parse, in ProtobufRpcEngine2 and v1) + on study-r6 C's DataTransfer door calls (7e81b3a588c: `DataTransferProtoUtil#withCausynth` -> `outboundOp(op)`, `Receiver`'s op handlers -> `received`). Sparse worktrees, built module by module with Maven and Java 8 (OPERATIONS §1) into Maven repos `/bigtemp/vnr3ne/m2/hdfs-study-r6` and `/bigtemp/vnr3ne/m2/hdfs-11741-r6` against `hdfs-ipc-handoff-name`'s shim (handingOff/handedOff, received, outboundResponse, outboundOp; javap-checked in the jars and `target/classes` a case loads); every case's workload run once there (its surefire report is the classpath). |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r5` | `gc/hdfs-study-r5` (on r4) | superseded by r6; kept for the runs that name it, never rebuilt. = r4 + the IPC request starts at the RPC engine's invoke point (`ProtobufRpcEngine2`/`ProtobufRpcEngine` `Invoker#invoke`: `CausynthMessagePropagation.requestStarting`/`requestEnded`, `Client#causynthAttempt`; `Client#sendRpcRequest`'s hand `endInbound()` deleted, so its loop sites are `#u53`/`#u58`). Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r5` (the GraphChecker jar of `hdfs-request-door` installed in it); every case's workload run once natively there before its first run (its surefire report is the classpath). |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r4` | `gc/hdfs-study-r4` `42f029cc568` | superseded by r5; kept for the runs that name it, never rebuilt. = r3 (the 49 study markers, MiniJournalCluster hooks, node-startup brackets, the startup window, weak adapter registries, the NN heartbeat tick, the IPC door naming its verb, the NN's `registerDatanode` write lock as the startup step) + the IPC handler opens a call's exchange before `doAs` (`Server.Handler#work`, `Call#causynthEnter/Exit`, `RpcCall#run` back to upstream) + DataXceiver's redundant hand `endInbound()` removed. Built (Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r4`, the GraphChecker jar of 62308852c installed in it: the copied one lacked `startupStep`), every HDFS case's workload run once natively (its surefire report is what a case's classpath reads); validated in R4A (`/bigtemp/vnr3ne/gc-out/hdfs-r4`). |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-verb` | `gc/hdfs-11741-verb` `0d24b5f626b` | superseded by 11741-r4; kept only for the runs that name it. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-verb`. |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r5` | `gc/hdfs-11741-r5` (on 11741-r4) | superseded by 11741-r6; kept for the runs that name it. 11741-r4 + the same request start. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r5`. |
-| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r4` | `gc/hdfs-11741-r4` `a703b618d34` | superseded by 11741-r5; never rebuilt. 11741-verb + the same handler change. Built, workload passes natively; Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r4`; validated in R4A. |
-| `hadoop-hdfs-study-next`, `-study-startup`, `-study`, `-bugs`, `-dtx`, `-dtx-w6`, `-11741-w6` | | bases or older trees; `main`'s cases run `hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`). The HDFS-group ones can go once r4 is in. |
-| `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | solr-18406, solr-18413 (main). Also `lucene-solr-bugs` (`gc/solr-bugs` `f65aaf7`, the Solr bug_study cases), `lucene-solr-storing2` (`40b7659`); clones `~/lucene-solr-8_11`, `~/lucene-solr-unified`. The Solr trees carry the upstream ZkStateReader-race workaround (OPERATIONS §8). Study markers not added yet. `MessageDoors.consumed` installs an envelope without its message key, so a consumed Overseer item's concrete elements stay unpaired (STATUS open defect 50). |
-| `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | the zk-bugs cases (main); `-hb` adds the RESPONSE door for `hb-schedule`. Maven repos `/bigtemp/vnr3ne/m2/zookeeper`, `/bigtemp/vnr3ne/m2/zookeeper-hb`. Its only remote is apache: never push. Study markers not added yet. |
-| `/bigtemp/vnr3ne/wt/hbase-unified` | `gc/hbase-unified` `1051825287` | HBase cases (`hbase-startup`). **Must change before any HBase run on the new body**: `CausynthRpc.java:61-62` passes `call.param` to a payload door the WIRE-CODEC deletion removed; drop `, call.param` and rebuild hbase-client. Study markers not added yet. |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7` | `gc/hdfs-study-r7` `bd72fcc1a13` | every HDFS case but 07, 21 and 11741 on both branches. r6 + the time family's workarounds (STATUS "Per-system surface"). Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-21` | `gc/hdfs-study-r7-21` `c360d869629` | hdfs-adhoc-21 only (`case.sh`): r7 + the DataNode handshake on its own joined thread |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8` | `gc/hdfs-study-r8` `e3dab6266a7` | hdfs-adhoc-07 only (`case.sh`): r7 + QJM's reply maps in the loggers' order. Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r8` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-11741-r6` `6c86fca9a2b` | hdfs-11741. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6` |
+| `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r6` | `gc/hdfs-study-r6` `7e81b3a588c` | the base of r7; r6 = r5 + the IPC hand-off naming + the codec door calls (OPERATIONS §1) |
+| `hadoop-hdfs-study-r7b`, r5, r4, r3, `-11741-r5`/`-r4`/`-verb`, `-study-next`, `-study-startup`, `-study`, `-bugs`, `-dtx*`, `-w6` | | superseded; kept only for the runs that name them (r7b can go) |
+| `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | solr-18406, solr-18413 (main); also `lucene-solr-bugs`, `lucene-solr-storing2`; study markers not added yet |
+| `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | the zk-bugs cases (main); never push (apache remote) |
+| `/bigtemp/vnr3ne/wt/hbase-unified` | `gc/hbase-unified` `1051825287` | HBase cases; must drop `CausynthRpc.java:61-62`'s `, call.param` before any run on the new body |
 
-VM images: `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves `system/hdfs` (sources = branch `hdfs-vm-hg5` 742f13363, merged;
-`SOURCE.txt` beside it); `vm-model-guards2` serves `main`; `vm-size-source` served HG4; `vm-hdfs-scope-container`,
-`vm-hdfs-scope-rows`, `vm-model-guards`, `vm-streams` are superseded. No VM change was made this session. The VM's
-dead natives (VM.md §8: `getPathCondition`, `trackContainerExpression`, `getShared*Versions`,
-`getConcolicRegionSummary`, the `armShared*`/`confirmShared*` refusals) and `exportLeaf`/`mintLeaf` (WIRE-CODEC only)
-can go in the next VM build.
+VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both HDFS branches (sources `hdfs-vm-hg5` 742f13363);
+`vm-model-guards2` serves `main`. No VM change was made since. The VM's dead natives (VM.md §8) and
+`exportLeaf`/`mintLeaf` can go in the next VM build.
 
-Snapshots in `~/gc-run/`: `hg7` (272afdef2) is the last round's body; agents' `as1`, `hcl1`, `hds9`-`hds14`, `whf1`
-and every older one (`hcs-*`, `hdv*`, `hg3`, `hg4`, `hg5*`, `hoa*`, `hsc*`, `hscope1`, `hsr1`, `hssp1`, `iof*`) can go
-(`tools/rounds/snapshot-gc.sh` refuses one in use).
+Snapshots in `~/gc-run/` (frozen; `tools/rounds/snapshot-gc.sh` refuses one in use): `hl1` (system/hdfs's locking round),
+`hf1` (system/hdfs1's code at c3e10284f: HF1, HF2), `cc8` (07's workaround), `w21` (21's), `oak1` (T's open-arm keys).
+Every older one (`int1`-`int6`, `ho1`, `wd1`, `ps1`, `ps2`, `cc1`-`cc7`, `cc-base*`, `oa0`-`oa5`, `r1a`, `r1b`, `u18a`,
+`t7a`-`t7d`, `t8`, `hg9`, `sw1`, `aw4`, `aw5`, `ar3`, `fd2`, `cw3`, `tm16`, `a4base`) can go.
 
-## 4. Rounds and the state of each check
+## 4. Rounds and evidence
 
-Outputs `/bigtemp/vnr3ne/gc-out/hdfs-study/accept-<round>-<n>/` (`sweep-<round>-cases.tsv` maps n to the case; a
-rerun's suffix names its case, `HG9L-11`); agents' runs under `/bigtemp/vnr3ne/gc-out/<branch>/`.
+Outputs under `/bigtemp/vnr3ne/gc-out/<dir>/accept-<round>-<n>/` (`sweep-<round>-cases.tsv` maps n to the case).
 
-| round | body | result |
+| round | body | what it closed |
 | --- | --- | --- |
-| HG7, HG7R, HG7N, HG7D, HG8A | `272afdef2`, `84f53669b`, `4d76294a3` | the 2026-10-05 day's rounds (STATE of 2026-10-05; git history) |
-| HG8E, HG8F, HG8W, HG8Z | 2026-10-05 bodies up to `2a5bec483` | HG8F: the 10 named PASS; the clock family stopped at 80+ give-ups; 05 UNSAT (HG8W), 52 UNSAT (HG8Z) on older bodies |
-| HG9 | `aaa2befe7` (clock placement + claim loop), 35 non-clock cases, 2 heads/host, 90-min budget | 10 SAT; 07 14 15 16 19 20 27 28 29 30 31 39 40 48 UNSAT at FIXED_POINT (07: UNBOUND 6, 14: UNBOUND 3); 05 11 12 26 33 37 cut by the budget; 08 09 timed out |
-| HG9B | the same, 3 h budget | named 9 PASS (11741: two unbound key-id handoffs); 49 50 UNSAT |
-| HG9L-05/11/12/26/33/37 | the same, 3 h budget | 11 26 33 37 UNSAT at FIXED_POINT; 05 FIXED_POINT but 85 bounded rows; 12 SAT confirmed, reproduced 4/10, 1 unbound (txid) |
-| SW1, SW1L-45 | `a147c2448` (swap rows) | 38 UNSAT (13 symbols); 45 UNSAT NO-SYMBOL; 06 UNSAT but 51 bounded rows |
-| HG10V | `b650a0f6d` ((b2) + decider) | 17897 PASS in 594 s; stopped at the handover |
-| agents' rounds (own `GC_OUT`) | | TM12-TM16 (time model: `hdfs-time-model/probe/runs.txt`), CL3 (claim loop), AR1-AR3 ((b2)), AW4-AW5 (export weave), DO1-DO2 (decider), FD1-FD3 (frontier depth), CW3-CW5 (container writers), NP7 (native plant), WD1-WD3 (wire flows) |
+| HL1 + reruns (HL1R-19, HL1R-pathC) | `system/hdfs` d6737d26b, `hdfs-study` | the 39 cases of `system/hdfs` |
+| HF1 | `system/hdfs1` c3e10284f, `hdfs-study` | 29 30 40 (39 ran RUN_DEFECT there: CHECKING trap 18) |
+| HF2 | the same, 14400 s | 11741 PASS (CLOCK_SKEW, 5168 s) |
+| W21 | `hdfs1-21-workaround`, `hdfs-21w` | 21 (time family, residue named) |
+| CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | 07 |
+| OK* | `hdfs1-open-arm-keys`, `hdfs1-open-arm-keys` | 39 (and 40 again) |
+| agents' gates | own `GC_OUT`s | OA2-OA5 (open arms), WD1-WD3 (wait deadline; WD3: 17897 PASS), CC1-CC8 (codec capture), PS1-PS2 (prefix span), P1A-P3C (time family probes) |
 
-Per check: [../checks/README.md](../checks/README.md) (state per row), how each is checked: [CHECKING.md](CHECKING.md).
-Summary (46 HDFS cases, 2026-10-06 handover):
-- known bugs: 9/10 PASS by mandate on the merged body (HG9B); 11741 PASS with a clean cone on (b2) (AR3, merged) and on
-  the time model (TM16), so 10/10 have passed; the final round re-confirms.
-- study checks: done 20 -- 11 15 16 19 20 26 27 29 30 33 37 38 40 49 50 UNSAT with symbols, 28 31 45 48 UNSAT over a
-  chain constant in the window (reasons in their rows), 10 SAT; fixed on a branch, owed a merge and the final round, 6
-  -- 12 (export weave), 14 ((b2), merged), 05 06 08 09 (frontier depth); in work 2 -- 07 (codec capture), 39 (its bug's
-  arm unreachable in replay); the time-model family 8 -- 21 22 23 24 25 34 35 52 (time model, hand-off naming, then the
-  three quick workarounds of TODO §2: quiesce before the window, no `du`/`df` forks, IBRs at once).
-- swapped (owner 2026-10-05): 32 for 05; 01 17 43 for 06 38 45. New bugs: none.
-
-Snapshots in `~/gc-run/` (each frozen; `tools/rounds/snapshot-gc.sh` removes one no process names): `hg9` (HG9's
-body), `sw1` (the swap rows), `aw5`/`aw4` (export weave), `ar3` ((b2)), `fd2` (frontier depth), `cw3` (container
-writers), `tm16` (time model), `a4base` (A4's base).
+Per check: [../STATUS.md](../STATUS.md) "HDFS checks" (verdict and the hand reading) and
+[../checks/README.md](../checks/README.md) (state per row). How each is checked: [CHECKING.md](CHECKING.md).
+New bugs: none. The 10 named bugs pass by mandate (11741 CLOCK_SKEW; the others MARKER_FLIPPED by an IPC door fault,
+17960 by its configuration, slowdisk-zero by STATE re-pairing).
 
 ## 5. Where the analyses and evidence live
 
 - `docs/checks/` (in the repo): the selection, the per-system point tables, the verified bugs.
-- `/bigtemp/vnr3ne/analysis/study-2026-10-04/`: `AGENT-RULES.md` (every coding agent's rules), the briefs of this
-  session's packages (`brief-*.md`; the open ones: `brief-refactor-compose.md`, `brief-planned-shape.md` (its third
-  package), `brief-cleanup-1.md` (phase-2 items)), `cleanup-audit/` (the dead-code audit's tables).
-- `/bigtemp/vnr3ne/ab/`: offline gates (`hdfs-decisive-verdicts/finish/`, `hdfs-refactor-compose/` with `cost-gate.sh`
-  and 07's COMPOSE samples `c07/`, `cleanup-*`).
-- `/bigtemp/vnr3ne/gc-out/diag-11741/`: the 11741 regression's diagnosis run (292 MB; delete once 11741 passes).
-- `/bigtemp/vnr3ne/gc-out/hdfs-seed-speed/`: SEED profiling (strace, jstack scripts).
-- `/bigtemp/vnr3ne/specs/`: `WIRE-CODEC-proposal.md`, `R1-ROOTS-proposal.md`, `R3-REFCONT-proposal.md` (cited by code
-  comments and the design docs).
-- `/bigtemp/vnr3ne/handover/`: bundles of deleted branches and old WIP patches.
-- `/bigtemp/vnr3ne/handover/2026-10-06/`: D1's rule-1 prototype patch and the 2026-10-05/06 session's scratch scripts
-  and notes (`scratchpad/`: HG9 verify output, legends of 12 and 14, analysis scripts).
-- `/bigtemp/vnr3ne/analysis/study-2026-10-05/`: that session's briefs and per-case `.smt` readings (`smt-checks.md`,
-  `legends/`).
-- Agents' evidence: `/bigtemp/vnr3ne/gc-out/hdfs-time-model/` (probe/runs.txt, stalls.py, around.py, untaken.py),
-  `hdfs-arm-rests-on/` (AR1/AR3/AW4/AW5), `hdfs-decider-open/` (DO1/DO2), `hdfs-frontier-depth/` (FD*), `hdfs-container-
-  writers/` (CW*); offline gates `/bigtemp/vnr3ne/ab/hdfs-refactor-compose/` (gate2.sh, armC-*), `/bigtemp/vnr3ne/ab/
-  a1-tmp/` (planner46.py), `/bigtemp/vnr3ne/ab/fd-owed-gate2`, `fd-direct`, `fd-drift*`.
-- `~/bug_study/*.txt`: the bug descriptions.
+- `/bigtemp/vnr3ne/analysis/study-2026-10-06b/`: this session's agent briefs (`brief-*.md`), the `.smt` readings draft
+  (`status-readings.md`), `anchor-check.py` (whether each case's seed reached its declared occurrence) and notes
+  (`smt-checks.md`).
+- Agents' evidence: `/bigtemp/vnr3ne/gc-out/hdfs-open-arms/` (S), `hdfs-wait-deadline/` and `hdfs-time-r6/` (T: probes,
+  `probe-table.py`), `hdfs-codec-capture/` (C), `hdfs-rule1/` (R: key gates, probes), `hdfs-21w/` (W21),
+  `hdfs1-open-arm-keys/` (T's 39 runs).
+- Older: `/bigtemp/vnr3ne/analysis/study-2026-10-04/`, `study-2026-10-05/`, `/bigtemp/vnr3ne/handover/` (bundles of
+  deleted branches, the 10-06 scratch), `/bigtemp/vnr3ne/specs/` (proposals cited by code comments), `~/bug_study/`.

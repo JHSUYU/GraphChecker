@@ -1,96 +1,47 @@
-# TODO at the handover of 2026-10-06
+# TODO after the HDFS group (2026-10-06 night)
 
 Order:
-1. HDFS to the end, as one group with no regression.
-2. Then Solr.
-3. Then HBase.
-4. Then ZooKeeper.
+1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
+   them or before a clean final acceptance run.
+2. Solr.
+3. HBase.
+4. ZooKeeper.
 
 The owner: "hdfs所有的case跑完为一组，不要有回归。然后就到另一个系统". Each system is finished when every one of its
 checks has an exported `.smt` that is right (SAT confirmed, or UNSAT at the fixed point) and every known bug of it
-passes (owner 2026-10-05: no exclusive runs required; keep all ten lifts full; the goal is a right `.smt` per check). Branch, tree and path details are in
-[STATE.md](STATE.md); every check with its live state in [../checks/README.md](../checks/README.md); commands in
+passes. Branch, tree and path details are in [STATE.md](STATE.md); every check with its state in
+[../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
-## HDFS (current system; `system/hdfs` 176acc689 + this handover's docs, trees r5 -> r6, image `vm-hg5`)
+## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7 cases; trees r7, r7-21, r8, 11741-r6; image `vm-hg5`)
 
-Where it stands (STATE §4, checks [../checks/README.md](../checks/README.md), how to check [CHECKING.md](CHECKING.md)):
-known bugs 9/10 PASS on the merged body (HG9B) and 11741 PASS with a clean cone on (b2) (AR3) and on the time model
-(TM16); study checks done 20 (19 UNSAT + 10 SAT), fixed on a branch and owed only a merge/rerun 6 (12 14 05 06 08 09),
-in work 2 (07 39), the time-model family 8 (21 22 23 24 25 34 35 52); no new bug. Every in-flight branch is listed in
-STATE §2 with its head, gate state and next step. One coding agent per area (AGENTS.md); each merge is one change,
-gated, then the next.
+All 46 cases closed with a hand-read `.smt` (STATUS "HDFS checks"); no new bug. What is left is the general work the
+workarounds stand in for, the defects the session found, and the cleanup. None of it reopens a closed case unless a
+change alters its formula; any engine change below reruns the affected cases on `system/hdfs1` (one change per round,
+RULES "Lock, then one change at a time").
 
-### 1. Merge what is gated or nearly (in this order; each: merge system/hdfs into it, build + shell test, merge)
-1. **`hdfs-export-weave`** (A1; STATE §2): every static export site woven, the witness chain closure (chain mode,
-   `WITNESS_CHAIN_OPEN`), verdict-based cone gating (`unboundOffWitness`, `UNSAT_CHAIN_OPEN`). Owed: a second AW-11741 and
-   AW-12 on its head (AW4-12: SAT, unbound 0, off-witness 3; AW4-11741 PASS, all 11 handoffs bound). Fixes 12.
-2. **`hdfs-frontier-depth`** (D1): set-valued arm keys, `EXPLORE.drift`, and the owed-path bound (count only paths
-   offering an owed arm; paths beyond the bound deferred, never dropped). 05 06 08 09 reached FIXED_POINT with
-   `bounded: null`, 17897 PASS; owed: 11741 x2 on its head with `CASE_TIMEOUT_SECONDS=10800` (FD3/FD3b were stopped
-   unfinished at the handover).
-3. **`hdfs-solver-fallback`** (D1): a host solver killed at its memory hold is placed through the ledger by its
-   measured peak, or fails by name at once (it asked 16 GB on its pinned host and waited 3900 s). Owed: one live case.
-4. **`hdfs-time-model`**: merged, then REVERTED on hdfs-int (8f9acc7c4, 2026-10-06): its body made 19, 26 and 37 miss
-   their declared occurrence (a timed-out monitor wait waiting for its WAKE turn with the program's monitor held); the
-   time family runs on the r7 tree's workarounds instead (owner: the time model by workarounds only). Delete
-   `hdfs-clock-replay` and `hdfs-time-model` once HDFS is done.
-5. **The r6 trees + `hdfs-ipc-handoff-name`** (A2, stacked on the time model): build both r6 trees properly
-   (OPERATIONS §1 "HDFS trees (next)"), javap the hooks on a case's classpath, rerun every HDFS workload test on r6,
-   switch every `case.sh` in one commit; gate: 21's and 52's stalls by blocking slot before/after (`probe/stalls.py`),
-   17897/bug1/17960 unchanged, one non-clock case. Then the full time-model family on the merged body.
-6. **`hdfs-codec-capture`** (A4; design approved, a plan-only WIP commit): after export-weave. The IPC door walks the
-   message (export from the message's own fields at the outbound door; bind each decoded element to its message object
-   after the parse; attach at the demanded getter from the receiver's binding; a relay re-stages the original producer);
-   the engine's runtime classes and generated protobuf messages/builders are never state; the setter capture loop and
-   the three protobuf WIRE_FLOW rows deleted. First step: check that Soot loads a generated getter's body
-   (`Scene.forceResolve(owner, BODIES)`; else ASM). Fixes 07 (relayed segment) and 11741's HELD carrier read. Gate:
-   07, 12, 11741 with cone unbound 0; producer growth on 07 and 11741 unchanged or explained (exports are stated at the
-   door's occurrence); a review agent before the merge.
-7. **Rule 1**: measured and not merged (the throughput bar): the kept conditions of the prefix closure as the key
-   (`hdfs-rule1` 7d2819214) asked 470 arms on 05 in 30 min against the merged key's 187 in all; the own-fault key
-   (`hdfs-u18-fix` 8ed56ddeb) 269 in 27 min. The merged key keeps the u18#3 gap (STATUS open defect 51).
+### 1. The two-phase final acceptance run (owner 2026-10-06, for later)
+For one clean run of all 46 on one body (once the items below are in or declined): (1) the ~36 short cases a few at a
+time (6-8 concurrent: their time is serial SEED, recording and seed replay, so exclusivity buys them little); (2) the
+deep closures (11741 08 09 05 06 11 14, 07) one at a time with the whole cluster (their cost is hundreds of obligation
+replays, which fan out: 09 has 653 verdicts over 9 tasks and 7 regions). Expected ~4-5 h in all versus ~9-10 h with
+every case exclusive. Note: the 39 cases of `system/hdfs` ran on the locked body, which lacks codec capture, open
+arms, the wait deadline and the open-arm keys; a run of them on `system/hdfs1` is that final run's first check.
+11741 needs `CASE_TIMEOUT_SECONDS=14400`.
 
-### 2. The time-model family (21 22 23 24 25 34 35 52) after the merges above
-A2's first divergences on tm13-tm16 (`/bigtemp/vnr3ne/gc-out/hdfs-time-model/probe/runs.txt`): 25 34 35 seed replays
-clean (0-2 give-ups) except under load (25: 238 at `Shell.runCommand` starts) or the NameNode edit path after an
-addBlock meets NotReplicatedYet (25: 89, 22); 22 varies 0-66 between runs (a DataNode heartbeat turn not due in the
-window: a recorded 2999.2 ms gap; its recordings' start-up took 9-283 s); 21: 14 of 17 stalls are the IPC Reader's
-hand-off naming (fixed by `hdfs-ipc-handoff-name`), its first a heartbeat SEND that never happened; 23: 0 give-ups on
-tm13; 52: a late `FSEditLogAsync` claim at slot 1710 (open), then the NameNode restart phase; 24 not probed yet.
-**Relaxed by the owner (2026-10-06, RULES):** for these eight, workarounds are allowed and an approximately right
-`.smt` is enough (residual gaps named in STATUS). **Quick workarounds to try first** (owner 2026-10-06 asked for fast ones; RULES "Workarounds, with measure": one general
-point in the HDFS adapter/test configuration, listed in STATUS, never chosen by a case's expected mechanism; check that
-no selected check's guard reads the setting it changes):
-- **Quiesce before the window** (21 22 23): in `CausynthCluster`'s automatic mode, before opening the recording window,
-  trigger one heartbeat and one full block report per DataNode (`MiniDFSCluster#triggerHeartbeats`,
-  `#triggerBlockReports`) and wait for the IBR queues to drain, so start-up timing state is settled outside the window
-  (22's start-up varied 9-283 s and a slow one puts more heartbeat turns inside it).
-- **No external processes in the test cluster** (25): `fs.getspaceused.classname` to a JVM-only implementation, so no
-  `du`/`df` fork (`Shell.runCommand`) runs during a replay.
-- **IBRs sent at once** (22 23): `dfs.blockreport.incremental.intervalMsec=0`, removing `waitTillNextIBR`'s timed wait.
-Validate each by probes (seed give-ups, target reached, two runs each), then 17897, bug1, 17960, 11741 unchanged.
-If a check still cannot reach its target after that round, swap it (only 04 is left as an alternate; RULES).
+### 2. The general fixes the workarounds stand in for
+- **21**: a loop root's prefix as its own occurrence (§3) and the stranded activation (§4); then 21 runs on r7 without
+  its tree and loop-bounds file.
+- **07**: index a decoded reply's consumer by the send ordinal of the request it answers, not by the order the code reads
+  it (STATUS open defect 57; `MessageDoors#send` records correlation id -> ordinal, `Identity#endpointAt`,
+  `WireExport#attachLeaf`; ~50 lines + a test). Needed for HBase and ZooKeeper too (they iterate replies out of
+  `HashMap`s). Then 07 runs on r7 without r8, and its world depth back at the default if it converges.
+- **The time family** (21 22 23 24 25 34 35 52): the r7 workarounds (STATUS "Per-system surface") stay; the time model
+  is never ground on (RULES).
+- **Native reproduction of a clock world**: none exists (`NATIVE_PLANT_UNSUPPORTED`); 11741's validation is CONFIRM's
+  replay. A native clock plant (an agent-side clock offset per node) would give it a k/N.
 
-### 3. The other open checks
-- **39** (RUN_DEFECT, `OPEN_ARM_UNANSWERED`) and **40** (an UNSAT resting on `dfs.namenode.replication.min`'s [1,1]):
-  on `hdfs-open-arms` (agent S, approved designs A and B): a faithful replay that never entered the open arm's
-  occurrence refutes its world (`WORLD_REFUTED`) and the flip is asked again without it; an integral configuration's
-  domain takes every literal a recorded decision compares it with, within its own validation. In testAppendTwice the
-  arm `uc != null` is unreachable (the append runs after `close()`, which needs the block COMPLETE: replication 1,
-  minReplication >= 1), so 39 is expected to close UNSAT on refuted worlds; 40's flip `minReplication >= 2` fails the
-  workload's create. Owed: the offline gate on HI2 corpora, live 39 40 15 16 38 17960, a review agent on A.
-- **07**: codec capture (§1.6); its UNSAT has 6 unbound relayed-segment handoffs today.
-- **Scope (B)**, after the 46 (right formulas that widening would only make more flippable): 29/30 recoveryId (the
-  block-pool map written at DN startup; `bpServiceToActive`'s in-window writer gated by HA state); 17's lease and 39's
-  IBR ordering (turns on threads with no schedule events); an identity compare of a tracked reference with an enum
-  constant states no VM term (VM.md §5.2); 05's thread-local buffer invariant.
-- A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
-- **Swap the too-challenging**: a check still a RUN_DEFECT after a reasonable fix round is replaced by an alternate.
-  Used (owner 2026-10-05): 05 for 32; 06, 38, 45 for 01, 17, 43; only 04 (client ack timeout, CLOCK) is left; never
-  42, 44, 46, 47. Update `checks.tsv`, `selection.txt` (branch `study`) and `docs/checks/` with the reason.
-
-### 3b. A loop root's prefix as its own occurrence (design; 21 runs on a tree workaround meanwhile)
+### 3. A loop root's prefix as its own occurrence (general fix for 21's tree workaround; design ready)
 A LOOP_BODY_ROOT occurrence's activations are its loop's iterations, so what its root method runs before the loop
 is observed by none (21: `BPServiceActor.run`'s handshake, `checkNNVersion`). Merging the prefix into the first
 iteration (branch `hdfs1-prefix-span` 1f14e68c7) stretched the actor occurrence over the whole service loop: its
@@ -108,7 +59,7 @@ two spans" text go; (4) no key change. Offline (PS1-11, current key): the actor'
 never did. Still owed with it: an activation stranded at session end publishes CUT (no ADMITTED verdict over
 unpublished rows).
 
-### 3c. A stranded activation's rows (evidence: W21's 3 BLOCKING gaps)
+### 4. A stranded activation's rows (21's residue; evidence: W21's 3 BLOCKING gaps)
 An activation whose root is still running when the session ends is stranded (`ConcolicResultPublisher#
 strandWithoutTerminal`, TERMINAL_NEVER_REACHED): its path is withheld, only its mints publish, yet the replay's
 verdict can stand ADMITTED (`FocusedReplay` saw the flipped arm taken). A nested path then cut from that session
@@ -123,43 +74,49 @@ grace, and one that reaches no hook makes its replay's obligations admit nothing
 flipped activation published no rows. Today's corpora of 07 (CC7), 11741 (AW5), 29 30 40 (HF1) and 39 (WD3) hold
 no stranded activation, so either touches only perpetual bodies like 21's actor.
 
-### 4. Speed (PERFORMANCE.md §5)
-- 11741's replays under the time model (258 s median vs 165-207 s); the ledger's ~1.6x over real use (step charges at
-  their start heap).
 
-### 5. The final round, then the end of HDFS
-1. After §1 (and §2's workarounds) land: a full round of the 46 on the merged body (`tools/adhoc/sweep.sh`, 2 heads
-   per host, `PRUNE=0`, **`CASE_TIMEOUT_SECONDS=10800`**, the next name `HG11`, case list
-   `/bigtemp/vnr3ne/gc-out/hdfs-study/rounds/HDFS46.cases`); watch with `round-watch.sh`/`round-slow.sh <round> HG9`.
-2. Verify each finished case with `round-verify.sh` and CHECKING.md §1 (no BOUNDED, no UNBOUND, FIXED_POINT or
-   confirmed); rerun anything cut at a longer budget.
-3. Hand-check every `.smt` (CHECKING.md §2: legend, chain, symbols, propagation against the HDFS code); write the chain
-   of each SAT and a one-line reading of each UNSAT into STATUS.
-4. Merge `system/hdfs` into `main`; push only when the owner asks.
+### 5. Defects found this session (STATUS "Open defects" has each with its fix)
+- **52-56, codec capture review**: a getter on a message no door decoded attaches nothing, silently (52); SEED derives
+  no port for a two-field getter or an unresolved class (53); a refused setter export leaves the builder's earlier
+  element bound (54); the input-shape key does not record which producer fed which site (55); a protobuf object kept
+  as state is not tracked as state (56). None is on a closed case's path (the review read 07, 11741, 12).
+- **58/59, open-arm bookkeeping** (T): an obligation id carries no path and no world, so two worlds can share one; and
+  the id drifts as the corpus grows. 39 closes, but its closure varied run to run before the open-arm keys (CHECKING
+  trap 18).
+- **51**: the arm key's u18#3 gap (rule 1 and the own-fault key missed the throughput bar; branches parked).
+- **Confirm-first** (`hdfs1-confirm-first` da913cd7c, parked): a returned confirmation is decided only by the next
+  step, behind any witness attempt in flight. With the Cone fix that costs minutes (HF2: 15 min from queue to
+  accepted); merge if a confirmation is seen waiting > 10 min.
+- **Scope (B)**, widening that would only make right formulas more flippable: 29/30 the block-pool map written at
+  DataNode start-up and `bpServiceToActive`'s in-window writer gated by HA state; 17's lease and 39's IBR ordering
+  (turns on threads with no schedule events); an identity compare of a tracked reference with an enum constant states
+  no VM term (VM.md §5.2); 05's thread-local buffer invariant; String fields (21's versions; defect 34); 14's retry
+  identity and its constant arm; 11's u18#3 key gap; 20's txid.
+- A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 
-### 5b. Later (owner 2026-10-06): the two-phase final run
-For a clean final acceptance run after the two branches are done: (1) the ~36 short cases a few at a time (6-8
-concurrent: their time is serial SEED, recording and seed replay, so exclusivity buys them little); (2) the deep
-closures (11741 08 09 05 06 11 14, 07) one at a time with the whole cluster (their cost is hundreds of obligation
-replays, which fan out: 09 has 653 verdicts over 9 tasks and 7 regions), agents offline meanwhile. Expected ~4-5 h in
-all versus ~9-10 h with every case exclusive. Not now: today each branch only runs its cases to their `.smt`.
+### 6. Speed (PERFORMANCE.md §5)
+- 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).
+- The ledger's ~1.6x over real use (step charges at their start heap).
 
-### 6. Cleanup still owed (RULES: every change deletes what it replaces)
+### 7. Cleanup still owed (RULES: every change deletes what it replaces)
 - Cleanup batch 1, phase 2 (`brief-cleanup-1.md`): MapFields.safe/Text.safe copies, LineageScan's classFiles copy,
   ScheduleLog.prefixFile, run_engine.sh's `input_flag=-j` branch, test-only accessors, `src/test/resources/
   external-callers.txt`'s stale rows, the four-hop door API (MessageDoors should call RuntimeTraceContext directly),
   CausynthTraceRecorder's offline aggregation into its own class, CausynthPipeline's weaves apart from orchestration,
   DependencyRole.
 - `hdfs-refactor-compose` step 5 (Composer.compose/run as steps; SmtLowering -> VmTermLowering + SmtSymbolTable), gated
-  identical; merge system/hdfs into it first.
+  identical; merge `system/hdfs1` into it first.
 - The VM's dead natives and `exportLeaf`/`mintLeaf` with the next VM build (STATE §3).
 - Loop-bound rows keyed structurally, not by Jimple unit ordinals (a tree change renumbers `#uN`).
-- Merged branches and their worktrees (STATE §2), stale snapshots (`tools/rounds/snapshot-gc.sh`), finished agents'
-  `gc-out` dirs, `/bigtemp/vnr3ne/gc-out/diag-11741`, `/bigtemp/vnr3ne/readout-stream/` once its numbers are in STATUS.
+- Merged and parked branches and their worktrees (STATE §2), the superseded trees (r7b and older) and their Maven
+  repos, stale snapshots (STATE §3; `tools/rounds/snapshot-gc.sh`), finished agents' `gc-out` dirs,
+  `/bigtemp/vnr3ne/gc-out/diag-11741`, `/bigtemp/vnr3ne/readout-stream/` once its numbers are in STATUS.
 
 ## Solr (next; `system/solr` = main today)
 
-**1. Bring the body.** Merge `main` (with the HDFS body) into `system/solr`. The WIRE-CODEC runtime is gone from the
+**1. Bring the body.** Merge `system/hdfs1` (the newest body; the HDFS work ends as two branches and does not go
+to `main`, owner 2026-10-06) into `system/solr`, and merge the parked `hdfs1-confirm-first` first if Solr's long
+campaigns show a confirmation waiting behind witness attempts. The WIRE-CODEC runtime is gone from the
 body; check that no Solr tree hook calls a removed door (`MessageDoors` payload/bytes overloads; the 3-arg
 `stored`/`fetched` stay). Close the `MessageDoors.consumed` gap (a consumed Overseer item states its message key).
 The Solr trees' `CausynthHttp` ends the served exchange by hand before each send: replace it by the request start at
