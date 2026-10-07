@@ -37,6 +37,16 @@ fi
 row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.tsv")
 [[ -n "${row}" ]] || { echo "unknown HDFS ad hoc check: $1" >&2; return 2; }
 IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"${row}"
+# 07's workarounds (owner 2026-10-06, STATUS "Per-system surface"): its tree
+# r8 is r7 plus QJM reading the journal nodes' replies in its loggers' order
+# (a HashMap keyed by identity hash read them in another order every JVM,
+# STATUS defect 57), and its fault combinations nest past the default world
+# depth of 3 (CC7: 181, 281, 62 and 15 sessions in worlds of 1-4 flips; each
+# depth cut from makes the next one's paths, so 6, not 4).
+if [[ "$1" == 07 ]]; then
+  repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8
+  export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=6
+fi
 case "${window}" in
   up) ;;
   startup) recording_window=startup ;;
