@@ -1,5 +1,11 @@
 # TODO at the handover of 2026-10-06
 
+> **This branch is locked (owner 2026-10-06).** `system/hdfs` holds the 39 HDFS cases it closed (round HL1 and its
+> reruns; their hand readings are in [../STATUS.md](../STATUS.md) "HDFS checks"). The other 7 cases (07, 11741, 21,
+> 29, 30, 39, 40), every engine change after the lock, and the current state, plan and rules of the whole project
+> are on **`system/hdfs1`** (`/bigtemp/vnr3ne/wt/gc-hdfs1`): read its `docs/handover/STATE.md` and `TODO.md`. The end
+> state is these two branches; nothing merges back here or into `main`.
+
 Order:
 1. HDFS to the end, as one group with no regression.
 2. Then Solr.

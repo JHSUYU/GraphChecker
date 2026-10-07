@@ -1,8 +1,9 @@
 # Status
 
-This page describes what the code on this branch (HEAD) does. On `system/hdfs`, the HDFS group's acceptance
-(rounds HG2-HG5, the state of each of the 46 HDFS cases) is in [handover/STATE.md](handover/STATE.md) §4; the
-Acceptance section below is the `main` regression set (V25). Every commit that completes or changes something listed here updates this
+This page describes what the code on this branch (HEAD) does. `system/hdfs` is locked (owner 2026-10-06): the 39
+HDFS cases it closed are read in "HDFS checks" below; the other 7 (07, 11741, 21, 29, 30, 39, 40) and every later
+engine change are on `system/hdfs1`, whose STATUS carries all 46 rows. The Acceptance section below is the `main`
+regression set (V25). Every commit that completes or changes something listed here updates this
 page in the same commit.
 
 - **Done** means the code does it on HEAD.

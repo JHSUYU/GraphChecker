@@ -1,5 +1,11 @@
 # State at the handover of 2026-10-06
 
+> **This branch is locked (owner 2026-10-06).** `system/hdfs` holds the 39 HDFS cases it closed (round HL1 and its
+> reruns; their hand readings are in [../STATUS.md](../STATUS.md) "HDFS checks"). The other 7 cases (07, 11741, 21,
+> 29, 30, 39, 40), every engine change after the lock, and the current state, plan and rules of the whole project
+> are on **`system/hdfs1`** (`/bigtemp/vnr3ne/wt/gc-hdfs1`): read its `docs/handover/STATE.md` and `TODO.md`. The end
+> state is these two branches; nothing merges back here or into `main`.
+
 The owner stopped the lead and every agent ("请你停止所有在做的agent任务，跟之前一样。把todo, design，agent合作方式，所有的长期记忆，
 开发踩过的坑…能让别的agent快速接手。同时，把commit push到远端"; "尤其是你检查.smt效果踩过的坑，也要说清楚"). Nothing runs on
 any lift: every agent stopped its runs and committed its WIP on its branch; the lead stopped its last check (HG10V).
