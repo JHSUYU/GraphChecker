@@ -1,8 +1,9 @@
 # State at the end of the HDFS group (2026-10-06 night)
 
-The HDFS group is finished: every one of its 46 cases has an exported `.smt` read by hand against the HDFS code, one
-row each in [../STATUS.md](../STATUS.md) "HDFS checks". The owner then stopped the work ("这3个跑完就可以停。然后更新所有
-文档里要更新的位置…存在的问题也要写好"): nothing runs on any lift and every agent has stopped. Read this file, then
+The HDFS group is finished but for one case: 45 of its 46 cases have an exported `.smt` read by hand against the HDFS
+code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks"; 07's last run was stopped before its verdict (TODO
+HDFS §0). The owner then stopped the work ("这3个跑完就可以停。然后更新所有文档里要更新的位置…存在的问题也要写好"; "07不用跑了。
+留个todo就行。39跑完就完了"): nothing runs on any lift and every agent has stopped. Read this file, then
 [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
 [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md);
 every check's state is in [../checks/README.md](../checks/README.md); done / partial / missing per requirement in
@@ -14,8 +15,8 @@ every check's state is in [../checks/README.md](../checks/README.md); done / par
   -- the nine named bugs other than 11741 (17897, 17899-bug1/2/3, 17967-pathA/B/C, 17960, slowdisk-zero) and 30 study
   checks (05 06 08 09 10 11 12 14 15 16 19 20 22 23 24 25 26 27 28 31 33 34 35 37 38 45 48 49 50 52). Locked: only docs
   land on it.
-- **`system/hdfs1`** (this branch): the other 7 cases -- 07, 11741, 21, 29, 30, 39, 40 -- and every engine change made
-  after the lock. Its STATUS carries all 46 rows, each naming the branch and run that closed it.
+- **`system/hdfs1`** (this branch): the other 7 cases -- 11741, 21, 29, 30, 39, 40 closed, 07 open (TODO HDFS §0) -- and
+  every engine change made after the lock. Its STATUS carries all 46 rows, each naming the branch and run that closed it.
 - Nothing merges back into `system/hdfs` or `main` (owner: "最终就是两个分支，system/hdfs和system/hdfs1"). The next system
   starts from `system/hdfs1`, the newer body (TODO).
 
@@ -106,8 +107,8 @@ Outputs under `/bigtemp/vnr3ne/gc-out/<dir>/accept-<round>-<n>/` (`sweep-<round>
 | HF1 | `system/hdfs1` c3e10284f, `hdfs-study` | 29 30 40 (39 ran RUN_DEFECT there: CHECKING trap 18) |
 | HF2 | the same, 14400 s | 11741 PASS (CLOCK_SKEW, 5168 s) |
 | W21 | `hdfs1-21-workaround`, `hdfs-21w` | 21 (time family, residue named) |
-| CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | 07 |
-| OK* | `hdfs1-open-arm-keys`, `hdfs1-open-arm-keys` | 39 (and 40 again) |
+| CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | none: 07 reached its fixed point, stopped in COMPOSE by the owner's end (TODO HDFS §0) |
+| OK3, OK4, OK5 | `hdfs1-open-arm-keys` fd0b0cd8a, `hdfs1-open-arm-keys` | 39 twice (UNSAT, clean), 40 (UNSAT) |
 | agents' gates | own `GC_OUT`s | OA2-OA5 (open arms), WD1-WD3 (wait deadline; WD3: 17897 PASS), CC1-CC8 (codec capture), PS1-PS2 (prefix span), P1A-P3C (time family probes) |
 
 Per check: [../STATUS.md](../STATUS.md) "HDFS checks" (verdict and the hand reading) and

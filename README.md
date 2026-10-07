@@ -47,8 +47,8 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
 
 ## Taking over: read these, in order
 
-**HDFS is finished** (2026-10-06 night): all 46 cases have a hand-read `.smt` (STATUS "HDFS checks"), split over two
-branches by the owner's ruling -- `system/hdfs` (locked body, 39 cases) and `system/hdfs1` (the newest body, the other
+**HDFS is finished but for 07** (2026-10-06 night): 45 of 46 cases have a hand-read `.smt` (STATUS "HDFS checks"; 07's
+last run was stopped before its verdict, TODO HDFS §0), split over two branches by the owner's ruling -- `system/hdfs` (locked body, 39 cases) and `system/hdfs1` (the newest body, the other
 7 and every later engine change); nothing goes to `main`. The next system (Solr) starts from `system/hdfs1`.
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent

@@ -13,12 +13,25 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
-## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7 cases; trees r7, r7-21, r8, 11741-r6; image `vm-hg5`)
+## HDFS (finished but for 07: `system/hdfs` 39 cases, `system/hdfs1` 6 + 07; trees r7, r7-21, r8, 11741-r6; image `vm-hg5`)
 
-All 46 cases closed with a hand-read `.smt` (STATUS "HDFS checks"); no new bug. What is left is the general work the
+45 of 46 cases closed with a hand-read `.smt` (STATUS "HDFS checks"); no new bug. What is left is the general work the
 workarounds stand in for, the defects the session found, and the cleanup. None of it reopens a closed case unless a
 change alters its formula; any engine change below reruns the affected cases on `system/hdfs1` (one change per round,
 RULES "Lock, then one change at a time").
+
+### 0. hdfs-adhoc-07: one clean run on its workarounds (owner 2026-10-06: "07不用跑了。留个todo就行")
+07 is the one open case. Its codec-capture run CC7-07 (r7) composed an unsat formula with its relay chain closed
+(cone unbound 0 over 126 roots) but ended RUN_DEFECT: 86 BLOCKING `TOPOLOGY_DIVERGENCE` rows (QJM reads the journal
+nodes' replies out of a `HashMap` keyed by identity hash, so the k-th read is another node in every JVM: open defect
+57), 16 BOUNDED rows (fault worlds past depth 4) and 8 obligations no host had room for. Its workarounds are merged
+(`hdfs1-07-wa`: tree `gc/hdfs-study-r8`, world depth 6, both through `case.sh`); their run CC8-07
+(`/bigtemp/vnr3ne/gc-out/hdfs-codec-capture/accept-CC8-07`, snapshot `~/gc-run/cc8`) reached its fixed point at round
+14 and was stopped in its final COMPOSE when the owner ended the work. To close it: one run on `system/hdfs1` (a fresh
+snapshot of its head, `CASE_TIMEOUT_SECONDS=10800`, about 2 h with the cluster), then CHECKING §1 (no BLOCKING, no
+BOUNDED, z3 unsat) and its STATUS row's verdict and leaf count. Expected: UNSAT (QJM's recovery always accepts a
+segment holding a txid a quorum committed; STATUS row). If it still diverges, the general fix in §2 (the reply
+consumer indexed by its request) is the next step.
 
 ### 1. The two-phase final acceptance run (owner 2026-10-06, for later)
 For one clean run of all 46 on one body (once the items below are in or declined): (1) the ~36 short cases a few at a
