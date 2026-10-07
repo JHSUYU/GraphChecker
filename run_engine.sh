@@ -4271,6 +4271,8 @@ campaign log says}); its logs are in ${worker}"
 #                     answer lands -- solving, its REPLAY queued or
 #                     replaying: a round's --in-flight
 #   stream_host_jobs  host -> how many of this campaign's run there
+#   stream_host_solves host -> how many of them are solves
+#                     (campaign_stream_solves_per_host)
 #   stream_step_pid   the step running, or ""; stream_step_dir its directory
 #                     (steps/NNNN/: what it gates and plans, or attempts)
 #   stream_witnesses  sessions landed as witnesses, gated, not attempted yet
@@ -4330,6 +4332,7 @@ campaign_explore() {
   local -A stream_jobs=() stream_job_charge=() stream_job_worker=()
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
+  local -A stream_host_solves=()
   local -A stream_solver_seen=() stream_confirming=()
   # An open witness chain (campaign_stream_attempt): the producers it names,
   # those already grown, and the witnesses attempted again once they are.
@@ -5204,7 +5207,8 @@ campaign_stream_admit_host() {
       [[ "${kind}" != OBLIGATION ]] || ! campaign_stream_warm "${host}" \
         || is=warm
       [[ "${is}" == "${pass}" ]] || continue
-      campaign_stream_try_host "${host}" "${turn}" "${mb}" && return 0
+      campaign_stream_try_host "${host}" "${turn}" "${mb}" "${kind}" \
+        && return 0
     done
   done
   if [[ -z "${stream_waiting}" ]]; then
@@ -5247,12 +5251,23 @@ campaign_stream_charge_mb() {
   fi
 }
 
+# How many of a campaign's solves one host holds at once.  Its solver
+# answers one question at a time (ObligationSolverMain --serve), so a second
+# keeps it busy and more add no answer, only their charges while they wait
+# in its queue: EX1-adhoc-07c, 13-18 questions waiting per lift, 512 MB each,
+# held 7-9 GB of every lift's ledger and no replay started for ten minutes.
+# The rest wait uncharged in the pool's queue.
+campaign_stream_solves_per_host=2
+
 # One host's admission for campaign_stream_admit_host, <turn> places after
-# the host after the last one chosen, charged <mb>: 0 with it charged and
-# chosen.
+# the host after the last one chosen, charged <mb>, for a start of <kind>
+# (an OBLIGATION only while the host holds fewer than
+# campaign_stream_solves_per_host): 0 with it charged and chosen.
 campaign_stream_try_host() {
-  local host=$1 turn=$2 mb=$3 count=${#stream_hosts[@]} status=0
+  local host=$1 turn=$2 mb=$3 kind=${4:-} count=${#stream_hosts[@]} status=0
   campaign_stream_has_cores "${host}" || return 1
+  [[ "${kind}" != OBLIGATION ]] || (( ${stream_host_solves[${host}]:-0} \
+    < campaign_stream_solves_per_host )) || return 1
   campaign_host_try_charge "${host}" "${mb}"
   case "${status}" in
     0)
@@ -5342,6 +5357,8 @@ campaign_stream_start() {
   stream_job_worker[$!]=${worker}
   stream_job_tree[$!]="${classes} ${plan}"
   stream_host_jobs[${host}]=$(( ${stream_host_jobs[${host}]:-0} + 1 ))
+  [[ "${kind}" != OBLIGATION ]] \
+    || stream_host_solves[${host}]=$(( ${stream_host_solves[${host}]:-0} + 1 ))
 }
 
 # The jobs that ended, taken without waiting (campaign_stream_ended), between
@@ -5412,6 +5429,8 @@ campaign_stream_ended() {
     campaign_stream_release "${pid}"
     campaign_replay_measured "${worker}"
     stream_host_jobs[${host}]=$(( stream_host_jobs[${host}] - 1 ))
+    [[ "${kind}" != OBLIGATION ]] \
+      || stream_host_solves[${host}]=$(( stream_host_solves[${host}] - 1 ))
     if [[ "${kind}" == OBLIGATION && "${status}" -eq 0 && "$(jq -r \
         '.verdict // ""' "${worker}/obligation_result.jsonl" 2>/dev/null)" \
         == SAT_MODEL_READY ]]; then

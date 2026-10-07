@@ -635,7 +635,9 @@ that as it grows, by a running JVM's rule (`campaign_watch_workload`: refused on
 would pass the ceiling, and then the JVM is ended); its heap is capped at the case's engine heap
 (`campaign_solver_heap_mb` = `engine_memory_mb`, the heap COMPOSE reads the same corpus with; a fixed
 8 GB was outgrown by hdfs-adhoc-07's doubled closure: an hour of garbage collection with 24 questions
-queued, then OutOfMemoryError). Charged that at its start, a solver waited for room it did not use, and every question of
+queued, then OutOfMemoryError). A host holds at most `campaign_stream_solves_per_host` (2) of a
+campaign's solves at once (`campaign_stream_try_host`): more add no answer, only their question
+charges while they wait in the solver's queue. Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
 questions in the order they came, each from the corpus as it stands when the question is taken:
 read again whenever a session landed in it or left it since (its session listing,

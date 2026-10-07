@@ -3203,10 +3203,11 @@ reset_config
 # each share it waits at, and takes its entry with it when it ends; outside
 # a shared pool it keeps no entry and waits for nothing but room (a40: one
 # Solr case's pool held 27-32 replays on all ten lifts while the sweep's
-# other cases waited).  Per row: the campaign's measured peak (- outside a
-# shared pool), the fresh and the stale entries of other explorations, the
-# most of three one-second solves that ran at once, and how many
-# explorations the wait names (- for none).
+# other cases waited).  Outside a shared pool the one host still holds no
+# more than campaign_stream_solves_per_host (2) of its solves.  Per row: the
+# campaign's measured peak (- outside a shared pool), the fresh and the stale
+# entries of other explorations, the most of three one-second solves that ran
+# at once, and how many explorations the wait names (- for none).
 while read -r cap_peak cap_fresh cap_stale cap_ran_most cap_sharers; do
   stream_fixture "stream-cap-${cap_peak}-${cap_fresh}-${cap_stale}"
   campaign_replay_peak_mb=0
@@ -3275,7 +3276,7 @@ naming ${cap_sharers} exploration(s): $(grep 'slot' \
       || fail "the exploration's entry outlived it: $(ls "${cap_entries}")"
   fi
 done <<'EOF'
-- 0 0 3 -
+- 0 0 2 -
 5000 0 1 2 1
 5000 1 0 1 2
 8000 2 0 1 3
@@ -3400,7 +3401,8 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
     stream_plan=g0/plan.jsonl
     stream_admitted_mb=${campaign_solver_start_mb}
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
-      stream_job_tree=() stream_host_jobs=() stream_solver_seen=()
+      stream_job_tree=() stream_host_jobs=() stream_solver_seen=() \
+      stream_host_solves=()
     stream_queue=("OBLIGATION obligations-0000 B")
     stream_pending=()
     stream_ticker=""
@@ -3637,6 +3639,8 @@ stream_two_hosts() {
   done
   (
     stream_stubs
+    # Where a solver serves, not how many it holds (the admission table).
+    campaign_stream_solves_per_host=4
     campaign_host_available_mb() {
       [[ "$1" == lift13 && "${name}" == stream-room ]] && echo 0 || echo 30000
     }
@@ -3790,14 +3794,19 @@ reset_config
 # The pool's choice over three hosts that all admit: a replay (a REPLAY, a
 # re-run) goes round-robin; an obligation's solve goes to a host where its
 # campaign's solver still serves (one started there within the solver's idle
-# time), else round-robin.  {kind, the host warm (- none), the hosts chosen
-# in turn}.
+# time), else round-robin; a host already holding
+# campaign_stream_solves_per_host of its solves takes no more (b:2).  {kind,
+# the host warm (- none), the hosts chosen in turn}.
 while IFS='|' read -r admit_kind admit_warm admit_want; do
   (
     stream_hosts=(a b c)
     stream_next_host=0
     stream_waiting=""
     declare -A stream_solver_seen=() stream_host_unread=()
+    declare -A stream_host_solves=()
+    [[ "${admit_warm}" != *:* ]] \
+      || stream_host_solves[${admit_warm%%:*}]=${admit_warm#*:}
+    admit_warm=${admit_warm%%:*}
     [[ "${admit_warm}" == - ]] \
       || stream_solver_seen[${admit_warm}]=$(date +%s)
     campaign_stream_has_cores() { return 0; }
@@ -3816,6 +3825,8 @@ RERUN|b|a b c
 REPLAY|b|a b c
 OBLIGATION|-|a b c
 OBLIGATION|b|b b b
+OBLIGATION|b:2|a c a
+REPLAY|b:2|a b c
 EOF
 
 # POOL-JOB: a start of the pool runs on the host that admitted it -- an
