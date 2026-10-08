@@ -304,9 +304,11 @@ public final class Corpus implements Arms.Rows {
      * indexed under its session, so its forced path composes and is asked
      * in its own scope ({@link #forcedPaths}), and none in the corpus-wide
      * views -- {@link #sessions}, the rows of an occurrence across sessions,
-     * a message's senders, a location's writers and sites, the schedule's
-     * senders -- so no other path, arm, slot, closure, witness or verdict
-     * reads a forced world.
+     * a location's writers and sites, the schedule's senders -- so no other
+     * path, arm, slot, closure, witness or verdict reads a forced world.  Its
+     * messages from before its forced world are the recording's world's
+     * and are a message's senders as any session's are: its own path's
+     * handoffs move with their producers there.
      */
     private final List<SessionReader> forcedSessions;
     /** Each forced session's forced world's first event: its forced target
@@ -743,9 +745,18 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** One session's rows; {@code apart}: a forced one's, under its
-     *  session only ({@link #forcedSessions}). */
+     *  session only ({@link #forcedSessions}) -- but its messages from
+     *  before its forced world, the recording's world's, which its own
+     *  path's handoffs are bound by ({@code FlipQuery}'s own run). */
     private void index(SessionReader session, boolean apart) {
-        if (!apart) indexSchedule(session);
+        long world = Long.MAX_VALUE;
+        if (apart) {
+            for (TargetRow row : session.targets()) {
+                if (row.isForced()) world = Math.min(world, row.seq());
+            }
+        } else {
+            indexSchedule(session);
+        }
         sessionById.put(session.sessionId(), session);
         SmtLowering.SessionJoin join = SmtLowering.joinOf(session);
         joinById.put(session.sessionId(), join);
@@ -775,10 +786,11 @@ public final class Corpus implements Arms.Rows {
         }
         for (ExportRow row : session.exports()) {
             // A forced world's export is no message any arm delivers.
+            if (row.seq() >= world) continue;
+            add(exports, row.endpoint().id(), row);
             if (apart) continue;
             remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
-            add(exports, row.endpoint().id(), row);
         }
         for (AttachRow row : session.attaches()) {
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
@@ -789,17 +801,17 @@ public final class Corpus implements Arms.Rows {
             // spelling.
             declaredSymbols.put(row.symbol(),
                     JavaSmtSorts.sortOfJava(row.javaType()));
+            Interaction interaction = row.interaction();
+            if (interaction != null && row.seq() < world) {
+                interactions.put(interaction.id(), interaction);
+                add(attachesByInteraction, interaction.id(), row);
+            }
             if (apart) continue;
             remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
             if (row.producer() != null) {
                 endpointById.put(row.producer().id(), row.producer());
                 remember(session.sessionId(), row.producer().occurrence());
-            }
-            Interaction interaction = row.interaction();
-            if (interaction != null) {
-                interactions.put(interaction.id(), interaction);
-                add(attachesByInteraction, interaction.id(), row);
             }
         }
         for (RootMintRow row : session.roots()) {

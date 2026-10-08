@@ -1226,9 +1226,12 @@ the last round's view (state, verdict detail, forced flip, `deferredSeedFlips`,
 
 The session lands with role `FORCED` and is held apart (`explore.Corpus#forcedPaths`): every row of it is
 indexed under its session, so its forced path composes and is asked in its own scope, and none in a
-corpus-wide view (sessions, rows of an occurrence across sessions, a message's senders, a location's writers
-and sites, the schedule's senders), so no other path, arm, slot, closure member, witness or settled arm reads a
-forced world; `SessionReader#admitted` is false for it, and no write from its forced world on is an alternative
+corpus-wide view (sessions, rows of an occurrence across sessions, a location's writers and sites, the
+schedule's senders), so no other path, arm, slot, closure member, witness or settled arm reads a forced world;
+its messages from before the forced world are the recording's world's and are a message's senders like any
+session's, so its own path's handoffs move with their producers (FlipQuery binds a handoff by its own run's
+arms: solr-18413 FA2's expiry, a wire value of the Overseer's clock, was otherwise pinned and the forced flip
+UNSAT); `SessionReader#admitted` is false for it, and no write from its forced world on is an alternative
 writer arm (`Arms#eligible`), nor an arrival whose producer the closure plans. Its path, `P_F`, is:
 - EXPLORE's forced flip (`ObligationFactory#forced`, `FlipQuery#buildForced`): its decisions before the first
   one forced against its concrete arm as run, and its forced path condition as the demanded conjunct (clock
