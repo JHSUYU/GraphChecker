@@ -10,7 +10,7 @@ declare -A basesec
 while IFS=$'\t' read -r n c; do
   s=$out/accept-$base-$n/summary.tsv
   [[ -f $s ]] && (( $(wc -l < "$s") >= 2 )) && basesec[$c]=$(tail -1 "$s" | cut -f3)
-done < "$out/sweep-$base-cases.tsv"
+done < <(round_runs "$base")
 while true; do
   now=$(date +%s)
   while IFS=$'\t' read -r n c; do
@@ -25,6 +25,6 @@ while true; do
         echo "SLOW x$m $c (n=$n) age=$((age/60))m base=$((b/60))m $stage"
       fi
     done
-  done < "$out/sweep-$round-cases.tsv"
+  done < <(round_runs "$round")
   sleep 120
 done

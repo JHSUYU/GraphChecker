@@ -66,5 +66,5 @@ PY
   printf "%-24s %-15s %6ss  end=%-24s z3=%-6s %s\n" "$c" "$claim" "$secs" "${stop:--}" "${z:--}" "$extra"
   cases=$((cases + 1)); [[ $extra != BOUNDED:* ]] || bounded=$((bounded + 1))
   [[ $extra != *UNBOUND:* ]] || unbound=$((unbound + 1))
-done < "$out/sweep-$round-cases.tsv"
+done < <(round_runs "$round")
 echo "# $round: $cases case(s), $bounded BOUNDED, $unbound UNBOUND"

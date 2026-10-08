@@ -36,6 +36,20 @@ export GC_BULK GC_OUT GC_TREES GC_M2 Z3_BIN CAUSYNTH_HOST_LEDGER LIFTS CAUSYNTH_
 # (experiments/lib/execute.sh), so every hop that starts a run or a piece of
 # one elsewhere (launch-round.sh's heads, a sweep's jobs, a campaign's remote
 # workers) passes them: the whole run sees one tree, one z3, one ledger.
+# round_runs <round>: one "<n>\t<case>" line per run of the round under
+# GC_OUT, accept-<round>-<n>, whatever started it (a sweep numbers its runs;
+# launch-run.sh, launch-round.sh and run-series.sh name them by case): the
+# case is the run's own out/<case>.  A run that has not made it yet is left out.
+round_runs() {
+  local dir case_id
+  for dir in "${GC_OUT}/accept-$1-"*/; do
+    case_id=$(ls "${dir}out" 2>/dev/null | head -1)
+    [[ -n ${case_id} ]] || continue
+    dir=${dir%/}
+    printf '%s\t%s\n' "${dir##*/accept-$1-}" "${case_id}"
+  done
+}
+
 gc_env_names=(GC_BULK GC_OUT GC_TREES GC_M2 Z3_BIN CAUSYNTH_HOST_LEDGER LIFTS CAUSYNTH_HOST_MAX_USED_PCT)
 gc_env_words() {
   local name

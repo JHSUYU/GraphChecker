@@ -14,4 +14,4 @@ while IFS=$'\t' read -r n c; do
   r=$d/out/$c/schedule/iteration-0000/seed-result/focused/replay.log
   g=$( [[ -f $r ]] && grep -c 'did not happen' "$r")
   printf "%-3s %-24s %4sm %-10s giveups=%s\n" "$n" "$c" "$age" "${stage:-?}" "${g:--}"
-done < "$out/sweep-$round-cases.tsv"
+done < <(round_runs "$round")

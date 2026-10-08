@@ -7,11 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
 out=${GC_OUT}
 round=$1 base=${2:-}
 declare -A basestalls
-if [[ -n $base && -f $out/sweep-$base-cases.tsv ]]; then
+if [[ -n $base ]]; then
   while IFS=$'\t' read -r n c; do
     f=$out/accept-$base-$n/out/$c/schedule/iteration-0000/seed-result/focused/replay.log
     [[ -f $f ]] && basestalls[$c]=$(grep -c 'did not happen' "$f")
-  done < "$out/sweep-$base-cases.tsv"
+  done < <(round_runs "$base")
 fi
 shopt -s nullglob
 declare -A seen
