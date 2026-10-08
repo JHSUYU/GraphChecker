@@ -102,25 +102,13 @@ acc_free_gb() {
 }
 acc_dir_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
-# The experiment a case id lives in, under any system's directory: the
-# longest "-"-prefix of the id that names one (hdfs-17899-bug1 lives in
-# hadoop/hdfs-17899, solr-18413 in solr/solr-18413), as
-# <system>/<experiment>.
-acc_experiment_of() {
-  local exp=$1 d
-  while :; do
-    for d in "$REPO"/experiments/*/"$exp"; do
-      [[ -f "$d/case.sh" ]] && { echo "${d#"$REPO"/experiments/}"; return 0; }
-    done
-    [[ "$exp" == *-* ]] || break
-    exp=${exp%-*}
-  done
-  echo "none/$1"
-}
-# The case id's rest after its experiment directory: the run.sh argument.
-acc_case_arg_of() {
-  local exp; exp=$(basename "$(acc_experiment_of "$1")")
-  [[ "$exp" == "$1" ]] && echo "" || echo "${1#"$exp"-}"
+# The case directory a case id names and its run.sh argument, "<dir> <arg>"
+# ("-" for none: lib/case-id.sh); a directory that holds no case for an id no
+# experiment names, which the preflight refuses.
+# shellcheck source=../lib/case-id.sh
+source "$here/../lib/case-id.sh"
+acc_case() {
+  case_dir_of "$REPO" "$1" || echo "$REPO/experiments/none/$1 -"
 }
 acc_case_dir() {
   local root=$1 c=$2 d
@@ -161,10 +149,9 @@ acc_build_jar() {
 # harness run must not inherit -- a fresh output directory and the VM image --
 # and nothing else.
 acc_run_case() {  # acc_run_case <case-id>
-  local case_id=$1
-  local exp; exp=$(acc_experiment_of "$case_id")
-  local arg; arg=$(acc_case_arg_of "$case_id")
-  local dir="$REPO/experiments/$exp"
+  local case_id=$1 dir="" arg=""
+  read -r dir arg < <(acc_case "$case_id")
+  [[ "$arg" != - ]] || arg=""
   local out="$OUT/out/$case_id"
   local log="$OUT/logs/$case_id.log" rc
 
@@ -340,9 +327,10 @@ for tool in jq python3 setsid timeout mvn; do
                                 || check "$tool" no "not on PATH"
 done
 for c in "${CASE_LIST[@]}"; do
-  d="$REPO/experiments/$(acc_experiment_of "$c")"
+  read -r d arg < <(acc_case "$c")
+  [[ "$arg" != - ]] || arg=""
   [[ -f "$d/case.sh" && -f "$d/workflow.properties" ]] \
-    && check "experiment $c" ok "lib/run.sh $d $(acc_case_arg_of "$c") campaign" \
+    && check "experiment $c" ok "lib/run.sh $d $arg campaign" \
     || check "experiment $c" no "no case.sh + workflow.properties at $d"
 done
 free=$(acc_free_gb)
@@ -353,12 +341,14 @@ free=$(acc_free_gb)
 echo
 echo "== commands per case"
 for c in "${CASE_LIST[@]}"; do
+  read -r d arg < <(acc_case "$c")
+  [[ "$arg" != - ]] || arg=""
   cat <<CMD
   --- $c
-  (d=$REPO/experiments/$(acc_experiment_of "$c"); \\
+  (d=$d; \\
      export CAUSYNTH_OUTPUT_DIR=$OUT/out/$c CAUSYNTH_CUSTOM_JDK_HOME=$IMG; \\
-     bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" validate && \\
-     bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" campaign)
+     bash $ACCEPT_LIB/run.sh \$d "$arg" validate && \\
+     bash $ACCEPT_LIB/run.sh \$d "$arg" campaign)
   bash $here/probe.sh $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
   python3 $here/cone.py $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
   python3 $here/report.py $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c

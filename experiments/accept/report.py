@@ -220,7 +220,8 @@ confirmation = result.get("confirmation") or {}
 confirmed = confirmation.get("confirmed") is True
 # WHICH mechanism the composition concluded, and the condition it rests on.
 # EMIT copies both out of the ClaimPolicy decision; "MISSING" here means the
-# run predates that, and is reported as itself rather than read as a default.
+# run published no result, and is reported as itself rather than read as a
+# default.
 finding_kind = result.get("findingKind", "MISSING")
 polarity_decides = result.get("polarityDecides", False)
 valuation_ordinal = result.get("valuationOrdinal", "?")

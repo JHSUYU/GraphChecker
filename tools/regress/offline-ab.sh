@@ -95,6 +95,8 @@ source "${ab_self_repo}/tools/lib/gc-env.sh"
 # tools/adhoc/fanout.sh takes them.
 # shellcheck source=../../run_engine.sh
 source "${ab_self_repo}/run_engine.sh"
+# shellcheck source=../../experiments/lib/case-id.sh
+source "${ab_self_repo}/experiments/lib/case-id.sh"
 set +e
 
 AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
@@ -680,24 +682,6 @@ ab_task() {
 # The driver
 # ---------------------------------------------------------------------------
 
-# The experiment a case id lives in (accept.sh acc_experiment_of): the longest
-# "-"-prefix naming a case directory; prints "<dir> <case-arg or ->".
-ab_experiment_of() {
-  local repo=$1 case_id=$2 exp=$2 dir
-  while :; do
-    for dir in "${repo}"/experiments/*/"${exp}"; do
-      if [[ -f "${dir}/case.sh" ]]; then
-        local arg=${case_id#"${exp}"}
-        arg=${arg#-}
-        printf '%s %s\n' "${dir}" "${arg:--}"
-        return 0
-      fi
-    done
-    [[ "${exp}" == *-* ]] || return 1
-    exp=${exp%-*}
-  done
-}
-
 # The recorded run of a case: the first round naming one.
 ab_recorded_run() {
   local case_id=$1 round dir
@@ -781,7 +765,7 @@ ${AB_EXTRA_CHAINS[*]}"
     for side in "${AB_SIDES[@]}"; do
       repo=${ab_self_repo}
       [[ "${side}" == candidate ]] || repo=${base_repo}
-      read -r decl arg < <(ab_experiment_of "${repo}" "${case_id}") \
+      read -r decl arg < <(case_dir_of "${repo}" "${case_id}") \
         || ab_die "${repo} declares no experiment for ${case_id}"
       dir=${AB_OUT}/${side}/${case_id}
       mkdir -p "${dir}"

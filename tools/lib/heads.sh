@@ -5,8 +5,8 @@
 #
 #   case_config <snapshot> <case-id>
 #       the case's workflow configuration, one key=value line per key, as
-#       run.sh's `config` prints it: the experiment a case id names is the
-#       longest "-"-prefix of it with a case.sh (accept.sh acc_experiment_of).
+#       run.sh's `config` prints it, of the case directory the id names
+#       (experiments/lib/case-id.sh case_dir_of).
 #       The configuration is no function of the workload's classpath, which
 #       a tree's test report states only once the workload ran, so it reads
 #       none.  Empty when the case id names no experiment.
@@ -35,20 +35,15 @@
 #       before every host heads one.  The rooms are the host ledger's
 #       (run_engine.sh campaign_host_room), read by the caller.
 
+# shellcheck source=../../experiments/lib/case-id.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../experiments/lib/case-id.sh"
+
 case_config() {
-  local snapshot=$1 id=$2 exp=$2 dir
-  while :; do
-    for dir in "${snapshot}"/experiments/*/"${exp}"; do
-      [[ -f "${dir}/case.sh" ]] || continue
-      local arg=${id#"${exp}"}
-      (cd "${dir}" && CAUSYNTH_CLASSPATH_OVERRIDE=unread bash \
-        "${snapshot}/experiments/lib/run.sh" "${dir}" "${arg#-}" config \
-        2>/dev/null)
-      return 0
-    done
-    [[ "${exp}" == *-* ]] || return 0
-    exp=${exp%-*}
-  done
+  local snapshot=$1 id=$2 dir="" arg=""
+  read -r dir arg < <(case_dir_of "${snapshot}" "${id}") || return 0
+  [[ "${arg}" != - ]] || arg=""
+  (cd "${dir}" && CAUSYNTH_CLASSPATH_OVERRIDE=unread bash \
+    "${snapshot}/experiments/lib/run.sh" "${dir}" "${arg}" config 2>/dev/null)
 }
 
 case_value() {
