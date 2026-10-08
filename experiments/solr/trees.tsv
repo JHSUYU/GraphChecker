@@ -1,0 +1,6 @@
+# The Solr trees the cases run (each case.sh's repo=, under GC_TREES): the
+# directory name and the branch of the Solr fork (SOLR_FORK, prepare-trees.sh)
+# it is checked out at.  It stands on Apache Lucene/Solr branch_8_11 faca81b
+# (8.11.4, the last Solr line on Java 8).
+# name	fork branch	what it is
+lucene-solr-checks	graphchecker/solr-checks	every Solr case: the adapter (CausynthSolrCluster, the message and store doors), the 12 study checks' markers, the eight bug checks' markers and their workloads
