@@ -300,7 +300,9 @@ attach by `HANDLE`, else -- when the message it received (`MessageDoors#current`
 for the port -- `CORRELATION_PORT` (that message's correlation and half, and the port), else
 unpaired: an element the message did not carry (`SymbolicMessageEnvelope#take` `ABSENT`: a value its
 sender forwarded without exporting it) pairs with nothing and is named `LINEAGE_LOST`. A queue item
-`MessageDoors#consumed` installs states no message, so its concrete elements stay unpaired. The `WIRE_FLOW` header does not carry the producer endpoint.
+`MessageDoors#consumed` takes is the message its consumer serves, named by its key and `REQUEST` as
+its write sent it (`#stored`), so its elements pair by `CORRELATION_PORT` too. The `WIRE_FLOW`
+header does not carry the producer endpoint.
 
 **Interactions** (`contract/Interaction`): (kind, producer endpoint, consumer endpoint), `id =
 sha16(kind + producer.id + consumer.id)`, kind `WIRE` (export to attach, `AttachRow#interaction`)
@@ -483,8 +485,12 @@ the `doAs` region opened first, under the context the Reader carried with the qu
 the handler's start counts told two calls apart (round HG5A hdfs-adhoc-14: one address planned, another run each
 replay). The IPC client's requests start at the RPC engine's invoke point (`requestStarting`, §3,
 on `gc/hdfs-study-r5` and `gc/hdfs-11741-r5`), which ends a received response before the client's
-call; the client's own hand `endInbound()` before its send is gone (Solr's `CausynthHttp` still ends
-the served exchange by hand before its send: pending for the Solr turn). The Solr trees call
+call; the client's own hand `endInbound()` before its send is gone. So in the Solr tree
+(`gc/solr-body`): `CausynthHttp#requestStarting`/`#requestEnded` wrap `HttpSolrClient#request`,
+`Http2SolrClient#request` and each stream of `ConcurrentUpdateHttp2SolrClient`'s runner, named by
+the request's operation (`CausynthHttp#verb`: its path, and an admin request's action,
+`/admin/collections:REQUESTSTATUS`), and its send is `outboundRequest` of that verb, so the Overseer's
+extra status polls renumber no other request. The Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid
@@ -522,8 +528,9 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   store's timing, so CONFIRM names every delivery of one version alike,
   `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
   they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
-- `consumed(transport, key)`: a queue item's staged values arrive with it; the consumer keeps its
-  own context.
+- `consumed(transport, key)`: a queue item taken, as `received` takes a request: it ends what the
+  thread served and is the message the thread serves until the next (its key and `REQUEST`, as its
+  write sent it), its staged values with it; the consumer keeps its own context.
 - `storing(transport, location)` ... `storeEnded(transport, token)`: a write in flight at one
   location (a sequential create's: the prefix the store completes). The write first takes its turn,
   a `WRITE` event whose site is `<transport>:<location>` (§8), so writes to one location run in the

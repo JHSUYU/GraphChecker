@@ -568,18 +568,26 @@ public final class MessageDoors {
     /**
      * An item of a store's queue (ZooKeeper's sequential nodes: the Solr
      * Overseer's state-update queue) taken by the one consumer that
-     * processes it: what its writer staged on it -- the values a {@code
-     * WIRE_FLOW} carries -- arrives with it and stays until the next item.
-     * The consumer's context stays its own: which turn takes an item is the
-     * queue's batching, and each turn is ordered as a tick of its own.  An
-     * item its writer has not yet filed is waited for ({@link #filed}).
+     * processes it, as {@link #received} takes a request: it ends what the
+     * thread served, and is the message the thread serves until the next
+     * one -- named by its key, as its write sent it ({@link #stored}), so an
+     * attach of an element it carried pairs with that write's export by the
+     * item and its port ({@code Interactions#pairing}, CORRELATION_PORT) --
+     * with the values its writer staged on it.  The consumer's context stays
+     * its own: which turn takes an item is the queue's batching, and each
+     * turn is ordered as a tick of its own.  An item its writer has not yet
+     * filed is waited for ({@link #filed}); one no write of the window filed
+     * names nothing.
      */
     public static void consumed(String transport, String key) {
+        endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         Outbound message = filed(transport, key);
-        if (message != null && !message.symbolic.isEmpty()) {
+        if (message == null) return;
+        if (!message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }
+        CURRENT.set(new Inbound(0L, key, "1", REQUEST));
     }
 
     /** The exchange the thread serves, or {@code null}. */

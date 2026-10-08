@@ -179,17 +179,18 @@ The 12 study checks (existing tests; rows with guard and site in [../checks/READ
 | solr-adhoc-39 | `RoutedAliasUpdateProcessor:247` | `TimeRoutedAliasUpdateProcessorTest#test` |
 | solr-adhoc-40 | `RoutedAliasUpdateProcessor:133` | `TimeRoutedAliasUpdateProcessorTest#test` |
 
-**1. The body.** `system/solr` is `system/hdfs1` (fast-forwarded 2026-10-08). The WIRE-CODEC runtime is gone from
-it: check that no Solr tree hook calls a removed door (`MessageDoors` payload/bytes overloads; the 3-arg
-`stored`/`fetched` stay). Close the `MessageDoors.consumed` gap (a consumed Overseer item states its message key). The
-Solr trees' `CausynthHttp` ends the served exchange by hand before each send: replace it by the request start at the
-client's invoke point (`MessageDoors#requestStarting`/`#requestEnded`, IDENTITY §3), ending a received response only.
-Bring `solr-bug-reindex`'s Solr replay fidelity (46 commits on `main`'s body, STATE §2) onto it and fix its
-solr-18413 regression first:
-- The seed replay stalls 103,812 times. A store-write slot is held while the Overseer's
-  `waitForCoreAdminAsyncCallToComplete` poll outruns its recorded WAKE count. Read the jstacks in
-  `gc-out/sbr/evidence/` (the time model of HDFS §3 may cover it).
-- SEED's trace aggregation needs the heap a 2.1 GB trace takes (SBR26b), or streams it.
+**1. The body.** `system/solr` is `system/hdfs1` (fast-forwarded 2026-10-08); round SC1 (2026-10-08, the storing
+tree as is) passed solr-18406 and solr-18413 on it. Branch `solr-body` (agent M) brings what the Solr cases need of
+`solr-bug-reindex` by intent and closes the body's Solr gaps; its Solr side is `gc/solr-body`: `RECORDING_STALLED`, the
+store-write turn (`WRITE`, `RunNames`/`spelledAs`; a conflict ends when the earlier write is taken or given up -- the
+branch's LATE state was solr-18413's 103,812-stall regression), a consumed queue item as the message it serves, the
+Solr request start (`CausynthHttp#requestStarting`, `outboundRequest` of the request's verb). Still open there:
+- the recording size of the growth cases (solr-bugs-reindex-cleanup's 2.1 GB on `main`, SBR26b): port
+  `solr-bug-reindex`'s state roots at writers and non-accessors, trace rows only inside an occurrence and scope growth
+  stopping at a declared codec (JavaBin) only if reindex-cleanup's SEED on this body measures too large;
+- `solr-bug-reindex`'s other seed-replay rules (`ScheduleReach`, `ScheduleWait`, the lock owner's early slot, the draw
+  scope over the test's own classes, the queue order, `AT_QUESTION_CLOSED`) come in only when a Solr seed replay on this
+  body shows the stall each answers.
 Merge the parked `hdfs1-confirm-first` if a confirmation is seen waiting behind witness attempts.
 
 **2. One tree, on the fork.** One Solr tree for all 20 cases: `gc/solr-bugs` (`f65aaf7`: the storing line, the

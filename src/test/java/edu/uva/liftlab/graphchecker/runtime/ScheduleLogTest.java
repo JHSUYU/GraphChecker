@@ -1041,6 +1041,34 @@ public class ScheduleLogTest {
                 location));
     }
 
+    /**
+     * A queue item its consumer takes is the message the thread serves, as
+     * its write sent it (its key, REQUEST), so an element it carried pairs
+     * by the item; the next item replaces it, and one no write of the window
+     * filed names nothing.
+     */
+    @Test(timeout = 20000L)
+    public void aConsumedItemIsTheMessageItsConsumerServes() {
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner);
+        MessageDoors.stored("STORE", "/q/qn-2@0", owner);
+        String[][] rows = {
+            {"/q/qn-1@0", "/q/qn-1@0"},
+            {"/q/qn-2@0", "/q/qn-2@0"},
+            {"/q/qn-9@0", null},
+        };
+        for (String[] row : rows) {
+            MessageDoors.consumed("STORE", row[0]);
+            MessageDoors.Inbound served = MessageDoors.current();
+            assertEquals(row[0], row[1],
+                    served == null ? null : served.correlationId);
+            if (served != null) {
+                assertEquals(MessageDoors.REQUEST, served.half);
+            }
+        }
+    }
+
     /** A notification on a thread of its own reading {@code key}: whether a
      *  write named its work goes to {@code named}. */
     private static Thread reading(final Object owner, final String key,
