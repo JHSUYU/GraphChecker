@@ -136,6 +136,15 @@ The owner (2026-10-08): "跑完solr上所有adhoc check对应的unit test ... ad
   chain the bug's (read against the 8.11.4 code, CHECKING.md);
 - each of the 12 study checks has a right `.smt`: SAT confirmed, or UNSAT at its fixed point;
 - the group runs with no regression (solr-18406 and solr-18413 first: both passed on `main`, V25).
+- the false SATs of a shared variable's other versions are filtered (owner 2026-10-08: "对shared variable的multi version做好处理，然后被我们的validation filter掉false positive。sat变成unsat"). COMPOSE re-pairs a read with any version of its location
+  (RULES: no recorded-order pruning, every static writer), so a stale or impossible version can make a false SAT;
+  CONFIRM, unchanged and strict, refutes it, the model is excluded and the next claim follows (PIPELINE "A claim CONFIRM
+  did not confirm is followed by the next", `refuted_claims.jsonl`, `campaign_next_claim`), until the case ends
+  `UNSAT_CLOSED` with `restsOnRefutations`, each refutation read against the code (CHECKING). It must converge: one
+  claim per version must not exhaust `campaign_max_claims` (8) and end `SAT_UNCONFIRMED`; a refused model (a replay
+  that could not hold the order) is no refutation (`UNSAT_BESIDE_REFUSED`). Shown on real runs only (RULES): the
+  study checks SOLR.md expects refuted (solr-adhoc-05 and -13, stale reads of watched cluster state and aliases) and
+  any other; no real witness of the 8 bug checks may be filtered.
 
 The 8 bug checks (the owner's bug reports 5-10 of 2026-10-08 and two merged upstream fixes). A workload passes
 natively: the recording does not throw at the target, the witness is the engine's (a fault, a clock, a re-paired
@@ -163,9 +172,9 @@ The 12 study checks (existing tests; rows with guard and site in [../checks/READ
 | solr-adhoc-10 | `MaintainRoutedAliasCmd:117` | `TimeRoutedAliasUpdateProcessorTest#test` |
 | solr-adhoc-13 | `RoutedAlias:350` (`doSynchronous`) | `TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation` |
 | solr-adhoc-14 | `SplitShardCmd:167` (`split`) | `SplitShardTest#doTest` |
-| solr-adhoc-19 | `CoreContainer:1330` (`create`) | `AddReplicaTest#testAddMultipleReplicas` |
+| solr-adhoc-19 | `CoreContainer:1330` (`create`) | `DeleteReplicaTest#deleteReplicaFromClusterStateLegacy` (`AddReplicaTest` never sets `legacyCloud`, so no writer of the guard's property; SOLR.md) |
 | solr-adhoc-21 | `CoreContainer:1765` (`reload`, an assert) | `CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss` |
-| solr-adhoc-31 | `CollectionsHandler:1477` (`forceLeaderElection`) | `ForceLeaderTest#testReplicasInLowerTerms` (`@Nightly`) |
+| solr-adhoc-31 | `CollectionsHandler:1477` (`forceLeaderElection`) | `ForceLeaderTest#testReplicasInLowerTerms` (`@Nightly`; an `AbstractFullDistribZkTestBase` test: the adapter must register its Jetty nodes and open the window) |
 | solr-adhoc-38 | `DistributedZkUpdateProcessor:1031` (`doDefensiveChecks`) | `TestPullReplica#testAddDocs` |
 | solr-adhoc-39 | `RoutedAliasUpdateProcessor:247` | `TimeRoutedAliasUpdateProcessorTest#test` |
 | solr-adhoc-40 | `RoutedAliasUpdateProcessor:133` | `TimeRoutedAliasUpdateProcessorTest#test` |
