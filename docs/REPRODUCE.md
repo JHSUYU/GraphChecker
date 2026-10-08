@@ -32,30 +32,40 @@ Which branch runs which case, with the case's budget and what series EX1 ended w
 Where things go is stated once, in [`tools/lib/gc-env.sh`](../tools/lib/gc-env.sh): `GC_BULK` (the shared storage),
 `GC_OUT` (run outputs), `GC_TREES` (the HDFS trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
 hosts) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller). On another cluster, edit those
-defaults in that file on both branches' checkouts: commands reached over ssh read the file, not your shell.
+defaults in that file on both checkouts. A value exported in the shell that starts a run also works: every hop of the
+run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command. The
+commands from step 2 on use these variables: `source ~/GraphChecker-hdfs1/tools/lib/gc-env.sh` in the shell first.
 
 ## 1. GraphChecker, both branches
 
 ```bash
-git clone -b system/hdfs1 git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-hdfs1
-git clone -b system/hdfs  git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-hdfs
-for b in hdfs1 hdfs; do (cd ~/GraphChecker-$b && tools/onlift.sh -g 6 mvn -q package -DskipTests); done
+for b in hdfs1 hdfs; do
+  git clone -q --no-checkout -b system/$b git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-$b
+  git -C ~/GraphChecker-$b sparse-checkout set --no-cone '/*' '!/third_party/'
+  git -C ~/GraphChecker-$b checkout -q system/$b
+  (cd ~/GraphChecker-$b && ~/GraphChecker-hdfs1/tools/onlift.sh -g 6 mvn -q package -DskipTests)
+done
 ```
 
-`tools/onlift.sh` runs a command in the current directory on the host of `LIFTS` with the most room, with Java 8 and
-Maven on its path; use it for every build. The first build downloads the dependencies into `~/.m2`. The three jars
+The checkouts leave out `third_party/` (the VM's 47,000 source files, which no build or run reads; step 2 clones them
+apart). `tools/onlift.sh` runs a command in the current directory on the host of `LIFTS` with the most room, with
+Java 8 and Maven on its path; use it for every build. The first build downloads the dependencies into `~/.m2`. The three jars
 (`target/GraphChecker-1.0-SNAPSHOT{,-jar-with-dependencies,-hadoop-shim}.jar`) are what a run reads; leave a checkout
 alone while a run uses it.
 
 ## 2. The concolic VM image
 
+On a host with gcc-6, a full clone on its local disk:
+
 ```bash
-cd ~/GraphChecker-hdfs1 && tools/onlift.sh -h <a host with gcc-6> -g 12 tools/vm/build-image.sh $GC_BULK/vm/hdfs
+ssh <host> 'git clone -q -b system/hdfs1 git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm &&
+  /localtmp/$USER/gc-vm/tools/vm/build-image.sh <GC_BULK>/vm/hdfs'
 ```
 
 A full OpenJDK 8 (Zero, release, `-DENABLE_CONCOLIC`) built on the host's local disk, then the causynth smoke suite
 on it: `$GC_BULK/vm/hdfs/j2sdk-image` is the image (`CAUSYNTH_CUSTOM_JDK_HOME`), `SOURCE.txt` the commit it was built
-from, `smoke.log` the suite (`SMOKE_EXIT=0`, 24 `OK` lines). A few minutes at `JOBS=40`. A host without gcc-6:
+from, `smoke.log` the suite (`SMOKE_EXIT=0`, 24 `OK` lines). About 3 minutes at `JOBS=40` (lift15, 2026-10-08). A
+host without gcc-6:
 `FULL_JDK=true third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh` (Ubuntu 18.04
 container), then copy its `build/linux-x86_64-normal-zero-release/images/j2sdk-image`.
 
@@ -73,7 +83,10 @@ Maven repository of its own (`$GC_M2/<name>`; hadoop-hdfs and every module it ne
 workload of every case that names it once natively: a case's classpath is read off its workload's surefire report, so
 a case whose workload never ran in its tree fails validate ("missing test report"). The log ends with one line per
 workload, `PASSED` or `FAILED` (a native failure still leaves the report the case needs) or `MISSING` (the script
-fails). Both GraphChecker branches read these trees: a run puts its own jar ahead of the tree's classpath.
+fails). A native `FAILED` seen once: `TestDFSStartupVersions#testVersions` in the long combined run (a DataNode's
+storage lock still held by the previous one in the same JVM); it passed when run again alone. Both GraphChecker
+branches read these trees: a run puts its own jar ahead of the tree's classpath. 10-25 minutes a tree (clone over
+NFS, build, workloads; r7 with its 43 workloads the longest; 2026-10-08), the four in parallel.
 
 ## 4. Running the cases
 
@@ -81,19 +94,19 @@ One case, from the checkout of its branch (the table's `branch` and `budget_s` c
 
 ```bash
 cd ~/GraphChecker-hdfs1
-GC_OUT=$GC_BULK/gc-out/repro CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs/j2sdk-image CASE_TIMEOUT_SECONDS=14400 \
-  tools/rounds/launch-run.sh ~/GraphChecker-hdfs1 hdfs-adhoc-29 R1-adhoc-29
+export GC_OUT=$GC_BULK/gc-out/repro CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs/j2sdk-image
+CASE_TIMEOUT_SECONDS=21600 tools/rounds/launch-run.sh ~/GraphChecker-hdfs1 hdfs-adhoc-29 R1-adhoc-29
 ```
 
 The run detaches; it writes `$GC_OUT/accept-R1-adhoc-29/` and ends with the second line of its `summary.tsv`. Its
-obligations go to every host of `LIFTS`. `tools/rounds/stop-run.sh R1-adhoc-29` stops it.
+obligations go to every host of `LIFTS`. `tools/rounds/stop-run.sh R1-adhoc-29` (with the same `GC_OUT`) stops it.
 
 All 46, each alone on the cluster, as series EX1 ran them:
 
 ```bash
 cd ~/GraphChecker-hdfs1
-(GC_OUT=$GC_BULK/gc-out/repro CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/hdfs/j2sdk-image setsid nohup \
-  tools/rounds/run-series.sh R1 ~/GraphChecker-hdfs ~/GraphChecker-hdfs1 > $GC_BULK/series-R1.out 2>&1 < /dev/null &)
+(setsid nohup tools/rounds/run-series.sh R1 ~/GraphChecker-hdfs ~/GraphChecker-hdfs1 > $GC_OUT/series-R1.out 2>&1 \
+  < /dev/null &)
 ```
 
 Each case runs from the checkout of its branch with its budget; naming case ids after the two checkouts runs only
@@ -104,8 +117,8 @@ case. Many cases at once instead: `tools/adhoc/sweep.sh` ([handover/OPERATIONS.m
 ## 5. Reading the results
 
 ```bash
-GC_OUT=$GC_BULK/gc-out/repro tools/rounds/round-verify.sh R1      # how each EXPLORE ended, z3 on the file, gaps, roots
-GC_OUT=$GC_BULK/gc-out/repro tools/rounds/series-stats.py R1      # claim, time breakdown, closure regions per case
+tools/rounds/round-verify.sh R1      # how each EXPLORE ended, z3 on the file, gaps, roots
+tools/rounds/series-stats.py R1      # claim, time breakdown, closure regions per case
 ```
 
 A case reproduces when its claim is the table's `ex1_claim`: SAT (`SAT_CANDIDATE`: confirmed by a replay, reproduced
@@ -113,7 +126,6 @@ natively) for the ten named bugs and hdfs-adhoc-10 and -12; UNSAT (`UNSAT_CLOSED
 `final/candidate.smt2` says unsat, EXPLORE at its fixed point) for the rest; hdfs-adhoc-21 `RUN_DEFECT` (its accepted
 residue). The report's `PASS` also checks a named bug's declared mechanism; a study check declares none, so its report
 says `FAIL` whatever its claim: the claim and round-verify decide, as [handover/CHECKING.md](handover/CHECKING.md) §1
-says. What each `.smt` must contain (its causal
-chain, symbols and propagation, read by hand against the HDFS code) is each case's row in
-[STATUS.md](STATUS.md) "HDFS checks"; `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol of a formula.
+says. What each `.smt` must contain (its causal chain, symbols and propagation, read by hand against the HDFS code)
+is each case's row in [STATUS.md](STATUS.md) "HDFS checks"; `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol of a formula.
 Wall times vary run to run (replays race); the EX1 rows are in [design/PERFORMANCE.md](design/PERFORMANCE.md) §6.

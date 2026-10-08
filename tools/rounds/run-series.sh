@@ -29,7 +29,7 @@ while IFS=$'\t' read -r id branch budget _; do
   [[ ! -e "${GC_OUT}/series-${round}.STOP" ]] || { echo "$(date +%F_%T) STOP" >>"${log}"; exit 0; }
   suffix=${round}-${id#hdfs-}
   out=${GC_OUT}/accept-${suffix}
-  (($(wc -l <"${out}/summary.tsv" 2>/dev/null || echo 0) < 2)) || continue
+  (($(wc -l 2>/dev/null <"${out}/summary.tsv" || echo 0) < 2)) || continue
   snap=${checkout[${branch}]}
   echo "$(date +%F_%T) $(date +%s) START ${id} ${suffix} ${snap} host=$(hostname -s)" >>"${log}"
   env CASE_TIMEOUT_SECONDS="${budget}" CAUSYNTH_CAMPAIGN_WORKER_HOSTS="${LIFTS}" \
@@ -37,9 +37,9 @@ while IFS=$'\t' read -r id branch budget _; do
     >"${GC_OUT}/launch-${suffix}.log" 2>&1 </dev/null
   # accept.sh re-execs under setsid: its summary row ends the case.
   waited=0
-  while (($(wc -l <"${out}/summary.tsv" 2>/dev/null || echo 0) < 2)) && ((waited < budget + 7200)); do
+  while (($(wc -l 2>/dev/null <"${out}/summary.tsv" || echo 0) < 2)) && ((waited < budget + 7200)); do
     sleep 30
     waited=$((waited + 30))
   done
-  echo "$(date +%F_%T) $(date +%s) END ${id} ${suffix} rows=$(wc -l <"${out}/summary.tsv" 2>/dev/null)" >>"${log}"
+  echo "$(date +%F_%T) $(date +%s) END ${id} ${suffix} rows=$(wc -l 2>/dev/null <"${out}/summary.tsv")" >>"${log}"
 done <"${self}/experiments/hadoop/hdfs-cases.tsv"
