@@ -141,3 +141,86 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (A1's measurement branch
    `hdfs-compose-perf-wip`).
 7. The two-phase final run (TODO HDFS §1): short cases a few at a time, deep closures each with the whole cluster.
+
+## 6. Every HDFS case alone on the ten lifts (series EX1, 2026-10-07/08)
+
+The owner's measurement (2026-10-07: "把46个case的每一个，独占集群跑完，每个case并行可以充分使用10个server。统计time breakdown ...
+以及每个case闭包最终的region总数"): each of the 46 cases ran alone, one after the other, its obligations, replays and
+head steps over all ten lifts (no shared pool), on the branch that closed it (`system/hdfs` locked body, snapshot
+`~/gc-run/hl1`; `system/hdfs1` 8c446418b, snapshot `~/gc-run/rp5`, for 07 11741 21 29 30 39 40). Driver
+`/bigtemp/vnr3ne/analysis/excl-2026-10-07/excl-driver.sh` (queue, PAUSE/STOP files), outputs
+`/bigtemp/vnr3ne/gc-out/hdfs-excl/accept-EX1-<case>/`, numbers by `stats.py` beside the driver, from each run's
+`stage_metrics.tsv`:
+
+- **analysis** = PREFLIGHT, FREEZE, SETUP, SEED (static passes, recording, trace aggregation), PLAN, INSTRUMENT, the
+  seed REPLAY and IMPORT; **exploration** = EXPLORE (planner rounds, solves, replays, GROW); **compose+solver** =
+  COMPOSE + SOLVE + DECIDE; **other** = CONFIRM, EMIT, REPRODUCE (the acceptance harness's z3 probe and report after
+  the campaign are not counted).
+- **regions** = the distinct regions of the final closure (the last generation's `execution_task_plan.jsonl`);
+  **occurrences** = its rows (planned occurrences); **rounds** and **verdicts** = EXPLORE's planner rounds and
+  obligation verdicts.
+
+Totals: 54886 s (15.2 h) of campaign wall time; analysis 26326 s (48 %), exploration 25369 s (46 %), compose+solver
+2009 s (4 %). Median case 762 s; analysis is the median case's larger part (64 %), serial and unaffected by more
+lifts. One case past an hour (07, 11113 s: 16-20 serial planner rounds over ~640 sessions, TODO HDFS §6 incremental
+planning), five between 30 and 45 min (11741 2626, 26 1892, 24 1857, 08 2060, 09 1929). Regions per closure: median
+11, from 1 (31, 48) to 28 (11). Against the shared HL1 round (43 cases, 1 head per lift) the deep closures ran 2.5-5x
+faster (08 5982 -> 2060 s, 09 6519 -> 1929, 14 3814 -> 1182, 17897 2126 -> 443) and the short ones the same.
+
+| case | branch | verdict | wall (s) | analysis (s) | exploration (s) | compose+solver (s) | other (s) | regions | occurrences | rounds | verdicts |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| hdfs-17897 | hdfs | SAT | 443 | 236 | 169 | 15 | 20 | 12 | 13 | 4 | 30 |
+| hdfs-17899-bug1 | hdfs | SAT | 430 | 284 | 121 | 2 | 19 | 14 | 20 | 2 | 23 |
+| hdfs-17899-bug2 | hdfs | SAT | 594 | 342 | 201 | 17 | 24 | 11 | 14 | 6 | 54 |
+| hdfs-17899-bug3 | hdfs | SAT | 418 | 248 | 147 | 2 | 18 | 9 | 16 | 2 | 22 |
+| hdfs-17967-pathA | hdfs | SAT | 398 | 232 | 144 | 2 | 17 | 12 | 13 | 2 | 8 |
+| hdfs-17967-pathB | hdfs | SAT | 367 | 232 | 114 | 2 | 17 | 11 | 12 | 2 | 8 |
+| hdfs-17967-pathC | hdfs | SAT | 433 | 246 | 161 | 4 | 18 | 11 | 12 | 3 | 18 |
+| hdfs-17960 | hdfs | SAT | 614 | 341 | 249 | 2 | 20 | 5 | 6 | 4 | 79 |
+| hdfs-11741 | hdfs1 | SAT | 2626 | 525 | 1664 | 228 | 202 | 15 | 31 | 6 | 1419 |
+| hdfs-bugs-slowdisk-zero | hdfs | SAT | 412 | 215 | 172 | 2 | 20 | 5 | 6 | 4 | 40 |
+| hdfs-adhoc-05 | hdfs | UNSAT | 633 | 441 | 167 | 9 | 14 | 7 | 17 | 7 | 193 |
+| hdfs-adhoc-06 | hdfs | UNSAT | 635 | 444 | 165 | 9 | 14 | 7 | 17 | 7 | 193 |
+| hdfs-adhoc-07 | hdfs1 | UNSAT | 11113 | 672 | 9601 | 519 | 302 | 12 | 31 | 20 | 2284 |
+| hdfs-adhoc-08 | hdfs | UNSAT | 2060 | 564 | 862 | 601 | 29 | 7 | 9 | 17 | 484 |
+| hdfs-adhoc-09 | hdfs | UNSAT | 1929 | 564 | 845 | 484 | 33 | 7 | 9 | 16 | 566 |
+| hdfs-adhoc-10 | hdfs | SAT | 783 | 600 | 161 | 2 | 17 | 11 | 17 | 2 | 46 |
+| hdfs-adhoc-11 | hdfs | UNSAT | 1135 | 451 | 665 | 7 | 7 | 28 | 86 | 9 | 42 |
+| hdfs-adhoc-12 | hdfs | SAT | 693 | 404 | 261 | 4 | 21 | 10 | 11 | 2 | 22 |
+| hdfs-adhoc-14 | hdfs | UNSAT | 1182 | 431 | 724 | 11 | 14 | 17 | 26 | 12 | 95 |
+| hdfs-adhoc-15 | hdfs | UNSAT | 901 | 432 | 455 | 2 | 3 | 12 | 84 | 2 | 13 |
+| hdfs-adhoc-16 | hdfs | UNSAT | 1352 | 877 | 460 | 2 | 3 | 13 | 119 | 2 | 26 |
+| hdfs-adhoc-19 | hdfs | UNSAT | 634 | 540 | 87 | 2 | 3 | 5 | 6 | 2 | 36 |
+| hdfs-adhoc-20 | hdfs | UNSAT | 505 | 476 | 7 | 4 | 3 | 13 | 61 | 2 | 12 |
+| hdfs-adhoc-21 | hdfs1 | UNSAT* | 1417 | 803 | 596 | 3 | 4 | 8 | 10 | 4 | 15 |
+| hdfs-adhoc-22 | hdfs | UNSAT | 1510 | 1006 | 489 | 4 | 6 | 15 | 66 | 4 | 45 |
+| hdfs-adhoc-23 | hdfs | UNSAT | 1774 | 1020 | 739 | 4 | 6 | 15 | 65 | 5 | 45 |
+| hdfs-adhoc-24 | hdfs | UNSAT | 1857 | 1286 | 556 | 5 | 6 | 15 | 65 | 4 | 35 |
+| hdfs-adhoc-25 | hdfs | UNSAT | 1429 | 967 | 444 | 5 | 9 | 15 | 66 | 9 | 81 |
+| hdfs-adhoc-26 | hdfs | UNSAT | 1892 | 1491 | 385 | 4 | 5 | 15 | 67 | 4 | 40 |
+| hdfs-adhoc-27 | hdfs | UNSAT | 892 | 684 | 189 | 4 | 9 | 15 | 77 | 4 | 28 |
+| hdfs-adhoc-28 | hdfs | UNSAT | 533 | 521 | 6 | 2 | 2 | 2 | 2 | 2 | 2 |
+| hdfs-adhoc-29 | hdfs1 | UNSAT | 395 | 382 | 6 | 2 | 2 | 2 | 2 | 2 | 1 |
+| hdfs-adhoc-30 | hdfs1 | UNSAT | 428 | 408 | 13 | 2 | 3 | 3 | 7 | 2 | 6 |
+| hdfs-adhoc-31 | hdfs | UNSAT | 329 | 317 | 6 | 2 | 2 | 1 | 1 | 2 | 1 |
+| hdfs-adhoc-33 | hdfs | UNSAT | 742 | 501 | 220 | 7 | 12 | 2 | 2 | 7 | 45 |
+| hdfs-adhoc-34 | hdfs | UNSAT | 1436 | 943 | 478 | 4 | 6 | 15 | 64 | 5 | 45 |
+| hdfs-adhoc-35 | hdfs | UNSAT | 1706 | 984 | 708 | 4 | 5 | 16 | 65 | 4 | 35 |
+| hdfs-adhoc-37 | hdfs | UNSAT | 1763 | 1487 | 261 | 4 | 5 | 15 | 68 | 4 | 36 |
+| hdfs-adhoc-38 | hdfs | UNSAT | 466 | 450 | 6 | 2 | 2 | 12 | 61 | 2 | 1 |
+| hdfs-adhoc-39 | hdfs1 | UNSAT | 1197 | 512 | 661 | 7 | 12 | 9 | 64 | 15 | 92 |
+| hdfs-adhoc-40 | hdfs1 | UNSAT | 548 | 330 | 211 | 2 | 3 | 7 | 9 | 4 | 9 |
+| hdfs-adhoc-45 | hdfs | UNSAT | 418 | 405 | 7 | 2 | 2 | 3 | 3 | 2 | 10 |
+| hdfs-adhoc-48 | hdfs | UNSAT | 470 | 458 | 6 | 2 | 2 | 1 | 1 | 2 | 1 |
+| hdfs-adhoc-49 | hdfs | UNSAT | 1677 | 523 | 1138 | 2 | 10 | 9 | 26 | 5 | 241 |
+| hdfs-adhoc-50 | hdfs | UNSAT | 895 | 348 | 533 | 2 | 8 | 9 | 30 | 4 | 141 |
+| hdfs-adhoc-52 | hdfs | UNSAT | 822 | 703 | 109 | 2 | 2 | 3 | 55 | 3 | 4 |
+
+Notes: verdicts are the runs' claims, checked with `round-verify.sh` (`ex1-verify.txt` beside the driver): every
+`system/hdfs` case repeats its HL1 verdict and `.smt` shape (the same four NO-SYMBOL UNSATs, 28 31 45 48, with their
+STATUS reasons). UNSAT* = 21's accepted RUN_DEFECT residue (1 BLOCKING `ADMISSION_GAP` of the stranded actor body,
+TODO HDFS §4; W21 had 3). 07 is its fifth attempt, EX1-adhoc-07e (07 on rp1 12588 s RUN_DEFECT, 07b/07c stopped,
+07d 10238 s UNSAT with 11 unfinished obligations); 29 is its rerun EX1-adhoc-29b (the first seed replay missed the
+anchor on a racy start-up, CHECKING trap 15). 11741 is BOUNDED after its witness (one task deferred past 32 paths),
+which a confirmed SAT does not rest on; its cone is unbound 0. The lead's builds and offline gates ran beside 08, 15,
+17899-bug1, 09, 07d and 07e for a few minutes each, and another user's IDE held ~4 GB on lift12 throughout.
