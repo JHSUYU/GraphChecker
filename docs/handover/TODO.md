@@ -141,8 +141,9 @@ The owner (2026-10-08): "跑完solr上所有adhoc check对应的unit test ... ad
   CONFIRM, unchanged and strict, refutes it, the model is excluded and the next claim follows (PIPELINE "A claim CONFIRM
   did not confirm is followed by the next", `refuted_claims.jsonl`, `campaign_next_claim`), until the case ends
   `UNSAT_CLOSED` with `restsOnRefutations`, each refutation read against the code (CHECKING). It must converge: one
-  claim per version must not exhaust `campaign_max_claims` (8) and end `SAT_UNCONFIRMED`; a refused model (a replay
-  that could not hold the order) is no refutation (`UNSAT_BESIDE_REFUSED`). Shown on real runs only (RULES): the
+  claim per version must not exhaust `campaign_max_claims` (8) and end `SAT_UNCONFIRMED`. A CONFIRM replay that does
+  not reach the exception, or times out or stalls, is a false positive (owner 2026-10-08, simplified: "如果replay跑不到
+  exception。或者超时卡死，就直接定义为false positive"), excluded, and the next claim follows. Shown on real runs only (RULES): the
   study checks SOLR.md expects refuted (solr-adhoc-05 and -13, stale reads of watched cluster state and aliases) and
   any other; no real witness of the 8 bug checks may be filtered.
 

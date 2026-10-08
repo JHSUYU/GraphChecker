@@ -21,7 +21,7 @@ variables a fatal condition names that no message family binds: `report/<case>/c
 
 **An UNSAT is done when** the claim is `UNSAT_CLOSED`, `end=(FIXED_POINT)`, z3 says unsat on the file, there is no
 BOUNDED, no UNBOUND on any path, no BLOCKING gap, `defects` is empty (`result.json`; e.g. `OPEN_ARM_UNANSWERED`,
-`UNSAT_BESIDE_REFUSED`, `EXPLORATION_CUT` are RUN_DEFECTs), and either `leaves > 0` or a written reason, read in the
+`EXPLORATION_CUT` are RUN_DEFECTs), and either `leaves > 0` or a written reason, read in the
 code, why the chain is constant inside the window.
 
 **A SAT is done when** the claim is `SAT_CANDIDATE`, CONFIRM confirmed it (`final/confirm.json`), `claim.json`
@@ -97,9 +97,11 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
 11. **A PASS line or a finding kind alone** (17960 once "passed" at valuation 0 with no root moved; v9's bug1/17967
     moved only a clock and passed because four keys collapsed onto one handoff symbol). Read `movedRoots`, the cone and
     the three questions of §2.
-12. **CONFIRM with no verdict is no SAT** (12 in HG9: the model's order waited on an event that never exited within
-    300 s, `CONFIRM_NO_VERDICT`). Read `confirm.json` and `defects`; with budget left the claim loop excludes the
-    model and claims the next one.
+12. **CONFIRM that did not reach the fatal is a false positive, never a SAT** (12 in HG9: the model's order waited on
+    an event that never exited within 300 s). Since 2026-10-08 (owner) every such replay -- no fatal, an order not held,
+    a stall, a timeout -- refutes the claim: read each `restsOnRefutations` row's reason against the code (an
+    engine-caused stall can filter a real witness, which for a known bug is a defect to fix, not a verdict). Only a
+    task CONFIRM refused by name or a failed decision is `CONFIRM_NO_VERDICT`.
 13. **A verdict from an older body or looser checks is not current** (the time-model family's "UNSAT" in HG8E, 07's
     and 39's earlier UNSATs). Count only verdicts on the current body that pass §1.
 14. **An engine artifact that looks like a regression**: vm-hg5's outside-mutation mark exposed 11741's unplanned

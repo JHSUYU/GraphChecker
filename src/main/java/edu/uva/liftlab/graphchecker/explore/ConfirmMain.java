@@ -130,7 +130,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * <p>The decision ({@code --sessions}): confirmed iff the replay was ADMITTED,
  * its session published a readable gaps file with no {@code
  * CONFIRM_MISMATCH}, and a target row at the claim's own anchor occurrence id
- * reached it and observed the fatal.</p>
+ * reached it and observed the fatal; any other replay refutes the claim, a
+ * false positive (owner 2026-10-08).</p>
  */
 public final class ConfirmMain {
     /** The one obligation id a confirmation carries. */
@@ -630,17 +631,18 @@ public final class ConfirmMain {
      * The decision, off the session the confirmation replay published: the
      * rule's conditions in order, the first one failing named.  The replay
      * was ADMITTED (roots planted); (a) its session published its gaps and
-     * none is a CONFIRM_MISMATCH -- a session that published no readable
-     * gaps answers nothing; (b) a target row AT THE CLAIM'S ANCHOR reached it
-     * and observed the fatal.  A fatal at another occurrence of the target
-     * site is another question (11741 v93's confirming session had two fatal
-     * target rows), and an occurrence is named by its id, which only this
-     * address computes.  Only (b) REFUTES the model, and only where the
-     * replay ran it: every root the claim moved minted at the model's value
-     * (a clock's cell minted) and no plant refused ({@link #unplanted}).  A
-     * run that took an edge the model did not choose (a), or ran without
-     * the model's plant, or did not run (not ADMITTED, no readable session)
-     * answers nothing about it: a defect of the run (RUN_DEFECT).
+     * none is a CONFIRM_MISMATCH -- an edge the model chose that the run did
+     * not take, an ORDER it could not hold in time; (b) a target row AT THE
+     * CLAIM'S ANCHOR reached it and observed the fatal.  A fatal at another
+     * occurrence of the target site is another question (11741 v93's
+     * confirming session had two fatal target rows), and an occurrence is
+     * named by its id, which only this address computes.  A replay that
+     * fails any of them -- not ADMITTED, no readable session, a mismatch, a
+     * plant it did not make ({@link #unplanted}), no fatal at the anchor --
+     * did not reach the exception: it REFUTES the model, a false positive
+     * (owner 2026-10-08: "如果replay跑不到exception。或者超时卡死，就直接定义
+     * 为false positive"), its reason naming which.  Only a claim stating no
+     * parseable anchor decides nothing: a defect of the claim.
      */
     static JsonObject decide(Path claimFile, Path worker, Path sessions)
             throws IOException {
@@ -651,13 +653,13 @@ public final class ConfirmMain {
         String verdict = optionalString(result, "verdict");
         String sessionId = optionalString(result, "sessionId");
         if (!"ADMITTED".equals(verdict)) {
-            return confirmation(false, false, "the confirmation replay was "
+            return confirmation(false, true, "the confirmation replay was "
                     + (verdict.isEmpty() ? "not run" : verdict) + ": "
                     + optionalString(result, "detail"), sessionId);
         }
         Path session = sessions.resolve(sessionId);
         if (sessionId.isEmpty() || !Files.isDirectory(session)) {
-            return confirmation(false, false, "the confirmation replay names "
+            return confirmation(false, true, "the confirmation replay names "
                     + "session " + sessionId + ", which " + sessions
                     + " does not hold", sessionId);
         }
@@ -671,13 +673,13 @@ public final class ConfirmMain {
                 targets.add(RowCodec.readTarget(row));
             }
         } catch (IOException | RuntimeException unread) {
-            return confirmation(false, false, "the run's session could not be"
+            return confirmation(false, true, "the run's session could not be"
                     + " read, so it answers nothing: " + unread.getMessage(),
                     sessionId);
         }
         for (JsonObject gap : gaps) {
             if ("CONFIRM_MISMATCH".equals(optionalString(gap, "kind"))) {
-                return confirmation(false, false, "the run took an edge the"
+                return confirmation(false, true, "the run took an edge the"
                         + " model did not choose, so it did not run the"
                         + " model: " + optionalString(gap, "detail"),
                         sessionId);
@@ -714,13 +716,12 @@ public final class ConfirmMain {
             unplanted = "its root rows could not be read: "
                     + unread.getMessage();
         }
-        return unplanted.isEmpty() ? confirmation(false, true, why, sessionId)
-                : confirmation(false, false, why + ", and " + unplanted
-                + ", so it did not run the model", sessionId);
+        return confirmation(false, true, unplanted.isEmpty() ? why
+                : why + ", and " + unplanted, sessionId);
     }
 
     /**
-     * Why a confirmation run did not run the claim's model, or "": a plant
+     * What of the claim's model a confirmation run did not plant, or "": a plant
      * it refused ({@code ASSIGNMENT_UNPLANTED}), or a root the claim moved
      * that it minted at no row, or (not a clock) at another value than the
      * model's.  A moved root is named as the claim names it, by root id or
@@ -768,9 +769,9 @@ public final class ConfirmMain {
     }
 
     /**
-     * The one shape of final/confirm.json; {@code refutes}: the program ran
-     * the model and disagreed, so the campaign excludes it
-     * ({@code compose.Refutations}).
+     * The one shape of final/confirm.json; {@code refutes}: the confirmation
+     * did not reach the fatal at the anchor, a false positive the campaign
+     * excludes ({@code compose.Refutations}).
      */
     private static JsonObject confirmation(boolean confirmed, boolean refutes,
                                            String reason, String sessionId) {
