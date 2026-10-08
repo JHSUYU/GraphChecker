@@ -781,6 +781,56 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A loop polling past its recorded count in the context whose next slot
+     * is the frontier owes the frontier: it polls again with no move of the
+     * order, never held to the watchdog (solr-adhoc-19 SG1: a waitForCore
+     * NodeName loop, 66 stalls).
+     */
+    @Test(timeout = 20000L)
+    public void aPollOwingTheFrontierPollsWithoutAMove() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String site = "tick.poll";
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+        order.add(event(ScheduleEvent.Kind.WAKE, site));
+        order.addAll(prefix("x"));
+        enforce(order);
+        long before = System.nanoTime();
+        for (int poll = 0; poll < 4; poll++) {
+            ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        }
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("no stall: " + took, took < 2000L);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("2 taken, 0 given up"));
+    }
+
+    /**
+     * A wait the recording never made, held at the cut in another context
+     * while the frontier stands and nothing computes, is let go a grace into
+     * the stall, not a timeout: x, which no thread makes, is given up later.
+     */
+    @Test(timeout = 30000L)
+    public void anIdleStallLetsAHeldWaitGoAGraceIn() throws Exception {
+        noRequest();
+        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "10000");
+        enforce(recorded);
+        long before = System.nanoTime();
+        Thread b = new Thread(() -> request("b",
+                () -> ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.b")));
+        b.start();
+        b.join(20000L);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("a grace, not the timeout: " + took,
+                took >= ScheduleLog.LET_GO_GRACE_MS - 100L && took < 8000L);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("1 of them let go"));
+    }
+
+    /**
      * The request that makes x first sleeps a wait the recording never
      * made: held at the cut, with the run idle, it is let go before x is
      * given up, and x is taken.  The turn it let go is vacant; x's is not.
@@ -2610,10 +2660,10 @@ public class ScheduleLogTest {
      * An event that never comes costs a timeout, then a grace after the
      * waits held without a slot are let go -- not {@link
      * ScheduleLog#CEILING} timeouts twice over while an engine thread
-     * computes.  A wait held at the cut is let go once; a poll held past its
-     * recorded count at its context's due slot -- the stalled one -- waits
-     * for no slot's event, so it does not hide that slot from the give-up
-     * y waits for, however long it keeps polling.
+     * computes.  A wait held at the cut is let go once; a poll past its
+     * recorded count whose context's next slot is the stalled frontier owes
+     * it and is not held at all, and it does not hide that slot from the
+     * give-up y waits for, however long it keeps polling: a timeout alone.
      */
     @Test(timeout = 60000L)
     public void aNeverComingEventCostsATimeoutAndAGrace() throws Exception {
@@ -2658,8 +2708,8 @@ public class ScheduleLogTest {
             y.join(5000L);
             assertFalse(row + ": y went while the loop still polled", waited);
             assertFalse(row, y.isAlive() || held.isAlive());
-            assertTrue(row + ", a timeout, then the let-go's grace: " + took,
-                    took >= 1000L + ScheduleLog.LET_GO_GRACE_MS);
+            assertTrue(row + ", a timeout, then any let-go's grace: " + took,
+                    took >= 1000L + (polls ? 0L : ScheduleLog.LET_GO_GRACE_MS));
             assertTrue(row + ", well inside the ceiling: " + took,
                     took < ScheduleLog.CEILING * 1000L - 500L);
             List<String> sites = sites();

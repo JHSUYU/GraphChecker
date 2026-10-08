@@ -1092,7 +1092,11 @@ public final class ScheduleLog {
                 ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
         if (next >= 0) {
             if (!dueLocked(next)) return next;
-            if (movedSincePollLocked(event) || clockLoopLocked(event)) {
+            // The frontier its own context's: the loop owes it, and holding
+            // the poll holds the frontier until the watchdog (solr-adhoc-19
+            // SG1: ZkController#waitForCoreNodeName, 66 stalls, 991 s).
+            if (movedSincePollLocked(event) || clockLoopLocked(event)
+                    || next == firstBlocking) {
                 return GO;
             }
         }
@@ -1455,7 +1459,17 @@ public final class ScheduleLog {
             if (now - cpuSampledAt >= CPU_SAMPLE_MS) lookLocked(now, false);
         }
         long stood = now - since;
-        if (stood < timeout || now - letGoAt < LET_GO_GRACE_MS) return false;
+        if (now - letGoAt < LET_GO_GRACE_MS) return false;
+        // A wait held without a slot is let go a grace into a stall nothing
+        // computes toward, not a timeout: the frontier may be behind it, and
+        // its event runs free anyway once let go (SG1: 92 such stalls across
+        // six study checks, 15 s each).
+        if (!HELD.isEmpty() && !letGoSinceProgress && stood < timeout
+                && stood >= LET_GO_GRACE_MS && !computingLocked(now)) {
+            letGoHeldLocked(stood, now);
+            return true;
+        }
+        if (stood < timeout) return false;
         if (stood < CEILING * timeout && computingLocked(now)) return false;
         // A poll held past its recorded count stands at its context's due
         // slot and waits for no slot's event, so it bounds no give-up (it

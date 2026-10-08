@@ -674,7 +674,9 @@ order:
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
   (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
-  the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
+  the first poll past the count goes at once. A poll whose context's next slot is the frontier itself
+  owes it and goes with no move: held, it held the frontier until the watchdog (solr-adhoc-19, round
+  SG1: `ZkController#waitForCoreNodeName`, 66 stalls of 15 s). A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
   wait is missed; the methods are installed from the rows the session reads when it opens,
@@ -722,7 +724,9 @@ order:
   unseen owner is one thread, so one such thread's CPU plus the collectors' time over half the
   look's span defers the give-up, not a sum: the traffic a free-running loop drives through threads
   that make no event (an IPC reader, a connection's receiver) is no one computing. The watchdog
-  first lets the waits held without a slot go; a grace (`LET_GO_GRACE_MS`, 2 s) later it gives up
+  first lets the waits held without a slot go -- a grace into a stall nothing computes toward, before
+  the timeout (round SG1: 92 stalls across six Solr study checks each waited a timeout to let a held
+  wait go) --; a grace (`LET_GO_GRACE_MS`, 2 s) after the timeout it gives up
   every open slot before the earliest waiter that waits for a slot. That is one let-go per
   frontier: a slot taken past it earns the held waits no second one, which would hold the give-up
   off for as long as anything ran elsewhere. A poll held past its count stands at a due slot and
