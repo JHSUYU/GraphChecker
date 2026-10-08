@@ -164,6 +164,9 @@ public final class ObligationSolverMain {
             throw new IOException("the round has no obligation " + obligationId
                     + ": " + obligations);
         }
+        if (proposal.force()) {
+            return force(corpus, iteration, obligations, proposal, out);
+        }
         ObligationFactory.Candidate candidate =
                 ObligationFactory.locate(corpus, proposal);
         if (candidate == null) {
@@ -234,6 +237,42 @@ public final class ObligationSolverMain {
         return published;
     }
 
+    /**
+     * A FORCE run's worker (PIPELINE §7.10): no query; the replay is the
+     * seed's world held to the seed's schedule up to the declared
+     * occurrence, whose branches the focus row's {@code force} has forced.
+     */
+    private static JsonObject force(Corpus corpus, Path iteration,
+                                    Path obligations, Obligation proposal,
+                                    Path out) throws IOException {
+        Task task = ClosurePlanner.taskOf(corpus, proposal.taskId());
+        if (task == null) {
+            return publish(out, proposal, ObligationResult.of(
+                    proposal.obligationId(), Verdict.NOT_ADMITTED, "",
+                    ForcedFlip.FORCE + ": no task " + proposal.taskId()
+                            + " in this corpus"), "",
+                    Collections.<GapRow>emptyList(), null);
+        }
+        OccurrenceAddress declared = declaredTarget(obligations);
+        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
+                corpus.seedSessionId(), targetOccurrences(task), true, out);
+        JsonObject focus = ExploreCodec.writeFocusRow(task.focused(),
+                declared, task.seedSessionId(), task.factor(), proposal,
+                Collections.<Corpus.Flip>emptyList(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(), cut);
+        focus.addProperty(ExploreCodec.FORCE, true);
+        JsonObject published = publish(out, proposal, ObligationResult.of(
+                proposal.obligationId(), Verdict.SAT_MODEL_READY, "",
+                ForcedFlip.FORCE + ": the recording's world, the declared "
+                        + "occurrence's branches forced to the throw"), "",
+                Collections.<GapRow>emptyList(), focus);
+        ask(out.resolve(ObligationDir.QUESTION_ASKED), ForcedFlip.FORCE + ":"
+                + proposal.obligationId());
+        return published;
+    }
+
     /** The iteration's task plan, which GROW appends to. */
     private static final String PLAN = "execution_task_plan.jsonl";
 
@@ -266,10 +305,15 @@ public final class ObligationSolverMain {
             ObligationFactory.Candidate candidate) {
         List<String> ids = new ArrayList<String>();
         ids.add(candidate.path.occurrence.id());
-        ids.add(candidate.task.focused().id());
-        for (OccurrenceAddress member : candidate.task.factor()) {
-            ids.add(member.id());
-        }
+        ids.addAll(targetOccurrences(candidate.task));
+        return ids;
+    }
+
+    /** A task's: its focus and factor. */
+    private static List<String> targetOccurrences(Task task) {
+        List<String> ids = new ArrayList<String>();
+        ids.add(task.focused().id());
+        for (OccurrenceAddress member : task.factor()) ids.add(member.id());
         return ids;
     }
 
@@ -298,9 +342,8 @@ public final class ObligationSolverMain {
                         ? "; no query was encoded: " + result.verdict() + " "
                         + result.detail() + System.lineSeparator()
                         : smt2).getBytes(StandardCharsets.UTF_8));
-        RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK),
-                focus == null ? Collections.<JsonObject>emptyList()
-                        : Collections.singletonList(focus));
+        ExploreCodec.writeFocusFile(out.resolve(ObligationDir.FOCUSED_TASK),
+                focus);
         return row;
     }
 }

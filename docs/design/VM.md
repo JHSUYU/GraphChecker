@@ -66,6 +66,13 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Branches.** The weave marks decision sites with `markConcolicBranch(siteId, ...)`; a marked
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
+  **Forcing** (`System.forceNextConcolicBranch(kind, value)`, a forced replay's, PIPELINE §7.10): asked
+  just before a marker, it binds to that marker's branch alone (`ThreadContext::mark_branch`; a refused
+  marker drops it): the marked `if*` takes the forced arm (`kind` 1, `value` 1 jumps, 0 falls through), a
+  `tableswitch`/`lookupswitch` the case of key `value` (`kind` 2) or its default (`kind` 3, a selector no
+  case has), in place of what its operands decide (`BI` `CONCOLIC_FORCE_BRANCH`, `CONCOLIC_FORCE_SWITCH`),
+  only for a pending marker of the current frame and once; the condition recorded is the forced arm's, and
+  the event states `forced` and `concrete`, the answer it overrode (an if's 1/0, a switch's selector).
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
   engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
   program thread (an inheritable thread-local's `childValue` in `Thread.init`,
@@ -545,14 +552,14 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 
 ## 8. What the VM publishes
 
-`jdk/src/share/classes/java/lang/System.java` declares 35 concolic natives (registered in
+`jdk/src/share/classes/java/lang/System.java` declares 36 concolic natives (registered in
 `jdk/src/share/native/java/lang/System.c`, implemented in `VM/prims/jvm.cpp`).
-`runtime/ConcolicVmBroker` looks 24 of them up by reflection, so it loads on a stock JDK, and
+`runtime/ConcolicVmBroker` looks 25 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
 `observeField`, `observeContainer`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
-`getTrackedLocationVersions`, `installGuardedStoreSites`. `markConcolicBranch` and the pause
+`getTrackedLocationVersions`, `installGuardedStoreSites`, `forceNextConcolicBranch`. `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
 statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATION_FAILED -1001`,
 `MALFORMED_RESULT -1002`, and names every status in the gap a refused export or attach files
@@ -679,7 +686,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 71
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 72
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -704,5 +711,7 @@ stated on query and array-element nodes, nothing added to the path) and
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and
 the one `toString` op); `RegionRedefineOnStackSmoke` attaches an agent to its own JVM and
-retransforms `Object` while a thread waits in it, then collects (§1). No smoke test covers the
+retransforms `Object` while a thread waits in it, then collects (§1); `RegionForcedBranchSmoke` forces
+nested `if`s off their concrete arms to a throw, one marker at a time (a refused marker's forcing dropped, a
+callee's branch unforced), and a table and a lookup switch to a case and to their default (§2). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.

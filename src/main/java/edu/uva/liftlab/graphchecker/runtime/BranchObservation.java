@@ -44,7 +44,11 @@ final class BranchObservation {
         try {
             PreparedBranch prepared = active.prepareBranch(method, unitIndex,
                     expression);
-            return prepared == null ? 0L : prepared.handle;
+            if (prepared == null) return 0L;
+            // A FORCE run's armed occurrence forces this branch at its
+            // marker, which follows (ForcedArms).
+            ForcedArms.direct(active, method, unitIndex);
+            return prepared.handle;
         } catch (Throwable throwable) {
             return 0L;
         }
@@ -146,10 +150,13 @@ final class BranchObservation {
                 // loop permuted it: a disjunctive target is read from the
                 // test the occurrence reached it at, and SOLR-18406's flipped
                 // replay decided the second (#u20) with the first never run.
-                active.recordTargetReach(branchSite,
-                        permuted ? active.activation.targetBranchOccurrence
-                                : prepared.occurrence,
+                int reached = permuted
+                        ? active.activation.targetBranchOccurrence
+                        : prepared.occurrence;
+                active.recordTargetReach(branchSite, reached,
                         decision.outcome(), vmEventId);
+                ForcedArms.reachedTarget(active, branchSite, reached,
+                        decision.outcome());
             }
         } catch (Throwable throwable) {
             RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
@@ -177,14 +184,18 @@ final class BranchObservation {
         private final boolean exactRange;
         private final PathConditionWindow conditions;
         private final VmBranchAttestation.Attestation attestation;
+        /** The decision's own VM event, or null when not exactly one. */
+        private final JsonObject event;
 
         private Capture(int baseline, boolean exactRange,
                         PathConditionWindow conditions,
-                        VmBranchAttestation.Attestation attestation) {
+                        VmBranchAttestation.Attestation attestation,
+                        JsonObject event) {
             this.baseline = baseline;
             this.exactRange = exactRange;
             this.conditions = conditions;
             this.attestation = attestation;
+            this.event = event;
         }
     }
 
@@ -214,9 +225,13 @@ final class BranchObservation {
             VmBranchAttestation.noteRefused(siteId, occurrence, attestation,
                     windowOutcome(eventConditionIndices, conditions));
         }
+        List<JsonObject> event = events.isJsonObject()
+                ? PathConditionWindow.eventsNumbered(events.getAsJsonObject(),
+                vmEventId) : Collections.<JsonObject>emptyList();
         return new Capture(baseline,
                 contiguousConditionIndices(eventConditionIndices),
-                conditions, attestation);
+                conditions, attestation,
+                event.size() == 1 ? event.get(0) : null);
     }
 
     /**
@@ -256,6 +271,7 @@ final class BranchObservation {
         // is added below (CONTRACT-SPEC §2.2).
         JsonObject mapping = decisionRow(method, unitIndex, occurrence,
                 vmEventId, observedOutcome, mappingBaseline, mappingLimit);
+        ForcedArms.mark(active, mapping, read.event, null);
         if (conditionIndex >= 0) {
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition =
@@ -298,8 +314,10 @@ final class BranchObservation {
         int mappingLimit = conditionIndices.isEmpty()
                 ? baseline : conditionIndices.get(
                 conditionIndices.size() - 1) + 1;
-        active.branchMappings.add(decisionRow(method, unitIndex, occurrence,
-                vmEventId, expected.caseArm(), mappingBaseline, mappingLimit));
+        JsonObject mapping = decisionRow(method, unitIndex, occurrence,
+                vmEventId, expected.caseArm(), mappingBaseline, mappingLimit);
+        ForcedArms.mark(active, mapping, read.event, expected.caseKeys);
+        active.branchMappings.add(mapping);
         for (Integer conditionIndex : conditionIndices) {
             JsonObject predicate = decisionRow(method, unitIndex, occurrence,
                     vmEventId, null, mappingBaseline, mappingLimit);

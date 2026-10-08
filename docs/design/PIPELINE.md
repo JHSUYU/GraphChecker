@@ -286,13 +286,15 @@ shutdown hook) returns only once they are published, so no exit halts the close 
 outlive the test, and a region started after the close would open a fresh VM session in which
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
-A focused replay ends early, once, for one of two reasons (`ConcolicResultPublisher#conclude`):
+A focused replay ends early, once, for one of three reasons (`ConcolicResultPublisher#conclude`):
 
 - `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
   (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
   held to it holds a `WAKE` it never made to the order's end, IDENTITY.md §8).
 - `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
-  `FocusedReplay#refusedAt`, §7.6).
+  `FocusedReplay#refusedAt`, §7.6), a FORCE run's divergence among them (§7.10).
+- `AT_FORCED_TARGET`: a FORCE run's declared occurrence published its forced target row
+  (`#concludeAtForcedTarget`, §7.10), read whole up to there as a witness's session is.
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
 publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
@@ -329,7 +331,7 @@ the run observed is the `concreteValue` of the query node (VM.md §6, the pin/gu
 which COMPOSE pins (§8, *A query's stated answer*).
 
 A target occurrence publishes its target row whether or not it reached the throw
-(`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
+(`runtime.RowPublication`; a FORCE run's, reached forced, states the forced path condition, §7.10): `phiTerm` is the VM's satisfied predicate of the target branch put in
 the fatal polarity (`RowRuntime.fatalTerm`); when the target branch tests what a helper returned,
 its condition from the decision that chose the return (`RowPublication#decided`: the latest decision
 in the helper's method before the target, when it is one of its `guardDeciders` branches, as
@@ -1192,6 +1194,53 @@ DIAGNOSTIC. COMPOSE, CONFIRM and EMIT then run on the corpus EXPLORE left, as af
 `campaign_publish_iteration_manifest` then writes `iteration_manifest.json`: provenance, digests of the
 task plan, schedule index, census and obligation results, the members and their obligation digests.
 
+### 7.10 The forced replay: FORCE
+
+Every campaign whose scope map states a forcing table (§2, `plan.ForcingTable`) asks, in its first round and
+ahead of every flip, ONE FORCE run of the declared anchor's task (`explore.ForcedFlip`, `Obligation#forcing`):
+the recording's world -- no plant, no flip -- held to the seed session's schedule up to the anchor, its focus
+row `flip: null` and `force: true` (`ExploreCodec#writeFocusFile`, which states the null). Its worker asks no
+solver (`ObligationSolverMain#force`): the answer is SAT_MODEL_READY and the replay runs. In it
+(`runtime.ForcedArms`) the declared occurrence, and only it -- on its thread, from its entry until its target
+decision -- records from its entry and takes the arms that lead to the throw: at the woven prefix of each
+branch of its table (`BranchObservation#prepare`) the runtime asks the VM to force the branch the next marker
+marks (`System.forceNextConcolicBranch`, VM.md §2), every evaluation of it (a loop's turns, a recursion's
+calls: each forced arm reaches the throw by post-dominance), a decider only inside a call of its helper from
+the table row's `via` method (`Identity#callerFrame`); a nested planned region, another occurrence or thread is
+never forced. The VM's event states the concrete answer it overrode; the decision row states it
+(`DecisionRow#forced`, `concreteOutcome`), and the first decision forced against its concrete arm opens the
+forced world. The target row, reached there on its fatal arm, stands at that decision and states as phi the
+forced path condition: every decision of the occurrence from it up to the target's, as taken (forced or not;
+a concrete one forced against its arm `false`), and the target's own phi (`RowPublication#forced`); it is
+marked `forced` and observed no fatal (`TargetRow#forced`), so it is never a witness. The run ends once that
+row is published (`AT_FORCED_TARGET`, §5) and its verdict is ADMITTED, `FORCED_TARGET` and how the occurrence
+then ended (the target's throw, or a handler that caught it); an occurrence that closes first, or takes its
+target's healthy arm (a branch no marker of its frame let the VM force), decides the run there
+(`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame): the session is withdrawn,
+the verdict NOT_ADMITTED, and the exploration goes on as it would without one. `result.json` `force` states
+the last round's view (state, verdict detail, forced flip, `deferredSeedFlips`,
+`seedFlipsAfterForcedFlip`).
+
+The session lands with role `FORCED` and is held apart (`explore.Corpus#forcedPaths`): every row of it is
+indexed under its session, so its forced path composes and is asked in its own scope, and none in a
+corpus-wide view (sessions, rows of an occurrence across sessions, a message's senders, a location's writers
+and sites, the schedule's senders), so no other path, arm, slot, closure member, witness or settled arm reads a
+forced world; `SessionReader#admitted` is false for it, and no write from its forced world on is an alternative
+writer arm (`Arms#eligible`), nor an arrival whose producer the closure plans. Its path, `P_F`, is:
+- EXPLORE's forced flip (`ObligationFactory#forced`, `FlipQuery#buildForced`): its decisions before the first
+  one forced against its concrete arm as run, and its forced path condition as the demanded conjunct (clock
+  margins too), every symbol rule a flip's; the ledger's flip is that decision at its forced arm, keyed apart
+  from the seed path's flip of it (another question). Its replay is unforced and cut from `P_F`'s session;
+  ADMITTED when that decision takes the arm, a witness when the fatal follows. While the FORCE run or the
+  forced flip is unanswered, the seed path's flips at a site of the forcing table are deferred, never dropped
+  (a DIAGNOSTIC gap each): the whole condition is asked first, the nested flips only where it brought no
+  witness.
+- one more of COMPOSE's admitted paths (`RestsOn#admitted`, §8): pi its decisions before the forced world,
+  phi the forced path condition, composed in its own session's scope -- roots by their corpus-wide names, clock
+  cells on the recording's timeline, `v_H` by message families over the corpus's other sessions' exports,
+  reads by its own writes. A claim on it is the run as recorded when it moves nothing (§10), never Realized
+  (its target observed no fatal), and accepted only once CONFIRM, unforced, confirms it.
+
 ## 8. COMPOSE: `compose.ComposeMain` → `compose.Composer`
 
 A merge, not a reconstruction: every value was propagated inside some replay. The anchor is the
@@ -1219,7 +1268,9 @@ CONFIRM judges the rest), at a concrete one the constant healthy decision (`fals
 in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48); the seed always, a focused session only when all its own verdicts are
 `ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
 the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
-`ADMISSION_GAP` naming the first refusal.
+`ADMISSION_GAP` naming the first refusal. Beside them, each forced path (§7.10) is admitted, in its own scope;
+its forced path condition is asserted on its own path alone, never on another's, since its constants are the
+forced world's and asserting them in another world could make a real witness UNSAT (completeness first).
 
 **One path** (`compose(path, ordinal)`), in its own session's scope:
 
@@ -1843,8 +1894,8 @@ or `cutoff` for the path, a schedule, pairing, arm or moved root the rows do not
 name (`CONFIRM refused:`, exit 1): a defect of the rows, `refutes` false, so a claim EMIT publishes
 with it is a `RUN_DEFECT`.
 
-- **The run as recorded**: a claim whose selected session is the seed's, that moves no root and no
-  clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
+- **The run as recorded**: a claim whose selected session is the seed's or a forced one (§7.10: the
+  recording's world), that moves no root and no clock, every selected arm the seed's own delivery and every chosen write the one its read saw,
   is refuted by name (`CONFIRM refutes:`, `refutes` true): it is no counterfactual, whatever a run of
   it observes (owner 2026-10-04: a claim moving no root is never a finding), and the campaign
   excludes it.
@@ -1868,7 +1919,8 @@ with it is a `RUN_DEFECT`.
   world's pairings are held by the rows its replay was held to (`ConfirmMain#holding`, the reader's
   occurrence a block; a pairing the session states no read or write of refuses, `PAIRING_UNSTATED`).
   The focus row focuses the anchor
-  with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
+  with `flip: null`, the anchor as declared target, no inherited flips and no forcing (a forced path's
+  world is the recording's, its claim confirmed by an unforced replay, §7.10). The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer

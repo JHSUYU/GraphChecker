@@ -205,12 +205,22 @@ public final class Frontier {
     }
 
     /** Opens one round over the arms the tasks still owe and nobody is
-     *  asking yet. */
-    public Round open(int index,
+     *  asking yet; {@code first}, a FORCE run ({@link ForcedFlip}), goes
+     *  ahead of them while it is owed (null: none). */
+    public Round open(int index, Obligation first,
                       List<ObligationFactory.Candidate> candidates) {
         List<Obligation> obligations = new ArrayList<Obligation>();
         Set<String> proposed = new LinkedHashSet<String>();
         int held = 0;
+        if (first != null && !settled.containsKey(first.obligationId())) {
+            if (inFlightIds.contains(first.obligationId())) {
+                held++;
+            } else {
+                proposed.add(first.obligationId());
+                proposedBy.put(first.obligationId(), first.taskId());
+                obligations.add(first);
+            }
+        }
         for (ObligationFactory.Candidate candidate : candidates) {
             if (settled.containsKey(candidate.obligationId)) continue;
             if (flying(candidate)) {

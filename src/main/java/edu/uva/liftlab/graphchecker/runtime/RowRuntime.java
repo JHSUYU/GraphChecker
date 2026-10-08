@@ -262,14 +262,24 @@ public final class RowRuntime {
     public static void decision(OccurrenceAddress occurrence, long seq,
                                 String siteId, int ordinal, boolean outcome,
                                 JsonObject condition) {
+        decision(occurrence, seq, siteId, ordinal, outcome, condition, null);
+    }
+
+    /** One decision; {@code concreteOutcome} non-null: a FORCE run forced
+     *  it ({@code DecisionRow#forced}), its operands deciding that arm. */
+    static void decision(OccurrenceAddress occurrence, long seq,
+                         String siteId, int ordinal, boolean outcome,
+                         JsonObject condition, Boolean concreteOutcome) {
         if (occurrence == null) return;
         SessionPublisher session = publisher;
         if (session != null) {
             String ref = expressionRef(condition);
             // Polarity-free: the composer conjoins (outcome ? term : not term).
-            session.decision(DecisionRow.of(sessionId(), sequence(seq),
+            DecisionRow row = DecisionRow.of(sessionId(), sequence(seq),
                     occurrence, trimmed(siteId), ordinal, outcome, ref,
-                    clockReadings(condition)));
+                    clockReadings(condition));
+            session.decision(concreteOutcome == null ? row
+                    : row.forced(concreteOutcome.booleanValue()));
         }
         if (FocusedReplay.observeDecision(occurrence, siteId, ordinal,
                 outcome)) {
@@ -624,23 +634,31 @@ public final class RowRuntime {
                               boolean reachedAnchor) {
         target(occurrence, seq, anchorSiteId, reachedAnchor
                         ? fatalTerm(condition, fatalArm) : "",
-                observedFatal, reachedAnchor, null);
+                observedFatal, reachedAnchor, null, false);
     }
 
     /** The anchor with phi already stated (a disjunction of fatal arms, a
-     *  helper decision's condition), and the open decider arm it left out,
-     *  if any (TargetRow.OpenArm). */
+     *  helper decision's condition, a FORCE run's forced path condition),
+     *  the open decider arm it left out, if any (TargetRow.OpenArm), and
+     *  whether a FORCE run reached it forced ({@code TargetRow#forced}). */
     static void target(OccurrenceAddress occurrence, long seq,
                        String anchorSiteId, String phiTerm,
                        boolean observedFatal, boolean reachedAnchor,
-                       TargetRow.OpenArm openArm) {
+                       TargetRow.OpenArm openArm, boolean forced) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null) return;
-        session.target(TargetRow.of(sessionId(), sequence(seq), occurrence,
+        TargetRow row = TargetRow.of(sessionId(), sequence(seq), occurrence,
                 trimmed(anchorSiteId), trimmed(phiTerm), observedFatal,
-                reachedAnchor, openArm));
-        if (observedFatal && reachedAnchor
-                && FocusedReplay.declaredTarget(occurrence)) {
+                reachedAnchor, openArm);
+        session.target(forced ? row.forced() : row);
+        if (!reachedAnchor || !FocusedReplay.declaredTarget(occurrence)) {
+            return;
+        }
+        // The question is answered at the witness; a FORCE run's at its
+        // forced target, which is no witness (it observed no fatal).
+        if (forced) {
+            ConcolicResultPublisher.concludeAtForcedTarget();
+        } else if (observedFatal) {
             ConcolicResultPublisher.concludeAtWitness();
         }
     }
@@ -1271,6 +1289,7 @@ public final class RowRuntime {
             Interactions.resetForTests();
             Lineage.resetForTests();
             FocusedReplay.resetForTests();
+            ForcedArms.resetForTests();
             RootMint.resetForTests();
             Confirmation.resetForTests();
             SessionPublisher.resetForTests();

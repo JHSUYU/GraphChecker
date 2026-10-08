@@ -202,8 +202,9 @@ public final class ExploreMain {
 
         // The one ledger of owed arms (Frontier).
         Frontier frontier = new Frontier(corpus, tasks, flipSites);
-        frontier.consume(RowCodec.readAll(results,
-                RowCodec::readObligationResult));
+        List<ObligationResult> answers = RowCodec.readAll(results,
+                RowCodec::readObligationResult);
+        frontier.consume(answers);
         if (inFlight != null) {
             frontier.inFlight(RowCodec.readAll(inFlight,
                     ExploreCodec::readObligation));
@@ -215,7 +216,12 @@ public final class ExploreMain {
                     flipSites.get(task.taskId()), bounds, branches, frontier,
                     gaps));
         }
-        Frontier.Round open = frontier.open(round, candidates);
+        // The forced replay of the anchor first (PIPELINE §7.10).
+        ForcedFlip.Round forced = ForcedFlip.plan(corpus,
+                anchorTask(tasks, roots), scope, frontier, answers,
+                candidates, gaps);
+        Frontier.Round open = frontier.open(round, forced.force,
+                forced.candidates);
 
         Files.createDirectories(out);
         // G_k and growth (PIPELINE §7.1); empty growth.jsonl +
@@ -270,10 +276,20 @@ public final class ExploreMain {
                 witnesses, wave(iteration, corpus), branches, concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, answersByFlip(iteration)));
+        manifest.add("force", forced.manifest);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;
+    }
+
+    /** The declared anchor's task among a round's, or null. */
+    private static Task anchorTask(List<Task> tasks,
+                                   List<OccurrenceAddress> roots) {
+        for (Task task : tasks) {
+            if (roots.contains(task.focused())) return task;
+        }
+        return null;
     }
 
     /**

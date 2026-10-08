@@ -98,6 +98,13 @@ public final class Arms {
         /** Every root the corpus minted, by root id. */
         Map<String, List<RootMintRow>> roots();
 
+        /** Where a forced session's forced world begins ({@code
+         *  explore.Corpus#forcedFrom}): no write from there on is an arm
+         *  of another writer; {@link Long#MAX_VALUE} for any other. */
+        default long forcedFrom(String sessionId) {
+            return Long.MAX_VALUE;
+        }
+
         /**
          * What one session RAN one root at, or {@code ""}.  Not the mint's
          * {@code recordedValue}: a planted replay states its value only in
@@ -484,6 +491,9 @@ public final class Arms {
                             String location, List<WriteRow> writes,
                             long observedVersion, WriteRow state) {
         if (state.version() == observedVersion) return true;
+        // A forced world's write is what its own forced path read, never
+        // another writer a read could have seen (PIPELINE §7.10).
+        if (state.seq() >= rows.forcedFrom(session)) return false;
         if (!state.initial() && (constructs(state) || !concurrent(reader,
                 state.endpoint().occurrence(), session))) {
             return false;

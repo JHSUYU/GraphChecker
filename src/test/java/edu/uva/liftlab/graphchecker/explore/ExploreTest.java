@@ -154,6 +154,131 @@ public class ExploreTest {
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
 
+    // ---- (0) the forced replay: the whole way to the throw first -------
+
+    /**
+     * PIPELINE §7.10: {@code if (a) { if (b) throw }}, the recording took
+     * not-a.  The first round asks ONE FORCE run of the anchor, first, and
+     * holds the seed's flip at a forced site back; once the forced session
+     * lands -- held apart, no path of the corpus-wide views -- its forced
+     * flip asks a and b at once, and only once that is answered does the
+     * seed's flip of a go out.
+     */
+    @Test
+    public void theForcedRunIsAskedFirstAndItsPathAsksTheWholeWay()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("forced").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.A", "M_A", RootKind.MARKER, "false", null,
+                null, true);
+        seed.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0", "10",
+                true);
+        seed.decision(TARGET, "Guard#u8", 1, false, "M_A");
+        seed.flush();
+        JsonObject target = com.google.gson.JsonParser.parseString(
+                targetSite("REGION.target", "Throw#u30", "Guard#u19"))
+                .getAsJsonObject();
+        target.add("force", com.google.gson.JsonParser.parseString(
+                "[{\"siteId\":\"Guard#u19\",\"arm\":true},"
+                        + "{\"siteId\":\"Guard#u8\",\"arm\":true}]"));
+        target.add("chain", com.google.gson.JsonParser.parseString(
+                "[{\"siteId\":\"Guard#u8\",\"outcome\":true}]"));
+        scopeMap(iteration, target.toString());
+        Path out = tree.newFolder("forced-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+
+        // Round 0: the FORCE run first; the seed's flip of a waits.
+        Path wave0 = out.resolve("obligations-0000");
+        JsonObject first = plan(iteration, TARGET_SELECTOR, null, results,
+                wave0, 0);
+        List<Obligation> proposed = obligations(wave0);
+        assertEquals("the FORCE run alone: " + proposed, 1, proposed.size());
+        Obligation force = proposed.get(0);
+        assertTrue(force.force() && !force.flips());
+        assertEquals(Corpus.pathId("s-seed", TARGET), force.pathId());
+        JsonObject held = first.getAsJsonObject("force");
+        assertEquals("PROPOSED", held.get("state").getAsString());
+        assertEquals(1, held.get("deferredSeedFlips").getAsInt());
+        // Its worker asks no solver: the seed's world, the anchor forced.
+        Worker forcing = solve(iteration, wave0, force, out, "force");
+        assertEquals(Verdict.SAT_MODEL_READY, forcing.verdict);
+        JsonObject focus = RowCodec.readJsonl(forcing.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertTrue(focus.get("force").getAsBoolean());
+        assertTrue(focus.get("flip").isJsonNull());
+        assertEquals(TARGET.render(),
+                focus.get("declaredTarget").getAsString());
+        // In flight, it is not asked again, and the seed's flip still waits.
+        Path flying = out.resolve("in_flight.jsonl");
+        RowCodec.writeAll(flying, Collections.singletonList(force),
+                ExploreCodec::writeObligation);
+        Path again = out.resolve("obligations-0000b");
+        JsonObject waiting = ExploreMain.plan(iteration, TARGET_SELECTOR,
+                null, results, flying, iteration.resolve(StaticScopeMap.FILE),
+                again, 1, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                DEFAULT_BOUNDS);
+        assertTrue(obligations(again).isEmpty());
+        assertEquals("IN_FLIGHT",
+                waiting.getAsJsonObject("force").get("state").getAsString());
+
+        // The forced session lands: a and b forced off their arms, its
+        // target standing at a with the whole way to the throw as phi.
+        Session forced = new Session(iteration, "s-forced");
+        forced.activation(TARGET, true);
+        forced.root(TARGET, "CASE.A", "M_A", RootKind.MARKER, "false", null,
+                null, true);
+        forced.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                "10", true);
+        forced.forcedDecision(TARGET, "Guard#u8", 1, true, "M_A");
+        forced.forcedDecision(TARGET, "Guard#u19", 1, true, "(> M_B 5)");
+        forced.forcedTarget(TARGET, "Guard#u19", 3L,
+                "(and M_A (> M_B 5))");
+        forced.answered(ObligationResult.of(force.obligationId(),
+                Verdict.ADMITTED, "s-forced", "FORCED_TARGET: reached"));
+        forced.flush();
+        record(results, ObligationResult.of(force.obligationId(),
+                Verdict.ADMITTED, "s-forced", "FORCED_TARGET: reached"));
+        Corpus corpus = Corpus.read(iteration, null);
+        assertEquals("held apart from every corpus-wide view", 1,
+                corpus.sessions().size());
+        assertTrue(corpus.targetsOn(TARGET).isEmpty()
+                && corpus.pathsOf(TARGET).size() == 1);
+        assertEquals(1, corpus.forcedPaths(TARGET).size());
+        assertEquals(3L, corpus.forcedFrom("s-forced"));
+
+        // Round 1: the forced flip, at a's forced arm; the seed's still waits.
+        Path wave1 = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null, results, wave1, 1);
+        List<Obligation> next = obligations(wave1);
+        assertEquals("the forced flip alone: " + next, 1, next.size());
+        Obligation whole = next.get(0);
+        assertEquals("Guard#u8", whole.siteId());
+        assertTrue(whole.flippedOutcome());
+        assertEquals(Corpus.pathId("s-forced", TARGET), whole.pathId());
+        Worker asked = solve(iteration, wave1, whole, out, "forced-flip");
+        assertEquals(Verdict.SAT_MODEL_READY, asked.verdict);
+        assertEquals("a holds", "true",
+                asked.obligation.rootAssignments().get("CASE.A"));
+        assertTrue("and so does b, nested behind it, in the same world",
+                Integer.parseInt(asked.obligation.rootAssignments()
+                        .get("CASE.B")) > 5);
+
+        // Answered: the seed's flip of a goes out, counted.
+        record(results, ObligationResult.of(whole.obligationId(),
+                Verdict.UNSAT, "", "no world"));
+        Path wave2 = out.resolve("obligations-0002");
+        JsonObject after = plan(iteration, TARGET_SELECTOR, null, results,
+                wave2, 2);
+        List<Obligation> last = obligations(wave2);
+        assertEquals(1, last.size());
+        assertEquals(Corpus.pathId("s-seed", TARGET), last.get(0).pathId());
+        assertEquals(1, after.getAsJsonObject("force")
+                .get("seedFlipsAfterForcedFlip").getAsInt());
+    }
+
     // ---- (1) depth: one decision per wave -----------------------------
 
     @Test
@@ -5411,6 +5536,8 @@ public class ExploreTest {
         private final List<GapRow> gaps = new ArrayList<>();
         /** What this replay SETTLED, as its own obligations.jsonl states. */
         private final List<ObligationResult> answered = new ArrayList<>();
+        /** A FORCE run's session ({@code SessionManifest.Role#FORCED}). */
+        private boolean forced;
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -5457,6 +5584,25 @@ public class ExploreTest {
                             String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
                     false, true));
+        }
+
+        /** A FORCE run's decision, forced off the arm its operands took. */
+        private void forcedDecision(OccurrenceAddress occurrence, String site,
+                                    int ordinal, boolean outcome,
+                                    String term) {
+            forced = true;
+            decisions.add(DecisionRow.of(sessionId, ++seq, occurrence, site,
+                    ordinal, outcome, term,
+                    Collections.<String, Long>emptyMap()).forced(!outcome));
+        }
+
+        /** A FORCE run's target, standing at {@code from}: the forced path
+         *  condition as its phi. */
+        private void forcedTarget(OccurrenceAddress occurrence, String site,
+                                  long from, String phi) {
+            forced = true;
+            targets.add(TargetRow.of(sessionId, from, occurrence, site, phi,
+                    false, true).forced());
         }
 
         /** The anchor, where this replay observed the fatal. */
@@ -5575,11 +5721,17 @@ public class ExploreTest {
             for (ActivationRow activation : activations) {
                 if (activation.focused()) focused = true;
             }
+            List<String> ran = new ArrayList<String>();
+            for (ObligationResult result : answered) {
+                ran.add(result.obligationId());
+            }
             RowCodec.writeManifest(dir.manifest(),
                     SessionManifest.of(sessionId,
-                            focused ? SessionManifest.Role.FOCUSED
+                            forced ? SessionManifest.Role.FORCED
+                                    : focused ? SessionManifest.Role.FOCUSED
                                     : SessionManifest.Role.SEED,
-                            focused ? Collections.singletonList(
+                            forced ? ran : focused
+                                    ? Collections.singletonList(
                                     "OBL." + sessionId)
                                     : Collections.<String>emptyList()));
         }

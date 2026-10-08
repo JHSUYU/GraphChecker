@@ -1296,6 +1296,18 @@ public final class Identity {
         return state.levels.get(state.depth()).token;
     }
 
+    /**
+     * The method that called the innermost one -- the frame one level out,
+     * as its level was entered ({@code JvmNames#stable} of the method's
+     * signature) -- or {@code ""} at the thread's root: which call of a
+     * helper a forced replay forces a decider in ({@code ForcedArms}).
+     */
+    static String callerFrame() {
+        State state = state();
+        return state.depth() < 2 ? ""
+                : state.frame(state.depth() - 2).callSite();
+    }
+
     /** The innermost frame's call site, for a report, or {@code ""}. */
     public static String innermostFrame() {
         State state = state();

@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -63,10 +64,20 @@ public final class ExploreCodec {
         json.add("rootAssignments", strings(obligation.rootAssignments()));
         json.add("answers", strings(obligation.answers()));
         json.add("unproducible", list(obligation.unproducible()));
+        if (obligation.force()) json.addProperty(FORCE, true);
         return json;
     }
 
+    /** A FORCE obligation's mark (Obligation#forcing), on its row and on
+     *  its focus row. */
+    static final String FORCE = "force";
+
     public static Obligation readObligation(JsonObject json) {
+        if (optionalBool(json, FORCE, false)) {
+            return Obligation.forcing(optionalString(json, "obligationId"),
+                    optionalString(json, "taskId"),
+                    optionalString(json, "pathId"));
+        }
         return Obligation.of(optionalString(json, "obligationId"),
                 optionalString(json, "taskId"),
                 optionalString(json, "pathId"),
@@ -145,6 +156,17 @@ public final class ExploreCodec {
         row.add("unproducible", list(obligation.unproducible()));
         if (cut != null) row.add("schedulePrefix", cut.toJson());
         return row;
+    }
+
+    /** Writes one focus row ({@code focused_task.jsonl}; none: an empty
+     *  file), nulls stated: a CONFIRM's or a FORCE run's {@code flip: null}
+     *  is the statement ({@code runtime.FocusedReplay} reads no row without
+     *  it). */
+    static void writeFocusFile(Path file, JsonObject focus)
+            throws IOException {
+        Files.write(file, (focus == null ? "" : new GsonBuilder()
+                .serializeNulls().create().toJson(focus) + "\n")
+                .getBytes(StandardCharsets.UTF_8));
     }
 
     /** The world one focus row states; mirrored by {@code

@@ -222,8 +222,15 @@ public final class RowCodec {
             clocks.addProperty(reading.getKey(), reading.getValue());
         }
         json.add("clockReadings", clocks);
+        if (row.isForced()) {
+            json.addProperty(FORCED, true);
+            json.addProperty("concreteOutcome", row.concreteOutcome());
+        }
         return json;
     }
+
+    /** A FORCED row's mark (DecisionRow#forced, TargetRow#forced). */
+    private static final String FORCED = "forced";
 
     static DecisionRow readDecision(JsonObject json, RowPool pool) {
         Map<String, Long> clocks = new LinkedHashMap<>();
@@ -231,10 +238,13 @@ public final class RowCodec {
         for (Map.Entry<String, JsonElement> reading : readings.entrySet()) {
             clocks.put(reading.getKey(), reading.getValue().getAsLong());
         }
-        return DecisionRow.of(string(json, SESSION_ID), number(json, SEQ),
+        DecisionRow row = DecisionRow.of(string(json, SESSION_ID),
+                number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "siteId"), integer(json, "ordinal"),
                 bool(json, "outcome"), string(json, "term"), clocks);
+        return json.has(FORCED) ? row.forced(bool(json, "concreteOutcome"))
+                : row;
     }
 
     public static JsonObject writeExport(ExportRow row) {
@@ -435,6 +445,7 @@ public final class RowCodec {
             }
             json.add(OPEN_ARM, arm);
         }
+        if (row.isForced()) json.addProperty(FORCED, true);
         return json;
     }
 
@@ -452,11 +463,13 @@ public final class RowCodec {
                     arm.has("askedOrdinal")
                             ? (int) number(arm, "askedOrdinal") : 0);
         }
-        return TargetRow.of(string(json, SESSION_ID), number(json, SEQ),
+        TargetRow row = TargetRow.of(string(json, SESSION_ID),
+                number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "anchorSiteId"), string(json, "phiTerm"),
                 bool(json, "observedFatal"), bool(json, "reachedAnchor"),
                 open);
+        return json.has(FORCED) ? row.forced() : row;
     }
 
     /** A target row's open decider arm (TargetRow.OpenArm). */

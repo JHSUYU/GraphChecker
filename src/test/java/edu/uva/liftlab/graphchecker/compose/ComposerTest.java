@@ -1564,6 +1564,41 @@ public class ComposerTest {
     }
 
     /**
+     * A FORCED path (PIPELINE §7.10): the recording took the healthy arm of
+     * a concrete guard, so its path is no world; the forced session, its
+     * guard forced, stands at that guard with the whole way to the throw as
+     * phi.  Composed beside it over the same root names, the forced
+     * disjunct is the witness -- the marker flipped AND the counter past 5,
+     * nested behind it.
+     */
+    @Test
+    public void aForcedPathStatesTheWholeWayToTheThrow() throws Exception {
+        Path iteration = folder.newFolder("forced").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.serial("0", "0", "10");
+        seed.target("false", false, true);
+        seed.write();
+        Session forced = new Session(iteration, "s-forced", false);
+        forced.marker("false");
+        forced.serial("0", "0", "10");
+        forced.forcedDecision(ANCHOR, "a#u1", MARKER);
+        forced.forcedTarget(3L, "(and " + MARKER + " (> " + SERIAL + " 5))");
+        forced.write();
+        // Pairs of moves are enumerated after the single ones.
+        Composer.Composition composition = compose(iteration, 64);
+        assertEquals("the seed's path and the forced one", 2,
+                composition.paths().size());
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, decision.claim().kind());
+        assertEquals("true", decision.claim().movedRoots().get(MARKER_ROOT));
+        assertTrue("and the counter nested behind it moved with it",
+                Integer.parseInt(decision.claim().movedRoots()
+                        .get(SERIAL_ROOT)) > 5);
+    }
+
+    /**
      * A DISJUNCTION is asked whole while that decides, else path by path,
      * and the answer is the first sat path in order.  A path refuted under
      * some assertions is not asked again under more of them; a refutation
@@ -7793,6 +7828,25 @@ public class ComposerTest {
                     observedFatal, reached));
         }
 
+        /** A FORCE run's (PIPELINE §7.10): this session states it ran
+         *  forced, its decision forced off the arm its operands took. */
+        void forcedDecision(OccurrenceAddress at, String site, String term) {
+            forced = true;
+            decisions.add(DecisionRow.of(id, ++seq, at, site,
+                    decisions.size() + 1, true, term,
+                    Collections.<String, Long>emptyMap()).forced(false));
+        }
+
+        /** A FORCE run's target, standing at {@code at}. */
+        void forcedTarget(long at, String phi) {
+            forced = true;
+            targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
+                    false, true).forced());
+        }
+
+        /** Whether this session states it ran forced. */
+        private boolean forced;
+
         /** A target standing at an earlier event (a helper decision's,
          *  runtime.RowPublication#decided). */
         void targetAt(long at, String phi, boolean observedFatal,
@@ -7828,16 +7882,17 @@ public class ComposerTest {
             // manifest does: an exploration replay is FOCUSED under the
             // obligation it ran, the recording is SEED.
             RowCodec.writeManifest(dir.manifest(), SessionManifest.of(id,
-                    explored ? SessionManifest.Role.FOCUSED
+                    forced ? SessionManifest.Role.FORCED : explored
+                            ? SessionManifest.Role.FOCUSED
                             : SessionManifest.Role.SEED,
-                    explored ? Collections.singletonList("OBL." + id)
+                    explored || forced ? Collections.singletonList("OBL." + id)
                             : Collections.<String>emptyList())
                     .atClose(Collections.<String, Integer>emptyMap(),
                             readings, derived));
             // And the VERDICT, which the replay owns: a focused session
             // that states none settled nothing, and the composition asks
             // the session's own row rather than the wave's copy of it.
-            RowCodec.writeAll(dir.obligations(), explored
+            RowCodec.writeAll(dir.obligations(), explored || forced
                             ? Collections.singletonList(settled)
                             : Collections.<ObligationResult>emptyList(),
                     RowCodec::writeObligationResult);
