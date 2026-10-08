@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -336,17 +337,54 @@ public final class MessageDoors {
     /**
      * A write to a store the nodes share is about to be made at {@code
      * location} (a sequential create's: the prefix the store completes).
-     * The store applies a write, and notifies the version's watchers, before
-     * the write's call returns, so another thread can read the version
-     * before {@link #stored} files it (SOLR-18413 F2: node1's state watchers
-     * read the routing rule's version before the Overseer's turn filed it,
-     * and their work opened no occurrence).  Until {@link #storeEnded}, a
-     * read of a version this write may have made that finds it unfiled
-     * waits for it, at most {@link #FILED_WAIT_MS} ({@link #filed}).
+     * It takes its turn first ({@link ScheduleEvent.Kind#WRITE}, keyed by
+     * the location as every run spells it, {@link RunNames}): writes to one
+     * location run in the recorded order, and the store decides each race
+     * they run -- whether a create finds its node made, a sequence number --
+     * as the recording's did (SB19, solr-bugs-reindex-cleanup: a node
+     * created the collection's terms node the recording had another replica
+     * create, and the shard's leader election went the other way).  A
+     * location that still spells a name only this run has, which no adapter
+     * stated ({@link #spelledAs}), keys alike in no two runs: that write
+     * takes no turn, and says so once per name.
+     *
+     * <p>The store applies a write, and notifies the version's watchers,
+     * before the write's call returns, so another thread can read the
+     * version before {@link #stored} files it (SOLR-18413 F2: node1's state
+     * watchers read the routing rule's version before the Overseer's turn
+     * filed it, and their work opened no occurrence).  Until {@link
+     * #storeEnded}, a read of a version this write may have made that finds
+     * it unfiled waits for it, at most {@link #FILED_WAIT_MS} ({@link
+     * #filed}).</p>
      *
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
+        RunNames.Keyed keyed = RunNames.key(trimmed(location));
+        if (keyed.unnamed.isEmpty()) {
+            ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
+                    ScheduleEvent.written(trimmed(transport), keyed.location));
+        } else if (UNNAMED.add(keyed.unnamed)) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    transport + " " + keyed.unnamed, "a write's location"
+                            + " spells " + keyed.unnamed + ", a name only"
+                            + " this run has that no adapter stated as a"
+                            + " node's (MessageDoors#spelledAs): its writes"
+                            + " take no turn before the store's call, so the"
+                            + " store decides their races as this run's"
+                            + " timing has it, held only by the SEND after"
+                            + " each");
+        }
+        return inFlight(transport, location);
+    }
+
+    /** The run-only names a write's location spelled that no adapter
+     *  stated, each named once ({@link #storing}). */
+    private static final java.util.Set<String> UNNAMED =
+            ConcurrentHashMap.newKeySet();
+
+    /** A write in flight at {@code location} until {@link #storeEnded}. */
+    private static long inFlight(String transport, String location) {
         long store = STORES.incrementAndGet();
         synchronized (STORING) {
             STORING.computeIfAbsent(transport,
@@ -458,7 +496,7 @@ public final class MessageDoors {
     public static void stored(String transport, String key, Object owner) {
         // In flight until filed, whatever bracket the adapter opened: the
         // SEND and the producer it mints take the concolic VM milliseconds.
-        long store = storing(transport, location(key));
+        long store = inFlight(transport, location(key));
         try {
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
@@ -704,6 +742,20 @@ public final class MessageDoors {
                                       String sourceId, long epoch) {
         CausynthTraceRecorder.registerSource(anchor, kind, role, sourceId,
                 epoch);
+    }
+
+    /**
+     * The names node {@code sourceId} has only in this run -- the id of its
+     * store session, its host and port -- each stated so: a store location
+     * that spells one keys its write by the node's name instead ({@link
+     * #storing}), alike in the recording and every replay (a ZooKeeper
+     * leader election's {@code <session>-<core>-n_} prefix).
+     */
+    public static void spelledAs(String sourceId, String... spellings) {
+        if (spellings == null) return;
+        for (String spelling : spellings) {
+            RunNames.spelled(trimmed(sourceId), trimmed(spelling));
+        }
     }
 
     public static void registerSourceAlias(Object alias, Object anchor) {

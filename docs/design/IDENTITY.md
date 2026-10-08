@@ -525,7 +525,17 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 - `consumed(transport, key)`: a queue item's staged values arrive with it; the consumer keeps its
   own context.
 - `storing(transport, location)` ... `storeEnded(transport, token)`: a write in flight at one
-  location (a sequential create's: the prefix the store completes). The store applies a write,
+  location (a sequential create's: the prefix the store completes). The write first takes its turn,
+  a `WRITE` event whose site is `<transport>:<location>` (§8), so writes to one location run in the
+  recorded order and the store decides each race they run -- whether a create finds its node made, a
+  sequence number -- as the recording's did (SB19, solr-bugs-reindex-cleanup on `main`: a node created
+  the collection's terms node the recording had another replica create, and the shard's leader
+  election went the other way). The location is keyed as every run spells it (`runtime/RunNames`): a
+  name a node has only in this run -- its store session's id, its host and port -- that its adapter
+  stated (`MessageDoors#spelledAs(sourceId, spellings...)`) becomes the node's name, so a leader
+  election's `<session>-<core>-n_` prefix keys alike in the recording and every replay; a location
+  still spelling a long number or a host and port takes no turn, and is named once (DIAGNOSTIC
+  `DECLARATION_MISSING`). The store applies a write,
   and notifies the version's watchers, before the write's call returns, so another thread can
   read the version before its writer files it (SOLR-18413 F2: node1's state watchers read the
   routing rule's version while the Overseer's turn was still in `stored`, and their work opened
@@ -564,7 +574,8 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 ## 8. The schedule
 
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
-`CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
+`CLAIM`, `SEND` (with the producer endpoint), `WRITE` (a shared store's write taking its turn before
+the store's call, §7.2), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
@@ -634,6 +645,17 @@ order:
   the state the interrupted thread stood in when another thread's call came (a Hadoop IPC sender
   idle between calls stands in its last call's claim), and the interrupter's own events hold the
   order; it takes its slot if it comes;
+- a `WRITE` never passes an earlier held write to its location (`ScheduleLog#conflictLocked`): one
+  with a slot that holds is due only past it anyway; one whose slot holds nothing (past the cut), or
+  with no slot -- a write the recording did not make there: a create-if-absent another node's write
+  found made, a retry, an extra sequential create -- waits for the write that was next there when it
+  first asked (fixed then, never every later write there), at the slot after it, until that slot is
+  taken or given up. A write that never comes costs a stall, never the run: on `solr-bug-reindex` a
+  given-up write still conflicted (a LATE state, never reversed), and SOLR-18413's seed replay stalled
+  103,812 times -- a core-admin CREATE's queue write waited behind the Overseer task's, which the
+  Overseer makes only once its `waitForCoreAdminAsyncCallToComplete` poll sees that CREATE complete.
+  Such a waiter passes none of its own context's slots there (where it waits is the other write's
+  place) and is never let go;
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order

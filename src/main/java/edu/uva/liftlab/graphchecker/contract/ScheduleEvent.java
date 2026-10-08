@@ -42,6 +42,16 @@ public final class ScheduleEvent extends Value {
         CLAIM,
         /** A message leaves. */
         SEND,
+        /**
+         * A write to a store the nodes share takes its turn, before the
+         * store's call: its site is {@link #written} (the store's transport
+         * and the location the write races for -- the path, a sequential
+         * create's prefix), so writes to one location run in the order the
+         * recording ran them, and the store decides each race as it did (a
+         * create-if-absent's, a sequence number).  The SEND after the write
+         * names the version it made.
+         */
+        WRITE,
         /** A message is installed on the thread that serves it. */
         RECV,
         /**
@@ -106,6 +116,12 @@ public final class ScheduleEvent extends Value {
                 Fields.text(site, "site"), k,
                 occurrence == null ? "" : occurrence,
                 endpoint == null ? "" : endpoint);
+    }
+
+    /** A WRITE's site: the store's transport and the location written. */
+    public static String written(String transport, String location) {
+        return (transport == null ? "" : transport) + ":"
+                + (location == null ? "" : location);
     }
 
     /** What two runs compare an event by: kind, context, site (not k). */

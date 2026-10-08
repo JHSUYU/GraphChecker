@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -54,6 +55,7 @@ public class ScheduleLogTest {
     private static final SourceRef NODE =
             new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
     private long request;
+    private Object node;
 
     @Before
     public void reset() {
@@ -68,7 +70,7 @@ public class ScheduleLogTest {
 
     /** The test's one request, on a freshly reset runtime. */
     private void openRequest() {
-        Object node = new Object();
+        node = new Object();
         RuntimeTraceContext.registerSource(node, NODE);
         request = RuntimeTraceContext.beginRequest(node, "schedule-test");
     }
@@ -888,6 +890,155 @@ public class ScheduleLogTest {
                         + "for ever: " + waited,
                 waited >= MessageDoors.FILED_WAIT_MS - 100L
                         && waited < MessageDoors.FILED_WAIT_MS + 3000L);
+    }
+
+    /**
+     * A WRITE takes its turn before the store's call, and never passes an
+     * earlier held write to its location -- until that write is taken or
+     * the watchdog gives it up, as any slot: no wait is unbounded.  Per row:
+     * the writes the recording made (request:location), the replay's (a
+     * request after a '<' writes only once the first request's write
+     * returned: the Overseer's poll for the core-admin CREATE it sent), the
+     * order they are written in, and whether a slot was given up.
+     *
+     * <ul>
+     * <li>SOLR-18413 on solr-bug-reindex: the Overseer task wrote its queue
+     *     item before the CREATE's in the recording, but makes it only once
+     *     its poll sees that CREATE complete -- a stall, then the CREATE goes
+     *     and the Overseer's write takes its given-up slot late;</li>
+     * <li>the same with the CREATE's write unrecorded there;</li>
+     * <li>a write the order lacks waits for the write that was next at its
+     *     location, and goes once it is made, with no stall;</li>
+     * <li>one whose write never comes goes after a stall;</li>
+     * <li>one elsewhere waits for nothing.</li>
+     * </ul>
+     */
+    @Test(timeout = 60000L)
+    public void aWriteNeverPassesAnEarlierWriteToItsLocationForLongerThanAStall()
+            throws Exception {
+        String q = "/overseer/queue/qn-";
+        String[][] rows = {
+            {"o:" + q + " c:" + q, "c:" + q + " o<c:" + q, "c o", "1"},
+            {"o:" + q, "c:" + q + " o<c:" + q, "c o", "1"},
+            {"o:/p", "c:/p o:/p", "o c", "0"},
+            {"o:/p", "c:/p", "c", "1"},
+            {"o:/p", "c:/q o:/p", "c o", "0"},
+        };
+        for (String[] row : rows) {
+            noRequest();
+            for (String write : row[0].split(" ")) {
+                String[] at = write.split(":", 2);
+                request(at[0], () -> written(at[1]));
+            }
+            List<ScheduleEvent> recorded = events();
+            noRequest();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+            enforce(recorded);
+            final CountDownLatch first = new CountDownLatch(1);
+            final Map<String, String> apis =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            List<Thread> writers = new ArrayList<Thread>();
+            long before = System.nanoTime();
+            for (String write : row[1].split(" ")) {
+                String[] at = write.split(":", 2);
+                final boolean after = at[0].endsWith("<c");
+                final String api = after ? at[0].substring(0, 1) : at[0];
+                Thread writer = new Thread(() -> request(api, () -> {
+                    apis.put(ScheduleLog.contextOf(Identity.contextHere()),
+                            api);
+                    try {
+                        if (after) first.await();
+                        written(at[1]);
+                        first.countDown();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }));
+                writer.start();
+                writers.add(writer);
+                Thread.sleep(300L);
+            }
+            for (Thread writer : writers) writer.join(20000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            String progress = ScheduleLog.progress();
+            List<String> made = new ArrayList<String>();
+            for (ScheduleEvent event : events()) {
+                made.add(apis.get(event.context()));
+            }
+            assertEquals(row[1], Arrays.asList(row[2].split(" ")), made);
+            assertTrue(row[1] + ": " + progress, progress.contains(
+                    " " + row[3] + " given up"));
+            assertTrue(row[1] + " a stall at most, never for ever: " + took,
+                    took < (row[3].equals("1") ? 12000L : 3000L));
+        }
+    }
+
+    /**
+     * A leader election's node is created under its node's store session,
+     * whose id differs from run to run: stated by the adapter as the node's
+     * own spelling, the location keys by the node's name, so the replay's
+     * creates take their recorded slots in the recorded order.  A session
+     * no adapter stated keys alike in no two runs: its write takes no turn.
+     */
+    @Test(timeout = 20000L)
+    public void anElectionPrefixKeysByItsNodeAcrossRunsWithOtherSessions()
+            throws Exception {
+        noRequest();
+        MessageDoors.spelledAs("auto0/node0", "72088256043548677");
+        MessageDoors.spelledAs("auto0/node1", "72088256043548678");
+        request("a", () -> written("/elect/72088256043548677-core_node3-n_"));
+        request("b", () -> written("/elect/72088256043548678-core_node6-n_"));
+        List<ScheduleEvent> recorded = events();
+        assertEquals(Arrays.asList("STORE:/elect/{auto0/node0}-core_node3-n_",
+                "STORE:/elect/{auto0/node1}-core_node6-n_"), sites());
+        noRequest();
+        MessageDoors.spelledAs("auto0/node0", "72089999000000001");
+        MessageDoors.spelledAs("auto0/node1", "72089999000000002");
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        enforce(recorded);
+        Thread b = new Thread(() -> request("b", () -> written(
+                "/elect/72089999000000002-core_node6-n_")));
+        b.start();
+        Thread.sleep(500L);
+        assertTrue("node1's create waits for node0's", b.isAlive());
+        request("a", () -> written("/elect/72089999000000001-core_node3-n_"));
+        b.join(10000L);
+        assertEquals(recorded.get(0).context(), events().get(0).context());
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 0 given up"));
+        written.clear();
+        request("c", () -> written("/elect/72089999000000003-core_node9-n_"));
+        assertTrue("an unstated session takes no turn: " + sites(),
+                sites().isEmpty());
+    }
+
+    /**
+     * A fresh run on this thread, its schedule empty, with no request
+     * standing, so the next one roots its lineage.
+     */
+    private void noRequest() {
+        written.clear();
+        reset();
+        RuntimeTraceContext.endRequest(request);
+        request = 0L;
+    }
+
+    /** One workload request {@code api}, rooting its lineage, running
+     *  {@code inside}. */
+    private void request(String api, Runnable inside) {
+        long token = RuntimeTraceContext.beginRequest(node, api);
+        try {
+            inside.run();
+        } finally {
+            RuntimeTraceContext.endRequest(token);
+        }
+    }
+
+    /** One write to the shared store at {@code location}: its bracket. */
+    private static void written(String location) {
+        MessageDoors.storeEnded("STORE", MessageDoors.storing("STORE",
+                location));
     }
 
     /** A notification on a thread of its own reading {@code key}: whether a

@@ -43,7 +43,11 @@ public enum GapKind {
      * the declaration's; without it the replay diverged from its recording.
      */
     SEED_OBSERVED_FATAL,
-    /** A root or a port the case never declared. */
+    /**
+     * A root or a port the case never declared; or a run's own name of a
+     * node (a store session's id, a host and port) a store location spells
+     * and no adapter stated ({@code runtime.MessageDoors#spelledAs}).
+     */
     DECLARATION_MISSING,
     /**
      * A tree hook ran in a case whose plan declares its source nowhere: no
