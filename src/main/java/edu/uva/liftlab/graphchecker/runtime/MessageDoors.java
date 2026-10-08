@@ -190,11 +190,25 @@ public final class MessageDoors {
      */
     public static long requestStarting(String transport, String verb,
                                        int attempt) {
-        Inbound served = CURRENT.get();
-        if (served != null && RESPONSE.equals(served.half)) endInbound();
+        callStarting();
         return Identity.requestStarting(Endpoint.messageSite(
                 trimmed(transport), REQUEST, trimmed(verb)), verb,
                 attempt);
+    }
+
+    /**
+     * A client's call starts on this thread whose requests start below it
+     * ({@link #requestStarting}): a cloud client's attempt at one call,
+     * which it routes over its nodes' clients and may hand to its pool.  A
+     * RESPONSE the thread received is over, as at a request's start, so
+     * neither the routing nor the work it hands off stands on the last
+     * response the thread read (round SG1, solr-adhoc-13: a cloud client's
+     * parallel updates stood on the response to its previous attempt, and
+     * the replay's timing had another response read last).
+     */
+    public static void callStarting() {
+        Inbound served = CURRENT.get();
+        if (served != null && RESPONSE.equals(served.half)) endInbound();
     }
 
     /** The request {@link #requestStarting} began is over, answered or
