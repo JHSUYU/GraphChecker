@@ -174,7 +174,7 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: `PUT_IF`/`REMOVE_IF` under the test the body made (§6); `computeIfAbsent computeIfPresent merge`: the callback's result stored under the test that ran it, what a callback that did not run would have stored an unknown cell; `compute`: the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); `ConcurrentHashMap`'s bulk parallel operations |
 | `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations; `peek`/`poll` as `PEEK`/`POLL` (§6) | `removeIf` abandons |
 | `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
-| `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet())`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
+| `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet()/toMap(...))`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
 | commons-lang 2 and Spring `StringUtils` | `isNotBlank`, `isEmpty` | commons-lang3 |
 
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
@@ -243,9 +243,25 @@ path holds models' concrete-answer conditions too), application code the body ra
 the recording and the rest runs as bytecode, named `STREAM_OPERATION_UNMODELED:<operation>` when the
 source's state or a symbolic bound was in it; and a terminal past the callback window stack runs as
 bytecode, `STREAM_PINNED:CALLBACK_DEPTH`. A pipeline nothing symbolic reached returns the run's
-result and names nothing. `Collectors.toList`/`toSet` are muted to name the kind of collector by its
-accumulator, the one non-capturing method reference every such collector holds, so a collector kept
-in a field is known at every use.
+result and names nothing. `Collectors.toList`/`toSet`/`toMap` are muted to name the kind of
+collector by its accumulator, the one non-capturing method reference every list or set collector
+holds and the lambda each `toMap` returns, so a collector kept in a field is known at every use.
+
+**`toMap`** (every overload: `toMap(k, v)` is `toMap(k, v, throwingMerger(), HashMap::new)`). Its
+accumulator `(map, e) -> map.merge(keyMapper.apply(e), valueMapper.apply(e), mergeFunction)`
+captured the three functions (the lambda's fields `arg$1..arg$3`; the collector's `supplier`
+field): the key and value mappers are two more stages, both seeded with the element, and the merge
+function and the supplier are callbacks of the terminal too (the supplier states nothing; it runs
+hooked). The result is the supplier's map, stated when it is one the map model states (else
+`STREAM_PINNED:MAP_UNMODELED`): from its stated empty base, each element as `HashMap.merge` stores
+it, `PUT [k, v]` under the element's guard -- and, where an earlier key may equal this one (the run
+called the merge function for it, or a key so far is no constant), `PUT_IF [k, v]` under `MATCHES
+(chain, k, null)` and, under its negation, what the merge function answered (seeded with a `READ`
+of the members before it and the element's value; a null answer a `REMOVE_IF`) or, where the run
+never called it, an `UNKNOWN` cell, named `STREAM_PINNED:MERGE` (a throwing merger's world throws:
+over-approximated, CONFIRM decides). A merge function that throws unwinds the terminal
+(`STREAM_PINNED:UNWOUND`). A filter's symbolic drop before the mappers is pinned (`DROPPED`), as
+before any stage that calls back.
 
 ## 5. Shared-state versioning
 
@@ -469,7 +485,8 @@ stated on the nodes it builds, and COMPOSE decides what holds (PIPELINE §8).
   result of the native it ran in (`UnsafeAccess::take_result`, read at that native's finish), which
   a branch on it decides; a field mint is its version and its shadow.
 
-**Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` carry the `guard` they hold under;
+**Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` (a set's, a `toMap`'s; `REMOVE_IF
+[k]` a merge function's null) carry the `guard` they hold under;
 `PIN` (no arguments, either shape) is its receiver's state where its `guard` holds. A version a
 stream published is `STATE_COLLECT`; a map's guarded mutation is `STATE_PUT_IF`, a queue's poll
 `STATE_POLL`. Of the VM's own chain readers, `ContainerSupport::position_answer` looks through a
@@ -701,8 +718,9 @@ and element); the engine's paused bookkeeping in `Thread.init` has `RegionInheri
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
-pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, the pins and
-the model gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
+pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, a `toMap`
+over constant and symbolic keys and with a merge function the run called, the pins and the model
+gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
 length past its element writes, a list's size past `set()` and at its `APPEND`/`REMOVE`),
 `RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
 named unknown cells, no version for a call that changed nothing, an `equals()` match, answers

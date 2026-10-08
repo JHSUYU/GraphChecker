@@ -3,6 +3,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +35,13 @@ import java.util.stream.Collectors;
  * callback mutating the source unstates the result; a natural order an
  * application compareTo decided is pinned and named; a collector kept in a
  * field is known at every use.</p>
+ *
+ * <p>And toMap: a map's entries collected to keys and joined values in the
+ * supplier's map (Solr's Aliases.convertMapOfListToMapOfCommaDelimited) is
+ * a PUT chain from its stated empty base; symbolic keys a run found new
+ * stand where an earlier one may equal them, with an UNKNOWN cell for what
+ * the merge function would have stored; a merge function the run called
+ * is stated as what it answered over a READ of the map so far.</p>
  */
 public final class RegionStreamSmoke {
     private static final Collector<Object, ?, List<Object>> TO_LIST =
@@ -204,6 +212,27 @@ public final class RegionStreamSmoke {
         List<Object> reused = volumes.stream()
                 .filter(v -> !slow.contains(v.path)).collect(TO_LIST);
         String reusedVersions = System.getSharedMapVersions(reused);
+
+        // 14. toMap: an alias map's entries to keys and joined values.
+        Map<String, String> joined = aliases.entrySet().stream()
+                .collect(Collectors.toMap(Map.Entry::getKey,
+                        e -> String.join(",", e.getValue()),
+                        (a, b) -> {
+                            throw new IllegalStateException(b);
+                        }, LinkedHashMap::new));
+        String joinedVersions = System.getSharedMapVersions(joined);
+        // 14b. Symbolic keys, toMap's own HashMap and throwing merger.
+        Map<String, Integer> lengths = two.stream()
+                .collect(Collectors.toMap(s -> s, String::length));
+        String lengthsVersions = System.getSharedMapVersions(lengths);
+        // 14c. A merge function the run called.
+        List<String> twice = new ArrayList<String>();
+        twice.add(input.disk);
+        twice.add(input.disk);
+        Map<String, String> merged = twice.stream()
+                .collect(Collectors.toMap(s -> s, s -> s,
+                        (a, b) -> a.concat(b)));
+        String mergedVersions = System.getSharedMapVersions(merged);
         String summary = System.getConcolicRegionSummary();
         System.endConcolic();
 
@@ -211,6 +240,9 @@ public final class RegionStreamSmoke {
         System.out.println("CAPPED " + cappedSize);
         System.out.println("REFS " + refsSize);
         System.out.println("SUMMARY " + summary);
+        System.out.println("JOINED " + joinedVersions);
+        System.out.println("LENGTHS " + lengthsVersions);
+        System.out.println("MERGED " + mergedVersions);
 
         require(kept.size() == 1 && capped.size() == 1 && refs.size() == 1
                         && sink.counted == 1L && sink.any
@@ -218,8 +250,33 @@ public final class RegionStreamSmoke {
                         && sink.skipped == 0L && sortedFast.size() == 1
                         && sortedKept.size() == 1 && sink.seen == 1
                         && heavy.size() == 1 && touched.size() >= 1
-                        && ordered.size() == 1 && reused.size() == 1,
+                        && ordered.size() == 1 && reused.size() == 1
+                        && joined.size() == 2 && lengths.size() == 2
+                        && merged.size() == 1
+                        && merged.get(input.disk).length() == 8,
                 "a modeled pipeline changed what the program computed");
+        require(joinedVersions.contains("\"versionKind\":\"STATE_COLLECT\"")
+                        && joinedVersions.contains("\"operation\":\"PUT")
+                        && joinedVersions.contains("ALIAS")
+                        && !joinedVersions.contains("\"operation\":"
+                                + "\"UNKNOWN\"")
+                        && !summary.contains(
+                                "STREAM_OPERATION_UNMODELED:collect"),
+                "toMap is no PUT chain of its entries' constant keys: "
+                        + joinedVersions);
+        require(lengthsVersions.contains("\"operation\":\"MATCHES\"")
+                        && lengthsVersions.contains("\"operation\":"
+                                + "\"UNKNOWN\"")
+                        && lengthsVersions.contains("length")
+                        && summary.contains("STREAM_PINNED:MERGE"),
+                "a symbolic key a run found new is not tested against the"
+                        + " keys before it: " + lengthsVersions);
+        require(mergedVersions.contains("concat")
+                        && mergedVersions.contains("\"operation\":\"READ\"")
+                        && !mergedVersions.contains("\"operation\":"
+                                + "\"UNKNOWN\""),
+                "a merge function the run called is not stated: "
+                        + mergedVersions);
         require(sortedFastVersions.contains("\"selected\":false")
                         && summary.contains("STREAM_PINNED:SORTED"),
                 "a barrier ahead of the first callback was stated: "
