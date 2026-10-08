@@ -39,11 +39,13 @@ case "${1:?usage: case.sh <bug>}" in
   # BUFFERING, and the next MIGRATE into it is refused at its buffer request.
   # The workload migrates two keys into one target; the witness, a fault at
   # a door of the first MIGRATE after its buffer request.  The target: the
-  # second MIGRATE's buffer request (selector from the first recording).
+  # second MIGRATE's buffer request, the second occurrence of the buffer
+  # lambda on the target's node (round SG1's recording: Overseer tasks #3
+  # and #4).
   migrate-buffer-leak)
     test_class=org.apache.solr.cloud.TestCausynthMigrateBufferLeak
     test_method=twoMigratesIntoOneTarget
-    target_occurrence=
+    target_occurrence='auto0/node1#epoch0/region/REGION.f524143b-7e54-33b5-b7b7-75fdecf194e7#2'
     scope=(
       core:org/apache/solr/cloud/api/collections/MigrateCmd
       core:org/apache/solr/handler/admin/CoreAdminOperation
@@ -93,11 +95,12 @@ case "${1:?usage: case.sh <bug>}" in
   # active shard.  The workload restores one backup twice into one
   # collection and adds to it; the witness, a fault at the first RESTORE's
   # RESTORECORE or buffered-updates request.  The target: the add's routing
-  # after the second RESTORE (selector from the first recording).
+  # after the second RESTORE, the client's third routed update (round SG1's
+  # recording: the source's two adds, then the add to the target).
   restore-construction)
     test_class=org.apache.solr.cloud.TestCausynthRestoreRetry
     test_method=restoreTwiceThenAdd
-    target_occurrence=
+    target_occurrence='auto0/client0#epoch0/region/REGION.9c74b1fc-0155-3e44-b37f-0634809064c9#3'
     scope=(
       core:org/apache/solr/cloud/api/collections/RestoreCmd
       solrj:org/apache/solr/common/cloud/HashBasedRouter
