@@ -71,7 +71,10 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
           ? 0 : (jlong) jt->osthread()->thread_id()),
       _pending_branch_active(false),
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
-      _pending_branch_occurrence(0) {
+      _pending_branch_occurrence(0), _next_force_kind(FORCE_NONE),
+      _next_force_value(0), _pending_force_kind(FORCE_NONE),
+      _pending_force_value(0), _pending_forced(false),
+      _pending_concrete(0) {
   _pending_view_removal_argument = NULL;
   _streams = NULL;
   guarantee(GlobalSymbolicSession::is_open(),
@@ -209,6 +212,7 @@ jlong ThreadContext::mark_branch(const char *site_id, int occurrence) {
   const ZeroFrame *owner_frame = _s_stack.marker_owner_frame();
   if (owner_frame == NULL) {
     cancel_pending_branch();
+    drop_next_force();
     return 0;
   }
   _pending_branch_event_id = GlobalSymbolicSession::next_event_id();
@@ -216,7 +220,54 @@ jlong ThreadContext::mark_branch(const char *site_id, int occurrence) {
   _pending_branch_occurrence = occurrence;
   _pending_branch_owner_frame = owner_frame;
   _pending_branch_active = true;
+  // The forcing asked of this marker, if any, is this branch's alone.
+  _pending_force_kind = _next_force_kind;
+  _pending_force_value = _next_force_value;
+  _next_force_kind = FORCE_NONE;
+  _next_force_value = 0;
   return _pending_branch_event_id;
+}
+
+void ThreadContext::drop_next_force() {
+  _next_force_kind = FORCE_NONE;
+  _next_force_value = 0;
+}
+
+bool ThreadContext::force_next_branch(int kind, jint value) {
+  if (kind != FORCE_ARM && kind != FORCE_CASE && kind != FORCE_DEFAULT) {
+    return false;
+  }
+  _next_force_kind = kind;
+  _next_force_value = value;
+  return true;
+}
+
+bool ThreadContext::forced_outcome(bool concrete) {
+  // Only the branch the marker of the current frame marked, and only an
+  // if's arm: a nested accessor's own branch is not the marked site.
+  if (_pending_force_kind != FORCE_ARM || !_pending_branch_active
+      || !_s_stack.is_current_frame(_pending_branch_owner_frame)) {
+    return concrete;
+  }
+  // One branch takes it: the marked one.
+  _pending_force_kind = FORCE_NONE;
+  _pending_forced = true;
+  _pending_concrete = concrete ? 1 : 0;
+  return _pending_force_value != 0;
+}
+
+int ThreadContext::forced_switch(jint concrete, jint *key) {
+  if ((_pending_force_kind != FORCE_CASE
+       && _pending_force_kind != FORCE_DEFAULT) || !_pending_branch_active
+      || !_s_stack.is_current_frame(_pending_branch_owner_frame)) {
+    return FORCE_NONE;
+  }
+  int kind = _pending_force_kind;
+  _pending_force_kind = FORCE_NONE;
+  _pending_forced = true;
+  _pending_concrete = concrete;
+  if (kind == FORCE_CASE) *key = _pending_force_value;
+  return kind;
 }
 
 void ThreadContext::cancel_pending_branch() {
@@ -225,6 +276,10 @@ void ThreadContext::cancel_pending_branch() {
   _pending_branch_owner_frame = NULL;
   _pending_branch_site_id.clear();
   _pending_branch_occurrence = 0;
+  _pending_force_kind = FORCE_NONE;
+  _pending_force_value = 0;
+  _pending_forced = false;
+  _pending_concrete = 0;
 }
 
 void ThreadContext::cancel_pending_branch_for_frame(
@@ -296,6 +351,8 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
     event.opcode = opcode;
     event.code_position = get_current_code_pos();
     event.condition_indices = direct_indices;
+    event.forced = _pending_forced;
+    event.concrete = _pending_concrete;
     frame->branch_events.push_back(event);
     cancel_pending_branch();
   }
@@ -366,6 +423,12 @@ std::string ThreadContext::serialize_branch_events_from(
     writer.EndArray();
     writer.Key("conditionCount");
     writer.Int((int) event.condition_indices.size());
+    if (event.forced) {
+      writer.Key("forced");
+      writer.Bool(true);
+      writer.Key("concrete");
+      writer.Int64(event.concrete);
+    }
     writer.Key("authority");
     writer.String("VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1");
     writer.EndObject();

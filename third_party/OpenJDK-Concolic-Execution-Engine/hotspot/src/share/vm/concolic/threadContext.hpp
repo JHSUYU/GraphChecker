@@ -50,6 +50,11 @@ private:
     int opcode;
     std::string code_position;
     std::vector<int> condition_indices;
+    // System.forceNextConcolicBranch forced this branch: it took `outcome`
+    // (a switch: the case of `outcome`'s conditions) in place of what its
+    // operands decide, `concrete` (an if's outcome 1/0, a switch's selector).
+    bool forced;
+    jlong concrete;
   };
 
   struct RegionFrame {
@@ -117,6 +122,16 @@ private:
   const ZeroFrame *_pending_branch_owner_frame;
   std::string _pending_branch_site_id;
   int _pending_branch_occurrence;
+  // What System.forceNextConcolicBranch asked of the next marker
+  // (_next_force_*), and what that marker binds to its branch
+  // (_pending_force_*): a FORCE_* kind and its arm or key; and, once the
+  // branch took it, the concrete answer it overrode.
+  int _next_force_kind;
+  jint _next_force_value;
+  int _pending_force_kind;
+  jint _pending_force_value;
+  bool _pending_forced;
+  jlong _pending_concrete;
 //  std::set<oop> _allocated_objs;
 
   // One in-flight conditional container removal, assembled across one
@@ -238,6 +253,24 @@ public:
   // exact event when the bytecode executes, so Java never has to guess from
   // method names or expression shape.
   jlong mark_branch(const char *site_id, int occurrence);
+
+  // Forcing (System.forceNextConcolicBranch): the runtime asks it of the
+  // next marker; the marked conditional bytecode then asks forced_outcome or
+  // forced_key, which answer the forced arm instead of the concrete one only
+  // for a pending marker of the current frame, and remember the concrete
+  // answer for the branch's event.  NONE answers the concrete one.
+  enum { FORCE_NONE = 0, FORCE_ARM = 1, FORCE_CASE = 2, FORCE_DEFAULT = 3 };
+  bool force_next_branch(int kind, jint value);
+  // A forcing never outlives the marker it was asked of, nor one refused.
+  void drop_next_force();
+  inline bool forcing() const {
+    return _pending_force_kind != FORCE_NONE;
+  }
+  bool forced_outcome(bool concrete);
+  // A switch's: FORCE_CASE with `key` set to the forced case's key,
+  // FORCE_DEFAULT (the interpreter picks a selector no case has), or
+  // FORCE_NONE.
+  int forced_switch(jint concrete, jint *key);
   void record_branch_condition(Expression *expression, bool outcome,
                                int opcode);
   void record_branch_conditions(const exp_list_t &expressions, bool outcome,

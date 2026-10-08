@@ -476,6 +476,22 @@ static SharedFieldVersions::ConcreteBits concolic_top_word(
     default:   return Word();
   }
 }
+
+// A selector no case of a lookupswitch has (its default arm's): the least
+// int none of its `npairs` keys is.  `lpc` is the aligned operand table.
+static jint lookupswitch_absent_key(jint *lpc, int32_t npairs) {
+  jint candidate = min_jint;
+  for (int32_t tries = 0; tries <= npairs; tries++) {
+    bool taken = false;
+    for (int32_t pair = 0; pair < npairs && !taken; pair++) {
+      taken = (jint) Bytes::get_Java_u4((address) &lpc[2 + 2 * pair])
+          == candidate;
+    }
+    if (!taken) return candidate;
+    candidate++;
+  }
+  return candidate;
+}
 #endif
 
 /*
@@ -2006,11 +2022,33 @@ run:
 #else
 #define CONCOLIC_OPC_REF_CMP(l_off, r_off, l_obj, r_obj, op, outcome)
 #endif
+#ifdef ENABLE_CONCOLIC
+/* A branch System.forceNextConcolicBranch forced takes the forced arm: its
+ * marker's frame is this one (ThreadContext::forced_outcome), and the arm is
+ * decided before the jump is computed, so the condition recorded is the
+ * forced arm's. */
+#define CONCOLIC_FORCE_BRANCH(cmp)                                             \
+  if (ConcolicMngr::ctx != NULL && ConcolicMngr::ctx->forcing()) {             \
+    cmp = ConcolicMngr::ctx->forced_outcome(cmp);                              \
+  }
+/* A forced switch's selector: the forced case's key, or one no case has. */
+#define CONCOLIC_FORCE_SWITCH(key, outside)                                    \
+  if (ConcolicMngr::ctx != NULL && ConcolicMngr::ctx->forcing()) {             \
+    jint forced_key = key;                                                     \
+    int forced_kind = ConcolicMngr::ctx->forced_switch(key, &forced_key);      \
+    if (forced_kind == ThreadContext::FORCE_CASE) key = forced_key;            \
+    else if (forced_kind == ThreadContext::FORCE_DEFAULT) key = (outside);     \
+  }
+#else
+#define CONCOLIC_FORCE_BRANCH(cmp)
+#define CONCOLIC_FORCE_SWITCH(key, outside)
+#endif
       /* comparison operators */
 
 #define COMPARISON_OP(name, comparison)                                        \
   CASE(_if_icmp##name) : {                                                     \
-    const bool cmp = (STACK_INT(-2) comparison STACK_INT(-1));                 \
+    bool cmp = (STACK_INT(-2) comparison STACK_INT(-1));                       \
+    CONCOLIC_FORCE_BRANCH(cmp);                                                \
     int skip = cmp ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;                  \
     address branch_pc = pc;                                                    \
                                                                                \
@@ -2024,7 +2062,8 @@ run:
     CONTINUE;                                                                  \
   }                                                                            \
   CASE(_if##name) : {                                                          \
-    const bool cmp = (STACK_INT(-1) comparison 0);                             \
+    bool cmp = (STACK_INT(-1) comparison 0);                                   \
+    CONCOLIC_FORCE_BRANCH(cmp);                                                \
     int skip = cmp ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;                  \
     address branch_pc = pc;                                                    \
                                                                                \
@@ -2040,7 +2079,8 @@ run:
 #define COMPARISON_OP2(name, comparison)                                     \
       COMPARISON_OP(name, comparison)                                        \
       CASE(_if_acmp##name): {                                                \
-          const bool cmp = (STACK_OBJECT(-2) comparison STACK_OBJECT(-1));   \
+          bool cmp = (STACK_OBJECT(-2) comparison STACK_OBJECT(-1));         \
+          CONCOLIC_FORCE_BRANCH(cmp);                                        \
           int skip = cmp                                                     \
                        ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;            \
           address branch_pc = pc;                                            \
@@ -2082,7 +2122,8 @@ run:
 
 #define NULL_COMPARISON_NOT_OP(name)                                         \
       CASE(_if##name): {                                                     \
-          const bool cmp = (!(STACK_OBJECT(-1) == NULL));                    \
+          bool cmp = (!(STACK_OBJECT(-1) == NULL));                          \
+          CONCOLIC_FORCE_BRANCH(cmp);                                        \
           int skip = cmp                                                     \
                       ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;             \
           address branch_pc = pc;                                            \
@@ -2096,7 +2137,8 @@ run:
 
 #define NULL_COMPARISON_OP(name)                                             \
       CASE(_if##name): {                                                     \
-          const bool cmp = ((STACK_OBJECT(-1) == NULL));                     \
+          bool cmp = ((STACK_OBJECT(-1) == NULL));                           \
+          CONCOLIC_FORCE_BRANCH(cmp);                                        \
           int skip = cmp                                                     \
                       ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;             \
           address branch_pc = pc;                                            \
@@ -2140,6 +2182,8 @@ run:
           int32_t  low  = Bytes::get_Java_u4((address)&lpc[1]);
           int32_t  high = Bytes::get_Java_u4((address)&lpc[2]);
           int32_t  skip;
+          CONCOLIC_FORCE_SWITCH(key, low > min_jint ? low - 1
+                                : high < max_jint ? high + 1 : key);
           int32_t  raw_key = key;
 #ifdef ENABLE_CONCOLIC
           exp_list_t switch_conditions;
@@ -2200,6 +2244,7 @@ run:
           int      index = -1;
           int      newindex = 0;
           int32_t  npairs = Bytes::get_Java_u4((address) &lpc[1]);
+          CONCOLIC_FORCE_SWITCH(key, lookupswitch_absent_key(lpc, npairs));
           int32_t  remaining = npairs;
           while (--remaining >= 0) {
             lpc += 2;

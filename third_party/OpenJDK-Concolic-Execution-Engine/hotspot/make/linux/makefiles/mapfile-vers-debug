@@ -271,6 +271,7 @@ SUNWprivate_1.1 {
                 JVM_PauseConcolicPathCondition;
                 JVM_ResumeConcolicPathCondition;
                 JVM_MarkConcolicBranch;
+                JVM_ForceNextConcolicBranch;
                 JVM_GetConcolicBranchEvents;
                 JVM_GetSymbolicExpression;
                 JVM_GetSymbolicFieldExpression;

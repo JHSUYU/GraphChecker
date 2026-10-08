@@ -196,6 +196,9 @@ public:
   static void pausePathConditionRecording();
   static void resumePathConditionRecording();
   static jlong markBranch(const char *site_id, int occurrence);
+  /** System.forceNextConcolicBranch: forces what the next marker marks
+   *  (ThreadContext::force_next_branch). */
+  static jint forceNextBranch(int kind, int value);
   static std::string getBranchEvents();
   static std::string getSymbolicExpression(Handle handle);
   /**

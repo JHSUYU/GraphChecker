@@ -173,6 +173,10 @@ JNIEXPORT jlong JNICALL
 JVM_MarkConcolicBranch(JNIEnv *env, jclass ignored, jstring site_id,
                        jint occurrence);
 
+JNIEXPORT jint JNICALL
+JVM_ForceNextConcolicBranch(JNIEnv *env, jclass ignored, jint kind,
+                            jint value);
+
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicBranchEvents(JNIEnv *env, jclass ignored);
 
