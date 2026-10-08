@@ -40,6 +40,7 @@ import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -501,17 +502,44 @@ public final class RowRuntime {
     }
 
     /**
-     * The VM's last event id, the seq a row the engine states itself takes
-     * (a store row): after every event before it, before every event after
-     * it.  0 outside a session (the recording publishes no row).
+     * The seq a row the engine states itself takes (a store row): the VM's
+     * last event id on this thread, after every event before it and before
+     * every event after it.  A thread with no VM context states none: its
+     * row is numbered past every event the VM numbers ({@link
+     * #UNSEQUENCED}, one each), so no two such rows are one event and none
+     * stands before a decision it did not precede.  0 outside a session
+     * (the recording publishes no row).
      */
     static long currentEvent() {
         if (publisher == null) return 0L;
+        long event;
         try {
-            return Math.max(0L, ConcolicVmBroker.engine().currentEventId());
+            event = ConcolicVmBroker.engine().currentEventId();
         } catch (Throwable unavailable) {
-            return 0L;
+            event = 0L;
         }
+        return event > 0L ? event : UNSEQUENCED + UNSEQUENCED_ROWS
+                .incrementAndGet();
+    }
+
+    /** Where rows no VM event numbers are numbered from. */
+    static final long UNSEQUENCED = 1L << 48;
+    private static final AtomicLong UNSEQUENCED_ROWS = new AtomicLong();
+
+    /**
+     * The occurrence a door's own event runs in: the admitted activation's,
+     * else the one running here (a role, an unselected region), stated as an
+     * unselected activation so its rows are an activation's (as a port
+     * event's, {@code WireExport}).
+     */
+    static OccurrenceAddress doorOccurrence(String nodeKey) {
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        if (active != null && active.d3Address != null) {
+            return active.d3Address;
+        }
+        OccurrenceAddress here = Identity.currentOccurrence(nodeKey);
+        ambientActivation(here);
+        return here;
     }
 
     /** The JVM type a store version is stated at: its content, bytes. */
@@ -554,6 +582,10 @@ public final class RowRuntime {
         if (session == null || occurrence == null || location == null) {
             return;
         }
+        // A guard that reads several objects of one parse with no VM event
+        // between them (a loop over a collection's slices) reads the version
+        // once.
+        if (!STORE_READS.add(seq + "|" + location)) return;
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         if (version >= 0L) {
@@ -565,6 +597,10 @@ public final class RowRuntime {
                 version, storeSymbol(location, version), STORE_TYPE, null));
         Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
     }
+
+    /** seq|location of every store read stated: one per event. */
+    private static final Set<String> STORE_READS =
+            ConcurrentHashMap.newKeySet();
 
     /** The symbol of one store version's reads. */
     static String storeSymbol(LocationId location, long version) {
@@ -1334,6 +1370,7 @@ public final class RowRuntime {
             ENDPOINTS.clear();
             WRITTEN.clear();
             READERS.clear();
+            STORE_READS.clear();
             OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();

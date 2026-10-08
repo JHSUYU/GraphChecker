@@ -209,19 +209,26 @@ public final class ScopeGrowth {
         Set<String> present = new LinkedHashSet<>(
                 classNames(Paths.get(args[2])));
         present.addAll(classNames(grown));
+        // A family the system placed a door in after its own hook is its
+        // transport, whatever the scope calls: the request a command in scope
+        // sends through layers out of it (Solr's RESTORECORE, through the
+        // shard handler) is that family's (SYMBOL-SCOPE §4.2), its other
+        // doors with it.  A library's family joins where a class of the scope
+        // calls into it.
+        Set<String> placed = new LinkedHashSet<>();
+        for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+            if (!door.atCalls() && door.relocated != null) {
+                placed.add(door.family());
+            }
+        }
         Set<String> decided = new LinkedHashSet<>();
         List<String> taken = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
             // A door at calls is woven in the scope's own callers.
             if (door.atCalls()) continue;
             String family = door.family();
-            // A door the system placed after its own hook is its transport,
-            // whatever the scope calls: the request a command in scope sends
-            // through layers out of it (Solr's RESTORECORE, through the shard
-            // handler) is that door's (SYMBOL-SCOPE §4.2).  A library's door
-            // joins where a class of the scope calls into its family.
             if (!decided.add(family) || present.contains(family)
-                    || door.relocated == null && !index.called(family)) {
+                    || !placed.contains(family) && !index.called(family)) {
                 continue;
             }
             List<String> copied = copyFamily(family, search, grown);

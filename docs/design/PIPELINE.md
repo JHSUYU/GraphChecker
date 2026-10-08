@@ -489,7 +489,8 @@ first test, and the reads of its later tests come after it -- hdfs-adhoc-26's cT
 read rows the anchor made, in each admitted path,
 before that path's deciding event, of the reads the root demand found on the throw's path guards
 (SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
-`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).
+`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins; a
+STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7).
 A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
 only through a read on it, whose writers the closure then asks. Their symbols are demanded like
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
@@ -527,6 +528,11 @@ are counted, never dropped silently: `concreteAnchors` states how many
   a store of a reference among those writes that states a `referentState` adds the writers of each
   state of that container the read could have seen through it (`Corpus#referentStates`, COMPOSE's
   `SmtLowering#statesOf`);
+- a STORE read (a guard's read of an object a store's fetch was parsed into, IDENTITY §7.2): the
+  eligible row writers by the same rule, on any node (a one-JVM cluster's nodes are one session),
+  and the writers of every earlier version of its location (`ClosurePlanner#storeWriters`,
+  `#earlierVersions`: each write modifies the document before it, `RestsOn#closure`'s rule); each
+  writer then names the doors of the queue item it took in (below); no static candidate;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the two doors of the message a demanded occurrence served (sender and receiver of its causal

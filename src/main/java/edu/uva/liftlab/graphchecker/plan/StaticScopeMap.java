@@ -102,10 +102,11 @@ public final class StaticScopeMap {
     public static final String READ_SITE = "READ_SITE";
     /**
      * A read of a construction-only field the root demand chose ({@code
-     * causynth.RootDemand} PROVENANCE): no replay versions it, its one
-     * writer being its constructor; a replay observes which version of a
-     * shared store the object it is read on was decoded from, and states
-     * that read (runtime.Provenance, IDENTITY §7.2).
+     * causynth.RootDemand} PROVENANCE), or a call into the system out of
+     * scope it chose (SCOPE) on a receiver: no replay versions it; a replay
+     * observes which version of a shared store the object read or called
+     * was decoded from, and states that read (runtime.Provenance, IDENTITY
+     * §7.2).
      */
     public static final String PROVENANCE_SITE = "PROVENANCE_SITE";
 
@@ -623,6 +624,21 @@ public final class StaticScopeMap {
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
                     unitIndex, clocks, configCalls, demand, regionRoots);
+            // A call into the system out of the scope the demand chose rests
+            // on its receiver's state: a decoded object's is the store
+            // version it was parsed from, observed at the call.
+            if (CALL_RETURN_KIND.equals(kind) && chosen(demand.at(
+                    SiteId.of(method, unitIndex), text(edge.get("fromCell"))),
+                    SCOPE_DEMAND) && !text(edge.get("invoke")).isEmpty()) {
+                add(found, seen, retained, new Site(PROVENANCE_SITE, "",
+                        SiteId.of(method, unitIndex), vmSite(method),
+                        text(edge.get("fromCell")), "", "",
+                        text(edge.get("invoke")), "", null, NO_GUARDS,
+                        NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "",
+                        false, false, "", distance(demand.at(SiteId.of(
+                                method, unitIndex), text(edge.get(
+                                "fromCell"))))));
+            }
             String field = field(edge);
             if (READ_KINDS.contains(kind)) {
                 SharedFieldFlow.TrackedKind tracked =
@@ -793,6 +809,11 @@ public final class StaticScopeMap {
      *  of one is a {@link #PROVENANCE_SITE}. */
     private static final Set<String> PROVENANCE_DEMAND =
             Collections.singleton("PROVENANCE");
+    /** The root demand's class of a call into the system out of scope: a
+     *  chosen one's receiver is observed (a PROVENANCE_SITE at the call). */
+    private static final Set<String> SCOPE_DEMAND =
+            Collections.singleton("SCOPE");
+    private static final String CALL_RETURN_KIND = "call_return";
 
     private static boolean chosen(Demanded mark, Collection<String> kinds) {
         return mark != null && mark.chosen && kinds.contains(mark.kind);
@@ -1736,6 +1757,17 @@ public final class StaticScopeMap {
             reads.add(readKey(site.siteId, site.cell));
         }
         return reads;
+    }
+
+    /** The {@link #PROVENANCE_SITE} calls, each site with its return cell:
+     *  the call's receiver is the object observed. */
+    public Map<String, String> provenanceCalls() {
+        Map<String, String> calls = new LinkedHashMap<String, String>();
+        for (Site site : ofRole(PROVENANCE_SITE,
+                read -> !read.declaredCallee.isEmpty())) {
+            calls.put(site.siteId, site.cell);
+        }
+        return calls;
     }
 
     /** The cells of the {@link #PROVENANCE_SITE} reads: what a guard reads

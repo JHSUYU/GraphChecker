@@ -521,16 +521,43 @@ SYMBOL-SCOPE.md §4.2's.
 For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
 - `stored(transport, key, owner)`: a write of `path@version` is a SEND; its staged values are kept
-  with the version.
+  with the version. It is also a version of the path's `STORE` location (CONTRACT-SPEC §1: owner the
+  transport, slot the path as `RunNames` keys it, version the store's own): a write row at the
+  writer's occurrence in a replay, site `<transport>#WRITE:<path, dotted>`, no expression; a
+  `STORE_WRITE` trace row naming the writer's address in the recording.
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
   `.<n>` from a node's second delivery of that version on; how many deliveries a run takes is the
   store's timing, so CONFIRM names every delivery of one version alike,
   `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
-  they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
+  they anchor takes no place in the schedule. A read outside a callback is no cause; what it
+  fetched is read where the objects it was parsed into are read (below).
+- `decoded(transport, key, product)`: the objects a fetch of `key` was parsed into (the adapter's
+  product: Solr's `ClusterState.load`, `Aliases.fromJSON`) hold that version (`runtime/Provenance`):
+  the product's graph is walked once -- instance fields of application objects, the contents of
+  maps, collections and object arrays; no JDK object, value, lambda, synthetic class, engine object
+  or inner object's outer one; at most 4096 objects and 16 hops, a walk cut there a DIAGNOSTIC
+  `UNSTATED_VALUE` -- with the VM's propagation paused, and each object it meets is registered with
+  the version, the first decode keeping it. A guard that reads a construction-only field of a
+  registered object at a `PROVENANCE_SITE` (SYMBOL-SCOPE §5.7) reads that version: a STORE read row
+  at the reading occurrence, its symbol naming the version (`RowRuntime#storeRead`). The recording
+  states each decode's objects by identity (`STORE_DECODED`), which PLAN joins with the objects an
+  occurrence read a field on. Each replay's log states the walks' cost (`Causynth decoded walks:`).
 - `consumed(transport, key)`: a queue item taken, as `received` takes a request: it ends what the
   thread served and is the message the thread serves until the next (its key and `REQUEST`, as its
-  write sent it), its staged values with it; the consumer keeps its own context.
+  write sent it), its staged values with it; the consumer keeps its own context, and its RECV names
+  the item it took in (`CausynthTraceRecorder#receivedExchange`), so the item's sender is a door of
+  the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`).
+
+A STORE read rests on the write that made its version and on every earlier version of its location:
+a store keeps one document per location, and each write modifies the one before it (Solr's state
+writer and aliases, every compare-and-set write), the rule `compose.RestsOn#closure` applies to
+every location. The closure demands those writers on any node -- a one-JVM cluster's nodes are one
+session, whose happens-before spans them -- each with the doors of the item it took in
+(`ClosurePlanner#storeWriters`, `#earlierVersions`; PIPELINE §7.2); PLAN admits the same
+(SYMBOL-SCOPE §4.4, `STORE_WRITER_V1`). No static candidate: a path is no field a site stores. A
+writer that runs no woven region (an updater turn of an Overseer whose code is out of scope) is a
+role: passed through to its item's doors, never planned, its own decisions not flipped (STATUS).
 - `storing(transport, location)` ... `storeEnded(transport, token)`: a write in flight at one
   location (a sequential create's: the prefix the store completes). The write first takes its turn,
   a `WRITE` event whose site is `<transport>:<location>` (§8), so writes to one location run in the

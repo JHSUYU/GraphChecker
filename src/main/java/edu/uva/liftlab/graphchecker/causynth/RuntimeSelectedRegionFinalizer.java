@@ -511,6 +511,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
         }
+        // A call out of scope whose receiver a provenance site observes: the
+        // objects it was called on are what its return rests on (crossStore).
+        sites.putAll(scopeMap.provenanceCalls());
         return sites;
     }
 

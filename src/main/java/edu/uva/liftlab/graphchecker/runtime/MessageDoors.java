@@ -542,10 +542,11 @@ public final class MessageDoors {
         long version = version(key);
         if (version < 0L) return;
         String path = location(key);
-        OccurrenceAddress at = Identity.currentOccurrence(
-                RuntimeTraceContext.ownedSource(owner).key());
+        String node = RuntimeTraceContext.ownedSource(owner).key();
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
-                at);
+                Identity.currentOccurrence(node));
+        if (!RowRuntime.open()) return;
+        OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         LocationId location = storeLocation(transport, path);
         RowRuntime.storeWrite(at, RowRuntime.currentEvent(),
                 Endpoint.messageSite(trimmed(transport), "WRITE",

@@ -260,7 +260,10 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
 
 Only classes under the lineage roots are indexed, so nothing else (the JDK, a library jar) is
 ever grown by a row. Before the first pass, outside the budget, the door step copies the class
-families of the library doors the system calls (§4.2), from a library jar too.
+families of the library doors the system calls (§4.2), from a library jar too, and every family a
+system's `HOOK` row places a door in, whatever the scope calls (`ScopeGrowth#doors`): those doors
+are the system's transports, and a command in scope reaches them through layers out of it (Solr's
+RestoreCmd sends RESTORECORE through the shard handler into `Http2SolrClient`).
 
 ## 3. The static scope map
 
@@ -276,6 +279,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `marker` (a fault marker's name, §4.2), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
+| `PROVENANCE_SITE` | a read of a construction-only field the root demand chose (§5.7) | `declaredCallee` (an accessor read's), `demandDistance` |
 | `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
@@ -713,6 +717,14 @@ reaches, to a fixed point:
   and seeds the cells on its way: the walk reaches an attach only where the attached value itself
   is demanded, and a value attached and then stored (hdfs-11741: the DataNode converting the
   KeyUpdateCommand's keys into the map its handshake reads) is found from the store it reaches.
+- **Writers of a store version the target read** (`STORE_WRITER_V1`,
+  `RuntimeSelectedRegionFinalizer#crossStore`): the objects a target occurrence of the question read
+  a `PROVENANCE_SITE`'s field on, joined with the recording's decodes (`STORE_DECODED` rows, by object
+  identity), name store versions; the occurrences that made each and every earlier version of its
+  location (`STORE_WRITE` rows: a store keeps one document per location, each write modifying the one
+  before it) are admitted where they are activations -- a role, an updater turn that ran no woven
+  region, is passed through -- and the doors of the item each took in (its RECV, `MessageDoors
+  #consumed`) are admitted where they read a fault marker (`CONTROL_PRODUCER_V1`).
 - **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
   and sent, or took in, the message that started an admitted occurrence (its `Anchor`, else the
   message its turn took in, a DataNode's DataTransfer op; the recorded schedule's `SEND` names the
@@ -819,6 +831,7 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
 | `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
 | `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
+| `PROVENANCE` | a construction-only field (§5.1) holding no container | a chosen read is a PROVENANCE_SITE (§5.7); the walk goes on through what the field's constructor stored, so a copy leads to its source |
 | `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
 | `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
 | `IO` | a stream, file, socket, channel or native result | a demanded door where its outcome reaches the slice (below), else named (`NO_DOOR`) |
@@ -1056,6 +1069,35 @@ each on the arm that reaches it, of every `publishedFrom` write site of that car
 of a recorded store of it (per method, as `#sitesAt`: bci and unit index do not compare).
 SOLR-18406: the store of `knownCommits` in `updateKnownCommitPoints` rests on the `isDeleted()`
 branch of its loop's `map.put`.
+
+### 5.7 Decoded objects (PROVENANCE)
+
+A node holds what it fetched from a shared store (ZooKeeper) as the objects it parsed the bytes
+into: Solr's `ClusterState`, `DocCollection`s, `Slice`s, `Replica`s, `Aliases`. Their fields are
+construction-only (§5.1): nothing re-pairs them, so a guard on one -- the client's
+`activeSlicesArr` in `HashBasedRouter.hashToSlice`, a processor's copy of `DocCollection.readOnly`
+-- read no row before, and a concrete anchor demanded nothing (round SG1: restore-construction's
+`.smt` was `(and true false)`). What such a read rests on is the store version the object was
+parsed from (IDENTITY §7.2), so:
+
+- the root demand classes a construction-only instance field `PROVENANCE` (§4.6) and walks on
+  through its constructor's store, where a copy names its source; a call into the system out of
+  scope (a `SCOPE` boundary, §4.6) rests on its receiver's state, so the chosen ones are observed by
+  their receiver too (`StaticScopeMap#provenanceCalls`: a processor's
+  `readOnlyCollection = coll.isReadOnly()`, `DocCollection` out of the scope);
+- a chosen read of one is a `PROVENANCE_SITE` (`StaticScopeMap#provenanceCells`), kept though
+  nothing in the slice stores it, observed by its receiver alone
+  (`ConcolicRegionRuntime.observeProvenance`, no VM call): a receiver a decode registered
+  (`runtime/Provenance`) makes a STORE read row of that version at the site, in the reading
+  occurrence;
+- the concrete anchor's demand joins such a row at its site (`StaticScopeMap#demandedAt`), and
+  PLAN joins the objects the recording saw the target read the field on with the objects each
+  decode registered (`causynth/RecordedStore`).
+
+A static slice could not do it: from `activeSlicesArr` back to the fetch it crosses the
+constructor, the map copies and the JSON parse (18 edges and more, past the bound), the parser
+would have to grow into scope (a codec never does, §2.4), and which fetch the node held would be
+a guess by time. The run names the object, the location and the version.
 
 ## 6. Wire ports (F3)
 

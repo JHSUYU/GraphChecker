@@ -183,7 +183,8 @@ public final class CausynthPipeline {
                 targetPathSites(result.edges,
                         result.executionContextAuthorities::containsKey),
                 CausynthStaticFacts::trackedKind,
-                CausynthStaticFacts::constructionOnly, systemClass,
+                cell -> CausynthStaticFacts.constructionOnly(cell)
+                        && !CausynthStaticFacts.staticField(cell), systemClass,
                 new LatentFaults(systemClass,
                         method -> !result.regionsHolding(method).isEmpty()),
                 woven);
@@ -2279,6 +2280,12 @@ public final class CausynthPipeline {
                         target.siteId);
                 InvokeExpr invocation = selected.getInvokeExpr();
                 if (!(invocation instanceof InstanceInvokeExpr)) {
+                    // A static call out of scope has no receiver to say
+                    // which decoded object it read.
+                    if (target.provenance) {
+                        unobserved++;
+                        continue;
+                    }
                     throw new IllegalStateException(
                             "OBSERVED_SITE_REQUIRES_INSTANCE_RECEIVER: "
                                     + target.siteId);
