@@ -130,7 +130,8 @@ public final class ExecutionTask extends PlanRow {
                 goal.plan().configuredSourcePhases());
     }
 
-    /** Drops planner-only access histories after the replay site is chosen. */
+    /** Drops a {@code fieldPaths} that only repeats the action's {@code
+     *  fieldPath}. */
     private static JsonArray compactInputActions(JsonArray actions) {
         JsonArray result = new JsonArray();
         for (JsonElement element : actions) {
@@ -139,7 +140,6 @@ public final class ExecutionTask extends PlanRow {
                 continue;
             }
             JsonObject action = element.getAsJsonObject().deepCopy();
-            action.remove("runtimeAccesses");
             JsonArray path = array(action, "fieldPath");
             JsonArray paths = array(action, "fieldPaths");
             if (path.size() > 0 && paths.size() == 1

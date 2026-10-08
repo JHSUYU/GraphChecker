@@ -26,34 +26,14 @@ public final class OccurrenceBinding {
         bindPorts(MapFields.rows(region.get("outputs")), rootCallId, occurrenceId);
     }
 
-    /** Stamps the occurrence onto the ports and accesses it owns. */
+    /** Stamps the occurrence onto the ports it owns. */
     private static void bindPorts(List<Map<String, Object>> ports,
                                   long rootCallId, String occurrenceId) {
         for (Map<String, Object> port : ports) {
-            boolean owned = false;
-            if (MapFields.longNumber(port.get("rootCallId"), -1L) == rootCallId) {
+            if (MapFields.longNumber(port.get("rootCallId"), -1L)
+                    == rootCallId) {
                 port.put("occurrenceId", occurrenceId);
-                owned = true;
-            }
-            if (MapFields.longNumber(port.get("toRootCallId"), -1L) == rootCallId) {
-                port.put("toOccurrenceId", occurrenceId);
-                owned = true;
-            }
-            if (MapFields.longNumber(port.get("fromRootCallId"), -1L) == rootCallId) {
-                port.put("fromOccurrenceId", occurrenceId);
-                owned = true;
-            }
-            if (!owned) continue;
-            // An access keeps its own activation if it recorded one.
-            for (Map<String, Object> access
-                    : MapFields.rows(port.get("runtimeAccesses"))) {
-                if (!(access.get("rootCallId") instanceof Number)
-                        || MapFields.longNumber(access.get("rootCallId"), -1L)
-                        == rootCallId) {
-                    access.put("occurrenceId", occurrenceId);
-                }
             }
         }
     }
-
 }

@@ -36,7 +36,6 @@ import java.util.function.Function;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.firstNonEmpty;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
@@ -2075,8 +2074,7 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<Map<String, Object>>> bySite = new LinkedHashMap<>();
         for (Map<String, Object> edge : edges) {
             if (!"GUARD".equals(text(edge.get("transferKind")))) continue;
-            String site = firstNonEmpty(text(edge.get("guardSiteId")),
-                    text(edge.get("siteId")));
+            String site = text(edge.get("siteId"));
             if (site.isEmpty()) continue;
             bySite.computeIfAbsent(site, ignored -> new ArrayList<>())
                     .add(edge);

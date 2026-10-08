@@ -1774,15 +1774,9 @@ public final class RuntimeRegionPlanner {
     /** Whether the port's type has an SMT term and is not marked concrete. */
     static boolean symbolicLeafPort(Map<String, Object> port,
                                     String javaType) {
-        if (port != null && !port.isEmpty()) {
-            String demand = stringValue(port.get("symbolicDemand"));
-            if (demand.startsWith("CONCRETE_")
-                    || Boolean.TRUE.equals(port.get("captureRootOnly"))
-                    || Boolean.TRUE.equals(port.get("loopControlOnly"))
-                    || Boolean.TRUE.equals(port.get("controlOnly"))
-                    || Boolean.TRUE.equals(port.get("pathAssumptionOnly"))) {
-                return false;
-            }
+        if (port != null && stringValue(port.get("symbolicDemand"))
+                .startsWith("CONCRETE_")) {
+            return false;
         }
         return symbolicLeafType(javaType);
     }
