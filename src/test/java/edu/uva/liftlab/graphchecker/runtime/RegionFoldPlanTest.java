@@ -351,7 +351,7 @@ public class RegionFoldPlanTest {
                 activations.runtimeInstances, cutObservations(threw),
                 cutScopeMap(ambiguous), RuntimeWorkflowDiscovery.FIRST,
                 Collections.<ScheduleEvent>emptyList(),
-                RecordedAccesses.NONE);
+                new RecordedAccesses.Builder().build());
     }
 
     /**

@@ -63,6 +63,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * The runtime half of the contract: the lineage an activation is addressed by,
@@ -335,13 +336,15 @@ public class RowRuntimeTest {
         SessionManifest manifest = RowCodec.readManifest(session().manifest());
         assertEquals(Collections.singleton("ROOT.EXPIRY"),
                 manifest.derivedRoots());
-        assertTrue("schema 2 states readings", manifest.statesReadings());
         JsonObject older = manifest.toJson();
         older.addProperty("schemaVersion", 1);
-        older.remove("concreteReadings");
-        older.remove("derivedRoots");
-        assertFalse("a schema-1 manifest states none",
-                SessionManifest.fromJson(older).statesReadings());
+        try {
+            SessionManifest.fromJson(older);
+            fail("a schema-1 manifest is read");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("schema 1"));
+        }
     }
 
     /**

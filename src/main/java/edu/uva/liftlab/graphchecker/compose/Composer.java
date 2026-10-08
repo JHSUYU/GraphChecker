@@ -1246,19 +1246,6 @@ public final class Composer {
         domains();
         refutations(disjuncts, clockCells, clockReadings, clockBefore);
         lowering.assertIdentitiesDistinct();
-        // A manifest that predates readings (schema 1) states none: a root
-        // such a session read and minted none guards none of its arms.
-        for (SessionReader session : corpus.sessions()) {
-            if (session.manifest() == null
-                    || session.manifest().statesReadings()) {
-                continue;
-            }
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    session.sessionId(), "this session's manifest predates "
-                            + "concrete readings and derived roots (schema "
-                            + "1), so a root it read and minted none guards "
-                            + "none of its arms and pins none of its path");
-        }
         // Corpus inconsistencies (one name, two sorts; one truncated name,
         // two identities) are BLOCKING gaps, not exceptions.
         for (Map.Entry<String, String> conflict
