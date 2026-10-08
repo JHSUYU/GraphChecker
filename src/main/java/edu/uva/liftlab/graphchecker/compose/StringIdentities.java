@@ -381,22 +381,18 @@ final class StringIdentities {
 
     /**
      * Whether a node is one Java primitive value: a stated primitive type,
-     * or an operator (a binary or a negation), whose value is always a
-     * promoted primitive.
+     * or a binary operator, whose value is always a promoted primitive.
      */
     private static boolean primitive(JsonElement node) {
-        String type = VmExpressionIr.typeOf(node);
         return !statedPrimitive(node).isEmpty()
-                || "BinaryExpression".equals(type)
-                || "NotExpression".equals(type);
+                || "BinaryExpression".equals(VmExpressionIr.typeOf(node));
     }
 
     /**
      * The primitive descriptor a node's type states ({@code Z B C S I J F
-     * D}; a negation is {@code Z}), else "".
+     * D}), else "".
      */
     private static String statedPrimitive(JsonElement node) {
-        if ("NotExpression".equals(VmExpressionIr.typeOf(node))) return "Z";
         String type = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 VmTermLowering.expressionJavaType(node));
         return JavaPrimitiveSmtSemantics.primitive(type) ? type : "";

@@ -183,7 +183,6 @@ public final class VmTermLowering {
 
         // Expression dispatch.
         ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
-        MALFORMED_NOT("MalformedNot", false),
         /** Named by the expression type alone. */
         UNKNOWN_EXPRESSION_TYPE("", false);
 

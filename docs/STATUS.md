@@ -610,12 +610,6 @@ Fallbacks and dead code:
       `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
       `getConcolicRegionSummary`;
     - nothing runs `causynth_smoke_test.sh`.
-18. `gc/compose/SmtLowering`: the `PlaceholderExpression` dispatch has no producer.
-
-Harness and declarations:
-
-21. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
-    `MessageDoors`, which the Solr trees call.
 
 Stale artifacts:
 

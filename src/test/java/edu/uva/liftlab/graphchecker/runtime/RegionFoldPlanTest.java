@@ -509,13 +509,8 @@ public class RegionFoldPlanTest {
     }
 
     /** The published scope map: the throw below {@link #GUARD_SITE}, which
-     *  decides it. */
-    private StaticScopeMap cutScopeMap() throws IOException {
-        return cutScopeMap(false);
-    }
-
-    /** The fixture's map; {@code ambiguous}: a second declared throw (unit
-     *  9) on the guard's other arm. */
+     *  decides it; {@code ambiguous}: a second declared throw (unit 9) on the
+     *  guard's other arm. */
     private StaticScopeMap cutScopeMap(boolean ambiguous) throws IOException {
         List<Map<String, Object>> throwsDeclared = new ArrayList<>();
         for (int unit : ambiguous ? new int[]{7, 9} : new int[]{7}) {

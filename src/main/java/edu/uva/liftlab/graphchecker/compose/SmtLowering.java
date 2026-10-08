@@ -1609,22 +1609,6 @@ public final class SmtLowering {
         return Term.of("nullRef", Sort.REF);
     }
 
-    private Term placeholderTerm(JsonObject expression) {
-        String function = primitiveString(expression, "_place_holder_func");
-        int count = optionalInteger(expression, "_count", -1);
-        if (!"currentTimeMills".equals(function) || count < 1) {
-            refuse("PlaceholderExpression:"
-                    + (function.isEmpty() ? "unknown" : function)
-                    + "#" + count, "");
-            return leaf(Sort.INT, primitiveString(expression, "_java_type"));
-        }
-        String name = symbols.mint("environment__",
-                scope + SEPARATOR + function + "#" + count, 10);
-        declare(name, Sort.INT);
-        assertJavaIntegralDomain(name, "J");
-        return Term.of(name, Sort.INT, IntegralWidth.JAVA_LONG);
-    }
-
     /**
      * How one read is bound, by level: a guarded read node
      * ({@link #guardedReadTerm}) or a read row ({@code Composer#stateJoins}).
@@ -3879,17 +3863,6 @@ public final class SmtLowering {
         }
         if ("OpStrExpression".equals(type)) {
             return stringOperation(object, origin);
-        }
-        if ("NotExpression".equals(type)) {
-            Term operand = dispatch(object.get("_operand"), Sort.BOOL,
-                    origin + ":not");
-            if (operand.sort != Sort.BOOL) {
-                return refuse(Reason.MALFORMED_NOT, origin, "", Sort.BOOL);
-            }
-            return result("(not " + operand.text + ")", Sort.BOOL, operand);
-        }
-        if ("PlaceholderExpression".equals(type)) {
-            return placeholderTerm(object);
         }
         if ("TypeCastExpression".equals(type)) {
             return typeCast(object, origin);
