@@ -215,7 +215,7 @@ orders, three under other JVM identity-hash generators).
 
 | item | status | where |
 | --- | --- | --- |
-| Engine code naming a system or case | done, with two library rules | Only comments name cases. `gc/runtime/PoolWorkers` names Jetty's `QueuedThreadPool.startThread`. The wire rule and scope growth name `.protobuf.` (the wire rule also `.protobuf.RpcController`). |
+| Engine code naming a system or case | done, with two library rules | Only comments name cases. `gc/runtime/PoolWorkers` names Jetty's `QueuedThreadPool.startThread`. The wire rule names `.protobuf.` (also `.protobuf.RpcController`); scope growth reads the library catalog's `CODEC` rows (protobuf's runtimes, SolrJ's JavaBin). |
 | VM code naming a system | done | Only comments. Library lists are hard-coded: logging and crypto are muted, commons-lang 2 and Spring `StringUtils` are modeled, two Jackson classes are muted. |
 | Per-case switches | partial | the named cases' `causynth_scope_growth_budget=0` (their declared occurrences name regions of the declared scope); each named case's `loop-bounds*.jsonl` and solr-18413's own `WIRE_FLOW` rows; `region_path_max_tasks=128` for 11741; the two per-case workarounds of `hdfs-adhoc` (07's tree and world depth, 21's tree and loop bounds, `case.sh`) |
 | Dead or fallback code | not done | See "Fallbacks and dead code" below. |

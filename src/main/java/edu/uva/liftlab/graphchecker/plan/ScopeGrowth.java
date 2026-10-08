@@ -52,7 +52,14 @@ import java.util.zip.ZipFile;
  * body runs the called method only when that body itself calls a demanded
  * door's anchor ({@link LibraryCatalog#demandedDoor}), listed as {@value
  * #IO} in the manifest; any other is skipped, named in the summary.
- * A protobuf message is a wire payload (F3), never scope.  Rows are taken
+ * A codec's class is the wire, never scope ({@link #codec}: the library
+ * catalog's {@code CODEC} rows, protobuf's runtimes and the messages
+ * generated on them, SolrJ's JavaBin): a value crosses a serialization
+ * through its doors' staged exports, never the codec's internals, and a
+ * codec grown into scope makes every encode and decode in the cluster a
+ * writer region (solr-bugs-reindex-cleanup SB2: JavaBinCodec, grown as the
+ * body of ZkNodeProps#load's JavaBin branch, 68 % of a 6.5 GB recording).
+ * Rows are taken
  * in the frontier's order -- the root demand's first, then nearest first
  * ({@link ScopeFrontier}) -- until the budget of grown classes is spent;
  * each class taken
@@ -135,7 +142,7 @@ public final class ScopeGrowth {
             for (String name : index.resolve(kind, signature)) {
                 if (taken + added >= budget) break;
                 ClassFacts facts = index.classes.get(name);
-                if (present.contains(name) || index.protobuf(name)) continue;
+                if (present.contains(name) || index.codec(name)) continue;
                 if (io && !index.callsFileOperation(name, signature)) {
                     noFileOperation.add(name);
                     continue;
@@ -424,13 +431,17 @@ public final class ScopeGrowth {
         return false;
     }
 
-    /** A generated protobuf class: some supertype is protobuf's. */
-    private boolean protobuf(String name) {
+    /** A codec's class: it or a supertype is one a catalog CODEC row names
+     *  ({@link LibraryCatalog#codecClasses}). */
+    boolean codec(String name) {
         Set<String> seen = new LinkedHashSet<>();
         List<String> pending = new ArrayList<>(Collections.singleton(name));
         while (!pending.isEmpty()) {
             String next = pending.remove(pending.size() - 1);
-            if (next.contains(".protobuf.")) return true;
+            for (java.util.regex.Pattern codec
+                    : LibraryCatalog.codecClasses()) {
+                if (codec.matcher(next).matches()) return true;
+            }
             ClassFacts facts = classes.get(next);
             if (facts == null || !seen.add(next)) continue;
             pending.addAll(facts.supertypes);

@@ -246,7 +246,13 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    - an IO row: the class whose body runs the called method, only when that body itself calls a
      demanded door's anchor (listed as `IO` in `GROWN`), else it is skipped and named in the
      step's summary (one level per growth round);
-   - never a generated protobuf class (a supertype in `*.protobuf.*`).
+   - never a codec's class: it or a supertype matches a library catalog `CODEC` row's globs
+     (`LibraryCatalog#codecClasses`: protobuf's runtimes and the messages generated on them,
+     `*.protobuf.*`; SolrJ's `JavaBinCodec` and its nested classes). A value crosses a
+     serialization through its doors' staged exports, never the codec's internals, and a codec
+     grown into scope makes every encode and decode in the cluster a writer region
+     (solr-bugs-reindex-cleanup SB2: `JavaBinCodec`, grown as the body of `ZkNodeProps#load`'s
+     JavaBin branch, 68 % of a 6.5 GB recording).
    Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
    (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes
    (default 24; `0` disables growth) are grown, taking the rows in the frontier's order.
