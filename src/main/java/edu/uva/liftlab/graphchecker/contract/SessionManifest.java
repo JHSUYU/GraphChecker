@@ -93,11 +93,6 @@ public final class SessionManifest {
                 derived == null ? Collections.<String>emptySet() : derived);
     }
 
-    /** Unnamed work's region entries, by {@code <node>/region/<regionId>}. */
-    public Map<String, Integer> unnamedEntries() {
-        return unnamedEntries;
-    }
-
     /**
      * Root id -> rendered occurrence -> the value a declared source held
      * when this replay first read it there, at an occurrence it ran

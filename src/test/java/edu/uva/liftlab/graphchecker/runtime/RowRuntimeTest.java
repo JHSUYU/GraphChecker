@@ -322,11 +322,11 @@ public class RowRuntimeTest {
         String node = NN.key() + "/region/";
         assertEquals(Arrays.asList(node + "REGION.handshake",
                 node + "REGION.wrap"), named);
-        Map<String, Integer> counted = new HashMap<>();
-        counted.put(node + "REGION.handshake", 2);
-        counted.put(node + "REGION.wrap", 1);
-        assertEquals(counted, new HashMap<>(RowCodec.readManifest(
-                session().manifest()).unnamedEntries()));
+        JsonObject counted = new JsonObject();
+        counted.addProperty(node + "REGION.handshake", 2);
+        counted.addProperty(node + "REGION.wrap", 1);
+        assertEquals(counted, RowCodec.readManifest(session().manifest())
+                .toJson().getAsJsonObject("unnamedEntries"));
         Map<String, String> read = new HashMap<>();
         read.put("occ#1", "119528");
         read.put("occ#2", "119529");
