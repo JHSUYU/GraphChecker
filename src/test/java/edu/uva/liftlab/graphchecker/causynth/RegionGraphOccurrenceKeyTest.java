@@ -273,7 +273,7 @@ public class RegionGraphOccurrenceKeyTest {
                                         "outcome", Boolean.FALSE)),
                         walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList(),
-                        RecordedAccesses.NONE);
+                        new RecordedAccesses.Builder().build());
         List<String> planned = new ArrayList<>();
         for (Map<String, Object> region : closure.regions) {
             for (Object occurrence

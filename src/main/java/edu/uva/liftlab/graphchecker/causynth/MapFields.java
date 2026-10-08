@@ -130,11 +130,6 @@ public final class MapFields {
         return value instanceof Number ? ((Number) value).longValue() : fallback;
     }
 
-    /** A string with a null read as absent, for values already typed. */
-    public static String safe(String value) {
-        return value == null ? "" : value;
-    }
-
     public static String firstNonEmpty(String left, String right) {
         return left == null || left.isEmpty() ? right : left;
     }

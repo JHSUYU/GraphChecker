@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * One turn of a service loop (heartbeat, monitor, key updater) is one root
  * scope, so daemon traffic is not all addressed {@code Lost}.
@@ -56,7 +58,7 @@ final class WakeScopes {
 
     /** {@code Class.method} of the wait: two waits of one loop are one loop. */
     static String api(String site) {
-        String value = Text.safe(site);
+        String value = trimmed(site);
         int open = value.indexOf('<');
         int colon = value.indexOf(':', open + 1);
         int paren = value.indexOf('(', colon + 1);

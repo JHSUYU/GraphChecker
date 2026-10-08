@@ -19,9 +19,6 @@ import java.util.Set;
  * RuntimeSelectedRegionFinalizer#DECIDER_CLASS}).
  */
 public final class RecordedAccesses {
-    /** No access recorded. */
-    public static final RecordedAccesses NONE = new Builder().build();
-
     /** Cell -> its accesses' seqs, ascending; at the same positions the
      *  calls they ran in, and whether each stored. */
     private final Map<String, long[]> seqs;

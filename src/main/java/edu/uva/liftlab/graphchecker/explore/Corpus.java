@@ -9,15 +9,12 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
-import edu.uva.liftlab.graphchecker.contract.GapKind;
-import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
-import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -123,7 +120,6 @@ public final class Corpus implements Arms.Rows {
         public final Map<String, String> rootAssignments;
         public final Map<String, String> clockDeltas;
         public final Map<String, String> answers;
-        public final Map<String, String> rootMints;
         /** Reader -> the writer it was held to, each as a confirmation names
          *  it ({@code ConfirmMain#holding}). */
         public final Map<String, String> pairings;
@@ -133,14 +129,12 @@ public final class Corpus implements Arms.Rows {
         World(Map<String, String> rootAssignments,
               Map<String, String> clockDeltas,
               Map<String, String> answers,
-              Map<String, String> rootMints,
               Map<String, String> pairings,
               List<Flip> flips) {
             this.rootAssignments =
                     Collections.unmodifiableMap(rootAssignments);
             this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
             this.answers = Collections.unmodifiableMap(answers);
-            this.rootMints = Collections.unmodifiableMap(rootMints);
             this.pairings = Collections.unmodifiableMap(pairings);
             this.flips = Collections.unmodifiableList(flips);
         }
@@ -148,7 +142,6 @@ public final class Corpus implements Arms.Rows {
         /** The seed's world, and that of a session with no worker. */
         static World empty() {
             return new World(new LinkedHashMap<String, String>(),
-                    new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
                     new LinkedHashMap<String, String>(),
@@ -199,9 +192,6 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Set<String>> writtenLocations =
             new LinkedHashMap<String, Set<String>>();
-    /** occurrence id -> its exports, across sessions. */
-    private final Map<String, List<ExportRow>> exportsOn =
-            new LinkedHashMap<String, List<ExportRow>>();
     /** session|location|version -> the write that produced it. */
     private final Map<String, WriteRow> writeByVersion =
             new LinkedHashMap<String, WriteRow>();
@@ -761,7 +751,6 @@ public final class Corpus implements Arms.Rows {
             remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
             add(exports, row.endpoint().id(), row);
-            add(exportsOn, row.endpoint().occurrence().id(), row);
         }
         for (AttachRow row : session.attaches()) {
             remember(session.sessionId(), row.endpoint().occurrence());
@@ -1058,12 +1047,6 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> writesOn(String sessionId,
                                    OccurrenceAddress occurrence) {
         return writesOn.of(occurrence.id(), sessionId);
-    }
-
-    /** Every export any session published at one occurrence. */
-    public List<ExportRow> exportsOn(OccurrenceAddress occurrence) {
-        return exportsOn.getOrDefault(occurrence.id(),
-                Collections.<ExportRow>emptyList());
     }
 
     // ---- The causal graph (GreyGraph §3.1) ----

@@ -21,7 +21,6 @@ import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
-import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -41,7 +40,6 @@ import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
-import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
@@ -782,18 +780,12 @@ public final class Composer {
             if (reads != null) own.addAll(reads);
             List<String> repaired = new ArrayList<String>();
             for (String arm : taken) {
-                if (!own.contains(arm) && ordinal(arm).equals(
-                        ordinal(selector))) {
+                if (!own.contains(arm) && Refutations.ordinal(arm).equals(
+                        Refutations.ordinal(selector))) {
                     repaired.add(arm);
                 }
             }
             return repaired;
-        }
-
-        /** The path ordinal a selector name carries ({@code kind__N__hash}). */
-        private static String ordinal(String name) {
-            String[] parts = name.split("__", -1);
-            return parts.length == 3 ? parts[1] : "";
         }
 
         /**
@@ -1246,19 +1238,6 @@ public final class Composer {
         domains();
         refutations(disjuncts, clockCells, clockReadings, clockBefore);
         lowering.assertIdentitiesDistinct();
-        // A manifest that predates readings (schema 1) states none: a root
-        // such a session read and minted none guards none of its arms.
-        for (SessionReader session : corpus.sessions()) {
-            if (session.manifest() == null
-                    || session.manifest().statesReadings()) {
-                continue;
-            }
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    session.sessionId(), "this session's manifest predates "
-                            + "concrete readings and derived roots (schema "
-                            + "1), so a root it read and minted none guards "
-                            + "none of its arms and pins none of its path");
-        }
         // Corpus inconsistencies (one name, two sorts; one truncated name,
         // two identities) are BLOCKING gaps, not exceptions.
         for (Map.Entry<String, String> conflict

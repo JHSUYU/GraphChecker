@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -32,6 +33,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * THE schedule of one run, and the one rule that holds a replay to another
@@ -86,9 +89,8 @@ public final class ScheduleLog {
     /** The same, as a system property; the property wins. */
     public static final String PREFIX_PROPERTY = "causynth.schedule.prefix";
     public static final String PREFIX_FILE = "schedule_prefix.jsonl";
+    /** The rest, beside the prefix in the worker directory. */
     public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
-    /** The rest, as a system property; else it stands beside the prefix. */
-    public static final String SUFFIX_PROPERTY = "causynth.schedule.suffix";
 
     /** Below the workload's own window waits (60 s). */
     static final long DEFAULT_TIMEOUT_MS = 15000L;
@@ -325,7 +327,7 @@ public final class ScheduleLog {
      * Lost one is, in the recording and in every replay.
      */
     static void unawaited(String transport) {
-        UNAWAITED.add(Text.safe(transport).toUpperCase(java.util.Locale.ROOT));
+        UNAWAITED.add(trimmed(transport).toUpperCase(java.util.Locale.ROOT));
     }
 
     /**
@@ -581,12 +583,12 @@ public final class ScheduleLog {
      */
     private static Pending pending(ScheduleEvent.Kind kind, String site,
                                    String endpoint, Stance at) {
-        String stable = JvmNames.stable(Text.safe(site));
+        String stable = JvmNames.stable(trimmed(site));
         if (stable.isEmpty()) return null;
         Stance stance = at != null ? at : standing();
         if (stance == null) return null;
         return new Pending(kind, stance.context, stable, stance.region,
-                Text.safe(endpoint));
+                trimmed(endpoint));
     }
 
     // ---- a turn's WAKE ---------------------------------------------------
@@ -632,7 +634,7 @@ public final class ScheduleLog {
         if (!RecordingWindow.opened()) return null;
         mute();
         try {
-            String stable = JvmNames.stable(Text.safe(site));
+            String stable = JvmNames.stable(trimmed(site));
             Stance stance = standing();
             if (stable.isEmpty() || stance == null) return null;
             TurnWake turn = new TurnWake(new Pending(ScheduleEvent.Kind.WAKE,
@@ -751,7 +753,7 @@ public final class ScheduleLog {
      * prefix that focuses it.
      */
     static void mark(String occurrenceId) {
-        String id = Text.safe(occurrenceId);
+        String id = trimmed(occurrenceId);
         if (id.isEmpty() || !RecordingWindow.opened()) return;
         synchronized (LOCK) {
             if (!MARKED.add(id)) return;
@@ -815,7 +817,7 @@ public final class ScheduleLog {
      * so a key's k never counts two threads interleaved.
      */
     static String contextOf(CausalContext context) {
-        String node = Text.safe(RuntimeTraceContext.nodeHere());
+        String node = trimmed(RuntimeTraceContext.nodeHere());
         String handoffs = Identity.handoffs();
         return node + "|" + context.render()
                 + (handoffs.isEmpty() ? "" : "|" + handoffs);
@@ -1586,7 +1588,7 @@ public final class ScheduleLog {
     }
 
     static long timeoutMillis() {
-        String configured = Text.safe(System.getProperty(TIMEOUT_PROPERTY));
+        String configured = trimmed(System.getProperty(TIMEOUT_PROPERTY));
         if (configured.isEmpty()) return DEFAULT_TIMEOUT_MS;
         try {
             long value = Long.parseLong(configured);
@@ -1726,19 +1728,16 @@ public final class ScheduleLog {
     }
 
     private static Path prefixFile() {
-        String named = Text.safe(System.getProperty(PREFIX_PROPERTY));
-        if (named.isEmpty()) named = Text.safe(System.getenv(PREFIX_ENV));
-        return orderFile(named, PREFIX_FILE);
+        String named = JsonFields.setting(PREFIX_PROPERTY, PREFIX_ENV);
+        return named.isEmpty() ? besideWorker(PREFIX_FILE) : Paths.get(named);
     }
 
     private static Path suffixFile() {
-        return orderFile(Text.safe(System.getProperty(SUFFIX_PROPERTY)),
-                SUFFIX_FILE);
+        return besideWorker(SUFFIX_FILE);
     }
 
-    /** The file {@code named}, else {@code name} in the worker directory. */
-    private static Path orderFile(String named, String name) {
-        if (!named.isEmpty()) return Paths.get(named);
+    /** {@code name} in the worker directory, or null. */
+    private static Path besideWorker(String name) {
         String worker = FocusedReplay.workerDir();
         if (worker.isEmpty()) return null;
         Path beside = Paths.get(worker).resolve(name);
@@ -1762,15 +1761,6 @@ public final class ScheduleLog {
                     + " open at the window's"
                     + " close";
         }
-    }
-
-    static void enforceForTests(List<ScheduleEvent> events) {
-        enforceForTests(events, Collections.<ScheduleEvent>emptyList());
-    }
-
-    static void enforceForTests(List<ScheduleEvent> events,
-                                List<ScheduleEvent> after) {
-        enforceForTests(events, after, false);
     }
 
     static void enforceForTests(List<ScheduleEvent> events,

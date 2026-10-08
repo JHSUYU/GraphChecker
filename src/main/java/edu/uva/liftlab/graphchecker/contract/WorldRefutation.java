@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * CONTRACT-SPEC §3: why a replay's world is no world of its question
  * (WORLD_REFUTED).  An open decider arm's flip (TargetRow.OpenArm) whose
@@ -35,11 +37,7 @@ public final class WorldRefutation extends Value {
         return new WorldRefutation(
                 Fields.copy(Fields.required(conditions,
                         "refutation.conditions")),
-                stated(exception), stated(thrownAt), stated(testFrame));
-    }
-
-    private static String stated(String value) {
-        return value == null ? "" : value.trim();
+                trimmed(exception), trimmed(thrownAt), trimmed(testFrame));
     }
 
     /** The faithfulness conditions (a)-(d), each as this run held it. */

@@ -24,7 +24,6 @@ import soot.jimple.CmpgExpr;
 import soot.jimple.CmplExpr;
 import soot.jimple.ConditionExpr;
 import soot.jimple.Constant;
-import soot.jimple.EqExpr;
 import soot.jimple.FieldRef;
 import soot.jimple.GeExpr;
 import soot.jimple.GotoStmt;

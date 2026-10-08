@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -91,10 +91,10 @@ final class RuntimeObjectIdentity {
     static String address(String sourceKey, String eventKind, String method,
                           String siteId, int argumentIndex, String field,
                           String runtimeType, String slot) {
-        return safe(sourceKey) + "\n" + safe(eventKind) + "\n"
-                + safe(method) + "\n" + safe(siteId) + "\n"
-                + argumentIndex + "\n" + safe(field) + "\n"
-                + safe(runtimeType) + "\n" + safe(slot);
+        return nonNull(sourceKey) + "\n" + nonNull(eventKind) + "\n"
+                + nonNull(method) + "\n" + nonNull(siteId) + "\n"
+                + argumentIndex + "\n" + nonNull(field) + "\n"
+                + nonNull(runtimeType) + "\n" + nonNull(slot);
     }
 
 }

@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * The focused-region replay: one occurrence (or one state-connected factor)
@@ -161,7 +162,7 @@ public final class FocusedReplay {
     public static boolean focused(String taskId, OccurrenceAddress occurrence) {
         load();
         if (occurrence == null) return false;
-        String id = Text.safe(taskId);
+        String id = trimmed(taskId);
         synchronized (LOCK) {
             if (!id.isEmpty() && FOCUSED_TASKS.contains(id)) {
                 FOCUSED_OCCURRENCES.add(occurrence.render());
@@ -183,7 +184,7 @@ public final class FocusedReplay {
      */
     public static Long clockSkew(String rootId) {
         load();
-        String stated = CLOCK_DELTAS.get(Text.safe(rootId));
+        String stated = CLOCK_DELTAS.get(trimmed(rootId));
         if (stated == null) return null;
         try {
             return Long.valueOf(stated);
@@ -199,7 +200,7 @@ public final class FocusedReplay {
     /** The value the wave assigned this root, or {@code ""}. */
     public static String rootAssignment(String rootId) {
         load();
-        String id = Text.safe(rootId);
+        String id = trimmed(rootId);
         for (Obligation obligation : OBLIGATIONS) {
             if (obligation.rootAssignments() == null) continue;
             String value = obligation.rootAssignments().get(id);
@@ -211,7 +212,7 @@ public final class FocusedReplay {
     /** The value the wave answered this attach endpoint with, or {@code ""}. */
     public static String answer(String endpointId) {
         load();
-        String id = Text.safe(endpointId);
+        String id = trimmed(endpointId);
         for (Obligation obligation : OBLIGATIONS) {
             if (obligation.answers() == null) continue;
             String value = obligation.answers().get(id);
@@ -248,7 +249,7 @@ public final class FocusedReplay {
             for (Inherited flip : INHERITED) {
                 if (flip.taken || !flip.refusal.isEmpty()) continue;
                 if (!flip.at.equals(at)) continue;
-                if (!flip.siteId.equals(Text.safe(siteId))
+                if (!flip.siteId.equals(trimmed(siteId))
                         || flip.ordinal != ordinal) {
                     continue;
                 }
@@ -310,11 +311,11 @@ public final class FocusedReplay {
     private static void observe(Obligation obligation, String at,
                                 String siteId, int ordinal,
                                 boolean outcome) {
-        String id = Text.safe(obligation.obligationId());
+        String id = trimmed(obligation.obligationId());
         if (REFUSALS.containsKey(id) || FLIPPED.contains(id)) return;
         // Joined on the focus row's focusedOccurrenceId.
-        if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) return;
-        if (!Text.safe(obligation.siteId()).equals(Text.safe(siteId))
+        if (!trimmed(FOCUS.get(id)).equals(trimmed(at))) return;
+        if (!trimmed(obligation.siteId()).equals(trimmed(siteId))
                 || obligation.ordinal() != ordinal) {
             return;
         }
@@ -322,8 +323,8 @@ public final class FocusedReplay {
             FLIPPED.add(id);
             return;
         }
-        REFUSALS.put(id, "wrong decision at " + Text.safe(siteId)
-                + "#" + ordinal + " of occurrence " + Text.safe(at)
+        REFUSALS.put(id, "wrong decision at " + trimmed(siteId)
+                + "#" + ordinal + " of occurrence " + trimmed(at)
                 + ": took " + outcome + ", the obligation flips it to "
                 + obligation.flippedOutcome());
     }
@@ -364,8 +365,8 @@ public final class FocusedReplay {
      */
     private static String refused(String at) {
         for (Obligation obligation : OBLIGATIONS) {
-            String id = Text.safe(obligation.obligationId());
-            if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) continue;
+            String id = trimmed(obligation.obligationId());
+            if (!trimmed(FOCUS.get(id)).equals(trimmed(at))) continue;
             String detail = REFUSALS.get(id);
             if (detail != null) return detail;
         }
@@ -389,8 +390,8 @@ public final class FocusedReplay {
         String at = occurrence.id();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
-                String id = Text.safe(obligation.obligationId());
-                if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) continue;
+                String id = trimmed(obligation.obligationId());
+                if (!trimmed(FOCUS.get(id)).equals(trimmed(at))) continue;
                 if (!FLIPPED.contains(id)) return false;
             }
             return true;
@@ -418,7 +419,7 @@ public final class FocusedReplay {
      * @return whether it {@link #decide decided} the replay
      */
     static boolean noteUnansweredTask(String detail) {
-        String stated = Text.safe(detail);
+        String stated = trimmed(detail);
         if (!stated.startsWith(PREFIX_UNMATCHED)) return false;
         load();
         synchronized (LOCK) {
@@ -448,7 +449,7 @@ public final class FocusedReplay {
         load();
         synchronized (LOCK) {
             if (unsettledPublication.isEmpty()) {
-                unsettledPublication = Text.safe(detail);
+                unsettledPublication = trimmed(detail);
             }
         }
     }
@@ -462,7 +463,7 @@ public final class FocusedReplay {
      * reads the row.
      */
     static void mintPublished(String rootId) {
-        String id = Text.safe(rootId);
+        String id = trimmed(rootId);
         if (id.isEmpty()) return;
         load();
         synchronized (LOCK) {
@@ -519,7 +520,7 @@ public final class FocusedReplay {
                                                   Confirmation.Held held) {
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         for (Obligation obligation : OBLIGATIONS) {
-            String id = Text.safe(obligation.obligationId());
+            String id = trimmed(obligation.obligationId());
             if (REFUSALS.containsKey(id)) {
                 results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, REFUSALS.get(id)));
@@ -539,7 +540,7 @@ public final class FocusedReplay {
                         ? ObligationResult.of(id, Verdict.ADMITTED,
                                 sessionId, obligation.flips()
                                 ? "the focused prefix reproduced and "
-                                + Text.safe(obligation.siteId()) + "#"
+                                + trimmed(obligation.siteId()) + "#"
                                 + obligation.ordinal() + " took "
                                 + obligation.flippedOutcome()
                                 : "the focused prefix reproduced and "
@@ -547,17 +548,17 @@ public final class FocusedReplay {
                                 + "planted; no flip was owed")
                         : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                                 sessionId, unstated));
-            } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
+            } else if (trimmed(FOCUS.get(id)).isEmpty()) {
                 // No occurrence stated: the ask is missing, not the run.
                 results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, "the focus row states no "
                         + "focusedOccurrenceId, so the flip at "
-                        + Text.safe(obligation.siteId()) + "#"
+                        + trimmed(obligation.siteId()) + "#"
                         + obligation.ordinal() + " is addressed at no "
                         + "occurrence of this replay"));
             } else {
-                String detail = "occurrence " + Text.safe(FOCUS.get(id))
-                        + " never reached " + Text.safe(obligation.siteId())
+                String detail = "occurrence " + trimmed(FOCUS.get(id))
+                        + " never reached " + trimmed(obligation.siteId())
                         + "#" + obligation.ordinal() + " in this replay";
                 List<String> unrefuted = new ArrayList<String>();
                 WorldRefutation refutation = OPEN_ARMS.contains(id)
@@ -606,7 +607,7 @@ public final class FocusedReplay {
     private static WorldRefutation refuted(Obligation obligation,
                                            Confirmation.Held held,
                                            List<String> unrefuted) {
-        String at = Text.safe(FOCUS.get(Text.safe(obligation.obligationId())));
+        String at = trimmed(FOCUS.get(trimmed(obligation.obligationId())));
         if (at.isEmpty() || ENTERED.contains(at)) return null;
         if (!workloadEnded) {
             unrefuted.add("(d) the workload did not end by itself");
@@ -745,7 +746,7 @@ public final class FocusedReplay {
             StackTraceElement[] frames = failure.getStackTrace();
             endedAt = frames.length == 0 ? "" : frames[0].toString();
             for (StackTraceElement frame : frames) {
-                if (frame.getClassName().equals(Text.safe(testClass))) {
+                if (frame.getClassName().equals(trimmed(testClass))) {
                     endedInTest = frame.toString();
                     break;
                 }
@@ -783,12 +784,12 @@ public final class FocusedReplay {
         List<String> missing = new ArrayList<String>();
         if (obligation.rootAssignments() != null) {
             for (String rootId : obligation.rootAssignments().keySet()) {
-                String id = Text.safe(rootId);
+                String id = trimmed(rootId);
                 if (!id.isEmpty() && !MINTED.contains(id)) missing.add(id);
             }
         }
         for (String rootId : CLOCK_DELTAS.keySet()) {
-            String id = Text.safe(rootId);
+            String id = trimmed(rootId);
             if (!id.isEmpty() && !MINTED.contains(id) && !missing.contains(id)) {
                 missing.add(id);
             }
@@ -998,7 +999,7 @@ public final class FocusedReplay {
         List<String> ids = new ArrayList<String>();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
-                String id = Text.safe(obligation.obligationId());
+                String id = trimmed(obligation.obligationId());
                 if (!id.isEmpty() && !ids.contains(id)) ids.add(id);
             }
         }
@@ -1011,7 +1012,7 @@ public final class FocusedReplay {
      */
     public static void planted(String rootId, boolean moved) {
         load();
-        String id = Text.safe(rootId);
+        String id = trimmed(rootId);
         if (id.isEmpty()) return;
         // The world acts where the plant moves what the run read.
         if (moved) worldActed();
@@ -1028,7 +1029,7 @@ public final class FocusedReplay {
 
     /** Notes that a mint of this root RAN, planted or not. */
     static void mintReached(String rootId) {
-        String id = Text.safe(rootId);
+        String id = trimmed(rootId);
         if (id.isEmpty()) return;
         load();
         synchronized (LOCK) {
@@ -1068,7 +1069,7 @@ public final class FocusedReplay {
         asked.add(CLOCK_DELTAS);
         for (Map<String, String> roots : asked) {
             for (Map.Entry<String, String> assigned : roots.entrySet()) {
-                String id = Text.safe(assigned.getKey());
+                String id = trimmed(assigned.getKey());
                 if (id.isEmpty() || PLANTED.contains(id)) continue;
                 if (!reachedLocked(id)) continue;
                 unplanted.put(id, assigned.getValue());
@@ -1112,7 +1113,7 @@ public final class FocusedReplay {
 
     /** The directory the campaign hands this replay's worker, or "". */
     static String workerDir() {
-        return Text.safe(System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
+        return trimmed(System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
     }
 
     private static Path readable(Path file) {
@@ -1142,7 +1143,7 @@ public final class FocusedReplay {
         if (!row.has(member) || row.get(member).isJsonNull()) return values;
         for (Map.Entry<String, JsonElement> entry
                 : row.getAsJsonObject(member).entrySet()) {
-            values.put(Text.safe(entry.getKey()),
+            values.put(trimmed(entry.getKey()),
                     entry.getValue().getAsString());
         }
         return values;
@@ -1152,7 +1153,7 @@ public final class FocusedReplay {
         List<String> values = new ArrayList<String>();
         if (!row.has(member) || row.get(member).isJsonNull()) return values;
         for (JsonElement value : row.getAsJsonArray(member)) {
-            values.add(Text.safe(value.getAsString()));
+            values.add(trimmed(value.getAsString()));
         }
         return values;
     }

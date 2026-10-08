@@ -743,18 +743,6 @@ public final class SmtLowering {
     }
 
     /**
-     * One published term (a decision's or phi) as {@link #statedTerm}
-     * lowers it, with what it reaches ({@link Lowered#reach}): the
-     * closure's question about a term.
-     */
-    public Lowered lowerTerm(String term, String origin) {
-        Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
-        String text = commit(lowered);
-        return text.isEmpty() ? Lowered.refused("UNSTATED_TERM:" + origin)
-                : new Lowered(text, null, lowered);
-    }
-
-    /**
      * One expression of the open conjunction's session, by {@link
      * #reference}: its definedness is a side condition of that conjunction,
      * answered by {@link #end} with the rest.  Null when the table lacks it.
@@ -900,8 +888,7 @@ public final class SmtLowering {
 
         /**
          * The value with its Java-level facts (a String's nullness, an
-         * integral's width), in this session's names; null for a published
-         * term ({@link #lowerTerm}) or a refusal.
+         * integral's width), in this session's names; null for a refusal.
          */
         public Term value() {
             return value;
@@ -1622,22 +1609,6 @@ public final class SmtLowering {
         return Term.of("nullRef", Sort.REF);
     }
 
-    private Term placeholderTerm(JsonObject expression) {
-        String function = primitiveString(expression, "_place_holder_func");
-        int count = optionalInteger(expression, "_count", -1);
-        if (!"currentTimeMills".equals(function) || count < 1) {
-            refuse("PlaceholderExpression:"
-                    + (function.isEmpty() ? "unknown" : function)
-                    + "#" + count, "");
-            return leaf(Sort.INT, primitiveString(expression, "_java_type"));
-        }
-        String name = symbols.mint("environment__",
-                scope + SEPARATOR + function + "#" + count, 10);
-        declare(name, Sort.INT);
-        assertJavaIntegralDomain(name, "J");
-        return Term.of(name, Sort.INT, IntegralWidth.JAVA_LONG);
-    }
-
     /**
      * How one read is bound, by level: a guarded read node
      * ({@link #guardedReadTerm}) or a read row ({@code Composer#stateJoins}).
@@ -1883,7 +1854,7 @@ public final class SmtLowering {
             if (VmRows.GUARDED_READ_TYPE.equals(type)) {
                 String key = locationKey(JsonFields.object(object,
                         "location"));
-                long version = observedVersion(object);
+                long version = VmRows.joinedVersion(object);
                 if (join.repaired(key, VmRows.readEvent(object))) {
                     found.add("read " + key + "@" + version);
                     if (!all) return found;
@@ -1913,7 +1884,7 @@ public final class SmtLowering {
                                  String origin) {
         JsonObject location = JsonFields.object(expression, "location");
         String key = locationKey(location);
-        long version = observedVersion(expression);
+        long version = VmRows.joinedVersion(expression);
         String javaType = primitiveString(expression, "_java_type");
         long event = VmRows.readEvent(expression);
         return bind(key, version, event,
@@ -2471,7 +2442,7 @@ public final class SmtLowering {
                             JsonElement written = join.writeExpression(
                                     locationKey(JsonFields.object(node,
                                             "location")),
-                                    observedVersion(node));
+                                    VmRows.joinedVersion(node));
                             if (written != null) roots.add(written);
                         }
                     }
@@ -3136,7 +3107,7 @@ public final class SmtLowering {
                 }
                 JsonObject read = found.getAsJsonObject();
                 return join.writeExpression(locationKey(JsonFields.object(
-                        read, "location")), observedVersion(read));
+                        read, "location")), VmRows.joinedVersion(read));
             }
 
             @Override
@@ -3843,10 +3814,6 @@ public final class SmtLowering {
         return observed.getAsJsonObject().get("expression");
     }
 
-    private static long observedVersion(JsonObject node) {
-        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
-    }
-
     /** What separates the parts of a minted name's identity. */
     private static final String SEPARATOR = "|";
 
@@ -3896,17 +3863,6 @@ public final class SmtLowering {
         }
         if ("OpStrExpression".equals(type)) {
             return stringOperation(object, origin);
-        }
-        if ("NotExpression".equals(type)) {
-            Term operand = dispatch(object.get("_operand"), Sort.BOOL,
-                    origin + ":not");
-            if (operand.sort != Sort.BOOL) {
-                return refuse(Reason.MALFORMED_NOT, origin, "", Sort.BOOL);
-            }
-            return result("(not " + operand.text + ")", Sort.BOOL, operand);
-        }
-        if ("PlaceholderExpression".equals(type)) {
-            return placeholderTerm(object);
         }
         if ("TypeCastExpression".equals(type)) {
             return typeCast(object, origin);

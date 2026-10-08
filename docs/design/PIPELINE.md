@@ -1257,8 +1257,8 @@ the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disju
   data-encryption key's id from instrumented occurrences with no read row); a DERIVED root -- one
   some session found carrying another input's expression where it read it, a clock-derived expiry
   say (`derivedRoots`, `Corpus#derived`) -- has no reading of its own, and none pins anything; a
-  session whose manifest predates readings (schema 1) is named, DIAGNOSTIC; a declared root this
-  session neither minted nor read refuses the path only when the path's terms name it;
+  declared root this session neither minted nor read refuses the path only when the path's terms
+  name it;
 - anchor handoffs, by the one arrival rule (`Composer#arrival`, a path's and an arm's alike):
   bound only by the message family, answered or not (an obligation's answer is
   what its replay planted at the consumer, not what a run delivered, so it is never a literal);

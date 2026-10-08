@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * THE order takers pass a startup step an adapter names: a step that builds
  * state a replay reads, which no slot of the schedule orders, before the
@@ -56,8 +58,8 @@ public final class StartupOrder {
      * @return what {@link #done} takes, or null when nothing is named
      */
     static String[] begin(String step, String who) {
-        String named = Text.safe(step);
-        String by = Text.safe(who);
+        String named = trimmed(step);
+        String by = trimmed(who);
         if (named.isEmpty() || by.isEmpty()) return null;
         synchronized (LOCK) {
             int n = BEGUN.merge(named + "\n" + by, 1, Integer::sum) - 1;

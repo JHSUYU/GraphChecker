@@ -4,6 +4,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * The engine's own plumbing, which is never program state (RULES, lead
  * 2026-10-06): the engine's runtime classes, and generated protobuf messages
@@ -33,12 +35,12 @@ final class EnginePlumbing {
 
     /** {@link #site}, of a class as the VM spells it ({@code a/b/C$D}). */
     static final Predicate<String> VM_CLASSES =
-            name -> site(Text.safe(name).replace('/', '.'));
+            name -> site(trimmed(name).replace('/', '.'));
 
     /** Whether code of {@code className} (source form, {@code a.b.C$D}) is
      *  plumbing. */
     static boolean site(String className) {
-        String name = Text.safe(className);
+        String name = trimmed(className);
         if (name.startsWith(ENGINE)) return true;
         Boolean known = SITES.get(name);
         if (known == null) {

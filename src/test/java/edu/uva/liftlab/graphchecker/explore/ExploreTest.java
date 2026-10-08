@@ -40,7 +40,6 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import org.junit.Assume;
 import org.junit.Rule;
@@ -79,6 +78,13 @@ import static org.junit.Assert.assertTrue;
  * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class ExploreTest {
+    /** The bounds a round runs with when the case states none. */
+    private static final ObligationFactory.Bounds DEFAULT_BOUNDS =
+            new ObligationFactory.Bounds(
+                    ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK,
+                    ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH,
+                    ObligationFactory.DEFAULT_MAX_WORLD_DEPTH);
+
     /** What a case declares: a v1 selector, resolved against the seed. */
     private static final String TARGET_SELECTOR =
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
@@ -968,7 +974,7 @@ public class ExploreTest {
         JsonObject awaiting = ExploreMain.plan(iteration, TARGET_SELECTOR,
                 null, results, flying, iteration.resolve(StaticScopeMap.FILE),
                 held, 4, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                DEFAULT_BOUNDS);
         assertEquals(proposed.size() - 1, obligations(held).size());
         assertEquals(1, awaiting.get("heldInFlight").getAsInt());
         assertEquals(1, awaiting.get("inFlight").getAsInt());
@@ -3473,7 +3479,7 @@ public class ExploreTest {
                 null, iteration.resolve("results.jsonl"), null,
                 iteration.resolve(StaticScopeMap.FILE), waveDir, 0, "epoch0",
                 ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                DEFAULT_BOUNDS);
         List<String> anchors = new ArrayList<String>();
         for (JsonElement element : manifest.getAsJsonArray("anchors")) {
             anchors.add(element.getAsString());
@@ -3494,7 +3500,7 @@ public class ExploreTest {
         JsonObject truncated = ExploreMain.plan(iteration, TARGET_SELECTOR,
                 null, iteration.resolve("results.jsonl"), null,
                 iteration.resolve(StaticScopeMap.FILE), cut, 0, "epoch0", 1,
-                ObligationFactory.Bounds.defaults());
+                DEFAULT_BOUNDS);
         assertTrue(truncated.get("truncated").getAsInt() >= 1);
         boolean recorded = false;
         for (GapRow gap : RowCodec.readAll(cut.resolve("gaps.jsonl"),
@@ -3516,7 +3522,7 @@ public class ExploreTest {
                 elsewhere.resolve("results.jsonl"), null,
                 elsewhere.resolve(StaticScopeMap.FILE), absentWave, 0,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                DEFAULT_BOUNDS);
         boolean named = false;
         for (GapRow gap : RowCodec.readAll(absentWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
@@ -4540,7 +4546,7 @@ public class ExploreTest {
         return ExploreMain.plan(iteration, selector, domains, results, null,
                 iteration.resolve(StaticScopeMap.FILE), roundDir, round,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                DEFAULT_BOUNDS);
     }
 
     /**

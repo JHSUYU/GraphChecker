@@ -88,11 +88,6 @@ public final class ObligationFactory {
             this.maxWorldDepth = maxWorldDepth < 0
                     ? DEFAULT_MAX_WORLD_DEPTH : maxWorldDepth;
         }
-
-        public static Bounds defaults() {
-            return new Bounds(DEFAULT_MAX_PATHS_PER_TASK,
-                    DEFAULT_MAX_FLIPS_PER_PATH, DEFAULT_MAX_WORLD_DEPTH);
-        }
     }
 
     /** One flip a round proposes: the path, the decision, and its identity. */
@@ -1029,8 +1024,7 @@ public final class ObligationFactory {
                     !decision.outcome(), id));
             flips.addAll(inherited.flips);
             String digest = wholeWorldDigest(new Corpus.World(roots,
-                    clockDeltas, answers, Collections.<String, String>
-                    emptyMap(), pairings, flips));
+                    clockDeltas, answers, pairings, flips));
             for (Corpus.Refuted world : refuted) {
                 if (world.digest.equals(digest)) {
                     return refused(candidate, Verdict.NOT_ADMITTED,

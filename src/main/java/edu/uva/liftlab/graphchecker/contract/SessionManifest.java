@@ -23,15 +23,15 @@ import java.util.TreeSet;
  * row of the session states what ran there; and it states what a declared
  * root was read at where the replay minted none ({@link #concreteReadings})
  * and which declared roots held a value computed from others where it read
- * them ({@link #derivedRoots}).  Schema 2; a schema-1 manifest states
- * neither ({@link #statesReadings}).
+ * them ({@link #derivedRoots}).  Schema 2; a manifest of another schema
+ * is refused.
  */
 public final class SessionManifest {
     /** What a session ran as: the recording, or one counterfactual of it. */
     public enum Role { SEED, FOCUSED }
 
     public static final String KIND = "SESSION_MANIFEST";
-    /** The schema that states readings and derived roots. */
+    /** The schema this contract reads and writes. */
     public static final int SCHEMA = 2;
 
     private final String sessionId;
@@ -40,13 +40,12 @@ public final class SessionManifest {
     private final Map<String, Integer> unnamedEntries;
     private final Map<String, Map<String, String>> concreteReadings;
     private final Set<String> derivedRoots;
-    private final boolean statesReadings;
 
     private SessionManifest(String sessionId, Role role,
                             List<String> obligationIds,
                             Map<String, Integer> unnamedEntries,
                             Map<String, Map<String, String>> readings,
-                            Set<String> derived, boolean statesReadings) {
+                            Set<String> derived) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
@@ -62,7 +61,6 @@ public final class SessionManifest {
         this.concreteReadings = Collections.unmodifiableMap(sorted);
         this.derivedRoots = Collections.unmodifiableSet(
                 new TreeSet<String>(derived));
-        this.statesReadings = statesReadings;
     }
 
     /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
@@ -79,7 +77,7 @@ public final class SessionManifest {
                 Fields.required(role, "role"), ids,
                 Collections.<String, Integer>emptyMap(),
                 Collections.<String, Map<String, String>>emptyMap(),
-                Collections.<String>emptySet(), true);
+                Collections.<String>emptySet());
     }
 
     /** This manifest, with what only the run's end can state. */
@@ -92,13 +90,7 @@ public final class SessionManifest {
                 readings == null
                         ? Collections.<String, Map<String, String>>emptyMap()
                         : readings,
-                derived == null ? Collections.<String>emptySet() : derived,
-                statesReadings);
-    }
-
-    /** Unnamed work's region entries, by {@code <node>/region/<regionId>}. */
-    public Map<String, Integer> unnamedEntries() {
-        return unnamedEntries;
+                derived == null ? Collections.<String>emptySet() : derived);
     }
 
     /**
@@ -119,12 +111,6 @@ public final class SessionManifest {
      */
     public Set<String> derivedRoots() {
         return derivedRoots;
-    }
-
-    /** Whether the manifest states readings and derived roots at all: a
-     *  schema-1 manifest predates both. */
-    public boolean statesReadings() {
-        return statesReadings;
     }
 
     /** Whether this session states it is the recording. */
@@ -172,8 +158,14 @@ public final class SessionManifest {
         return json;
     }
 
-    /** Reads one manifest; an absent or unknown role is refused, never SEED. */
+    /** Reads one manifest; another schema, or an absent or unknown role, is
+     *  refused, never SEED. */
     public static SessionManifest fromJson(JsonObject json) {
+        int schema = JsonFields.optionalInteger(json, "schemaVersion", -1);
+        if (schema != SCHEMA) {
+            throw new IllegalArgumentException("manifest states schema "
+                    + schema + "; this contract reads schema " + SCHEMA);
+        }
         String role = JsonFields.optionalString(json, "role");
         Role parsed;
         try {
@@ -212,9 +204,7 @@ public final class SessionManifest {
                 JsonFields.strings(json, "obligationIds"));
         return new SessionManifest(manifest.sessionId, manifest.role,
                 manifest.obligationIds, unnamed, readings,
-                new TreeSet<String>(JsonFields.strings(json, "derivedRoots")),
-                json.has("schemaVersion")
-                        && json.get("schemaVersion").getAsInt() >= SCHEMA);
+                new TreeSet<String>(JsonFields.strings(json, "derivedRoots")));
     }
 
     @Override

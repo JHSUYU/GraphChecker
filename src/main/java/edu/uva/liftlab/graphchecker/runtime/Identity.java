@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * The execution index of the running thread: one stack, O(1) per event
  * (IDENTITY §3).
@@ -758,7 +760,7 @@ public final class Identity {
      * ({@link #occurrence}).  One test decides both: {@link Lineage#named}.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
-        String stable = JvmNames.stable(Text.safe(startSiteId));
+        String stable = JvmNames.stable(trimmed(startSiteId));
         if (stable.isEmpty() || carrier == null) return;
         if (!Lineage.named()) {
             // Never in place of a named start of the same carrier.
@@ -852,7 +854,7 @@ public final class Identity {
      *         names no sender, whose hand-off is a plain start
      */
     static Object handoffStarting(String message) {
-        if (Text.safe(message).isEmpty()) return null;
+        if (trimmed(message).isEmpty()) return null;
         State state = state();
         Handoff handoff = new Handoff(state.scopeBase, state.handedMessage);
         state.scopeBase = state.depth();
@@ -1043,7 +1045,7 @@ public final class Identity {
      */
     public static long enterFrame(String callSiteId, Object receiver) {
         State state = state();
-        String site = JvmNames.stable(Text.safe(callSiteId));
+        String site = JvmNames.stable(trimmed(callSiteId));
         // One reading of the window, for the count and the level alike: an
         // entry racing the window's opening counted under one and filed
         // under the other would keep a set-up count inside the window.
@@ -1209,16 +1211,9 @@ public final class Identity {
      * Closes the innermost open region entry: one pop per entry, folded or
      * not, so a folded exit pops its marker and cannot close the occurrence
      * it folded into ({@link #fold}).  Regions hold no counts; nothing to
-     * clean.
-     */
-    public static void regionExit() {
-        regionExit(null);
-    }
-
-    /**
-     * {@link #regionExit()}, by a throw when {@code thrown} is not null: an
-     * occurrence a hop named ends with its region's entry, whichever comes
-     * first ({@link #hopOpened}), and states how.
+     * clean.  By a throw when {@code thrown} is not null: an occurrence a
+     * hop named ends with its region's entry, whichever comes first ({@link
+     * #hopOpened}), and states how.
      */
     public static void regionExit(Throwable thrown) {
         State state = state();
@@ -1268,7 +1263,7 @@ public final class Identity {
         State state = state();
         Region running = state.activeRegion();
         if (running == null) return 0;
-        String key = Text.safe(site);
+        String key = trimmed(site);
         // The window rule ({@link RecordingWindow}): renumber from the
         // window's opening.
         if (running.window != RecordingWindow.index()) {
@@ -1403,8 +1398,8 @@ public final class Identity {
      */
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
-        String node = Text.safe(nodeKey);
-        String region = Text.safe(regionId);
+        String node = trimmed(nodeKey);
+        String region = trimmed(regionId);
         if (node.isEmpty() || region.isEmpty()) {
             return null;
         }
@@ -1609,7 +1604,7 @@ public final class Identity {
     public static Endpoint endpointAt(OccurrenceAddress occurrence,
                                       String site, int attempt) {
         if (occurrence == null) return null;
-        String stable = JvmNames.stable(Text.safe(site));
+        String stable = JvmNames.stable(trimmed(site));
         return Endpoint.of(occurrence, stable, eventSiteIndex(stable),
                 attempt);
     }
@@ -1644,8 +1639,8 @@ public final class Identity {
                                             String half) {
         OccurrenceAddress at = roleOccurrence(nodeKey, Lineage.role());
         if (at == null) return null;
-        String site = JvmNames.stable(Text.safe(transport) + "#"
-                + Text.safe(half));
+        String site = JvmNames.stable(trimmed(transport) + "#"
+                + trimmed(half));
         return Endpoint.of(at, site, ExecutionIndex.of(Arrays.asList(
                 Frame.of(site, 0))), 0);
     }
@@ -1673,8 +1668,8 @@ public final class Identity {
         Endpoint producer = minted != null ? minted
                 : endpointAt(currentOccurrence(nodeKey), site, 0);
         if (producer == null) return null;
-        Interactions.sent(Text.safe(transport), Text.safe(correlationId),
-                Text.safe(half), producer);
+        Interactions.sent(trimmed(transport), trimmed(correlationId),
+                trimmed(half), producer);
         // A role occurrence (a response minted at its request's scope, a
         // send under no region) has no activation of its own; stated here,
         // the chain of whatever runs under this message goes on through the
@@ -1693,7 +1688,7 @@ public final class Identity {
      * context is still exact.
      */
     public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {
-        String node = Text.safe(nodeKey);
+        String node = trimmed(nodeKey);
         if (node.isEmpty()) return null;
         Role kind = role == null ? Role.UNKNOWN : role;
         return OccurrenceAddress.of(NodeId.parse(node),
@@ -1725,8 +1720,8 @@ public final class Identity {
                                          String rpcSite, Role role,
                                          String api, int windowIndex,
                                          Role unattributed) {
-        if (!Text.safe(anchorEndpointId).isEmpty()) {
-            return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
+        if (!trimmed(anchorEndpointId).isEmpty()) {
+            return CausalContext.of(anchorEndpointId, trimmed(rpcSite));
         }
         // No "started by a submission" arm: started work runs in its
         // starter's scope, and siblings differ by the start FRAME

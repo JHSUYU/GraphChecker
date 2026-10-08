@@ -27,17 +27,15 @@ import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -58,7 +56,7 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 
 /** Binds region skeletons and refined region state to concrete activations. */
@@ -293,29 +291,16 @@ public final class RuntimeRegionPlanner {
             }
             if (events.isEmpty()) continue;
             events.sort(Map.Entry.comparingByKey());
-            MessageDigest digest = sha256();
+            StringBuilder signed = new StringBuilder();
             for (Map.Entry<Long, String> event : events) {
-                digest.update((event.getValue() + "\n").getBytes(
-                        StandardCharsets.UTF_8));
-            }
-            StringBuilder hex = new StringBuilder();
-            for (byte value : Arrays.copyOf(digest.digest(), 16)) {
-                hex.append(String.format("%02x", value & 0xff));
+                signed.append(event.getValue()).append('\n');
             }
             activation.put(RuntimeSelectedRegionFinalizer.SIGNATURE,
-                    hex.toString());
+                    ArtifactIO.digest(signed.toString(), 32));
             activation.put(RuntimeSelectedRegionFinalizer.FIRST_SEQ,
                     events.get(0).getKey());
             activation.put(RuntimeSelectedRegionFinalizer.LAST_SEQ,
                     events.get(events.size() - 1).getKey());
-        }
-    }
-
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
         }
     }
 
@@ -1789,15 +1774,9 @@ public final class RuntimeRegionPlanner {
     /** Whether the port's type has an SMT term and is not marked concrete. */
     static boolean symbolicLeafPort(Map<String, Object> port,
                                     String javaType) {
-        if (port != null && !port.isEmpty()) {
-            String demand = stringValue(port.get("symbolicDemand"));
-            if (demand.startsWith("CONCRETE_")
-                    || Boolean.TRUE.equals(port.get("captureRootOnly"))
-                    || Boolean.TRUE.equals(port.get("loopControlOnly"))
-                    || Boolean.TRUE.equals(port.get("controlOnly"))
-                    || Boolean.TRUE.equals(port.get("pathAssumptionOnly"))) {
-                return false;
-            }
+        if (port != null && stringValue(port.get("symbolicDemand"))
+                .startsWith("CONCRETE_")) {
+            return false;
         }
         return symbolicLeafType(javaType);
     }
@@ -1920,8 +1899,8 @@ public final class RuntimeRegionPlanner {
     /** Grouping key for the replay ordinal; not an identity. */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, NodeId node) {
-        return node.render() + "\n" + safe(regionId) + "\n"
-                + safe(root.method);
+        return node.render() + "\n" + nonNull(regionId) + "\n"
+                + nonNull(root.method);
     }
 
     /**
@@ -1988,7 +1967,7 @@ public final class RuntimeRegionPlanner {
      * OccurrenceBinding} id + replay selector): stable across recordings. */
     public static String activationId(String occurrenceId,
                                Map<String, Object> rootSelector) {
-        return "ACT." + UUID.nameUUIDFromBytes((safe(occurrenceId) + "\n"
+        return "ACT." + UUID.nameUUIDFromBytes((nonNull(occurrenceId) + "\n"
                 + canonicalIdentity(rootSelector))
                 .getBytes(StandardCharsets.UTF_8));
     }
@@ -2119,15 +2098,15 @@ public final class RuntimeRegionPlanner {
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
                     String occurrenceAddress, boolean regionFolded) {
-            this.occurrenceAddress = safe(occurrenceAddress);
+            this.occurrenceAddress = nonNull(occurrenceAddress);
             this.regionFolded = regionFolded;
             this.seq = seq;
-            this.test = safe(test);
-            this.threadName = safe(threadName);
+            this.test = nonNull(test);
+            this.threadName = nonNull(threadName);
             this.tid = tid;
-            this.method = safe(method);
+            this.method = nonNull(method);
             this.objectId = objectId;
-            this.receiverType = safe(receiverType);
+            this.receiverType = nonNull(receiverType);
             this.callId = callId;
             this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
@@ -2137,8 +2116,8 @@ public final class RuntimeRegionPlanner {
             this.source = source;
             this.sourceKey = sourceOf(source).key();
             this.receiverAttributed = receiverAttributed;
-            this.requestKey = safe(requestKey);
-            this.requestApi = safe(requestApi);
+            this.requestKey = nonNull(requestKey);
+            this.requestApi = nonNull(requestApi);
         }
 
         /** This entry with the fold cleared ({@code
@@ -2187,25 +2166,25 @@ public final class RuntimeRegionPlanner {
                       SourceRef source, String requestKey, String requestApi,
                       String producerEndpointId, String producerEndpoint) {
             this.seq = seq;
-            this.direction = safe(direction);
-            this.transport = safe(transport);
-            this.correlationId = safe(correlationId);
-            this.attemptId = safe(attemptId);
-            this.half = safe(half);
-            this.threadName = safe(threadName);
+            this.direction = nonNull(direction);
+            this.transport = nonNull(transport);
+            this.correlationId = nonNull(correlationId);
+            this.attemptId = nonNull(attemptId);
+            this.half = nonNull(half);
+            this.threadName = nonNull(threadName);
             this.tid = tid;
-            this.method = safe(method);
+            this.method = nonNull(method);
             this.callId = callId;
             this.invocationId = invocationId;
-            this.declaredCallee = safe(declaredCallee);
+            this.declaredCallee = nonNull(declaredCallee);
             this.laneId = laneId;
             this.spanId = spanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
-            this.requestKey = safe(requestKey);
-            this.requestApi = safe(requestApi);
-            this.producerEndpointId = safe(producerEndpointId);
-            this.producerEndpoint = safe(producerEndpoint);
+            this.requestKey = nonNull(requestKey);
+            this.requestApi = nonNull(requestApi);
+            this.producerEndpointId = nonNull(producerEndpointId);
+            this.producerEndpoint = nonNull(producerEndpoint);
         }
 
         /** The one half of one exchange this leg is on. */
@@ -2242,20 +2221,20 @@ public final class RuntimeRegionPlanner {
                      Boolean outcome, Integer successorIndex, String branchKind,
                      String switchCaseKeys) {
             this.seq = seq;
-            this.kind = safe(kind);
-            this.method = safe(method);
+            this.kind = nonNull(kind);
+            this.method = nonNull(method);
             this.callId = callId;
             this.invocationId = invocationId;
-            this.siteId = safe(siteId);
-            this.declaredCallee = safe(declaredCallee);
+            this.siteId = nonNull(siteId);
+            this.declaredCallee = nonNull(declaredCallee);
             this.argumentIndex = argumentIndex;
-            this.runtimeType = safe(runtimeType);
+            this.runtimeType = nonNull(runtimeType);
             this.objectId = objectId;
-            this.primitiveValue = safe(primitiveValue);
+            this.primitiveValue = nonNull(primitiveValue);
             this.outcome = outcome;
             this.successorIndex = successorIndex;
-            this.branchKind = safe(branchKind);
-            this.switchCaseKeys = safe(switchCaseKeys);
+            this.branchKind = nonNull(branchKind);
+            this.switchCaseKeys = nonNull(switchCaseKeys);
         }
     }
 
@@ -2287,16 +2266,16 @@ public final class RuntimeRegionPlanner {
                          int receiverObjectId, int valueObjectId,
                          String primitiveValue) {
             this.seq = seq;
-            this.kind = safe(kind);
-            this.method = safe(method);
+            this.kind = nonNull(kind);
+            this.method = nonNull(method);
             this.callId = callId;
             this.unitIndex = unitIndex;
             this.siteId = unitIndex >= 0 && !this.method.isEmpty()
-                    ? SiteId.of(this.method, unitIndex) : safe(siteId);
-            this.field = safe(field);
+                    ? SiteId.of(this.method, unitIndex) : nonNull(siteId);
+            this.field = nonNull(field);
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
-            this.primitiveValue = safe(primitiveValue);
+            this.primitiveValue = nonNull(primitiveValue);
         }
     }
 

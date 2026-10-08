@@ -5,6 +5,7 @@ import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,7 +15,6 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
  * The lineage scope: every application class that hands work to another thread,
@@ -58,7 +58,7 @@ public final class LineageScan {
                 throw new IllegalStateException(
                         "lineage class root not found: " + root);
             }
-            for (Path file : classFiles(root)) {
+            for (Path file : ArtifactIO.classFiles(root)) {
                 scanned++;
                 Path relative = root.relativize(file);
                 if (analysed.stream().anyMatch(dir
@@ -75,16 +75,6 @@ public final class LineageScan {
         System.out.println("lineage scope: " + kept + " of " + scanned
                 + " class(es) start, hand off, run, wait, signal or draw"
                 + " outside the analysis scope");
-    }
-
-    private static List<Path> classFiles(Path root) throws IOException {
-        List<Path> files = new ArrayList<>();
-        try (Stream<Path> walk = Files.walk(root)) {
-            walk.filter(path -> path.toString().endsWith(".class"))
-                    .sorted()
-                    .forEach(files::add);
-        }
-        return files;
     }
 
     static boolean handsOffWork(Path file) throws IOException {

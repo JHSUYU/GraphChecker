@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -48,9 +48,9 @@ final class VmBranchAttestation {
     static void noteRefused(String siteId, int occurrence,
                             Attestation attestation, String windowOutcome) {
         RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
-                safe(siteId) + "#" + occurrence,
+                nonNull(siteId) + "#" + occurrence,
                 "this decision publishes no site predicate ("
-                        + safe(windowOutcome) + "): " + attestation.error);
+                        + nonNull(windowOutcome) + "): " + attestation.error);
     }
 
     /**
@@ -91,9 +91,9 @@ final class VmBranchAttestation {
                     "event stream belongs to Java thread " + envelopeOwner
                             + " instead of " + active.thread.getId());
         }
-        if (!safe(active.activation.regionId).equals(
+        if (!nonNull(active.activation.regionId).equals(
                 optionalString(envelope, "regionId"))
-                || !safe(active.activation.taskId).equals(
+                || !nonNull(active.activation.taskId).equals(
                 optionalString(envelope, "taskId"))) {
             return Attestation.invalid(
                     "event stream region/task does not match owner");
@@ -112,7 +112,7 @@ final class VmBranchAttestation {
             return Attestation.invalid(
                     "unsupported event authority " + authority);
         }
-        if (!safe(siteId).equals(optionalString(selected, "siteId"))
+        if (!nonNull(siteId).equals(optionalString(selected, "siteId"))
                 || optionalInteger(selected, "occurrence", -1) != occurrence) {
             return Attestation.invalid(
                     "event site/occurrence does not match prepared branch");
@@ -327,20 +327,20 @@ final class VmBranchAttestation {
      * the fall-through; null when the expression states none.
      */
     private static String armOperator(String expression, boolean outcome) {
-        Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
+        Matcher matcher = BRANCH_OPERATOR.matcher(nonNull(expression));
         if (!matcher.find()) return null;
         return outcome ? matcher.group(1)
                 : BranchPredicateAlgebra.complementOperator(matcher.group(1));
     }
 
     private static boolean nullComparison(String expression) {
-        return safe(expression).matches(".*\\bnull\\b.*");
+        return nonNull(expression).matches(".*\\bnull\\b.*");
     }
 
     /** Resolves the Java boolean value selected by a Jimple zero test. */
     private static Boolean booleanValueRequiredByZeroBranch(
             String expression, boolean outcome) {
-        String rendered = safe(expression).trim();
+        String rendered = nonNull(expression).trim();
         Matcher matcher = BRANCH_OPERATOR.matcher(rendered);
         if (!matcher.find()) return null;
         String declared = matcher.group(1);
@@ -472,7 +472,7 @@ final class VmBranchAttestation {
             this.conditionIndices = Collections.unmodifiableList(
                     new ArrayList<>(conditionIndices));
             this.valid = valid;
-            this.error = safe(error);
+            this.error = nonNull(error);
         }
 
         private static Attestation valid(

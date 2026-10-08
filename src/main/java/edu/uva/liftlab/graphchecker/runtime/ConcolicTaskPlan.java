@@ -35,7 +35,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
@@ -175,9 +175,9 @@ final class ConcolicTaskPlan {
 
         private RefusedCandidate(String said, OccurrenceAddress observed,
                                  String attribution) {
-            this.said = safe(said);
+            this.said = nonNull(said);
             this.observed = observed;
-            this.attribution = safe(attribution);
+            this.attribution = nonNull(attribution);
             this.thread = Thread.currentThread().getName();
         }
 
@@ -318,7 +318,7 @@ final class ConcolicTaskPlan {
             // invocation would file a refusal against every task.
             if (!task.loopBodyRoot
                     || !task.loopRootHookGroup.equals(
-                    safe(loopRootHookGroup))) {
+                    nonNull(loopRootHookGroup))) {
                 continue;
             }
             // From here this task's own hook ran, so every refusal is stated;
@@ -409,7 +409,7 @@ final class ConcolicTaskPlan {
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
             if (!task.rootHookGroup.equals(
-                    safe(rootHookGroupKey))) continue;
+                    nonNull(rootHookGroupKey))) continue;
             if (task.completedGoalReserved) continue;
             // Stated, or the run end reports ROOT_NEVER_EXECUTED.
             RefusedCandidate refused = task.loopBodyRoot
@@ -530,7 +530,7 @@ final class ConcolicTaskPlan {
         for (RuntimeTask task : tasks) {
             if (task.address != null
                     && task.rootHookGroup.equals(
-                    safe(rootHookGroupKey))
+                    nonNull(rootHookGroupKey))
                     && task.address.regionId().equals(address.regionId())
                     && task.address.node().equals(address.node())
                     && task.address.context().render().equals(
@@ -573,9 +573,9 @@ final class ConcolicTaskPlan {
                 task.rootContextSelector, arguments, receiver,
                 rootArguments)) {
             return RefusedCandidate.stated((enclosing
-                    ? "an enclosing invocation of " + safe(rootMethod)
+                    ? "an enclosing invocation of " + nonNull(rootMethod)
                     + " ran, and this task's enclosing root selector"
-                    : "an invocation of " + safe(rootMethod) + " ran, and"
+                    : "an invocation of " + nonNull(rootMethod) + " ran, and"
                     + " this task's root selector")
                     + " does not fit it: receiver " + describe(receiver)
                     + ", " + (rootArguments == null ? 0
@@ -617,7 +617,7 @@ final class ConcolicTaskPlan {
      * refusal on the planned node reads differently from one on no node.
      */
     static String attribution(String activationSourceKey) {
-        String key = safe(activationSourceKey);
+        String key = nonNull(activationSourceKey);
         if (key.isEmpty()
                 || RuntimeRegionPlanner.UNREGISTERED_SOURCE.key().equals(key)) {
             return " (this run attributed the activation to no node, so it"
@@ -627,15 +627,15 @@ final class ConcolicTaskPlan {
     }
 
     static ConcolicTaskPlan load() {
-        String planValue = safe(System.getProperty(
+        String planValue = nonNull(System.getProperty(
                 FocusedReplay.PLAN_PROPERTY)).trim();
-        String selectedTasks = safe(System.getProperty(
+        String selectedTasks = nonNull(System.getProperty(
                 "causynth.concolic.task.id")).trim();
         if (planValue.isEmpty()) {
             return new ConcolicTaskPlan(null,
                     Collections.<RuntimeTask>emptyList());
         }
-        String resultValue = safe(System.getProperty(
+        String resultValue = nonNull(System.getProperty(
                 "causynth.concolic.results")).trim();
         if (selectedTasks.isEmpty() || resultValue.isEmpty()) {
             throw new IllegalStateException("Concolic runtime requires "
@@ -697,7 +697,7 @@ final class ConcolicTaskPlan {
     static Set<String> campaignTaskIds(String property) {
         Set<String> ids = new LinkedHashSet<>();
         for (String value : property.split(",")) {
-            String taskId = safe(value).trim();
+            String taskId = nonNull(value).trim();
             if (taskId.isEmpty()) continue;
             if (!ids.add(taskId)) {
                 throw new IllegalStateException("malformed plan: "
@@ -723,7 +723,9 @@ final class ConcolicTaskPlan {
             String selectedMethod, String actualMethod,
             RootContextSelector context, RootArgumentSelector arguments,
             Object receiver, Object[] rootArguments) {
-        if (!safe(selectedMethod).equals(safe(actualMethod))) return false;
+        if (!nonNull(selectedMethod).equals(nonNull(actualMethod))) {
+            return false;
+        }
         if (!context.matches(receiver)) {
             return false;
         }
@@ -745,9 +747,9 @@ final class ConcolicTaskPlan {
         private RootContextSelector(String receiverRuntimeClass,
                                     String sourceKey,
                                     int invocationOrdinal) {
-            this.sourceKey = safe(sourceKey);
+            this.sourceKey = nonNull(sourceKey);
             this.invocationOrdinal = invocationOrdinal;
-            this.receiverRuntimeClass = safe(receiverRuntimeClass);
+            this.receiverRuntimeClass = nonNull(receiverRuntimeClass);
         }
 
         private static RootContextSelector from(JsonObject selector) {
@@ -962,8 +964,6 @@ final class ConcolicTaskPlan {
          * occurrences publish; later iterations run concretely.
          */
         final boolean loopBodyRoot;
-        final String rootLoopMethod;
-        final int rootLoopHeaderUnitIndex;
         /**
          * A loop-body region's occurrence budget: its ROOT loop's K_L.  Trap:
          * the region max includes inner loops unrolled within one occurrence
@@ -1059,8 +1059,6 @@ final class ConcolicTaskPlan {
                                 + this.occurrenceId + ", which names no "
                                 + "occurrence");
             }
-            this.rootLoopMethod = task.rootLoopMethod();
-            this.rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
             // An undeclared root loop site inherits the default K_L.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
@@ -1096,14 +1094,14 @@ final class ConcolicTaskPlan {
                 // A port may have several captures here; replay asks only
                 // whether it is declared and keys the rest on the port id.
                 if (!site.outgoing()) {
-                    attachSites.putIfAbsent(safe(site.portId()), site);
+                    attachSites.putIfAbsent(nonNull(site.portId()), site);
                 }
             }
         }
 
         /** The declared attach site of one communication port, or null. */
         CommunicationHandoffSpec attachSite(String portId) {
-            return attachSites.get(safe(portId));
+            return attachSites.get(nonNull(portId));
         }
 
         /** Files one refused candidate's facts. */
@@ -1199,7 +1197,7 @@ final class ConcolicTaskPlan {
 
         /** The planned address, or null when the id names no occurrence. */
         private static OccurrenceAddress parseAddress(String occurrenceId) {
-            String value = safe(occurrenceId);
+            String value = nonNull(occurrenceId);
             if (value.isEmpty()) return null;
             try {
                 return OccurrenceAddress.parse(value);
@@ -1446,7 +1444,7 @@ final class ConcolicTaskPlan {
          */
         static boolean targetRequiredOutcome(JsonObject targetBranch,
                                              String targetSite) {
-            if (safe(targetSite).isEmpty()) return false;
+            if (nonNull(targetSite).isEmpty()) return false;
             JsonElement encoded = targetBranch == null ? null
                     : targetBranch.get("requiredOutcome");
             if (encoded == null || !encoded.isJsonPrimitive()

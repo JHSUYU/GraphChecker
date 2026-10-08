@@ -120,6 +120,12 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   `VmTermLowering` + `SmtSymbolTable`; gated identical (`offline-ab.sh`, COMPOSE).
 - The VM's dead natives and `exportLeaf`/`mintLeaf` with the next VM build (STATE §3).
 - Loop-bound rows keyed structurally, not by Jimple unit ordinals (a tree change renumbers `#uN`).
+- Left by the 2026-10-08 cleanup, each needing a decision: `DependencyRole` (its constant is hashed into task
+  digests: deleting it re-keys every arm); STATUS open defects 14-16 (ClosurePlanner's fallback, SelectorResolution's
+  degraded address, ScheduleLog's malformed timeout: semantic changes, design first); the two option parsers
+  (`LongOptions`, `parseArgs`: merging changes how a bad command line is refused).
+- `offline-ab.sh` `ab_stage_seed_static` tests `-s GROWN` on the gate host right after another host wrote it; over NFS
+  it can miss the file (one spurious SEED.static difference on 2026-10-08): wait for it, or read it on the writer.
 
 ## Solr (next; `system/solr` = main today)
 

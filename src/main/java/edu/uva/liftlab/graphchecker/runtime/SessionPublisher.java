@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+
 /**
  * Writes one replay session's rows, one file per kind, through the
  * contract's codec.  Every row is flushed at once: the JVM is halted with no
@@ -207,7 +209,7 @@ public final class SessionPublisher {
     /** Files one expression under the ref the rows name it by: the nodes
      *  the log does not hold yet, then the ref. */
     public void expression(String ref, JsonObject expression) {
-        String key = Text.safe(ref);
+        String key = trimmed(ref);
         if (key.isEmpty() || expression == null) return;
         synchronized (LOCK) {
             if (failed || !expressionRefs.add(key)) return;

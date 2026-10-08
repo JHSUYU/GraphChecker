@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.ComposeMain;
+import edu.uva.liftlab.graphchecker.compose.Refutations;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -343,7 +344,7 @@ public final class ConfirmMain {
             for (JsonElement element : array(manifest, "paths")) {
                 JsonObject path = element.getAsJsonObject();
                 if (pathId.equals(optionalString(path, "pathId"))) {
-                    ordinalOfPath = ordinalOf(optionalString(path,
+                    ordinalOfPath = Refutations.ordinal(optionalString(path,
                             "selector"));
                     stated = path.has("restsOn");
                     restsOn.addAll(strings(path, "restsOn"));
@@ -361,7 +362,7 @@ public final class ConfirmMain {
             for (JsonElement element : array(valuation, "selectedArms")) {
                 JsonObject arm = element.getAsJsonObject();
                 if (ordinalOfPath.equals(
-                        ordinalOf(optionalString(arm, "selector")))) {
+                        Refutations.ordinal(optionalString(arm, "selector")))) {
                     arms.add(arm);
                 }
             }
@@ -1516,12 +1517,6 @@ public final class ConfirmMain {
     /** One version of one location. */
     private static String version(LocationId location, long version) {
         return SmtLowering.locationKey(location) + "@" + version;
-    }
-
-    /** The path ordinal a composer selector carries: {@code kind__N__hash}. */
-    static String ordinalOf(String selector) {
-        String[] parts = selector.split("__", -1);
-        return parts.length == 3 ? parts[1] : "";
     }
 
     /** The valuation row the claim rests on. */

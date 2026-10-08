@@ -12,7 +12,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
@@ -66,8 +66,8 @@ final class BranchObservation {
             ActiveRegion unattested = ConcolicRegionRuntime.activeRegion();
             RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
                     SiteId.render(method, unitIndex),
-                    "the weave states switch domain kind=" + safe(branchKind)
-                            + " keys=[" + safe(encodedCaseKeys)
+                    "the weave states switch domain kind=" + nonNull(branchKind)
+                            + " keys=[" + nonNull(encodedCaseKeys)
                             + "] successor=" + observedSuccessorIndex
                             + " and this decoder refuses it ("
                             + malformed.getMessage() + "), so the run cannot"
@@ -351,7 +351,7 @@ final class BranchObservation {
                                   Boolean outcome, int baseline, int limit) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", SiteId.render(method, unitIndex));
-        mapping.addProperty("method", safe(method));
+        mapping.addProperty("method", nonNull(method));
         mapping.addProperty("unitIndex", unitIndex);
         mapping.addProperty("occurrence", occurrence);
         if (vmEventId > 0L) mapping.addProperty("vmEventId", vmEventId);
@@ -397,14 +397,14 @@ final class BranchObservation {
         static SwitchExpectation parse(
                 String branchKind, String encodedCaseKeys,
                 int observedSuccessorIndex) {
-            String kind = safe(branchKind);
+            String kind = nonNull(branchKind);
             if (!("TABLE_SWITCH".equals(kind)
                     || "LOOKUP_SWITCH".equals(kind))) {
                 throw new IllegalArgumentException(
                         "unsupported branch kind " + kind);
             }
             List<Integer> keys = new ArrayList<>();
-            String encoded = safe(encodedCaseKeys);
+            String encoded = nonNull(encodedCaseKeys);
             if (!encoded.isEmpty()) {
                 for (String token : encoded.split(",", -1)) {
                     if (!token.matches("-?(?:0|[1-9][0-9]*)")) {
@@ -509,17 +509,17 @@ final class BranchObservation {
         PreparedBranch(long handle, String method, int unitIndex,
                                String expression, int occurrence) {
             this.handle = handle;
-            this.method = safe(method);
+            this.method = nonNull(method);
             this.unitIndex = unitIndex;
-            this.expression = safe(expression);
+            this.expression = nonNull(expression);
             this.occurrence = occurrence;
         }
 
         boolean matches(String actualMethod, int actualUnitIndex,
                                 String actualExpression) {
-            return method.equals(safe(actualMethod))
+            return method.equals(nonNull(actualMethod))
                     && unitIndex == actualUnitIndex
-                    && expression.equals(safe(actualExpression));
+                    && expression.equals(nonNull(actualExpression));
         }
     }
 }

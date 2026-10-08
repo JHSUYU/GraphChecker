@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import static edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner.UNREGISTERED_SOURCE;
 
-import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -18,6 +17,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 /**
  * The running thread's causal context: the registered sources, the node the
@@ -105,7 +107,7 @@ final class RuntimeTraceContext {
             throw new IllegalArgumentException(
                     "request source alias is not registered: "
                             + describeAnchor(sourceAlias) + " for request "
-                            + MapFields.safe(apiName));
+                            + nonNull(apiName));
         }
         return beginRequest(source, apiName);
     }
@@ -130,7 +132,7 @@ final class RuntimeTraceContext {
         }
         State state = CURRENT.get();
         long requestId = nextId();
-        String normalizedApi = Text.safe(apiName);
+        String normalizedApi = trimmed(apiName);
         if (normalizedApi.isEmpty()) normalizedApi = "request";
         ScopeFrame scope = new ScopeFrame(requestId, state);
         // The workload's action roots this lineage.
@@ -459,8 +461,8 @@ final class RuntimeTraceContext {
         ScopeFrame frame = new ScopeFrame(token, state);
         standIn(state, frame, scope.source, scope.requestKey,
                 scope.requestApi);
-        String api = MapFields.safe(apiName).isEmpty()
-                ? scope.requestApi : MapFields.safe(apiName);
+        String api = nonNull(apiName).isEmpty()
+                ? scope.requestApi : nonNull(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
                 scope.source.key(), Role.of(roleName), api);
         // The carried scope is the work's, not the pool thread's.
@@ -501,7 +503,7 @@ final class RuntimeTraceContext {
         // sends reaches its server anchored rather than Lost.
         if (source != null
                 && !UNREGISTERED_SOURCE.key().equals(source.key())) {
-            String api = Text.safe(roleName);
+            String api = trimmed(roleName);
             if (api.isEmpty()) api = "tick";
             state.source = source;
             state.flow = state.flow.withRequest(source.key() + "/tick/"
@@ -513,7 +515,7 @@ final class RuntimeTraceContext {
         // Lineage#pop).  Only a turn whose WAKE was written states its END,
         // so no END is left without a WAKE across the window opening.
         final long hop = scope.lineageToken;
-        final String site = "tick." + MapFields.safe(roleName);
+        final String site = "tick." + nonNull(roleName);
         scope.tick = Lineage.quietly(() -> ScheduleLog.turnBegun(site, hop));
         Identity.hopOpened(scope.lineageToken);
         return token;
@@ -567,7 +569,7 @@ final class RuntimeTraceContext {
         if (UNREGISTERED_SOURCE.key().equals(source.key())) {
             return 0L;
         }
-        String normalizedApi = Text.safe(api);
+        String normalizedApi = trimmed(api);
         if (normalizedApi.isEmpty()) normalizedApi = "wake";
         long token = nextId();
         ScopeFrame scope = new ScopeFrame(token, state);
@@ -698,9 +700,9 @@ final class RuntimeTraceContext {
                 state.flow.exchangeCorrelationId, state.flow.exchangeHalf);
         // Api is the last segment (ComposeMain.apiOf).
         String rpcSite = normalizedUpper(transport)
-                + (Text.safe(via).isEmpty() ? ""
+                + (trimmed(via).isEmpty() ? ""
                 : "." + normalizedUpper(via)) + "/"
-                + MapFields.safe(remote.requestApi);
+                + nonNull(remote.requestApi);
         Lineage.anchor(sender, rpcSite);
         if (sender.isEmpty()) unanchored(state, rpcSite);
         Identity.hopOpened(scope.lineageToken);
@@ -737,15 +739,15 @@ final class RuntimeTraceContext {
      * cannot be held to it.
      */
     private static String inboundFamily(String requestKey, String requestApi) {
-        String key = Text.safe(requestKey);
+        String key = trimmed(requestKey);
         int marker = key.lastIndexOf("/request/");
-        if (marker <= 0) return Text.safe(requestApi);
+        if (marker <= 0) return trimmed(requestApi);
         String source = key.substring(0, marker);
         String api = key.substring(marker + "/request/".length());
         int ordinal = api.lastIndexOf('#');
         if (ordinal > 0) api = api.substring(0, ordinal);
         return source.isEmpty() || api.isEmpty()
-                ? Text.safe(requestApi) : source + "/" + api;
+                ? trimmed(requestApi) : source + "/" + api;
     }
 
     static void exitInbound(long token) {
@@ -946,7 +948,7 @@ final class RuntimeTraceContext {
 
     /** Whether {@code sourceKey} names an epoch of its node at all. */
     static boolean declaresEpoch(String sourceKey) {
-        String value = Text.safe(sourceKey);
+        String value = trimmed(sourceKey);
         return !value.isEmpty() && !sourceIdentity(value).equals(value);
     }
 
@@ -969,7 +971,7 @@ final class RuntimeTraceContext {
     }
 
     private static String sourceIdentity(String sourceKey) {
-        String value = Text.safe(sourceKey);
+        String value = trimmed(sourceKey);
         int marker = value.lastIndexOf("#epoch");
         if (marker <= 0 || marker + 6 >= value.length()) return value;
         for (int i = marker + 6; i < value.length(); i++) {
@@ -1020,7 +1022,6 @@ final class RuntimeTraceContext {
         final boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
-        final String exchangeCorrelationId;
         final String exchangeAttemptId;
         /** The request flow this view states. */
         private final Flow flow;
@@ -1037,7 +1038,6 @@ final class RuntimeTraceContext {
             this.flow = flow;
             this.requestKey = flow.requestKey;
             this.requestApi = flow.requestApi;
-            this.exchangeCorrelationId = flow.exchangeCorrelationId;
             this.exchangeAttemptId = flow.exchangeAttemptId;
         }
 
@@ -1126,11 +1126,11 @@ final class RuntimeTraceContext {
         private Flow(String requestKey, String requestApi,
                      String exchangeTransport, String exchangeCorrelationId,
                      String exchangeAttemptId, String exchangeHalf) {
-            this.requestKey = MapFields.safe(requestKey);
-            this.requestApi = MapFields.safe(requestApi);
+            this.requestKey = nonNull(requestKey);
+            this.requestApi = nonNull(requestApi);
             this.exchangeTransport = normalizedUpper(exchangeTransport);
-            this.exchangeCorrelationId = Text.safe(exchangeCorrelationId);
-            this.exchangeAttemptId = Text.safe(exchangeAttemptId);
+            this.exchangeCorrelationId = trimmed(exchangeCorrelationId);
+            this.exchangeAttemptId = trimmed(exchangeAttemptId);
             this.exchangeHalf = normalizedUpper(exchangeHalf);
         }
 
@@ -1179,7 +1179,7 @@ final class RuntimeTraceContext {
     }
 
     private static String normalizedUpper(String value) {
-        return Text.safe(value).toUpperCase(Locale.ROOT);
+        return trimmed(value).toUpperCase(Locale.ROOT);
     }
 
     private static String encoded(String value) {
@@ -1215,7 +1215,7 @@ final class RuntimeTraceContext {
         }
 
         private static MessageContext parse(String header) {
-            String[] parts = MapFields.safe(header).split("\\|", -1);
+            String[] parts = nonNull(header).split("\\|", -1);
             try {
                 if (parts.length != 8 || !"1".equals(parts[0])) {
                     throw new IllegalArgumentException();

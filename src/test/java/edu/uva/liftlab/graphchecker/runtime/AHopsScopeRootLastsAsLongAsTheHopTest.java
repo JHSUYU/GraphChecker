@@ -82,7 +82,7 @@ public class AHopsScopeRootLastsAsLongAsTheHopTest {
             assertEquals("one producer per turn, running=" + running + ": "
                     + producers, 3, producers.size());
             Identity.exitFrame(loop);
-            if (running) Identity.regionExit();
+            if (running) Identity.regionExit(null);
             Identity.exitFrame(run);
             RuntimeTraceContext.endRequest(request);
         }

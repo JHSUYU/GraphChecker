@@ -31,7 +31,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -243,7 +243,7 @@ final class ActiveRegion {
         if (targetReach != null) return;
         JsonObject reach = new JsonObject();
         reach.addProperty("kind", "TARGET_REACH_EVENT");
-        reach.addProperty("siteId", safe(siteId));
+        reach.addProperty("siteId", nonNull(siteId));
         reach.addProperty("occurrence", occurrence);
         reach.addProperty("outcome", outcome);
         // Same clock as the decisions, so they can be ordered against it.
@@ -266,14 +266,14 @@ final class ActiveRegion {
             ActiveRegion active, String sourceId, String fieldSignature) {
         if (active != null && active.symbolicallyActive()) return true;
         RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                firstNonBlank(safe(sourceId), safe(fieldSignature)),
+                firstNonBlank(nonNull(sourceId), nonNull(fieldSignature)),
                 "this configured-source hook fired under "
                         + (active == null ? "none" : active.mintAddress())
                         + ", which is not an occurrence this replay runs"
                         + " symbolically, so the field it stands on holds"
                         + " the literal this execution produced and no root"
-                        + " is minted for " + safe(sourceId) + " here"
-                        + " (field " + safe(fieldSignature) + ")");
+                        + " is minted for " + nonNull(sourceId) + " here"
+                        + " (field " + nonNull(fieldSignature) + ")");
         return false;
     }
 
@@ -289,7 +289,7 @@ final class ActiveRegion {
     /** This activation, as a row about its mint names it. */
     private String mintAddress() {
         return firstNonBlank(address(), Long.toString(token))
-                + " of region " + safe(activation.regionId);
+                + " of region " + nonNull(activation.regionId);
     }
 
     /**
@@ -311,7 +311,7 @@ final class ActiveRegion {
         String site = context == null ? "" : context.siteId();
         for (ConfiguredSourcePhaseContract.Occurrence candidate
                 : activation.configuredSourcePhases) {
-            if (candidate.sourceId().equals(safe(sourceId))
+            if (candidate.sourceId().equals(nonNull(sourceId))
                     && (site.isEmpty()
                     || candidate.siteId().equals(site))) {
                 declaration.add(candidate);
@@ -319,7 +319,7 @@ final class ActiveRegion {
         }
         ConfiguredSourcePhaseContract.Occurrence planned =
                 declaration.isEmpty() ? ConcolicTaskPlan.configuration()
-                        .declaredPhase(safe(sourceId)) : null;
+                        .declaredPhase(nonNull(sourceId)) : null;
         if (declaration.isEmpty() && planned == null) {
             // A tree hook every NameNode runs (a block key's serial, a
             // configuration a scaffold hooks) in a case whose plan declares
@@ -327,7 +327,7 @@ final class ActiveRegion {
             // and nothing a verdict waits for -- named, not blocking, and
             // counted by a closed negative.
             RowRuntime.gap(GapKind.HOOK_UNDECLARED, GapClass.DIAGNOSTIC,
-                    mintAddress(), "the hook for " + safe(sourceId)
+                    mintAddress(), "the hook for " + nonNull(sourceId)
                             + " ran, but no task of this case's plan"
                             + " declares a phase of that source: it is no"
                             + " root of this case, and nothing is minted");
@@ -336,7 +336,7 @@ final class ActiveRegion {
         if (context == null) {
             refuseMint(GapKind.DECLARATION_MISSING,
                     declaration.isEmpty() ? null : declaration.get(0),
-                    "the PUBLISH hook for " + safe(sourceId)
+                    "the PUBLISH hook for " + nonNull(sourceId)
                             + " ran under no active call site, so the"
                             + " mint is at no declared phase");
             return null;
@@ -345,7 +345,7 @@ final class ActiveRegion {
                 && planned.category() == RootCategory.CONFIG) {
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     mintAddress(), "the configuration read of "
-                            + safe(sourceId) + " at " + site + " is outside"
+                            + nonNull(sourceId) + " at " + site + " is outside"
                             + " this occurrence's frozen phase catalog (its"
                             + " recording never read the key there): the"
                             + " field holds the world's value, written at"
@@ -365,7 +365,7 @@ final class ActiveRegion {
         ConfiguredSourcePhaseContract.Occurrence matched =
                 declaration.get(0);
         if (!matched.fieldSignature().equals(
-                safe(runtimeFieldSignature))
+                nonNull(runtimeFieldSignature))
                 || !matched.runtimeDeclaredCallee().equals(
                 context.declaredCallee())) {
             refuseMint(GapKind.DECLARATION_MISSING, matched,
@@ -411,11 +411,11 @@ final class ActiveRegion {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
         }
-        row.addProperty("sourceId", safe(sourceId));
+        row.addProperty("sourceId", nonNull(sourceId));
         row.addProperty("sourcePhaseId", entry.phaseId());
         row.addProperty("siteId", entry.siteId);
-        row.addProperty("fieldSignature", safe(fieldSignature));
-        row.addProperty("symbol", safe(symbol));
+        row.addProperty("fieldSignature", nonNull(fieldSignature));
+        row.addProperty("symbol", nonNull(symbol));
         row.add("expression", expression == null
                 ? JsonNull.INSTANCE : expression);
         row.addProperty("reused", reused);
@@ -423,7 +423,7 @@ final class ActiveRegion {
         configDomain(row, entry.domainMin(), entry.domainMax(),
                 entry.valid(), recordedValue);
         row.addProperty("mintOccurrence",
-                mintOccurrence(safe(sourceId)));
+                mintOccurrence(nonNull(sourceId)));
         symbolizedRows.add(row);
     }
 
@@ -441,9 +441,9 @@ final class ActiveRegion {
     static void configDomain(JsonObject row, String staticMin,
                              String staticMax, Validity valid,
                              String recordedValue) {
-        String min = safe(staticMin).trim();
-        String max = safe(staticMax).trim();
-        String value = safe(recordedValue).trim();
+        String min = nonNull(staticMin).trim();
+        String max = nonNull(staticMax).trim();
+        String value = nonNull(recordedValue).trim();
         Validity kept = Validity.ANY;
         if (valid != null && valid != Validity.ANY
                 && INTEGER.matcher(value).matches()
@@ -501,7 +501,7 @@ final class ActiveRegion {
      */
     ActiveRegion rootOwner(String rootId) {
         ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
-                new ConcolicRegionRuntime.Declares.Root(safe(rootId)));
+                new ConcolicRegionRuntime.Declares.Root(nonNull(rootId)));
         return owner == null ? this : owner;
     }
 
@@ -537,14 +537,14 @@ final class ActiveRegion {
         // Captured now: frames are gone at publish.  One row per mint
         // (RowPlaceholderMint), so the frames alone place it.
         row.addProperty("siteIndex", Identity.siteIndex().render());
-        row.addProperty("symbol", safe(requestedSymbol));
+        row.addProperty("symbol", nonNull(requestedSymbol));
         JsonArray encodedPath = new JsonArray();
         for (String segment : fieldPath == null
                 ? Collections.<String>emptyList() : fieldPath) {
-            encodedPath.add(safe(segment));
+            encodedPath.add(nonNull(segment));
         }
         row.add("fieldPath", encodedPath);
-        row.addProperty("fieldSignature", safe(fieldSignature));
+        row.addProperty("fieldSignature", nonNull(fieldSignature));
         row.add("expression", expression == null
                 ? JsonNull.INSTANCE : expression);
         JsonObject exact = VmExpressionIr.exactSymbolRoot(expression);
@@ -583,7 +583,7 @@ final class ActiveRegion {
             }
         }
         row.addProperty("mintOccurrence",
-                mintOccurrence(safe(action.symbol)));
+                mintOccurrence(nonNull(action.symbol)));
         symbolizedRows.add(row);
         // I4: file the clock cell at mint time, keyed by the installed VM
         // symbol: nested activations publish their decisions before this
@@ -592,9 +592,9 @@ final class ActiveRegion {
         if (minted && action.declaresWallClockRead()) {
             String installed = optionalString(row, "rawSymbol");
             RowRuntime.clockCell(installed.isEmpty()
-                            ? safe(requestedSymbol) : installed,
-                    safe(action.symbol),
-                    RowPublication.literal(safe(recordedValue)));
+                            ? nonNull(requestedSymbol) : installed,
+                    nonNull(action.symbol),
+                    RowPublication.literal(nonNull(recordedValue)));
         }
     }
 
@@ -612,7 +612,7 @@ final class ActiveRegion {
                 firstNonBlank(
                         phase == null ? "" : phase.phaseId(),
                         address(), Long.toString(token)),
-                safe(detail));
+                nonNull(detail));
     }
 
     /**
@@ -655,7 +655,7 @@ final class ActiveRegion {
      * stands.</p>
      */
     private String mintIsNotThePlannedNode(Object mintOwner) {
-        String planned = safe(activation.sourceKey);
+        String planned = nonNull(activation.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return "";
         Set<String> attributed = mintAttribution(mintOwner);
         if (attributed.contains(planned)) return "";

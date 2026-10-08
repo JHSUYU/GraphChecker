@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -10,7 +9,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 /**
  * Reflective view of the concolic VM's static entry points, so this class
@@ -127,7 +126,7 @@ final class ConcolicVmBroker {
     String workloadSessionStatus() {
         if (workloadSessionStatus == null) return "";
         try {
-            return safe(String.valueOf(
+            return nonNull(String.valueOf(
                     workloadSessionStatus.invoke(null)));
         } catch (Throwable unavailable) {
             return "";
@@ -181,11 +180,11 @@ final class ConcolicVmBroker {
             Object owner, String fieldSignature, String prefix)
             throws Exception {
         DeclaredField field = FieldPathSpec.declaredField(
-                safe(fieldSignature));
+                nonNull(fieldSignature));
         if (field == null) {
             throw new UnsupportedOperationException(
                     "no exact declared field for symbolized leaf: "
-                            + safe(fieldSignature));
+                            + nonNull(fieldSignature));
         }
         symbolizeExactField.invoke(null, owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()), prefix);
@@ -201,11 +200,11 @@ final class ConcolicVmBroker {
      */
     void observeField(Object owner, String fieldSignature) throws Exception {
         DeclaredField field = FieldPathSpec.declaredField(
-                safe(fieldSignature));
+                nonNull(fieldSignature));
         if (field == null) {
             throw new UnsupportedOperationException(
                     "no exact declared field for observed leaf: "
-                            + safe(fieldSignature));
+                            + nonNull(fieldSignature));
         }
         Object status = observeField.invoke(null, owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()));
@@ -213,7 +212,7 @@ final class ConcolicVmBroker {
                 ? ((Number) status).longValue() : MALFORMED_RESULT;
         if (answered != OK) {
             throw new IllegalStateException(statusName(answered)
-                    + ": the VM did not observe " + safe(fieldSignature));
+                    + ": the VM did not observe " + nonNull(fieldSignature));
         }
     }
 

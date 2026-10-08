@@ -25,7 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -33,6 +33,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * Publishes one finished activation as contract rows: decisions, writes,
@@ -131,7 +132,7 @@ final class RowPublication {
      * int 119992 ({@code Y}, JVM type letter, value).
      */
     static String literal(String value) {
-        String stated = safe(value);
+        String stated = nonNull(value);
         if (stated.length() > 4 && stated.charAt(0) == 'Y'
                 && stated.charAt(1) == '_' && stated.charAt(3) == '_') {
             return stated.substring(4);
@@ -409,7 +410,7 @@ final class RowPublication {
                                Set<String> published) {
         LocationId location = locationId(locationKey);
         if (location == null) return;
-        long observed = versionOf(node);
+        long observed = VmRows.joinedVersion(node);
         long event = eventOf(node);
         String identity = readIdentity(locationKey, observed, event);
         if (!published.add(identity)) return;
@@ -421,7 +422,7 @@ final class RowPublication {
         }
         // What the read returned (VM f11: every scalar and String read
         // states it), which a read whose write no row lowers is pinned to.
-        String value = safe(ReadRow.returned(node));
+        String value = nonNull(ReadRow.returned(node));
         if (observed < 0L && value.isEmpty()) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     locationKey, "a read states neither the version it"
@@ -461,7 +462,7 @@ final class RowPublication {
         // joinability included: the projection's own observedVersion states
         // no unnamedWriter, and once VM f11 found a location incomplete
         // the two spelled one read event as two rows (SOLR-18406 s48).
-        long observed = versionOf(read);
+        long observed = VmRows.joinedVersion(read);
         long event = eventOf(node);
         if (event < 0L) event = eventOf(value);
         if (event < 0L && read != null) event = eventOf(read);
@@ -526,11 +527,6 @@ final class RowPublication {
     private static String readIdentity(String locationKey, long observed,
                                        long event) {
         return locationKey + "#" + observed + "#" + event;
-    }
-
-    /** The version a node observed, or {@code -1}. */
-    static long versionOf(JsonObject node) {
-        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** The VM event a node names, or {@code -1} ({@link VmRows#readEvent},
@@ -681,7 +677,7 @@ final class RowPublication {
                    boolean observed, boolean fatalArm, long at) {
         String own = RowRuntime.fatalTerm(condition, observed == fatalArm);
         if (deciders.isEmpty()) return new Phi(own, at, null);
-        String ref = Text.safe(RowRuntime.expressionRef(condition));
+        String ref = trimmed(RowRuntime.expressionRef(condition));
         Decided decided = decided(mappings, deciders, at, ref.isEmpty()
                 ? String.valueOf(observed) : Arms.conjunct(ref, observed),
                 observed);
@@ -758,7 +754,7 @@ final class RowPublication {
                 && took.verdict().booleanValue() != observed) {
             return null;
         }
-        String held = Text.safe(RowRuntime.expressionRef(
+        String held = trimmed(RowRuntime.expressionRef(
                 object(latest, "witness").get("sourceSatisfiedPredicate")));
         Decided nested = !held.isEmpty() || took.deciders().isEmpty() ? null
                 : decided(mappings, took.deciders(), at,

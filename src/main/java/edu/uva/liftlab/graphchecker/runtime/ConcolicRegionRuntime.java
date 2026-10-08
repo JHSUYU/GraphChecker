@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
@@ -131,8 +131,9 @@ public final class ConcolicRegionRuntime {
         try {
             ActiveRegion active = activeRegion();
             long replayOwnerId = active == null ? 0L : active.token;
-            return CausynthTraceRecorder.beginCall(replayOwnerId, safe(method),
-                    unitIndex, safe(declaredCallee), null, true);
+            return CausynthTraceRecorder.beginCall(replayOwnerId,
+                    nonNull(method), unitIndex, nonNull(declaredCallee), null,
+                    true);
         } catch (Throwable ignored) {
             // Never perturb the workload; id 0 makes both close hooks no-ops.
             return 0L;
@@ -145,7 +146,7 @@ public final class ConcolicRegionRuntime {
         if (invocationId <= 0L) return;
         try {
             CausynthTraceRecorder.endCall(invocationId, returnValue,
-                    safe(primitiveValue));
+                    nonNull(primitiveValue));
         } catch (Throwable ignored) {
             // A trace failure is not an application failure.
         }
@@ -189,9 +190,9 @@ public final class ConcolicRegionRuntime {
         // a JDK body) is entered.
         try {
             ActiveRegion active = activeRegion();
-            String caller = safe(callerMethod);
-            String site = safe(callSiteId);
-            String callee = safe(declaredCallee);
+            String caller = nonNull(callerMethod);
+            String site = nonNull(callSiteId);
+            String callee = nonNull(declaredCallee);
             if (active == null || caller.isEmpty() || callUnitIndex < 0
                     || callee.isEmpty()
                     || !site.equals(SiteId.render(caller, callUnitIndex))) {
@@ -593,7 +594,7 @@ public final class ConcolicRegionRuntime {
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId, Object receiver) {
-        return Identity.enterFrame(safe(callSiteId), receiver);
+        return Identity.enterFrame(nonNull(callSiteId), receiver);
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */
@@ -635,9 +636,9 @@ public final class ConcolicRegionRuntime {
         int regions = Identity.regionDepth();
         // No frame here: the frame hook at this same entry already opened it.
         String node = RuntimeTraceContext.activationSource(receiver).key();
-        Identity.occurrence(node, safe(regionId), true);
+        Identity.occurrence(node, nonNull(regionId), true);
         REGION_ENTRIES.get().push(new RegionEntry(entry, depth, regions,
-                safe(rootMethod)));
+                nonNull(rootMethod)));
         return entry;
     }
 
@@ -832,7 +833,7 @@ public final class ConcolicRegionRuntime {
                                           Object receiver) {
         ActiveRegion active = activeRegion();
         if (active == null || receiver == null
-                || safe(fieldSignature).isEmpty()) {
+                || nonNull(fieldSignature).isEmpty()) {
             return;
         }
         try {
@@ -841,9 +842,9 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable failure) {
             // Not one lost row: every later read of the cell joins nothing.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    firstNonBlank(safe(siteId), safe(fieldSignature)),
+                    firstNonBlank(nonNull(siteId), nonNull(fieldSignature)),
                     "this access could not start the VM's version log"
-                            + " for " + safe(fieldSignature) + ", so every"
+                            + " for " + nonNull(fieldSignature) + ", so every"
                             + " later read of that location joins to no"
                             + " writer: " + rootCause(failure));
         }
@@ -878,8 +879,8 @@ public final class ConcolicRegionRuntime {
             if (engine().observeContainer(container, afterMutation)
                     == ConcolicVmBroker.UNSUPPORTED_TARGET) {
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        firstNonBlank(safe(siteId), safe(fieldSignature)),
-                        safe(fieldSignature) + " holds a "
+                        firstNonBlank(nonNull(siteId), nonNull(fieldSignature)),
+                        nonNull(fieldSignature) + " holds a "
                                 + container.getClass().getName() + ", which"
                                 + " no container model of the VM knows, so"
                                 + " its state at this site is not versioned"
@@ -887,9 +888,10 @@ public final class ConcolicRegionRuntime {
             }
         } catch (Throwable failure) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    firstNonBlank(safe(siteId), safe(fieldSignature)),
+                    firstNonBlank(nonNull(siteId), nonNull(fieldSignature)),
                     "this access could not start the VM's version log of the"
-                            + " container " + safe(fieldSignature) + " holds,"
+                            + " container " + nonNull(fieldSignature)
+                            + " holds,"
                             + " so a query of it reads no version: "
                             + rootCause(failure));
         }
@@ -1021,7 +1023,7 @@ public final class ConcolicRegionRuntime {
             String detail = PROPAGATED_EXPRESSION_IMPORT_FAILED
                     + ": producer=" + describeImportPayload(serialized)
                     + " occurrence=" + (active == null ? "<none>"
-                    : safe(active.activation.occurrenceId))
+                    : nonNull(active.activation.occurrenceId))
                     + ": " + rootCause(malformed);
             throw new PropagatedExpressionImportFailure(detail, malformed);
         }
@@ -1029,7 +1031,7 @@ public final class ConcolicRegionRuntime {
 
     /** The outermost shape of a VM payload an import refused, for the row. */
     private static String describeImportPayload(String serialized) {
-        String value = safe(serialized);
+        String value = nonNull(serialized);
         if (value.isEmpty()) return "<empty payload>";
         return value.length() <= 160 ? value
                 : value.substring(0, 160) + "...(" + value.length() + " B)";
@@ -1255,11 +1257,11 @@ public final class ConcolicRegionRuntime {
             @Override
             public boolean declaredBy(ActiveRegion region) {
                 for (SymbolizeAction action : region.activation.symbolize) {
-                    if (safe(action.symbol).equals(rootId)) return true;
+                    if (nonNull(action.symbol).equals(rootId)) return true;
                 }
                 for (ConfiguredSourcePhaseContract.Occurrence phase
                         : region.activation.configuredSourcePhases) {
-                    if (safe(phase.sourceId()).equals(rootId)) {
+                    if (nonNull(phase.sourceId()).equals(rootId)) {
                         return true;
                     }
                 }
@@ -1875,10 +1877,10 @@ public final class ConcolicRegionRuntime {
                 String actualCallerMethod, int actualCallUnitIndex,
                 String actualCallSiteId, String actualDeclaredCallee,
                 Object actualFieldOwner) {
-            return callerMethod.equals(safe(actualCallerMethod))
+            return callerMethod.equals(nonNull(actualCallerMethod))
                     && callUnitIndex == actualCallUnitIndex
-                    && callSiteId.equals(safe(actualCallSiteId))
-                    && declaredCallee.equals(safe(actualDeclaredCallee))
+                    && callSiteId.equals(nonNull(actualCallSiteId))
+                    && declaredCallee.equals(nonNull(actualDeclaredCallee))
                     && receiver == actualFieldOwner;
         }
     }
@@ -1894,7 +1896,7 @@ public final class ConcolicRegionRuntime {
         int local(String method, int unitIndex, String local) {
             return observe("LOCAL\u0000"
                     + SiteId.render(method, unitIndex)
-                    + "::" + safe(local));
+                    + "::" + nonNull(local));
         }
 
         int methodArgument(String method, int argumentIndex) {
@@ -1906,7 +1908,7 @@ public final class ConcolicRegionRuntime {
         }
 
         private static String argumentKey(String method, int argumentIndex) {
-            return "ARGUMENT\u0000" + safe(method) + "#arg" + argumentIndex;
+            return "ARGUMENT\u0000" + nonNull(method) + "#arg" + argumentIndex;
         }
 
         /**

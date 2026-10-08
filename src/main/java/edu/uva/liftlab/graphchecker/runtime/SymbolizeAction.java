@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 import com.google.gson.JsonElement;
 
@@ -221,16 +221,16 @@ final class SymbolizeAction {
                                  int actualUnitIndex,
                                  String actualLocal) {
         return "LOCAL_DEFINITION".equals(bindingMode)
-                && method.equals(safe(actualMethod))
+                && method.equals(nonNull(actualMethod))
                 && (definitionUnitIndices.isEmpty()
                 || definitionUnitIndices.contains(actualUnitIndex))
-                && local.equals(safe(actualLocal));
+                && local.equals(nonNull(actualLocal));
     }
 
     boolean matchesMethodArgument(String actualMethod,
                                           int actualIndex) {
         return "METHOD_ARGUMENT".equals(bindingMode)
-                && method.equals(safe(actualMethod))
+                && method.equals(nonNull(actualMethod))
                 && index == actualIndex;
     }
 
@@ -279,12 +279,12 @@ final class SymbolizeAction {
                 || "HEAP_OBJECT_FIELD".equals(location))) {
             return false;
         }
-        String exactSignature = safe(signature);
+        String exactSignature = nonNull(signature);
         DeclaredField declaration = FieldPathSpec.declaredField(
                 exactSignature);
         if (declaration == null
-                || !declaration.name().equals(safe(actualField))
-                || !accessField.equals(safe(actualField))) {
+                || !declaration.name().equals(nonNull(actualField))
+                || !accessField.equals(nonNull(actualField))) {
             return false;
         }
         if (!accessOwnerClass.isEmpty()
@@ -307,11 +307,11 @@ final class SymbolizeAction {
     /** The logical path for an exact getstatic materialization. */
     List<String> exactStaticFieldPath(
             String signature, String actualField) {
-        String exactSignature = safe(signature);
+        String exactSignature = nonNull(signature);
         DeclaredField declaration = FieldPathSpec.declaredField(
                 exactSignature);
         if (declaration == null
-                || !declaration.name().equals(safe(actualField))
+                || !declaration.name().equals(nonNull(actualField))
                 || fieldPath.size() != 1
                 || !fieldPath.get(0).equals(actualField)
                 || !accessField.equals(actualField)
@@ -363,7 +363,7 @@ final class SymbolizeAction {
                 ConcolicRegionRuntime.lightweightAccessorContextOccurrence();
         if (accessorConstrained
                 && (!accessorImplementationMethod.equals(
-                safe(actualMethod))
+                nonNull(actualMethod))
                 || !accessorContextMatches)) {
             return false;
         }
@@ -372,7 +372,7 @@ final class SymbolizeAction {
                 actualAccessorOccurrence)) {
             return false;
         }
-        if (!accessField.equals(safe(actualField))) {
+        if (!accessField.equals(nonNull(actualField))) {
             return false;
         }
         if (!accessOwnerClass.isEmpty()
@@ -382,13 +382,13 @@ final class SymbolizeAction {
         if (accessSiteConstrained
                 && (accessOwnerClass.isEmpty()
                 || accessFieldSignature.isEmpty()
-                || !accessFieldSignature.equals(safe(signature)))) {
+                || !accessFieldSignature.equals(nonNull(signature)))) {
             return false;
         }
         // A path rooted at a return/local may have no static owner.
         return !accessOwnerClass.isEmpty()
-                || !safe(signature).isEmpty()
-                && cell.contains(safe(signature));
+                || !nonNull(signature).isEmpty()
+                && cell.contains(nonNull(signature));
     }
 
     Object leafOwner(Object accessOwner) {

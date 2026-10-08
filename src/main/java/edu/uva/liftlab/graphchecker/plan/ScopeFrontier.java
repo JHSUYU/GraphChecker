@@ -17,6 +17,8 @@ import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static edu.uva.liftlab.graphchecker.plan.StaticScopeMap.text;
+
 /**
  * Where the fatal slice stops at the analysis scope (SYMBOL-SCOPE §2.4), the
  * input of {@link ScopeGrowth}:
@@ -161,9 +163,5 @@ public final class ScopeFrontier {
         row.addProperty("signature", signature);
         row.addProperty("distance", distance);
         found.put(kind + "|" + signature, row);
-    }
-
-    private static String text(Object value) {
-        return value == null ? "" : String.valueOf(value).trim();
     }
 }

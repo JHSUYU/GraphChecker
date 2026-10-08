@@ -1,12 +1,13 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
 /**
  * Whether a waiting thread's loop reads a CLOCK root: the scope map
@@ -65,23 +66,18 @@ final class ClockLoops {
 
     /** {@code class#method} of a CLOCK root row's {@code vmSite}, or "". */
     static String clockMethod(JsonObject row) {
-        if (!StaticScopeMap.SITE_KIND.equals(member(row, "kind"))
-                || !StaticScopeMap.DECLARED_SITE.equals(member(row, "role"))
+        if (!StaticScopeMap.SITE_KIND.equals(primitiveString(row, "kind"))
+                || !StaticScopeMap.DECLARED_SITE.equals(
+                        primitiveString(row, "role"))
                 || !StaticScopeMap.CLOCK_INPUT.equals(
-                        member(row, "inputKind"))) {
+                        primitiveString(row, "inputKind"))) {
             return "";
         }
-        String site = member(row, "vmSite");
+        String site = primitiveString(row, "vmSite");
         int owner = site.indexOf('#');
         int descriptor = site.indexOf('(', owner + 1);
         if (owner <= 0 || descriptor <= owner + 1) return "";
         return site.substring(0, descriptor);
-    }
-
-    private static String member(JsonObject row, String name) {
-        JsonElement value = row.get(name);
-        return value == null || !value.isJsonPrimitive() ? ""
-                : value.getAsString();
     }
 
     static void useForTests(Set<String> declared) {
