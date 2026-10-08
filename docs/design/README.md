@@ -199,23 +199,22 @@ builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
   - **UNSAT_CLOSED**.
   - **RUN_DEFECT** (a solver timeout, CONFIRM with no verdict, a target never reached, an
     exploration cut while it owed arms: EXPLORATION_CUT, judged once at EMIT).
-- A model CONFIRM refuted or gave no verdict on excludes the claim's region (its clocks' too) from
-  every later composition; an UNSAT whose unsat core names a refutation states `restsOnRefutations`,
-  and one whose core names a refused model, or whose core is unknown beside one, is RUN_DEFECT (`UNSAT_BESIDE_REFUSED`;
-  a core is known only where its own run said unsat). Within a rank, a witness that is its selected session's own run
+- A model CONFIRM refuted (a false positive) excludes the claim's region (its clocks' too) from every
+  later composition; an UNSAT whose unsat core names a refutation states `restsOnRefutations`. Within a rank, a witness that is its selected session's own run
   is claimed first; each valuation is asked once across both rank passes.
 
 **9. CONFIRM** replays the witness world from the recording. It holds the chosen edges (writer
 ORDER, STATE pairings including INITIAL, WIRE deliveries) and checks that the anchor observes the
-fatal. It is strict: every substitution is named. Only a replay that ran the model (every moved
-root planted) and did not reach the fatal refutes; a refused confirmation (CONFIRM_MISMATCH, an
-ORDER not held in time, a plant not applied, no verdict) refutes nothing, and its model
-(`refused_models.jsonl`) is excluded from later compositions so the next claim follows; a final
-claim left with none is a RUN_DEFECT. In a campaign it is a pool job on any host. The witness is
+fatal. It is strict: every substitution is named. A replay that does not reach the fatal at the
+anchor -- no fatal, a CONFIRM_MISMATCH, an ORDER not held in time, a plant not applied, a stall, a
+timeout -- refutes the claim, a false positive (owner 2026-10-08), excluded from later compositions
+so the next claim follows; a task refused by name or a failed decision is the engine's defect, and
+a final claim left so is a RUN_DEFECT. In a campaign it is a pool job on any host. The witness is
 chosen by attempt order, not finish time.
 
 **10. EMIT / REPRODUCE** write `candidate.smt2`, `claim.json`, `confirm.json` and `result.json`
-(with `concrete[]`). Native runs then plant the fault markers. Acceptance is
+(with `concrete[]`). Native runs then plant the confirmed world (fault markers, hook roots, clocks,
+configurations, accessor reads, call-return answers, the model's order; PIPELINE §10b). Acceptance is
 `experiments/accept/report.py` plus `cone.py` (the moved roots lie in the witness cone, and no
 fatal boundary variable is unbound).
 

@@ -229,13 +229,13 @@ ab_iteration() {
   for file in execution_task_plan.jsonl slots.jsonl obligation_results.jsonl; do
     [[ -f "${ab_acc_it}/${file}" ]] && cp "${ab_acc_it}/${file}" "${dst}/"
   done
-  # The models CONFIRM refuted or gave no verdict on, which the last COMPOSE
-  # excluded: all but the last claim's own row, written after that COMPOSE.
+  # The models CONFIRM refuted, which the last COMPOSE excluded: all but the
+  # last claim's own row, written after that COMPOSE.
   local last="" final
   final=$(dirname "${ab_acc_it}")/final
   [[ ! -s "${final}/claim.json" ]] \
     || last=$(campaign_claim_model "${final}/claim.json")
-  for file in refuted_claims.jsonl refused_models.jsonl; do
+  for file in refuted_claims.jsonl; do
     [[ -f "${ab_acc_it}/${file}" ]] || continue
     jq -c --argjson last "${last:-null}" "${campaign_model_key}"'
       select(((.claimed // "") | endswith("/final")) and $last != null

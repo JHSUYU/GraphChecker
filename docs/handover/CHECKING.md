@@ -11,7 +11,9 @@ is one of those, with how it fooled the check and how to see it now.
 GC_OUT=<out> tools/rounds/round-verify.sh <round> [case...]
 ```
 
-One line per finished case: the claim, how EXPLORE ended (`end=`), z3 on the exported `final/candidate.smt2`,
+One line per finished case: the claim, how EXPLORE ended (`end=`), z3 on the exported `final/candidate.smt2` (under
+both arithmetic engines at once, the first that decides answering, as the engine asks: `tools/lib/z3-race.sh`; under
+engine 2 alone solr-18413's file was undecided in 300 s, under 6 sat in 0.2 s),
 `BOUNDED:<keys>` (a declared bound cut the search: `result.json` `bounded`), `UNBOUND:<n>` (distinct boundary
 variables a fatal condition names that no message family binds: `report/<case>/cone.json` `unbound`),
 `BLOCKING:<codes>`, `moved=`/`polarityDecides=`, `leaves=` (the formula's leaf symbols, roots/reads/handoffs; 0 is
@@ -19,14 +21,14 @@ variables a fatal condition names that no message family binds: `report/<case>/c
 
 **An UNSAT is done when** the claim is `UNSAT_CLOSED`, `end=(FIXED_POINT)`, z3 says unsat on the file, there is no
 BOUNDED, no UNBOUND on any path, no BLOCKING gap, `defects` is empty (`result.json`; e.g. `OPEN_ARM_UNANSWERED`,
-`UNSAT_BESIDE_REFUSED`, `EXPLORATION_CUT` are RUN_DEFECTs), and either `leaves > 0` or a written reason, read in the
+`EXPLORATION_CUT` are RUN_DEFECTs), and either `leaves > 0` or a written reason, read in the
 code, why the chain is constant inside the window.
 
 **A SAT is done when** the claim is `SAT_CANDIDATE`, CONFIRM confirmed it (`final/confirm.json`), `claim.json`
 `movedRoots` names at least one root, `polarityDecides` is true, the claimed path's cone has no unbound handoff
 (`cone.json` `unbound`; other paths' are reported as `unboundOffWitness`, lead decision 2026-10-06, RULES), and the
 native reproduction ran (`final/reproduce.json`: `reproduced`/`runs`, record k/N; a race-dependent bug may reproduce
-4/10; a clock-skew world names `NATIVE_PLANT_UNSUPPORTED` and rests on CONFIRM, trap 21). A known bug also needs its mandated mechanism (RULES "Acceptance"; `report.py` PASS) with the mechanism's
+4/10; a world no native run can plant names `NATIVE_PLANT_UNSUPPORTED` and rests on CONFIRM, trap 21). A known bug also needs its mandated mechanism (RULES "Acceptance"; `report.py` PASS) with the mechanism's
 roots in `movedRoots`.
 
 ## 2. Reading the formula by hand (the hand check written into STATUS)
@@ -95,9 +97,11 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
 11. **A PASS line or a finding kind alone** (17960 once "passed" at valuation 0 with no root moved; v9's bug1/17967
     moved only a clock and passed because four keys collapsed onto one handoff symbol). Read `movedRoots`, the cone and
     the three questions of §2.
-12. **CONFIRM with no verdict is no SAT** (12 in HG9: the model's order waited on an event that never exited within
-    300 s, `CONFIRM_NO_VERDICT`). Read `confirm.json` and `defects`; with budget left the claim loop excludes the
-    model and claims the next one.
+12. **CONFIRM that did not reach the fatal is a false positive, never a SAT** (12 in HG9: the model's order waited on
+    an event that never exited within 300 s). Since 2026-10-08 (owner) every such replay -- no fatal, an order not held,
+    a stall, a timeout -- refutes the claim: read each `restsOnRefutations` row's reason against the code (an
+    engine-caused stall can filter a real witness, which for a known bug is a defect to fix, not a verdict). Only a
+    task CONFIRM refused by name or a failed decision is `CONFIRM_NO_VERDICT`.
 13. **A verdict from an older body or looser checks is not current** (the time-model family's "UNSAT" in HG8E, 07's
     and 39's earlier UNSATs). Count only verdicts on the current body that pass §1.
 14. **An engine artifact that looks like a regression**: vm-hg5's outside-mutation mark exposed 11741's unplanned
@@ -122,6 +126,9 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     stranded actor body, yet every one of the 5 fatal paths ends in the constant `false` (an untracked String
     compare), so no unexplored path can change UNSAT. Such a case is accepted only under the time-family license, with
     the gap ids and the reason in its STATUS row; outside that family it stays open.
-21. **A clock witness has no native reproduction** (11741): `reproduce.json` says `NATIVE_PLANT_UNSUPPORTED` (a native
-    run plants no clock). CONFIRM's replay, which planted the skewed clocks and reached the fatal, is its validation;
-    say so in its STATUS row instead of reporting a k/N.
+21. **A world with no native reproduction**: `reproduce.json` says `NATIVE_PLANT_UNSUPPORTED` with the reason (PIPELINE
+    §10b: an attach answered at a method-parameter, call-argument or method-return capture or at a codec port, a root
+    minted other than at a call's return). CONFIRM's replay, which planted that world and reached the fatal, is its
+    validation; say so in its STATUS row instead of reporting a k/N. Clocks, configurations, accessor reads and
+    call-return answers are planted natively (11741 EX1 10/10, solr-18406/18413 SC1 and SC2 10/10 each). A reproduced
+    run may leave ORDER rows `NOT_REACHED`: their after-activation runs past the anchor, where the run ends.

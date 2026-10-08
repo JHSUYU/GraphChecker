@@ -756,29 +756,25 @@ public class ComposerTest {
     }
 
     /**
-     * A model CONFIRM refuted ({@code refuted_claims.jsonl}) or gave no
-     * verdict on ({@code refused_models.jsonl}) is excluded from every later
-     * composition of the iteration, its arms matched by their digests at
-     * whatever path ordinal the claim spelled them ({@code
-     * Refutations#atPath}): the claim over it is another model, or none.
-     * One whose path the corpus no longer composes states nothing.  An UNSAT
-     * resting on a refused model is no verdict: no run decided it.
+     * A model CONFIRM refuted ({@code refuted_claims.jsonl}: a false
+     * positive) is excluded from every later composition of the iteration,
+     * its arms matched by their digests at whatever path ordinal the claim
+     * spelled them ({@code Refutations#atPath}): the claim over it is another
+     * model, or none, and an UNSAT names it as what it rests on.  One whose
+     * path the corpus no longer composes states nothing.
      */
     @Test
     public void anExcludedModelIsNoModelOfTheNextComposition()
             throws Exception {
-        // the file, the path the model names, the arms' path ordinal moved
+        // the path the model names, the arms' path ordinal moved
         Object[][] table = {
-                {"refuted_claims.jsonl", "elsewhere", false},
-                {"refuted_claims.jsonl", "claimed", false},
-                {"refused_models.jsonl", "elsewhere", false},
-                {"refused_models.jsonl", "claimed", true},
+                {"elsewhere", false},
+                {"claimed", false},
+                {"claimed", true},
         };
         for (Object[] row : table) {
-            String file = (String) row[0];
-            boolean refused = file.startsWith("refused");
-            Path iteration = folder.newFolder("excluded-" + file + "-"
-                    + row[1] + "-" + row[2]).toPath();
+            Path iteration = folder.newFolder("excluded-" + row[0] + "-"
+                    + row[1]).toPath();
             Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
                     at("export#1", 0), 0);
             Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
@@ -792,13 +788,13 @@ public class ComposerTest {
             assertEquals(ClaimKind.MARKER_FLIPPED, first.claim().kind());
             ClaimPolicy.Outcome claimed = first.outcomes().get(
                     first.claim().valuationOrdinal());
-            boolean excluded = "claimed".equals(row[1]);
+            boolean excluded = "claimed".equals(row[0]);
             JsonObject model = new JsonObject();
             model.addProperty("pathId", excluded
                     ? claimed.selected().path().pathId : "elsewhere");
             JsonArray arms = new JsonArray();
             for (String arm : claimed.selectedArms().keySet()) {
-                arms.add((Boolean) row[2]
+                arms.add((Boolean) row[1]
                         ? Refutations.atPath(arm, "41") : arm);
             }
             assertTrue("the claim chose arms", arms.size() > 0);
@@ -813,38 +809,30 @@ public class ComposerTest {
             excludedRow.add("model", model);
             excludedRow.addProperty("reason",
                     "the run published no target row");
-            RowCodec.writeJsonl(iteration.resolve(file),
+            RowCodec.writeJsonl(iteration.resolve(Refutations.FILE),
                     Collections.singletonList(excludedRow));
             String detail = Arrays.toString(row);
             Composer.Composition next = compose(iteration, 8);
-            String name = (refused ? "refused" : "refuted") + "_claim__0";
+            String name = "refuted_claim__0";
             assertEquals(detail, excluded, next.body().contains(name));
-            assertEquals(detail, excluded, named(next.gaps(), refused
-                    ? GapKind.CLAIM_REFUSED : GapKind.CLAIM_REFUTED));
+            assertEquals(detail, excluded, named(next.gaps(),
+                    GapKind.CLAIM_REFUTED));
             ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
             assertEquals(detail, excluded ? ClaimKind.NO_SUPPORTED_WITNESS
                     : ClaimKind.MARKER_FLIPPED, again.claim().kind());
             // An excluded model is no part of the run itself: a path it
             // excludes does not contradict its own run, and the UNSAT names
-            // what it rests on -- no verdict where that was never run.
+            // what it rests on.
             assertFalse(detail + ": " + again.claim().gaps(),
                     named(again.claim().gaps(),
                             GapKind.PATH_SELF_CONTRADICTORY));
             if (!excluded) continue;
             JsonObject claim = ComposeMain.campaignClaim(next, again);
-            assertEquals(detail + ": " + claim, refused ? "RUN_DEFECT"
-                    : "UNSAT_CLOSED", claim.get("claim").getAsString());
+            assertEquals(detail + ": " + claim, "UNSAT_CLOSED",
+                    claim.get("claim").getAsString());
             assertEquals(detail, name, claim.getAsJsonArray(
                     "restsOnRefutations").get(0).getAsJsonObject()
                     .get("name").getAsString());
-            if (!refused) continue;
-            // And where no core run says what the UNSAT rests on, it may
-            // rest on the refused model: no verdict either.
-            Composer.Composition coreless = compose(iteration, 8);
-            JsonObject unknown = ComposeMain.campaignClaim(coreless,
-                    ClaimPolicy.decide(coreless, corelessSolver()));
-            assertEquals(detail + ": " + unknown, "RUN_DEFECT",
-                    unknown.get("claim").getAsString());
         }
     }
 
@@ -918,22 +906,6 @@ public class ComposerTest {
         assertEquals(vh, link.get("symbol").getAsString());
         assertEquals("the producer GROW would plan", PRODUCER.render(),
                 link.get("producer").getAsString());
-    }
-
-    /** A z3 whose every core run answers unknown, and every other run as
-     *  z3 does. */
-    private Z3 corelessSolver() throws IOException {
-        Path script = folder.newFile("z3-coreless.sh").toPath();
-        Files.write(script, Arrays.asList("#!/bin/bash",
-                "input=$(cat)",
-                "case \"$input\" in",
-                "  *get-unsat-core*) echo unknown ;;",
-                "  *) printf '%s' \"$input\" | exec " + z3() + " \"$@\" ;;",
-                "esac"));
-        assertTrue("the fixture solver is executable",
-                script.toFile().setExecutable(true));
-        solver();
-        return new Z3(script, 30000L);
     }
 
     /**

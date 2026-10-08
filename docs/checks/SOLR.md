@@ -129,7 +129,9 @@ bug_study is Solr 11 main; "present" = the faulty logic and the fatal throw exis
 
 Kept: the 24 TESTED items below. Dropped for a hard reason: SOLR-02 and SOLR-26 (failure branch unreachable in our
 tree, see A). NO_PATH/UNCERTAIN with no test stay out (01, 03, 08, 11, 12, 17, 20, 25, 33). Fit is information only.
-Marker: "inline" = put `@CausynthExceptionTarget("<id>")` on the existing `throw new`.
+Marker: "inline" = put `@CausynthExceptionTarget("<id>")` on the existing `throw new` (fully qualified where the file
+imports none, so no line moves). The 12 checked points (05 07 09 10 13 14 19 21 31 38 39 40) and the six bug checks of
+D.2 are marked on `gc/solr-checks`; 22 is solr-18406's marker.
 
 | case id | our site | tree change | workload (our tree) | counterfactual / chain | start scope | fit |
 |---|---|---|---|---|---|---|
@@ -151,7 +153,7 @@ Marker: "inline" = put `@CausynthExceptionTarget("<id>")` on the existing `throw
 | solr-adhoc-28 | C CollectionsHandler.java:1183 | inline | same | none | same | C |
 | solr-adhoc-29 | C CollectionsHandler.java:681 | `throw ex` -> `throw new @..("solr-adhoc-29") SolrException(ex.code(), ex.getMessage(), ex)` | TimeRoutedAliasUpdateProcessorTest#test | none (validation) | C handler/admin/CollectionsHandler, cloud/api/collections/RoutedAlias | C |
 | solr-adhoc-30 | C CollectionsHandler.java:685 | assert rewrite | same | none (invalid input) | same | C |
-| solr-adhoc-31 | C CollectionsHandler.java:1477 | inline | ForceLeaderTest#testReplicasInLowerTerms (@Nightly, AbstractFullDistribZkTestBase: adapter must register its Jetty nodes and open the window) | CLOCK on the receiving node's LazyCollectionRef (ZkStateReader.java:823) or re-pairing of its DocCollection: stale view shows the killed leader ACTIVE -> refusal | C handler/admin/CollectionsHandler; J ZkStateReader, Slice, Replica | B- |
+| solr-adhoc-31 | C CollectionsHandler.java:1477 | inline | ForceLeaderTest#testReplicasInLowerTerms (not `@Nightly` in our tree; an AbstractFullDistribZkTestBase test: the base class registers its servers and opens the window, `CausynthSolrCluster#registerServers`) | CLOCK on the receiving node's LazyCollectionRef (ZkStateReader.java:823) or re-pairing of its DocCollection: stale view shows the killed leader ACTIVE -> refusal | C handler/admin/CollectionsHandler; J ZkStateReader, Slice, Replica | B- |
 | solr-adhoc-32 | C ConfigSetsHandler.java:486 | inline | TestConfigSetsAPI#testCreateWithTrust (throw is taken in the run: target an untaken occurrence) | none (auth) | C handler/admin/ConfigSetsHandler | C |
 | solr-adhoc-35 | C DistributedZkUpdateProcessor.java:633 | assert rewrite | TimeRoutedAliasUpdateProcessorTest#test | none (test hook) | C update/processor/DistributedZkUpdateProcessor | C |
 | **solr-adhoc-38** | C DistributedZkUpdateProcessor.java:1031 | inline | named CloudHttp2SolrClientTest#testAliasHandling (solrj); **core: TestPullReplica#testAddDocs** | ORDER/re-pairing of `CloudDescriptor.isLeader` (volatile, initial false) on the leader's update thread: Overseer applied LEADER (state ACTIVE) before the election thread's `setLeader(true)`; held across the 5 x 500 ms loop -> throw | C update/processor/DistributedZkUpdateProcessor, cloud/CloudDescriptor, cloud/ShardLeaderElectionContext(Base) | B |
@@ -166,39 +168,65 @@ solr-adhoc-34 (CoordinatorHttpSolrCall:142, TestCoordinatorRole#testSimple; C), 
 ### D.2 bug_study additions (all criteria checked against our tree)
 
 1. **solr-bugs-migrate-buffer-leak** (#17). Target `CoreAdminOperation.java:186` (REQUESTBUFFERUPDATES "Core .. not in
-   active state", inline). Workload: self-written `TestCausynthMigrateBufferLeak` (copy TestCausynthMigrateRuleTarget:
-   MIGRATE `a!` S->T, then MIGRATE `b!` S->T; no status assert between). Counterfactual: FAULT on the first MIGRATE after
-   the buffer step (ADDROUTINGRULE offer ZK write, or SPLIT/temp CREATE/REQUESTAPPLYUPDATES HTTP request). Chain: T's
-   `UpdateLog.state` = BUFFERING (bufferUpdates) never returned to ACTIVE (apply request never sent; MigrateCmd has no
-   finally) -> second MIGRATE's buffer request reads BUFFERING -> throw. Hard to recover: T buffers forwarded updates
-   (invisible) and refuses every later MIGRATE until a reload/restart. Scope: MigrateCmd, CoreAdminOperation, UpdateLog,
+   active state", inline; the second MIGRATE's buffer request, a selector). Workload `TestCausynthMigrateBufferLeak#
+   twoMigratesIntoOneTarget`: S on node0, T on node1, MIGRATE `a!` S->T, then MIGRATE `b!` S->T, both synchronous, each
+   failure returned rather than thrown, no check between. Counterfactual: FAULT on the first MIGRATE after the buffer step
+   (ADDROUTINGRULE offer ZK write, or SPLIT/temp CREATE/REQUESTAPPLYUPDATES HTTP request). Chain: T's `UpdateLog.state` =
+   BUFFERING (bufferUpdates) never returned to ACTIVE (apply request never sent; MigrateCmd has no finally) -> second
+   MIGRATE's buffer request reads BUFFERING -> throw. Hard to recover: T buffers forwarded updates (invisible) and refuses
+   every later MIGRATE until a reload/restart. Scope: MigrateCmd, CoreAdminOperation, UpdateLog,
    OverseerCollectionMessageHandler. A-.
-2. **solr-bugs-overseer-lock-leak** (#50). Target `DistributedZkUpdateProcessor.java:238` (processAdd "is read-only",
-   inline, declared occurrence = the add after the async MODIFYCOLLECTION). Workload: self-written: CREATE C;
-   MODIFYCOLLECTION readOnly=true; async MODIFYCOLLECTION readOnly=false with a bounded REQUESTSTATUS wait (no assert);
-   ADD. Counterfactual: ZK WRITE fault at `runningMap.put` (OverseerTaskProcessor.java:492; verify the ZooKeeper#create
-   door is woven inside `SolrZkClient#makePath`, which has no HOOK row). Chain: KeeperException escapes
+2. **solr-bugs-overseer-lock-leak** (#50). Target `DistributedZkUpdateProcessor.java:238` (8.11.4 :236; processAdd "is
+   read-only", inline; the window's first add). Workload `TestCausynthOverseerLockLeak#addAfterAnAsyncReadOnlyOff`: CREATE
+   C; MODIFYCOLLECTION readOnly=true; async MODIFYCOLLECTION readOnly="" (removal) under a fixed request id; at most 30
+   REQUESTSTATUS polls 1 s apart, no assert; ADD. Counterfactual: ZK WRITE fault, OperationTimeout (the write committed),
+   at `runningMap.put` (OverseerTaskProcessor.java:492, `DistributedMap.put` -> `SolrZkClient#makePath`'s own
+   `keeper.create`, which no HOOK row names: the catalog door at its library anchor). Chain: KeeperException escapes
    `markTaskAsRunning` (only NodeExists/Interrupted unlock, :316-325) -> outer catch :335 keeps the LockTree lock and
    `runningTasks` -> the task is never dispatched again, its Runner never runs -> readOnly stays true -> add throws.
-   Hard to recover: every later command on C blocks until the Overseer changes. Alternative fatal: a later sync command
-   times out at CollectionsHandler.java:383 (180 s). Scope: OverseerTaskProcessor, OverseerCollectionMessageHandler,
-   LockTree, DistributedMap, DistributedZkUpdateProcessor. B.
-3. **solr-bugs-snapshot-no-active** (#16). Target `BackupCmd.java:207` ("Unable to find any live replica with a
-   snapshot named", inline). Workload: self-written (CREATE 2x1, index, commit, CREATESNAPSHOT M, BACKUP commitName=M,
-   no asserts between; TestSolrCloudSnapshots#testSnapshots asserts in between). Counterfactual: the Overseer's view in
-   CreateSnapshotCmd.java:102: CLOCK skew on the LazyCollectionRef cache (Overseer hosts no core: cached DocCollection
-   from creation with replicas DOWN) or STATE re-pairing of the watched DocCollection. Chain: replica skipped (:104) ->
-   no core entry for the shard -> `failedShards` empty -> Successful (:181) -> metadata JSON in ZK -> BackupCmd finds
-   no replica snapshot -> throw. Hard to recover: same-name retry refused (:86), backup from M impossible. Risk: the
-   list shape crosses snapshot-metadata JSON. Scope: CreateSnapshotCmd, BackupCmd, SolrSnapshotManager,
-   CollectionSnapshotMetaData, ZkStateReader. B.
-4. **solr-bugs-tra-start-overwrite** (#20). Target: client-side `CloudSolrClient` "Collection not found: B" (inline).
-   Workload: self-written (TRA with router.start=NOW/DAY; CREATEALIAS B; first ADD to the TRA; query B). Counterfactual:
-   STATE re-pairing of the ADD thread's `getAliases()` snapshot (TimeRoutedAlias.java:377) to the version before B;
-   the async task (:386) writes the stale full map with B's version -> B lost. Risk: alias-key presence through
-   aliases.json. B-.
-5. **solr-bugs-restore-construction** (#26). Target solrj `common/cloud/HashBasedRouter.java:67` ("No active slice servicing hash code",
-   inline). Workload: self-written (BACKUP S; RESTORE to new T; RESTORE to T again; ADD T). Counterfactual: FAULT at the
-   first RESTORE's RESTORECORE or apply-buffer HTTP request (RestoreCmd.java:282-284) -> T left CONSTRUCTION; the retry
-   takes RestoreOnExistingCollection (:600, never marks ACTIVE) and reports success -> ADD has no active slice. Hard to
+   The leak's only throw of its own, a later sync command's wait timeout (CollectionsHandler.java:383), never comes in an
+   automatic cluster (`DEFAULT_COLLECTION_OP_TIMEOUT` = `CausynthBounds.NEVER_MS`): the target is the effect the task
+   never applied, after a wait bounded by a count. Hard to recover: every later command on C blocks until the Overseer
+   changes. Scope: OverseerTaskProcessor, LockTree, DistributedMap, OverseerCollectionMessageHandler,
+   DistributedZkUpdateProcessor, SolrZkClient. B.
+3. **solr-bugs-snapshot-no-active** (#16). Target `BackupCmd.java:207` ("Unable to find any live replica with a snapshot
+   named", inline). The report's zero-request case (every replica of a shard skipped) never reaches it: BACKUP skips a
+   shard the snapshot holds no replica of (:331-336, a warning; the backup silently lacks the shard, and the next failure
+   is a RESTORE's read of the missing files, IO). :207 needs a shard the snapshot holds whose holders are all down or
+   gone. Workload `TestCausynthSnapshotBackup#backupFromASnapshotAfterItsLeaderIsGone`: CREATE C 1 shard x 2 replicas,
+   index, commit, CREATESNAPSHOT M, DELETEREPLICA the leader R1 (wait until it is gone and R2 leads), BACKUP commitName=M
+   incremental=false (the path that reads M). Natively R2 was ACTIVE at CREATESNAPSHOT, so M holds both and the backup
+   reads R2's. Counterfactual: the Overseer's view at CreateSnapshotCmd.java:102 shows R2 not ACTIVE yet (STATE
+   re-pairing of its DocCollection read; CLOCK on a lazy reference where the Overseer hosts no replica) -> R2 skipped ->
+   M = {R1}, recorded Successful (:176) -> R1 deleted -> :207. Risk: the list shape crosses snapshot-metadata JSON. Scope:
+   CreateSnapshotCmd, BackupCmd, SolrSnapshotManager, CollectionSnapshotMetaData, ZkStateReader. B.
+4. **solr-bugs-tra-start-overwrite** (#20). Target solrj `BaseCloudSolrClient.java:901` ("Collection not found: B" in
+   `requestWithRetryOnStaleState`, inline; the same message at :1140 in `sendRequest` comes after it, `CloudSolrClient`
+   has none; a selector: every client request passes it). Workload `TestCausynthTraStartAlias#
+   requestViaAnAliasCreatedBeforeTheFirstDocument`: D on the Overseer's node; a TRA whose start `2019-09-14T03:00:00Z/DAY`
+   is date math on a fixed day (the same collections every run), its collection on the other node; CREATEALIAS B->D; the
+   TRA's first ADD (rewrites the start); at most 30 polls of the client's own alias view for the parsed start; a query via
+   B. Counterfactual: STATE re-pairing of the routing node's `getAliases()` capture (TimeRoutedAlias.java:377) to the
+   version before B: CreateAliasCmd only sleeps 100 ms for the nodes' watchers, so nothing orders B into the routing
+   node's view before the capture; the async task (:386) writes the captured map over B's version -> B lost. The
+   workload never reads the routing node's view (that read would order B first), and the TRA's collection is off the
+   Overseer's node (the Overseer applies its own alias writes to its view as it makes them). Risk: alias-key presence
+   through aliases.json. B-.
+5. **solr-bugs-restore-construction** (#26). Target solrj `common/cloud/HashBasedRouter.java:67` ("No active slice servicing
+   hash code", inline; a selector: every routed add passes it). Workload `TestCausynthRestoreRetry#restoreTwiceThenAdd`:
+   BACKUP S; RESTORE to new T; RESTORE to T again; ADD T, each RESTORE's failure returned rather than thrown and nothing
+   waiting for T's shards in between (such a wait never ends in the counterfactual). Counterfactual: FAULT at the first
+   RESTORE's RESTORECORE or apply-buffer HTTP request (RestoreCmd.java:282-284) -> T left CONSTRUCTION; the retry takes
+   RestoreOnExistingCollection (:600, never marks ACTIVE) and reports success -> ADD has no active slice. Hard to
    recover: only DELETE + RESTORE. B-.
+6. **solr-bugs-reindex-cleanup** (#04, the owner's report 5). Target `DeleteCollectionCmd.java:246` (`checkAliasReference`,
+   inline; the window's first DELETE, the cleanup's of T). Workload `TestCausynthReindexAbortAlias#
+   abortAfterAnAliasOfTheTargetIsRemoved`: REINDEX S->T async, held at `TestInjection#reindexLatch` once S is read-only
+   and T exists; CREATEALIAS A->T; DELETEALIAS A (a failure logged, as an operator would go on); ABORT; release the
+   latch; at most 30 REQUESTSTATUS polls; an add to S. Counterfactual: a SOLR_HTTP REQUEST fault on DELETEALIAS (an
+   IOException: an admin request is retried on another node only on a ConnectException) -> A->T survives -> the
+   cleanup's DELETE of T throws -> S's read-only flag and reindexing state are never reset. The report's trigger was a
+   concurrent CREATEALIAS; here the workload's own requests order the alias against the cleanup (DELETEALIAS completes,
+   the client sends ABORT, the worker reads the abort from ZooKeeper, `checkAliasReference` re-reads aliases.json after
+   `update()`), so a re-pairing with A's write is no world. Scope: DeleteCollectionCmd, ReindexCollectionCmd,
+   DeleteAliasCmd, OverseerCollectionMessageHandler, Aliases, ZkStateReader.

@@ -1122,9 +1122,11 @@ cancelled or reaped, by id):
   confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
   attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
   (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
-  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, or given no
-  verdict (a refused model: a mismatch, a replay that published none), its model is excluded from
-  every later composition (§10) and the exploration goes on, as after any other claim. With no room
+  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted (its replay did
+  not reach the fatal at the anchor: a false positive, §10), its model is excluded from every later
+  composition and the exploration goes on, as after any other claim; one CONFIRM gave no verdict on
+  (a task it refused by name, a decision that failed: a defect of the engine) is excluded from
+  nothing. With no room
   left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
@@ -2001,38 +2003,30 @@ with it is a `RUN_DEFECT`.
   `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
   `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
   the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
-  occurrence of the target site does not confirm. Only the last refutes, and only where the run
-  ran the model (`ConfirmMain#unplanted`: every root the claim moved minted at the model's value,
-  a clock's cell minted, no `ASSIGNMENT_UNPLANTED`); a `CONFIRM_MISMATCH` (the run took an edge the
-  model did not choose) or a run without the model's plant did not run it. A ConfirmMain that
-  exits nonzero is "unconfirmed" with its log named.
+  occurrence of the target site does not confirm. A replay that fails any of them -- not ADMITTED,
+  no readable session, a `CONFIRM_MISMATCH` (an edge the model chose that it did not take, an ORDER
+  it could not hold within `ORDER_TIMEOUT_MS`), a plant it did not make (`ConfirmMain#unplanted`),
+  no fatal at the anchor -- and a replay that published no verdict (killed at its bound, stalled)
+  did not reach the exception: it REFUTES the claim, a false positive (owner 2026-10-08: "如果replay跑不到exception。或者超时卡死，就直接定义为false positive。不用给这么多细分/迭代了"), its reason
+  naming which. Only a decision that failed, or a claim stating no parseable anchor, decides
+  nothing: a defect of the engine.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
 sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says the
-model is refuted: the replay ran it and disagreed (no fatal at the anchor, the model planted), or
-ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A refusal (`CONFIRM
-refused:`), a mismatch, a run without the model's plant, a replay that was not ADMITTED,
-published no readable session or no verdict, or a decision that failed, refutes nothing: the model
-is REFUSED (`campaign_refuse`, one row of `<iteration>/refused_models.jsonl`, `result.json`
-`refusedModels`). An ORDER the replay cannot hold within `ORDER_TIMEOUT_MS` is such a mismatch,
-never a refutation: a timeout cannot tell a slow run from an order the program forbids
-(hdfs-adhoc-10 SL1: a re-paired writer arm ordered jn0's `journal()` before the `startLogSegment`
-its client waits for). A refused model is excluded from every later composition as a refuted one
-is (below), so the next claim follows; no witness attempt confirms it again, and the final CONFIRM
-of a composition that repeated it takes its row instead of a replay (both matched as the
-composition matches a model, `campaign_model_key`). A final claim of its own left with no verdict
-is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`); one CONFIRM refuted is `SAT_UNCONFIRMED`, not accepted, the
-models refused before it published as `refusedModels` -- each excluded, none a verdict -- and an
-UNSAT that follows them stands only where it rests on none (above).
+claim is a false positive: its replay did not reach the fatal at the anchor (above), or
+ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A task ConfirmMain
+refused by name (`CONFIRM refused:`, rows that state no runnable model) and a decision that
+failed ran no replay of the model: a defect of the engine, excluded from nothing, and a final
+claim left so is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`). A final claim CONFIRM refuted with no next
+claim owed (below: the bound, the budget) is `SAT_UNCONFIRMED`: every claim filtered as a false
+positive, not accepted and no RUN_DEFECT.
 
 **A claim CONFIRM did not confirm is followed by the next.** A refuted claim (`campaign_refute`)
-is one row of `<iteration>/refuted_claims.jsonl`, a refused model one of `refused_models.jsonl`:
-its `model` (`campaign_claim_model`, off `claim.json`: the
+is one row of `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
 finding kind, the selected path, the arm selectors it chose there, the valuation, and the claim's
 moved roots, a clock by its cell's symbol at the model's instant), where it was `claimed`, and the
 confirmation's `reason`. Every later composition of the iteration excludes each
-(`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` (`refused_claim__k` for a
-refused model) asserts that the path's
+(`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` asserts that the path's
 selector, those arms (an arm's selector is `<kind>__<path ordinal>__<digest>`, taken at the path's
 ordinal in this query), the valuation's non-clock roots (named as the valuations name them,
 `Corpus#anyRoot`) and the claim's clock region are not all true at once -- a region, not an
@@ -2040,21 +2034,18 @@ instant: each clock cell the claim moved jumped the way it did, by any amount, a
 cell of the query runs on from the cell before it (`Composer#clockStep`, the spelling of a
 witness's run-on pins too); an instant alone excluded one point, and the next model sat a tick
 beside it --, a
-DIAGNOSTIC `CLAIM_REFUTED` (`CLAIM_REFUSED`) gap names it, and a model whose path or arm the query no
+DIAGNOSTIC `CLAIM_REFUTED` gap names it, and a model whose path or arm the query no
 longer composes is not stated. An exclusion is a region, so an UNSAT may rest on one: whenever one is
 asserted, the free-formula ask and the self-check ask for the unsat core (a path whose self-check
 core names one does not contradict its run, `Disjunction#refutedBySelfCheck`); an `UNSAT_CLOSED`
 whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (its path, moved
 roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`),
-and an UNSAT whose core names a `refused_claim__k`, or whose core is unknown while it excludes one, is
-`RUN_DEFECT` (`unsatBesideRefused`, EMIT's defect `UNSAT_BESIDE_REFUSED`): no run decided that model.
-A core is known only where its own run said unsat (`Z3.Answer#coreKnown`; a core run that timed out,
+each a false positive read against the code before the UNSAT counts (CHECKING). A core is known only where its own run said unsat (`Z3.Answer#coreKnown`; a core run that timed out,
 found no room or answered unknown names none, which is not the empty core), a disjunction's only
 where every path's is, and a path's refutation answers a core-wanting ask only with a known one.
 During EXPLORE a witness attempt CONFIRM did not confirm lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a
-`SAT_CANDIDATE` CONFIRM did not confirm whose model is recorded once in the two files together
-(matched by `campaign_model_key`: an arm by its kind and digest, its path ordinal being one
+`SAT_CANDIDATE` CONFIRM refuted whose model is recorded once in `refuted_claims.jsonl` (matched by `campaign_model_key`: an arm by its kind and digest, its path ordinal being one
 composition's; not one the composition was told to exclude already), the campaign's budget has
 room for its reserve (`campaign_claim_room`) and fewer than `campaign_max_claims` (8) claims were
 decided again (past it the last claim is published, the bound named in the log), its artifacts
@@ -2072,12 +2063,27 @@ After EMIT -- the verdict is published first, and nothing REPRODUCE does moves i
 VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map --plant
 <file>` writes the plant from what CONFIRM itself plants and holds (`ConfirmMain.Witness`, the one
 reading of the claim both make: the selected session's world under the model's moved roots, and
-the edges the model chose), each row numbered (`row`):
-- a `ROOT` per root the world assigns, naming the occurrence id it is minted at: a FAULT marker
-  `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
-  value: true|false}`, a tree hook's root `{category HOOK, rootId, occurrence, value}`;
+the edges the model chose), each row numbered (`row`); where a value is the return of a call it
+names the call as the task plan does (`explore.PlantSites`: the input action's `siteId`,
+`<method>#u<unit>`, and its `declaredCallee`, or an unwoven accessor's call):
+- a `ROOT` per root the world assigns or skews, naming the occurrence id it is minted at: a FAULT
+  marker `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
+  value: true|false}`; a tree hook's root `{category HOOK, rootId, occurrence, value}`; a
+  configuration `{category CONFIG, rootId, occurrence, sites: [{siteId, callee}], javaType, value}`
+  (its getter calls); an unwoven accessor's read `{category READ, rootId, occurrence, siteId,
+  callee, javaType, value}`; a clock the world skews `{category CLOCK, rootId, occurrence, siteId,
+  callee, javaType, clock: {nanos, source}, skew}` (the model's jumps and the selected session's
+  skews on cells the composition does not anchor, as CONFIRM plants them);
+- when the world skews a clock, a `CLOCK_SITE {siteId, callee, javaType, clock, regions}` per
+  declared clock reading of the plan (an observed one, as a replay mints it): context, applied by
+  nobody;
+- an `ANSWER {endpoint, port, siteId, callee, regions, value}` per attach the world answers, at its
+  port's call-return capture and the regions declaring it IN;
 - CONFIRM's own `ORDER` rows (`{before, after}`, §10: the join closure's at the locations the fatal
-  rests on, and those holding the pairings the world plants), each pair once;
+  rests on, and those holding the pairings the world plants -- an INITIAL pairing holds every
+  other writer of the location after the read), each pair once; a pairing at a placeholder (a mint
+  read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
+  plant's summary counts them (`placeholderPairings`);
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
   id>, siteId: <guard>, value: <its fatal arm>}`.
 
@@ -2087,13 +2093,15 @@ Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reaso
   a moved root the recording mints nowhere or a moved clock no reading anchors, and the edges'
   refusals (`STATE_CONFLICT`, `PAIRING_UNSTATED`, a selected arm whose consumer its session states
   no attach for);
-- `NATIVE_PLANT_UNSUPPORTED`: a world that skews a clock or answers an attach (the recording weave
-  reads no clock through the model and answers no attach); a root of another category than FAULT
-  or HOOK -- a configuration (the recording weave has neither the configuration-read nor the
-  getter-call mint), an unwoven accessor's read, a clock; a FAULT root its plan input calls at no
-  site or at several, or assigned other than true or false; a root with no mint occurrence; a world
-  that plants no root and holds no order (it would repeat the recording); a scope map that states
-  no fatal arm;
+- `NATIVE_PLANT_UNSUPPORTED`: a root minted other than at a call's return (an argument, a field or
+  static read: the recording weave states no read there for a plant to take), a FAULT root its plan
+  input calls at no site or at several or assigns other than true or false, a READ root at several
+  calls, a clock read at other than one declared clock call or skewed by no integer, a root with no
+  mint occurrence; an answer whose capture is a method parameter, a call argument or a method's
+  return, or whose value a message getter's element carries (a codec port: which getter call
+  attaches is the decode's binding, `MessageCodec`, which a native run does not keep -- keeping it
+  would export on every send, which needs the VM); a world that plants no root and holds no order
+  (it would repeat the recording); a scope map that states no fatal arm;
 - a recording that measured no peak resident memory to charge a run with.
 
 `reproduce_runs` (10) runs go out at once, each a head step (§7.7, `campaign_reproduce_one`)
@@ -2104,8 +2112,16 @@ times the recording's own workload, at least `reproduce_min_s` (300: a short rec
 little of how long ten runs at once on a busy cluster take -- hdfs-17960's 8 s recording gave 24 s,
 and all ten runs of round NP1 were cut before their window opened; hdfs-17897's 9 s recording, ten
 runs of 119-187 s in NP7, each at the anchor; `campaign_reproduce_bound`). A
-run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` (`execute.sh`,
-`CAUSYNTH_PLANT`); inside the window:
+run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` and the plant-run
+agent, `-javaagent` of the engine's jar (`execute.sh`, `CAUSYNTH_PLANT`; `runtime.PlantAgent`, the
+jar's `Premain-Class`; a JVM with no plant loads none). The agent rewrites, as they load, the caller
+classes the plant's call rows name: after every invoke of a callee named there, one call
+`RecordingPlant.returned(T)T` for the invoke's JVM return type (a reference through `Object` and a
+cast back), in ASM API 5 with the operand stack's types kept, so no frame is recomputed and no class
+loaded; the woven classes on disk, SEED's artifacts and the recording are untouched. Which call it
+is, the recording weave's own call-site context states at run time (`CausynthTraceRecorder
+#currentCallSiteContext`, pushed with that `siteId` and callee before the invoke), so no unit index is
+mapped to a bytecode offset; an invoke no context wraps matches no row. Inside the window:
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
   occurrence (`CausynthTraceRecorder#enclosingOccurrences`) has the row's own id
   (`RecordingPlant#marker`);
@@ -2114,6 +2130,19 @@ run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant
   `RootMint#writeModeledField`) under any enclosing occurrence the confirmation focuses -- the
   anchor or the mint occurrence of any root of the plant -- as a replay's mint plants under a focused
   occurrence (`RootMint#focusedRootValue`); a write that fails is a `PLANT_UNWRITTEN` row;
+- at a call the plant reads (`RecordingPlant#returnedAt`): a CONFIG row's getter calls return its
+  value whatever occurrence reads them (a configuration is the world's, as in a replay); a READ row's
+  accessor call its value under its occurrence; a CLOCK row's first return under its occurrence is
+  the host's reading plus the skew and a jump of that occurrence's node's clock (`NodeClocks`), and
+  every declared clock reading (a CLOCK_SITE row) reads the host plus the skew of the latest jump at
+  or before it on its node's clock, its node the one of its innermost enclosing occurrence of a
+  declaring region (none: the host) -- "before" is this run's real order, a counter of declared
+  readings (`RecordingPlant#PLACES`), since a native run has no recorded place; an ANSWER row's
+  capture carries the call's value as the replay's weave carries it and names each leaf by the
+  endpoint a replay's attach names it by in its innermost enclosing occurrence of a declaring region
+  (`HandoffMint#answerNatively`: `Identity#endpointAt`, one per leaf, so the k-th attach is the
+  replay's k-th where the run attaches as the replay did), writing the answer at the endpoint the row
+  names; a value the call's type cannot hold is a `PLANT_UNWRITTEN` row;
 - `runtime.Confirmation` holds the ORDER rows at `Identity`'s frame hooks as in a CONFIRM run (it
   reads the plant in a planted run), each at most half the run's bound
   (`causynth.confirm.order.timeout.ms`, `CAUSYNTH_ORDER_TIMEOUT_MS`), each row stating what it came
@@ -2128,10 +2157,11 @@ A planted run is not the recording's world, so the workload's checks of that wor
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
 planted, rootsPlanted, fatal, atAnchor, reproduced}`, read off its trace's plant rows against the
-plant: the rows to apply (ROOT and ORDER), how many it applied, each it did not with why
-(`UNHELD`, `UNWRITTEN`, `HOLDING` at the run's end, `NOT_REACHED`), whether it applied every row
-and every ROOT row, whether it took the fatal arm and at the anchor, and whether it **reproduced**:
-the fatal arm at the claim's anchor with every ROOT row applied. A run that did not plant the
+plant: the rows to apply (ROOT, ANSWER and ORDER; CLOCK_SITE and TARGET rows are context), how many
+it applied, each it did not with why (`UNHELD`, `UNWRITTEN`, `HOLDING` at the run's end,
+`NOT_REACHED`), whether it applied every row and every ROOT and ANSWER row, whether it took the
+fatal arm and at the anchor, and whether it **reproduced**: the fatal arm at the claim's anchor
+with every ROOT and ANSWER row applied (clock jumps, configurations and answers included). A run that did not plant the
 model's roots and reaches the fatal all the same is the program's own race, never a reproduction.
 `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
 reproduced, unheld, holding, reason}` -- runs that applied the whole plant, took the fatal arm,
@@ -2140,7 +2170,11 @@ when they ended, and the runs that stated no answer as `reason`. A native run ho
 order, not the recording's, so the planted occurrence may not recur: the share of runs that
 reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside
 `result.json`) and never refutes it. Then the campaign exits by its verdict
-(`campaign_exit_verdict`).
+(`campaign_exit_verdict`). The stage also runs alone, again, over a finished campaign
+(`run_engine.sh ... reproduce`, `do_reproduce`; `tools/rounds/reproduce-again.sh <run> <case> <copy>`
+copies the case's output directory -- linking what REPRODUCE reads, writing `final/` afresh -- so
+the finished run is never written): its bound is a factor of SEED's whole time there, since the
+recording's own is not kept apart.
 
 ## 11. EMIT
 
@@ -2157,7 +2191,7 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `confirmed` is `SAT_UNCONFIRMED` when the confirmation `refutes` it, else `RUN_DEFECT` with a
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim;
-   `restsOnRefutations` (the refuted and refused models an UNSAT's core names, and each world a
+   `restsOnRefutations` (the refuted models an UNSAT's core names, and each world a
    replay refuted for an open arm whose flip came back UNSAT or BOUNDED, kind `REFUTED_WORLD`); `concrete[]`
    with the last round's `openArms` (kind OPEN_ARM) beside its concrete anchors, and
    `evidence.unsatClosureComplete` true only where every such arm's flip came to UNSAT or stopped at

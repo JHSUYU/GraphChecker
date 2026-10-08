@@ -104,8 +104,9 @@ CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
 EMIT        final/result.json, gaps.json, run-manifest.json
 REPRODUCE   after the verdict: run a confirmed witness natively, N runs at once over
             the lifts, the recording weave on the stock JDK planting CONFIRM's world
-            (fault markers, tree hook roots, the model's order), each ending at the
-            fatal at its anchor (runtime/RecordingPlant)
+            (fault markers, hook roots, clocks, configurations, accessor reads,
+            call-return answers, the model's order), each ending at the fatal at
+            its anchor (runtime/RecordingPlant, the plant agent runtime/PlantAgent)
 ```
 
 The stages, their gates and the claim kinds are specified in
@@ -116,7 +117,8 @@ The stages, their gates and the claim kinds are specified in
 A case directory holds declarations only. `experiments/<system>/<case>/` contains:
 
 - `case.sh`: the tree, the workload test, the target occurrence and the analysis scope; the test
-  is a class and a method `m`, or one invocation of a parameterized test or class, `m[k]` (`m[i][j]`
+  is a class and a method `m` (marked `@Test`, or a public `test*()` where the class's randomizedtesting runner takes
+  JUnit 3 style methods, as Lucene's and Solr's `LuceneTestCase` does), or one invocation of a parameterized test or class, `m[k]` (`m[i][j]`
   when both are: the class's, then the method's), k from 1 in the argument sources' order, as JUnit
   numbers them (`runtime/JUnitInvocation`);
 - `workflow.properties`: budgets and inputs. `run_engine.sh` accepts only the keys it knows, so

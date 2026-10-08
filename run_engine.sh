@@ -13,6 +13,7 @@ usage() {
 Usage:
   ./run_engine.sh --config FILE campaign
   ./run_engine.sh --config FILE config|validate
+  ./run_engine.sh --config FILE reproduce
   ./run_engine.sh --config FILE --run-obligation \
       --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
       ID OBLIGATIONS SESSIONS WORKER CHARGED_MB
@@ -24,6 +25,10 @@ Commands:
               (a streaming pool of obligations, growing the woven region
               set as replays expose it) and
               compose/solve/decide/confirm/reproduce/emit.
+  reproduce   REPRODUCE alone over a finished campaign: the configuration's
+              output directory (CAUSYNTH_OUTPUT_DIR, a copy of one, so the
+              original is never written; tools/rounds/reproduce-again.sh)
+              holds a confirmed claim and no reproduction yet
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -4861,13 +4866,6 @@ campaign_stream_attempt() {
     campaign_stream_witnessed "${step}" "${dir}" null
   else
     model=$(campaign_claim_model "${dir}/claim.json")
-    if [[ -n "$(campaign_refused_reason "${iteration_dir}" "${model}")" ]]
-    then
-      campaign_stream_attempt_row "${dir}" null "its model got no verdict \
-from an earlier confirmation (refused_models.jsonl): not confirmed again" 0 \
-        false
-      return 0
-    fi
     if grep -q -x -F -- "${model}" "${step}/confirming"; then
       printf '%s\n' "$@" >"${step}/deferred"
       campaign_stream_attempt_row "${dir}" null "its model is under \
@@ -5841,7 +5839,7 @@ explore_manifest.json 2>/dev/null) \
 # round's obligations, a round was due when the budget stopped it, or the
 # planner could not hold the corpus (PLANNER_HEAP_EXCEEDED); WITNESSED
 # owes the same, and a witness that stands (the claim a SAT_CANDIDATE,
-# which CONFIRM validates) owes nothing -- one refuted or given no verdict,
+# which CONFIRM validates) owes nothing -- one refuted (a false positive),
 # followed by a claim composed again over the trimmed corpus with no new
 # EXPLORE
 # (campaign_next_claim), owes it all.  FIXED_POINT and the declared nesting
@@ -6105,26 +6103,25 @@ campaign_decide() {
 # claim says, so it is not held (a divergence stays a diagnostic gap of the
 # session); the model's order is, by the ORDER rows of
 # expected_edges.jsonl (runtime.Confirmation), and an ORDER the run cannot
-# hold is a CONFIRM_MISMATCH (PIPELINE §10).  Every other
-# outcome -- a refused task, a replay that published no verdict -- is
-# "unconfirmed, because ...": EMIT downgrades the claim,
-# the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
-# claim has nothing to confirm and the stage says so.  A claim the run
-# disagreed with is refuted (campaign_refute), one it gave no verdict on is
-# refused (campaign_refuse), both excluded from every later composition,
-# and the campaign goes on to the next claim while its budget has room
-# (campaign_next_claim).  The exploration's
+# hold is a CONFIRM_MISMATCH (PIPELINE §10).  A replay that did not reach
+# the fatal at the anchor -- it ran to its end without it, an ORDER it could
+# not hold, a stall, a timeout, a replay that published no verdict -- is a
+# FALSE POSITIVE (owner 2026-10-08): the claim is refuted (campaign_refute),
+# excluded from every later composition, and the campaign goes on to the next
+# claim while its budget has room (campaign_next_claim).  A confirmation no
+# replay ran -- a task ConfirmMain refused by name, a decision that failed --
+# is a defect of the engine, no verdict: EMIT publishes the claim RUN_DEFECT.
+# Only a SAT_CANDIDATE is confirmed; any other claim has nothing to confirm
+# and the stage says so.  The exploration's
 # witness was confirmed as it was accepted (campaign_stream_attempt): the
 # same model, composed again over the same corpus, is not replayed twice.
 campaign_confirm() {
-  local iteration_dir=$1 claim refused
+  local iteration_dir=$1 claim
   claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
   if [[ "${claim}" != SAT_CANDIDATE ]]; then
     campaign_log "claim=${claim}: nothing to confirm"
     return 0
   fi
-  refused=$(campaign_refused_reason "${iteration_dir}" \
-    "$(campaign_claim_model "${campaign_final}/claim.json")")
   if [[ -s "${campaign_witness_attempt}/confirm.json" ]] \
       && [[ "$(campaign_claim_model "${campaign_final}/claim.json")" \
         == "$(campaign_claim_model "${campaign_witness_attempt}/claim.json")" ]]
@@ -6133,11 +6130,6 @@ campaign_confirm() {
       "${campaign_final}/confirm.json"
     campaign_log "the model is the exploration's witness, confirmed in \
 ${campaign_witness_attempt}"
-  elif [[ -n "${refused}" ]]; then
-    campaign_confirm_verdict false "an earlier confirmation of this model \
-gave no verdict (refused_models.jsonl): ${refused}" "" false \
-      >"${campaign_final}/confirm.json"
-    campaign_log "the model got no verdict earlier: not confirmed again"
   else
     campaign_confirm_claim "${iteration_dir}" "${campaign_final}" \
       "${campaign_final}/confirm"
@@ -6219,14 +6211,16 @@ campaign_confirm_replay() {
 
 # The verdict on the claim <claims>/claim.json from the replay of <dir>, which
 # exited <status>: read off the session it published (ConfirmMain
-# --sessions) into <claims>/confirm.json.  A replay that published no
-# verdict, or a decision that failed, leaves the model unconfirmed and open.
+# --sessions) into <claims>/confirm.json.  A replay that published no verdict
+# (killed at its bound, stalled, crashed) never reached the fatal: it refutes
+# the model, a false positive (owner 2026-10-08).  A decision that failed is
+# the engine's defect and decides nothing.
 campaign_confirm_decide() {
   local claims=$1 dir=$2 replayed=$3 status=0
   if [[ "${replayed}" -ne 0 ]]; then
     campaign_confirm_verdict false "the confirmation replay published no \
-verdict (exit ${replayed}); its log is ${dir}/confirm.log" "" false \
-      >"${claims}/confirm.json"
+verdict (exit ${replayed}): it never reached the fatal at the anchor; its \
+log is ${dir}/confirm.log" "" true >"${claims}/confirm.json"
     return 0
   fi
   run_capturing_status run_java_main \
@@ -6239,49 +6233,20 @@ confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
     false >"${claims}/confirm.json"
 }
 
-# A verdict written: the claim refuted (campaign_refute) only when the
-# verdict refutes it -- the replay ran the model and disagreed, or ConfirmMain
-# refuted it by name (the run as recorded); a confirmation that neither
-# confirmed nor refuted it (a refusal, a run that did not run the model, a
-# replay that published no verdict) is a refused model (campaign_refuse).
+# A verdict written: the claim refuted (campaign_refute) when the verdict
+# refutes it -- a replay that did not reach the fatal at the anchor, or a
+# claim ConfirmMain refuted by name (the run as recorded); one neither
+# confirmed nor refuted (a refusal no replay ran, a failed decision) is the
+# engine's defect, excluded from nothing: EMIT publishes it RUN_DEFECT.
 campaign_confirm_settle() {
   local iteration_dir=$1 claims=$2
   require_nonempty "confirmation" "${claims}/confirm.json"
   if [[ "$(jq -r '.refutes' "${claims}/confirm.json")" == true ]]; then
     campaign_refute "${iteration_dir}" "${claims}"
   elif [[ "$(jq -r '.confirmed' "${claims}/confirm.json")" != true ]]; then
-    campaign_refuse "${iteration_dir}" "${claims}"
-  fi
-}
-
-# A model CONFIRM gave no verdict on: one row of
-# <iteration>/refused_models.jsonl, its model and the reason.  No
-# refutation, but every later composition of the iteration excludes it as
-# one (compose.Refutations, refused_claim__k: an UNSAT resting on it is no
-# verdict), so the next claim follows (campaign_next_claim); no witness
-# attempt confirms it again (campaign_stream_attempt) and the final CONFIRM
-# takes its row (campaign_confirm), should a composition repeat it.
-campaign_refuse() {
-  local iteration_dir=$1 claims=$2 model
-  model=$(campaign_claim_model "${claims}/claim.json")
-  jq -n -c --argjson model "${model}" --arg claimed "${claims}" \
-    --slurpfile confirmation "${claims}/confirm.json" \
-    '{schemaVersion: 1, kind: "REFUSED_MODEL", model: $model,
-      claimed: $claimed, reason: $confirmation[0].reason}' \
-    >>"${iteration_dir}/refused_models.jsonl"
-  campaign_log "refused, no verdict: $(jq -r '.reason' \
+    campaign_log "no verdict, a defect of the engine: $(jq -r '.reason' \
 "${claims}/confirm.json")"
-}
-
-# The reason CONFIRM gave no verdict on this model (campaign_refuse), or
-# nothing: matched as the composition matches it (campaign_model_key).
-campaign_refused_reason() {
-  local iteration_dir=$1 model=$2
-  [[ -n "${model}" && -s "${iteration_dir}/refused_models.jsonl" ]] \
-    || return 0
-  jq -r -c --argjson model "${model}" "${campaign_model_key}"'
-    select((.model | key) == ($model | key)) | .reason' \
-    "${iteration_dir}/refused_models.jsonl" | head -n 1
+  fi
 }
 
 # One model of an iteration as every composition of it names the model
@@ -6378,10 +6343,9 @@ campaign_last_round_millis() {
 }
 
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE
-# CONFIRM did not confirm -- refuted, or given no verdict (a refused model)
-# -- its model is recorded once in refuted_claims.jsonl and
-# refused_models.jsonl together (campaign_model_key) -- so the next
-# composition excludes it, and it is not a model the composition was told
+# CONFIRM refuted -- a false positive, its model recorded once in
+# refuted_claims.jsonl (campaign_model_key) -- so the next composition
+# excludes it, and it is not a model the composition was told
 # to exclude already -- the budget has room, and fewer than
 # campaign_max_claims claims were decided again.  The claim's artifacts move
 # to final/refuted/NNNN/ first, so final/ holds the claim EMIT publishes.
@@ -6393,8 +6357,7 @@ campaign_next_claim() {
     || return 1
   model=$(campaign_claim_model "${campaign_final}/claim.json")
   [[ -z "${model}" ]] || seen=$(cat "${iteration_dir}/refuted_claims.jsonl" \
-      "${iteration_dir}/refused_models.jsonl" 2>/dev/null \
-    | jq -c --argjson model "${model}" "${campaign_model_key}"'
+      2>/dev/null | jq -c --argjson model "${model}" "${campaign_model_key}"'
       select((.model | key) == ($model | key))' | grep -c '' || true)
   if (( seen != 1 )); then
     campaign_log "the claim's model is excluded ${seen} time(s), not once: \
@@ -6420,17 +6383,17 @@ has no room for another claim"
     [[ ! -e "${campaign_final}/${name}" ]] \
       || mv -- "${campaign_final}/${name}" "${dir}/"
   done
-  campaign_log "the claim was $(jq -r \
-    'if .refutes then "refuted" else "given no verdict" end' \
-    "${dir}/confirm.json") (${dir}): composing the next one"
+  campaign_log "the claim was refuted (${dir}): composing the next one"
 }
 
-# REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again
+# REPRODUCE (PIPELINE §10b), after EMIT: a confirmed witness run again
 # natively -- the recording weave on the stock JDK, planting what the
 # confirmation's world plants and holds (its fault markers, its trees' hook
-# roots, its ORDER rows) and watching the target's guards for their fatal
-# arm at the claim's anchor (explore.ConfirmMain --plant, the code that wrote
-# CONFIRM's world; runtime.RecordingPlant).  reproduce_runs runs, all at
+# roots, its clock jumps, configurations, accessor reads and answers at the
+# calls the plant-run agent hands it, its ORDER rows) and watching the
+# target's guards for their fatal arm at the claim's anchor
+# (explore.ConfirmMain --plant, the code that wrote CONFIRM's world;
+# runtime.RecordingPlant, runtime.PlantAgent).  reproduce_runs runs, all at
 # once, each a head step charged the recording's measured peak resident
 # memory wherever there is room (campaign_reproduce_one) and bounded by
 # campaign_reproduce_bound; a run ends as
@@ -6438,16 +6401,17 @@ has no room for another claim"
 # question answered.  Each run states its answer itself
 # (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
 # many applied every row of the plant, took the target's fatal arm, took it
-# at the claim's own anchor, reproduced (at the anchor with every ROOT row
-# applied: what tools/adhoc/findings.py rates), could not hold an ORDER in
-# time, and still held one when the run ended -- and names the runs that
-# stated none.  A native run holds no recorded order,
+# at the claim's own anchor, reproduced (at the anchor with every ROOT and
+# ANSWER row applied: what tools/adhoc/findings.py rates), could not hold an
+# ORDER in time, and still held one when the run ended -- and names the runs
+# that stated none.  A native run holds no recorded order,
 # only the model's, so the planted occurrence may not recur: the rate ranks
 # a finding (tools/adhoc/findings.py) and never refutes it, and nothing here
 # moves the claim, CONFIRM's decision or what EMIT published.  A world a
-# native run cannot plant (a clock, an attach's answer, a configuration, a
-# world that plants nothing), or a recording that measured no peak memory,
-# is a reproduce.json with no run and the reason.  Only a confirmed
+# native run cannot plant (NATIVE_PLANT_UNSUPPORTED: a root minted other
+# than at a call's return, an answer at no call-return capture, a world that
+# plants nothing), or a recording that measured no peak memory, is a
+# reproduce.json with no run and the reason.  Only a confirmed
 # SAT_CANDIDATE is reproduced.
 campaign_reproduce() {
   local iteration_dir=$1
@@ -6538,14 +6502,17 @@ logs are in ${run}"
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
 # rows, applied, unapplied, planted, rootsPlanted, fatal, atAnchor,
-# reproduced} -- the plant's rows to apply (ROOT and ORDER), how many the
-# run applied, each one it did not with why (UNHELD: an ORDER's wait timed
-# out; HOLDING: still waiting when the run ended; UNWRITTEN: a HOOK row's
-# field write failed; NOT_REACHED), whether it applied every row and every
-# ROOT row, whether it took the target's fatal arm and at the anchor, and
-# whether it reproduced: the fatal arm at the anchor with every ROOT row
-# applied -- a run that did not plant the model's roots and reaches the
-# fatal anyway is the program's own race, no reproduction.  An ORDER is held
+# reproduced} -- the plant's rows to apply (ROOT, ANSWER and ORDER: a
+# CLOCK_SITE or TARGET row is context), how many the run applied, each one
+# it did not with why (UNHELD: an ORDER's wait timed out; HOLDING: still
+# waiting when the run ended; UNWRITTEN: a value it could not plant -- a
+# HOOK row's field write, a value the call's type cannot hold; NOT_REACHED),
+# whether it applied every row and every ROOT and ANSWER row (clock jumps,
+# configurations and answers included), whether it took the target's fatal
+# arm and at the anchor, and whether it reproduced: the fatal arm at the
+# anchor with every ROOT and ANSWER row applied -- a run that did not plant
+# the model's world and reaches the fatal anyway is the program's own race,
+# no reproduction.  An ORDER is held
 # at most half the run's bound (causynth.confirm.order.timeout.ms), so an
 # unrealizable order is stated UNHELD before the bound ends the run.
 campaign_reproduce_run() {
@@ -6558,7 +6525,8 @@ campaign_reproduce_run() {
   [[ -s "${trace}" ]] || trace=/dev/null
   jq -n -c -R --argjson exit "${status}" --slurpfile plant "${plant}" '
     [inputs | select(contains("\"event\":\"PLANT_")) | fromjson?] as $rows
-    | [$plant[] | select(.kind != "TARGET")] as $planted
+    | [$plant[] | select(.kind == "ROOT" or .kind == "ANSWER"
+        or .kind == "ORDER")] as $planted
     | def stated($event): [$rows[] | select(.event == $event) | .row];
       def why($row):
         if any(stated("PLANT_UNHELD")[]; . == $row) then "UNHELD"
@@ -6567,11 +6535,11 @@ campaign_reproduce_run() {
         else "NOT_REACHED" end;
       stated("PLANT_APPLIED") as $applied
     | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
-        | {row, kind, planted: (.rootId // "\(.before) -> \(.after)"),
-           why: why($p.row)}] as $unapplied
+        | {row, kind, planted: (.rootId // .endpoint
+             // "\(.before) -> \(.after)"), why: why($p.row)}] as $unapplied
     | ($planted | length) as $count
     | any($rows[]; .event == "PLANT_FATAL" and .atAnchor) as $atAnchor
-    | (all($unapplied[]; .kind != "ROOT")) as $roots
+    | (all($unapplied[]; .kind == "ORDER")) as $roots
     | {exit: $exit, rows: $count, applied: ($count - ($unapplied | length)),
        unapplied: $unapplied,
        planted: ($count > 0 and ($unapplied | length) == 0),
@@ -6828,10 +6796,6 @@ campaign_emit() {
   # positives (tools/adhoc/triage.py), whatever the claim published.
   local refuted="${iteration_dir}/refuted_claims.jsonl"
   [[ -s "${refuted}" ]] || refuted=/dev/null
-  # Every model CONFIRM gave no verdict on (campaign_refuse), published
-  # beside the claim.
-  local refused="${iteration_dir}/refused_models.jsonl"
-  [[ -s "${refused}" ]] || refused=/dev/null
   # What the last EXPLORE round found decided on no symbol (ExploreMain's
   # concreteAnchors): information beside the verdict, never a gap.
   local explored=/dev/null round
@@ -6856,7 +6820,6 @@ campaign_emit() {
     --arg formula "${formula_path}" \
     --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
-    --slurpfile refusedModels "${refused}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile exploreDocuments "${explored}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
@@ -6924,12 +6887,9 @@ campaign_emit() {
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
      refutedClaims: $refutedClaims,
-     # The models CONFIRM gave no verdict on (campaign_refuse): no
-     # refutation, each excluded from the compositions after it, and an
-     # UNSAT resting on one is no verdict (ComposeMain#campaignClaim).
-     refusedModels: $refusedModels,
-     # The excluded models an UNSAT rests on: the refuted_claim__ and
-     # refused_claim__ labels its unsat core names (ComposeMain#campaignClaim),
+     # The excluded models an UNSAT rests on: the refuted_claim__ labels its
+     # unsat core names (ComposeMain#campaignClaim), the false positives
+     # CONFIRM filtered,
      # each the model it excludes -- a region the verdict rests on beside the
      # corpus -- and each world a replay refuted for an open decider arm whose
      # flip then came back UNSAT or stopped at its bound (REFUTED_WORLD,
@@ -7003,12 +6963,6 @@ campaign_emit() {
           then [{stage: "CONFIRM", code: "CONFIRM_NO_VERDICT",
                  subject: ($confirmation.sessionId // ""),
                  detail: $confirmation.reason}]
-          else [] end)
-       # An UNSAT that rests on a model CONFIRM gave no verdict on, or whose
-       # core is unknown beside one (ComposeMain#campaignClaim).
-       + (if ($decided.unsatBesideRefused // false)
-          then [{stage: "COMPOSE", code: "UNSAT_BESIDE_REFUSED",
-                 subject: "", detail: $decided.claimReason}]
           else [] end)
        # A causal chain EXPLORE could not close: a value a fatal condition the
        # verdict rests on names that no attested producer made -- the witness
@@ -7326,6 +7280,32 @@ do_campaign() {
   campaign_exit_verdict
 }
 
+# REPRODUCE alone (`reproduce`): the stage over a finished campaign's output
+# directory, a copy of one (tools/rounds/reproduce-again.sh links what it
+# reads), with the claim, manifest and confirmation EMIT published and no
+# reproduction yet.  The recording's own time is not kept apart from SEED's,
+# so SEED's time is what the runs' bound is a factor of
+# (campaign_reproduce_bound).
+do_reproduce() {
+  campaign_root="${schedule_output_dir}"
+  campaign_final="${campaign_root}/final"
+  composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+  require_file "a confirmation" "${campaign_final}/confirm.json"
+  require_file "a composition manifest" "${composition_manifest}"
+  [[ ! -e "${campaign_final}/reproduce.json" ]] \
+    || die "this campaign already holds a reproduction: ${campaign_final}"
+  campaign_recorded_workload_rss_mb=$(cat \
+    "$(dirname "${runtime_region_plan}")/workload_rss_mb" 2>/dev/null) \
+    || campaign_recorded_workload_rss_mb=""
+  campaign_recorded_workload_s=$(awk -F'\t' '$1 == "SEED" {
+    print int($2 / 1000) }' "${campaign_root}/stage_metrics.tsv" 2>/dev/null)
+  campaign_init_local_scratch_root
+  campaign_head_charging=1
+  campaign_head_reserve
+  campaign_reproduce "${campaign_root}/iteration-0000"
+  cat "${campaign_final}/reproduce.json"
+}
+
 # One claim of the iteration: composed, solved, decided and confirmed.
 campaign_claim_stages() {
   campaign_stage COMPOSE campaign_compose "$1"
@@ -7362,13 +7342,17 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|config|validate|--run-obligation|--run-placed)
+  campaign|config|validate|reproduce|--run-obligation|--run-placed)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
       campaign)
         [[ $# -eq 0 ]] || die "campaign takes no extra arguments"
         do_campaign
+        ;;
+      reproduce)
+        [[ $# -eq 0 ]] || die "reproduce takes no extra arguments"
+        do_reproduce
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

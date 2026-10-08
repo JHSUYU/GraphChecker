@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# round-verify.sh <round> [case...]: per finished case, how EXPLORE ended, the claim, z3 on the exported candidate.smt2,
-# the blocking gaps, whether a SAT moved roots, and the formula's leaf symbols (roots, reads, handoffs: every declared
-# constant but the formula's own selectors and named identities); an UNSAT over none (NO-SYMBOL) decided nothing that
-# moves, a scope hole to read before it counts. BOUNDED:<keys> names the declared bounds that cut the case's search
-# (result.json's `bounded`, RULES: a named, rare last resort), and the round's last line counts those cases.
-# UNBOUND:<n> counts the distinct boundary variables a fatal condition names that no message family binds (cone.py's
-# `unbound`: a broken causal chain, so the case is not done whatever its verdict); the last line counts those cases
-# too. No case: every finished case of the round.
+# round-verify.sh <round> [case...]: per finished case, how EXPLORE ended, the claim, z3 on the exported candidate.smt2
+# (both arithmetic engines raced, tools/lib/z3-race.sh), the blocking gaps, whether a SAT moved roots, and the formula's
+# leaf symbols (roots, reads, handoffs: every declared constant but the formula's own selectors and named identities);
+# an UNSAT over none (NO-SYMBOL) decided nothing that moves, a scope hole to read before it counts. BOUNDED:<keys> names
+# the declared bounds that cut the case's search (result.json's `bounded`, RULES: a named, rare last resort), and the
+# round's last line counts those cases. UNBOUND:<n> counts the distinct boundary variables a fatal condition names that
+# no message family binds (cone.py's `unbound`: a broken causal chain, so the case is not done whatever its verdict);
+# the last line counts those cases too. No case: every finished case of the round.
 # shellcheck source=../lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+# shellcheck source=../lib/z3-race.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/z3-race.sh"
 out=${GC_OUT}; round=$1; shift
 want=" $* "; cases=0; bounded=0; unbound=0
 while IFS=$'\t' read -r n c; do
@@ -18,7 +20,7 @@ while IFS=$'\t' read -r n c; do
   f=$d/out/$c/schedule/final
   stop=$(grep -ho 'exploration stopped ([A-Z_]*)' "$d/logs/$c.log" 2>/dev/null | head -1 | sed 's/exploration stopped //')
   claim=$(tail -1 "$s" | cut -f4); secs=$(tail -1 "$s" | cut -f3)
-  z=$( [[ -f $f/candidate.smt2 ]] && timeout 300 "$Z3_BIN" -smt2 "$f/candidate.smt2" 2>/dev/null | head -1)
+  z=$( [[ -f $f/candidate.smt2 ]] && z3_race "$f/candidate.smt2" 300 | head -1)
   extra=$(python3 - "$f" "$d/report/$c" <<'PY'
 import json,sys,os
 f=sys.argv[1]; out=[]

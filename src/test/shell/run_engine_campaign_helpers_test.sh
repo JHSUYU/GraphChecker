@@ -590,33 +590,6 @@ for state in UNSAT UNANSWERED; do
 $(jq -c '{claim, concrete, evidence, defects}' "${campaign_final}/result.json")"
 done
 
-# A model CONFIRM gave no verdict on (refused_models) is the composition's
-# to judge: excluded from it, an UNSAT resting on it is RUN_DEFECT there
-# (ComposeMain#campaignClaim); one that does not stands, the model named.
-emit_unsat_fixture
-printf '%s\n' '{"schemaVersion":1,"kind":"REFUSED_MODEL","model":{"pathId":"P1"},"claimed":"x","reason":"the replay was NOT_ADMITTED"}' \
-  >"${emit_iteration}/refused_models.jsonl"
-run_emit
-jq -e '.claim == "UNSAT_CLOSED" and .accepted == true
-  and (.refusedModels | length) == 1 and .defects == []' \
-  "${campaign_final}/result.json" >/dev/null \
-  || fail "an UNSAT not resting on a refused model was withheld: \
-$(jq -c '{claim, defects, refusedModels}' "${campaign_final}/result.json")"
-# ... and one COMPOSE found resting on one, or beside one with no core, is
-# the defect it named.
-jq '.solver.campaignClaim.claim = "RUN_DEFECT"
-  | .solver.campaignClaim.claimReason = "unsat beside a refused model"
-  | .solver.campaignClaim.unsatBesideRefused = true' "${composition_manifest}" \
-  >"${composition_manifest}.tmp"
-mv "${composition_manifest}.tmp" "${composition_manifest}"
-run_emit
-jq -e '.claim == "RUN_DEFECT" and .accepted == false
-  and ([.defects[].code] | index("UNSAT_BESIDE_REFUSED")) != null' \
-  "${campaign_final}/result.json" >/dev/null \
-  || fail "an UNSAT beside a refused model was not named a defect: \
-$(jq -c '{claim, defects}' "${campaign_final}/result.json")"
-rm -f -- "${emit_iteration}/refused_models.jsonl"
-
 # A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
 # other: published as CONFIRM left it.
 emit_fixture
@@ -1280,8 +1253,8 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     reproduce_min_s=75
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
-    # ConfirmMain --plant: a root, an order and the target's arm, else
-    # refused.
+    # ConfirmMain --plant: a root, an order, an answer, a clock reading (a
+    # context row, applied by nobody) and the target's arm, else refused.
     run_java_main() {
       (( repro_plant == 0 )) || {
         echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
@@ -1295,13 +1268,15 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
       {
         echo '{"kind":"ROOT","category":"HOOK","rootId":"R","row":0}'
         echo '{"kind":"ORDER","before":"b|","after":"a|","row":1}'
-        echo '{"kind":"TARGET","row":2}'
+        echo '{"kind":"ANSWER","endpoint":"e","row":2}'
+        echo '{"kind":"CLOCK_SITE","row":3}'
+        echo '{"kind":"TARGET","row":4}'
       } >"${plant}"
     }
     # Run n: 1 every row applied and the fatal at the anchor; 2 its order
     # unheld and the fatal elsewhere; 3 its root unwritten, its order still
-    # holding, and the fatal at the anchor all the same -- the program's own
-    # race, no reproduction; 4 no trace.  Each states its bound, its order
+    # holding, its answer not reached, and the fatal at the anchor all the
+    # same -- the program's own race, no reproduction; 4 no trace.  Each states its bound, its order
     # timeout and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
@@ -1312,8 +1287,10 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
         echo '{"event":"BRANCH"}'
         case ${n} in
           1) echo '{"event":"PLANT_APPLIED","row":0}'
-             echo '{"event":"PLANT_APPLIED","row":1}' ;;
+             echo '{"event":"PLANT_APPLIED","row":1}'
+             echo '{"event":"PLANT_APPLIED","row":2}' ;;
           2) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_APPLIED","row":2}'
              echo '{"event":"PLANT_HOLDING","row":1}'
              echo '{"event":"PLANT_UNHELD","row":1}' ;;
           3) echo '{"event":"PLANT_UNWRITTEN","row":0}'
@@ -1339,7 +1316,7 @@ ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
       || "$(jq -c '[.unapplied[].why]' \
         "${repro_dir}/final/reproduce/run-3/answer.json")" \
-        == '["UNWRITTEN","HOLDING"]' ]] \
+        == '["UNWRITTEN","HOLDING","NOT_REACHED"]' ]] \
     || fail "a run does not say why it did not apply a row: \
 $(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
   [[ "${repro_expected}" != *'"runs":4'* \
@@ -4308,9 +4285,6 @@ confirm_stub_replay() {
 run_confirm() {
   local claim=$1
   rm -rf -- "${campaign_final}/confirm" "${campaign_final}/confirm.json"
-  # Each run asks afresh, unless the test keeps what an earlier one refused.
-  [[ -n "${confirm_keep_refused:-}" ]] \
-    || rm -f -- "${confirm_iteration}/refused_models.jsonl"
   jq -n --arg claim "${claim}" \
     '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
   # The arms at the path ordinal this composition gave the path.
@@ -4377,91 +4351,56 @@ confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DI
 {"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule-rest#2","detail":"the rest gave up"}'
 run_confirm SAT_CANDIDATE
 confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
-# (a) An edge the model chose that the run did not take: that run did not
-# run the model, so it refutes nothing -- a refused model, named, which no
-# witness attempt confirms again.
-confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
-rm -f -- "${confirm_iteration}/refuted_claims.jsonl"
-run_confirm SAT_CANDIDATE
-confirm_says false "the model chose producer p1, the run paired p2" \
-  "a mismatched edge was confirmed"
-[[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
-    && ! -e "${confirm_iteration}/refuted_claims.jsonl" ]] \
-  && jq -e -s 'length == 1 and (.[0] | .kind == "REFUSED_MODEL"
-    and .model.pathId == "P.sel"
-    and (.reason | contains("did not run the model")))' \
-    "${confirm_iteration}/refused_models.jsonl" >/dev/null \
-  || fail "a mismatched run refuted the model, or its model is not refused: \
-$(cat "${campaign_final}/confirm.json" \
-  "${confirm_iteration}/refused_models.jsonl" 2>&1)"
-confirm_stub_gaps=""
-# (b) The fatal not observed at the anchor, by a run that minted the moved
-# root at the model's value: it ran the model and disagreed, so the claim is
-# refuted -- its model (the finding kind, the path, the arms, the
-# valuation, the moved roots) and the reason, one row every later
+# Every replay that does not reach the fatal at the anchor refutes the model,
+# a false positive (owner 2026-10-08), one row of refuted_claims.jsonl whose
+# reason names how: (a) an edge the model chose that the run did not take, a
+# plant it did not make, a session with no gap file, an unadmitted replay;
+# (b) no fatal at the anchor (a fatal at another occurrence of the site is not
+# the anchor's).  The row is the claim's model (the finding kind, the path,
+# the arms, the valuation, the moved roots) and the reason, which every later
 # composition of the iteration excludes (compose.Refutations).
+# confirm_refutes <reason> <what> [<setup>]: one run, refuted for <reason>.
+confirm_refutes() {
+  rm -f -- "${confirm_iteration}/refuted_claims.jsonl"
+  run_confirm SAT_CANDIDATE
+  confirm_says false "$1" "$2"
+  [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true ]] \
+    && jq -e -s --arg why "$1" 'length == 1 and (.[0] | .kind == "REFUTED_CLAIM"
+      and .model.pathId == "P.sel" and .model.arms == ["message_arm__1__a1",
+        "message_arm__1__b2"] and .model.assignment == {"ROOT.M": "true"}
+      and .model.moved == {"ROOT.M": "true"}
+      and (.reason | contains($why)))' \
+      "${confirm_iteration}/refuted_claims.jsonl" >/dev/null \
+    || fail "$2, and was not refuted as its model: \
+$(cat "${campaign_final}/confirm.json" \
+  "${confirm_iteration}/refuted_claims.jsonl" 2>&1)"
+}
+confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
+confirm_refutes "the model chose producer p1, the run paired p2" \
+  "a mismatched edge was confirmed"
+confirm_stub_gaps=""
 confirm_stub_fatal=false
-run_confirm SAT_CANDIDATE
-confirm_says false "observed the fatal" "a healthy anchor was confirmed"
-jq -e -s 'length == 1 and (.[0] | .kind == "REFUTED_CLAIM"
-  and .model.pathId == "P.sel" and .model.arms == ["message_arm__1__a1",
-    "message_arm__1__b2"] and .model.assignment == {"ROOT.M": "true"}
-  and .model.moved == {"ROOT.M": "true"}
-  and (.reason | contains("observed the fatal")))' \
-  "${confirm_iteration}/refuted_claims.jsonl" >/dev/null \
-  || fail "the refuted claim's model is not its row: \
-$(cat "${confirm_iteration}/refuted_claims.jsonl" 2>&1)"
-# ... and by a run that minted it at another value, or minted none, it did
-# not run the model: no refutation.
+confirm_refutes "observed the fatal" "a healthy anchor was confirmed"
 for planted in false ""; do
   confirm_stub_planted=${planted}
-  run_confirm SAT_CANDIDATE
-  confirm_says false "so it did not run the model" \
-    "an unplanted healthy run (planted '${planted}') was a verdict"
-  [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
-      && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" -eq 1 ]] \
-    || fail "an unplanted run (planted '${planted}') refuted the model"
+  confirm_refutes "observed the fatal" \
+    "an unplanted healthy run (planted '${planted}') was confirmed"
 done
 confirm_stub_planted=true
 confirm_stub_fatal=true
-# A session that published no gap file answers nothing about the edges --
-# nor about the model, which is not refuted.
 unset confirm_stub_gaps
-run_confirm SAT_CANDIDATE
-confirm_says false "published no readable" \
-  "a session with no gap file was confirmed"
-[[ "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" -eq 1 ]] \
-  || fail "a confirmation that ran nothing refuted the model"
+confirm_refutes "published no readable" "a session with no gap file was \
+confirmed"
 confirm_stub_gaps=""
-# ... and observed at another occurrence of the target site is not the
-# claim's anchor observing it.
 confirm_stub_target_iteration=1
-run_confirm SAT_CANDIDATE
-confirm_says false "1 row(s) at other occurrences did" \
+confirm_refutes "1 row(s) at other occurrences did" \
   "a fatal at another occurrence of the site confirmed the claim's anchor"
 confirm_stub_target_iteration=0
-# A model an earlier confirmation gave no verdict on is not confirmed
-# again, composed at another path ordinal too (its arms matched by their
-# digests): the final CONFIRM takes that row, and nothing is replayed.
 confirm_stub_verdict=NOT_ADMITTED
-run_confirm SAT_CANDIDATE
+confirm_refutes "was NOT_ADMITTED: stub" "an unadmitted replay was confirmed"
 confirm_stub_verdict=ADMITTED
-rm -f -- "${confirm_root}/replay-ran"
-confirm_keep_refused=1
-confirm_path_ordinal=7
-run_confirm SAT_CANDIDATE
-confirm_keep_refused=
-confirm_path_ordinal=
-confirm_says false "an earlier confirmation of this model gave no verdict" \
-  "a refused model, renumbered, was confirmed again"
-[[ ! -e "${confirm_root}/replay-ran" ]] \
-  || fail "a refused model was replayed again"
-# A replay whose roots were not planted, or whose prefix was abandoned,
-# states NOT_ADMITTED, and that is the reason.
-confirm_stub_verdict=NOT_ADMITTED
-run_confirm SAT_CANDIDATE
-confirm_says false "was NOT_ADMITTED: stub" "an unadmitted replay was confirmed"
-confirm_stub_verdict=ADMITTED
+unset -f confirm_refutes
+rm -f -- "${confirm_iteration}/refuted_claims.jsonl"
 # A selected session that already took every edge the model chose, with the
 # moved roots at the model's values, and observed the fatal IS the run that
 # confirms: published as ConfirmMain states it, and nothing is replayed.
@@ -4475,17 +4414,17 @@ confirm_says true "is itself the run" "a realized claim was not confirmed"
   || fail "a claim the selected session already realized was replayed"
 confirm_stub_realized=false
 # A confirmation nothing can run is refused by name: a defect of the rows,
-# which refutes nothing -- the claim is unconfirmed for that reason, its
-# model stays open, and the campaign goes on to EMIT.  Only a claim
-# ConfirmMain refutes by name (the run as recorded) is refuted without a
-# replay.
+# which no replay ran -- the claim is unconfirmed for that reason, its model
+# excluded from nothing, and the campaign goes on to EMIT (RUN_DEFECT).  Only
+# a claim ConfirmMain refutes by name (the run as recorded) is refuted
+# without a replay.
 confirm_stub_task_status=1
-refuted_before=$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")
+refuted_before=0
 run_confirm SAT_CANDIDATE
 confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
   "a refused confirmation task did not name its reason"
 [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
-    && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" \
+    && "$(grep -c "" "${confirm_iteration}/refuted_claims.jsonl" 2>/dev/null)" \
       -eq "${refuted_before}" ]] \
   || fail "a refused confirmation refuted the model: \
 $(cat "${campaign_final}/confirm.json")"
@@ -4495,7 +4434,7 @@ run_confirm SAT_CANDIDATE
 confirm_says false "CONFIRM refutes: the claim moves nothing" \
   "a refuted confirmation task did not name its reason"
 [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true \
-    && "$(grep -c '' "${confirm_iteration}/refuted_claims.jsonl")" \
+    && "$(grep -c "" "${confirm_iteration}/refuted_claims.jsonl" 2>/dev/null)" \
       -eq $((refuted_before + 1)) ]] \
   || fail "the run as recorded was not refuted: \
 $(cat "${campaign_final}/confirm.json")"
@@ -4518,8 +4457,8 @@ campaign_witness_attempt=""
 unset -f confirm_stub_main confirm_stub_replay run_confirm confirm_says
 unset confirm_anchor confirm_stub_target_iteration confirm_java
 
-# NEXT-CLAIM: a SAT_CANDIDATE CONFIRM refuted, or gave no verdict on (a
-# refused model), does not end the campaign while its budget has room: its
+# NEXT-CLAIM: a SAT_CANDIDATE CONFIRM refuted (a false positive) does not
+# end the campaign while its budget has room: its
 # artifacts move to final/refuted/NNNN/ and the next claim is composed.  Not
 # when the claim was confirmed, not when the composition repeated a model it
 # was told to exclude (matched by its arms' digests, whatever path ordinal
@@ -4540,8 +4479,7 @@ next_claim() {
   jq -n --argjson confirmed "$1" --arg file "$2" '{confirmed: $confirmed,
     refutes: ($file == "refuted_claims"), reason: "r"}' \
     >"${campaign_final}/confirm.json"
-  rm -f -- "${next_iteration}/refuted_claims.jsonl" \
-    "${next_iteration}/refused_models.jsonl"
+  rm -f -- "${next_iteration}/refuted_claims.jsonl"
   campaign_claim_model "${campaign_final}/claim.json" \
     | jq -c '{model: .}' >"${next_iteration}/$2.jsonl"
 }
@@ -4553,24 +4491,20 @@ campaign_started_s=${SECONDS}
 next_claim true refuted_claims
 ! campaign_next_claim "${next_iteration}" >/dev/null \
   || fail "a confirmed claim was followed by another"
-next_index=0
-for file in refuted_claims refused_models; do
-  next_claim false "${file}"
+# Each refuted claim in turn: its artifacts move to final/refuted/NNNN/.
+for next_index in 0 1; do
+  next_claim false refuted_claims
   next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
-    || fail "a claim recorded in ${file} with room in the budget was not \
-followed"
-  [[ "${next_out}" == *"was $([[ ${file} == refuted_claims ]] && echo refuted \
-      || echo 'given no verdict') ("* ]] \
-    || fail "the next claim after one recorded in ${file} did not say why: \
-${next_out}"
+    || fail "a refuted claim with room in the budget was not followed"
+  [[ "${next_out}" == *"was refuted ("* ]] \
+    || fail "the next claim after a refuted one did not say why: ${next_out}"
   [[ -s "${campaign_final}/refuted/000${next_index}/claim.json" \
       && -d "${campaign_final}/refuted/000${next_index}/confirm" \
       && ! -e "${campaign_final}/candidate.smt2" ]] \
-    || fail "the artifacts of a claim recorded in ${file} did not move out \
-of final/"
-  next_index=$((next_index + 1))
+    || fail "the artifacts of refuted claim ${next_index} did not move out of \
+final/"
 done
-next_claim false refused_models
+next_claim false refuted_claims
 campaign_claim_model "${campaign_final}/claim.json" \
   | jq -c '{model: (.arms = ["m__3__a"])}' \
   >>"${next_iteration}/refuted_claims.jsonl"

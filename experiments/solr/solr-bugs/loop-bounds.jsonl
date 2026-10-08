@@ -1,0 +1,8 @@
+# reindex-cleanup: ReindexCollectionCmd#call copies its source collection's router.* properties
+# (for (String key : coll.keySet()), u242) and its message's overrides (for (String key :
+# message.keySet()), u253): condition-bounded scans of a map's keys, 9 and 6 keys a REINDEX in the
+# recording.  At the inherited ceiling of 8 the property scan cut every REINDEX occurrence's path
+# in its seed replay (accept-SB8, BOUND_INSUFFICIENT MAX_LOOP_BODY_ITERATIONS_REACHED at #loop:u241),
+# so none of the occurrence's later decisions -- every door after the alias step -- was recorded.
+{"loopSiteId":"<org.apache.solr.cloud.api.collections.ReindexCollectionCmd: void call(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u242","loopBodyBound":32,"reason":"covers the source collection's property scan"}
+{"loopSiteId":"<org.apache.solr.cloud.api.collections.ReindexCollectionCmd: void call(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u253","loopBodyBound":32,"reason":"covers the message's override scan"}

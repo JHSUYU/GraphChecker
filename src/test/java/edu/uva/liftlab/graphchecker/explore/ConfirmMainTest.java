@@ -1245,4 +1245,121 @@ public class ConfirmMainTest {
             }
         }
     }
+
+    /**
+     * The values a native run plants at calls' returns: a clock the world
+     * skews (ROOT CLOCK at its one declared clock call, and every declared
+     * clock reading as CLOCK_SITE context) and an attach the world answers
+     * at its port's call-return capture (ANSWER); an answer whose value a
+     * message getter's element carries is refused by name.
+     */
+    @Test
+    public void aNativePlantPlantsClocksAndAnswersAtCallReturns()
+            throws Exception {
+        Path iteration = iteration();
+        Path focus = iteration.resolve("obligations-0000").resolve("w1")
+                .resolve(ObligationDir.FOCUSED_TASK);
+        JsonObject world = RowCodec.readJsonl(focus).get(0);
+        world.add("rootAssignments", new JsonObject());
+        world.add("clockDeltas", JsonParser.parseString(
+                "{\"CLOCK.r\":\"7000\"}").getAsJsonObject());
+        JsonObject mints = new JsonObject();
+        mints.addProperty("CLOCK.r", MINT);
+        world.add("rootMints", mints);
+        JsonObject answers = new JsonObject();
+        answers.addProperty(consumer.id(), "5");
+        world.add("answers", answers);
+        RowCodec.writeJsonl(focus, Collections.singletonList(world));
+        Path scopeMap = folder.newFile("static_scope_map.jsonl").toPath();
+        JsonObject site = new JsonObject();
+        site.addProperty("schemaVersion", 1);
+        site.addProperty("kind", StaticScopeMap.SITE_KIND);
+        site.addProperty("role", StaticScopeMap.TARGET_SITE);
+        site.addProperty("regionId", anchor.regionId());
+        site.addProperty("siteId", "<a.Handler: void handle()>#u8");
+        site.add("guards", JsonParser.parseString(
+                "[\"<a.Handler: void handle()>#u5\"]"));
+        site.add("guardOutcomes", JsonParser.parseString("[false]"));
+        Files.write(scopeMap, Collections.singletonList(site.toString()),
+                StandardCharsets.UTF_8);
+        for (String codecField : new String[]{"", "keyId"}) {
+            JsonObject clock = new JsonObject();
+            clock.addProperty("portId", "CLOCK.r");
+            clock.addProperty("location", "CALL_RETURN");
+            clock.addProperty("siteId", "<a.Manager: void tick()>#u3");
+            clock.addProperty("declaredCallee",
+                    "<java.lang.System: long currentTimeMillis()>");
+            clock.addProperty("javaType", "long");
+            clock.addProperty("clock", 1_000_000L);
+            clock.addProperty("clockSource", Clock.WALL);
+            clock.addProperty("observed", true);
+            JsonArray actions = new JsonArray();
+            actions.add(clock);
+            JsonObject capture = new JsonObject();
+            capture.addProperty("portId", consumer.site());
+            capture.addProperty("handoffLeafPath", "value");
+            capture.addProperty("javaType", "int");
+            capture.addProperty("definitionMethod",
+                    "<a.Handler: void handle()>");
+            capture.addProperty("side", "IN");
+            capture.addProperty("captureKind", "CALL_RETURN");
+            capture.addProperty("definitionUnitIndex", 4);
+            capture.addProperty("declaredCallee", "<a.Msg: int keyId()>");
+            capture.addProperty("codecField", codecField);
+            JsonArray handoffs = new JsonArray();
+            handoffs.add(capture);
+            JsonObject task = new JsonObject();
+            task.addProperty("regionId", anchor.regionId());
+            task.add("inputActions", actions);
+            task.add("communicationHandoffs", handoffs);
+            Files.write(iteration.resolve("execution_task_plan.jsonl"),
+                    Collections.singletonList(task.toString()),
+                    StandardCharsets.UTF_8);
+            Path plant = folder.newFile().toPath();
+            try {
+                ConfirmMain.writePlant(iteration, claim("HDFS.SERIAL",
+                        "119981"), manifest(), scopeMap, plant);
+                assertEquals("planted", "", codecField);
+            } catch (ConfirmMain.Refused refused) {
+                assertTrue(refused.getMessage(), refused.getMessage()
+                        .startsWith("NATIVE_PLANT_UNSUPPORTED"));
+                assertEquals(refused.getMessage(), "keyId", codecField);
+                continue;
+            }
+            List<String> kinds = new ArrayList<String>();
+            for (JsonObject row : RowCodec.readJsonl(plant)) {
+                String kind = row.get("kind").getAsString();
+                if ("ROOT".equals(kind) && "CLOCK".equals(
+                        row.get("category").getAsString())) {
+                    assertEquals("CLOCK.r " + mint.id() + " 7000 "
+                                    + "<a.Manager: void tick()>#u3 "
+                                    + "currentTimeMillis/1000000",
+                            row.get("rootId").getAsString() + " "
+                                    + row.get("occurrence").getAsString()
+                                    + " " + row.get("skew").getAsString()
+                                    + " " + row.get("siteId").getAsString()
+                                    + " " + Clock.of(row.getAsJsonObject(
+                                    "clock").get("nanos").getAsLong(),
+                                    row.getAsJsonObject("clock").get("source")
+                                            .getAsString()));
+                } else if ("ANSWER".equals(kind)) {
+                    assertEquals(consumer.id() + " <a.Handler: void "
+                                    + "handle()>#u4 [\"" + anchor.regionId()
+                                    + "\"] 5",
+                            row.get("endpoint").getAsString() + " "
+                                    + row.get("siteId").getAsString() + " "
+                                    + row.get("regions") + " "
+                                    + row.get("value").getAsString());
+                } else if ("CLOCK_SITE".equals(kind)) {
+                    assertEquals("<a.Manager: void tick()>#u3",
+                            row.get("siteId").getAsString());
+                }
+                kinds.add(kind + ("ROOT".equals(kind) ? " "
+                        + row.get("category").getAsString() : ""));
+            }
+            assertTrue(kinds.toString(), kinds.containsAll(Arrays.asList(
+                    "ROOT HOOK", "ROOT CLOCK", "ANSWER", "CLOCK_SITE",
+                    "TARGET")));
+        }
+    }
 }

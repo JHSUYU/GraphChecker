@@ -21,7 +21,7 @@ marked throw as that known bug found again (`tools/adhoc/findings.py
 Everything executable is here, one copy for every case:
 
 ```bash
-lib/run.sh <case dir> <case id> build|config|validate|campaign
+lib/run.sh <case dir> <case id> build|config|validate|campaign|reproduce
 ```
 
 | script | role |
