@@ -2441,9 +2441,10 @@ chmod 000 "${checkout_repo}/locked.txt"
 rm -f -- "${checkout_repo}/locked.txt"
 # STREAM: EXPLORE is one streaming loop (PIPELINE §7.7, §7.9).  The planner,
 # the worker, the gate and COMPOSE are stubbed -- each stands where its JVM
-# stands -- and everything between them is the production loop: the queue,
-# the ledger's admission, landing, the head's steps, rounds and their
-# in-flight rows, the stops.
+# stands (the planner's: its service's loop, stream_planner_serve) -- and
+# everything between them is the production loop: the queue, the ledger's
+# admission, landing, the head's steps, the planner service's start, its
+# questions and its ends, rounds and their in-flight rows, the stops.
 #
 # stream_fixture <name>: an iteration and a configuration of its own; a case
 # then says what each round proposes (stream_round_plan <round> <out>: rows
@@ -2466,6 +2467,46 @@ stream_fixture() {
   campaign_host_poll_s=1
   campaign_adapter_kill_grace_s=1
 }
+# Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
+# <id> <peak> <log> <args...>): it names itself where its rounds are asked
+# and answers each with stream_planner, until it is ended -- or until
+# stream_planner_dies <round> <heap> says it ends there with that status
+# (3: out of heap, its JVM's last words in its log).
+stream_planner_serve() {
+  local heap=$1 id=$2 log=$4 sessions="" dir request name round status
+  shift 4
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" != --sessions ]] || sessions=$2
+    shift
+  done
+  dir=$(campaign_planner_dir "${sessions}" "${id}")
+  mkdir -p "${dir}/requests" "${dir}/answers"
+  printf '%s\n' "${heap}" >>"${stream_dir}/planner-heaps.txt"
+  printf '%s\n' "${BASHPID}" >"${dir}/server"
+  while true; do
+    for request in "${dir}"/requests/*.json; do
+      [[ -e "${request}" ]] || continue
+      name=$(basename "${request}" .json)
+      mv -- "${request}" "${dir}/requests/${name}.taken"
+      round=$(jq -r '.round' "${dir}/requests/${name}.taken")
+      status=$(stream_planner_dies "${round}" "${heap}")
+      if [[ -n "${status}" ]]; then
+        echo "Terminating due to java.lang.OutOfMemoryError: Java heap \
+space" >>"${log}"
+        rm -rf -- "${dir}/requests" "${dir}/answers"
+        return "${status}"
+      fi
+      stream_planner --round "${round}" --output-dir "$(jq -r '.outputDir' \
+        "${dir}/requests/${name}.taken")" --in-flight "$(jq -r '.inFlight' \
+        "${dir}/requests/${name}.taken")"
+      printf '{"exit":0,"error":""}\n' >"${dir}/answers/${name}.part"
+      mv -- "${dir}/answers/${name}.part" "${dir}/answers/${name}.json"
+      rm -f -- "${dir}/requests/${name}.taken"
+    done
+    sleep 0.1
+  done
+}
+stream_planner_dies() { :; }
 # Where explore.ExploreMain stands: the files it states every round.
 stream_planner() {
   local round="" out="" flying=""
@@ -2539,7 +2580,7 @@ stream_answer() {
 stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
-  run_java_main() { stream_planner "$@"; }
+  campaign_planner_serve() { stream_planner_serve "$@"; }
   # Where CONFIRM stands.  Its task planned: a verdict now where
   # stream_realize names the attempt (its selected session is the run),
   # else the replay owed.  The replay, a job of the pool: what it was handed,
@@ -2956,7 +2997,9 @@ it left unasked"
 stream_fixture stream-3c
 (
   stream_stubs
-  campaign_budget_s=3
+  # Room for round 0 (its planner's start among it) and SLOW's start, and
+  # none past the planner round's wall the reserve stands COMPOSE for.
+  campaign_budget_s=10
   campaign_reserve_s=1
   reproduce_min_s=1
   campaign_started_s=${SECONDS}
@@ -3022,13 +3065,7 @@ done
 stream_fixture stream-3b
 (
   stream_stubs
-  run_java_main() {
-    if [[ " $* " == *" --round 1 "* ]]; then
-      echo "Terminating due to java.lang.OutOfMemoryError: Java heap space" >&2
-      return 3
-    fi
-    stream_planner "$@"
-  }
+  stream_planner_dies() { [[ "$1" != 1 ]] || echo 3; }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A SLOW; }
   campaign_obligation_worker() {
     local id=$1 worker=$4
@@ -3059,12 +3096,71 @@ jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
   || fail "a planner out of heap did not end the exploration by name: \
 $(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
 
+# STREAM-SERVE: ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1, §7.9).  It is
+# started once, at what the planner starts at, every round asked of it, and
+# it is ended with the exploration, its charge given back.  One that runs out
+# of a heap below the engine heap is started again at twice it and the round
+# asked again; any other end fails EXPLORE with its deepest throwable, never
+# a silent start of another.
+stream_fixture stream-serve
+(
+  stream_stubs
+  engine_memory_mb=16384
+  stream_planner_dies() {
+    [[ "$1" != 1 || "$2" != 8192 ]] || echo 3
+  }
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A ;;
+      1) stream_propose "$2" B ;;
+    esac
+  }
+  campaign_obligation_worker() {
+    case "$1" in
+      A) stream_answer "$4" A ADMITTED SESSION.A ;;
+      B) stream_answer "$4" B UNSAT ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "STREAM-SERVE: the served exploration failed: \
+$(cat "${stream_dir}/explore.log")"
+[[ "$(paste -sd ' ' - <"${stream_dir}/planner-heaps.txt")" == "8192 16384" ]] \
+  && grep -q 'ExploreMain ran out of its 8192 MB heap; run again at 16384 MB' \
+    "${stream_dir}/obligations-0001/stderr.log" \
+  && jq -e '.stop == "FIXED_POINT" and .rounds == 3' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  || fail "STREAM-SERVE: one planner did not serve the rounds, again at twice \
+its heap once out of it: $(cat "${stream_dir}/planner-heaps.txt" \
+"${stream_dir}/exploration.json")"
+[[ ! -e "${stream_dir}/planner/pid" \
+   && -z "$(ls "${campaign_host_gate_root}"/*/charges 2>/dev/null)" ]] \
+  || fail "STREAM-SERVE: the planner outlived its exploration, or its charge"
+stream_fixture stream-serve-dies
+(
+  stream_stubs
+  engine_memory_mb=16384
+  stream_planner_dies() { [[ "$1" != 1 ]] || echo 1; }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A; }
+  campaign_obligation_worker() { stream_answer "$4" A ADMITTED SESSION.A; }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  && fail "STREAM-SERVE: a planner that died was started again"
+grep -q 'the planner service on localhost ended with exit 1' \
+    "${stream_dir}/obligations-0001/stderr.log" \
+  && grep -q 'reason=the planner of obligations-0001 failed with exit 1' \
+    "${stream_dir}/explore.log" \
+  && grep -q 'exit 1: java.lang.OutOfMemoryError' "${stream_dir}/explore.log" \
+  && [[ "$(grep -c . "${stream_dir}/planner-heaps.txt")" == 1 ]] \
+  || fail "STREAM-SERVE: a planner's other end did not fail EXPLORE by name: \
+$(cat "${stream_dir}/explore.log")"
+
 # STREAM-4: a planner that states no growth file did not run to completion:
 # refused by name, never read as "nothing exposed".
 stream_fixture stream-4
 (
   stream_stubs
-  run_java_main() { :; }
+  stream_planner() { :; }
   campaign_explore "${stream_dir}" iteration-0000
 ) >/dev/null 2>"${stream_dir}/explore.err" \
   && fail "a round with no growth.jsonl was read as nothing exposed"
@@ -3103,8 +3199,10 @@ stream_fixture stream-5
 (
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
+  campaign_planner_serve() { stream_planner_serve "$@"; }
   run_java_main() {
-    [[ "$1" == *.ImportGateMain ]] || { stream_planner "$@"; return; }
+    [[ "$1" == *.ImportGateMain ]] \
+      || fail "the step ran an engine main past the gate: $1"
     shift
     [[ "$*" == "--sessions ${stream_dir}/sessions --gate SESSION.A \
 --gated ${stream_dir}/import_gated.txt "* ]] \
@@ -4129,7 +4227,7 @@ the round's growth rows: $*"
         >"${output}"
       return 0
     fi
-    stream_planner "$@"
+    fail "the step ran an engine main GROW does not: $1"
   }
   campaign_instrument() {
     [[ "$1" == "${stream_dir}" \

@@ -188,7 +188,11 @@ AB_ACCEPT_ROOT=/bigtemp/vnr3ne/gc-out/hdfs-excl AB_OUT=/bigtemp/vnr3ne/ab/<name>
 Re-runs every stage that is a pure function of a recorded round (SEED.static, SEED.trace, PLAN,
 EXPLORE.0, SOLVE.0, IMPORT, EXPLORE.N, COMPOSE, CONFIRM planning) with both jars and compares.
 `AB_STAGES=EXPLORE.drift` replays the landing order to count re-keyed arms (a change to an arm's
-key: `ObligationFactory#dependence`, `Corpus#inputShape`).
+key: `ObligationFactory#dependence`, `Corpus#inputShape`). `AB_STAGES=EXPLORE.serve` replays it with
+a planner of its own per round (baseline side) against ONE served planner (candidate side): a change
+to what the planner keeps across rounds (`ExploreMain --serve`) is gated by passing one jar as both
+sides, every round's files identical; each side's per-round walls are `walls-<case>.EXPLORE.serve.tsv`.
+Both replays run each side's whole loop on one host, placed by its heap.
 No replay: it cannot see VM, runtime or identity changes — those need a live round. Read the
 header for `AB_HEAP_MB`, `AB_BASELINE_REPO` (when declarations differ between sides), `AB_HOSTS`.
 Keep jars in `/bigtemp/vnr3ne/ab/jars/`.

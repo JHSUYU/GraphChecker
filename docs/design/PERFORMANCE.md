@@ -83,7 +83,7 @@ running out of memory, and a single case alone takes the whole cluster.
 | 16: PLAN_CLOSURE_CUT, 1542 occurrences over `schedule_max_jobs` | 1520 polling turns of `MarkedDeleteBlockScrubber` each planned as a task once control flow counted | E1: equivalent deciders planned once per class (1406 turns -> 55 classes) |
 | 07: rounds proposing 180, 136, 587 obligations | the same (task, site, flip) arm re-asked under ~7.8 dependence digests on average; 47 of 189 re-asked arms changed verdict, so most is real work | open: dependence-key granularity (TODO); give the case the cluster |
 | 07: COMPOSE silent for 17+ min over 556 sessions (HR1), past the case limit | `Composition#withoutFatalArm` looked for a refuted claim in each command with an `indexOf` reading to the end of the 26 MB body: commands x body size for every path of the self-check; and the reserve, before any COMPOSE was measured, owed it no more than the `campaign_reserve_s` floor (600 s) | each command's refuted-claim flag found once, from its last 64 characters; obligation workers' rows read 8 at a time; progress lines in `compose.log` (one per 25 paths, one per z3 run): 116-191 s offline (the corpus read 73-130 s from NFS), outputs byte-identical. Before a COMPOSE is measured, the reserve owes COMPOSE and EMIT the last planner round's wall each (07: 241 s; `campaign_last_round_millis`), never less than the floor |
-| 07: `slots.jsonl` 1 GB (314,758 slots), rewritten by EXPLORE every round and most of COMPOSE's remaining read | the slot table grows with every session's pairings | open (TODO) |
+| 07: `slots.jsonl` 1-1.9 GB (314,758 slots), read and rewritten by every round's planner (07e: 38-51 s and 194-208 s of a ~900 s round) | the slot table grows with every session's pairings | each round writes only its changes, `obligations-NNNN/slots.jsonl`, folded by its one reader; the served planner keeps the table |
 | a replay's answer row corrupted when written from another host (MCH1) | rewriting a file in place over NFS: a client's cached copy wrote past a truncate | answers are written as a new inode and renamed |
 | a branch window re-imported its whole closure per node (SB19 seed window 787 s) | O(n^2) re-import | stream the import, skip expanded nodes (183 s) |
 | Solr replays growing for minutes overcommitted lifts (SB11/SB13) | charges counted only during a 60 s ramp | life-long leased charges |
@@ -122,13 +122,15 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 
 ## 5. Open performance items (also in TODO.md)
 
-0. **Incremental planning** (TODO HDFS §6, first): every round's planner re-reads the whole corpus; in
-   EX1-adhoc-07d the 16 planners took 1h51m of EXPLORE's 2h25m (a round 2 s early, 19-22 min at ~640 sessions)
-   while the lifts ran 4-71 solves and replays at once, so more lifts would buy 10-20 % at most. Keep the
-   planner's corpus and indexes across rounds and read only the sessions landed since, as the host solver does.
-1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it; the 1 GB
-   `slots.jsonl` (07: 314,758 slots) is rewritten by EXPLORE every round and is most of COMPOSE's remaining read;
-   `Corpus#index` re-reads each session's schedule on one thread.
+0. **Incremental planning** (TODO HDFS §6, first; in progress): in EX1-adhoc-07d the 16 planners took 1h51m of
+   EXPLORE's 2h25m (a round 2 s early, 19-22 min at ~640 sessions), so more lifts would buy 10-20 % at most. A late
+   07e round offline (~900 s): the corpus's rows 140-172 s, its indexes 24-39 s, the closure 190 s, the slot
+   table read 38-51 s and rewritten 194-208 s, the frontier 168-177 s and the candidates 88-95 s. One planner
+   now serves the exploration (PIPELINE §7.1), keeping the rows, the static map and the slot table, whose rounds
+   write only their changes.
+1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it, the slot table
+   (07: 314,758 slots, now its rounds' changes folded) most of the rest; `Corpus#index` re-reads each session's
+   schedule on one thread.
 2. The seed replay's give-ups in the start-up/clock family: handled by workarounds (RULES); no time model.
 3. EXPLORE: dependence-key granularity (re-asked arms, 07's snowball), measured before any change.
 4. Step charges at the start heap (~1.6x real); a per-step measured charge needs a planner that survives a refused

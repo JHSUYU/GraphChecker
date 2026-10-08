@@ -27,12 +27,18 @@
 #
 # The chain SEED.static is SEED's static pass alone: what a slice change
 # costs (wall, edges, methods, scope rows, chosen keys) on cases whose
-# recording no later stage of this checkout reads.  The chain
-# EXPLORE.drift replays the run's landing order (ab_stage_drift): every
-# recorded round planned again over the sessions landed before it, with no
-# answer, so every flip it offers is keyed; a flip offered under two ids is
-# an arm the run asks again.  What a change to an arm's key does to the
-# re-asks -- the run's own answers are keyed by the jar that recorded it.
+# recording no later stage of this checkout reads.  The chains EXPLORE.drift
+# and EXPLORE.serve replay the run's landing order (ab_stage_landings): every
+# recorded round planned again, in one iteration that evolves as the run's
+# did, over the sessions landed before its planner started, with no answer
+# and nothing in flight, so every flip it offers is keyed.  EXPLORE.drift
+# plans each round in a JVM of its own on both sides: a flip offered under
+# two ids is an arm the run asks again -- what a change to an arm's key does
+# to the re-asks (the run's own answers are keyed by the jar that recorded
+# it).  EXPLORE.serve's baseline side plans each round in a JVM of its own
+# and its candidate side asks every round of ONE served planner (ExploreMain
+# --serve): whether a served planner's rounds are a fresh planner's (pass one
+# jar as both); each side's per-round walls are its walls.tsv.
 #
 # The recorded runs are the rounds named (--round, at least one; the first
 # holding a case wins): a TAG is ${AB_ACCEPT_ROOT}/accept-<TAG>-<case without
@@ -42,8 +48,10 @@
 # rounds recorded by a build whose row contract HEAD still reads.
 #
 # A stage that reads an iteration reads a private one: the recorded sessions
-# and obligation rounds linked, the files a stage rewrites (slots.jsonl)
-# copied, so nothing under a recorded run is ever written.  Both jars are
+# and obligation rounds linked (a round's slot-table changes with it, so the
+# closing round folds the rounds before it), the iteration's files copied,
+# so nothing under a recorded run is ever written.  A stage's slot table is
+# compared folded (ab_compare.py).  Both jars are
 # copied into the output first (a rebuild under a running gate changes
 # nothing) and run under THIS checkout's case declarations and harness
 # (experiments/): the jar is the one variable -- unless AB_BASELINE_REPO
@@ -103,7 +111,7 @@ AB_CASES=(hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17967-pathA
   hdfs-17967-pathB hdfs-17967-pathC hdfs-17960 hdfs-17897 hdfs-11741)
 AB_CHAINS=(SEED IMPORT EXPLORE.N COMPOSE)
 # Chains AB_STAGES may name beside the default ones.
-AB_EXTRA_CHAINS=(SEED.static EXPLORE.drift)
+AB_EXTRA_CHAINS=(SEED.static EXPLORE.drift EXPLORE.serve)
 AB_SIDES=(baseline candidate)
 
 ab_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -489,49 +497,107 @@ ab_stage_exploren() {
     --output-dir "${dir}/iteration-0000/${last}" "${ab_explore[@]}"
 }
 
-# The landing order replayed (EXPLORE.drift): each recorded round planned
-# again over the sessions landed before its planner started (a session lands
-# by a rename, so its directory's ctime is its landing; the round's
-# in_flight.jsonl is copied as its planner starts), the waves before it (the
-# focus rows that state each session's world) and the plan generation then
-# current, with no answer and nothing in flight; the rounds one after
-# another, each over the slot table the one before wrote.
-ab_stage_drift() {
-  local dir wave round start name it plan prev="" code=0 wall=0
-  dir=$(ab_stage_dir EXPLORE.drift)
+# The landing order replayed (EXPLORE.drift, EXPLORE.serve): this side's
+# whole loop (ab_landings) on the host of AB_HOSTS with the most room for
+# the planner's heap, charged that while it runs (ab_place) -- there, since a
+# host lists at once only the links it made itself in the iteration.
+ab_stage_landings() {
+  local chain=$1 dir heap mode=fresh code=0
+  dir=$(ab_stage_dir "${chain}")
+  [[ "${chain}" != EXPLORE.serve || "${ab_side}" != candidate ]] \
+    || mode=served
+  heap=$(ab_heap "$(ab_cfg engine_memory_mb)")
+  ab_place "${heap}"
+  local -a loop=(bash "${ab_self}" --landings "${ab_out}" "${ab_side}"
+    "${ab_case_id}" "${chain}" "${mode}" "${heap}")
+  if campaign_host_is_local "${ab_placed_host}"; then
+    "${loop[@]}" >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null \
+      || code=$?
+  else
+    ssh -o BatchMode=yes "${ab_placed_host}" "$(printf '%q ' "${loop[@]}")" \
+      >"${dir}/stdout.log" 2>"${dir}/stderr.log" </dev/null || code=$?
+  fi
+  campaign_host_release "${ab_placed_host}" "${ab_placed_charge}"
+  printf 'exit=%s wall_s=%s rss_mb=- host=%s\n' "${code}" \
+    "$(awk '{w += $2} END {printf "%.2f", w}' "${dir}/walls.tsv" \
+      2>/dev/null)" "${ab_placed_host}" >"${dir}/status"
+  return "${code}"
+}
+
+# --landings <out> <side> <case> <chain> fresh|served <heap_mb>: the
+# landing order replayed, here.  Before each recorded round its iteration
+# gains what the run had when that round's planner started: the sessions
+# landed by then (a session lands by a rename, so its directory's ctime is
+# its landing; the round's in_flight.jsonl is copied as its planner starts),
+# the workers of the round before (linked into this replay's own round
+# directory), the plan generation then current.  fresh: the round planned
+# by a JVM of its own; served: asked of the one planner served from the
+# start (run_engine.sh campaign_planner_ask).  Each round's wall, from its
+# start to its files, is a row of walls.tsv.
+ab_landings() {
+  local out=$1 side=$2 case_id=$3 chain=$4 mode=$5 heap=$6
+  local dir it wave round start name plan prev="" t0 served="" code=0
+  # shellcheck source=/dev/null
+  source "${out}/env.sh"
+  ab_side_env "${out}" "${side}" "${case_id}"
   ab_explore_args
+  dir=${ab_case_dir}/${chain}
+  it=${dir}/iteration-0000
+  mkdir -p "${it}/sessions"
+  [[ ! -f "${ab_acc_it}/recorded_schedule.jsonl" ]] \
+    || cp "${ab_acc_it}/recorded_schedule.jsonl" "${it}/"
+  : >"${it}/obligation_results.jsonl"
+  local -a planner=(env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}"
+    "${ab_java_bin}" -XX:+ExitOnOutOfMemoryError
+    "-Dcausynth.loop.default.bound=${ab_loop_bound}" -cp "${ab_jar}"
+    edu.uva.liftlab.graphchecker.explore.ExploreMain
+    --sessions "${it}/sessions" --results "${it}/obligation_results.jsonl"
+    --static-scope-map "${ab_acc}/static_scope_map.jsonl"
+    --topology-epoch iteration-0000 "${ab_explore[@]}")
+  if [[ "${mode}" == served ]]; then
+    served=$(campaign_planner_dir "${it}/sessions" ab)
+    rm -rf -- "${served}"
+    mkdir -p "${served}/requests"
+    "${planner[@]}" --serve "${served}" >>"${dir}/planner.log" 2>&1 &
+    printf '%s\n' "$!" >"${served}/server"
+    trap 'kill "$(cat "${served}/server")" 2>/dev/null; rm -rf -- "${served}"' \
+      EXIT
+  fi
   for wave in "${ab_acc_it}"/obligations-*; do
     round=$(basename "${wave}")
     start=$(stat -c %Y "${wave}/in_flight.jsonl" 2>/dev/null) \
       || start=$(stat -c %Y "${wave}/obligations.jsonl") || continue
-    it=${dir}/${round}/iteration-0000
-    mkdir -p "${it}/sessions"
     for name in "${ab_acc_it}"/sessions/*; do
+      [[ ! -e "${it}/sessions/$(basename "${name}")" ]] || continue
       (( $(stat -c %Z "${name}") < start )) && ln -s "${name}" "${it}/sessions/"
     done
-    for name in "${ab_acc_it}"/obligations-*; do
-      [[ "${name}" < "${wave}" ]] && ln -s "${name}" "${it}/"
-    done
+    if [[ -n "${prev}" ]]; then
+      for name in "${ab_acc_it}/${prev}"/*/; do
+        [[ -d "${name}" ]] && ln -s "${name%/}" "${it}/${prev}/"
+      done
+    fi
+    prev=${round}
     plan=${ab_acc_it}/execution_task_plan.jsonl
     for name in "${ab_acc_it}"/generations/g*/execution_task_plan.jsonl; do
       [[ -f "${name}" ]] && (( $(stat -c %Y "${name}") < start )) && plan=${name}
     done
     cp "${plan}" "${it}/execution_task_plan.jsonl"
-    [[ ! -f "${ab_acc_it}/recorded_schedule.jsonl" ]] \
-      || cp "${ab_acc_it}/recorded_schedule.jsonl" "${it}/"
-    [[ -z "${prev}" || ! -f "${prev}/slots.jsonl" ]] || cp "${prev}/slots.jsonl" "${it}/"
-    : >"${it}/obligation_results.jsonl"
-    ab_java "${dir}/${round}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" "${ab_jar}" \
-      edu.uva.liftlab.graphchecker.explore.ExploreMain \
-      --sessions "${it}/sessions" --results "${it}/obligation_results.jsonl" \
-      --static-scope-map "${ab_acc}/static_scope_map.jsonl" \
-      --topology-epoch iteration-0000 --round "$((10#${round#obligations-}))" \
-      --output-dir "${it}/${round}" "${ab_explore[@]}" || code=$?
-    wall=$(awk -v a="${wall}" -v b="$(sed -n 's/.*wall_s=\([^ ]*\).*/\1/p' "${dir}/${round}/status")" 'BEGIN{print a+b}')
+    mkdir -p "${it}/${round}"
+    t0=$(date +%s.%N)
+    if [[ "${mode}" == served ]]; then
+      campaign_planner_ask "${it}/sessions" ab \
+        "$((10#${round#obligations-}))" "" "${it}/${round}" \
+        2>>"${dir}/planner.log" || code=$?
+    else
+      "${planner[@]}" --round "$((10#${round#obligations-}))" \
+        --output-dir "${it}/${round}" >/dev/null 2>>"${dir}/planner.log" \
+        || code=$?
+    fi
+    printf '%s\t%s\n' "${round}" "$(awk -v a="${t0}" \
+      -v b="$(date +%s.%N)" 'BEGIN {printf "%.2f", b - a}')" \
+      >>"${dir}/walls.tsv"
     (( code == 0 )) || break
-    prev=${it}
   done
-  printf 'exit=%s wall_s=%s rss_mb=- host=%s\n' "${code}" "${wall}" "$(hostname -s)" >"${dir}/status"
   return "${code}"
 }
 
@@ -582,6 +648,9 @@ ab_stage_confirm() {
 ab_side_env() {
   local out=$1 side=$2 case_id=$3
   ab_case_dir=${out}/${side}/${case_id}
+  ab_out=${out}
+  ab_side=${side}
+  ab_case_id=${case_id}
   ab_jar=${out}/jars/${side}.jar
   read -r ab_acc ab_case_decl ab_case_arg ab_side_repo \
     <"${ab_case_dir}/inputs.txt"
@@ -667,7 +736,7 @@ ab_task() {
         case "${chain}" in
           IMPORT) ab_stage_import ;;
           EXPLORE.N) ab_stage_exploren ;;
-          EXPLORE.drift) ab_stage_drift ;;
+          EXPLORE.drift|EXPLORE.serve) ab_stage_landings "${chain}" ;;
           COMPOSE)
             if ab_stage_compose; then ab_stage_confirm
             else ab_skip "${ab_case_dir}/CONFIRM" "COMPOSE failed or did not run"
@@ -813,6 +882,9 @@ ${ab_rounds[*]} -> ${AB_OUT}"
 if [[ "${1:-}" == --task ]]; then
   shift
   ab_task "$@"
+elif [[ "${1:-}" == --landings ]]; then
+  shift
+  ab_landings "$@"
 else
   ab_main "$@"
 fi
