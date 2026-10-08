@@ -840,6 +840,112 @@ public class ExploreTest {
     }
 
     /**
+     * ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1): what it read for a round
+     * it keeps for the next -- the sessions' rows, the static map, the slot
+     * table it changed -- and each round's files are the ones a planner of
+     * its own writes over the iteration as it stands, while sessions land
+     * and one leaves (a GROW swap).  The slot table on disk is the rounds'
+     * changes: a slot a world opened, then dropped once its session left.
+     */
+    @Test
+    public void aServedRoundIsAFreshPlannersRound() throws Exception {
+        Path iteration = tree.newFolder("served").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.export(ROTATED, "e.119992", 11L, "119992");
+        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"));
+        Path results = iteration.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path fresh = tree.newFolder("served-fresh").toPath();
+        ExploreMain served = new ExploreMain(iteration, TARGET_SELECTOR, null,
+                results, iteration.resolve(StaticScopeMap.FILE), "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS, DEFAULT_BOUNDS);
+        // round -> what lands before it: a world's session, its leaving,
+        // another world's.
+        String[][] landings = {{}, {"land", "s-a"}, {"leave", "s-a"},
+                {"land", "s-b"}};
+        Map<String, Integer> kinds = new LinkedHashMap<String, Integer>();
+        for (int round = 0; round < landings.length; round++) {
+            String[] landing = landings[round];
+            if (landing.length > 0 && landing[0].equals("land")) {
+                Session world = new Session(iteration, landing[1]);
+                world.activation(TARGET, true);
+                world.root(TARGET, "CASE.MARKER", "M_MARKER",
+                        RootKind.MARKER, "true", null, null, true);
+                world.decision(TARGET, "Guard#u8", 1, true, "M_MARKER");
+                world.activation(WRITER, false);
+                world.activation(PRODUCER, false);
+                world.constant("e.119992", "119992");
+                world.symbolic("e.stored", "M_HOFF_KEY");
+                world.export(ROTATED, "e.119992", 11L, "119992");
+                world.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+                world.write(STORED, ALL_KEYS, 5L, "e.stored");
+                world.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+                world.answered(ObligationResult.of("o-" + landing[1],
+                        Verdict.ADMITTED, landing[1], "the flip ran"));
+                world.flush();
+                worker(iteration, String.format("obligations-%04d",
+                        round - 1), "w-" + landing[1], "o-" + landing[1],
+                        landing[1], TARGET, "Guard#u8",
+                        Collections.<String, String>emptyMap(),
+                        Collections.<String, String>emptyMap());
+            } else if (landing.length > 0) {
+                deleteTree(iteration.resolve("sessions").resolve(landing[1]));
+            }
+            String name = String.format("obligations-%04d", round);
+            Path mine = iteration.resolve(name);
+            served.round(round, null, mine);
+            Path own = fresh.resolve(name);
+            plan(iteration, TARGET_SELECTOR, null, results, own, round);
+            List<String> files = new ArrayList<String>();
+            try (java.util.stream.Stream<Path> listed = Files.list(own)) {
+                listed.forEach(file -> files.add(file.getFileName()
+                        .toString()));
+            }
+            assertTrue("round " + round + " writes its slot changes: "
+                    + files, files.contains(SlotTable.FILE));
+            for (String file : files) {
+                assertEquals("round " + round + ": " + file,
+                        new String(Files.readAllBytes(own.resolve(file)),
+                                StandardCharsets.UTF_8),
+                        new String(Files.readAllBytes(mine.resolve(file)),
+                                StandardCharsets.UTF_8));
+            }
+            for (JsonObject row : RowCodec.readJsonl(
+                    mine.resolve(SlotTable.FILE))) {
+                kinds.merge(row.get("kind").getAsString(), 1, Integer::sum);
+            }
+        }
+        assertTrue("slots were opened and dropped: " + kinds,
+                kinds.containsKey(SlotTable.OPENED)
+                        && kinds.containsKey(SlotTable.DROPPED));
+    }
+
+    /** A directory and everything under it, gone (a session GROW moved
+     *  aside). */
+    private static void deleteTree(Path dir) throws IOException {
+        List<Path> all = new ArrayList<Path>();
+        try (java.util.stream.Stream<Path> walked = Files.walk(dir)) {
+            walked.forEach(all::add);
+        }
+        Collections.reverse(all);
+        for (Path path : all) Files.delete(path);
+    }
+
+    /**
      * One obligation worker of the iteration: the FOCUS ROW its replay was
      * driven by, and the result row that names the session it published.
      *
@@ -2739,7 +2845,8 @@ public class ExploreTest {
             SlotTable landed = new SlotTable();
             landed.reconcile(Corpus.read(alone, null), pairedMembers, 1);
             if (landing[1].equals("file")) {
-                landed.write(alone);
+                landed.write(Files.createDirectories(
+                        alone.resolve("obligations-0001")));
                 landed = SlotTable.read(alone);
             }
             SlotTable.Reconciliation both = landed.reconcile(
