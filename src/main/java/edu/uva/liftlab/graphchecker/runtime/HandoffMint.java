@@ -116,7 +116,8 @@ final class HandoffMint {
     private static ActiveRegion attachConsumerRegion(
             CommunicationHandoffSpec site) {
         return ConcolicRegionRuntime.declaringRegion(
-                new ConcolicRegionRuntime.Declares.Port(nonNull(site.portId())));
+                new ConcolicRegionRuntime.Declares.Port(
+                        nonNull(site.portId())));
     }
 
     /**

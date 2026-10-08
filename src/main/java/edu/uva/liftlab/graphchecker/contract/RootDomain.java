@@ -73,13 +73,13 @@ public final class RootDomain extends Value {
      * {@code +k}/{@code -k} read off the reading, else the mint's bounds,
      * which are absolute ({@code -2} is minus two), never both.  Kind and
      * recorded value are the mint's.  An integral configuration is widened
-     * by {@code compared}: each literal a recorded decision compared the root with, its {@code
-     * c - 1, c, c + 1} joining the mint's hull and its reading (a comparison
-     * with a value the slice does not state, a live replica count, is one
-     * with the literal the run had: SYMBOL-SCOPE §4.3), the whole within
-     * what the configuration's own validation admits ({@link
-     * RootMintRow#valid}) when the reading lies within it.  The case's
-     * declaration still wins.
+     * by {@code compared}: each literal a recorded decision compared the
+     * root with, its {@code c - 1, c, c + 1} joining the mint's hull and its
+     * reading (a comparison with a value the slice does not state, a live
+     * replica count, is one with the literal the run had: SYMBOL-SCOPE
+     * §4.3), the whole within what the configuration's own validation admits
+     * ({@link RootMintRow#valid}) when the reading lies within it.  The
+     * case's declaration still wins.
      */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared,

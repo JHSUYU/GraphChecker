@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 /**
  * The running thread's causal context: the registered sources, the node the
@@ -106,7 +107,7 @@ final class RuntimeTraceContext {
             throw new IllegalArgumentException(
                     "request source alias is not registered: "
                             + describeAnchor(sourceAlias) + " for request "
-                            + JsonFields.nonNull(apiName));
+                            + nonNull(apiName));
         }
         return beginRequest(source, apiName);
     }
@@ -460,8 +461,8 @@ final class RuntimeTraceContext {
         ScopeFrame frame = new ScopeFrame(token, state);
         standIn(state, frame, scope.source, scope.requestKey,
                 scope.requestApi);
-        String api = JsonFields.nonNull(apiName).isEmpty()
-                ? scope.requestApi : JsonFields.nonNull(apiName);
+        String api = nonNull(apiName).isEmpty()
+                ? scope.requestApi : nonNull(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
                 scope.source.key(), Role.of(roleName), api);
         // The carried scope is the work's, not the pool thread's.
@@ -514,7 +515,7 @@ final class RuntimeTraceContext {
         // Lineage#pop).  Only a turn whose WAKE was written states its END,
         // so no END is left without a WAKE across the window opening.
         final long hop = scope.lineageToken;
-        final String site = "tick." + JsonFields.nonNull(roleName);
+        final String site = "tick." + nonNull(roleName);
         scope.tick = Lineage.quietly(() -> ScheduleLog.turnBegun(site, hop));
         Identity.hopOpened(scope.lineageToken);
         return token;
@@ -701,7 +702,7 @@ final class RuntimeTraceContext {
         String rpcSite = normalizedUpper(transport)
                 + (trimmed(via).isEmpty() ? ""
                 : "." + normalizedUpper(via)) + "/"
-                + JsonFields.nonNull(remote.requestApi);
+                + nonNull(remote.requestApi);
         Lineage.anchor(sender, rpcSite);
         if (sender.isEmpty()) unanchored(state, rpcSite);
         Identity.hopOpened(scope.lineageToken);
@@ -1125,8 +1126,8 @@ final class RuntimeTraceContext {
         private Flow(String requestKey, String requestApi,
                      String exchangeTransport, String exchangeCorrelationId,
                      String exchangeAttemptId, String exchangeHalf) {
-            this.requestKey = JsonFields.nonNull(requestKey);
-            this.requestApi = JsonFields.nonNull(requestApi);
+            this.requestKey = nonNull(requestKey);
+            this.requestApi = nonNull(requestApi);
             this.exchangeTransport = normalizedUpper(exchangeTransport);
             this.exchangeCorrelationId = trimmed(exchangeCorrelationId);
             this.exchangeAttemptId = trimmed(exchangeAttemptId);
@@ -1214,7 +1215,7 @@ final class RuntimeTraceContext {
         }
 
         private static MessageContext parse(String header) {
-            String[] parts = JsonFields.nonNull(header).split("\\|", -1);
+            String[] parts = nonNull(header).split("\\|", -1);
             try {
                 if (parts.length != 8 || !"1".equals(parts[0])) {
                     throw new IllegalArgumentException();

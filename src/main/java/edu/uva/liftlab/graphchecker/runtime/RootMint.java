@@ -459,7 +459,8 @@ final class RootMint {
         // A native reproduction writes the value its plant assigns; no
         // engine runs there.
         if (RecordingPlant.planting()) {
-            RecordingPlant.hook(nonNull(sourceId), owner, nonNull(fieldSignature));
+            RecordingPlant.hook(nonNull(sourceId), owner,
+                    nonNull(fieldSignature));
             return false;
         }
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
@@ -572,8 +573,9 @@ final class RootMint {
             return true;
         } catch (Throwable failure) {
             // Never into the workload's own read; never silent.
-            RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(
-                    nonNull(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+            RowRuntime.gap(GapKind.UNSTATED_VALUE,
+                    assignedByTheWave(nonNull(sourceId)) ? GapClass.BLOCKING
+                            : GapClass.DIAGNOSTIC,
                     nonNull(sourceId), "the configured source at "
                             + entry.siteId + " was not minted, so the region"
                             + " reads " + nonNull(fieldSignature) + " as it was"
@@ -622,8 +624,9 @@ final class RootMint {
             }
             configuredSource(sourceId, owner, fieldSignature);
         } catch (Throwable failure) {
-            RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(
-                    nonNull(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+            RowRuntime.gap(GapKind.UNSTATED_VALUE,
+                    assignedByTheWave(nonNull(sourceId)) ? GapClass.BLOCKING
+                            : GapClass.DIAGNOSTIC,
                     nonNull(sourceId), "the configuration read of "
                             + nonNull(fieldSignature) + " failed, so the region"
                             + " reads the field as it was and no row states a"

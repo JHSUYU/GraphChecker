@@ -4,7 +4,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.pauseOb
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.resumeObservation;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -26,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
 /**
  * A door's walk of the protobuf message it carries (SYMBOL-SCOPE §6.3).
@@ -96,14 +96,14 @@ final class MessageCodec {
         Map<String, Map<String, PortField>> found =
                 new LinkedHashMap<String, Map<String, PortField>>();
         for (JsonObject row : rows) {
-            if (!StaticScopeMap.SITE_KIND.equals(member(row, "kind"))
+            if (!StaticScopeMap.SITE_KIND.equals(primitiveString(row, "kind"))
                     || !StaticScopeMap.EXPORT_SITE.equals(
-                            member(row, "role"))) {
+                            primitiveString(row, "role"))) {
                 continue;
             }
             FieldPathSpec.DeclaredField cell = FieldPathSpec.declaredField(
-                    member(row, "cell"));
-            String portId = member(row, "portId");
+                    primitiveString(row, "cell"));
+            String portId = primitiveString(row, "portId");
             if (cell == null || portId.isEmpty()) continue;
             found.computeIfAbsent(cell.owner(),
                     owner -> new LinkedHashMap<String, PortField>())
@@ -369,12 +369,6 @@ final class MessageCodec {
         } catch (ReflectiveOperationException | RuntimeException none) {
             return null;
         }
-    }
-
-    private static String member(JsonObject row, String name) {
-        JsonElement value = row.get(name);
-        return value == null || !value.isJsonPrimitive() ? ""
-                : value.getAsString();
     }
 
     // ------------------------------------------------------------------

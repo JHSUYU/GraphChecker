@@ -129,7 +129,8 @@ final class FieldAccess {
             Object owner, String declaringClass, String fieldName,
             String descriptor, boolean inherited) {
         if (owner == null || nonNull(declaringClass).isEmpty()
-                || nonNull(fieldName).isEmpty() || nonNull(descriptor).isEmpty()) {
+                || nonNull(fieldName).isEmpty()
+                || nonNull(descriptor).isEmpty()) {
             return null;
         }
         Class<?> type = owner.getClass();

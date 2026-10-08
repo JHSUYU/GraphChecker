@@ -988,7 +988,8 @@ public class RowRuntimeTest {
         assertTrue(receipt.detail(), receipt.detail().contains(
                 "HADOOP_IPC REQUEST received at HADOOP_IPC/refused-wire"
                         + " names no sender this run holds"));
-        List<ActivationRow> activations = SessionReader.read(session()).activations();
+        List<ActivationRow> activations =
+                SessionReader.read(session()).activations();
         assertEquals("the activation to admit is stated, unselected",
                 here, activations.get(0).occurrence());
         assertFalse(activations.get(0).instrumented());
@@ -1049,7 +1050,8 @@ public class RowRuntimeTest {
         assertNotNull("the refused export is named", refused);
         assertEquals("at the occurrence it ran in", here.render(),
                 refused.subject());
-        List<ActivationRow> activations = SessionReader.read(session()).activations();
+        List<ActivationRow> activations =
+                SessionReader.read(session()).activations();
         assertEquals("that occurrence is stated, unselected", here,
                 activations.get(0).occurrence());
         assertFalse(activations.get(0).instrumented());

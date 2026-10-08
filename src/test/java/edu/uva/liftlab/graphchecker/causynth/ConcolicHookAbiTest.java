@@ -48,8 +48,9 @@ import static org.junit.Assert.fail;
  *
  * <p>The other half of the ABI is not woven at all: the system trees call
  * GraphChecker (the Hadoop shim, the message doors) from their own source,
- * compiled against an older jar, so a {@code git grep} of this repository returns empty for
- * every one of them and the reference resolves only at campaign SEED.
+ * compiled against an older jar, so a {@code git grep} of this repository
+ * returns empty for every one of them and the reference resolves only at
+ * campaign SEED.
  * {@code external-callers.txt} is that list.</p>
  */
 public class ConcolicHookAbiTest {

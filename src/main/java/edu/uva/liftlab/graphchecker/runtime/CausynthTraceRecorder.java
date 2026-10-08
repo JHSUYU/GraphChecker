@@ -56,6 +56,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
@@ -230,7 +231,7 @@ public final class CausynthTraceRecorder {
                 ? context.receiverAttributed
                 : context.source != null && context.source.equals(
                 RuntimeTraceContext.sourceFor(receiver));
-        String region = JsonFields.nonNull(openedRegionId);
+        String region = nonNull(openedRegionId);
         // No frame push here: #enterMethodFrame already opened this level
         // (IDENTITY §3); a second push would shift every address below it.
         String address = "";
@@ -397,17 +398,17 @@ public final class CausynthTraceRecorder {
      * session.
      */
     private static String lineageSubject(String named) {
-        String subject = JsonFields.nonNull(named);
+        String subject = nonNull(named);
         if (!subject.isEmpty()) return subject;
         try {
-            subject = JsonFields.nonNull(
+            subject = nonNull(
                     RuntimeTraceContext.activationSource(null).key());
         } catch (Throwable unnamed) {
             subject = "";
         }
         if (!subject.isEmpty()) return subject;
         Thread current = Thread.currentThread();
-        return "thread:" + JsonFields.nonNull(current.getName())
+        return "thread:" + nonNull(current.getName())
                 + "#" + current.getId();
     }
 
@@ -429,7 +430,7 @@ public final class CausynthTraceRecorder {
                     "kind", kind.name(),
                     "cls", cls.name(),
                     "subject", lineageSubject(subject),
-                    "detail", JsonFields.nonNull(detail));
+                    "detail", nonNull(detail));
         }
     }
 
@@ -449,7 +450,7 @@ public final class CausynthTraceRecorder {
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
-        event.primitiveValue = JsonFields.nonNull(primitiveValue);
+        event.primitiveValue = nonNull(primitiveValue);
         emitExecutionEvent(event);
     }
 
@@ -463,7 +464,7 @@ public final class CausynthTraceRecorder {
         ExecutionEvent event = newExecutionEvent("CALL_SITE_ENTER",
                 firstNonBlank(caller, owner == null ? "" : owner.method), ownerCallId);
         event.siteId = SiteId.render(event.method, unitIndex);
-        event.declaredCallee = JsonFields.nonNull(declaredCallee);
+        event.declaredCallee = nonNull(declaredCallee);
         event.invocationId = event.id;
         if (traced) {
             event.runtimeType = runtimeType(receiver);
@@ -487,7 +488,7 @@ public final class CausynthTraceRecorder {
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
-        event.primitiveValue = JsonFields.nonNull(primitiveValue);
+        event.primitiveValue = nonNull(primitiveValue);
         emitExecutionEvent(event);
     }
 
@@ -503,7 +504,7 @@ public final class CausynthTraceRecorder {
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId, Object receiver) {
-        return Identity.enterFrame(JsonFields.nonNull(callSiteId), receiver);
+        return Identity.enterFrame(nonNull(callSiteId), receiver);
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */
@@ -524,7 +525,7 @@ public final class CausynthTraceRecorder {
         if (site == null || site.traced) {
             event.runtimeType = runtimeType(returnValue);
             event.objectId = identity(returnValue);
-            event.primitiveValue = JsonFields.nonNull(primitiveValue);
+            event.primitiveValue = nonNull(primitiveValue);
             emitExecutionEvent(event);
         }
         removeCallSite(invocationId);
@@ -575,8 +576,8 @@ public final class CausynthTraceRecorder {
                                           String branchKind,
                                           String encodedCaseKeys) {
         ExecutionEvent event = branchEvent(callId, method, unitIndex);
-        event.branchKind = JsonFields.nonNull(branchKind);
-        event.switchCaseKeys = JsonFields.nonNull(encodedCaseKeys);
+        event.branchKind = nonNull(branchKind);
+        event.switchCaseKeys = nonNull(encodedCaseKeys);
         event.successorIndex = successorIndex >= 0 ? successorIndex : null;
         int caseCount = encodedCaseKeys == null
                 || encodedCaseKeys.isEmpty() ? 0
@@ -599,7 +600,7 @@ public final class CausynthTraceRecorder {
         if (traced) {
             event.runtimeType = runtimeType(returnValue);
             event.objectId = identity(returnValue);
-            event.primitiveValue = JsonFields.nonNull(primitiveValue);
+            event.primitiveValue = nonNull(primitiveValue);
             emitExecutionEvent(event);
         }
         closeCall(call, resolvedCallId, null);
@@ -701,8 +702,8 @@ public final class CausynthTraceRecorder {
         } catch (IllegalStateException noFlow) {
             // Refusal is a named row; the send goes out without a header.
             RowRuntime.messageContextRefused("outbound "
-                    + JsonFields.nonNull(transport) + " "
-                    + JsonFields.nonNull(half), noFlow.getMessage());
+                    + nonNull(transport) + " "
+                    + nonNull(half), noFlow.getMessage());
             return "";
         }
         // IDENTITY §4: the message's producer endpoint is filed in-JVM by
@@ -714,8 +715,8 @@ public final class CausynthTraceRecorder {
         // A response keeps the endpoint its request's receipt minted, named
         // by its transport and half alone; a verb names what a message
         // minted here asks for.
-        String site = Endpoint.messageSite(JsonFields.nonNull(transport),
-                JsonFields.nonNull(half), receipt == null ? verb : "");
+        String site = Endpoint.messageSite(nonNull(transport),
+                nonNull(half), receipt == null ? verb : "");
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half, site,
@@ -791,15 +792,15 @@ public final class CausynthTraceRecorder {
         } catch (IllegalArgumentException refused) {
             // Same refusal as outbound; 0 means no scope installed.
             RowRuntime.messageContextRefused("inbound "
-                    + JsonFields.nonNull(transport) + " "
-                    + JsonFields.nonNull(half), refused.getMessage());
+                    + nonNull(transport) + " "
+                    + nonNull(half), refused.getMessage());
             return 0L;
         }
         // The schedule's RECV, under the scope the message opened; an
         // unawaited receipt's work is no part of the order.
         if (awaited) {
             ScheduleLog.observe(ScheduleEvent.Kind.RECV,
-                    JsonFields.nonNull(transport) + "#" + JsonFields.nonNull(half));
+                    nonNull(transport) + "#" + nonNull(half));
         } else {
             ScheduleLog.unawaited(trimmed(via).isEmpty() ? transport
                     : transport + "." + via);
@@ -837,7 +838,7 @@ public final class CausynthTraceRecorder {
                                         Object localOwner) {
         initialize();
         ScheduleLog.observe(ScheduleEvent.Kind.RECV,
-                JsonFields.nonNull(transport) + "#" + JsonFields.nonNull(half),
+                nonNull(transport) + "#" + nonNull(half),
                 Interactions.sender(transport, correlationId, half));
         recordExchange("RECEIVE", transport, correlationId, attemptId, half,
                 localOwner, null, null);
@@ -870,8 +871,8 @@ public final class CausynthTraceRecorder {
 
     private static String receiptKey(String transport, String correlationId,
                                      String attemptId) {
-        return JsonFields.nonNull(transport) + "|" + JsonFields.nonNull(correlationId)
-                + "|" + JsonFields.nonNull(attemptId);
+        return nonNull(transport) + "|" + nonNull(correlationId) + "|"
+                + nonNull(attemptId);
     }
 
     public static void endInboundExchange(long scopeToken) {
@@ -887,10 +888,10 @@ public final class CausynthTraceRecorder {
                                       String half, Object localOwner,
                                       Object carriedScope,
                                       Endpoint producer) {
-        String normalizedDirection = JsonFields.nonNull(direction).toUpperCase();
+        String normalizedDirection = nonNull(direction).toUpperCase();
         String normalizedTransport = trimmed(transport);
         String normalizedCorrelation = trimmed(correlationId);
-        String normalizedHalf = JsonFields.nonNull(half).toUpperCase();
+        String normalizedHalf = nonNull(half).toUpperCase();
         if (!("SEND".equals(normalizedDirection)
                 || "RECEIVE".equals(normalizedDirection))
                 || normalizedTransport.isEmpty()
@@ -1042,7 +1043,7 @@ public final class CausynthTraceRecorder {
                 apiName);
         writeSourceTraceLine("REQUEST_BEGIN",
                 RuntimeTraceContext.currentSource(), null, requestId,
-                JsonFields.nonNull(apiName), 0);
+                nonNull(apiName), 0);
         return requestId;
     }
 
@@ -1066,7 +1067,7 @@ public final class CausynthTraceRecorder {
         long requestId = RuntimeTraceContext.beginRequest(source, apiName,
                 true);
         writeSourceTraceLine("REQUEST_BEGIN", source, null, requestId,
-                JsonFields.nonNull(apiName), 0);
+                nonNull(apiName), 0);
         return requestId;
     }
 
@@ -1076,7 +1077,7 @@ public final class CausynthTraceRecorder {
     public static void endSourceRequest(long requestId, String apiName) {
         SourceRef source = RuntimeTraceContext.currentSource();
         writeSourceTraceLine("REQUEST_END", source, null, requestId,
-                JsonFields.nonNull(apiName), 0);
+                nonNull(apiName), 0);
         RuntimeTraceContext.endRequest(requestId);
     }
 
@@ -1098,8 +1099,8 @@ public final class CausynthTraceRecorder {
         long id = EVENT_COUNTER.incrementAndGet();
         ExecutionEvent event = new ExecutionEvent();
         event.id = id;
-        event.kind = JsonFields.nonNull(kind);
-        event.method = JsonFields.nonNull(method);
+        event.kind = nonNull(kind);
+        event.method = nonNull(method);
         event.callId = stated(callId);
         // No index or context: only METHOD_ENTER and exchange rows are read
         // for them, and computing them per event dominated recording cost.
@@ -1162,7 +1163,7 @@ public final class CausynthTraceRecorder {
                     "event", event,
                     "seq", EVENT_COUNTER.incrementAndGet(),
                     "row", row,
-                    "planted", JsonFields.nonNull(planted),
+                    "planted", nonNull(planted),
                     "occurrenceAddress", occurrence,
                     "value", value);
         }
@@ -1214,10 +1215,10 @@ public final class CausynthTraceRecorder {
         ActiveCallSite site = activeCallSite(call.parentSiteId);
         String expectedSite = SiteId.render(callerMethod, callerUnitIndex);
         return site != null
-                && JsonFields.nonNull(callerMethod).equals(site.caller)
-                && JsonFields.nonNull(callerSiteId).equals(expectedSite)
+                && nonNull(callerMethod).equals(site.caller)
+                && nonNull(callerSiteId).equals(expectedSite)
                 && expectedSite.equals(site.siteId)
-                && JsonFields.nonNull(declaredCallee).equals(site.declaredCallee);
+                && nonNull(declaredCallee).equals(site.declaredCallee);
     }
 
     private static void removeCall(long callId) {
@@ -1798,7 +1799,7 @@ public final class CausynthTraceRecorder {
         Map<Long, String> own = new LinkedHashMap<>();
         Map<Long, Long> parents = new LinkedHashMap<>();
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-            own.put(event.callId, JsonFields.nonNull(event.sourceKey));
+            own.put(event.callId, nonNull(event.sourceKey));
             parents.put(event.callId, event.parentCallId);
         }
         Map<Long, String> resolved = new LinkedHashMap<>();
@@ -1849,7 +1850,7 @@ public final class CausynthTraceRecorder {
         }
         for (SourceTraceEvent event : trace.sources) {
             observations.add(new TraceObservation(event.seq, event.objectId,
-                    JsonFields.nonNull(event.source == null ? ""
+                    nonNull(event.source == null ? ""
                             : event.source.key()), event.kind, "", "", -1,
                     "", "", "objectId", 0L));
         }
@@ -1883,19 +1884,19 @@ public final class CausynthTraceRecorder {
             this.seq = seq;
             this.objectId = objectId;
             this.sourceKey = sourceKey;
-            this.eventKind = JsonFields.nonNull(eventKind);
-            this.method = JsonFields.nonNull(method);
-            this.siteId = JsonFields.nonNull(siteId);
+            this.eventKind = nonNull(eventKind);
+            this.method = nonNull(method);
+            this.siteId = nonNull(siteId);
             this.argumentIndex = argumentIndex;
-            this.field = JsonFields.nonNull(field);
-            this.runtimeType = JsonFields.nonNull(runtimeType);
-            this.slot = JsonFields.nonNull(slot);
+            this.field = nonNull(field);
+            this.runtimeType = nonNull(runtimeType);
+            this.slot = nonNull(slot);
             this.callId = callId;
         }
 
         private String address(Map<Long, String> sourceKeyByCall) {
             String source = sourceKey != null ? sourceKey
-                    : JsonFields.nonNull(sourceKeyByCall.get(callId));
+                    : nonNull(sourceKeyByCall.get(callId));
             return RuntimeObjectIdentity.address(source, eventKind, method,
                     siteId, argumentIndex, field, runtimeType, slot);
         }
@@ -2414,7 +2415,7 @@ public final class CausynthTraceRecorder {
         private SourceTraceEvent(long seq, String kind, SourceRef source,
                                  int objectId) {
             this.seq = seq;
-            this.kind = JsonFields.nonNull(kind);
+            this.kind = nonNull(kind);
             this.source = source;
             this.objectId = objectId;
         }
@@ -2452,7 +2453,7 @@ public final class CausynthTraceRecorder {
             this.callId = callId;
             this.parentCallId = parentCallId;
             this.parentSiteId = parentSiteId;
-            this.method = JsonFields.nonNull(method);
+            this.method = nonNull(method);
             this.receiver = receiver;
             this.spanId = spanId;
             this.rootContext = rootContext;
@@ -2557,9 +2558,9 @@ public final class CausynthTraceRecorder {
                                String declaredCallee, boolean traced) {
             this.invocationId = invocationId;
             this.ownerCallId = ownerCallId;
-            this.siteId = JsonFields.nonNull(siteId);
-            this.caller = JsonFields.nonNull(caller);
-            this.declaredCallee = JsonFields.nonNull(declaredCallee);
+            this.siteId = nonNull(siteId);
+            this.caller = nonNull(caller);
+            this.declaredCallee = nonNull(declaredCallee);
             this.traced = traced;
         }
     }
@@ -2570,8 +2571,8 @@ public final class CausynthTraceRecorder {
         private final String declaredCallee;
 
         private ActiveCallSiteContext(String siteId, String declaredCallee) {
-            this.siteId = JsonFields.nonNull(siteId);
-            this.declaredCallee = JsonFields.nonNull(declaredCallee);
+            this.siteId = nonNull(siteId);
+            this.declaredCallee = nonNull(declaredCallee);
         }
 
         public String siteId() { return siteId; }

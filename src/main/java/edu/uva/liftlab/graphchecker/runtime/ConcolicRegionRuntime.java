@@ -131,8 +131,9 @@ public final class ConcolicRegionRuntime {
         try {
             ActiveRegion active = activeRegion();
             long replayOwnerId = active == null ? 0L : active.token;
-            return CausynthTraceRecorder.beginCall(replayOwnerId, nonNull(method),
-                    unitIndex, nonNull(declaredCallee), null, true);
+            return CausynthTraceRecorder.beginCall(replayOwnerId,
+                    nonNull(method), unitIndex, nonNull(declaredCallee), null,
+                    true);
         } catch (Throwable ignored) {
             // Never perturb the workload; id 0 makes both close hooks no-ops.
             return 0L;
@@ -889,7 +890,8 @@ public final class ConcolicRegionRuntime {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     firstNonBlank(nonNull(siteId), nonNull(fieldSignature)),
                     "this access could not start the VM's version log of the"
-                            + " container " + nonNull(fieldSignature) + " holds,"
+                            + " container " + nonNull(fieldSignature)
+                            + " holds,"
                             + " so a query of it reads no version: "
                             + rootCause(failure));
         }

@@ -862,7 +862,8 @@ public class ContractTest {
         RowCodec.writeExpressions(session.expressions(),
                 ExpressionTable.of(expressions));
         assertEquals(ExpressionTable.of(expressions),
-                SessionExpressionLog.read(session.expressions(), new RowPool()));
+                SessionExpressionLog.read(session.expressions(),
+                        new RowPool()));
         assertEquals(Collections.singletonList(session),
                 SessionDir.sessionsIn(root));
 

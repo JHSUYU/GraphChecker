@@ -723,7 +723,9 @@ final class ConcolicTaskPlan {
             String selectedMethod, String actualMethod,
             RootContextSelector context, RootArgumentSelector arguments,
             Object receiver, Object[] rootArguments) {
-        if (!nonNull(selectedMethod).equals(nonNull(actualMethod))) return false;
+        if (!nonNull(selectedMethod).equals(nonNull(actualMethod))) {
+            return false;
+        }
         if (!context.matches(receiver)) {
             return false;
         }
