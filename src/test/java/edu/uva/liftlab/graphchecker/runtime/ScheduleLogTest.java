@@ -1004,6 +1004,60 @@ public class ScheduleLogTest {
     }
 
     /**
+     * The one write a conflicted waiter needs is given up once: another
+     * waiter asking the watchdog before the conflicted one sees it settled
+     * -- the frontier, x, standing still -- finds nothing more to do there,
+     * and its own stall (x and y) comes a timeout later (solr-18413 MB3: 628
+     * stalls given at one settled slot, a spin).
+     */
+    @Test(timeout = 30000L)
+    public void aSettledConflictIsGivenUpOnceWhoeverAsks() throws Exception {
+        noRequest();
+        request("x", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("o", () -> written("/p"));
+        request("y", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        String[] waiting = {"d", "e", "f", "g"};
+        for (String waiter : waiting) {
+            request(waiter, () -> ScheduleLog.observe(
+                    ScheduleEvent.Kind.SEND, "z"));
+        }
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "100");
+        enforce(recorded);
+        // x's context at work (its loop's events run free), so the stall
+        // stands to its ceiling, where nothing defers the watchdog.
+        final boolean[] stop = new boolean[1];
+        Thread busy = new Thread(() -> request("x", () -> {
+            while (!stop[0]) {
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x2");
+                spin(20L);
+            }
+        }));
+        busy.start();
+        // Other waiters, later in the order, ask the watchdog too: whichever
+        // asks after the write was given up must find nothing to do there.
+        List<Thread> others = new ArrayList<Thread>();
+        for (String waiter : waiting) {
+            Thread other = new Thread(() -> request(waiter,
+                    () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "z")));
+            other.start();
+            others.add(other);
+        }
+        Thread.sleep(200L);
+        Thread c = new Thread(() -> request("c", () -> written("/p")));
+        c.start();
+        c.join(10000L);
+        for (Thread other : others) other.join(10000L);
+        stop[0] = true;
+        busy.join(10000L);
+        assertFalse(c.isAlive());
+        for (Thread other : others) assertFalse(other.isAlive());
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("3 given up in 2 stall(s)"));
+    }
+
+    /**
      * A write whose slot is past the cut holds nothing of its own, but waits
      * behind the prefix's write to its location until it is made.
      */

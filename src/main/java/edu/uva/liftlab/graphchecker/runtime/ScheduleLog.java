@@ -1480,8 +1480,12 @@ public final class ScheduleLog {
             // A write the order lacks there, or one whose slot holds nothing,
             // waits at the slot after the one write to its location it
             // follows: that write alone is given up, never the run of other
-            // nodes' events before it, and it is no stall past the cut.
+            // nodes' events before it, and it is no stall past the cut.  One
+            // already settled is the waiter's to see at its next ask, and
+            // nothing to do (another waiter asking first spun on it:
+            // solr-18413 MB3, 628 stalls at one slot).
             int write = earliest - 1;
+            if (state[write] != OPEN) return false;
             stalls++;
             giveUpLocked(write);
             stateLocked("schedule-write#" + write, "the write at slot "
