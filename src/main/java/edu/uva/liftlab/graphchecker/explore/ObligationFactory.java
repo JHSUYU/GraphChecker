@@ -1002,7 +1002,10 @@ public final class ObligationFactory {
             List<String> rests = new ArrayList<String>();
             for (Corpus.Refuted world : refuted) rests.add(world.digest);
             return refused(candidate, Verdict.UNSAT,
-                    "no world of this corpus takes the other arm at "
+                    (candidate.forced ? "no world of this corpus takes the"
+                            + " forced way to the throw from "
+                            : "no world of this corpus takes the other arm"
+                            + " at ")
                             + decision.siteId() + "#" + decision.ordinal()
                             + (rests.isEmpty() ? "" : " but the "
                             + rests.size() + " world(s) its replays refuted "
