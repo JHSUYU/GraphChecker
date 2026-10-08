@@ -108,7 +108,7 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 
 | opener | hop |
 |---|---|
-| `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call |
+| `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call. It stands until its end, past the traced activation it began in (`RuntimeTraceContext#exitRoot`: the thread's request flow stays its, where an exchange received in the activation ends with it) |
 | `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`), once the exchange the thread served has ended (§7.1) |
 | `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn (a request, a served message, a node startup are not: a wait inside them is a pause) |
 | `enterInbound` (a received message) | role = the transport, api = the request's `<source>/<api>`; the anchor is `Interactions.sender(transport, correlation, half)`, rpcSite `<TRANSPORT>[.<VIA>]/<api>` |
