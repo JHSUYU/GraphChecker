@@ -851,6 +851,26 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * A guard's read of a construction-only field (a {@code
+     * PROVENANCE_SITE}): when its object was decoded from a version of a
+     * shared store ({@link Provenance}), the read is a read of that version,
+     * stated as a STORE read row of this activation at the site (IDENTITY
+     * §7.2).  An object no decode made states nothing, and the VM is never
+     * asked: the field itself has nothing to re-pair.
+     */
+    public static void observeProvenance(String siteId, Object receiver) {
+        ActiveRegion active = activeRegion();
+        if (active == null || receiver == null
+                || active.d3Address == null) {
+            return;
+        }
+        Provenance.Version version = Provenance.of(receiver);
+        if (version == null) return;
+        RowRuntime.storeRead(active.d3Address, RowRuntime.currentEvent(),
+                nonNull(siteId), version.location, version.version);
+    }
+
+    /**
      * Starts versioning the state of the container a tracked cell holds, at
      * a read of the cell (the referent it returned) or before a container
      * mutation through it (the call's receiver), unless its log already

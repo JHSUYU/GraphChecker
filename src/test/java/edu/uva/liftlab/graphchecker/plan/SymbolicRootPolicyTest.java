@@ -278,6 +278,45 @@ public class SymbolicRootPolicyTest {
                 observed);
     }
 
+    /**
+     * SYMBOL-SCOPE §5.7: a construction-only field's read the root demand
+     * chose (PROVENANCE) is a PROVENANCE_SITE, kept though nothing in the
+     * slice stores it; a replay observes it by its receiver alone, and the
+     * concrete anchor's demand joins a STORE read at that site, and no
+     * other kind of read.
+     */
+    @Test
+    public void aChosenConstructionOnlyReadIsAProvenanceSite()
+            throws Exception {
+        String flag = "<D: java.lang.Boolean flag>";
+        StaticScopeMap map = map(Arrays.asList(read(flag, 7, "$r1"),
+                guard(GET_NUM + "::$r1")),
+                Collections.singletonMap(NN, Collections.singletonList(
+                        GET_NUM)), Collections.<String, Clock>emptyMap(),
+                method -> false, cell -> SharedFieldFlow.TrackedKind.NONE,
+                (demandSite, demandCell) -> (GET_NUM + "#u7").equals(
+                        demandSite) ? new StaticScopeMap.Demanded(
+                        "PROVENANCE", 3, true) : null);
+        JsonArray observed = map.observedSites();
+        Object[][] rows = {
+            {"the cell a decoded object's guard reads",
+                Collections.singleton(flag), map.provenanceCells()},
+            {"observed by its receiver alone", "true/false/false",
+                member(observed, 0, "provenance") + "/"
+                        + member(observed, 0, "field") + "/"
+                        + member(observed, 0, "container")},
+            {"a store read there is demanded", true, map.demandedAt(
+                    GET_NUM + "#u7", "[B",
+                    edu.uva.liftlab.graphchecker.contract.LocationKind.STORE)},
+            {"a heap read there is not", false, map.demandedAt(
+                    GET_NUM + "#u7", "Ljava/lang/Boolean;",
+                    edu.uva.liftlab.graphchecker.contract.LocationKind
+                            .INSTANCE)}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
     private static Map<String, Object> read(String cell, int unitIndex,
                                             String local) {
         return edge("{\"kind\":\"field_read\",\"method\":\"" + GET_NUM

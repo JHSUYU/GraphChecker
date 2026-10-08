@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
@@ -5289,6 +5290,103 @@ public class ExploreTest {
                 assertEquals(label, expected[2],
                         anchor.get("offCone").getAsInt());
             }
+        }
+    }
+
+    /**
+     * IDENTITY §7.2: a store version the concrete anchor read through a
+     * decoded object -- a STORE read at its PROVENANCE_SITE, before it
+     * decided -- rests on the write that made it and on every earlier
+     * version of its location, whatever node wrote them, and each writer on
+     * the queue item it took in: the item's sender decided a fault, so it is
+     * a control producer and its door is asked
+     * (solr-bugs-restore-construction: the client's view of state.json,
+     * the Overseer's state writes, the item RestoreCmd offered).  Rows:
+     * whether the read is on the anchor's provenance site, whether the
+     * earlier writer took in the item, and what is then planned.
+     */
+    @Test
+    public void aStoreVersionRestsOnEveryWriteOfItsLocationAndTheirItems()
+            throws Exception {
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/t/state.json");
+        OccurrenceAddress client = occurrence("solr-case/client0",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Client#add#1");
+        OccurrenceAddress first = occurrence("solr-case/node0",
+                "REGION.update", CausalContext.of(
+                        Role.of("OVERSEER_STATE_UPDATE"), "", 1),
+                "Overseer#run#1");
+        OccurrenceAddress last = occurrence("solr-case/node0",
+                "REGION.update", CausalContext.of(
+                        Role.of("OVERSEER_STATE_UPDATE"), "", 2),
+                "Overseer#run#2");
+        OccurrenceAddress restore = occurrence("solr-case/node0",
+                "REGION.restore", CausalContext.of(Role.of("OVERSEER_TASK"),
+                        "", 1), "Restore#run#1");
+        Object[][] cases = {
+            {true, true, Arrays.asList(true, true, true)},
+            {true, false, Arrays.asList(true, true, false)},
+            {false, true, Arrays.asList(false, false, false)},
+        };
+        for (int at = 0; at < cases.length; at++) {
+            boolean provenance = (Boolean) cases[at][0];
+            boolean taken = (Boolean) cases[at][1];
+            Path iteration = tree.newFolder("store-" + at).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(client, false);
+            seed.activation(first, false, true, "updater");
+            seed.activation(last, false, true, "updater");
+            seed.activation(restore, false, true, "runner");
+            seed.root(restore, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(restore, "Door#u3", 1, false, "M_DOOR");
+            seed.write(at(first, "SOLR_ZK#WRITE:.collections.t.state.json",
+                    "Overseer#run#1"), state, 1L, "", "[B");
+            seed.write(at(last, "SOLR_ZK#WRITE:.collections.t.state.json",
+                    "Overseer#run#2"), state, 2L, "", "[B");
+            seed.read(at(client, "Router#hash#u2", "Router#hash#2"), state,
+                    2L, "S_state2", null);
+            seed.target(client, "Guard#u8#1", "false");
+            seed.flush();
+            List<JsonObject> schedule = new ArrayList<JsonObject>();
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
+                    ScheduleEvent.Kind.SEND, ContextShape.Stance.of(restore)
+                            .render(), "SOLR_ZK#REQUEST", 0, restore.id(),
+                    "e-item")));
+            if (taken) {
+                schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(1L,
+                        ScheduleEvent.Kind.RECV, ContextShape.Stance.of(
+                                first).render(), "SOLR_ZK#REQUEST", 0,
+                        first.id(), "e-item")));
+            }
+            RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                    schedule);
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8"), scopeSite(provenance
+                            ? StaticScopeMap.PROVENANCE_SITE
+                            : StaticScopeMap.READ_SITE, "",
+                    "Router#hash#u2", "Router#hash",
+                    "<D: Slice[] active>", "<D: Slice[] active>", ""));
+            Path out = tree.newFolder("store-" + at + "-out").toPath();
+            Path results = out.resolve("obligation_results.jsonl");
+            Files.write(results, new byte[0]);
+            Path wave = out.resolve("obligations-0000");
+            JsonObject manifest = plan(iteration,
+                    "solr-case/client0#epoch0/region/REGION.target#1", null,
+                    results, wave, 0);
+            Set<String> focused = new LinkedHashSet<String>();
+            for (JsonElement task : manifest.getAsJsonArray("taskRows")) {
+                focused.add(task.getAsJsonObject().get("focused")
+                        .getAsString());
+            }
+            String label = "case " + at + ": " + focused;
+            assertEquals(label, cases[at][2], Arrays.asList(
+                    focused.contains(last.render()),
+                    focused.contains(first.render()),
+                    focused.contains(restore.render())));
+            assertEquals(label, (Boolean) ((List<?>) cases[at][2]).get(2),
+                    named(obligations(wave), "Door#u3") != null);
         }
     }
 

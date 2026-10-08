@@ -88,6 +88,13 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static final String WIRE_PRODUCER_ADMISSION = "WIRE_PRODUCER_V1";
     /**
+     * {@code admissionBasis} of an activation carried because it made a
+     * version of a shared store the question's target read through an
+     * object a fetch of that version decoded, or an earlier version of its
+     * location ({@link RecordedStore}, {@link #crossStore}).
+     */
+    private static final String STORE_WRITER_ADMISSION = "STORE_WRITER_V1";
+    /**
      * Activation member, in memory only: per field the recording saw it read
      * or write, the objects it did so on ({@code
      * RuntimeRegionPlanner#stampFieldOwners}).  A heap location is one
@@ -208,7 +215,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> branchObservations,
             StaticScopeMap scopeMap, String declaredOccurrence,
-            Collection<ScheduleEvent> recordedSchedule,
+            Collection<ScheduleEvent> recordedSchedule, RecordedStore store,
             RecordedAccesses accesses)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
@@ -308,7 +315,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 branchOrder);
         applyClosure(program, failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap, cutPorts, declaredOccurrence,
-                new RecordedMessages(recordedSchedule), accesses));
+                new RecordedMessages(recordedSchedule), store, accesses));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -808,7 +815,7 @@ public final class RuntimeSelectedRegionFinalizer {
             StaticProgram program, RegionDemandIndex demands, String source,
             StaticScopeMap scopeMap, Map<String, List<CutPort>> cutPorts,
             String declaredOccurrence, RecordedMessages messages,
-            RecordedAccesses accesses)
+            RecordedStore store, RecordedAccesses accesses)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -936,6 +943,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         walk.walk(seeds);
+        crossStore(program, walk, scopeMap, messages, store, targets);
         admitRelevantRoots(program, walk, scopeMap, messages);
         walk.stateUnpairedWires(program.planGaps);
         walk.stateFixedDeciders(program.planGaps);
@@ -1040,6 +1048,70 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return reads;
+    }
+
+    /**
+     * {@link #STORE_WRITER_ADMISSION}: what a target of the question read,
+     * before it decided, through an object a fetch of a shared store decoded
+     * -- a construction-only field the root demand chose ({@code
+     * StaticScopeMap#provenanceCells}), read on an object the recording
+     * states that fetch registered ({@link RecordedStore#versionsOf}) --
+     * rests on that version, and on every earlier version of its location
+     * ({@link RecordedStore#writersUpTo}).  Each occurrence that made one is
+     * admitted where it is an activation (a role -- an updater turn that ran
+     * no woven region -- is passed through, never planned), and the doors
+     * of the message each served, the queue item an updater turn took in
+     * ({@code MessageDoors#consumed}), are admitted where they read a fault
+     * marker ({@link #CONTROL_PRODUCER_ADMISSION}): a fault there decides
+     * whether the version was ever written (solr-bugs-restore-construction:
+     * the client's add reads the shards' state its ZkStateReader parsed; the
+     * ACTIVE that state holds was written by the Overseer's state updater
+     * for the item RestoreCmd offered after its RESTORECORE requests).
+     */
+    private static void crossStore(StaticProgram program, DemandWalk walk,
+                                   StaticScopeMap scopeMap,
+                                   RecordedMessages messages,
+                                   RecordedStore store,
+                                   Collection<String> targets) {
+        Set<String> cells = scopeMap.provenanceCells();
+        if (store.isEmpty() || cells.isEmpty()) return;
+        Map<String, String> byId = new HashMap<>();
+        for (String occurrence : program.activations.keySet()) {
+            byId.put(OccurrenceAddress.parse(occurrence).id(), occurrence);
+        }
+        Set<String> crossed = new LinkedHashSet<>();
+        for (String target : targets) {
+            Map<String, Object> activation = program.activations.get(target);
+            Set<Integer> objects = new HashSet<>();
+            for (String cell : cells) {
+                objects.addAll(objectsOf(activation, cell, false));
+            }
+            int depth = walk.depth(target) + 1;
+            for (Map.Entry<String, Long> version
+                    : store.versionsOf(objects).entrySet()) {
+                for (String writer : store.writersUpTo(version.getKey(),
+                        version.getValue())) {
+                    if (!crossed.add(writer)) continue;
+                    if (program.activations.containsKey(writer)
+                            && !walk.reached.contains(writer)
+                            && !walk.excluded.contains(writer)) {
+                        walk.admit(writer, depth, STORE_WRITER_ADMISSION);
+                    }
+                    for (String door : messages.doorsOf(
+                            OccurrenceAddress.parse(writer))) {
+                        String held = byId.get(door);
+                        if (held == null || walk.reached.contains(held)
+                                || walk.excluded.contains(held)
+                                || !readsAFault(rootReads(
+                                program.activations.get(held), scopeMap))) {
+                            continue;
+                        }
+                        walk.admit(held, depth + 1,
+                                CONTROL_PRODUCER_ADMISSION);
+                    }
+                }
+            }
+        }
     }
 
     /**

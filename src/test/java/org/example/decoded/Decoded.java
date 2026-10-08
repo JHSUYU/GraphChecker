@@ -1,0 +1,55 @@
+package org.example.decoded;
+
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+
+/**
+ * What a store's fetch is parsed into, as a system's own classes, outside
+ * the engine's packages (runtime.ProvenanceTest): a collection holding its
+ * slices by name and as an array, each slice its state; a supplier lambda
+ * capturing the client that fetched it; an inner object holding its outer
+ * one.
+ */
+public final class Decoded {
+    /** The client a lambda of the product captures: no data of it. */
+    public static final class Client {
+        public final Object connection = new Object();
+    }
+
+    public static final class Slice {
+        public final String name;
+        public final String state;
+
+        public Slice(String name, String state) {
+            this.name = name;
+            this.state = state;
+        }
+    }
+
+    public static final class Collection {
+        public final Map<String, Slice> slices = new LinkedHashMap<>();
+        public final Slice[] active;
+        public final List<Slice> listed;
+        public final Supplier<Object> lazy;
+        public final Inner inner;
+
+        public Collection(Client client, Slice... slices) {
+            for (Slice slice : slices) this.slices.put(slice.name, slice);
+            this.active = slices;
+            this.listed = Arrays.asList(slices);
+            this.lazy = () -> client;
+            this.inner = new Inner();
+        }
+
+        /** An inner object: its outer one is the code that made it. */
+        public final class Inner {
+            public final String label = "inner";
+        }
+    }
+
+    private Decoded() {
+    }
+}

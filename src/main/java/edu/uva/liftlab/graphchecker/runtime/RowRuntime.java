@@ -501,6 +501,78 @@ public final class RowRuntime {
     }
 
     /**
+     * The VM's last event id, the seq a row the engine states itself takes
+     * (a store row): after every event before it, before every event after
+     * it.  0 outside a session (the recording publishes no row).
+     */
+    static long currentEvent() {
+        if (publisher == null) return 0L;
+        try {
+            return Math.max(0L, ConcolicVmBroker.engine().currentEventId());
+        } catch (Throwable unavailable) {
+            return 0L;
+        }
+    }
+
+    /** The JVM type a store version is stated at: its content, bytes. */
+    static final String STORE_TYPE = "[B";
+
+    /**
+     * One version a shared store's write made (IDENTITY §7.2): a write row
+     * of its {@code STORE} location at the writer's occurrence, under the
+     * store's own site ({@code <transport>#WRITE:<location>}, a message
+     * site's spelling: {@code Endpoint#messageSite}).
+     * It states no expression: the store's content is none, and what a
+     * reader decides on it rests on the version, which the closure follows
+     * to its writer.
+     */
+    public static void storeWrite(OccurrenceAddress occurrence, long seq,
+                                  String site, LocationId location,
+                                  long version) {
+        SessionPublisher session = publisher;
+        if (session == null || occurrence == null || location == null) {
+            return;
+        }
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        WRITTEN.add(Confirmation.key(location, version));
+        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
+                version, "", STORE_TYPE));
+        Confirmation.wrote(location, version, at, false);
+    }
+
+    /**
+     * One read of a shared store's version at a decision site: a guard read
+     * a field of an object a decode of that version made ({@link
+     * Provenance}).  Its symbol names the version ({@link #storeSymbol}),
+     * as one symbol names one heap version; no expression holds it.
+     */
+    public static void storeRead(OccurrenceAddress occurrence, long seq,
+                                 String site, LocationId location,
+                                 long version) {
+        SessionPublisher session = publisher;
+        if (session == null || occurrence == null || location == null) {
+            return;
+        }
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        if (version >= 0L) {
+            READERS.computeIfAbsent(Confirmation.key(location, version),
+                    key -> new Readers(at, location, version))
+                    .count.incrementAndGet();
+        }
+        session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
+                version, storeSymbol(location, version), STORE_TYPE, null));
+        Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
+    }
+
+    /** The symbol of one store version's reads. */
+    static String storeSymbol(LocationId location, long version) {
+        return "S_" + ArtifactIO.digest(location.owner() + "#"
+                + location.slot() + "#" + version, 16);
+    }
+
+    /**
      * Names two events of one site that stand on identical frames in one
      * occurrence.
      *
@@ -1163,6 +1235,10 @@ public final class RowRuntime {
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
+        if (Provenance.walked()) {
+            EngineConsole.println("Causynth decoded walks: "
+                    + Provenance.summary());
+        }
         Map<String, Integer> unnamed = new LinkedHashMap<String, Integer>();
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());

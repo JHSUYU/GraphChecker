@@ -215,8 +215,13 @@ public final class ScopeGrowth {
             // A door at calls is woven in the scope's own callers.
             if (door.atCalls()) continue;
             String family = door.family();
+            // A door the system placed after its own hook is its transport,
+            // whatever the scope calls: the request a command in scope sends
+            // through layers out of it (Solr's RESTORECORE, through the shard
+            // handler) is that door's (SYMBOL-SCOPE §4.2).  A library's door
+            // joins where a class of the scope calls into its family.
             if (!decided.add(family) || present.contains(family)
-                    || !index.called(family)) {
+                    || door.relocated == null && !index.called(family)) {
                 continue;
             }
             List<String> copied = copyFamily(family, search, grown);

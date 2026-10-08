@@ -3,6 +3,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayList;
@@ -523,8 +526,68 @@ public final class MessageDoors {
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
+            written(transport, key, owner);
         } finally {
             storeEnded(transport, store);
+        }
+    }
+
+    /**
+     * The version a write made is a version of its store location
+     * (LocationKind.STORE): a write row at the writer's occurrence in a
+     * replay, a STORE_WRITE trace row in the recording, which PLAN crosses
+     * from a demanded read of it ({@code RecordedStore}).
+     */
+    private static void written(String transport, String key, Object owner) {
+        long version = version(key);
+        if (version < 0L) return;
+        String path = location(key);
+        OccurrenceAddress at = Identity.currentOccurrence(
+                RuntimeTraceContext.ownedSource(owner).key());
+        CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
+                at);
+        LocationId location = storeLocation(transport, path);
+        RowRuntime.storeWrite(at, RowRuntime.currentEvent(),
+                Endpoint.messageSite(trimmed(transport), "WRITE",
+                        location.slot().replace('/', '.').replace('@', '.')),
+                location, version);
+    }
+
+    /**
+     * The objects a fetch of {@code key} was parsed into, the adapter's
+     * product of the decode (Solr's {@code ClusterState.load}, {@code
+     * Aliases.fromJSON}): each application object of it is registered as
+     * holding that version ({@link Provenance}), so a guard that reads one
+     * of its fields reads the version (a STORE read row at the guard, {@code
+     * ConcolicRegionRuntime#observeProvenance}).  The recording states the
+     * objects by identity (a STORE_DECODED trace row), which PLAN joins with
+     * the objects each occurrence read a field on.
+     */
+    public static void decoded(String transport, String key, Object product) {
+        long version = version(key);
+        if (version < 0L || product == null) return;
+        String path = location(key);
+        List<Object> registered = Provenance.register(new Provenance.Version(
+                storeLocation(transport, path), version), product);
+        CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
+                registered);
+    }
+
+    /** A store location as every run spells it. */
+    static LocationId storeLocation(String transport, String path) {
+        return LocationId.of(LocationKind.STORE, trimmed(transport),
+                RunNames.key(trimmed(path)).location);
+    }
+
+    /** A stored version's version: its key after the last {@code @}, or -1. */
+    private static long version(String key) {
+        String held = trimmed(key);
+        int at = held.lastIndexOf('@');
+        if (at < 0) return -1L;
+        try {
+            return Long.parseLong(held.substring(at + 1));
+        } catch (NumberFormatException unversioned) {
+            return -1L;
         }
     }
 
@@ -608,6 +671,11 @@ public final class MessageDoors {
         SymbolicMessageEnvelope.clearInbound();
         Outbound message = filed(transport, key);
         if (message == null) return;
+        // Its RECV names the item the turn took in, as a received request's
+        // does: the doors of the message that started the consumer
+        // (Corpus#startedBy, RecordedMessages#doorsOf).
+        CausynthTraceRecorder.receivedExchange(transport, key, "1", REQUEST,
+                null);
         if (!message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }

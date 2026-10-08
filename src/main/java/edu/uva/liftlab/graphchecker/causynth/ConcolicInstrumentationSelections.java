@@ -474,14 +474,17 @@ public final class ConcolicInstrumentationSelections {
                         && site.get("field").getAsBoolean();
                 boolean container = site.has("container")
                         && site.get("container").getAsBoolean();
+                boolean provenance = site.has("provenance")
+                        && site.get("provenance").getAsBoolean();
                 if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
                         || cell.isEmpty() || !field && !container
+                        && !provenance
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }
                 if (conflicts(new ObservedSite(method, unitIndex,
                         siteId, callee, cell, read, staticField, field,
-                        container))) {
+                        container, provenance))) {
                     throw new IOException(
                             "OBSERVED_SITE_CONFLICT: " + siteId);
                 }
@@ -670,10 +673,15 @@ public final class ConcolicInstrumentationSelections {
         /** The state of the container the access reaches: after a read, on
          *  its referent; before a mutator call, on its receiver. */
         final boolean container;
+        /** A construction-only field's read: which store version its
+         *  object holds, on the read's receiver before it (runtime.
+         *  Provenance). */
+        final boolean provenance;
 
         ObservedSite(String method, int unitIndex, String siteId,
                      String declaredCallee, String cell, boolean read,
-                     boolean staticField, boolean field, boolean container) {
+                     boolean staticField, boolean field, boolean container,
+                     boolean provenance) {
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = siteId;
@@ -683,6 +691,7 @@ public final class ConcolicInstrumentationSelections {
             this.staticField = staticField;
             this.field = field;
             this.container = container;
+            this.provenance = provenance;
         }
 
         boolean sameObservation(ObservedSite other) {
@@ -690,7 +699,8 @@ public final class ConcolicInstrumentationSelections {
                     other.declaredCallee) && cell.equals(other.cell)
                     && read == other.read
                     && staticField == other.staticField
-                    && field == other.field && container == other.container;
+                    && field == other.field && container == other.container
+                    && provenance == other.provenance;
         }
     }
 

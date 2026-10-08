@@ -588,6 +588,10 @@ public final class ClosurePlanner {
         /** Doors said to decide no fault, once each ({@link
          *  #controlProducer}). */
         private final Set<String> faultless = new LinkedHashSet<String>();
+        /** session|store location -> the highest version whose earlier
+         *  versions' writers are demanded ({@link #earlierVersions}). */
+        private final Map<String, Long> storeExpanded =
+                new HashMap<String, Long>();
 
         private Walk(Corpus corpus, StaticScopeMap map,
                      OccurrenceAddress anchor) {
@@ -1050,6 +1054,10 @@ public final class ClosurePlanner {
      * object, SYMBOL-SCOPE §5.5).</p>
      */
     private static void writers(Walk walk, ReadRow row, List<Demand> into) {
+        if (row.location().kind() == LocationKind.STORE) {
+            storeWriters(walk, row, into);
+            return;
+        }
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
                 row.location(), row.observedVersion(),
                 walk.carriersAt(row.endpoint().site(), row.javaType(),
@@ -1117,17 +1125,72 @@ public final class ClosurePlanner {
         }
     }
 
+    /**
+     * Who made the store version a demanded read observed (IDENTITY §7.2):
+     * the eligible row writers, as for any read -- a one-JVM cluster's nodes
+     * are one session, whose happens-before spans them, so no node limits
+     * them -- each with the earlier versions of the location it rests on
+     * ({@link #wrote}).  No static candidate: a store location is a path,
+     * which no site of the map stores.
+     */
+    private static void storeWriters(Walk walk, ReadRow row,
+                                     List<Demand> into) {
+        for (WriteRow write : walk.corpus.eligibleWrites(row.sessionId(),
+                SmtLowering.locationKey(row.location()),
+                row.observedVersion(), row.endpoint().occurrence())) {
+            wrote(walk, write, into);
+        }
+    }
+
+    /**
+     * The earlier versions of a store location a demanded version rests on:
+     * a store keeps one document per location, and each write modifies the
+     * one before it (Solr's state writer, its aliases, every compare-and-set
+     * write), the rule {@code RestsOn#closure} applies to every location.
+     * The writers are demanded once per session and location, below the
+     * first version asked ({@link Walk#storeExpanded}): every later one asked
+     * there is among them or above them.
+     */
+    private static void earlierVersions(Walk walk, WriteRow write,
+                                        List<Demand> into) {
+        String key = SmtLowering.locationKey(write.location());
+        Long first = walk.storeExpanded.putIfAbsent(write.sessionId() + "|"
+                + key, write.version());
+        if (first != null && first >= write.version()) return;
+        for (WriteRow earlier : walk.corpus.writesOf(write.sessionId(), key)) {
+            if (earlier.initial() || earlier.version() >= write.version()
+                    || first != null && earlier.version() < first) {
+                continue;
+            }
+            into.add(writer(walk, earlier));
+        }
+        if (first != null) {
+            walk.storeExpanded.put(write.sessionId() + "|" + key,
+                    write.version());
+        }
+    }
+
     /** One recorded write a demanded value may rest on: its writer, flipped
      *  at the guards of its method's write sites, contributing what it
-     *  wrote.  An INITIAL has no writer: no run decided it. */
+     *  wrote; a store version also rests on its location's earlier ones
+     *  ({@link #earlierVersions}).  An INITIAL has no writer: no run
+     *  decided it. */
     private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
         if (write.initial()) return;
+        into.add(writer(walk, write));
+        if (write.location().kind() == LocationKind.STORE) {
+            earlierVersions(walk, write, into);
+        }
+    }
+
+    /** The demand of one write's writer. */
+    private static Demand writer(Walk walk, WriteRow write) {
         Demand paired = new Demand(write.endpoint().occurrence(),
                 CLOSURE_MEMBER, false);
         paired.contributes(write.sessionId(), write.expressionRef(),
                 write.seq());
         paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
-        into.add(paired);
+        return paired;
     }
 
     /**

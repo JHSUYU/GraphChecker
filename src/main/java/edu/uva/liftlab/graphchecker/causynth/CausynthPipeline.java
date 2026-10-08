@@ -182,7 +182,8 @@ public final class CausynthPipeline {
                 clocks, recognized,
                 targetPathSites(result.edges,
                         result.executionContextAuthorities::containsKey),
-                CausynthStaticFacts::trackedKind, systemClass,
+                CausynthStaticFacts::trackedKind,
+                CausynthStaticFacts::constructionOnly, systemClass,
                 new LatentFaults(systemClass,
                         method -> !result.regionsHolding(method).isEmpty()),
                 woven);
@@ -2284,6 +2285,14 @@ public final class CausynthPipeline {
                 }
                 owner = ((InstanceInvokeExpr) invocation).getBase();
             }
+            if (target.provenance) {
+                List<Unit> before = new ArrayList<>();
+                refs.bracket(before, Hook.OBSERVE_PROVENANCE,
+                        StringConstant.v(target.siteId),
+                        objectArg(body, owner, before));
+                insertBeforeSequence(body, selected, before);
+                continue;
+            }
             if (target.field) {
                 List<Unit> before = new ArrayList<>();
                 Value receiver = objectArg(body, owner, before);
@@ -3705,6 +3714,7 @@ public final class CausynthPipeline {
         EXIT_ACCESSOR_CALL_CONTEXT,
         OBSERVE_TRACKED_SITE,
         OBSERVE_TRACKED_CONTAINER,
+        OBSERVE_PROVENANCE,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3879,6 +3889,8 @@ public final class CausynthPipeline {
                     .add(Hook.OBSERVE_TRACKED_CONTAINER, runtime,
                             "observeTrackedContainer", VoidType.v(), string,
                             string, object, BooleanType.v())
+                    .add(Hook.OBSERVE_PROVENANCE, runtime,
+                            "observeProvenance", VoidType.v(), string, object)
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),
                             IntType.v(), object, string)

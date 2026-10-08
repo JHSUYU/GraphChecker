@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -326,11 +327,14 @@ public final class RestsOn {
             }
         }
         // Then the anchor, then reached occurrences in closure order (P3);
-        // a symbol is stated by the first row met.
+        // a symbol is stated by the first row met.  A store version's read
+        // states no value a symbol of a path may be (IDENTITY §7.2): it is
+        // the closure's, joined here only for what it reaches.
         for (String occurrenceId : occurrences) {
             OccurrenceAddress at = corpus.occurrence(occurrenceId);
             if (at == null) continue;
             for (ReadRow read : corpus.readsOn(session, at)) {
+                if (read.location().kind() == LocationKind.STORE) continue;
                 if (read.symbol() == null || stated.add(read.symbol())) {
                     rows.add(read);
                 }
