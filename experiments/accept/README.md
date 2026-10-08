@@ -55,7 +55,11 @@ when all of these hold:
   fault), or `MARKER_FLIPPED` should a fault reach its fatal too. hdfs-17960:
   `MARKER_FLIPPED` moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`.
   solr-18413 and solr-18406: `CLOCK_SKEW` (a MIGRATE rule that has not expired
-  yet; a commit reservation that has run out);
+  yet; a commit reservation that has run out). solr-bugs-reindex-cleanup:
+  `MARKER_FLIPPED` whose `movedRoots` hold a Solr door fault (a marker whose
+  declared site is in `HttpSolrClient`, `Http2SolrClient`, `SolrZkClient` or
+  `ZooKeeper`) flipped to true and no clock cell. A rule's door list is a
+  tuple of class names, any of which the fault's site may be in;
 * `polarityDecides` is true — the formula is unsatisfiable at the recorded
   valuation, so the mechanism explains the difference between the run that
   failed and the run that did not;

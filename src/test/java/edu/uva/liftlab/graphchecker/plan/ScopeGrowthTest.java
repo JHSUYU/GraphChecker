@@ -198,6 +198,27 @@ public class ScopeGrowthTest {
         }
     }
 
+    /** A codec's class is the wire, never scope: the catalog's CODEC rows
+     *  (protobuf's runtimes and generated messages, SolrJ's JavaBin and its
+     *  nested classes), a supertype's match included. */
+    @Test
+    public void aCodecIsNeverScope() throws Exception {
+        ScopeGrowth growth = new ScopeGrowth();
+        growth.scan(fixtures());
+        String[][] rows = {
+            {"org.apache.solr.common.util.JavaBinCodec", "true"},
+            {"org.apache.solr.common.util.JavaBinCodec$StringCache", "true"},
+            {"com.google.protobuf.GeneratedMessageV3", "true"},
+            {"org.apache.hadoop.hdfs.protocol.proto.HdfsProtos", "false"},
+            {"org.apache.solr.common.util.NamedList", "false"},
+            {T + "$Impl", "false"},
+        };
+        for (String[] row : rows) {
+            assertEquals(row[0], Boolean.parseBoolean(row[1]),
+                    growth.codec(row[0]));
+        }
+    }
+
     /** A class root holding the fixtures' class files. */
     private Path fixtures() throws Exception {
         Path root = folder.newFolder().toPath();
