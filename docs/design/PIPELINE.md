@@ -1119,9 +1119,11 @@ cancelled or reaped, by id):
   confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
   attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
   (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
-  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted, or given no
-  verdict (a refused model: a mismatch, a replay that published none), its model is excluded from
-  every later composition (§10) and the exploration goes on, as after any other claim. With no room
+  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted (its replay did
+  not reach the fatal at the anchor: a false positive, §10), its model is excluded from every later
+  composition and the exploration goes on, as after any other claim; one CONFIRM gave no verdict on
+  (a task it refused by name, a decision that failed: a defect of the engine) is excluded from
+  nothing. With no room
   left in the campaign's budget
   for a confirmation (`campaign_claim_room`, below), the claim is accepted unconfirmed and the
   final CONFIRM decides.
@@ -1945,38 +1947,30 @@ with it is a `RUN_DEFECT`.
   `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
   `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
   the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
-  occurrence of the target site does not confirm. Only the last refutes, and only where the run
-  ran the model (`ConfirmMain#unplanted`: every root the claim moved minted at the model's value,
-  a clock's cell minted, no `ASSIGNMENT_UNPLANTED`); a `CONFIRM_MISMATCH` (the run took an edge the
-  model did not choose) or a run without the model's plant did not run it. A ConfirmMain that
-  exits nonzero is "unconfirmed" with its log named.
+  occurrence of the target site does not confirm. A replay that fails any of them -- not ADMITTED,
+  no readable session, a `CONFIRM_MISMATCH` (an edge the model chose that it did not take, an ORDER
+  it could not hold within `ORDER_TIMEOUT_MS`), a plant it did not make (`ConfirmMain#unplanted`),
+  no fatal at the anchor -- and a replay that published no verdict (killed at its bound, stalled)
+  did not reach the exception: it REFUTES the claim, a false positive (owner 2026-10-08: "如果replay跑不到exception。或者超时卡死，就直接定义为false positive。不用给这么多细分/迭代了"), its reason
+  naming which. Only a decision that failed, or a claim stating no parseable anchor, decides
+  nothing: a defect of the engine.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
 sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says the
-model is refuted: the replay ran it and disagreed (no fatal at the anchor, the model planted), or
-ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A refusal (`CONFIRM
-refused:`), a mismatch, a run without the model's plant, a replay that was not ADMITTED,
-published no readable session or no verdict, or a decision that failed, refutes nothing: the model
-is REFUSED (`campaign_refuse`, one row of `<iteration>/refused_models.jsonl`, `result.json`
-`refusedModels`). An ORDER the replay cannot hold within `ORDER_TIMEOUT_MS` is such a mismatch,
-never a refutation: a timeout cannot tell a slow run from an order the program forbids
-(hdfs-adhoc-10 SL1: a re-paired writer arm ordered jn0's `journal()` before the `startLogSegment`
-its client waits for). A refused model is excluded from every later composition as a refuted one
-is (below), so the next claim follows; no witness attempt confirms it again, and the final CONFIRM
-of a composition that repeated it takes its row instead of a replay (both matched as the
-composition matches a model, `campaign_model_key`). A final claim of its own left with no verdict
-is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`); one CONFIRM refuted is `SAT_UNCONFIRMED`, not accepted, the
-models refused before it published as `refusedModels` -- each excluded, none a verdict -- and an
-UNSAT that follows them stands only where it rests on none (above).
+claim is a false positive: its replay did not reach the fatal at the anchor (above), or
+ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A task ConfirmMain
+refused by name (`CONFIRM refused:`, rows that state no runnable model) and a decision that
+failed ran no replay of the model: a defect of the engine, excluded from nothing, and a final
+claim left so is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`). A final claim CONFIRM refuted with no next
+claim owed (below: the bound, the budget) is `SAT_UNCONFIRMED`: every claim filtered as a false
+positive, not accepted and no RUN_DEFECT.
 
 **A claim CONFIRM did not confirm is followed by the next.** A refuted claim (`campaign_refute`)
-is one row of `<iteration>/refuted_claims.jsonl`, a refused model one of `refused_models.jsonl`:
-its `model` (`campaign_claim_model`, off `claim.json`: the
+is one row of `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
 finding kind, the selected path, the arm selectors it chose there, the valuation, and the claim's
 moved roots, a clock by its cell's symbol at the model's instant), where it was `claimed`, and the
 confirmation's `reason`. Every later composition of the iteration excludes each
-(`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` (`refused_claim__k` for a
-refused model) asserts that the path's
+(`Composer#refutations`, `compose.Refutations`): `refuted_claim__k` asserts that the path's
 selector, those arms (an arm's selector is `<kind>__<path ordinal>__<digest>`, taken at the path's
 ordinal in this query), the valuation's non-clock roots (named as the valuations name them,
 `Corpus#anyRoot`) and the claim's clock region are not all true at once -- a region, not an
@@ -1984,21 +1978,18 @@ instant: each clock cell the claim moved jumped the way it did, by any amount, a
 cell of the query runs on from the cell before it (`Composer#clockStep`, the spelling of a
 witness's run-on pins too); an instant alone excluded one point, and the next model sat a tick
 beside it --, a
-DIAGNOSTIC `CLAIM_REFUTED` (`CLAIM_REFUSED`) gap names it, and a model whose path or arm the query no
+DIAGNOSTIC `CLAIM_REFUTED` gap names it, and a model whose path or arm the query no
 longer composes is not stated. An exclusion is a region, so an UNSAT may rest on one: whenever one is
 asserted, the free-formula ask and the self-check ask for the unsat core (a path whose self-check
 core names one does not contradict its run, `Disjunction#refutedBySelfCheck`); an `UNSAT_CLOSED`
 whose core names a `refuted_claim__k` publishes each as `restsOnRefutations` (its path, moved
 roots and reason; `Composition#restsOn`, `ComposeMain#campaignClaim`, EMIT, `report.py`, `triage.py`),
-and an UNSAT whose core names a `refused_claim__k`, or whose core is unknown while it excludes one, is
-`RUN_DEFECT` (`unsatBesideRefused`, EMIT's defect `UNSAT_BESIDE_REFUSED`): no run decided that model.
-A core is known only where its own run said unsat (`Z3.Answer#coreKnown`; a core run that timed out,
+each a false positive read against the code before the UNSAT counts (CHECKING). A core is known only where its own run said unsat (`Z3.Answer#coreKnown`; a core run that timed out,
 found no room or answered unknown names none, which is not the empty core), a disjunction's only
 where every path's is, and a path's refutation answers a core-wanting ask only with a known one.
 During EXPLORE a witness attempt CONFIRM did not confirm lets the exploration go on (§7.9); after
 it, the final stages go on to the next claim (`campaign_next_claim`): while the claim is a
-`SAT_CANDIDATE` CONFIRM did not confirm whose model is recorded once in the two files together
-(matched by `campaign_model_key`: an arm by its kind and digest, its path ordinal being one
+`SAT_CANDIDATE` CONFIRM refuted whose model is recorded once in `refuted_claims.jsonl` (matched by `campaign_model_key`: an arm by its kind and digest, its path ordinal being one
 composition's; not one the composition was told to exclude already), the campaign's budget has
 room for its reserve (`campaign_claim_room`) and fewer than `campaign_max_claims` (8) claims were
 decided again (past it the last claim is published, the bound named in the log), its artifacts
@@ -2101,7 +2092,7 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
    `confirmed` is `SAT_UNCONFIRMED` when the confirmation `refutes` it, else `RUN_DEFECT` with a
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim;
-   `restsOnRefutations` (the refuted and refused models an UNSAT's core names, and each world a
+   `restsOnRefutations` (the refuted models an UNSAT's core names, and each world a
    replay refuted for an open arm whose flip came back UNSAT or BOUNDED, kind `REFUTED_WORLD`); `concrete[]`
    with the last round's `openArms` (kind OPEN_ARM) beside its concrete anchors, and
    `evidence.unsatClosureComplete` true only where every such arm's flip came to UNSAT or stopped at

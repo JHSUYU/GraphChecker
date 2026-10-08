@@ -230,7 +230,12 @@ recommendation.
   the VM's source; a full checkout on NFS took 45+ minutes and made every commit in it slow.
 - **Lock, then one change at a time:** keep the last all-passing main; integrate one large change
   per live round; stacking several big changes is what made rounds regress repeatedly
-  (2026-10-01).
+  (2026-10-01). **Superseded across systems by per-system branches** (owner 2026-10-08, long-term: "solr上现在是全新的开发了。
+  引擎和vm可以一次多处修改。不必遵循一次修改一处"; "不止局限于hdfs, 以后，hdfs, solr, zookeeper, hbase都是自己的branch。回归只考虑在自己的
+  system内"): each system lives on its own branch (`system/hdfs` + `system/hdfs1`, `system/solr`, `system/zookeeper`,
+  `system/hbase`) and regression is judged only within that system (Solr: its 20 cases, solr-18406 and solr-18413
+  first, a final round of all 20 with none regressed). Several engine and VM changes may land per round; another
+  system's corpora may serve as offline-gate data, never as a blocker.
 
 - **Establish from the code what is done and what is not** (owner 2026-09-29): before claiming a capability,
   read the code (read-only agents may help); keep `docs/STATUS.md` (done / partial / not done per requirement)

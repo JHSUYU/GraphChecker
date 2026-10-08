@@ -624,10 +624,9 @@ rests = result.get("restsOnRefutations") or []
 if rests:
     out += ["## Rests on excluded models", "",
             "The unsat core names models the formula excludes: refuted"
-            " claims (refuted_claim__, CONFIRM ran them and disagreed), on"
-            " which the UNSAT rests beside the corpus, and models CONFIRM"
-            " gave no verdict on (refused_claim__), which leave no verdict"
-            " (result.json restsOnRefutations).", ""]
+            " claims (refuted_claim__, false positives whose CONFIRM replay"
+            " did not reach the fatal at the anchor), on which the UNSAT rests"
+            " beside the corpus (result.json restsOnRefutations).", ""]
     for row in rests:
         out.append("* `%s` on path `%s`, moving %s -- %s" % (
             row.get("name", "?"), row.get("pathId", "?"),

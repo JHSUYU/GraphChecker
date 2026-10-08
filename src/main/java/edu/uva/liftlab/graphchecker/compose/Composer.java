@@ -216,7 +216,7 @@ public final class Composer {
         private final Map<String, List<String>> heldArrivals;
         private final Map<String, Endpoint> unattestedArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
-        /** refuted_claim__k, refused_claim__k -> the model it excludes. */
+        /** refuted_claim__k -> the model it excludes. */
         private final Map<String, Refutations.Refuted> refutations;
         private final List<JsonObject> refusedPaths;
         private final Map<String, List<String>> ownArms;
@@ -427,8 +427,7 @@ public final class Composer {
          */
         private static boolean refutation(String body, int start, int end) {
             String tail = body.substring(Math.max(start, end - 64), end);
-            return tail.contains(":named " + REFUTED_CLAIM)
-                    || tail.contains(":named " + REFUSED_CLAIM);
+            return tail.contains(":named " + REFUTED_CLAIM);
         }
 
         private boolean kept(int command, String selector) {
@@ -865,24 +864,16 @@ public final class Composer {
             return refusedPaths;
         }
 
-        /** Whether this formula excludes a model CONFIRM refuted or gave
-         *  no verdict on ({@link Composer#refutations}): an UNSAT may then
-         *  rest on one, which only an unsat core shows. */
+        /** Whether this formula excludes a model CONFIRM refuted ({@link
+         *  Composer#refutations}): an UNSAT may then rest on one, which only
+         *  an unsat core shows. */
         public boolean assertsRefutations() {
             return !refutations.isEmpty();
         }
 
-        /** Whether it excludes a model CONFIRM gave no verdict on. */
-        public boolean excludesRefused() {
-            for (String name : refutations.keySet()) {
-                if (name.startsWith(REFUSED_CLAIM)) return true;
-            }
-            return false;
-        }
-
         /**
          * The exclusions an unsat core names (its {@code refuted_claim__k}
-         * and {@code refused_claim__k} labels), each as the model it
+         * labels), each as the model it
          * excludes: what an UNSAT rests on beside the corpus ({@code
          * restsOnRefutations}).
          */
@@ -3058,9 +3049,8 @@ public final class Composer {
     }
 
     /**
-     * Every claim CONFIRM refuted or gave no verdict on ({@link
-     * Refutations}), excluded -- {@code refuted_claim__k} and {@code
-     * refused_claim__k} -- its path, the arms it chose there (by their
+     * Every claim CONFIRM refuted ({@link Refutations}), excluded -- {@code
+     * refuted_claim__k} -- its path, the arms it chose there (by their
      * digest: a selector's path ordinal is this composition's, {@link
      * Refutations#atPath}), its valuation and its clocks' region are,
      * together, no model of this formula, so a claim over it is another
@@ -3082,13 +3072,11 @@ public final class Composer {
             refuted = Refutations.read(corpus.iteration());
         } catch (java.io.IOException | RuntimeException unreadable) {
             gap(GapKind.CLAIM_REFUTED, GapClass.BLOCKING, Refutations.FILE,
-                    "this iteration's refuted claims and refused models "
-                            + "could not be read, so a claim over it may be "
+                    "this iteration's refuted claims could not be read, so a claim over it may be "
                             + "one CONFIRM decided against: " + unreadable);
             return;
         }
         int ordinal = 0;
-        int refused = 0;
         for (Refutations.Refuted model : refuted) {
             String path = null;
             for (Disjunct disjunct : disjuncts) {
@@ -3150,16 +3138,12 @@ public final class Composer {
                 conjuncts.add(clockStep(cell, clockReadings, clockBefore,
                         Long.signum(skew - previous)));
             }
-            String name = model.refused ? REFUSED_CLAIM + refused++
-                    : REFUTED_CLAIM + ordinal++;
+            String name = REFUTED_CLAIM + ordinal++;
             lowering.assertNamed(name,
                     "(not " + VmTermLowering.and(conjuncts) + ")");
             refutationNames.put(name, model);
-            gap(model.refused ? GapKind.CLAIM_REFUSED
-                            : GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC,
-                    model.pathId, "CONFIRM "
-                            + (model.refused ? "gave no verdict on" : "refuted")
-                            + " the model on this path with arms "
+            gap(GapKind.CLAIM_REFUTED, GapClass.DIAGNOSTIC, model.pathId,
+                    "CONFIRM refuted the model on this path with arms "
                             + model.arms + " at " + model.assignment
                             + (model.moved.isEmpty() ? ""
                             : " moving " + model.moved)
@@ -3471,17 +3455,13 @@ public final class Composer {
     /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";
 
-    /** The name prefixes of the assertions excluding a model CONFIRM
-     *  refuted, and one it gave no verdict on ({@link #refutations}), which
-     *  an unsat core names. */
+    /** The name prefix of the assertions excluding a model CONFIRM refuted
+     *  ({@link #refutations}), which an unsat core names. */
     static final String REFUTED_CLAIM = "refuted_claim__";
-    static final String REFUSED_CLAIM = "refused_claim__";
 
-    /** Whether a name is an exclusion of a model CONFIRM decided against:
-     *  refuted or refused. */
+    /** Whether a name is an exclusion of a model CONFIRM refuted. */
     static boolean excludesAModel(String name) {
-        return name != null && (name.startsWith(REFUTED_CLAIM)
-                || name.startsWith(REFUSED_CLAIM));
+        return name != null && name.startsWith(REFUTED_CLAIM);
     }
 
     void gap(GapKind kind, GapClass cls, String subject,

@@ -17,73 +17,60 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The models CONFIRM decided against in this iteration (PIPELINE §10): each
- * claim the program ran and disagreed with, {@code
+ * The models CONFIRM refuted in this iteration (PIPELINE §10): each claim
+ * whose confirmation did not reach the fatal at its anchor -- the replay ran
+ * to its end without it, timed out or stalled, or the model could not be
+ * planted (owner 2026-10-08: such a claim is a false positive) -- {@code
  * <iteration>/refuted_claims.jsonl} ({@code run_engine.sh campaign_refute}),
- * and each it gave no verdict on, {@code refused_models.jsonl}
- * ({@code campaign_refuse}), one row each off the claim's {@code
- * claim.json}: its {@code model} -- {@code findingKind}, {@code pathId} (the
+ * one row each off the claim's {@code claim.json}: its {@code model} -- {@code findingKind}, {@code pathId} (the
  * selected path), {@code arms} (the arm selectors the model chose on it),
  * {@code assignment} (its valuation, root id to value) and {@code moved}
  * (the claim's moved roots, a clock by its cell's symbol at the model's
  * instant) -- where it was {@code claimed}, and the confirmation's {@code
  * reason}.  The composition excludes each ({@code Composer#refutations}):
  * that path, those arms and that valuation together are no model of it, so
- * the next claim is another model, or none.  A refused model is excluded
- * like a refuted one, but no run decided it: an UNSAT resting on it is no
- * verdict ({@code ComposeMain#campaignClaim}).
+ * the next claim is another model, or none.
  */
 public final class Refutations {
 
     static final String FILE = "refuted_claims.jsonl";
-    static final String REFUSED_FILE = "refused_models.jsonl";
 
-    /** One model CONFIRM refuted, or gave no verdict on. */
+    /** One model CONFIRM refuted. */
     static final class Refuted {
         final String pathId;
         final List<String> arms;
         final Map<String, String> assignment;
         final Map<String, String> moved;
         final String reason;
-        /** No verdict: CONFIRM did not run the model. */
-        final boolean refused;
 
         private Refuted(String pathId, List<String> arms,
                         Map<String, String> assignment,
-                        Map<String, String> moved, String reason,
-                        boolean refused) {
+                        Map<String, String> moved, String reason) {
             this.pathId = pathId;
             this.arms = Collections.unmodifiableList(arms);
             this.assignment = Collections.unmodifiableMap(assignment);
             this.moved = Collections.unmodifiableMap(moved);
             this.reason = reason;
-            this.refused = refused;
         }
     }
 
     private Refutations() {
     }
 
-    /** This iteration's refuted models, then its refused ones, each in the
-     *  order the campaign decided them. */
+    /** This iteration's refuted models, in the order the campaign refuted
+     *  them. */
     static List<Refuted> read(Path iteration) throws IOException {
-        List<Refuted> models = new ArrayList<Refuted>();
-        if (iteration == null) return models;
-        for (String file : new String[]{FILE, REFUSED_FILE}) {
-            boolean refused = REFUSED_FILE.equals(file);
-            models.addAll(RowCodec.readAll(iteration.resolve(file),
-                    row -> row(row, refused)));
-        }
-        return models;
+        if (iteration == null) return new ArrayList<Refuted>();
+        return RowCodec.readAll(iteration.resolve(FILE), Refutations::row);
     }
 
-    private static Refuted row(JsonObject row, boolean refused) {
+    private static Refuted row(JsonObject row) {
         JsonObject model = JsonFields.object(row, "model");
         if (model == null) model = new JsonObject();
         return new Refuted(JsonFields.optionalString(model, "pathId"),
                 new ArrayList<String>(JsonFields.strings(model, "arms")),
                 values(model, "assignment"), values(model, "moved"),
-                JsonFields.optionalString(row, "reason"), refused);
+                JsonFields.optionalString(row, "reason"));
     }
 
     /** One {@code {name: value}} field of a row, in its order. */

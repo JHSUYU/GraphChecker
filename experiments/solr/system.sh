@@ -50,13 +50,13 @@ system_classpath() {
 }
 
 system_build() {
-  bash "${system_dir}/build.sh" "${repo}" "${test_class}" "${test_method}" \
-    "${solr_seed}"
+  bash "${system_dir}/build.sh" "${repo}" "${solr_seed}" "${test_class}#${test_method}"
 }
 
 # What the junit4 runner hands every test JVM of the tree, for a workload
 # JVM the engine starts: the randomized-testing seed and environment, the
-# test-files home, and the automatic cluster.
+# test-files home, and the automatic cluster (build.sh's native run: the
+# same seed, parked groups and automatic cluster).
 system_jvm_properties() {
   jvm_properties=(
     "-DtempDir=$1"
@@ -64,6 +64,11 @@ system_jvm_properties() {
     "-Dtests.src.home=${repo}/solr/core"
     "-Dcommon.dir=${repo}/lucene"
     "-Dtests.asserts=true" "-Dtests.slow=true" "-Dtests.nightly=false"
+    # The workload a case names runs whatever test group upstream parked it
+    # in: these properties only let @BadApple and @AwaitsFix tests run
+    # (TimeRoutedAliasUpdateProcessorTest and its base class, for solr-adhoc-10
+    # 13 39 40).
+    "-Dtests.badapples=true" "-Dtests.awaitsfix=true"
     "-Dtests.timeoutSuite=86400000" "-Dtests.timeout=86400000"
     "-Djetty.testMode=1" "-Djetty.insecurerandom=1"
     "-Dsolr.directoryFactory=org.apache.solr.core.MockDirectoryFactory"

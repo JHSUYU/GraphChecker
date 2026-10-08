@@ -1,6 +1,6 @@
 # SOLR-18413: an update of a MIGRATE route key looks up a deleted target
 # collection after the source leader applied it (Solr 8.11).  Declarations only.
-repo=${GC_TREES}/lucene-solr-storing
+repo=${GC_TREES}/lucene-solr-checks
 test_class=org.apache.solr.cloud.TestCausynthMigrateRuleTarget
 test_method=updateAfterRuleExpiryAndTargetDeletion
 # The source leader's update of a!2, after the target's deletion: its

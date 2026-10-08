@@ -45,8 +45,8 @@ public class Z3Test {
     @Test
     public void aCoreIsKnownOnlyWhereItsRunSaidUnsat() throws IOException {
         Object[][] rows = {
-                {"printf 'unsat\\n(refused_claim__0 valuation__m)\\n'", true,
-                        Arrays.asList("refused_claim__0", "valuation__m")},
+                {"printf 'unsat\\n(refuted_claim__0 valuation__m)\\n'", true,
+                        Arrays.asList("refuted_claim__0", "valuation__m")},
                 {"exec sleep 60", false, Collections.<String>emptyList()},
                 {"echo unknown", false, Collections.<String>emptyList()},
         };

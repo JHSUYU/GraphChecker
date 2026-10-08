@@ -228,9 +228,9 @@ public final class ClaimPolicy {
         }
         List<GapRow> gaps = new ArrayList<GapRow>(claim.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>(decided.outcomes());
-        // An unsat may rest on a model the formula excludes, refuted or
-        // refused: the core names it (restsOnRefutations), so it is asked
-        // for whenever one is asserted.
+        // An unsat may rest on a model the formula excludes, a refuted
+        // claim: the core names it (restsOnRefutations), so it is asked for
+        // whenever one is asserted.
         Outcome free = outcome(composition, asks,
                 composition.free(outcomes.size()),
                 Collections.<String>emptyList(),

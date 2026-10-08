@@ -4905,13 +4905,6 @@ campaign_stream_attempt() {
     campaign_stream_witnessed "${step}" "${dir}" null
   else
     model=$(campaign_claim_model "${dir}/claim.json")
-    if [[ -n "$(campaign_refused_reason "${iteration_dir}" "${model}")" ]]
-    then
-      campaign_stream_attempt_row "${dir}" null "its model got no verdict \
-from an earlier confirmation (refused_models.jsonl): not confirmed again" 0 \
-        false
-      return 0
-    fi
     if grep -q -x -F -- "${model}" "${step}/confirming"; then
       printf '%s\n' "$@" >"${step}/deferred"
       campaign_stream_attempt_row "${dir}" null "its model is under \
@@ -5885,7 +5878,7 @@ explore_manifest.json 2>/dev/null) \
 # round's obligations, a round was due when the budget stopped it, or the
 # planner could not hold the corpus (PLANNER_HEAP_EXCEEDED); WITNESSED
 # owes the same, and a witness that stands (the claim a SAT_CANDIDATE,
-# which CONFIRM validates) owes nothing -- one refuted or given no verdict,
+# which CONFIRM validates) owes nothing -- one refuted (a false positive),
 # followed by a claim composed again over the trimmed corpus with no new
 # EXPLORE
 # (campaign_next_claim), owes it all.  FIXED_POINT and the declared nesting
@@ -6149,26 +6142,25 @@ campaign_decide() {
 # claim says, so it is not held (a divergence stays a diagnostic gap of the
 # session); the model's order is, by the ORDER rows of
 # expected_edges.jsonl (runtime.Confirmation), and an ORDER the run cannot
-# hold is a CONFIRM_MISMATCH (PIPELINE §10).  Every other
-# outcome -- a refused task, a replay that published no verdict -- is
-# "unconfirmed, because ...": EMIT downgrades the claim,
-# the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
-# claim has nothing to confirm and the stage says so.  A claim the run
-# disagreed with is refuted (campaign_refute), one it gave no verdict on is
-# refused (campaign_refuse), both excluded from every later composition,
-# and the campaign goes on to the next claim while its budget has room
-# (campaign_next_claim).  The exploration's
+# hold is a CONFIRM_MISMATCH (PIPELINE §10).  A replay that did not reach
+# the fatal at the anchor -- it ran to its end without it, an ORDER it could
+# not hold, a stall, a timeout, a replay that published no verdict -- is a
+# FALSE POSITIVE (owner 2026-10-08): the claim is refuted (campaign_refute),
+# excluded from every later composition, and the campaign goes on to the next
+# claim while its budget has room (campaign_next_claim).  A confirmation no
+# replay ran -- a task ConfirmMain refused by name, a decision that failed --
+# is a defect of the engine, no verdict: EMIT publishes the claim RUN_DEFECT.
+# Only a SAT_CANDIDATE is confirmed; any other claim has nothing to confirm
+# and the stage says so.  The exploration's
 # witness was confirmed as it was accepted (campaign_stream_attempt): the
 # same model, composed again over the same corpus, is not replayed twice.
 campaign_confirm() {
-  local iteration_dir=$1 claim refused
+  local iteration_dir=$1 claim
   claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
   if [[ "${claim}" != SAT_CANDIDATE ]]; then
     campaign_log "claim=${claim}: nothing to confirm"
     return 0
   fi
-  refused=$(campaign_refused_reason "${iteration_dir}" \
-    "$(campaign_claim_model "${campaign_final}/claim.json")")
   if [[ -s "${campaign_witness_attempt}/confirm.json" ]] \
       && [[ "$(campaign_claim_model "${campaign_final}/claim.json")" \
         == "$(campaign_claim_model "${campaign_witness_attempt}/claim.json")" ]]
@@ -6177,11 +6169,6 @@ campaign_confirm() {
       "${campaign_final}/confirm.json"
     campaign_log "the model is the exploration's witness, confirmed in \
 ${campaign_witness_attempt}"
-  elif [[ -n "${refused}" ]]; then
-    campaign_confirm_verdict false "an earlier confirmation of this model \
-gave no verdict (refused_models.jsonl): ${refused}" "" false \
-      >"${campaign_final}/confirm.json"
-    campaign_log "the model got no verdict earlier: not confirmed again"
   else
     campaign_confirm_claim "${iteration_dir}" "${campaign_final}" \
       "${campaign_final}/confirm"
@@ -6263,14 +6250,16 @@ campaign_confirm_replay() {
 
 # The verdict on the claim <claims>/claim.json from the replay of <dir>, which
 # exited <status>: read off the session it published (ConfirmMain
-# --sessions) into <claims>/confirm.json.  A replay that published no
-# verdict, or a decision that failed, leaves the model unconfirmed and open.
+# --sessions) into <claims>/confirm.json.  A replay that published no verdict
+# (killed at its bound, stalled, crashed) never reached the fatal: it refutes
+# the model, a false positive (owner 2026-10-08).  A decision that failed is
+# the engine's defect and decides nothing.
 campaign_confirm_decide() {
   local claims=$1 dir=$2 replayed=$3 status=0
   if [[ "${replayed}" -ne 0 ]]; then
     campaign_confirm_verdict false "the confirmation replay published no \
-verdict (exit ${replayed}); its log is ${dir}/confirm.log" "" false \
-      >"${claims}/confirm.json"
+verdict (exit ${replayed}): it never reached the fatal at the anchor; its \
+log is ${dir}/confirm.log" "" true >"${claims}/confirm.json"
     return 0
   fi
   run_capturing_status run_java_main \
@@ -6283,49 +6272,20 @@ confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
     false >"${claims}/confirm.json"
 }
 
-# A verdict written: the claim refuted (campaign_refute) only when the
-# verdict refutes it -- the replay ran the model and disagreed, or ConfirmMain
-# refuted it by name (the run as recorded); a confirmation that neither
-# confirmed nor refuted it (a refusal, a run that did not run the model, a
-# replay that published no verdict) is a refused model (campaign_refuse).
+# A verdict written: the claim refuted (campaign_refute) when the verdict
+# refutes it -- a replay that did not reach the fatal at the anchor, or a
+# claim ConfirmMain refuted by name (the run as recorded); one neither
+# confirmed nor refuted (a refusal no replay ran, a failed decision) is the
+# engine's defect, excluded from nothing: EMIT publishes it RUN_DEFECT.
 campaign_confirm_settle() {
   local iteration_dir=$1 claims=$2
   require_nonempty "confirmation" "${claims}/confirm.json"
   if [[ "$(jq -r '.refutes' "${claims}/confirm.json")" == true ]]; then
     campaign_refute "${iteration_dir}" "${claims}"
   elif [[ "$(jq -r '.confirmed' "${claims}/confirm.json")" != true ]]; then
-    campaign_refuse "${iteration_dir}" "${claims}"
-  fi
-}
-
-# A model CONFIRM gave no verdict on: one row of
-# <iteration>/refused_models.jsonl, its model and the reason.  No
-# refutation, but every later composition of the iteration excludes it as
-# one (compose.Refutations, refused_claim__k: an UNSAT resting on it is no
-# verdict), so the next claim follows (campaign_next_claim); no witness
-# attempt confirms it again (campaign_stream_attempt) and the final CONFIRM
-# takes its row (campaign_confirm), should a composition repeat it.
-campaign_refuse() {
-  local iteration_dir=$1 claims=$2 model
-  model=$(campaign_claim_model "${claims}/claim.json")
-  jq -n -c --argjson model "${model}" --arg claimed "${claims}" \
-    --slurpfile confirmation "${claims}/confirm.json" \
-    '{schemaVersion: 1, kind: "REFUSED_MODEL", model: $model,
-      claimed: $claimed, reason: $confirmation[0].reason}' \
-    >>"${iteration_dir}/refused_models.jsonl"
-  campaign_log "refused, no verdict: $(jq -r '.reason' \
+    campaign_log "no verdict, a defect of the engine: $(jq -r '.reason' \
 "${claims}/confirm.json")"
-}
-
-# The reason CONFIRM gave no verdict on this model (campaign_refuse), or
-# nothing: matched as the composition matches it (campaign_model_key).
-campaign_refused_reason() {
-  local iteration_dir=$1 model=$2
-  [[ -n "${model}" && -s "${iteration_dir}/refused_models.jsonl" ]] \
-    || return 0
-  jq -r -c --argjson model "${model}" "${campaign_model_key}"'
-    select((.model | key) == ($model | key)) | .reason' \
-    "${iteration_dir}/refused_models.jsonl" | head -n 1
+  fi
 }
 
 # One model of an iteration as every composition of it names the model
@@ -6422,10 +6382,9 @@ campaign_last_round_millis() {
 }
 
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE
-# CONFIRM did not confirm -- refuted, or given no verdict (a refused model)
-# -- its model is recorded once in refuted_claims.jsonl and
-# refused_models.jsonl together (campaign_model_key) -- so the next
-# composition excludes it, and it is not a model the composition was told
+# CONFIRM refuted -- a false positive, its model recorded once in
+# refuted_claims.jsonl (campaign_model_key) -- so the next composition
+# excludes it, and it is not a model the composition was told
 # to exclude already -- the budget has room, and fewer than
 # campaign_max_claims claims were decided again.  The claim's artifacts move
 # to final/refuted/NNNN/ first, so final/ holds the claim EMIT publishes.
@@ -6437,8 +6396,7 @@ campaign_next_claim() {
     || return 1
   model=$(campaign_claim_model "${campaign_final}/claim.json")
   [[ -z "${model}" ]] || seen=$(cat "${iteration_dir}/refuted_claims.jsonl" \
-      "${iteration_dir}/refused_models.jsonl" 2>/dev/null \
-    | jq -c --argjson model "${model}" "${campaign_model_key}"'
+      2>/dev/null | jq -c --argjson model "${model}" "${campaign_model_key}"'
       select((.model | key) == ($model | key))' | grep -c '' || true)
   if (( seen != 1 )); then
     campaign_log "the claim's model is excluded ${seen} time(s), not once: \
@@ -6464,9 +6422,7 @@ has no room for another claim"
     [[ ! -e "${campaign_final}/${name}" ]] \
       || mv -- "${campaign_final}/${name}" "${dir}/"
   done
-  campaign_log "the claim was $(jq -r \
-    'if .refutes then "refuted" else "given no verdict" end' \
-    "${dir}/confirm.json") (${dir}): composing the next one"
+  campaign_log "the claim was refuted (${dir}): composing the next one"
 }
 
 # REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again
@@ -6872,10 +6828,6 @@ campaign_emit() {
   # positives (tools/adhoc/triage.py), whatever the claim published.
   local refuted="${iteration_dir}/refuted_claims.jsonl"
   [[ -s "${refuted}" ]] || refuted=/dev/null
-  # Every model CONFIRM gave no verdict on (campaign_refuse), published
-  # beside the claim.
-  local refused="${iteration_dir}/refused_models.jsonl"
-  [[ -s "${refused}" ]] || refused=/dev/null
   # What the last EXPLORE round found decided on no symbol (ExploreMain's
   # concreteAnchors): information beside the verdict, never a gap.
   local explored=/dev/null round
@@ -6900,7 +6852,6 @@ campaign_emit() {
     --arg formula "${formula_path}" \
     --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
-    --slurpfile refusedModels "${refused}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile exploreDocuments "${explored}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
@@ -6968,12 +6919,9 @@ campaign_emit() {
      # session answered and why, not only that the claim was downgraded.
      confirmation: $confirmation,
      refutedClaims: $refutedClaims,
-     # The models CONFIRM gave no verdict on (campaign_refuse): no
-     # refutation, each excluded from the compositions after it, and an
-     # UNSAT resting on one is no verdict (ComposeMain#campaignClaim).
-     refusedModels: $refusedModels,
-     # The excluded models an UNSAT rests on: the refuted_claim__ and
-     # refused_claim__ labels its unsat core names (ComposeMain#campaignClaim),
+     # The excluded models an UNSAT rests on: the refuted_claim__ labels its
+     # unsat core names (ComposeMain#campaignClaim), the false positives
+     # CONFIRM filtered,
      # each the model it excludes -- a region the verdict rests on beside the
      # corpus -- and each world a replay refuted for an open decider arm whose
      # flip then came back UNSAT or stopped at its bound (REFUTED_WORLD,
@@ -7042,12 +6990,6 @@ campaign_emit() {
           then [{stage: "CONFIRM", code: "CONFIRM_NO_VERDICT",
                  subject: ($confirmation.sessionId // ""),
                  detail: $confirmation.reason}]
-          else [] end)
-       # An UNSAT that rests on a model CONFIRM gave no verdict on, or whose
-       # core is unknown beside one (ComposeMain#campaignClaim).
-       + (if ($decided.unsatBesideRefused // false)
-          then [{stage: "COMPOSE", code: "UNSAT_BESIDE_REFUSED",
-                 subject: "", detail: $decided.claimReason}]
           else [] end)
        # A causal chain EXPLORE could not close: a value a fatal condition the
        # verdict rests on names that no attested producer made -- the witness
