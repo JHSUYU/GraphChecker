@@ -397,7 +397,7 @@ initialize_config() {
   causynth_output_dir=${causynth_output_dir:-@project/target/causynth-workflow}
   causynth_target_spec=${causynth_target_spec:-@config/target.yaml}
   custom_jdk_home=${custom_jdk_home:-}
-  z3_bin=${z3_bin:-z3}
+  z3_bin=${z3_bin:-${Z3_BIN}}
   workload_work_dir=${workload_work_dir:-${project_module_dir}}
   # Scheduler, solver and topology bounds have no engine defaults.
   # The production workload states them in its frozen configuration.

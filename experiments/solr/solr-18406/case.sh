@@ -1,6 +1,6 @@
 # SOLR-18406: a follower's filecontent request for a generation its leader
 # deleted after the reservation ran out (Solr 8.11).  Declarations only.
-repo=/bigtemp/vnr3ne/wt/lucene-solr-storing
+repo=${GC_TREES}/lucene-solr-storing
 test_class=org.apache.solr.handler.TestCausynthPullReplicaReservation
 test_method=pullReplicaFetchesAcrossALeaderCommit
 # The leader's first filecontent of G, the first after the commit of G+1

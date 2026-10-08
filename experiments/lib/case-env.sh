@@ -49,6 +49,10 @@ target_spec=${case_dir}/target.yaml
 target_occurrence=
 recording_window=
 scope=()
+# Where the trees and their Maven repositories are (GC_TREES, GC_M2), which
+# every case.sh names its tree under.
+# shellcheck source=../../tools/lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/gc-env.sh"
 # shellcheck source=/dev/null
 source "${system_dir}/system.sh"
 # shellcheck source=/dev/null

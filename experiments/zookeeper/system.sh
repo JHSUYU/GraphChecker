@@ -17,7 +17,7 @@
 zk_module=zookeeper-server
 # The Maven repository every ZooKeeper tree builds with: its SNAPSHOT
 # artifacts are the tree's own, never the shared ~/.m2's.
-zk_maven_repo=/bigtemp/vnr3ne/m2/zookeeper
+zk_maven_repo=${GC_M2}/zookeeper
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (slf4j and its binding, Netty) are not the engine's versions.
 system_jar_first=false

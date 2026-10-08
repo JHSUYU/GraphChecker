@@ -43,6 +43,9 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
 
 ## Taking over: read these, in order
 
+**This branch is locked** with the 39 HDFS cases it closed; the other 7, the current state and the tools that rebuild
+everything a run needs from GitHub (`docs/REPRODUCE.md`) are on `system/hdfs1`.
+
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
 [AGENTS.md](docs/handover/AGENTS.md), [OPERATIONS.md](docs/handover/OPERATIONS.md),

@@ -1,6 +1,6 @@
 # Known ZooKeeper coordination bugs (~/bug_study/ZooKeeper.txt), on one
 # branch-3.9 tree that marks each bug's target throw.  Declarations only.
-repo=/bigtemp/vnr3ne/wt/zookeeper-unified
+repo=${GC_TREES}/zookeeper-unified
 case "${1:?usage: case.sh quota-init|election-offer}" in
   quota-init)
     # Bug 01: SetQuotaCommand.createQuota commits the limit node, then

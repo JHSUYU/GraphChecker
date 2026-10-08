@@ -16,7 +16,7 @@ while IFS=$'\t' read -r n c; do
   f=$d/out/$c/schedule/final
   stop=$(grep -ho 'exploration stopped ([A-Z_]*)' "$d/logs/$c.log" 2>/dev/null | head -1 | sed 's/exploration stopped //')
   claim=$(tail -1 "$s" | cut -f4); secs=$(tail -1 "$s" | cut -f3)
-  z=$( [[ -f $f/candidate.smt2 ]] && timeout 300 ~/.local/bin/z3 -smt2 "$f/candidate.smt2" 2>/dev/null | head -1)
+  z=$( [[ -f $f/candidate.smt2 ]] && timeout 300 "$Z3_BIN" -smt2 "$f/candidate.smt2" 2>/dev/null | head -1)
   extra=$(python3 - "$f" "$d/report/$c" <<'PY'
 import json,sys,os
 f=sys.argv[1]; out=[]

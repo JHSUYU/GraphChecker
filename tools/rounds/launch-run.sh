@@ -12,7 +12,6 @@ export SKIP_BUILD=1
 export JAR="$1/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
 export CASES="$2"
 export OUT=${GC_OUT}/accept-"$3"
-export Z3_BIN=/u/vnr3ne/.local/bin/z3
 export CAUSYNTH_CUSTOM_JDK_HOME
 # Its obligations go to every host in LIFTS, as a round's do (launch-round.sh):
 # a run left to its head alone replayed two or three at a time (W6C2-W6C4).

@@ -23,7 +23,7 @@ Defaults, all overridable by environment: `JAR` = `<repo>/target/GraphChecker-
 1.0-SNAPSHOT-jar-with-dependencies.jar` (setting it moves the run to that
 jar's own repo, because `run_engine.sh` resolves the jar relative to its own
 tree), `OUT` = `<repo>/target/accept`, `CASES` = the nine cases in `ACCEPT_ALL_CASES`,
-`CASE_TIMEOUT_SECONDS` = 21600, `Z3_BIN` = `z3`, `Z3_TIMEOUT_SECONDS` = 600,
+`CASE_TIMEOUT_SECONDS` = 21600, `Z3_BIN` = `tools/lib/gc-env.sh`'s, `Z3_TIMEOUT_SECONDS` = 600,
 `MIN_FREE_GB` = 6 and `DISK_WAIT_SECONDS` = 1800 (free space on the filesystem
 `OUT` is written to; a 1 MB probe write there that is refused, as under a full
 per-user quota, counts as none: the preflight fails, and a case waits and is
