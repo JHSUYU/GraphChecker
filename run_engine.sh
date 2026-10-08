@@ -13,6 +13,7 @@ usage() {
 Usage:
   ./run_engine.sh --config FILE campaign
   ./run_engine.sh --config FILE config|validate
+  ./run_engine.sh --config FILE reproduce
   ./run_engine.sh --config FILE --run-obligation \
       --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
       ID OBLIGATIONS SESSIONS WORKER CHARGED_MB
@@ -24,6 +25,10 @@ Commands:
               (a streaming pool of obligations, growing the woven region
               set as replays expose it) and
               compose/solve/decide/confirm/reproduce/emit.
+  reproduce   REPRODUCE alone over a finished campaign: the configuration's
+              output directory (CAUSYNTH_OUTPUT_DIR, a copy of one, so the
+              original is never written; tools/rounds/reproduce-again.sh)
+              holds a confirmed claim and no reproduction yet
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
@@ -6425,12 +6430,14 @@ has no room for another claim"
   campaign_log "the claim was refuted (${dir}): composing the next one"
 }
 
-# REPRODUCE (ADHOC-INFRA WP5.D), after EMIT: a confirmed witness run again
+# REPRODUCE (PIPELINE §10b), after EMIT: a confirmed witness run again
 # natively -- the recording weave on the stock JDK, planting what the
 # confirmation's world plants and holds (its fault markers, its trees' hook
-# roots, its ORDER rows) and watching the target's guards for their fatal
-# arm at the claim's anchor (explore.ConfirmMain --plant, the code that wrote
-# CONFIRM's world; runtime.RecordingPlant).  reproduce_runs runs, all at
+# roots, its clock jumps, configurations, accessor reads and answers at the
+# calls the plant-run agent hands it, its ORDER rows) and watching the
+# target's guards for their fatal arm at the claim's anchor
+# (explore.ConfirmMain --plant, the code that wrote CONFIRM's world;
+# runtime.RecordingPlant, runtime.PlantAgent).  reproduce_runs runs, all at
 # once, each a head step charged the recording's measured peak resident
 # memory wherever there is room (campaign_reproduce_one) and bounded by
 # campaign_reproduce_bound; a run ends as
@@ -6438,16 +6445,17 @@ has no room for another claim"
 # question answered.  Each run states its answer itself
 # (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
 # many applied every row of the plant, took the target's fatal arm, took it
-# at the claim's own anchor, reproduced (at the anchor with every ROOT row
-# applied: what tools/adhoc/findings.py rates), could not hold an ORDER in
-# time, and still held one when the run ended -- and names the runs that
-# stated none.  A native run holds no recorded order,
+# at the claim's own anchor, reproduced (at the anchor with every ROOT and
+# ANSWER row applied: what tools/adhoc/findings.py rates), could not hold an
+# ORDER in time, and still held one when the run ended -- and names the runs
+# that stated none.  A native run holds no recorded order,
 # only the model's, so the planted occurrence may not recur: the rate ranks
 # a finding (tools/adhoc/findings.py) and never refutes it, and nothing here
 # moves the claim, CONFIRM's decision or what EMIT published.  A world a
-# native run cannot plant (a clock, an attach's answer, a configuration, a
-# world that plants nothing), or a recording that measured no peak memory,
-# is a reproduce.json with no run and the reason.  Only a confirmed
+# native run cannot plant (NATIVE_PLANT_UNSUPPORTED: a root minted other
+# than at a call's return, an answer at no call-return capture, a world that
+# plants nothing), or a recording that measured no peak memory, is a
+# reproduce.json with no run and the reason.  Only a confirmed
 # SAT_CANDIDATE is reproduced.
 campaign_reproduce() {
   local iteration_dir=$1
@@ -6538,14 +6546,17 @@ logs are in ${run}"
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
 # rows, applied, unapplied, planted, rootsPlanted, fatal, atAnchor,
-# reproduced} -- the plant's rows to apply (ROOT and ORDER), how many the
-# run applied, each one it did not with why (UNHELD: an ORDER's wait timed
-# out; HOLDING: still waiting when the run ended; UNWRITTEN: a HOOK row's
-# field write failed; NOT_REACHED), whether it applied every row and every
-# ROOT row, whether it took the target's fatal arm and at the anchor, and
-# whether it reproduced: the fatal arm at the anchor with every ROOT row
-# applied -- a run that did not plant the model's roots and reaches the
-# fatal anyway is the program's own race, no reproduction.  An ORDER is held
+# reproduced} -- the plant's rows to apply (ROOT, ANSWER and ORDER: a
+# CLOCK_SITE or TARGET row is context), how many the run applied, each one
+# it did not with why (UNHELD: an ORDER's wait timed out; HOLDING: still
+# waiting when the run ended; UNWRITTEN: a value it could not plant -- a
+# HOOK row's field write, a value the call's type cannot hold; NOT_REACHED),
+# whether it applied every row and every ROOT and ANSWER row (clock jumps,
+# configurations and answers included), whether it took the target's fatal
+# arm and at the anchor, and whether it reproduced: the fatal arm at the
+# anchor with every ROOT and ANSWER row applied -- a run that did not plant
+# the model's world and reaches the fatal anyway is the program's own race,
+# no reproduction.  An ORDER is held
 # at most half the run's bound (causynth.confirm.order.timeout.ms), so an
 # unrealizable order is stated UNHELD before the bound ends the run.
 campaign_reproduce_run() {
@@ -6558,7 +6569,8 @@ campaign_reproduce_run() {
   [[ -s "${trace}" ]] || trace=/dev/null
   jq -n -c -R --argjson exit "${status}" --slurpfile plant "${plant}" '
     [inputs | select(contains("\"event\":\"PLANT_")) | fromjson?] as $rows
-    | [$plant[] | select(.kind != "TARGET")] as $planted
+    | [$plant[] | select(.kind == "ROOT" or .kind == "ANSWER"
+        or .kind == "ORDER")] as $planted
     | def stated($event): [$rows[] | select(.event == $event) | .row];
       def why($row):
         if any(stated("PLANT_UNHELD")[]; . == $row) then "UNHELD"
@@ -6567,11 +6579,11 @@ campaign_reproduce_run() {
         else "NOT_REACHED" end;
       stated("PLANT_APPLIED") as $applied
     | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
-        | {row, kind, planted: (.rootId // "\(.before) -> \(.after)"),
-           why: why($p.row)}] as $unapplied
+        | {row, kind, planted: (.rootId // .endpoint
+             // "\(.before) -> \(.after)"), why: why($p.row)}] as $unapplied
     | ($planted | length) as $count
     | any($rows[]; .event == "PLANT_FATAL" and .atAnchor) as $atAnchor
-    | (all($unapplied[]; .kind != "ROOT")) as $roots
+    | (all($unapplied[]; .kind == "ORDER")) as $roots
     | {exit: $exit, rows: $count, applied: ($count - ($unapplied | length)),
        unapplied: $unapplied,
        planted: ($count > 0 and ($unapplied | length) == 0),
@@ -7307,6 +7319,32 @@ do_campaign() {
   campaign_exit_verdict
 }
 
+# REPRODUCE alone (`reproduce`): the stage over a finished campaign's output
+# directory, a copy of one (tools/rounds/reproduce-again.sh links what it
+# reads), with the claim, manifest and confirmation EMIT published and no
+# reproduction yet.  The recording's own time is not kept apart from SEED's,
+# so SEED's time is what the runs' bound is a factor of
+# (campaign_reproduce_bound).
+do_reproduce() {
+  campaign_root="${schedule_output_dir}"
+  campaign_final="${campaign_root}/final"
+  composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+  require_file "a confirmation" "${campaign_final}/confirm.json"
+  require_file "a composition manifest" "${composition_manifest}"
+  [[ ! -e "${campaign_final}/reproduce.json" ]] \
+    || die "this campaign already holds a reproduction: ${campaign_final}"
+  campaign_recorded_workload_rss_mb=$(cat \
+    "$(dirname "${runtime_region_plan}")/workload_rss_mb" 2>/dev/null) \
+    || campaign_recorded_workload_rss_mb=""
+  campaign_recorded_workload_s=$(awk -F'\t' '$1 == "SEED" {
+    print int($2 / 1000) }' "${campaign_root}/stage_metrics.tsv" 2>/dev/null)
+  campaign_init_local_scratch_root
+  campaign_head_charging=1
+  campaign_head_reserve
+  campaign_reproduce "${campaign_root}/iteration-0000"
+  cat "${campaign_final}/reproduce.json"
+}
+
 # One claim of the iteration: composed, solved, decided and confirmed.
 campaign_claim_stages() {
   campaign_stage COMPOSE campaign_compose "$1"
@@ -7343,13 +7381,17 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|config|validate|--run-obligation|--run-placed)
+  campaign|config|validate|reproduce|--run-obligation|--run-placed)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
       campaign)
         [[ $# -eq 0 ]] || die "campaign takes no extra arguments"
         do_campaign
+        ;;
+      reproduce)
+        [[ $# -eq 0 ]] || die "reproduce takes no extra arguments"
+        do_reproduce
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;

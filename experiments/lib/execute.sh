@@ -30,12 +30,14 @@ else
   scratch_owned=${work}
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
-  # A native reproduction plants CONFIRM's world (runtime.RecordingPlant),
-  # each ORDER held at most CAUSYNTH_ORDER_TIMEOUT_MS (runtime.Confirmation).
+  # A native reproduction plants CONFIRM's world (runtime.RecordingPlant):
+  # the plant-run agent hands it the returns of the calls the plant reads
+  # (runtime.PlantAgent), and each ORDER is held at most
+  # CAUSYNTH_ORDER_TIMEOUT_MS (runtime.Confirmation).
   properties=(
     "-Dcausynth.trace.test=${test_name}"
     "-Dcausynth.trace.start.paused=true"
-    ${CAUSYNTH_PLANT:+"-Dcausynth.plant=${CAUSYNTH_PLANT}"}
+    ${CAUSYNTH_PLANT:+"-javaagent:${jar}" "-Dcausynth.plant=${CAUSYNTH_PLANT}"}
     ${CAUSYNTH_ORDER_TIMEOUT_MS:+"-Dcausynth.confirm.order.timeout.ms=${CAUSYNTH_ORDER_TIMEOUT_MS}"})
 fi
 

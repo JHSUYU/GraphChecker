@@ -39,8 +39,6 @@ arms, the wait deadline and the open-arm keys; a run of them on `system/hdfs1` i
   `HashMap`s). Then 07 runs on r7 without r8, and its world depth back at the default if it converges.
 - **The time family** (21 22 23 24 25 34 35 52): the r7 workarounds (STATUS "Per-system surface") stay; the time model
   is never ground on (RULES).
-- **Native reproduction of a clock world**: none exists (`NATIVE_PLANT_UNSUPPORTED`); 11741's validation is CONFIRM's
-  replay. A native clock plant (an agent-side clock offset per node) would give it a k/N.
 
 ### 3. A loop root's prefix as its own occurrence (general fix for 21's tree workaround; design ready)
 A LOOP_BODY_ROOT occurrence's activations are its loop's iterations, so what its root method runs before the loop

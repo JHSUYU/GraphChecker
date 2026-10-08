@@ -1253,8 +1253,8 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     reproduce_min_s=75
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
-    # ConfirmMain --plant: a root, an order and the target's arm, else
-    # refused.
+    # ConfirmMain --plant: a root, an order, an answer, a clock reading (a
+    # context row, applied by nobody) and the target's arm, else refused.
     run_java_main() {
       (( repro_plant == 0 )) || {
         echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
@@ -1268,13 +1268,15 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
       {
         echo '{"kind":"ROOT","category":"HOOK","rootId":"R","row":0}'
         echo '{"kind":"ORDER","before":"b|","after":"a|","row":1}'
-        echo '{"kind":"TARGET","row":2}'
+        echo '{"kind":"ANSWER","endpoint":"e","row":2}'
+        echo '{"kind":"CLOCK_SITE","row":3}'
+        echo '{"kind":"TARGET","row":4}'
       } >"${plant}"
     }
     # Run n: 1 every row applied and the fatal at the anchor; 2 its order
     # unheld and the fatal elsewhere; 3 its root unwritten, its order still
-    # holding, and the fatal at the anchor all the same -- the program's own
-    # race, no reproduction; 4 no trace.  Each states its bound, its order
+    # holding, its answer not reached, and the fatal at the anchor all the
+    # same -- the program's own race, no reproduction; 4 no trace.  Each states its bound, its order
     # timeout and its charge, and the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
@@ -1285,8 +1287,10 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
         echo '{"event":"BRANCH"}'
         case ${n} in
           1) echo '{"event":"PLANT_APPLIED","row":0}'
-             echo '{"event":"PLANT_APPLIED","row":1}' ;;
+             echo '{"event":"PLANT_APPLIED","row":1}'
+             echo '{"event":"PLANT_APPLIED","row":2}' ;;
           2) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_APPLIED","row":2}'
              echo '{"event":"PLANT_HOLDING","row":1}'
              echo '{"event":"PLANT_UNHELD","row":1}' ;;
           3) echo '{"event":"PLANT_UNWRITTEN","row":0}'
@@ -1312,7 +1316,7 @@ ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
   [[ "${repro_expected}" != *'"runs":4'* \
       || "$(jq -c '[.unapplied[].why]' \
         "${repro_dir}/final/reproduce/run-3/answer.json")" \
-        == '["UNWRITTEN","HOLDING"]' ]] \
+        == '["UNWRITTEN","HOLDING","NOT_REACHED"]' ]] \
     || fail "a run does not say why it did not apply a row: \
 $(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
   [[ "${repro_expected}" != *'"runs":4'* \
