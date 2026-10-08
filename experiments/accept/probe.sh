@@ -77,7 +77,8 @@ set -uo pipefail
 
 # shellcheck source=../../tools/lib/gc-env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/gc-env.sh"
-ACCEPT_Z3=${Z3_BIN}
+# shellcheck source=../../tools/lib/z3-race.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/z3-race.sh"
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
 ACCEPT_WHOLE=${PROBE_WHOLE_SECONDS:-60}
 (( ACCEPT_WHOLE > ACCEPT_Z3_TIMEOUT )) && ACCEPT_WHOLE=$ACCEPT_Z3_TIMEOUT
@@ -98,9 +99,9 @@ mkdir -p "$work/probe"
 grep -av '^(check-sat' "$C" | grep -av '^(get-value' \
   | grep -av ':named valuation__' >"$work/probe/body.smt2"
 
-solve() {  # solve <file> <seconds>: z3's verdict line
+solve() {  # solve <file> <seconds>: z3's verdict line, both arithmetic engines raced
   local out
-  out=$(timeout $(($2+60)) "$ACCEPT_Z3" -T:"$2" "$1" 2>&1 | tail -1)
+  out=$(z3_race "$1" "$2" | tail -1)
   printf '%s' "${out:-NO_OUTPUT}"
 }
 

@@ -11,7 +11,9 @@ is one of those, with how it fooled the check and how to see it now.
 GC_OUT=<out> tools/rounds/round-verify.sh <round> [case...]
 ```
 
-One line per finished case: the claim, how EXPLORE ended (`end=`), z3 on the exported `final/candidate.smt2`,
+One line per finished case: the claim, how EXPLORE ended (`end=`), z3 on the exported `final/candidate.smt2` (under
+both arithmetic engines at once, the first that decides answering, as the engine asks: `tools/lib/z3-race.sh`; under
+engine 2 alone solr-18413's file was undecided in 300 s, under 6 sat in 0.2 s),
 `BOUNDED:<keys>` (a declared bound cut the search: `result.json` `bounded`), `UNBOUND:<n>` (distinct boundary
 variables a fatal condition names that no message family binds: `report/<case>/cone.json` `unbound`),
 `BLOCKING:<codes>`, `moved=`/`polarityDecides=`, `leaves=` (the formula's leaf symbols, roots/reads/handoffs; 0 is
