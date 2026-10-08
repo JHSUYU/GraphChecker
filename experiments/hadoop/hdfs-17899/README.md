@@ -56,16 +56,14 @@ HDFS case's `../communication-mappings.jsonl`); `case.sh` carries what is per ca
 | the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/target-dn#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
 | clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | fault points | the engine's library catalog (`docs/design/SYMBOL-SCOPE.md` §4.2), not this directory | every catalog door of a class the system calls is woven with its Boolean fault points: `FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure), `FAULT:HADOOP_IPC:RESPONSE`, `FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`, `FAULT:HDFS_DATA_TRANSFER:REQUEST` in `datatransfer.Sender.send` and `FAULT:HDFS_DATA_TRANSFER:RESPONSE` after each response or ack parse of a class in scope (`DataNode$DataTransfer`'s close ack, `BlockDispatcher`'s response). The recorded polarity is false; true throws the transport's failure before the request leaves (after the response arrives) |
-| hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither is listed in `symbolic-inputs.jsonl` |
+| hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`) |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
 | wire mappings | `../communication-mappings.jsonl` (every HDFS case's one declaration), one `WIRE_FLOW` row | `data-encryption-key-id` (`CALL_ARGUMENT` at the SASL client, `METHOD_PARAMETER` 0 of `retrieveDataEncryptionKey`: the key id travels inside the SASL user name, where no automatic port sees it). The block keys' ids and expiry dates and the NameNode's data-encryption key id are protobuf message fields: derived ports, which the IPC door walks (SYMBOL-SCOPE §6.2-6.3). Declared ports are tracked and mint nothing: the consumer gets the producer's own propagated expression |
 | loop bounds | `loop-bounds.jsonl` (five rows) for `bug1`/`bug2`, `loop-bounds-datanode.jsonl` (four rows) for `bug3`, every row at `loopBodyBound: 8`; `causynth_loop_default_bound=8` | `case.sh` selects the file and `run.sh` exports it as `CAUSYNTH_LOOP_BOUNDS` |
 
 ## Build and run
 
-Each case has its own Hadoop worktree, so its source changes and compiled classes stay
-independent, and each replay loads that checkout's common, client and HDFS classes. From
-this directory, replacing `bug1` as needed:
+From this directory, replacing `bug1` as needed:
 
 ```bash
 ../../lib/run.sh . bug1 build      # installs the current GraphChecker API, builds that checkout,
@@ -74,8 +72,8 @@ this directory, replacing `bug1` as needed:
 ../../lib/run.sh . bug1 campaign
 ```
 
-`lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
-`CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Each workload opens its recording
+`lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR`; override it with a fresh directory per
+campaign. Each workload opens its recording
 boundary only after its stable node and application sources and aliases are registered. The
 in-tree acceptance harness (`experiments/accept/README.md`) runs campaign, z3 probe
 and report together, one case at a time:

@@ -102,8 +102,8 @@ From this directory, replacing `pathA` as needed:
 ../../lib/run.sh . pathA campaign
 ```
 
-`lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
-`CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Or run the acceptance harness
+`lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR`; override it with a fresh directory per
+campaign. Or run the acceptance harness
 (`experiments/accept/README.md`), which does campaign, z3 probe and report together:
 
 ```bash

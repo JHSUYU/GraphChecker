@@ -1,6 +1,6 @@
 # HDFS ad hoc coordination checks: the HDFS sites of the owner's static
-# study (GraphChecker branch `study`, study.txt [HDFS-NN]) on the one tree
-# gc/hdfs-study.  The tree marks each check's throw with
+# study (docs/checks/study.txt [HDFS-NN]) on the tree gc/hdfs-study-r7 (the
+# fork's graphchecker/hdfs-checks).  The tree marks each check's throw with
 # @CausynthExceptionTarget("hdfs-adhoc-NN"); checks.tsv declares, per NN, the
 # workload, where its window opens and the classes the analysis starts from.
 # Declarations only.
