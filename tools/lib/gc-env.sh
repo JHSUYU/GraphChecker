@@ -30,3 +30,16 @@
 : "${LIFTS:=lift06 lift07 lift08 lift09 lift10 lift11 lift12 lift13 lift14 lift15}"
 : "${CAUSYNTH_HOST_MAX_USED_PCT:=70}"
 export GC_BULK GC_OUT GC_TREES GC_M2 Z3_BIN CAUSYNTH_HOST_LEDGER LIFTS CAUSYNTH_HOST_MAX_USED_PCT
+
+# gc_env_words: the values above as NAME=value words, for a command another
+# host runs.  ssh drops the environment, and each replay re-reads its case.sh
+# (experiments/lib/execute.sh), so every hop that starts a run or a piece of
+# one elsewhere (launch-round.sh's heads, a sweep's jobs, a campaign's remote
+# workers) passes them: the whole run sees one tree, one z3, one ledger.
+gc_env_names=(GC_BULK GC_OUT GC_TREES GC_M2 Z3_BIN CAUSYNTH_HOST_LEDGER LIFTS CAUSYNTH_HOST_MAX_USED_PCT)
+gc_env_words() {
+  local name
+  for name in "${gc_env_names[@]}"; do
+    printf '%s=%q ' "${name}" "${!name}"
+  done
+}

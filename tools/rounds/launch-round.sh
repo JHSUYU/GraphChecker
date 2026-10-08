@@ -91,9 +91,7 @@ for launch in "${launches[@]}"; do
     continue
   fi
   suffix="${round}-${case_id#hdfs-}"
-  command="setsid nohup env CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' \
-GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} \
-CAUSYNTH_HOST_MAX_USED_PCT=${CAUSYNTH_HOST_MAX_USED_PCT} \
+  command="setsid nohup env CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' $(gc_env_words)\
 CAUSYNTH_CUSTOM_JDK_HOME=${vm} ${stop_after} \
 bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} ${case_id} ${suffix} \
 > ${out}/launch-${suffix}.log 2>&1 < /dev/null &"

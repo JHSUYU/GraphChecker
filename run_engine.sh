@@ -1768,9 +1768,9 @@ campaign_write_remote_worker_script() {
     printf '    PATH=%q \\\n' "${PATH}"
     printf '    HOME=%q \\\n' "${HOME}"
     printf '    CAUSYNTH_LOCAL_SCRATCH=%q \\\n' "${campaign_local_scratch_root}"
-    printf '    CAUSYNTH_HOST_LEDGER=%q \\\n' "${campaign_host_gate_root}"
-    printf '    CAUSYNTH_HOST_MAX_USED_PCT=%q \\\n' \
-      "${campaign_host_max_used_pct}"
+    for assignment in "${gc_env_names[@]}"; do
+      printf '    %s=%q \\\n' "${assignment}" "${!assignment}"
+    done
     while IFS= read -r assignment; do
       printf '    %q \\\n' "${assignment}"
     done < <(campaign_remote_env_assignments)

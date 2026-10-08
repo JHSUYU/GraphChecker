@@ -58,6 +58,6 @@ not be read): no case is launched" >&2
     exit 2
   }
   printf '%s\t%s\n' "${n}" "${cases[$n]}" >> "${out}/sweep-${round}-cases.tsv"
-  printf '%s\n' "ADMIT_MB=$(case_head_reserve_mb "${config}") PRUNE=${PRUNE:-1} CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_STREAM_SHARED_POOL=true CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' GC_OUT=${out} CAUSYNTH_HOST_LEDGER=${CAUSYNTH_HOST_LEDGER} ${vm}${stop_after} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
+  printf '%s\n' "ADMIT_MB=$(case_head_reserve_mb "${config}") PRUNE=${PRUNE:-1} CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_STREAM_SHARED_POOL=true CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' $(gc_env_words)${vm}${stop_after} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
 done
 exec bash "${here}/fanout.sh" "${jobs}" "${out}/sweep-${round}-logs" "${heads}"
