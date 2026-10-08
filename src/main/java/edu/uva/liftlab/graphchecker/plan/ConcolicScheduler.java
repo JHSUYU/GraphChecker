@@ -141,8 +141,12 @@ public final class ConcolicScheduler {
                     target.add("guards", guards);
                 }
                 // The arms a forced replay forces on the way to the throw
-                // (ForcingTable): the replay plan carries them.
-                JsonArray force = loaded.staticScopeMap.forcing();
+                // (ForcingTable), for this occurrence: the replay plan
+                // carries them.
+                JsonArray force = ForcingTable.forOccurrence(
+                        loaded.staticScopeMap.forcing(),
+                        throwMethods(loaded.staticScopeMap),
+                        observedSites(candidate.branches));
                 if (force.size() > 0) target.add("force", force);
                 executionTask.add("targetBranch", target);
             }
@@ -270,6 +274,28 @@ public final class ConcolicScheduler {
             return guards;
         }
         return guards;
+    }
+
+    /** The methods of the declared throws. */
+    private static Set<String> throwMethods(StaticScopeMap map) {
+        Set<String> methods = new LinkedHashSet<>();
+        for (StaticScopeMap.Site target : map.targetSites()) {
+            methods.add(SiteId.methodOf(target.siteId));
+        }
+        return methods;
+    }
+
+    /** The branch sites the recording's occurrence decided. */
+    private static Set<String> observedSites(JsonArray branches) {
+        Set<String> sites = new LinkedHashSet<>();
+        for (JsonElement element : branches) {
+            if (element.isJsonObject() && optionalBool(
+                    element.getAsJsonObject(), "observed", false)) {
+                sites.add(optionalString(element.getAsJsonObject(),
+                        "siteId"));
+            }
+        }
+        return sites;
     }
 
     /** The helper branch arms deciding the target guard {@code

@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -176,6 +177,36 @@ public final class ForcingTable {
             }
         }
         return Collections.unmodifiableMap(table);
+    }
+
+    /**
+     * PLAN: the table one declared occurrence is forced by.  Where the
+     * recording's occurrence entered the throw's method (it decided a branch
+     * there, {@code observed}), a caller's chain guard is left out: the run
+     * reaches the method by some call, and forcing the guard of another call
+     * into it would only divert it (solr-18413 FA1: two callers' guards,
+     * concrete, forced off the way the recording took into the method, and
+     * the forced condition was {@code false}).  The throw's method's own
+     * branches and the deciders (forced only in a call from their {@code
+     * via}) stay.
+     */
+    public static JsonArray forOccurrence(JsonArray table, Set<String> throwMethods,
+                                          Set<String> observed) {
+        boolean entered = false;
+        for (String site : observed) {
+            entered |= throwMethods.contains(SiteId.methodOf(site));
+        }
+        if (!entered) return table.deepCopy();
+        JsonArray kept = new JsonArray();
+        for (JsonElement row : table) {
+            if (!row.isJsonObject()) continue;
+            JsonObject arm = row.getAsJsonObject();
+            if (arm.has("via") || throwMethods.contains(
+                    SiteId.methodOf(optionalString(arm, "siteId")))) {
+                kept.add(arm.deepCopy());
+            }
+        }
+        return kept;
     }
 
     /** Every row of several tables, a site named twice kept once. */

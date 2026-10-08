@@ -140,7 +140,9 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    the one decision each target row's open decider arm names (`TargetRow.OpenArm`); and `force`,
    the forcing table (each of those branches with the arm that leads to the throw,
    `plan.ForcingTable`), which PLAN copies onto the declared task's `targetBranch.force` for the
-   forced replay (§7.10). Loop-bound
+   forced replay (§7.10), less a caller's chain guard where the recording's occurrence entered the
+   throw's method (`ForcingTable#forOccurrence`: it reaches the method by some call, and forcing another
+   call's guard would only divert it). Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
@@ -406,7 +408,8 @@ schedule) and:
    indexed by whether its opening session answered its consumer's occurrence; only another
    answered pairing fills such a slot.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
-   campaign has queued or running), builds the candidates (§7.4) and opens the round:
+   campaign has queued or running), builds the candidates (§7.4) -- the FORCE run first while it is owed, the
+   forced flips next, the seed path's flips at forced sites deferred behind them (§7.10) -- and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
 6. Names the WITNESSES: every admitted focused session whose target row at the anchor observed the
    fatal (`ExploreMain#witnesses`), and states the anchor as a target row spells its occurrence
@@ -418,7 +421,7 @@ schedule) and:
    the counts new since the previous round), `growth.jsonl` (§7.8), `tasks.jsonl`, `gaps.jsonl` and
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
-   verdict histogram, gap counts, state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
+   verdict histogram, gap counts, `force` (§7.10), state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
    flight) | `FIXED_POINT`, `concreteAnchors` and `openArms`). What only the seed ran is BLOCKING at the fixed
    point alone: nothing proposed, exposed or in flight, and no witness. A concrete anchor (§7.2) is
    information, never a gap: its decision is a constant of the formula (§8, a `false` phi), and each

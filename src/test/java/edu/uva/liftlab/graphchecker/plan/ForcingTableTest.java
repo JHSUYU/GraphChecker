@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 
@@ -94,6 +95,34 @@ public class ForcingTableTest {
                 + ",\"force\":" + force + "}").forcing());
         assertEquals("no target, no table", new JsonArray(),
                 StaticScopeMap.empty().forcing());
+    }
+
+    /** An occurrence that entered the throw's method is forced by its own
+     *  branches and the deciders only; one that never did, by its callers'
+     *  guards too. */
+    @Test
+    public void anOccurrenceInsideTheThrowsMethodLeavesItsCallersGuards() {
+        JsonArray table = JsonParser.parseString("[{\"siteId\":\"" + M
+                + "#u8\",\"arm\":false},{\"siteId\":\"" + CALLER
+                + "#u4\",\"arm\":true},{\"siteId\":\"" + H
+                + "#u1\",\"arm\":false,\"via\":\"" + M + "\"}]")
+                .getAsJsonArray();
+        Set<String> throwing = Collections.singleton(M);
+        Object[][] rows = {
+                {"it decided a branch of the throw's method",
+                        Collections.singleton(M + "#u3"), 2},
+                {"it never entered it", Collections.singleton(
+                        CALLER + "#u2"), 3},
+                {"it decided nothing", Collections.<String>emptySet(), 3}};
+        for (Object[] row : rows) {
+            @SuppressWarnings("unchecked")
+            Set<String> observed = (Set<String>) row[1];
+            Map<String, ForcingTable.Arm> kept = ForcingTable.read(
+                    ForcingTable.forOccurrence(table, throwing, observed));
+            assertEquals((String) row[0], row[2], kept.size());
+            assertEquals((String) row[0], (Integer) row[2] == 3,
+                    kept.containsKey(CALLER + "#u4"));
+        }
     }
 
     @Test
