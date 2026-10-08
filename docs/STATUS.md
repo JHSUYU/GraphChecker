@@ -1,9 +1,9 @@
 # Status
 
 This page describes what the code on this branch (HEAD) does. The HDFS group is finished (46 of 46): "HDFS checks"
-below holds every one of the 46 cases with its branch (`system/hdfs` locked, or this branch `system/hdfs1`), run, verdict and its
-`.smt` read by hand; the Acceptance section is the `main` regression set (V25). Every commit that completes or changes something listed here updates this
-page in the same commit.
+below holds every one of the 46 cases with its branch (`system/hdfs` locked, or this branch `system/hdfs1`), run, verdict
+and its `.smt` read by hand. Every commit that completes or changes something listed here updates this page in the same
+commit.
 
 - **Done** means the code does it on HEAD.
 - **Partial** means the code does part of it; the "missing" column says which part.
@@ -12,45 +12,6 @@ page in the same commit.
 Pointers are `path` plus class and method. `gc/` stands for
 `src/main/java/edu/uva/liftlab/graphchecker/`, and `VM/` for
 `third_party/OpenJDK-Concolic-Execution-Engine/hotspot/src/share/vm/`.
-
-## Acceptance
-
-Main after the merges of `symbolic-scope` (rounds `V10`, `V11`), `system-zookeeper` + the recorded-address identity rule
-(`V12`, `V13`), `vm-streams` (round `V14`, 12/12 incl. zk-bugs-quota-init), `retire-adhoc-pipeline` (`V15`),
-`seed-functional` (`V16` + `V16b`, snapshot `p229`, 12/12), `preWindow-loop-root` (round `V17`, snapshot `p230`, 12/12),
-`zk-election-offer` (round `V18`, snapshot `p231`, 13/13, hdfs-11741 on its rerun `V18b`) and `pairing-port` (rounds `PP1` +
-`PP1b`, snapshot `pp1`, under `/bigtemp/vnr3ne/gc-out/pairing-port/`: 13/13 and hdfs-11741 twice) `vm-model-guards` (round
-`V19`, snapshot `p232`, 13/13), `host-ledger-lease` (`V20`, `p233`) and `replay-address-only` + `readout-stream`
-(`V21`, `p234`), `hbase-identity` (`V22c`, `p236`), `slice-matched-returns` (`V23`, `p237`), each 13/13, `slowdisk-dev` (`V24`, `p238`, 14/14) and `replay-heap-bound` (`V25`, `p239`, 14/14), VM `/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image`, trees `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`, the eight
-named HDFS cases), `~/hadoop-hdfs-11741`
-(`gc/hdfs-11741`) and `/bigtemp/vnr3ne/wt/lucene-solr-storing` (`gc/solr-unified-storing` `663e0ef`). Runs under
-`/bigtemp/vnr3ne/gc-out/accept-<round>-<case>/`, each `.smt` at `out/<case>/schedule/final/candidate.smt2`. Every
-case is PASS by `experiments/accept/report.py` (SAT_CANDIDATE, no BLOCKING gap, the expected mechanism,
-`polarityDecides`, confirmed, moved roots in `cone.py`'s cone), and its causal chain was checked by hand against
-the system's code (the moved roots are those of the Phase 1 release, rounds `F1`/`F1b`/`N1`).
-
-| case | run | time | mechanism (moved roots) |
-| --- | --- | --- | --- |
-| hdfs-17897 | `V17` | 6 min | MARKER_FLIPPED, IPC door of the target DataNode's first in-window heartbeat (V17: response, `REGION.9ffdee3d`, `Client#getRpcResponse`; other rounds: request, `REGION.763d087e`, `Client$Connection#sendRpcRequest`) |
-| hdfs-17899-bug1 | `V17` | 9 min | MARKER_FLIPPED, the same heartbeat's IPC door (V17: response; V16: request) |
-| hdfs-17899-bug2, bug3 | `V17` | 10, 10 min | MARKER_FLIPPED, IPC door (V17: bug2 response, bug3 request) |
-| hdfs-17967-pathA, B, C | `V17` | 6, 9, 7 min | MARKER_FLIPPED, IPC door (V17: pathA and pathC response, pathB request) |
-| hdfs-17960 | `V17` | 11 min | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` |
-| hdfs-11741 | `V17` | 25 min | CLOCK_SKEW: the NameNode key-rotation clock (`REGION.08ab84c9`) sets a key's `expiryDate`, which crosses to dn1 as a handoff; dn1's `removeExpiredKeys` (`assoc_remove_if` over `allKeys`, `expiry < clock`) by its own clock (`REGION.ba3902cd`) drops the key the Balancer holds, and `retrieveDataEncryptionKey` throws |
-| solr-18406 | `V17` | 17 min | CLOCK_SKEW: the `IndexCommitWrapper.delete()` clock jumps past the commit's one-hour reservation, generation 2 is deleted and `getAndSaveCommitPoint(2)` throws |
-| solr-18413 | `V17` | 21 min | CLOCK_SKEW between nodes: the Overseer's `MigrateCmd` clock (node0, `REGION.b648bde9`) sets `expireAt` = clock + timeout, relayed through the queue and `SliceMutator` into `state.json`; the source shard's leader (node1) parses it in `RoutingRule` and checks it against its own clock (`REGION.f92dbcb6`), so the rule is still valid there and the migrated target collection's lookup throws |
-
-| zk-bugs-quota-init | `V17` (tree `/bigtemp/vnr3ne/wt/zookeeper-unified`, `gc/zk-unified` `8f18cf3a4`) | 6 min | MARKER_FLIPPED, the ZOOKEEPER WRITE door's ConnectionLoss on `SetQuotaCommand.createQuota`'s limit create (`REGION.acedb7d4`, `createQuota@0/create@1`): the limit is written, the client retries, the retry finds the limit and takes the update branch, and the server's `getData` of the stat node the failed call never created throws NoNode |
-| zk-bugs-election-offer | `V18` (tree `gc/zk-unified`) | 12 min | STATE_PAIRING_FLIPPED (no root moved): the anchor, Thread-3's `getData` of its offer `n_0` (`LeaderElectionSupport` ~:310, server `FinalRequestProcessor` -> `DataTree.getNode` -> `NodeHashMapImpl.get`), re-paired to the competitor's `stop()` delete of `n_0` (`DataTree.deleteNode`, the arm binds the node map to `assoc_remove(.., "/../n_0000000000")` with `lastProcessedZxid`=6); the lookup returns null and `FinalRequestProcessor` throws NoNode; CONFIRM holds Thread-3's `getData` send until the delete exited (claim `repairedArms`) |
-| hdfs-bugs-slowdisk-zero | `V24` (tree `/bigtemp/vnr3ne/wt/hadoop-hdfs-bugs`, `gc/hdfs-bugs`) | 9 min | STATE_PAIRING_FLIPPED (no root moved): a `DataNodeDiskMetrics` detector turn's read of `maxSlowDisksToExclude` re-paired to the field's INITIAL (1, the value before the run-time reconfiguration wrote 0; claim `repairedArms` = that INITIAL arm); its `if (max > 0)` takes the store of `slowDisksToExclude` = [the SSD] (`limit(max)` over the outliers), `FsVolumeList.chooseVolume`'s filter removes the only SSD and `RoundRobinVolumeChoosingPolicy` throws `DiskOutOfSpaceException`; CONFIRM's own replay holds the reconfiguration after the turn's occurrence closes |
-
-The workload of solr-18413 places the source shard's leader off the Overseer's node (tree `b41116b`): with
-both on one node, the per-node clock order leaves no witness short of the node's wall clock stepping back.
-hdfs-11741's balancer may run its second move to dn1 one dispatcher iteration later (`maxNoMoveInterval` on its
-own clock). An occurrence a replay answered by its shape pairs under its own chain and a withdrawn session's
-slots stand on nothing, so neither order is a replacement: round `V18`'s corpus, refused there by three BLOCKING
-TOPOLOGY_DIVERGENCE rows against a withdrawn session's slot, composes offline to the same witness with
-`pairing-port` (`/bigtemp/vnr3ne/ab/pairing-port-V18-11741`).
 
 ## HDFS checks: each case's `.smt`, read by hand (lead 2026-10-06; branch, round, verdict, reading)
 
@@ -233,50 +194,14 @@ list of checks runs one campaign per check over the ten lifts under the memory g
 | Automatic cluster as a workload | partial (tree patches) | Solr `CausynthSolrCluster` (`experiments/solr/system.sh` turns it on for every workload); HDFS `CausynthCluster` automatic mode (`hadoop-hdfs-unified`), turned on per case by `cluster_automatic=true` in its `case.sh` (`experiments/hadoop/system.sh` adds `-Dcausynth.cluster.automatic=true`; `experiments/hadoop/hdfs-adhoc` sets it for every check that runs an upstream test, and not for a fine-tuned workload of the tree's own, a `TestCausynth*` class that registers its nodes itself: hdfs-adhoc-12) | Real-time bounds are patched per system; upstream HDFS workloads are limited to one DataNode (`ThreadLocalRandom`). |
 | A parameterized test as a workload | done (Jupiter) | `gc/runtime/JUnitInvocation`, `JUnitLifecycle`: a case's `test_method` `m[k]` is the k-th invocation (from 1, in the argument sources' order, as JUnit numbers them) of a `@ParameterizedTest` m or of a `@ParameterizedClass`, `m[i][j]` both (class, then method); the arguments are resolved before anything of the test runs and go to the method's leading parameters and the class's one constructor or `@Parameter(i)` fields; the Hadoop and ZooKeeper native builds (`experiments/{hadoop,zookeeper}/build.sh`) run every invocation of the method | Sources `@MethodSource` (static factories), `@ValueSource`, `@EnumSource` only; any other source, an aggregator, an implicit conversion, a class invocation's own lifecycle (`@BeforeParameterizedClassInvocation`), a factory that throws or yields nothing, a k past its count, and a parameterized test named bare are refused by name. The run states the invocation it resolved, its arguments rendered alike in both passes (a value without its own `toString` by its class), as a schedule mark handed on with every order (`ScheduleEvent#INVOCATION`, `SchedulePrefix#write`); a replay held to a run that resolved another (a factory listing its arguments in another order) is refused by name (`ScheduleLog#invocation`). A `toString` that differs between runs reads as another invocation. A class its own JUnit 4 runner runs takes a bare method name. |
 
-## R5. Correct .smt for the Solr cases; the nine HDFS cases keep passing
+## R5. The Solr and ZooKeeper cases; the offline gate
 
-See Acceptance above. What remains (the branches are in docs/handover/STATE.md §2):
-
-- hdfs-11741: the 22 blockers are fixed off main. A claim names only a clock's jumps (a cell that
-  runs on from the cell before it is no move), so the three NameNode clocks that moved only through
-  the `clock_order` constraint are no longer named; no round has checked the cone on HEAD.
-- SOLR-18406: passes on this code (`a37f4`); no round on HEAD.
-- SOLR-18413: the `isExpired` flip is SAT with MigrateCmd's clock skewed forward, and its replay
-  reproduces the fatal. Its fatal condition is concrete in that replay: the runtime now states such
-  a phi as the constant of its arm (`gc/runtime/RowRuntime#fatalTerm`), IMPORT judges it
-  (invariant 9) and COMPOSE rests the fatal on the path condition that reached the anchor; `r9`'s
-  rows predate this and state none. COMPOSE's constraint independence keeps what moves
-  (`gc/compose/Independence#of`); closed over sharing, it kept 3479 conditions and reads of that
-  path, a tlog write among them that did not lower, and refused it. The path now composes. It was
-  unsat on its own because the VM snapshotted MigrateCmd's message map (a `LinkedHashMap`:
-  `operation`, `collection`, ...) by its table, `collection` first, so the leader's lookup at the
-  run's position 1 read `operation`: a snapshot now states its members in the order the class
-  iterates and says which (`ContainerSupport::iteration_order`, image `vm-r3c`), and a view's
-  positions follow the chain only where that order holds, else are a bijection in no order
-  (`ContainerSmtCodec#unordered`). With `r9`'s four message snapshots restated as `vm-r3c` records
-  them, COMPOSE claims CLOCK_SKEW offline in 17 s: both clocks in the formula, MigrateCmd's moved,
-  the leader's held, polarity decides (one arithmetic engine alone did not answer its clock
-  question in 30 minutes; every z3 run now races two, `smt.Z3#run`). Live `s13a` (vm-r3c) claimed
-  it, and CONFIRM did not confirm it: its ORDER held `migrateKey`'s entry until the watcher's parse
-  of the routing rule exited, a parse that follows the rule `migrateKey` itself offers (fixed: an
-  ORDER holds the last activation entered before the read, `ConfirmMain.StateClosure#holdBefore`,
-  here the poll's `getRoutingRules`); and 38 STATE edges named the parse of the watcher's second
-  delivery of that version (`STATEWATCHER.2`), which that run took once (fixed: CONFIRM names every
-  delivery of one version alike, `OccurrenceAddress#anyDelivery`: 32 of the 38 offline; the other
-  6 follow the poll iteration the stalled entry shifted). Its PLAN
-  refused `OCCURRENCE_ADDRESS_SHARED` for two ZooKeeper callback tasks under a Lost context, which
-  the R1-ROOTS unnamed-work rule opens no occurrence for. Live `stream7b` (vm-w4e) claimed it again
-  (both clocks to one instant: the rule unexpired at the leader, which leastClocks did not pin) and
-  reproduced the fatal, and 17 STATE edges failed: 15 joined reads to a container's INITIAL, whose
-  writer is whichever access first observed the map -- in that run a later one, since `migrateKey`
-  happened not to register the first watch that refreshes the cluster state on its own thread
-  (fixed: a join to an INITIAL is no edge, `WriteRow#initial`); 2 were MigrateCmd's poll, which saw the
-  rule a turn sooner (fixed: a STATE edge is taken at any turn of the loops on its path,
-  `readerAnyTurn`). Offline, that run's own reads take all 222 edges. A read of a stored
-  version its writer has not yet filed waits for the writes in flight (`gc/runtime/MessageDoors#filed`),
-  so neither the Overseer queue's attach nor a state watcher's delivery is left unpaired (round `F2`'s
-  witness lost node1's two `routing-rule-expiry-state` attaches, `HOFF.e90c52ed` and `HOFF.6c0fff60`,
-  that way: their callbacks read the version before the Overseer's turn filed it).
+solr-18406 and solr-18413 (CLOCK_SKEW: a commit reservation that ran out; a MIGRATE rule not yet expired at the source
+leader against the Overseer's clock), zk-bugs-quota-init (MARKER_FLIPPED, the ZooKeeper WRITE door's ConnectionLoss on
+the quota's limit create) and zk-bugs-election-offer (STATE_PAIRING_FLIPPED, an offer's lookup re-paired with a
+competitor's delete) passed on `main`'s body (round V25, 2026-10-03, with the named HDFS cases: 14/14,
+`/bigtemp/vnr3ne/gc-out/accept-V25-*`). None has run on this body yet: each system's turn starts with it (TODO Solr §1,
+ZooKeeper §1); `solr-bug-reindex` regressed solr-18413 (TODO).
 
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
@@ -292,7 +217,7 @@ orders, three under other JVM identity-hash generators).
 | --- | --- | --- |
 | Engine code naming a system or case | done, with two library rules | Only comments name cases. `gc/runtime/PoolWorkers` names Jetty's `QueuedThreadPool.startThread`. The wire rule and scope growth name `.protobuf.` (the wire rule also `.protobuf.RpcController`). |
 | VM code naming a system | done | Only comments. Library lists are hard-coded: logging and crypto are muted, commons-lang 2 and Spring `StringUtils` are modeled, two Jackson classes are muted. |
-| Per-case switches | not done | `causynth_scope_growth_budget=0` in every named case; per-case `WIRE_FLOW` rows; hand roots and target rewrites in the trees; `region_path_max_tasks=128` for 11741. |
+| Per-case switches | partial | the named cases' `causynth_scope_growth_budget=0` (their declared occurrences name regions of the declared scope); each named case's `loop-bounds*.jsonl` and solr-18413's own `WIRE_FLOW` rows; `region_path_max_tasks=128` for 11741; the two per-case workarounds of `hdfs-adhoc` (07's tree and world depth, 21's tree and loop bounds, `case.sh`) |
 | Dead or fallback code | not done | See "Fallbacks and dead code" below. |
 
 ## Per-system surface
@@ -317,7 +242,7 @@ What a system costs today, outside the general engine.
 | tree: roots | `CausynthSymbolicSource.symbolize`: 6 hooks in `BlockTokenSecretManager`; 1 in `SnapshotManager` (hdfs-17960), which mints its field as `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` and so owns it: the engine declares no configuration read of a field a hook mints. The hook retires once the tree drops it; the field is then the engine's configuration root `CONFIG:dfs.namenode.snapshot.deletion.ordered` (`gc/causynth/ConfigRoots`), and `experiments/accept/report.py` names that root | none | none |
 | tree: cluster and bounds | `CausynthCluster` (with automatic mode), `MiniDFSCluster` hooks, on `gc/hdfs-study` also `MiniJournalCluster` hooks (automatic mode: each JournalNode `auto<n>/jn<i>`, its RPC server the anchor; the window opened after `waitActive`, its client the test's thread, registered on the journal cluster, since a QJM test builds its managers after the cluster is up; a restarted JournalNode re-registered in its slot); on `gc/hdfs-study-next` automatic mode builds every NameNode, DataNode and JournalNode a cluster constructs or restarts in a node startup (`CausynthCluster#nameNodeStartup`, `#nodeStartup`, `#nodeRestart`) under the name it is registered by, `auto<n>/nn<i>` (i the index MiniDFSCluster numbers the NameNode by; its format is a startup of the same slot) and `auto<n>/<dn|jn><k>` (n counting the clusters begun, k the cluster's nodes of that kind built; a restart keeps its slot's name at the next epoch, the slot moved by `restartSource` first), registers each JournalNode once built and a restarted NameNode or DataNode at once, and for a case's `recording_window=startup` opens the window when the first cluster's construction begins (the test's client `auto<n>/client0` registered on the cluster object, its file system client the same node once up), timeouts in `CausynthCluster.configure` (on `gc/hdfs-study` also every QuorumJournalManager quorum wait), `pinBlockKeys` copies in the workloads. hdfs-11741's workload (`TestCausynthExpiredBalancerKey`, on `gc/hdfs-11741`) also rotates once inside the recording window and drives a second DataNode key update through a heartbeat after its recorded refresh; that rotation, the second update and `pinBlockKeys` are workload scaffolding, to be replaced by a recording start the engine places where PRE_WINDOW values would arise and by a periodic daemon tick (the key update) the clock decides as a repeatable occurrence | `CausynthSolrCluster`, `MiniSolrCloudCluster`, `SolrCloudTestCase`, `CausynthBounds` and its uses; `ClusterState` keeps live nodes in a `TreeSet`; Overseer batching off in automatic mode | `CausynthZkCluster` (automatic mode only) with hooks in `ClientBase` (`startServerInstance`, `createClient`, `tearDown`): the server and each `createClient` client registered whole, the window opened with the first client on its thread and closed at tear-down, no session timeout (the server's maximum and the client's request `NEVER_MS`); `PortAssignment` starts at a random port in a workload. `QuorumBase` ensembles are not registered |
 | tree: targets | each named case's target throw carries `@CausynthExceptionTarget("<case ids>")` (`BlockTokenSecretManager.retrieveDataEncryptionKey` for the seven block-key cases, `FSImageFormatPBSnapshot` for hdfs-17960, whose `Preconditions.checkState` is spelled as an if/throw); on `gc/hdfs-study` also the 51 study checks' throws (`hdfs-adhoc-NN`, `experiments/hadoop/hdfs-adhoc/checks.tsv`; each `checkState`/`checkArgument`/`assert` spelled as an if/throw of the same type and message); HDFS-2 #09 (re-encryption negative sleep) was dropped after round HG1: real, but its chain crosses an exception the JDK throws on a negative sleep and a write that never happens on another thread, which no rule of the model states (`docs/checks/VERIFIED-BUGS.md`); its marker and workload leave the tree at its next consolidation; the cases' specs are derived from it (`tools/lib/annotated.py`) and a sweep's finding there is a known bug (`findings.py --annotated`); no engine code reads it. hdfs-17897's fix is reverted (e23df4c4b84) | the same: the tree marks the two named bugs' throws (`solr-18406` in `IndexDeletionPolicyWrapper`, `solr-18413` in `DistributedZkUpdateProcessor`), from which both cases' specs are derived. Two scaffold patches stay until the engine can state 18413 without them: a `getCollection` call in `DistributedZkUpdateProcessor` is `getCollectionOrNull` plus a local throw (`ClusterState.getCollection`'s throw is shared by over a hundred call sites and a target names no call path), and `SliceMutator`'s `expireAt` is a `Long.parseLong`/`String.valueOf` round trip so that its `WIRE_FLOW` rows have capture sites (WIRE-CODEC W6 removes it). | the same: `FinalRequestProcessor#handleGetDataRequest`'s NoNode guard is marked for `zk-bugs-quota-init` and `zk-bugs-election-offer`. A workload of the tree's own (owner-approved): `CausynthQuotaRetryTest` (a hard quota set retrying on ConnectionLoss, raised, enforced), because no existing test reaches the bug's path: the tree's `SetQuotaCommand.createQuota` callers (`ZooKeeperQuotaTest`, `EnforceQuotaTest`, `QuorumQuotaTest`) each set one quota on a fresh path, never retry after a ConnectionLoss and never call it again on a path that has a quota, so none takes the update branch that reads the stat node, and a fault at the limit create would end them at the exception; the recipes run their Jupiter tests (`junit-platform-runner`) |
-| branches | `gc/hdfs-unified-dtx` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`): one adapter plus the DataTransfer op's envelope, every named case (round `PP1`); `gc/hdfs-study` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-study`, Maven repo `/bigtemp/vnr3ne/m2/hdfs-study`): `gc/hdfs-unified-dtx` plus bug #15, the study checks' markers, the journal hooks and the re-encryption case, the tree of `experiments/hadoop/hdfs-adhoc` and `hdfs-bugs`; `gc/hdfs-study-r7` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7`, Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7`): every HDFS case but 11741 on `system/hdfs`, `gc/hdfs-study-r6` (`gc/hdfs-study-r5`, i.e. `gc/hdfs-study-r4` plus the IPC request's start, plus the IPC hand-off's name and the codec door calls; Maven repo `m2/hdfs-study-r6`) plus the time-model family's workarounds (row above); `gc/hdfs-11741-r6` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6`, Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6`): hdfs-11741, `gc/hdfs-11741-r4` plus the request start, the hand-off name and the IPC codec calls; r5 (`gc/hdfs-study-r5`, `gc/hdfs-11741-r5`): superseded; `gc/hdfs-study-r4` (`gc/hdfs-study-r3` plus the IPC handler's exchange) and `gc/hdfs-11741-r4`: superseded; `gc/hdfs-study-r3` (superseded, Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-next`): `gc/hdfs-study-next` plus `gc/hdfs-study-startup` (the NameNode's `registerDatanode` write lock is the startup step that fixes the DataNodes' order); `gc/hdfs-study-next` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-next`): `gc/hdfs-study` plus the node startups and the startup window in `CausynthCluster`, `MiniDFSCluster` and `MiniJournalCluster`, hdfs-adhoc-12's workload (`TestCausynthDataTransferRpcFailure#testUnencryptedReplicationAfterModeledKeyRefreshRpcFailure`, bug3's replication with data-transfer encryption off), the NameNode's heartbeat tick owned by its block manager (the block-token manager it named is null while block tokens are off, so every upstream test's tick was `workload/unregistered`), `CausynthCluster`'s registries weak, a cluster's entries dropped at its shutdown (they kept every shut-down cluster alive), and HDFS-2 #09's marker and workload removed (the check was dropped after HG1); `gc/hdfs-unified` (`~/hadoop-hdfs-unified`), its base, no case names it; `gc/hdfs-11741` apart | one branch, `gc/solr-unified` (`~/lucene-solr-unified`), for both cases; `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`) is it plus the store bracket, to replace it: on `gc/solr-unified` a write is in flight only from its `stored` on, not from the store's call | one branch, `gc/zk-unified` (`/bigtemp/vnr3ne/wt/zookeeper-unified`, on `branch-3.9`; its only remote is apache/zookeeper: never push it) |
+| branches | the Hadoop fork's four (STATE §3): `graphchecker/hdfs-checks` = `gc/hdfs-study-r7` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7`), every HDFS case but 07, 21 and 11741: trunk 734dd8a67cd plus the adapter, the doors, the hooks of the rows above, the markers and workloads of `experiments/hadoop/hdfs-adhoc`, `hdfs-bugs` and the named cases, and the time family's workarounds; `graphchecker/hdfs-checks-adhoc07` = `gc/hdfs-study-r8` (07's tree); `graphchecker/hdfs-checks-adhoc21` = `gc/hdfs-study-r7-21` (21's tree); `graphchecker/hdfs-11741` = `gc/hdfs-11741-r6` (`/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6`): trunk with HDFS-11741's fix reverted, the same transport hooks; `main`'s cases: `gc/hdfs-unified-dtx` (local) | one branch, `gc/solr-unified` (`~/lucene-solr-unified`), for both cases; `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`) is it plus the store bracket, to replace it: on `gc/solr-unified` a write is in flight only from its `stored` on, not from the store's call | one branch, `gc/zk-unified` (`/bigtemp/vnr3ne/wt/zookeeper-unified`, on `branch-3.9`; its only remote is apache/zookeeper: never push it) |
 
 ## Open defects
 

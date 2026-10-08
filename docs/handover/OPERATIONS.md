@@ -13,15 +13,14 @@ everything lives, how to build, test, run and read a campaign, and the traps the
 | local scratch | `/localtmp/$USER` on each lift (replay working directories go to `/localtmp/$USER/graphchecker/`). |
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64`. **Trap:** the owner's dotfiles export `JAVA_HOME=java-11`, which lift11–15 lack, and `bash -c` under ssh re-reads `~/.bashrc`. Do not edit the dotfiles; use `onlift.sh`, which unsets `SSH_CLIENT` and sets Java 8. |
 | z3 | `~/.local/bin/z3` (4.14.1) |
-| concolic VM images | `system/hdfs`'s VM: **`/bigtemp/vnr3ne/vm-hg5/j2sdk-image`** (vm-size-source + the container observation of scope batch 1: list/deque/HashSet iterators reach their tracked container, a read record states its observed version `{fieldVersionId, versionKind}` in envelope schema 2, outside mutations marked after they run; sources = branch `hdfs-vm-hg5` `742f13363`, merged into `system/hdfs`; its `SOURCE.txt` and `smoke.log` sit beside it). `vm-size-source` (an INDEXED size skips element sets) served HG2-HG4. `main`'s VM: `vm-model-guards2` (no model records a condition). Older: `vm-streams2`, `vm-w4h` (rounds before V19). Superseded, deletable: `vm-model-guards`, `vm-streams`, `vm-hdfs-scope-container`, `vm-hdfs-scope-rows`. Parked, unreviewed: `vm-w4i` (branch `perf-vm-readout`), `vm-nr41` (branch `vm-ref-compare`). Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`); a jar after `hdfs-scope-rows` refuses a schema-1 image. |
-| HDFS trees | **`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7`** (`gc/hdfs-study-r7` `bd72fcc1a13`, a sparse worktree of `~/hadoop` without yarn, mapreduce, tools and cloud-storage, Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7`; = r6 plus the time-model family's workarounds, STATUS "Per-system surface"; r6 = `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r6`, `gc/hdfs-study-r6` `7e81b3a588c`, Maven repo `m2/hdfs-study-r6`): every HDFS case but 11741 on `system/hdfs` (the 36 study checks, the eight named block-key/snapshot cases, `hdfs-bugs-slowdisk-zero`); hdfs-11741: **`/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6`** (`gc/hdfs-11741-r6` `6c86fca9a2b`, sparse too, Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6`; no workaround: it is not in the time-model family). **Per-case trees** (system/hdfs1, owner 2026-10-06: the last open cases by workarounds): `case.sh` overrides `repo=` (and `loop_bounds=`, a world depth) for one case id only, so no other case reads the tree: hdfs-adhoc-21 on `/bigtemp/vnr3ne/wt/hadoop-hdfs-21` (`gc/hdfs-study-r7-21` c360d869629: r7 + the DataNode handshake on its own joined thread, `BPServiceActor` recompiled with javac 8 -g), hdfs-adhoc-07 on `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8` (`gc/hdfs-study-r8` e3dab6266a7: r7 + QJM's `AsyncLoggerSet`/`QuorumCall` reply maps in the loggers' order, Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r8`). Recipe: a sparse worktree on r7's branch, the patch, r7's Maven repo copied, hadoop-common and hadoop-hdfs-client `target/` copied from r7 (unchanged sources), only hadoop-hdfs rebuilt (`build-module.sh`), then the case's workload run once natively for its surefire report; javap the patched class. r6 = r5 (r4, r3 plus the IPC handler opening a call's exchange before `doAs`, plus the IPC request's start at the RPC engine's invoke point) plus the IPC server's hand-off named by its call (`Server#internalQueueCall` in `handingOff`/`handedOff`) and the codec door calls (`Server#setupResponse` -> `outboundResponse`, `received` after the IPC client's and server's parse; on study-r6 also `DataTransferProtoUtil#withCausynth` -> `outboundOp(op)` and `Receiver`'s op handlers -> `received`). **Building a sparse tree**: the root reactor names the missing modules and does not load, so each module is built by its own pom, in order, after the branch's GraphChecker jars are installed into the tree's repository (`/bigtemp/vnr3ne/gc-out/hdfs-time-r6/builds/install-gc-jar.sh <graphchecker worktree> <repo>`, then `build-module.sh <tree> <repo> hadoop-common-project/hadoop-common hadoop-hdfs-project/hadoop-hdfs-client hadoop-hdfs-project/hadoop-hdfs`: `./mvnw -o -Dmaven.repo.local=<repo> -Djavac.version=8 ... -f <module>/pom.xml -DskipTests clean install` via `onlift.sh -g 12`; the other modules come from the repository, copied from r5's). A tree change that adds or removes a statement in a method shifts its Jimple unit ids: a case's `loop-bounds.jsonl` rows naming them must follow (r5: `Client#sendRpcRequest` `#u54`/`#u59` -> `#u53`/`#u58`). A case's classpath is read off its own workload's surefire report in the tree: a case whose workload never ran there fails validate ("missing test report"), so after a rebuild run every case's test once (`./mvnw -o -Dmaven.repo.local=<repo> ... -pl hadoop-hdfs-project/hadoop-hdfs surefire:test -Dtest=<Class#method,...>`). r3 (`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r3`, superseded) = `gc/hdfs-study-next` (the 49 study markers, MiniJournalCluster hooks, node-startup brackets, startup window, weak adapter registries, the NameNode's heartbeat tick, the IPC door naming its verb) + `gc/hdfs-study-startup` (the NameNode's `registerDatanode` write lock is the startup step that fixes the DataNodes' order); Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-next`. Superseded, kept for the runs that name them: r5 (`hadoop-hdfs-study-r5`, `hadoop-hdfs-11741-r5`, Maven repos `m2/hdfs-study-r5`, `m2/hdfs-11741-r5`), r4, `hadoop-hdfs-11741-verb`. A copied Maven repo may hold an older GraphChecker jar than the tree calls (r4's lacked `startupStep`): install the current one first (`mvn -o install:install-file -Dfile=<jar> -DpomFile=pom.xml -Dmaven.repo.local=<repo>`). `main`'s cases run `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (`gc/hdfs-unified-dtx`, Maven repo `/bigtemp/vnr3ne/wt/dtx/m2`); its inventory `/bigtemp/vnr3ne/analysis/unify/hdfs-inventory.md`. Older trees (`gc/hdfs-study`, `gc/hdfs-bugs`, `~/hadoop-hdfs-11741`, the `-w6` trees of `wire-codec-p1`) serve only the runs and branches that name them. A server-side class compiled into a tree by hand (r3's `FSNamesystem`) used the snapshot's `GraphChecker-1.0-SNAPSHOT-hadoop-shim.jar` on the classpath: `javac -source 8 -target 8 -cp "$SHIM:target/classes:$(cat hdfs-cp.txt)" -d target/classes <file>`. |
+| concolic VM images | Both HDFS branches: **`/bigtemp/vnr3ne/vm-hg5/j2sdk-image`** (sources: branch `hdfs-vm-hg5` `742f13363`; its `SOURCE.txt` and `smoke.log` sit beside it): list/deque/HashSet iterators reach their tracked container, a read record states its observed version `{fieldVersionId, versionKind}` in envelope schema 2, outside mutations marked after they run. `main`'s: `vm-model-guards2`. Every other `vm-*` directory is superseded. Pass an image as `CAUSYNTH_CUSTOM_JDK_HOME` (a sweep: `VM_IMAGE`), never as `JAVA_HOME`. A Java side that needs natives an image lacks refuses the replay by name (`ConcolicVmBroker#requireCurrentCapabilities`). |
+| HDFS trees | Worktrees of `~/hadoop` (remote `origin` = the fork `git@github.com:JHSUYU/hadoop.git`), each sparse (no yarn, mapreduce, tools or cloud-storage) with its own Maven repo; which case reads which is its `case.sh` `repo=` line: **`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7`** = local `gc/hdfs-study-r7` `bd72fcc1a13` = remote **`graphchecker/hdfs-checks`** (every HDFS case but 07, 21 and 11741: the 36 study checks' markers and workloads, the eight named block-key/snapshot cases, `hdfs-bugs-slowdisk-zero`, the time family's workarounds; Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r7`); **`/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8`** = `gc/hdfs-study-r8` `e3dab6266a7` = **`graphchecker/hdfs-checks-adhoc07`** (hdfs-adhoc-07 only: r7 + QJM's `AsyncLoggerSet`/`QuorumCall` reply maps in the loggers' order; Maven repo `m2/hdfs-study-r8`); **`/bigtemp/vnr3ne/wt/hadoop-hdfs-21`** = `gc/hdfs-study-r7-21` `c360d869629` = **`graphchecker/hdfs-checks-adhoc21`** (hdfs-adhoc-21 only: r7 + the DataNode handshake on its own joined thread, `BPServiceActor` recompiled with javac 8 -g; r7's build otherwise); **`/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6`** = `gc/hdfs-11741-r6` `6c86fca9a2b` = **`graphchecker/hdfs-11741`** (hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation; Maven repo `m2/hdfs-11741-r6`). `main`'s cases read `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` (local `gc/hdfs-unified-dtx`, Maven repo `/bigtemp/vnr3ne/wt/dtx/m2`). Every other `hadoop-hdfs-*` worktree is superseded. **A per-case tree** (a workaround one case reads, owner 2026-10-06): a sparse worktree on r7's branch, the patch, r7's Maven repo copied, hadoop-common and hadoop-hdfs-client `target/` copied from r7, only hadoop-hdfs rebuilt, the case's workload run once natively for its surefire report, the patched class checked with javap; `case.sh` overrides `repo=` for that case id only. **Building a sparse tree**: the root reactor names the missing modules and does not load, so each module is built by its own pom, in order, after the branch's GraphChecker jars are installed into the tree's repository (a copied repository may hold an older one): `/bigtemp/vnr3ne/gc-out/hdfs-time-r6/builds/install-gc-jar.sh <graphchecker worktree> <repo>`, then `build-module.sh <tree> <repo> hadoop-common-project/hadoop-common hadoop-hdfs-project/hadoop-hdfs-client hadoop-hdfs-project/hadoop-hdfs` beside it (`./mvnw -o -Dmaven.repo.local=<repo> -Djavac.version=8 ... -f <module>/pom.xml -DskipTests clean install`) via `onlift.sh -g 12`. A tree change that adds or removes a statement in a method shifts its Jimple unit ids: a case's `loop-bounds*.jsonl` rows naming them must follow. A case's classpath is read off its own workload's surefire report in the tree: a case whose workload never ran there fails validate ("missing test report"), so after a rebuild run every case's test once (`./mvnw -o -Dmaven.repo.local=<repo> ... -pl hadoop-hdfs-project/hadoop-hdfs surefire:test -Dtest=<Class#method,...>`). |
 | Solr trees | One Solr 8.11 tree line, `~/lucene-solr-unified` (branch `gc/solr-unified`, a worktree of `~/lucene-solr-8_11`): the shared adapter, both cases' workloads and target markers, the two kept scaffold patches (inventory: `/bigtemp/vnr3ne/analysis/unify/solr-inventory.md`); solr-18406 and solr-18413 name its successor `gc/solr-unified-storing` (`/bigtemp/vnr3ne/wt/lucene-solr-storing`: the same plus SolrZkClient's `MessageDoors#storing` write brackets). The older per-case worktrees (`gc/solr`, `~/lucene-solr-18406`, `~/lucene-solr-18413`, `~/lucene-solr-8_11-adhoc`) serve only rounds started on them. Ant build; native Ant tests need `-Dtests.useSecurityManager=false`. `~/solr` is apache/solr main (blobless: never `git grep` a commit there). |
 | ZooKeeper trees | `/bigtemp/vnr3ne/wt/zookeeper-hb` (`gc/zk-unified-hb`, + the RESPONSE door, for `hb-schedule`; Maven repo `/bigtemp/vnr3ne/m2/zookeeper-hb`). `/bigtemp/vnr3ne/wt/zookeeper-unified` (branch `gc/zk-unified` on `branch-3.9`, a worktree of `~/zookeeper`): the adapter (`CausynthZk`, `CausynthZkCluster`), the `zk-bugs` cases' target markers and the quota workload. Maven build into its own repository `/bigtemp/vnr3ne/m2/zookeeper` (`experiments/zookeeper/build.sh`, which installs the GraphChecker jar there; never `~/.m2`). Build a case's workload before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/zookeeper/zk-bugs <case> build`. Its only remote is apache/zookeeper: never push it. |
-| HBase and bug trees | `gc/hbase-unified`, `gc/solr-bugs`, `gc/hdfs-bugs`, `gc/hdfs-unified-dtx-w6`, `gc/hdfs-11741-w6` under `/bigtemp/vnr3ne/wt/` ([STATE.md](STATE.md) §5); clones `~/hbase`, `~/zookeeper`, `~/hadoop`, `~/lucene-solr-8_11`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
-| integration worktree | `/bigtemp/vnr3ne/wt/gc-hg4b` (branch `hg5`): where the 2026-10-04 lead merged each HDFS round's feature branches before snapshotting (`~/gc-run/hg<N>`). `/bigtemp/vnr3ne/wt/main-pw` is the 2026-10-03 lead's merge worktree for `main` rounds |
+| HBase tree | `/bigtemp/vnr3ne/wt/hbase-unified` (`gc/hbase-unified`); clones `~/hbase`, `~/zookeeper`, `~/hadoop`, `~/lucene-solr-8_11`; private Maven repos `/bigtemp/vnr3ne/m2/<name>` |
 | host ledger | `$CAUSYNTH_HOST_LEDGER` = `/bigtemp/vnr3ne/gc-out/hosts/<lift>/charges/<mb>.<host>.<pid>.<time>.<rand>`: a charge's mtime is its 120 s lease, renewed every 10 s by its holder; a lapsed lease no longer counts (it is deleted at ten leases); `explorations/` = the capped explorations running. `ls` the charges of a host to see what holds it |
 | evidence and agent tools | `/bigtemp/vnr3ne/gc-out/solr-bugs/{evidence,agent-tools,scripts}` (jstacks of the ZkStateReader-race hangs, A2's `watch-sb.sh`/`watch-stall.sh` run watchers, the storing tree's `spelledAs-adapter.patch`); `/bigtemp/vnr3ne/readout-stream/` (A6's `measure-seed.sh`, `measure-obl.sh`, `compare.py` and the retained-heap tool `heap/tool/HeapRetained.java`: how replay memory was measured; 4.2 GB of data); `/bigtemp/vnr3ne/gc-out/hb-schedule/` (Z1–Z5 with their `run.sh` recipes); `/bigtemp/vnr3ne/ab/` (offline gates; jars in `ab/jars/`) |
-| round outputs | `/bigtemp/vnr3ne/gc-out/hdfs-study/` (the HDFS group: `accept-<round>-<n>/`, `sweep-<round>-cases.tsv` maps n to the case, `rounds/<round>.cases` and `rounds/<round>-review.md`); `/bigtemp/vnr3ne/gc-out/<branch or agent>/` for agents' runs; `gc-out/accept-V*` the `main` rounds |
+| round outputs | `/bigtemp/vnr3ne/gc-out/hdfs-study/` (the HDFS group's rounds: `accept-<round>-<n>/`, `sweep-<round>-cases.tsv` maps n to the case, `rounds/<round>.cases`); `/bigtemp/vnr3ne/gc-out/hdfs-excl/` (series EX1, every case alone, PRUNE=0: the offline gate's corpora); `/bigtemp/vnr3ne/gc-out/<branch or agent>/` for agents' runs; `gc-out/accept-V25-*` `main`'s last round |
 | owner's memory notes | `~/.claude/projects/-u-vnr3ne-GraphChecker/memory/` (one fact per file, index `MEMORY.md`) |
 
 ## 2. Helper commands (outside the repo)
@@ -68,11 +67,9 @@ Never overwrite an image a round uses; build a new directory.
 ```bash
 tools/lib/worktree-add.sh ~/gc-run/p<N> <commit> --detach   # no third_party/: seconds, not most of an hour
 (cd ~/gc-run/p<N> && /bigtemp/vnr3ne/bin/onlift.sh -g 10 mvn -q -o package -DskipTests)
-GC_OUT=/bigtemp/vnr3ne/gc-out CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-model-guards2/j2sdk-image \
-  tools/rounds/launch-round.sh ~/gc-run/p<N> <round>              # all 11 cases, heads chosen by room
-CASES="hdfs-17960 solr-18413" ... tools/rounds/launch-round.sh ... # a subset (or any case id); the 14 regression
-#   cases: hdfs-11741 hdfs-17897 hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3 hdfs-17960 hdfs-17967-pathA
-#   hdfs-17967-pathB hdfs-17967-pathC solr-18406 solr-18413 zk-bugs-quota-init zk-bugs-election-offer hdfs-bugs-slowdisk-zero
+GC_OUT=/bigtemp/vnr3ne/gc-out/<dir> CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-hg5/j2sdk-image \
+  CASES="hdfs-17960 hdfs-adhoc-20" tools/rounds/launch-round.sh ~/gc-run/p<N> <round>   # heads chosen by room
+#   (CASES unset: launch-round.sh's own list of the named cases)
 # tools/rounds/launch-run.sh <snapshot> <case> <suffix>: one run, its obligations also over all of LIFTS
 DRY=1 ... tools/rounds/launch-round.sh ...                         # the heads it would choose
 GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/round-monitor.sh '<round>-*' | grep --line-buffered 'DONE '
@@ -114,22 +111,15 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   `v*`, `r1`–`r9`, `ra1`, `rb1`, `i1`–`i3`, `stream*`, `fast*`, `g1`, `F1`, `F1b`, `F2`, `K*`, `L*`, `N1`,
   `V1`–`V25`, `V4h`, `V5h`, `V7b`, `V16b`, `V18b`, `V22b`, `V22c`, `V24b`, `PP1`, `PP1b`, `M1`, `CF1`, `STO1`, agents' `a37f*`,
   `ee*`, `agent-*`, `w4-*`, `R5x*`, `r6s*`, `R7*`, `nr*`, `SB*`, `SBX*`, `SBR*`, `EO*`, `ZK*`, `SD*`, `HB*`, `HBA*`,
-  `W6C*`, `Z*`, `G*` (in their own `GC_OUT`). Use a fresh name: the next `main` round is `V26`, the next HDFS group round `HG11` (used 2026-10-05/06: `HG8*`, `HG9`, `HG9B`, `HG9L-<case>`, `SW1`, `SW1L-45`, `HG10V`; agents', each in its own `GC_OUT`: `TM*`, `CL*`, `AR*`, `AW*`, `DO*`, `FD*`, `CW*`, `SH55`, `NP*`, `WD*`, `SL*`) (HDFS-study names used: `HG1`-`HG5`, `HG5A`, `HG7`, `HS*`, `HN*`, `TD*`, `DS2`-`DS8`, `DC*`, `IOF*`, `HSS*`, `HSC*`, `HOA*`, `HDV*`, `HCS*`; agents' of 2026-10-05, each in its own `GC_OUT`: `RIH*`, `MCH*`, `WHF*`, `HCL*`, `PS*`, `AS*`, `HR*`, `DW*`, `D1`).
-- Typical wall time on main (round `V25`, cluster shared with agent runs): HDFS RPC cases 7–12 min (up to 30
-  on a busy cluster), 17960 ~12 min, 11741 ~34 min, solr-18406 ~20 min, solr-18413 ~23 min, quota-init ~10 min,
-  election-offer ~34 min, slowdisk-zero ~9 min. After the campaign, the acceptance report's
-  `probe.sh` (z3 per alternative path, 600 s each) can add up to 30 min before the summary row is
-  written; it is reported, not a gate.
-- **How the last lead used the servers:** one round at a time, at most ~6–8 cases at once (batch 1
-  = six cases, then the rest as cases finish); sweeps with 1 head per host
-  (`sweep.sh … 1`); agents' verification runs in their own `GC_OUT`; every start through the ledger
-  (≤ 70 % memory per lift); `lift11` (the owner's machine, where the lead session runs) works but
-  never heads; builds with `onlift.sh -g 10`.
+  `W6C*`, `Z*`, `G*` (in their own `GC_OUT`). Use a fresh name: the next `main` round is `V26`, the next HDFS group round `HG11` (used 2026-10-06/07 on the two HDFS branches: `HL1`, `HL1R-*`, `HF1`-`HF3`, `OK3`-`OK5`, `W21`, `CC*`, `EX1`; used 2026-10-05/06: `HG8*`, `HG9`, `HG9B`, `HG9L-<case>`, `SW1`, `SW1L-45`, `HG10V`; agents', each in its own `GC_OUT`: `TM*`, `CL*`, `AR*`, `AW*`, `DO*`, `FD*`, `CW*`, `SH55`, `NP*`, `WD*`, `SL*`) (HDFS-study names used: `HG1`-`HG5`, `HG5A`, `HG7`, `HS*`, `HN*`, `TD*`, `DS2`-`DS8`, `DC*`, `IOF*`, `HSS*`, `HSC*`, `HOA*`, `HDV*`, `HCS*`; agents' of 2026-10-05, each in its own `GC_OUT`: `RIH*`, `MCH*`, `WHF*`, `HCL*`, `PS*`, `AS*`, `HR*`, `DW*`, `D1`).
+- Typical wall time: the 46 HDFS cases each alone on the ten lifts are [../design/PERFORMANCE.md](../design/PERFORMANCE.md)
+  §6 (series EX1: most 10-40 min, 11741 ~1.5 h, 07 ~3 h). After the campaign, the acceptance report's `probe.sh` (z3
+  per alternative path, 600 s each) can add up to 30 min before the summary row is written; it is reported, not a gate.
 
 **The HDFS group (a sweep of the 46 cases), as the 2026-10-05 lead ran it (round HG7):**
 
 ```bash
-tools/lib/worktree-add.sh ~/gc-run/<snap> system/hdfs --detach
+tools/lib/worktree-add.sh ~/gc-run/<snap> system/hdfs1 --detach
 (cd ~/gc-run/<snap> && /bigtemp/vnr3ne/bin/onlift.sh -g 6 mvn -q -o package -DskipTests)
 out=/bigtemp/vnr3ne/gc-out/hdfs-study
 cp $out/rounds/HG7.cases $out/rounds/<ROUND>.cases            # the 46 case ids, one per line
@@ -138,7 +128,7 @@ cd ~/gc-run/<snap> && (GC_OUT=$out VM_IMAGE=/bigtemp/vnr3ne/vm-hg5/j2sdk-image P
   > $out/sweep-<ROUND>.log 2>&1 < /dev/null &)
 # under a Monitor (it expires after 30 min; the tools keep state in $out/.watch-<ROUND>, so a re-armed one
 # does not repeat itself):
-(tools/rounds/round-watch.sh <ROUND> & GC_OUT=$out tools/rounds/round-slow.sh <ROUND> HG7 & wait) 2>&1 \
+(GC_OUT=$out tools/rounds/round-watch.sh <ROUND> & GC_OUT=$out tools/rounds/round-slow.sh <ROUND> HG7 & wait) 2>&1 \
   | grep --line-buffered -E 'DONE|STALLS>=80|SLOW x4|rror'
 GC_OUT=$out tools/rounds/round-status.sh <ROUND>     # every started case: age, stage, seed give-ups or its verdict
 GC_OUT=$out tools/rounds/round-verify.sh <ROUND>     # every finished case: how EXPLORE ended, z3 on candidate.smt2,
@@ -150,7 +140,7 @@ tools/rounds/obl-times.py $out/accept-<ROUND>-<n>/out/<case>/schedule   # EXPLOR
   `accept-<ROUND>-<n>` appears; its first wave (20 heads at once) runs SEED ~3x slower than later starts.
 - `PRUNE=0` keeps every artifact (the recordings the offline gate needs; ~1.5-6 GB per case, /bigtemp has room);
   `PRUNE=1` (the default) keeps what a verdict needs.
-- A case at 80+ seed give-ups whose class is known (the start-up/clock family, until the time model lands) is
+- A case at 80+ seed give-ups whose class is known (the start-up/clock family, handled by workarounds) is
   stopped, not waited out; mark it in `$out/.watch-<ROUND>/slow.<n>.{2,4}` so the slow watcher stops naming it.
 - Stopping a sweep takes two steps:
   1. Kill its `fanout.sh` driver by pid, on the host you launched it from. Find it with
@@ -169,7 +159,7 @@ tools/rounds/obl-times.py $out/accept-<ROUND>-<n>/out/<case>/schedule   # EXPLOR
   cases still queued, kill the `fanout.sh` driver by pid (its running cases go on) and start a new sweep of the queued
   ones (HG9 -> HG9B).
 - **A check added to `checks.tsv`** (a swap) needs its workload's surefire report in the case's tree, or validate
-  fails ("missing test report ... run build first"): run its test there once with the r5 runner
+  fails ("missing test report ... run build first"): run its test there once with the workload runner
   `/bigtemp/vnr3ne/gc-out/hdfs-r5/workloads/run.sh <tree> <m2 repo> <batch> '<Class#method*>'` via `onlift.sh -g 8 env
   JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 PATH=/usr/lib/jvm/java-8-openjdk-amd64/bin:/usr/bin:/bin bash ...`
   (`TestEditLog` for 45, 2026-10-06), and check the report names the test.
@@ -180,31 +170,20 @@ tools/rounds/obl-times.py $out/accept-<ROUND>-<n>/out/<case>/schedule   # EXPLOR
 
 ## 5. A snapshot for a branch that needs another tree
 
-There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=`. To
-validate a branch that needs a different tree (no branch does today; `pairing-port` needed
-`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` before its merge), edit those lines in the **snapshot only**, uncommitted,
-never on main:
-
-```bash
-tools/lib/worktree-add.sh ~/gc-run/p<N> <main> --detach
-cd ~/gc-run/p<N> && git merge --no-ff -q <branch> -m "Validation merge: <branch>"     # resolve docs conflicts by keeping both sides
-sed -i 's#repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx$#repo=<tree>#' \
-  experiments/hadoop/hdfs-17967/case.sh experiments/hadoop/hdfs-17899/case.sh \
-  experiments/hadoop/hdfs-17960/case.sh experiments/hadoop/hdfs-17897/case.sh
-/bigtemp/vnr3ne/bin/onlift.sh -g 10 bash -c 'cd ~/gc-run/p<N> && mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'
-```
-
-The `case.sh` files of 17899 and 17967 hold indented `repo=` lines (one per sub-case), hence no `^` there.
-11741 keeps `~/hadoop-hdfs-11741`. A tree built for one branch must not be installed into the shared
-`~/.m2` (use `MAVEN_REPO_LOCAL`, `experiments/hadoop/build.sh`), or it changes the jars every other tree's
-build resolves. A Solr workload must be built in the Solr tree the case names before its first run:
-`SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/solr/<case> "" build` from the snapshot.
+There is no override for a case's tree: each `experiments/<system>/<case>/case.sh` names its `repo=` (17899's and
+17967's per sub-case, indented; `hdfs-adhoc`'s per check id). To validate a branch on another tree, edit those lines in
+the **snapshot only**, uncommitted, never on a system branch, then build and test the snapshot
+(`onlift.sh -g 10 bash -c 'mvn -q -o package && bash src/test/shell/run_engine_campaign_helpers_test.sh'`). A tree built
+for one branch must not be installed into the shared `~/.m2` (use `MAVEN_REPO_LOCAL`, `experiments/hadoop/build.sh`), or
+it changes the jars every other tree's build resolves. A Solr or ZooKeeper workload must be built in the tree the case
+names before its first run: `SKIP_GRAPHCHECKER_INSTALL=1 bash experiments/lib/run.sh experiments/<system>/<case> "<arg>"
+build` from the snapshot.
 
 ## 6. The offline regression gate (merge gate)
 
 ```bash
-AB_ACCEPT_ROOT=/bigtemp/vnr3ne/gc-out AB_OUT=/bigtemp/vnr3ne/ab/<name> [AB_STAGES="IMPORT EXPLORE.N COMPOSE"] \
-  tools/regress/offline-ab.sh --round r8 --round r7 <baseline.jar> <candidate.jar> [case...]
+AB_ACCEPT_ROOT=/bigtemp/vnr3ne/gc-out/hdfs-excl AB_OUT=/bigtemp/vnr3ne/ab/<name> [AB_STAGES="IMPORT EXPLORE.N COMPOSE"] \
+  tools/regress/offline-ab.sh --round EX1 <baseline.jar> <candidate.jar> [case...]
 ```
 
 Re-runs every stage that is a pure function of a recorded round (SEED.static, SEED.trace, PLAN,
@@ -217,11 +196,8 @@ Keep jars in `/bigtemp/vnr3ne/ab/jars/`.
 
 - Start a gate through `onlift.sh` on a lift other than `lift11`, a few cases (one corpus set) at a time: each case's
   stages wait for ledger room in `ab_place`, and dozens of waiters jammed NFS on lift11 (2026-10-06).
-- A corpus recorded before a contract change cannot feed the candidate side: after `hdfs-time-model` merges, schedule
-  rows without clock stamps are refused by name ("schedule row predates the clock-stamp contract"), so baselines must
-  be rounds recorded on or after that merge.
-- `AB_STAGES=EXPLORE.drift` (on `hdfs-frontier-depth`) replays a run's landing order to count re-asked arms and
-  bound-cut task rounds offline.
+- A corpus recorded before a row-contract change cannot feed the candidate side: gate against rounds recorded by
+  this body (EX1, `PRUNE=0`, holds every case's recording and corpus; 07's run is `accept-EX1-adhoc-07e`).
 
 ## 7. Reading a campaign, and debugging
 
@@ -271,9 +247,8 @@ breaks a campaign's time down by stage.
   lift waits silently (`waiting for memory for a head step … on any host`). Main now holds the best host for a
   waiting step and starts GROW's planner at 2 GB; if a log goes quiet for many minutes, read the step's own
   stderr (`obligations-<NNNN>/grow-stderr.log`).
-- **Never rebuild a tree that someone reads.** Agents run checks on `/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx` and the
-  Solr trees too: check `pgrep -fc '[h]adoop-hdfs-dtx'` (etc.) on every lift first; replays read the tree's
-  `target/classes` directly.
+- **Never rebuild a tree that someone reads.** Check `pgrep -fc '[h]adoop-hdfs-study-r7'` (etc.) on every lift first;
+  replays read the tree's `target/classes` directly.
 - **Parallel coverage or test runs can corrupt a tree's `target/test-classes`** (a broken `ssl-client.xml`
   once failed every HDFS workload; the backup is in `/bigtemp/vnr3ne/analysis/corrupt-test-classes/`).
 - **A monitor re-armed on `round-monitor.sh` re-reports every finished case;** filter out the ones you have.
@@ -316,8 +291,6 @@ breaks a campaign's time down by stage.
 - **The ledger's memory reading under many waiters** (fixed b7c5dc99d): every waiter refreshed every host's reading
   over ssh and renamed it into one NFS directory every 5 s; 254 processes sat in D state on lift11. Now one shell per
   host refreshes (`<host>/refresh`) and the others use a reading up to 30 s old.
-- **A solver JVM killed at its memory hold** falls back to "a solver of its own" asking 16 GB on the same pinned host and
-  waits 3900 s (D1, CW4b-adhoc-11): a fix is on `hdfs-solver-fallback` (not merged).
 - **A Hadoop tree hook calls a shim method the jar must have**: a tree with A4's door calls throws NoSuchMethodError at
   the first IPC under any jar without `received`/`outboundResponse`; the shim entry goes into `system/hdfs` before the
   tree is built.

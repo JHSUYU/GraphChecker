@@ -87,7 +87,8 @@ host, and it is why isolation must be strict.
 
 - **One seed replay is one JVM**, held to the recorded order. More lifts do not shorten it; replay fidelity does:
   every schedule give-up costs the 15 s watchdog plus a grace (80 give-ups = 20+ min, and every obligation replay cut
-  from it inherits the drift). The time model and deterministic listings are speed work as much as correctness work.
+  from it inherits the drift). Deterministic listings are speed work as much as correctness work; the start-up/clock
+  family's give-ups are handled by workarounds (RULES).
 - **SEED's static passes** read the classpath over NFS: Soot's directory lookups made ~200K failed `stat`s per pass;
   `IndexedSourceLocator` lists each looked-up folder once per JVM (~7K left). On warm caches the pass is analysis-bound
   (43-62 s for hdfs-adhoc-19 either way); the many passes per SEED are the cost.

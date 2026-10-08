@@ -47,9 +47,12 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
 
 ## Taking over: read these, in order
 
-**HDFS is finished** (2026-10-07): all 46 cases have a hand-read `.smt` (STATUS "HDFS checks"; 07 closed on
-2026-10-07), and every one ran alone on the ten lifts for its time breakdown (EX1, docs/design/PERFORMANCE.md §6), split over two branches by the owner's ruling -- `system/hdfs` (locked body, 39 cases) and `system/hdfs1` (the newest body, the other
-7 and every later engine change); nothing goes to `main`. The next system (Solr) starts from `system/hdfs1`.
+**HDFS is finished** (46 of 46): every case has an exported `.smt` read by hand against the HDFS code (STATUS "HDFS
+checks"; 07, the last, closed on 2026-10-07), and every case then ran alone on the ten lifts for its time breakdown
+(series EX1, [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) §6). The work ends as two branches, by the owner's
+ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest body, the other 7 and every later
+engine change); nothing goes to `main`. The remote keeps `main`, `system/hdfs` and `system/hdfs1`; the Hadoop fork keeps
+the four trees the cases read (`graphchecker/*`, STATE §3). The next system (Solr) starts from `system/hdfs1` (TODO).
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
@@ -58,7 +61,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 
 | # | document | what it holds |
 | --- | --- | --- |
-| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands at the end of the HDFS group (2026-10-06 night): the two HDFS branches and what each holds; the goals (verbatim); every GraphChecker branch with its head, worktree and state; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch, including the per-case HDFS trees; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
+| 1 | [docs/handover/STATE.md](docs/handover/STATE.md) | Where the work stands at the end of the HDFS group (2026-10-08): the two HDFS branches and what each holds; the goals (verbatim); the remote and the parked local branches; every system tree (Hadoop, Solr, ZooKeeper, HBase) with its branch and, for HDFS, the fork's branch it is; VM images and snapshots; the rounds that closed each case; where the evidence lives. |
 | 2 | [docs/handover/TODO.md](docs/handover/TODO.md) | The plan, per system in the owner's order (HDFS, Solr, HBase, ZooKeeper): for HDFS the follow-ups (the two-phase final acceptance run, the general fixes the workarounds stand in for, the defects found, speed, cleanup); then each next system's steps. |
 | 3 | [docs/handover/RULES.md](docs/handover/RULES.md) | The owner's standing rules, long-term, quoted: what a finished check is (only SAT or UNSAT, a right `.smt`), symbolic scope first, general fixes only, no fallback code, a large closure converges (a bound is a rare last resort), workarounds with measure, system by system, git and safety. |
 | 3b | [docs/handover/CHECKING.md](docs/handover/CHECKING.md) | How every verdict and `.smt` is checked before it counts (round-verify's columns, the hand check with the legend) and the twenty-one traps the leads fell into (cut searches, unbound handoffs, bounded rounds, constant fatal arms, unreached arms, one-value domains, HELD values, the let-binding trap, NO-SYMBOL, a sweep's default budget, run-to-run open arms, read-order divergence, residue that cannot move a constant phi, ...). |

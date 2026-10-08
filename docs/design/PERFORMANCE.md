@@ -91,9 +91,6 @@ running out of memory, and a single case alone takes the whole cluster.
 | 11741 took 4.7-5.4 h though its witness landed after ~150 verdicts (AR1) | each solved obligation's REPLAY was put at the queue's front, ahead of the witness's CONFIRM: it waited behind 473 replays | a REPLAY goes behind a leading CONFIRM or RERUN (adffd6072) |
 | 254 processes in NFS D state on lift11, load 288 (2026-10-06) | dozens of `offline-ab.sh` waiters each refreshed every host's ledger reading (ssh + mktemp + rename into one NFS directory) whenever the 5 s cache was stale | one refresher per host, the others use a reading up to 30 s old (b7c5dc99d); gates via `onlift.sh` off lift11 |
 | a worktree took 45+ min to check out, a commit in it minutes | 99 % of the repository's files are `third_party/` (the VM's source) written to NFS | `tools/lib/worktree-add.sh`: sparse, 10 s |
-| 11 did not converge under the prefix span (CW5: 1267 asks vs WD3's 47) | six IPC arms re-asked ~110 times each over ~23 paths | rule 1 (an arm keyed by the kept conditions of its prefix closure), TODO §1.7 |
-| 11741's replays under the time model: median 258 s vs 165-207 s (TM16) | two 15 s stalls per replay: the window opens 65 s late in model time and time stands there until the order catches up | gone with the time model's revert; HF2-11741 (system/hdfs1, 2026-10-06): witness at ~60 min, confirmed at ~75 min, PASS in 5168 s |
-| TM14-11741: 175 worker timeouts and solver OOMs | a diagnostic row whose name grew with every pre-window lift: 1.5 GB of `gaps.jsonl` per session | on `hdfs-time-model` only (511c8d049), reverted with it |
 | 11741's witness attempt stuck for hours (CC7, 2026-10-06) | `Cone.read` searched every assertion of another selector to the end of a 150 MB body for every path | the Cone read once and indexed by selector (3e7becca7) |
 | a confirmed witness's verdict waiting behind a witness attempt | a returned confirmation is decided only by the next step, and steps run one at a time | minutes with the Cone fix (HF2: 15 min queue to accepted); `hdfs1-confirm-first` parked |
 
@@ -138,8 +135,8 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    growth.
 5. A host solver killed at its memory hold is placed by its measured peak or fails by name (`hdfs-solver-fallback`,
    in the body); 07's CC7 still lost 8 obligations to a full host (no host had room within the 60 s placement wait).
-6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (A1's measurement branch
-   `hdfs-compose-perf-wip`).
+6. 17897's COMPOSE: two z3 runs per satisfiable ask, whole asks 16-56 s (measured on `hdfs-compose-perf-wip`,
+   bundled in `/bigtemp/vnr3ne/handover/2026-10-08/graphchecker-remote-branches.bundle`).
 7. The two-phase final run (TODO HDFS §1): short cases a few at a time, deep closures each with the whole cluster.
 
 ## 6. Every HDFS case alone on the ten lifts (series EX1, 2026-10-07/08)

@@ -1,4 +1,4 @@
-# TODO after the HDFS group (2026-10-06 night)
+# TODO after the HDFS group (2026-10-08)
 
 Order:
 1. HDFS is finished (STATE §0): its follow-up items below are optional engine work, done when a later system needs
@@ -13,7 +13,7 @@ passes. Branch, tree and path details are in [STATE.md](STATE.md); every check w
 [../checks/README.md](../checks/README.md) and its reading in [../STATUS.md](../STATUS.md); commands in
 [OPERATIONS.md](OPERATIONS.md); speed and the cluster in [../design/PERFORMANCE.md](../design/PERFORMANCE.md).
 
-## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7; trees r7, r7-21, r8, 11741-r6; image `vm-hg5`)
+## HDFS (finished: `system/hdfs` 39 cases, `system/hdfs1` 7; trees r7, r7-21, r8, 11741-r6 = the fork's `graphchecker/*` branches; image `vm-hg5`)
 
 46 of 46 cases closed with a hand-read `.smt` (STATUS "HDFS checks"); no new bug; every case ran alone on the ten
 lifts for its time breakdown (EX1, PERFORMANCE §6). What is left is the general work the
@@ -113,18 +113,13 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - The ledger's ~1.6x over real use (step charges at their start heap).
 
 ### 7. Cleanup still owed (RULES: every change deletes what it replaces)
-- Cleanup batch 1, phase 2 (`brief-cleanup-1.md`): MapFields.safe/Text.safe copies, LineageScan's classFiles copy,
-  ScheduleLog.prefixFile, run_engine.sh's `input_flag=-j` branch, test-only accessors, `src/test/resources/
-  external-callers.txt`'s stale rows, the four-hop door API (MessageDoors should call RuntimeTraceContext directly),
-  CausynthTraceRecorder's offline aggregation into its own class, CausynthPipeline's weaves apart from orchestration,
-  DependencyRole.
-- `hdfs-refactor-compose` step 5 (Composer.compose/run as steps; SmtLowering -> VmTermLowering + SmtSymbolTable), gated
-  identical; merge `system/hdfs1` into it first.
+- The four-hop door API: `MessageDoors` should call `RuntimeTraceContext` directly.
+- `CausynthTraceRecorder`'s offline aggregation into its own class; `CausynthPipeline`'s weaves apart from the analysis
+  orchestration.
+- The COMPOSE refactor's step 5 (steps 1-4 are in): `Composer.compose`/`run` as named steps; `SmtLowering` ->
+  `VmTermLowering` + `SmtSymbolTable`; gated identical (`offline-ab.sh`, COMPOSE).
 - The VM's dead natives and `exportLeaf`/`mintLeaf` with the next VM build (STATE §3).
 - Loop-bound rows keyed structurally, not by Jimple unit ordinals (a tree change renumbers `#uN`).
-- Merged and parked branches and their worktrees (STATE §2), the superseded trees (r7b and older) and their Maven
-  repos, stale snapshots (STATE §3; `tools/rounds/snapshot-gc.sh`), finished agents' `gc-out` dirs,
-  `/bigtemp/vnr3ne/gc-out/diag-11741`, `/bigtemp/vnr3ne/readout-stream/` once its numbers are in STATUS.
 
 ## Solr (next; `system/solr` = main today)
 

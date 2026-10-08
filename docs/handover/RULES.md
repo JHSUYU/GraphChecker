@@ -150,15 +150,15 @@ recommendation.
 - **A SAT is judged on the path it claims, an UNSAT on every path it rests on** (lead, 2026-10-06): cone.py gates a SAT
   on the claimed selector's fatal cone (other selectors' unbound handoffs are computed and reported as
   `unboundOffWitness`, never hidden); an UNSAT on every admitted path, and COMPOSE refuses to close while any path's
-  cone holds an unattested handoff (on `hdfs-export-weave`, not merged yet). Not a per-case or per-variable exemption.
+  cone holds an unattested handoff. Not a per-case or per-variable exemption.
 - **A witness ends exploration only when its own chain is closed** (lead, 2026-10-06): when the first witness's fatal
   cone names a HELD/unbound handoff, EXPLORE grows only that chain's producers, re-composes, then claims; a chain that
-  growing cannot close is a named `WITNESS_CHAIN_OPEN` RUN_DEFECT (on `hdfs-export-weave`).
-- **An arm the bug may live in is never closed silently** (lead, 2026-10-06, merged b650a0f6d): every open decider arm of
+  growing cannot close is a named `WITNESS_CHAIN_OPEN` RUN_DEFECT.
+- **An arm the bug may live in is never closed silently** (lead, 2026-10-06): every open decider arm of
   a reached anchor that no admitted run took is named at the fixed point with its flips' verdicts; flips that only came
   back NOT_ADMITTED leave no verdict (`OPEN_ARM_UNANSWERED`, RUN_DEFECT).
 - **A faithful run that never enters an open arm's occurrence refutes that world** (lead, 2026-10-06, after the
-  handover; agent S's design A for 39/40, tightened after review; on `hdfs-open-arms`, for `system/hdfs1`): for an open
+  handover; agent S's design A for 39/40, tightened after review): for an open
   arm's flip toward the arm only, a replay that ran its world faithfully -- every assignment minted and planted, no
   prefix abandoned, every inherited flip taken; no order hold gave way and no paired read misread (holds still waiting
   wait only on the never-entered occurrence); the world acted in the window (a plant at the recorded value is no act)
@@ -274,9 +274,7 @@ recommendation.
    `git diff --name-only system/<sys>...<branch>` of each open branch), the rest after the merges.
 7. **Artifacts too**: merged branches and their worktrees, stale snapshots (`tools/rounds/snapshot-gc.sh`), finished
    agents' outputs, outdated documents are deleted; evidence still needed is named in STATE.
-Progress and what is still owed: STATE.md §2 (deleted so far: the WIRE-CODEC runtime, 6131 lines; dead symbols,
-unused config and duplicate helpers, 664 lines; the COMPOSE refactor steps 1-4 on `hdfs-refactor-compose`), TODO.md
-HDFS §1 and §8.
+What is still owed: TODO.md HDFS §7.
 
 **Acceptance**
 - **How to check**: [CHECKING.md](CHECKING.md) (round-verify's columns, the hand check with the legend, the traps).
