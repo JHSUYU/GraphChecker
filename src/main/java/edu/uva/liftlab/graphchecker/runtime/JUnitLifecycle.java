@@ -45,6 +45,12 @@ final class JUnitLifecycle {
     /** What marks the method the adapter names, in either vocabulary. */
     private static final String[] TEST = {
             "org.junit.jupiter.api.Test", "org.junit.Test"};
+    /** randomizedtesting's choice of the methods its runner takes as
+     *  tests (Lucene's and Solr's {@code LuceneTestCase}): a provider whose
+     *  name says JUnit 3 takes every public {@code test*()} method, marked
+     *  or not (Solr's {@code TestPullReplica#testAddDocs}). */
+    private static final String METHOD_PROVIDERS =
+            "com.carrotsearch.randomizedtesting.annotations.TestMethodProviders";
     /** What marks a method run once per argument set. */
     private static final String[] PARAMETERIZED = {
             JUnitInvocation.PARAMETERIZED_TEST};
@@ -214,9 +220,10 @@ final class JUnitLifecycle {
      * same-named helper is passed over; refused if missing or not marked a
      * test.  What its parameters take is {@link JUnitInvocation#resolve}'s.
      */
-    private static Method testMethod(Class<?> testClass, String methodName)
+    static Method testMethod(Class<?> testClass, String methodName)
             throws NoSuchMethodException {
         boolean named = false;
+        boolean junit3 = junit3Provided(testClass);
         for (Class<?> type : hierarchy(testClass, false)) {
             for (Method method : type.getDeclaredMethods()) {
                 if (!method.getName().equals(methodName)
@@ -226,7 +233,8 @@ final class JUnitLifecycle {
                 named = true;
                 Annotation[] marks = method.getDeclaredAnnotations();
                 if (!hasAnnotation(marks, TEST)
-                        && !hasAnnotation(marks, PARAMETERIZED)) {
+                        && !hasAnnotation(marks, PARAMETERIZED)
+                        && !(junit3 && junit3Test(method))) {
                     continue;
                 }
                 method.setAccessible(true);
@@ -434,6 +442,43 @@ final class JUnitLifecycle {
             }
         }
         return ordered;
+    }
+
+    /** Whether the class's runner takes JUnit 3 style methods as tests: a
+     *  {@value #METHOD_PROVIDERS} on it or a superclass names a provider
+     *  whose class name says JUnit3. */
+    private static boolean junit3Provided(Class<?> testClass) {
+        for (Class<?> type : hierarchy(testClass, false)) {
+            for (Annotation annotation : type.getDeclaredAnnotations()) {
+                if (!METHOD_PROVIDERS.equals(
+                        annotation.annotationType().getName())) {
+                    continue;
+                }
+                try {
+                    for (Class<?> provider : (Class<?>[]) annotation
+                            .annotationType().getMethod("value")
+                            .invoke(annotation)) {
+                        if (provider.getSimpleName().contains("JUnit3")) {
+                            return true;
+                        }
+                    }
+                } catch (ReflectiveOperationException unreadable) {
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** A JUnit 3 test: public, of the instance, named test*, no
+     *  parameters, returning nothing. */
+    private static boolean junit3Test(Method method) {
+        int modifiers = method.getModifiers();
+        return method.getName().startsWith("test")
+                && java.lang.reflect.Modifier.isPublic(modifiers)
+                && !java.lang.reflect.Modifier.isStatic(modifiers)
+                && method.getParameterCount() == 0
+                && method.getReturnType() == void.class;
     }
 
     private static List<Class<?>> hierarchy(Class<?> testClass,
