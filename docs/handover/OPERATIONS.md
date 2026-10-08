@@ -42,7 +42,8 @@ same case), `round-slow.sh <round> <baseline>` (a running case past 2x/4x its ba
 CONFIRM, the formula's leaf symbols: NO-SYMBOL marks an UNSAT over nothing that moves, a scope hole to read before
 it counts; `BOUNDED:<keys>`, a declared bound cut the search; `UNBOUND:<n>`, a broken causal chain per `cone.py`; the last
 line counts both. What each column means for "done" and the traps behind them: [CHECKING.md](CHECKING.md)), `obl-times.py <case>/schedule` (EXPLORE: run time vs queue wait per verdict, concurrency, refusal
-reasons). How to debug a slow case: [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §4. Reading a `.smt` by hand:
+reasons), `reproduce-again.sh <run dir> <case> <copy dir>` (REPRODUCE alone over a copy of a finished campaign, with this
+checkout's jar on the tree its case.sh names: a confirmed witness's native k/N, PIPELINE §10b). How to debug a slow case: [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §4. Reading a `.smt` by hand:
 `tools/analysis/smt-legend.py <out/case> --repo <tree>` names every leaf symbol of `final/candidate.smt2` (each root's
 door or configuration and where it was minted, each read's node, region, method and field, each handoff's port and
 producer), the starting point of every causal-chain check.

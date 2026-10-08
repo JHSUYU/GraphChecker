@@ -213,7 +213,8 @@ a final claim left so is a RUN_DEFECT. In a campaign it is a pool job on any hos
 chosen by attempt order, not finish time.
 
 **10. EMIT / REPRODUCE** write `candidate.smt2`, `claim.json`, `confirm.json` and `result.json`
-(with `concrete[]`). Native runs then plant the fault markers. Acceptance is
+(with `concrete[]`). Native runs then plant the confirmed world (fault markers, hook roots, clocks,
+configurations, accessor reads, call-return answers, the model's order; PIPELINE §10b). Acceptance is
 `experiments/accept/report.py` plus `cone.py` (the moved roots lie in the witness cone, and no
 fatal boundary variable is unbound).
 

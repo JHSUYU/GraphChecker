@@ -28,7 +28,7 @@ code, why the chain is constant inside the window.
 `movedRoots` names at least one root, `polarityDecides` is true, the claimed path's cone has no unbound handoff
 (`cone.json` `unbound`; other paths' are reported as `unboundOffWitness`, lead decision 2026-10-06, RULES), and the
 native reproduction ran (`final/reproduce.json`: `reproduced`/`runs`, record k/N; a race-dependent bug may reproduce
-4/10; a clock-skew world names `NATIVE_PLANT_UNSUPPORTED` and rests on CONFIRM, trap 21). A known bug also needs its mandated mechanism (RULES "Acceptance"; `report.py` PASS) with the mechanism's
+4/10; a world no native run can plant names `NATIVE_PLANT_UNSUPPORTED` and rests on CONFIRM, trap 21). A known bug also needs its mandated mechanism (RULES "Acceptance"; `report.py` PASS) with the mechanism's
 roots in `movedRoots`.
 
 ## 2. Reading the formula by hand (the hand check written into STATUS)
@@ -126,6 +126,9 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     stranded actor body, yet every one of the 5 fatal paths ends in the constant `false` (an untracked String
     compare), so no unexplored path can change UNSAT. Such a case is accepted only under the time-family license, with
     the gap ids and the reason in its STATUS row; outside that family it stays open.
-21. **A clock witness has no native reproduction** (11741): `reproduce.json` says `NATIVE_PLANT_UNSUPPORTED` (a native
-    run plants no clock). CONFIRM's replay, which planted the skewed clocks and reached the fatal, is its validation;
-    say so in its STATUS row instead of reporting a k/N.
+21. **A world with no native reproduction**: `reproduce.json` says `NATIVE_PLANT_UNSUPPORTED` with the reason (PIPELINE
+    §10b: an attach answered at a method-parameter, call-argument or method-return capture or at a codec port, a root
+    minted other than at a call's return). CONFIRM's replay, which planted that world and reached the fatal, is its
+    validation; say so in its STATUS row instead of reporting a k/N. Clocks, configurations, accessor reads and
+    call-return answers are planted natively (11741 EX1 10/10, solr-18406/18413 SC1 and SC2 10/10 each). A reproduced
+    run may leave ORDER rows `NOT_REACHED`: their after-activation runs past the anchor, where the run ends.
