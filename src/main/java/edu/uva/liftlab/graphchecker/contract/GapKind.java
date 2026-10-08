@@ -56,6 +56,13 @@ public enum GapKind {
      * ({@code undeclaredHookCount}).
      */
     HOOK_UNDECLARED,
+    /**
+     * A direct call of a door method a system's hook moved the door from
+     * that carries no door: no hook call follows it in its method, it
+     * reaches several, or it is made outside the hook's class family
+     * ({@code causynth.DoorWeave#moved}).  DIAGNOSTIC.
+     */
+    DOOR_UNPLACED,
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
     /**

@@ -29,6 +29,10 @@ import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.jimple.ThrowStmt;
 import soot.tagkit.Tag;
+import soot.toolkits.graph.BriefUnitGraph;
+import soot.toolkits.graph.UnitGraph;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,6 +41,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * The transport doors' fault points, the {@code DOOR} rows of the engine's
@@ -71,6 +77,9 @@ import java.util.Set;
 final class DoorWeave {
     private static final Logger LOG = LoggerFactory.getLogger(DoorWeave.class);
     private static final String GENERIC = "java.io.IOException";
+    /** A Soot method signature: its class and its sub-signature. */
+    private static final Pattern SIGNATURE =
+            Pattern.compile("<([^:\\s]+): (.+)>");
     private static final String MARKER_CLASS =
             "edu.uva.liftlab.graphchecker.annotation.Debug";
 
@@ -80,6 +89,7 @@ final class DoorWeave {
     /** Weaves every catalog door of an analysed family, and every door at
      *  calls into the analysed methods making them. */
     static void apply() {
+        UNPLACED.clear();
         Map<String, List<String>> missed = new LinkedHashMap<>();
         Set<String> doorMethods = new LinkedHashSet<>();
         List<String> woven = new ArrayList<>();
@@ -105,14 +115,7 @@ final class DoorWeave {
             if (miss.isEmpty()) {
                 doorMethods.add(door.doorMethod());
                 woven.add(door.name() + " at " + door.method);
-                for (Map.Entry<SootMethod, List<Stmt>> hooked
-                        : hookCalls(door).entrySet()) {
-                    for (Stmt call : hooked.getValue()) {
-                        weave(door, hooked.getKey(), call);
-                    }
-                    woven.add(door.name() + " at "
-                            + hooked.getKey().getSignature());
-                }
+                woven.addAll(weaveMoved(door, analysed));
             } else {
                 missed.computeIfAbsent(door.doorMethod(),
                         method -> new ArrayList<>()).add(miss);
@@ -246,32 +249,50 @@ final class DoorWeave {
     }
 
     /**
-     * A door a system's hook moved ({@link LibraryCatalog.Door#relocated}):
-     * every other method of the hook method's class family -- its nested
-     * classes and lambdas included -- that calls the door method itself,
-     * with the hook calls it is woven after: each first call of the hook
-     * that follows a call of the door method in body order.  A call no hook
-     * call follows in its own method has none here: the hook method's own
-     * retry lambda ({@code SolrZkClient#create}'s), whose hook call is the
-     * hook method's, already doored.
+     * The direct calls of a door method its system's hook moved the door
+     * from ({@link LibraryCatalog.Door#relocated}) that carry no door, each
+     * named, DIAGNOSTIC ({@code DOOR_UNPLACED}), read by the static pass's
+     * catalog gaps ({@link #unplaced}).
      */
-    static Map<SootMethod, List<Stmt>> hookCalls(LibraryCatalog.Door door) {
-        Map<SootMethod, List<Stmt>> found = new LinkedHashMap<>();
+    private static final List<Map<String, Object>> UNPLACED =
+            new ArrayList<>();
+
+    /** The moved doors' direct calls left with no door, as gap rows. */
+    static List<Map<String, Object>> unplaced() {
+        return Collections.unmodifiableList(UNPLACED);
+    }
+
+    /**
+     * Where else a door a system's hook moved goes ({@link
+     * LibraryCatalog.Door#relocated}): after the hook call each direct call
+     * of the door method reaches by control flow, in every method of the
+     * hook method's class family -- its nested classes and lambdas included,
+     * a call through a subclass's reference too ({@code SolrZooKeeper} for
+     * {@code ZooKeeper}) -- but the hook method, whose placement is its own.
+     * A door method that calls the hook method itself (Solr's HTTP/2 request
+     * parsing its response) carries the door in every call of it, so none is
+     * moved.  A direct call that reaches no hook call or several, or is made
+     * outside the hook's class family, carries no door, and is named
+     * ({@link #UNPLACED}): a retry lambda whose hook call its caller makes
+     * ({@code SolrZkClient#create}'s) is covered by that caller's door, any
+     * other is a door lost.
+     */
+    static Map<SootMethod, Set<Stmt>> moved(LibraryCatalog.Door door,
+                                           List<SootClass> analysed) {
+        Map<SootMethod, Set<Stmt>> found = new LinkedHashMap<>();
         if (door.relocated == null) return found;
-        SootMethod hook = CausynthStaticFacts.method(door.method);
-        SootMethod moved = Scene.v().grabMethod(door.relocated);
-        if (hook == null || moved == null) return found;
-        String family = door.family();
-        List<SootClass> types = new ArrayList<>();
-        for (SootClass type : Scene.v().getApplicationClasses()) {
-            String name = type.getName();
-            if ((name.equals(family) || name.startsWith(family + "$"))
-                    && analysed(type)) {
-                types.add(type);
-            }
+        Matcher target = SIGNATURE.matcher(door.relocated);
+        if (!target.matches()) {
+            throw new IllegalStateException("DOOR_METHOD_UNAVAILABLE: "
+                    + door.relocated + " is no method signature");
         }
-        types.sort((a, b) -> a.getName().compareTo(b.getName()));
-        for (SootClass type : types) {
+        SootMethod moved = CausynthStaticFacts.method(door.relocated);
+        Body own = moved == null ? null : CausynthStaticFacts.activeBody(moved);
+        if (own != null && call(own, door.method, 0) != null) return found;
+        SootMethod hook = CausynthStaticFacts.method(door.method);
+        for (SootClass type : analysed) {
+            boolean family = type.getName().equals(door.family())
+                    || type.getName().startsWith(door.family() + "$");
             List<SootMethod> methods = new ArrayList<>(type.getMethods());
             methods.sort((a, b) -> a.getSignature().compareTo(
                     b.getSignature()));
@@ -279,36 +300,113 @@ final class DoorWeave {
                 if (method.equals(hook)) continue;
                 Body body = CausynthStaticFacts.activeBody(method);
                 if (body == null) continue;
-                boolean called = false;
-                List<Stmt> hooks = new ArrayList<>();
+                UnitGraph graph = null;
                 for (Unit unit : body.getUnits()) {
                     Stmt stmt = (Stmt) unit;
-                    if (!stmt.containsInvokeExpr()) continue;
-                    SootMethodRef ref = stmt.getInvokeExpr().getMethodRef();
-                    if (calls(ref, moved)) {
-                        called = true;
-                    } else if (called && door.anchor.equals(
-                            ref.getSignature())) {
-                        hooks.add(stmt);
-                        called = false;
+                    if (!stmt.containsInvokeExpr() || !calls(
+                            stmt.getInvokeExpr().getMethodRef(),
+                            target.group(1), target.group(2))) {
+                        continue;
+                    }
+                    if (!family) {
+                        unplaced(door, method, body, stmt, "it is made outside"
+                                + " the class family of its hook, "
+                                + door.family());
+                        continue;
+                    }
+                    if (graph == null) graph = new BriefUnitGraph(body);
+                    Set<Stmt> reached = hookCallsReached(graph, stmt,
+                            door.anchor, target.group(1), target.group(2));
+                    if (reached.size() == 1) {
+                        found.computeIfAbsent(method,
+                                ignored -> new LinkedHashSet<>())
+                                .addAll(reached);
+                    } else {
+                        unplaced(door, method, body, stmt, reached.isEmpty()
+                                ? "no call of its hook " + door.anchor
+                                        + " follows it in its method: its"
+                                        + " door is the one its caller's"
+                                        + " hook call carries, if any"
+                                : "it reaches " + reached.size() + " calls"
+                                        + " of its hook " + door.anchor);
                     }
                 }
-                if (!hooks.isEmpty()) found.put(method, hooks);
             }
         }
         return found;
     }
 
-    /** Whether {@code ref} calls {@code target}: its name and parameters,
-     *  on its class or a subclass of it (a call through a subclass's
+    /** Weaves a moved door at every other placement it has ({@link
+     *  #moved}); the methods it was woven in. */
+    static List<String> weaveMoved(LibraryCatalog.Door door,
+                                   List<SootClass> analysed) {
+        List<String> woven = new ArrayList<>();
+        for (Map.Entry<SootMethod, Set<Stmt>> hooked
+                : moved(door, analysed).entrySet()) {
+            for (Stmt call : hooked.getValue()) {
+                weave(door, hooked.getKey(), call);
+            }
+            woven.add(door.name() + " at " + hooked.getKey().getSignature());
+        }
+        return woven;
+    }
+
+    /** The hook calls {@code call} reaches by normal control flow, each the
+     *  first on its path; a path through another call of the door method
+     *  is that call's. */
+    private static Set<Stmt> hookCallsReached(UnitGraph graph, Stmt call,
+                                              String anchor, String owner,
+                                              String subSignature) {
+        Set<Stmt> reached = new LinkedHashSet<>();
+        Set<Unit> seen = new java.util.HashSet<>();
+        java.util.ArrayDeque<Unit> pending =
+                new java.util.ArrayDeque<>(graph.getSuccsOf(call));
+        while (!pending.isEmpty()) {
+            Stmt next = (Stmt) pending.poll();
+            if (!seen.add(next)) continue;
+            if (next.containsInvokeExpr()) {
+                SootMethodRef ref = next.getInvokeExpr().getMethodRef();
+                if (anchor.equals(ref.getSignature())) {
+                    reached.add(next);
+                    continue;
+                }
+                if (calls(ref, owner, subSignature)) continue;
+            }
+            pending.addAll(graph.getSuccsOf(next));
+        }
+        return reached;
+    }
+
+    private static void unplaced(LibraryCatalog.Door door, SootMethod method,
+                                 Body body, Stmt call, String why) {
+        String site = method.getSignature() + "#u" + unitIndex(body, call);
+        UNPLACED.add(CommunicationCatalogPlanner.gap(GapKind.DOOR_UNPLACED,
+                GapClass.DIAGNOSTIC, why, method.getSignature(), site,
+                "the direct call of " + door.relocated + " at " + site
+                        + " carries no " + door.name() + " door: " + why));
+    }
+
+    /** {@code unit}'s index in its body's unit chain. */
+    private static int unitIndex(Body body, Unit unit) {
+        int index = 0;
+        for (Unit next : body.getUnits()) {
+            if (next == unit) return index;
+            index++;
+        }
+        return -1;
+    }
+
+    /** Whether {@code ref} calls {@code owner}'s {@code subSignature}: on
+     *  that class or a subclass of it (a call through a subclass's
      *  reference, {@code SolrZooKeeper} for {@code ZooKeeper}). */
-    private static boolean calls(SootMethodRef ref, SootMethod target) {
-        if (!ref.getSubSignature().equals(target.getNumberedSubSignature())) {
+    private static boolean calls(SootMethodRef ref, String owner,
+                                 String subSignature) {
+        if (!ref.getSubSignature().getString().equals(subSignature)) {
             return false;
         }
         for (SootClass type = ref.getDeclaringClass(); type != null;
              type = type.hasSuperclass() ? type.getSuperclass() : null) {
-            if (type.equals(target.getDeclaringClass())) return true;
+            if (type.getName().equals(owner)) return true;
             if (type.isPhantom()) return false;
         }
         return false;

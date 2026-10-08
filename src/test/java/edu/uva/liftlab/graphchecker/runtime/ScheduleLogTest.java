@@ -975,6 +975,112 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A write waiting behind the write to its location gives that one write
+     * up when it stalls, never the run of other nodes' events before it: x
+     * and y stay open and are taken when their threads come, and only o's
+     * write, which never came, is given up.
+     */
+    @Test(timeout = 30000L)
+    public void aWriteWaitingBehindAnotherGivesUpThatWriteAlone()
+            throws Exception {
+        noRequest();
+        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        request("o", () -> written("/p"));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "500");
+        enforce(recorded);
+        Thread c = new Thread(() -> request("c", () -> written("/p")));
+        c.start();
+        c.join(10000L);
+        assertFalse("c's write goes once o's alone is given up", c.isAlive());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 1 given up"));
+    }
+
+    /**
+     * A write whose slot is past the cut holds nothing of its own, but waits
+     * behind the prefix's write to its location until it is made.
+     */
+    @Test(timeout = 30000L)
+    public void aWritePastTheCutWaitsBehindThePrefixsWriteThere()
+            throws Exception {
+        noRequest();
+        request("o", () -> written("/p"));
+        request("c", () -> written("/p"));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        enforce(recorded.subList(0, 1), recorded.subList(1, 2));
+        Thread c = new Thread(() -> request("c", () -> written("/p")));
+        c.start();
+        Thread.sleep(500L);
+        assertTrue("c's rest write waits for o's prefix write", c.isAlive());
+        request("o", () -> written("/p"));
+        c.join(10000L);
+        assertFalse(c.isAlive());
+        assertEquals(Arrays.asList(recorded.get(0).context(),
+                recorded.get(1).context()), Arrays.asList(
+                events().get(0).context(), events().get(1).context()));
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+    }
+
+    /**
+     * The 18413 cycle with its poll: the Overseer task's write stands first
+     * at the queue's location, and the Overseer makes it only once its poll
+     * sees the core-admin CREATE complete, whose write waits behind it.  The
+     * poll's requests are the frontier owner at work, so the stall is
+     * deferred to its ceiling, CEILING timeouts (120 s at the 15 s default),
+     * then the Overseer's write is given up and both go; never longer.
+     */
+    @Test(timeout = 60000L)
+    public void theCycleWithAPollCostsAtMostTheStallsCeiling()
+            throws Exception {
+        String q = "/overseer/queue/qn-";
+        noRequest();
+        request("o", () -> written(q));
+        request("c", () -> written(q));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        long timeout = 300L;
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
+                String.valueOf(timeout));
+        enforce(recorded);
+        final CountDownLatch completed = new CountDownLatch(1);
+        long before = System.nanoTime();
+        Thread overseer = new Thread(() -> request("o", () -> {
+            try {
+                while (!completed.await(50L, TimeUnit.MILLISECONDS)) {
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                            "SOLR_HTTP#REQUEST:admin.cores:REQUESTSTATUS");
+                }
+                written(q);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        Thread create = new Thread(() -> request("c", () -> {
+            written(q);
+            completed.countDown();
+        }));
+        overseer.start();
+        create.start();
+        overseer.join(30000L);
+        create.join(30000L);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertFalse(overseer.isAlive() || create.isAlive());
+        assertTrue("the ceiling, not for ever: " + took,
+                took >= ScheduleLog.CEILING * timeout
+                        && took < ScheduleLog.CEILING * timeout + 5000L);
+    }
+
+    /**
      * A leader election's node is created under its node's store session,
      * whose id differs from run to run: stated by the adapter as the node's
      * own spelling, the location keys by the node's name, so the replay's

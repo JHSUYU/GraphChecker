@@ -336,17 +336,19 @@ public final class MessageDoors {
 
     /**
      * A write to a store the nodes share is about to be made at {@code
-     * location} (a sequential create's: the prefix the store completes).
-     * It takes its turn first ({@link ScheduleEvent.Kind#WRITE}, keyed by
-     * the location as every run spells it, {@link RunNames}): writes to one
-     * location run in the recorded order, and the store decides each race
-     * they run -- whether a create finds its node made, a sequence number --
+     * location}: a create of that path, or a write of its data.  It takes
+     * its turn first ({@link ScheduleEvent.Kind#WRITE}, keyed by the location
+     * as every run spells it, {@link RunNames}): writes to one location run
+     * in the recorded order while the prefix holds them, and the store
+     * decides each race they run -- whether a create finds its node made --
      * as the recording's did (SB19, solr-bugs-reindex-cleanup: a node
      * created the collection's terms node the recording had another replica
-     * create, and the shard's leader election went the other way).  A
-     * location that still spells a name only this run has, which no adapter
-     * stated ({@link #spelledAs}), keys alike in no two runs: that write
-     * takes no turn, and says so once per name.
+     * create, and the shard's leader election went the other way).  Past the
+     * cut no slot holds, and writes at one location are ordered only behind
+     * the prefix's ({@code ScheduleLog#conflictLocked}).  A location that
+     * still spells a name only this run has, which no adapter stated
+     * ({@link #spelledAs}), keys alike in no two runs: that write takes no
+     * turn, and says so once per name.
      *
      * <p>The store applies a write, and notifies the version's watchers,
      * before the write's call returns, so another thread can read the
@@ -360,11 +362,37 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
+        turn(transport, location);
+        return inFlight(transport, location);
+    }
+
+    /**
+     * A write that takes or frees a number of its location's parent: a
+     * sequential create ({@code location}: the prefix the store completes)
+     * or a delete ({@code location}: the path deleted), each moving the
+     * parent's child counter, which numbers the next sequential create
+     * there.  Its turn is keyed by the parent, so every participant of one
+     * leader election, or every writer of one queue, takes its number in
+     * the recorded order, and no run-only name of the creating node (its
+     * store session, spelled in an election's prefix) is part of the key.
+     * In flight, as {@link #storing}, at {@code location}.
+     *
+     * @return the write's token, for {@link #storeEnded}
+     */
+    public static long storingChild(String transport, String location) {
+        String path = trimmed(location);
+        int slash = path.lastIndexOf('/');
+        turn(transport, slash <= 0 ? "/" : path.substring(0, slash));
+        return inFlight(transport, location);
+    }
+
+    /** A write's turn at {@code location}, keyed as every run spells it. */
+    private static void turn(String transport, String location) {
         RunNames.Keyed keyed = RunNames.key(trimmed(location));
         if (keyed.unnamed.isEmpty()) {
             ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
                     ScheduleEvent.written(trimmed(transport), keyed.location));
-        } else if (UNNAMED.add(keyed.unnamed)) {
+        } else if (RunNames.firstUnstated(keyed.unnamed)) {
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     transport + " " + keyed.unnamed, "a write's location"
                             + " spells " + keyed.unnamed + ", a name only"
@@ -375,13 +403,7 @@ public final class MessageDoors {
                             + " timing has it, held only by the SEND after"
                             + " each");
         }
-        return inFlight(transport, location);
     }
-
-    /** The run-only names a write's location spelled that no adapter
-     *  stated, each named once ({@link #storing}). */
-    private static final java.util.Set<String> UNNAMED =
-            ConcurrentHashMap.newKeySet();
 
     /** A write in flight at {@code location} until {@link #storeEnded}. */
     private static long inFlight(String transport, String location) {
@@ -575,9 +597,11 @@ public final class MessageDoors {
      * item and its port ({@code Interactions#pairing}, CORRELATION_PORT) --
      * with the values its writer staged on it.  The consumer's context stays
      * its own: which turn takes an item is the queue's batching, and each
-     * turn is ordered as a tick of its own.  An item its writer has not yet
-     * filed is waited for ({@link #filed}); one no write of the window filed
-     * names nothing.
+     * turn is ordered as a tick of its own, and a consumer takes an item
+     * inside its turn ({@link #beginTick}), which ended whatever the thread
+     * served before: what an item ends is the item before it.  An item its
+     * writer has not yet filed is waited for ({@link #filed}); one no write
+     * of the window filed names nothing.
      */
     public static void consumed(String transport, String key) {
         endInbound(true);
@@ -673,8 +697,13 @@ public final class MessageDoors {
         CausynthTraceRecorder.startupDone(pass);
     }
 
-    /** Closes the tick {@link #beginTick} opened. */
+    /**
+     * Closes the tick {@link #beginTick} opened, and the exchange its thread
+     * served in it: the turn serves nothing past its end (the Solr
+     * Overseer's batch write after its last item's turn served that item).
+     */
     public static void endTick(long token) {
+        endInbound();
         CausynthTraceRecorder.endDaemonTick(token);
     }
 

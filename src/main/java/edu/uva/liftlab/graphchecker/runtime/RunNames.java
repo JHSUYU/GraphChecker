@@ -3,7 +3,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,11 +32,23 @@ final class RunNames {
     private RunNames() {
     }
 
-    /** {@code spelling} is node {@code node}'s in this run. */
+    /** The run-only names a location spelled that no adapter stated, each
+     *  named once ({@link #firstUnstated}). */
+    private static final Set<String> UNSTATED = new HashSet<String>();
+
+    /**
+     * {@code spelling} is node {@code node}'s in this run.  Only a spelling
+     * that holds a run-only name ({@link #UNNAMED}) is one: a session not yet
+     * connected spells {@code 0}, which would rename every 0.  Stated again
+     * (a restarted node, a renewed session) it is kept once.
+     */
     static synchronized void spelled(String node, String spelling) {
-        if (spelling == null || spelling.isEmpty() || node == null
-                || node.isEmpty()) {
+        if (spelling == null || node == null || node.isEmpty()
+                || !UNNAMED.matcher(spelling).find()) {
             return;
+        }
+        for (String[] named : spellings) {
+            if (named[0].equals(spelling)) return;
         }
         List<String[]> next = new ArrayList<String[]>(spellings);
         next.add(new String[] {spelling, "{" + node + "}"});
@@ -64,7 +78,13 @@ final class RunNames {
         return new Keyed(keyed, left.find() ? left.group() : "");
     }
 
+    /** Whether {@code unnamed} is named here for the first time. */
+    static synchronized boolean firstUnstated(String unnamed) {
+        return UNSTATED.add(unnamed);
+    }
+
     static synchronized void resetForTests() {
         spellings = Collections.emptyList();
+        UNSTATED.clear();
     }
 }

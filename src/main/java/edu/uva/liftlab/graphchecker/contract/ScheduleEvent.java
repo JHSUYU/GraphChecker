@@ -45,11 +45,13 @@ public final class ScheduleEvent extends Value {
         /**
          * A write to a store the nodes share takes its turn, before the
          * store's call: its site is {@link #written} (the store's transport
-         * and the location the write races for -- the path, a sequential
-         * create's prefix), so writes to one location run in the order the
-         * recording ran them, and the store decides each race as it did (a
-         * create-if-absent's, a sequence number).  The SEND after the write
-         * names the version it made.
+         * and the location the write races for -- the path; for a sequential
+         * create or a delete, the parent whose child counter it moves), so
+         * writes to one location run in the order the recording ran them
+         * while the prefix holds them, and the store decides each race as it
+         * did (a create-if-absent's, a sequence number).  Past the cut no
+         * slot holds: writes there are ordered only behind the prefix's.  The
+         * SEND after the write names the version it made.
          */
         WRITE,
         /** A message is installed on the thread that serves it. */

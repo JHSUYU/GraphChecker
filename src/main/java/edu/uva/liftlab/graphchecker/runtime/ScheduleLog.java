@@ -1476,6 +1476,23 @@ public final class ScheduleLog {
             return true;
         }
         if (earliest == Integer.MAX_VALUE) return false;
+        if (onlyConflictedAtLocked(earliest)) {
+            // A write the order lacks there, or one whose slot holds nothing,
+            // waits at the slot after the one write to its location it
+            // follows: that write alone is given up, never the run of other
+            // nodes' events before it, and it is no stall past the cut.
+            int write = earliest - 1;
+            stalls++;
+            giveUpLocked(write);
+            stateLocked("schedule-write#" + write, "the write at slot "
+                    + write + " (" + order.get(write).render() + ") did not"
+                    + " happen in the " + stood + " ms the frontier stood at"
+                    + " slot " + firstBlocking + ", while a write to its"
+                    + " location waited for it: it alone is given up, and"
+                    + " still takes its slot if it comes");
+            settleLocked();
+            return true;
+        }
         boolean atTheLine = WAITERS.containsValue(AT_THE_LINE)
                 && earliest == line;
         stalls++;
@@ -1543,17 +1560,24 @@ public final class ScheduleLog {
         LOCK.notifyAll();
     }
 
+    /** Whether every waiter at {@code slot} is a write waiting behind the
+     *  write to its location ({@link #CONFLICTED}). */
+    private static boolean onlyConflictedAtLocked(int slot) {
+        boolean any = false;
+        for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
+            if (waiter.getValue() != slot) continue;
+            if (!CONFLICTED.contains(waiter.getKey())) return false;
+            any = true;
+        }
+        return any;
+    }
+
     /** What waits at {@code earliest}, as it names itself. */
     private static String waitingAtLocked(int earliest) {
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
             if (earliest == line && waiter.getValue() == AT_THE_LINE) {
                 return heldLocked(waiter.getKey()) + " waited at the "
                         + (line == cut ? "cut" : "order's end");
-            }
-            if (waiter.getValue() == earliest
-                    && CONFLICTED.contains(waiter.getKey())) {
-                return "a WRITE waited for the write to its location at"
-                        + " slot " + (earliest - 1);
             }
         }
         return order.get(earliest).render() + " waited at slot " + earliest;
