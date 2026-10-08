@@ -148,7 +148,7 @@ public class ContractTest {
         expressions.put("EXPR.0000000000000001", chain);
         RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
         assertTrue(Files.size(file) < 64 * 1024);
-        JsonObject read = RowCodec.readExpressions(file)
+        JsonObject read = SessionExpressionLog.read(file, new RowPool())
                 .expression("EXPR.0000000000000001");
         assertSame(read.get("_left"), read.get("_right"));
         assertEquals(new ExpressionRefs().ref(chain),
@@ -177,7 +177,7 @@ public class ContractTest {
                 "s-no-log").create();
         for (Path unpublished : new Path[] {file, bare.expressions()}) {
             try {
-                RowCodec.readExpressions(unpublished);
+                SessionExpressionLog.read(unpublished, new RowPool());
                 fail("read " + unpublished + " as a table");
             } catch (IllegalArgumentException refused) {
                 assertTrue(refused.getMessage(), refused.getMessage()
@@ -520,7 +520,8 @@ public class ContractTest {
             RootDomain domain = RootDomain.resolved(RootMintRow.of("s", 1L,
                     at, (String) row[1], "sym", RootKind.INTEGRAL,
                     RootCategory.CONFIG, "100", (String) row[2],
-                    (String) row[3], true, null, 0L), declared);
+                    (String) row[3], true, null, 0L), declared,
+                    Collections.<java.math.BigInteger>emptyList());
             assertEquals((String) row[0], row[4],
                     "[" + domain.min() + ", " + domain.max() + "]");
         }
@@ -746,25 +747,25 @@ public class ContractTest {
                 "the exporter ran outside any attributable scope");
 
         assertEquals(activation, RowCodec.readActivation(
-                reline(RowCodec.writeActivation(activation))));
+                reline(RowCodec.writeActivation(activation)), new RowPool()));
         // An activation a lightweight entry hook published carries no thread
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.
         ActivationRow ambient = ActivationRow.of("s-17897-1", producer, "",
                 false, false, "KeyManager-1#13");
         ActivationRow ambientBack = RowCodec.readActivation(
-                reline(RowCodec.writeActivation(ambient)));
+                reline(RowCodec.writeActivation(ambient)), new RowPool());
         assertEquals(ambient, ambientBack);
         assertFalse(ambientBack.instrumented());
         assertEquals("KeyManager-1#13", ambientBack.threadKey());
         assertEquals(decision, RowCodec.readDecision(
-                reline(RowCodec.writeDecision(decision))));
+                reline(RowCodec.writeDecision(decision)), new RowPool()));
         assertEquals(exported, RowCodec.readExport(
-                reline(RowCodec.writeExport(exported))));
+                reline(RowCodec.writeExport(exported)), new RowPool()));
         assertEquals(attached, RowCodec.readAttach(
-                reline(RowCodec.writeAttach(attached))));
+                reline(RowCodec.writeAttach(attached)), new RowPool()));
         assertEquals(written, RowCodec.readWrite(
-                reline(RowCodec.writeWrite(written))));
+                reline(RowCodec.writeWrite(written)), new RowPool()));
         // A reference write states its container's state, or why not.
         LocationId map = LocationId.of(LocationKind.MAP, "42", "-3");
         for (WriteRow reference : Arrays.asList(
@@ -776,16 +777,16 @@ public class ContractTest {
                         LocationId.of(LocationKind.INSTANCE, "8", "16"), 9L,
                         "EXPR.v1.7ab1", "L", null, "RESIZING"))) {
             assertEquals(reference, RowCodec.readWrite(
-                    reline(RowCodec.writeWrite(reference))));
+                    reline(RowCodec.writeWrite(reference)), new RowPool()));
         }
         assertFalse(RowCodec.writeWrite(written).has("referentState"));
         assertEquals(read, RowCodec.readRead(
-                reline(RowCodec.writeRead(read))));
+                reline(RowCodec.writeRead(read)), new RowPool()));
         // A placeholder's mint version is part of the row it round-trips as.
         ReadRow placeholder = ReadRow.of("s-17897-1", 14L, read.endpoint(),
                 keys, 7L, "state_allKeys_7", BLOCK_KEY, null, 9L);
         assertEquals(placeholder, RowCodec.readRead(
-                reline(RowCodec.writeRead(placeholder))));
+                reline(RowCodec.writeRead(placeholder)), new RowPool()));
         assertFalse("a stated mint version is not the unknown one",
                 placeholder.equals(read));
         // So is an unnamed writer: the read joins, alternatives not.
@@ -793,7 +794,7 @@ public class ContractTest {
                 keys, 7L, "state_allKeys_7", BLOCK_KEY, null,
                 ReadRow.UNKNOWN_VERSION, true);
         assertEquals(partial, RowCodec.readRead(
-                reline(RowCodec.writeRead(partial))));
+                reline(RowCodec.writeRead(partial)), new RowPool()));
         assertFalse(partial.equals(read));
         assertFalse(RowCodec.writeRead(read).has("unnamedWriter"));
         assertEquals(minted, RowCodec.readRootMint(
@@ -816,7 +817,7 @@ public class ContractTest {
         // The parts a reader joins on survive the line form: the context, the
         // index, the site index, the session order and the declared sorts.
         AttachRow back = RowCodec.readAttach(
-                reline(RowCodec.writeAttach(attached)));
+                reline(RowCodec.writeAttach(attached)), new RowPool());
         assertEquals(attach.id(), back.endpoint().id());
         assertEquals(site, back.endpoint().siteIndex());
         assertEquals(9L, back.seq());
@@ -831,8 +832,8 @@ public class ContractTest {
                         GapKind.SOLVER_TIMEOUT, GapClass.BLOCKING,
                         anchor.id(), "z3 gave no answer in 900s")))).kind());
         // A nullable field that was null comes back null, not "" or "null".
-        assertNull(RowCodec.readRead(reline(RowCodec.writeRead(read)))
-                .concreteValue());
+        assertNull(RowCodec.readRead(reline(RowCodec.writeRead(read)),
+                new RowPool()).concreteValue());
 
         RowCodec.writeAll(session.attaches(), Arrays.asList(attached,
                 AttachRow.of("s-17897-1", 11L, Endpoint.of(anchor, PORT,
@@ -840,7 +841,7 @@ public class ContractTest {
                         "v_H_key_id_2", "I", "5", false, null, null,
                         "xch-53092d3e", "")), RowCodec::writeAttach);
         List<AttachRow> rows = RowCodec.readAll(session.attaches(),
-                RowCodec::readAttach);
+                json -> RowCodec.readAttach(json, new RowPool()));
         assertEquals(2, rows.size());
         assertEquals(attached, rows.get(0));
         // WHICH key paired it survives the round trip, and a blank one is
@@ -850,8 +851,8 @@ public class ContractTest {
         assertNull(rows.get(1).pairedBy());
         assertNull(rows.get(1).producer());
         // Reading one kind never touches another kind's file.
-        assertTrue(RowCodec.readAll(session.reads(), RowCodec::readRead)
-                .isEmpty());
+        assertTrue(RowCodec.readAll(session.reads(),
+                json -> RowCodec.readRead(json, new RowPool())).isEmpty());
 
         JsonObject expression = new JsonObject();
         expression.addProperty("op", "SYMBOL");
@@ -861,7 +862,7 @@ public class ContractTest {
         RowCodec.writeExpressions(session.expressions(),
                 ExpressionTable.of(expressions));
         assertEquals(ExpressionTable.of(expressions),
-                RowCodec.readExpressions(session.expressions()));
+                SessionExpressionLog.read(session.expressions(), new RowPool()));
         assertEquals(Collections.singletonList(session),
                 SessionDir.sessionsIn(root));
 

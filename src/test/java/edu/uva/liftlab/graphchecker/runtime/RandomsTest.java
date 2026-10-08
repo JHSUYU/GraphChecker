@@ -126,7 +126,7 @@ public class RandomsTest {
             String first = Randoms.key(SITE);
             String second = Randoms.key(SITE);
             long drawn = Randoms.at(SITE).nextLong();
-            if (woven) Identity.regionExit();
+            if (woven) Identity.regionExit(null);
             Lineage.pop(turn);
             assertNotEquals("two draws of one site in one context", first,
                     second);

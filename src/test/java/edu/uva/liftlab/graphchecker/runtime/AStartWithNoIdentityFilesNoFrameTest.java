@@ -89,13 +89,13 @@ public class AStartWithNoIdentityFilesNoFrameTest {
                 said.add(opened("REGION.inner"));
                 said.add("ordinals " + Identity.nextBranchOrdinal("loop#u3")
                         + "," + Identity.nextBranchOrdinal("loop#u3"));
-                Identity.regionExit();
+                Identity.regionExit(null);
                 RuntimeTraceContext.endRequest(hop);
                 said.add(Identity.currentOccurrence(DN.key()).regionId());
             }
-            Identity.regionExit();
+            Identity.regionExit(null);
             long hop = RuntimeTraceContext.beginRequest(DN, "last");
-            Identity.regionExit();
+            Identity.regionExit(null);
             said.add(Identity.currentOccurrence(DN.key()).regionId());
             RuntimeTraceContext.endRequest(hop);
             return said;
@@ -112,7 +112,7 @@ public class AStartWithNoIdentityFilesNoFrameTest {
         RuntimeTraceContext.endRequest(request);
         assertEquals("Root:CLIENT/accept#1", claimed(named, carrier -> {
             String first = opened("REGION.handshake");
-            Identity.regionExit();
+            Identity.regionExit(null);
             return first;
         }));
     }
@@ -138,10 +138,10 @@ public class AStartWithNoIdentityFilesNoFrameTest {
         Identity.startWork(ACCEPT, unnamed);
         String[] tasks = claimed(unnamed, carrier -> {
             String first = opened("REGION.task");
-            Identity.regionExit();
+            Identity.regionExit(null);
             Identity.claimStart(new Object());
             String next = opened("REGION.task");
-            Identity.regionExit();
+            Identity.regionExit(null);
             return new String[]{first, next};
         });
         assertEquals("none", tasks[0]);

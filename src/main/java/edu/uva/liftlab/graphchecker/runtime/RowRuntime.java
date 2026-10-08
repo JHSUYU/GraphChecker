@@ -48,6 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * The one door between the replay and the row set.
@@ -123,7 +124,7 @@ public final class RowRuntime {
 
     /** The sessions directory {@link #SESSIONS_ENV} names, or null. */
     private static Path declaredSessionsRoot() {
-        String declared = Text.safe(System.getenv(SESSIONS_ENV));
+        String declared = trimmed(System.getenv(SESSIONS_ENV));
         return declared.isEmpty() ? null
                 : Paths.get(declared).toAbsolutePath();
     }
@@ -148,7 +149,7 @@ public final class RowRuntime {
         Path parent = resultFile.toAbsolutePath().getParent();
         String where = parent == null || parent.getFileName() == null
                 ? "session" : parent.getFileName().toString();
-        return where + "-" + ArtifactIO.digest(Text.safe(
+        return where + "-" + ArtifactIO.digest(trimmed(
                 resultFile.toAbsolutePath() + "\n"
                 + ManagementFactory.getRuntimeMXBean().getName() + "\n"
                 + System.nanoTime()), 8);
@@ -174,7 +175,7 @@ public final class RowRuntime {
         if (address == null) {
             if (session != null) {
                 gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                        firstNonBlank(Text.safe(regionId), Text.safe(taskId),
+                        firstNonBlank(trimmed(regionId), trimmed(taskId),
                                 Long.toString(token)),
                         "an activation of this region ran on a node this run"
                                 + " could not name, so it has no address");
@@ -184,7 +185,7 @@ public final class RowRuntime {
         FocusedReplay.entered(address);
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
-                    Text.safe(taskId), FocusedReplay.focused(taskId,
+                    trimmed(taskId), FocusedReplay.focused(taskId,
                             address), true, threadKey(),
                     anchorProducer(address)));
             if (address.lineageLost()) {
@@ -267,7 +268,7 @@ public final class RowRuntime {
             String ref = expressionRef(condition);
             // Polarity-free: the composer conjoins (outcome ? term : not term).
             session.decision(DecisionRow.of(sessionId(), sequence(seq),
-                    occurrence, Text.safe(siteId), ordinal, outcome, ref,
+                    occurrence, trimmed(siteId), ordinal, outcome, ref,
                     clockReadings(condition)));
         }
         if (FocusedReplay.observeDecision(occurrence, siteId, ordinal,
@@ -292,7 +293,7 @@ public final class RowRuntime {
             if (!type.isEmpty()) {
                 session.export(ExportRow.of(sessionId(), sequence(seq),
                         endpoint, ref, type, handle,
-                        Text.safe(recordedValue)));
+                        trimmed(recordedValue)));
             }
         }
         return endpoint;
@@ -340,19 +341,19 @@ public final class RowRuntime {
             if (!type.isEmpty()) {
                 // The row states WHICH key paired; blank when none did.
                 session.attach(AttachRow.of(sessionId(), sequence(seq),
-                        endpoint, Text.safe(symbol), type,
-                        Text.safe(arrival), answered,
-                        answered ? Text.safe(answeredValue) : null, producer,
-                        Text.safe(correlationId), pairing.key()));
+                        endpoint, trimmed(symbol), type,
+                        trimmed(arrival), answered,
+                        answered ? trimmed(answeredValue) : null, producer,
+                        trimmed(correlationId), pairing.key()));
             }
             if (producer == null) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, endpoint.id(),
                         handle == SymbolicMessageEnvelope.ABSENT
                                 ? "the message carried no element for "
-                                + Text.safe(portId) + ", so the delivery"
+                                + trimmed(portId) + ", so the delivery"
                                 + " pairs with no export"
-                                : "the delivery at " + Text.safe(portId)
+                                : "the delivery at " + trimmed(portId)
                                 + " was paired with no export of this run"));
             }
         }
@@ -389,10 +390,10 @@ public final class RowRuntime {
      */
     public static OccurrenceAddress occurrenceHere(String nodeKey,
                                                    String site) {
-        String node = Text.safe(nodeKey);
+        String node = trimmed(nodeKey);
         if (node.isEmpty() || OccurrenceBinding.UNREGISTERED_SOURCE_KEY
                 .equals(node)) {
-            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, Text.safe(site),
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, trimmed(site),
                     "an event at this site ran on a thread the attribution"
                             + " rule names no node for -- no explicit scope,"
                             + " no registered receiver on its frames, no"
@@ -492,9 +493,9 @@ public final class RowRuntime {
         }
         distinct(at, "read#" + location + "#" + seq);
         session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
-                observedVersion, Text.safe(symbol), type,
-                Text.safe(concreteValue).isEmpty() ? null
-                        : Text.safe(concreteValue), mintVersion,
+                observedVersion, trimmed(symbol), type,
+                trimmed(concreteValue).isEmpty() ? null
+                        : trimmed(concreteValue), mintVersion,
                 unnamedWriter));
         Confirmation.read(at, location, observedVersion, mintVersion);
     }
@@ -509,8 +510,8 @@ public final class RowRuntime {
      */
     private static void distinct(Endpoint at, String event) {
         if (at == null) return;
-        String first = ENDPOINTS.putIfAbsent(at.id(), Text.safe(event));
-        if (first == null || first.equals(Text.safe(event))) return;
+        String first = ENDPOINTS.putIfAbsent(at.id(), trimmed(event));
+        if (first == null || first.equals(trimmed(event))) return;
         gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, at.render(),
                 "two events of this site inside one occurrence stand on the"
                         + " same frames, so the site index cannot"
@@ -548,13 +549,13 @@ public final class RowRuntime {
                               String site) {
         if (location == null) return;
         OUTSIDE.putIfAbsent(Confirmation.key(location, version),
-                Text.safe(site));
+                trimmed(site));
     }
 
     /** Where the store of a version outside every region ran ("" unstated),
      *  or null when the VM stated no such store ({@link #storedOutside}). */
     static String outsideSite(String key) {
-        return OUTSIDE.get(Text.safe(key));
+        return OUTSIDE.get(trimmed(key));
     }
 
     /**
@@ -604,11 +605,11 @@ public final class RowRuntime {
         if (session == null || occurrence == null) return;
         session.rootMint(RootMintRow.of(sessionId(), sequence(seq),
                 occurrence,
-                Text.safe(rootId), Text.safe(symbol),
+                trimmed(rootId), trimmed(symbol),
                 kind == null ? RootKind.INTEGRAL : kind, category,
-                Text.safe(recordedValue),
-                Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
-                Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
+                trimmed(recordedValue),
+                trimmed(domainMin).isEmpty() ? null : trimmed(domainMin),
+                trimmed(domainMax).isEmpty() ? null : trimmed(domainMax),
                 declared, clock, clockSkew).validated(valid));
         // The mint is IN the session -- a different fact from the plant,
         // which survives an occurrence whose rows are discarded.
@@ -636,7 +637,7 @@ public final class RowRuntime {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null) return;
         session.target(TargetRow.of(sessionId(), sequence(seq), occurrence,
-                Text.safe(anchorSiteId), Text.safe(phiTerm), observedFatal,
+                trimmed(anchorSiteId), trimmed(phiTerm), observedFatal,
                 reachedAnchor, openArm));
         if (observedFatal && reachedAnchor
                 && FocusedReplay.declaredTarget(occurrence)) {
@@ -652,7 +653,7 @@ public final class RowRuntime {
      * {@code false} (CONTRACT-SPEC §2.2), never empty.
      */
     static String fatalTerm(JsonObject condition, boolean fatalArm) {
-        String ref = Text.safe(expressionRef(condition));
+        String ref = trimmed(expressionRef(condition));
         return ref.isEmpty() ? String.valueOf(fatalArm)
                 : Arms.conjunct(ref, fatalArm);
     }
@@ -679,8 +680,8 @@ public final class RowRuntime {
     public static void gap(GapKind kind, GapClass cls, String subject,
                            String detail) {
         SessionPublisher session = publisher;
-        String named = Text.safe(subject).trim();
-        String says = Text.safe(detail);
+        String named = trimmed(subject).trim();
+        String says = trimmed(detail);
         if (named.isEmpty() && session != null) {
             // configure() sets publisher and sessionId under one lock.
             named = sessionId();
@@ -737,8 +738,8 @@ public final class RowRuntime {
         // Neither the trace nor the schedule states what ran before the
         // window opened.
         if (!RecordingWindow.opened()) return;
-        String subject = Text.safe(nodeKey) + "/region/"
-                + Text.safe(regionId);
+        String subject = trimmed(nodeKey) + "/region/"
+                + trimmed(regionId);
         if (UNNAMED.computeIfAbsent(subject, key -> new AtomicInteger())
                 .getAndIncrement() > 0) {
             return;
@@ -776,10 +777,10 @@ public final class RowRuntime {
      */
     static void concreteReading(String rootId, String occurrence,
                                 String value) {
-        if (Text.safe(occurrence).isEmpty() || Text.safe(value).isEmpty()) {
+        if (trimmed(occurrence).isEmpty() || trimmed(value).isEmpty()) {
             return;
         }
-        CONCRETE.computeIfAbsent(Text.safe(rootId),
+        CONCRETE.computeIfAbsent(trimmed(rootId),
                 key -> new ConcurrentHashMap<String, String>())
                 .putIfAbsent(occurrence, value);
     }
@@ -790,7 +791,7 @@ public final class RowRuntime {
      * clock's, say), and no reading of it is the root's own.
      */
     static void derivedRoot(String rootId) {
-        if (!Text.safe(rootId).isEmpty()) DERIVED.add(Text.safe(rootId));
+        if (!trimmed(rootId).isEmpty()) DERIVED.add(trimmed(rootId));
     }
 
     /** The labels this session's declared mints asked the VM for. */
@@ -807,7 +808,7 @@ public final class RowRuntime {
      * later filing point races.  Read by {@link #isDeclaredMint}.</p>
      */
     public static void declaredMintLabel(String label) {
-        String named = Text.safe(label);
+        String named = trimmed(label);
         if (!named.isEmpty()) MINT_LABELS.add(named);
     }
 
@@ -822,7 +823,7 @@ public final class RowRuntime {
      * question.</p>
      */
     public static boolean isDeclaredMint(String symbol) {
-        String name = Text.safe(symbol);
+        String name = trimmed(symbol);
         if (name.length() <= FIELD_SYMBOL_HEAD || name.charAt(0) != 'M'
                 || name.charAt(1) != '_'
                 || !name.startsWith("_field_", 3)) {
@@ -846,7 +847,7 @@ public final class RowRuntime {
      * happens either way; a frame that cannot be filed is a stated gap.
      */
     public static void startWork(String startSiteId, Object carrier) {
-        String site = Text.safe(startSiteId);
+        String site = trimmed(startSiteId);
         try {
             Identity.startWork(site, carrier);
         } catch (Throwable unnamed) {
@@ -985,8 +986,8 @@ public final class RowRuntime {
     /** Filed at the mint first, then again at the root row. */
     static void clockCell(String symbol, String rootId,
                           String recordedValue) {
-        String named = Text.safe(symbol);
-        String root = Text.safe(rootId);
+        String named = trimmed(symbol);
+        String root = trimmed(rootId);
         Long reading = longOrNull(recordedValue);
         if (named.isEmpty() || root.isEmpty() || reading == null) return;
         CLOCK_CELLS.put(named, new ClockCell(root, reading.longValue()));
@@ -1012,7 +1013,7 @@ public final class RowRuntime {
      * (an operator node states none; its operands do).
      */
     private static String javaType(String declared, JsonObject expression) {
-        String type = Text.safe(declared);
+        String type = trimmed(declared);
         if (!type.isEmpty()) return type;
         // Java null is a reference, whichever field it was stored into (the
         // VM's null symbol states no class): a null store into a tracked
@@ -1063,7 +1064,7 @@ public final class RowRuntime {
             JsonObject object = walk.next();
             JsonElement own = object.get("_java_type");
             if (own != null && own.isJsonPrimitive()) {
-                String stated = Text.safe(own.getAsString());
+                String stated = trimmed(own.getAsString());
                 if (!stated.isEmpty()) return stated;
             }
             // A String method's result is typed by the method, not its
@@ -1081,7 +1082,7 @@ public final class RowRuntime {
 
     private static Long longOrNull(String value) {
         try {
-            return Long.valueOf(Text.safe(value));
+            return Long.valueOf(trimmed(value));
         } catch (NumberFormatException notALong) {
             return null;
         }
@@ -1103,8 +1104,8 @@ public final class RowRuntime {
      * §4); a later one publishes nothing.</p>
      */
     public static boolean claimEvent(String kind, String identity) {
-        return CLAIMED_EVENTS.put(Text.safe(kind) + "\n"
-                + Text.safe(identity), Boolean.TRUE) == null;
+        return CLAIMED_EVENTS.put(trimmed(kind) + "\n"
+                + trimmed(identity), Boolean.TRUE) == null;
     }
 
     private static Endpoint endpoint(OccurrenceAddress occurrence,
@@ -1118,8 +1119,8 @@ public final class RowRuntime {
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt,
                                      String siteIndex) {
-        return Endpoint.of(occurrence, Text.safe(site),
-                ExecutionIndex.parse(Text.safe(siteIndex)), attempt);
+        return Endpoint.of(occurrence, trimmed(site),
+                ExecutionIndex.parse(trimmed(siteIndex)), attempt);
     }
 
     /** Keys this activation's frame journal by the VM's enter id. */

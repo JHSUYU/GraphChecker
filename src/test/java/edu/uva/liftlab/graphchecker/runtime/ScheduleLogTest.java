@@ -453,7 +453,7 @@ public class ScheduleLogTest {
 
     @Test
     public void aThreadWhoseEventIsNotNextWaitsForItsTurn() throws Exception {
-        ScheduleLog.enforceForTests(prefix("x", "y"));
+        enforce(prefix("x", "y"));
         final CountDownLatch waiting = new CountDownLatch(1);
         Thread late = new Thread(new Runnable() {
             @Override
@@ -478,7 +478,7 @@ public class ScheduleLogTest {
     public void aStalledSlotIsGivenUpAndAnEventTheOrderLacksRunsFree()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        ScheduleLog.enforceForTests(prefix("x", "z"));
+        enforce(prefix("x", "z"));
         long before = System.nanoTime();
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "w");
         assertTrue("no slot holds w: it runs free at once",
@@ -507,7 +507,7 @@ public class ScheduleLogTest {
 
     @Test
     public void anInterruptedAdmissionTakesItsSlotAndTheOrderStands() throws Exception {
-        ScheduleLog.enforceForTests(prefix("x", "y"));
+        enforce(prefix("x", "y"));
         final boolean[] flagged = new boolean[1];
         Thread waiter = new Thread(new Runnable() {
             @Override
@@ -528,7 +528,7 @@ public class ScheduleLogTest {
 
     @Test
     public void aMonitorHoldingWaitAsksWithoutBlocking() {
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "x"),
                 event(ScheduleEvent.Kind.WAKE, "<L: void loop()>#u2")));
         ScheduleLog.Wake wake = ScheduleLog.wake("<L: void loop()>#u2");
@@ -543,7 +543,7 @@ public class ScheduleLogTest {
             throws Exception {
         RecordingWindow.reset();
         final String site = "<L: void idle()>#u3";
-        ScheduleLog.enforceForTests(Collections.singletonList(
+        enforce(Collections.singletonList(
                 event(ScheduleEvent.Kind.WAKE, site)));
         final long[] took = new long[1];
         Thread idle = new Thread(new Runnable() {
@@ -581,7 +581,7 @@ public class ScheduleLogTest {
         final Object monitor = new Object();
         for (boolean held : new boolean[] {false, true}) {
             restart();
-            if (held) ScheduleLog.enforceForTests(prefix("x"));
+            if (held) enforce(prefix("x"));
             Thread woken = waits(monitor, "<C: void w()>#u1", 1, true).get(0);
             if (held) {
                 Thread.sleep(200L);
@@ -619,7 +619,7 @@ public class ScheduleLogTest {
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
         final String site = "<C: boolean waitForWork()>#u21";
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         final Object monitor = new Object();
         long before = System.nanoTime();
         synchronized (monitor) {
@@ -647,7 +647,7 @@ public class ScheduleLogTest {
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "3000");
         final String site = "<C: void waitTillNextIBR(long)>#u18";
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         ScheduleLog.Wake held = ScheduleLog.wake(site);
         long asked = System.nanoTime();
         assertFalse("held at the cut: not yet", ScheduleLog.timedOut(held));
@@ -731,7 +731,7 @@ public class ScheduleLogTest {
             List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
             order.add(event(ScheduleEvent.Kind.WAKE, site));
             order.addAll(prefix("x"));
-            ScheduleLog.enforceForTests(order);
+            enforce(order);
             final long began = System.nanoTime();
             final long[] moved = new long[1];
             Thread next = new Thread(() -> {
@@ -769,7 +769,7 @@ public class ScheduleLogTest {
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
         order.add(event(ScheduleEvent.Kind.WAKE, site));
         order.addAll(prefix("x"));
-        ScheduleLog.enforceForTests(order);
+        enforce(order);
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
@@ -787,7 +787,7 @@ public class ScheduleLogTest {
     public void anIdleRunLetsTheCutsWaitsGoBeforeGivingUp() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
         String site = "tick.once";
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         assertTrue("a turn let go is vacant", ScheduleLog.vacated());
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
@@ -802,7 +802,7 @@ public class ScheduleLogTest {
     @Test(timeout = 20000L)
     public void closingTheWindowLetsTheOrderGo() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(prefix("x", "y"));
+        enforce(prefix("x", "y"));
         Thread y = observer(ScheduleEvent.Kind.SEND, "y");
         Thread.sleep(200L);
         assertTrue("y waits for x", y.isAlive());
@@ -916,7 +916,7 @@ public class ScheduleLogTest {
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final String site = "<D: void offerService()>#u4";
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         Thread daemon = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -964,7 +964,7 @@ public class ScheduleLogTest {
             ScheduleEvent.Kind kind = (ScheduleEvent.Kind) row[0];
             String site = (String) row[1];
             restart();
-            ScheduleLog.enforceForTests(Arrays.asList(
+            enforce(Arrays.asList(
                     event(kind, site),
                     event(ScheduleEvent.Kind.SEND, "x"),
                     event(ScheduleEvent.Kind.SEND, "y")));
@@ -986,7 +986,7 @@ public class ScheduleLogTest {
     @Test
     public void aHeldWaitOutlivesThePrefixOnTheWallClock() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         final Object monitor = new Object();
         Thread idle = waits(monitor, "<C: boolean waitForWork()>#u21", 1,
                 true).get(0);
@@ -1041,7 +1041,7 @@ public class ScheduleLogTest {
             restart();
             // Opening: the wait starts free, on the wall clock, in the set.
             if (opening) RecordingWindow.reset();
-            ScheduleLog.enforceForTests(prefix("x"));
+            enforce(prefix("x"));
             Thread idle = waits(monitor, site, 1, true).get(0);
             if (opening) Thread.sleep(100L);
             synchronized (monitor) {
@@ -1069,7 +1069,7 @@ public class ScheduleLogTest {
         }
 
         restart();
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         final ReentrantLock lock = new ReentrantLock();
         final Condition ready = lock.newCondition();
         final boolean[] signalled = new boolean[1];
@@ -1116,7 +1116,7 @@ public class ScheduleLogTest {
         final Object monitor = new Object();
         for (boolean held : new boolean[] {true, false}) {
             restart();
-            if (held) ScheduleLog.enforceForTests(prefix("x"));
+            if (held) enforce(prefix("x"));
             String row = held ? "held, timed" : "free, untimed";
             List<Thread> first = waits(monitor, "<C: void loop()>#u7", 2,
                     held);
@@ -1215,7 +1215,7 @@ public class ScheduleLogTest {
         restart();
         openRequest();
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(Arrays.asList(wake, beat,
+        enforce(Arrays.asList(wake, beat,
                 event(ScheduleEvent.Kind.SEND, "y"), end));
         final CountDownLatch ending = new CountDownLatch(1);
         Thread held = daemonTurn(monitor, ending);
@@ -1314,7 +1314,7 @@ public class ScheduleLogTest {
     public void aSleepWithNoEventToMakeRunsOnTheWallClock() throws Exception {
         // A wait at a site the identity cannot name makes no event
         // (ScheduleLog.pending), so no order holds it.
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         assertTrue(ScheduleLog.enforcing());
         long before = System.nanoTime();
         TimedWaits.sleep(300L, "");
@@ -1326,7 +1326,7 @@ public class ScheduleLogTest {
         restart();
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final String site = "<L: void loop()>#u9";
-        ScheduleLog.enforceForTests(prefix("x"), Collections.singletonList(
+        enforce(prefix("x"), Collections.singletonList(
                 event(ScheduleEvent.Kind.WAKE, "tick.d")));
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         before = System.nanoTime();
@@ -1374,7 +1374,7 @@ public class ScheduleLogTest {
     public void aHeldWaitAnInterruptEndsWritesItsWake() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final String site = "<C: boolean waitForWork()>#u21";
-        ScheduleLog.enforceForTests(prefix("x"));
+        enforce(prefix("x"));
         final Object monitor = new Object();
         final String[] outcome = new String[1];
         Thread waiter = new Thread(new Runnable() {
@@ -1403,7 +1403,7 @@ public class ScheduleLogTest {
         final String spin = "<P: void spin()>#u3";
         for (boolean held : new boolean[] {false, true}) {
             restart();
-            if (held) ScheduleLog.enforceForTests(prefix("x"));
+            if (held) enforce(prefix("x"));
             final boolean[] flagged = new boolean[1];
             Thread parker = new Thread(new Runnable() {
                 @Override
@@ -1439,7 +1439,7 @@ public class ScheduleLogTest {
     public void aTimedWaitEnteredInterruptedThrowsEvenWhenItsTurnIsNext()
             throws Exception {
         final String site = "<L: void loop()>#u4";
-        ScheduleLog.enforceForTests(Collections.singletonList(
+        enforce(Collections.singletonList(
                 event(ScheduleEvent.Kind.WAKE, site)));
         Thread.currentThread().interrupt();
         long before = System.nanoTime();
@@ -1611,7 +1611,7 @@ public class ScheduleLogTest {
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final String site = "<C: boolean waitForWork()>#u21";
-        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+        enforce(prefix("x"), Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "a"),
                 event(ScheduleEvent.Kind.WAKE, "tick.d"),
                 event(ScheduleEvent.Kind.WAKE, site)));
@@ -1652,7 +1652,7 @@ public class ScheduleLogTest {
     @Test
     public void pastThePrefixEverythingButTheRestsTimeoutsRunsFree() {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+        enforce(prefix("x"), Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "a"),
                 event(ScheduleEvent.Kind.WAKE, "tick.d")));
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
@@ -1707,7 +1707,7 @@ public class ScheduleLogTest {
     public void theRestGivesUpOnlyWhatCameBeforeTheEarliestWaitingTimeout()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
-        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+        enforce(prefix("x"), Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "never"),
                 event(ScheduleEvent.Kind.WAKE, "tick.d"),
                 event(ScheduleEvent.Kind.SEND, "y"),
@@ -1730,7 +1730,7 @@ public class ScheduleLogTest {
         // Inside the prefix: the same give-up, and the rest still to come.
         restart();
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "never"),
                 event(ScheduleEvent.Kind.WAKE, "tick.d"),
                 event(ScheduleEvent.Kind.SEND, "y")),
@@ -1758,7 +1758,7 @@ public class ScheduleLogTest {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
         for (int round = 0; round < 5; round++) {
             restart();
-            ScheduleLog.enforceForTests(Arrays.asList(
+            enforce(Arrays.asList(
                     event(ScheduleEvent.Kind.SEND, "never"),
                     event(ScheduleEvent.Kind.SEND, "refresh"),
                     event(ScheduleEvent.Kind.WAKE, "tick.hb")));
@@ -1777,7 +1777,7 @@ public class ScheduleLogTest {
     @Test
     public void aTurnsEndSettlesWhatTheTurnDidNotDo() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+        enforce(prefix("x"), Arrays.asList(
                 event(ScheduleEvent.Kind.WAKE, "tick.a"),
                 event(ScheduleEvent.Kind.SEND, "heartbeat"),
                 event(ScheduleEvent.Kind.START, "call"),
@@ -1806,7 +1806,7 @@ public class ScheduleLogTest {
             after.add(event(ScheduleEvent.Kind.SEND, "never" + turn));
             after.add(event(ScheduleEvent.Kind.WAKE, "tick.d" + turn));
         }
-        ScheduleLog.enforceForTests(prefix("x"), after);
+        enforce(prefix("x"), after);
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         for (int turn = 1; turn <= ScheduleLog.REST_STALLS; turn++) {
             ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d" + turn);
@@ -1826,7 +1826,7 @@ public class ScheduleLogTest {
     public void aWaitASignalEndedNoLongerDefersAGiveUp() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "400");
         final String site = "<C: boolean waitForWork()>#u21";
-        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+        enforce(prefix("x"), Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "never"),
                 event(ScheduleEvent.Kind.WAKE, site),
                 event(ScheduleEvent.Kind.SEND, "never2"),
@@ -1858,7 +1858,7 @@ public class ScheduleLogTest {
         // The recording: a send inside occurrence o1 that the replay never
         // makes (a stale connection's attempt), a connection set-up, then
         // the retry's send inside o2.
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 inOccurrence(ScheduleEvent.Kind.SEND, "req", "o1"),
                 event(ScheduleEvent.Kind.START, "conn"),
                 inOccurrence(ScheduleEvent.Kind.SEND, "req", "o2")));
@@ -1881,7 +1881,7 @@ public class ScheduleLogTest {
                         + " occurrence's close"));
 
         restart();
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 inOccurrence(ScheduleEvent.Kind.SEND, "req", "o1"),
                 event(ScheduleEvent.Kind.START, "a"),
                 inOccurrence(ScheduleEvent.Kind.SEND, "req", "o2"),
@@ -1908,7 +1908,7 @@ public class ScheduleLogTest {
         Identity.occurrence(NODE.key(), "REGION.handler", true);
         String own = Identity.innermostRegionId();
         written.clear();
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 inOccurrence(ScheduleEvent.Kind.START, "enqueue", own),
                 event(ScheduleEvent.Kind.SEND, "x"),
                 inOccurrence(ScheduleEvent.Kind.SEND, "response", own)));
@@ -1937,7 +1937,7 @@ public class ScheduleLogTest {
     public void aWaiterNoOccurrenceNamesPassesTheRestOfItsOwnLoop()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "poll"),
                 event(ScheduleEvent.Kind.SEND, "poll"),
                 event(ScheduleEvent.Kind.SEND, "other"),
@@ -2008,7 +2008,7 @@ public class ScheduleLogTest {
             final List<ScheduleEvent.Kind> before =
                     (List<ScheduleEvent.Kind>) row[1];
             final String first = (String) row[2];
-            ScheduleLog.enforceForTests(Arrays.asList(
+            enforce(Arrays.asList(
                     event(first.equals(w) ? ScheduleEvent.Kind.SEND
                             : ScheduleEvent.Kind.WAKE, first),
                     event(ScheduleEvent.Kind.SEND, "x"),
@@ -2099,7 +2099,7 @@ public class ScheduleLogTest {
                 rest.add(ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
                         context[0], "e", 0, ""));
             }
-            ScheduleLog.enforceForTests(
+            enforce(
                     Collections.<ScheduleEvent>emptyList(), rest);
             Thread works = new Thread(new Runnable() {
                 @Override
@@ -2158,7 +2158,7 @@ public class ScheduleLogTest {
         long timeout = 1500L;
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
                 String.valueOf(timeout));
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 event(ScheduleEvent.Kind.SEND, "x"),
                 event(ScheduleEvent.Kind.WAKE, "tick.d")));
         Thread.sleep(timeout + 500L);
@@ -2217,7 +2217,7 @@ public class ScheduleLogTest {
             boolean reads = (Boolean) row[2];
             ClockLoops.useForTests(reads ? Collections.singleton(clock)
                     : Collections.<String>emptySet());
-            ScheduleLog.enforceForTests(Arrays.asList(
+            enforce(Arrays.asList(
                     event(ScheduleEvent.Kind.WAKE, loop),
                     event(ScheduleEvent.Kind.WAKE, "tick.d"),
                     event(ScheduleEvent.Kind.SEND, "y")));
@@ -2287,7 +2287,7 @@ public class ScheduleLogTest {
             List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
             if (polls) order.add(event(ScheduleEvent.Kind.WAKE, loop));
             order.addAll(prefix("never", "y"));
-            ScheduleLog.enforceForTests(order);
+            enforce(order);
             final boolean[] stop = new boolean[1];
             Thread busy = new Thread(new Runnable() {
                 @Override
@@ -2347,7 +2347,7 @@ public class ScheduleLogTest {
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
         final String site = "<D: void run()>#u29";
-        ScheduleLog.enforceForTests(Arrays.asList(
+        enforce(Arrays.asList(
                 event(ScheduleEvent.Kind.INTERRUPT, site),
                 event(ScheduleEvent.Kind.SEND, "x")));
         final boolean[] threw = new boolean[1];
@@ -2394,6 +2394,17 @@ public class ScheduleLogTest {
         });
         thread.start();
         return thread;
+    }
+
+    /** Holds this run to {@code prefix}, with no rest after it. */
+    private static void enforce(List<ScheduleEvent> prefix) {
+        enforce(prefix, Collections.<ScheduleEvent>emptyList());
+    }
+
+    /** Holds this run to {@code prefix}, then {@code rest}. */
+    private static void enforce(List<ScheduleEvent> prefix,
+                                List<ScheduleEvent> rest) {
+        ScheduleLog.enforceForTests(prefix, rest, false);
     }
 
     /** A prefix of SEND events at these sites, on this thread's context. */

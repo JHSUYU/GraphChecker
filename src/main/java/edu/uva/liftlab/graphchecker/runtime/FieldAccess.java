@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -27,7 +27,7 @@ final class FieldAccess {
         }
         Object current = root;
         for (int index = 0; index + 1 < path.size(); index++) {
-            String field = safe(path.get(index)).trim();
+            String field = nonNull(path.get(index)).trim();
             if (field.isEmpty()) {
                 return MissingValue.INSTANCE;
             }
@@ -36,7 +36,7 @@ final class FieldAccess {
                 return current;
             }
         }
-        String leaf = safe(path.get(path.size() - 1)).trim();
+        String leaf = nonNull(path.get(path.size() - 1)).trim();
         return leaf.isEmpty() ? MissingValue.INSTANCE : current;
     }
 
@@ -58,7 +58,7 @@ final class FieldAccess {
     }
 
     private static Integer pathIndex(String segment) {
-        String value = safe(segment).trim();
+        String value = nonNull(segment).trim();
         if (value.startsWith("[") && value.endsWith("]")) {
             value = value.substring(1, value.length() - 1).trim();
         }
@@ -128,8 +128,8 @@ final class FieldAccess {
     private static Field declaredInstanceField(
             Object owner, String declaringClass, String fieldName,
             String descriptor, boolean inherited) {
-        if (owner == null || safe(declaringClass).isEmpty()
-                || safe(fieldName).isEmpty() || safe(descriptor).isEmpty()) {
+        if (owner == null || nonNull(declaringClass).isEmpty()
+                || nonNull(fieldName).isEmpty() || nonNull(descriptor).isEmpty()) {
             return null;
         }
         Class<?> type = owner.getClass();

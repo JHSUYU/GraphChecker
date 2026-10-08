@@ -396,28 +396,4 @@ public final class WorkStartSites {
     public static List<TimedWait> timedWaits() {
         return TIMED_WAITS;
     }
-
-    /** The callee's name in a Soot method signature, or {@code ""}. */
-    public static String calleeName(String declaredCallee) {
-        String signature = declaredCallee == null ? "" : declaredCallee;
-        int open = signature.indexOf('(');
-        if (open < 0) return "";
-        int space = signature.lastIndexOf(' ', open);
-        if (space < 0 || space + 1 >= open) return "";
-        return signature.substring(space + 1, open);
-    }
-
-    public static int argumentCount(String declaredCallee) {
-        String signature = declaredCallee == null ? "" : declaredCallee;
-        int open = signature.indexOf('(');
-        int close = signature.lastIndexOf(')');
-        if (open < 0 || close <= open) return -1;
-        String arguments = signature.substring(open + 1, close).trim();
-        if (arguments.isEmpty()) return 0;
-        int count = 1;
-        for (int index = 0; index < arguments.length(); index++) {
-            if (arguments.charAt(index) == ',') count++;
-        }
-        return count;
-    }
 }

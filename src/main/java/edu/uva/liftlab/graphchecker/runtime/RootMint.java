@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.declaredInstanceField;
 import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.exactFieldSignature;
@@ -89,12 +89,12 @@ final class RootMint {
      */
     static boolean configurationAgrees(String rootId, String value,
                                        String where) {
-        String standing = CONFIGURATIONS.putIfAbsent(safe(rootId),
-                safe(value));
-        if (standing == null || standing.equals(safe(value))) return true;
+        String standing = CONFIGURATIONS.putIfAbsent(nonNull(rootId),
+                nonNull(value));
+        if (standing == null || standing.equals(nonNull(value))) return true;
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                safe(rootId), "the configuration read at " + safe(where)
-                        + " ran at " + safe(value) + " where the root's"
+                nonNull(rootId), "the configuration read at " + nonNull(where)
+                        + " ran at " + nonNull(value) + " where the root's"
                         + " symbol stands for " + standing + " in this JVM"
                         + " (another default, view or node's"
                         + " configuration), so it is read concretely and no"
@@ -369,7 +369,7 @@ final class RootMint {
                 ConfiguredSourcePhaseContract.Occurrence phase,
                 String siteId) {
             this.phase = phase;
-            this.siteId = safe(siteId);
+            this.siteId = nonNull(siteId);
         }
 
         String phaseId() {
@@ -426,9 +426,9 @@ final class RootMint {
                 assignedByTheWave(rootId)
                         ? GapClass.BLOCKING
                         : GapClass.DIAGNOSTIC,
-                firstNonBlank(safe(rootId), safe(context)),
+                firstNonBlank(nonNull(rootId), nonNull(context)),
                 "no admitted activation of this session owns this mint ("
-                        + safe(context) + "), so the declared root is read"
+                        + nonNull(context) + "), so the declared root is read"
                         + " concretely and no symbol is minted for it; the"
                         + " read stands at no occurrence, so no reading of"
                         + " it guards the arms that rest on it");
@@ -437,8 +437,8 @@ final class RootMint {
 
     /** Whether the obligation this session runs assigns this root. */
     private static boolean assignedByTheWave(String rootId) {
-        return !FocusedReplay.rootAssignment(safe(rootId)).isEmpty()
-                || FocusedReplay.clockSkew(safe(rootId)) != null;
+        return !FocusedReplay.rootAssignment(nonNull(rootId)).isEmpty()
+                || FocusedReplay.clockSkew(nonNull(rootId)) != null;
     }
 
     /**
@@ -459,18 +459,18 @@ final class RootMint {
         // A native reproduction writes the value its plant assigns; no
         // engine runs there.
         if (RecordingPlant.planting()) {
-            RecordingPlant.hook(safe(sourceId), owner, safe(fieldSignature));
+            RecordingPlant.hook(nonNull(sourceId), owner, nonNull(fieldSignature));
             return false;
         }
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
-        if (mintConfiguredSource(active, safe(sourceId), owner,
-                safe(fieldSignature))) {
+        if (mintConfiguredSource(active, nonNull(sourceId), owner,
+                nonNull(fieldSignature))) {
             return true;
         }
         ConcolicRegionRuntime.pauseObservation();
         try {
-            readConcretely(active, safe(sourceId),
-                    readExactField(owner, safe(fieldSignature)));
+            readConcretely(active, nonNull(sourceId),
+                    readExactField(owner, nonNull(fieldSignature)));
         } catch (Throwable ignored) {
             // Observation must never alter the workload's own outcome.
         } finally {
@@ -491,16 +491,16 @@ final class RootMint {
             return false;
         }
         SourceSiteEntry entry = active.observeConfiguredSourceEntry(
-                safe(sourceId), safe(fieldSignature));
+                nonNull(sourceId), nonNull(fieldSignature));
         if (entry == null) return false;
         ConcolicRegionRuntime.pauseObservation();
         try {
-            Field field = declaredInstanceField(owner, safe(fieldSignature));
+            Field field = declaredInstanceField(owner, nonNull(fieldSignature));
             if (field == null || !field.getType().isPrimitive()) {
                 return false;
             }
             // Before the VM is touched: no symbol without a row.
-            if (mintUnattributed(active, safe(sourceId),
+            if (mintUnattributed(active, nonNull(sourceId),
                     "configured source at " + entry.siteId)) {
                 return false;
             }
@@ -530,7 +530,7 @@ final class RootMint {
             String observed = ConcolicRegionRuntime.recordedScalar(
                     field.get(owner));
             if (!reused && entry.category() == RootCategory.CONFIG
-                    && !configurationAgrees(safe(sourceId), observed,
+                    && !configurationAgrees(nonNull(sourceId), observed,
                     entry.siteId)) {
                 return false;
             }
@@ -538,14 +538,14 @@ final class RootMint {
             // it back through this same path.
             String planted = "";
             if (!reused && entry.category() != RootCategory.CONFIG) {
-                planted = applyFocusedRootAssignment(active, safe(sourceId),
-                        owner, safe(fieldSignature), descriptor);
+                planted = applyFocusedRootAssignment(active, nonNull(sourceId),
+                        owner, nonNull(fieldSignature), descriptor);
             }
             // ONE SYMBOL PER DECLARED SOURCE: the label is the source's
             // alone, so a flip moves every read.  The row is still one per
             // READ.
             String symbol = ConfiguredSourcePhaseContract.engineLabel(
-                    safe(sourceId));
+                    nonNull(sourceId));
             if (!reused) {
                 api.symbolizeExactField(owner, exactFieldSignature(field),
                         declaring(symbol));
@@ -556,7 +556,7 @@ final class RootMint {
                     value));
             if (!reused && mintRefused(expression, symbol,
                     jvmShared(api, owner), "the configured source field "
-                            + safe(fieldSignature), safe(sourceId))) {
+                            + nonNull(fieldSignature), nonNull(sourceId))) {
                 return false;
             }
             active.pathRecordingStarted = true;
@@ -564,19 +564,19 @@ final class RootMint {
             // stated twice and differently and Composer refuses the path.
             // A CLOCK states its reading: FlipQuery bounds the cell by it.
             String stated = !planted.isEmpty()
-                    && FocusedReplay.clockSkew(safe(sourceId)) == null
+                    && FocusedReplay.clockSkew(nonNull(sourceId)) == null
                     ? planted : observed;
-            active.recordConfiguredSourceMint(entry, safe(sourceId),
-                    safe(fieldSignature), symbol, expression, reused,
+            active.recordConfiguredSourceMint(entry, nonNull(sourceId),
+                    nonNull(fieldSignature), symbol, expression, reused,
                     stated);
             return true;
         } catch (Throwable failure) {
             // Never into the workload's own read; never silent.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(
-                    safe(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
-                    safe(sourceId), "the configured source at "
+                    nonNull(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                    nonNull(sourceId), "the configured source at "
                             + entry.siteId + " was not minted, so the region"
-                            + " reads " + safe(fieldSignature) + " as it was"
+                            + " reads " + nonNull(fieldSignature) + " as it was"
                             + " and no row states a mint of it: "
                             + ConcolicRegionRuntime.rootCause(failure));
             return false;
@@ -615,17 +615,17 @@ final class RootMint {
                               String fieldSignature) {
         if (owner == null) return;
         try {
-            String assigned = FocusedReplay.rootAssignment(safe(sourceId));
+            String assigned = FocusedReplay.rootAssignment(nonNull(sourceId));
             if (!assigned.isEmpty()) {
-                plantConfiguration(safe(sourceId), owner,
-                        safe(fieldSignature), assigned);
+                plantConfiguration(nonNull(sourceId), owner,
+                        nonNull(fieldSignature), assigned);
             }
             configuredSource(sourceId, owner, fieldSignature);
         } catch (Throwable failure) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(
-                    safe(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
-                    safe(sourceId), "the configuration read of "
-                            + safe(fieldSignature) + " failed, so the region"
+                    nonNull(sourceId)) ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                    nonNull(sourceId), "the configuration read of "
+                            + nonNull(fieldSignature) + " failed, so the region"
                             + " reads the field as it was and no row states a"
                             + " mint of it: "
                             + ConcolicRegionRuntime.rootCause(failure));
@@ -773,7 +773,7 @@ final class RootMint {
                                        Object owner, String symbolicPath,
                                        List<String> exactFieldPath,
                                        ConcolicVmBroker api) {
-        String symbol = action.symbol + "." + safe(symbolicPath);
+        String symbol = action.symbol + "." + nonNull(symbolicPath);
         Object value = MissingValue.INSTANCE;
         try {
             String leafFieldSignature = action.exactLeafFieldSignature(
@@ -1272,9 +1272,9 @@ final class RootMint {
     private static String manualMintLabel(String requestedSymbol,
                                   String plannedOccurrenceId,
                                   boolean primitiveRoot) {
-        String requested = safe(requestedSymbol);
+        String requested = nonNull(requestedSymbol);
         if (!primitiveRoot) return requested;
-        String occurrence = safe(plannedOccurrenceId);
+        String occurrence = nonNull(plannedOccurrenceId);
         if (requested.isEmpty() || occurrence.isEmpty()) {
             throw new IllegalArgumentException(
                     "manual primitive mint requires symbol and occurrence");

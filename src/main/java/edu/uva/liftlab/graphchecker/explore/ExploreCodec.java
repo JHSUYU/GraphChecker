@@ -163,7 +163,6 @@ public final class ExploreCodec {
         return new Corpus.World(map(object(json, "rootAssignments")),
                 map(object(json, "clockDeltas")),
                 map(object(json, "answers")),
-                map(object(json, "rootMints")),
                 map(object(json, "pairings")), flips);
     }
 

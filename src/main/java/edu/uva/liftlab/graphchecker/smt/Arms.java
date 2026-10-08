@@ -141,7 +141,6 @@ public final class Arms {
         private final boolean attested;
         private final Set<String> nested;
         private final WriteRow write;
-        private final ExportRow export;
         private final AttachRow attach;
 
         Arm(String slotId, String symbol, String sessionId,
@@ -149,7 +148,7 @@ public final class Arms {
             String producerPathId, String expressionRef, List<String> pi,
             Map<String, String> guard, Map<String, RootMintRow> guardMints,
             boolean attested, Set<String> nested, WriteRow write,
-            ExportRow export, AttachRow attach) {
+            AttachRow attach) {
             this.slotId = slotId;
             this.symbol = symbol;
             this.sessionId = sessionId;
@@ -163,7 +162,6 @@ public final class Arms {
             this.attested = attested;
             this.nested = Collections.unmodifiableSet(nested);
             this.write = write;
-            this.export = export;
             this.attach = attach;
         }
 
@@ -246,14 +244,9 @@ public final class Arms {
             return write;
         }
 
-        /** The export a WIRE arm delivers; null for a state arm. */
-        public ExportRow export() {
-            return export;
-        }
-
         /**
-         * The attach the delivering run paired {@link #export} with: the
-         * consumer's half of a WIRE arm, whose {@code javaType} is the sort
+         * The attach the delivering run paired the export it delivers with:
+         * the consumer's half of a WIRE arm, whose {@code javaType} is the sort
          * the delivered value is taken at; null for a state arm.
          */
         public AttachRow attach() {
@@ -324,7 +317,7 @@ public final class Arms {
                 if (!export.sessionId().equals(session)) continue;
                 Arm arm = arm(slot.id(), symbol, session,
                         slot.producer().occurrence(), export.expressionRef(),
-                        export.seq(), null, export, paired);
+                        export.seq(), null, paired);
                 if (arm != null) arms.add(arm);
             }
         }
@@ -433,8 +426,7 @@ public final class Arms {
                         observedVersion, write)) {
                     Arm arm = arm(slot(write, readerEndpoint), "", session,
                             write.endpoint().occurrence(),
-                            write.expressionRef(), write.seq(), write, null,
-                            null);
+                            write.expressionRef(), write.seq(), write, null);
                     if (arm != null) arms.add(arm);
                 }
                 continue;
@@ -455,7 +447,7 @@ public final class Arms {
                 continue;
             }
             Arm arm = arm(slot(write, readerEndpoint), "", session, writer,
-                    write.expressionRef(), write.seq(), write, null, null);
+                    write.expressionRef(), write.seq(), write, null);
             if (arm == null) continue;
             // An alternative must be attested; the observed writer is stated
             // whatever it is, because it is what the run did.
@@ -644,8 +636,7 @@ public final class Arms {
 
     private Arm arm(String slotId, String symbol, String session,
                     OccurrenceAddress producer, String expressionRef,
-                    long deliveredAt, WriteRow write, ExportRow export,
-                    AttachRow attach) {
+                    long deliveredAt, WriteRow write, AttachRow attach) {
         JsonObject expression = rows.expression(session, expressionRef);
         if (expression == null) return null;
         // An INITIAL rests on nothing a run decided: attested, no prefix.
@@ -711,7 +702,7 @@ public final class Arms {
         return new Arm(slotId, symbol, session, producer, deliveredAt,
                 attested && !initial ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardMints, attested, nested,
-                write, export, attach);
+                write, attach);
     }
 
     /**

@@ -31,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
+import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
@@ -189,9 +190,9 @@ public class RowRuntimeTest {
             Identity.claimStart(task);
             int claimed = Identity.depth();
             Identity.occurrence(NN.key(), "REGION.accessor", true);
-            Identity.regionExit();
+            Identity.regionExit(null);
             depths[1] = Identity.depth() - claimed;
-            Identity.regionExit();
+            Identity.regionExit(null);
             depths[2] = Identity.depth();
         });
         drainer.start();
@@ -252,16 +253,16 @@ public class RowRuntimeTest {
                     .render();
             Identity.occurrence(NN.key(), "REGION.handshake", true);
             folded[0] = Identity.openedNone();
-            Identity.regionExit();
+            Identity.regionExit(null);
             long scope = RuntimeTraceContext.enterCarriedScope(carried,
                     "DATA_XCEIVER", "write-block");
             opened[1] = Identity.currentOccurrence(NN.key()).render();
             Identity.occurrence(NN.key(), "REGION.check", true);
             folded[1] = Identity.openedNone();
-            Identity.regionExit();
+            Identity.regionExit(null);
             RuntimeTraceContext.exitCarriedScope(scope);
             opened[2] = Identity.currentOccurrence(NN.key()).render();
-            Identity.regionExit();
+            Identity.regionExit(null);
         });
         connection.start();
         connection.join();
@@ -297,7 +298,7 @@ public class RowRuntimeTest {
                 for (String region : new String[]{"REGION.handshake",
                         "REGION.handshake", "REGION.wrap"}) {
                     opened.add(Identity.occurrence(NN.key(), region, true));
-                    Identity.regionExit();
+                    Identity.regionExit(null);
                 }
             });
             handler.start();
@@ -655,8 +656,7 @@ public class RowRuntimeTest {
 
         OccurrenceAddress scope = response.get().occurrence();
         ActivationRow stated = null;
-        for (ActivationRow row : RowCodec.readAll(session().activations(),
-                RowCodec::readActivation)) {
+        for (ActivationRow row : SessionReader.read(session()).activations()) {
             if (row.occurrence().equals(scope)) stated = row;
         }
         assertNotNull("the role scope that answered is stated", stated);
@@ -684,7 +684,7 @@ public class RowRuntimeTest {
                         "RESPONSE").id());
                 RuntimeTraceContext.exitInbound(inbound);
             }
-            Identity.regionExit();
+            Identity.regionExit(null);
         });
         handler.start();
         handler.join();
@@ -843,8 +843,7 @@ public class RowRuntimeTest {
                 "");
         RowRuntime.closeSession();
 
-        List<AttachRow> rows = RowCodec.readAll(
-                session().attaches(), RowCodec::readAttach);
+        List<AttachRow> rows = SessionReader.read(session()).attaches();
         assertEquals(1, rows.size());
         AttachRow row = rows.get(0);
         assertEquals(attached, row.endpoint());
@@ -986,8 +985,7 @@ public class RowRuntimeTest {
         assertTrue(receipt.detail(), receipt.detail().contains(
                 "HADOOP_IPC REQUEST received at HADOOP_IPC/refused-wire"
                         + " names no sender this run holds"));
-        List<ActivationRow> activations = RowCodec.readAll(
-                session().activations(), RowCodec::readActivation);
+        List<ActivationRow> activations = SessionReader.read(session()).activations();
         assertEquals("the activation to admit is stated, unselected",
                 here, activations.get(0).occurrence());
         assertFalse(activations.get(0).instrumented());
@@ -1048,8 +1046,7 @@ public class RowRuntimeTest {
         assertNotNull("the refused export is named", refused);
         assertEquals("at the occurrence it ran in", here.render(),
                 refused.subject());
-        List<ActivationRow> activations = RowCodec.readAll(
-                session().activations(), RowCodec::readActivation);
+        List<ActivationRow> activations = SessionReader.read(session()).activations();
         assertEquals("that occurrence is stated, unselected", here,
                 activations.get(0).occurrence());
         assertFalse(activations.get(0).instrumented());
@@ -1263,14 +1260,13 @@ public class RowRuntimeTest {
         Identity.occurrence(NN.key(), "REGION.loader", true);
         long nested = ConcolicRegionRuntime.enterRegionEntry("REGION.apply",
                 "<a.Loader: long applyEditLogOp()>", null);
-        Identity.regionExit();
+        Identity.regionExit(null);
         ConcolicRegionRuntime.exitRegionEntry(nested);
 
         RowRuntime.closeSession();
 
         SessionDir dir = session();
-        List<DecisionRow> decisions = RowCodec.readAll(dir.decisions(),
-                RowCodec::readDecision);
+        List<DecisionRow> decisions = SessionReader.read(dir).decisions();
         assertEquals(3, decisions.size());
         assertEquals(occurrence, decisions.get(0).occurrence());
         assertTrue(decisions.get(0).term().startsWith("EXPR."));
@@ -1282,18 +1278,15 @@ public class RowRuntimeTest {
                 "", decisions.get(2).term());
         assertFalse("a clockless decision adds no conjunct at any prefix",
                 Arms.predicate(Arms.conjunct(decisions.get(2))));
-        List<ExportRow> exports = RowCodec.readAll(dir.exports(),
-                RowCodec::readExport);
+        List<ExportRow> exports = SessionReader.read(dir).exports();
         assertEquals(1, exports.size());
         assertEquals(7L, exports.get(0).handle());
         assertEquals(4L, exports.get(0).seq());
         assertEquals("J", exports.get(0).javaType());
-        List<AttachRow> attaches = RowCodec.readAll(dir.attaches(),
-                RowCodec::readAttach);
+        List<AttachRow> attaches = SessionReader.read(dir).attaches();
         assertTrue(attaches.get(0).answered());
         assertEquals("2", attaches.get(0).answeredValue());
-        List<WriteRow> writes = RowCodec.readAll(dir.writes(),
-                RowCodec::readWrite);
+        List<WriteRow> writes = SessionReader.read(dir).writes();
         assertEquals("neither the tool's own wait set nor a generated"
                 + " builder is a write", 3, writes.size());
         assertEquals(125L, writes.get(0).version());
@@ -1310,8 +1303,7 @@ public class RowRuntimeTest {
                 writes.get(2).javaType());
         assertEquals("a String method's result is a String",
                 "Ljava/lang/String;", writes.get(1).javaType());
-        List<ReadRow> reads = RowCodec.readAll(dir.reads(),
-                RowCodec::readRead);
+        List<ReadRow> reads = SessionReader.read(dir).reads();
         assertEquals(125L, reads.get(0).observedVersion());
         assertEquals(14L, reads.get(0).seq());
         assertEquals("the placeholder reads the location the write wrote",
@@ -1368,7 +1360,7 @@ public class RowRuntimeTest {
             recorded.put(root.symbol(), root.recordedValue());
         }
         Map<String, JsonObject> table =
-                RowCodec.readExpressions(dir.expressions()).expressions();
+                SessionReader.read(dir).expressions().expressions();
         int checked = 0;
         for (DecisionRow row : decisions) {
             Boolean held = holdsAtRoots(table.get(row.term()), recorded,
@@ -1384,7 +1376,9 @@ public class RowRuntimeTest {
         assertEquals("one decision is over declared roots only", 1, checked);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());
         assertEquals(11L, roots.get(0).seq());
-        assertFalse(roots.get(0).pinned());
+        assertTrue("the declared root is domained",
+                roots.get(0).domainMin() != null
+                        || roots.get(0).domainMax() != null);
         // The kind is read off the declaration: a configured source states
         // no javaType of its own and carries it on the symbol it minted, so
         // a declared boolean root is a MARKER and not an INTEGRAL with a
@@ -1467,7 +1461,7 @@ public class RowRuntimeTest {
                 .get("versionKind").getAsString());
         // The expressions the refs name are in the session's own table.
         assertTrue(Files.exists(dir.expressions()));
-        assertTrue(RowCodec.readExpressions(dir.expressions())
+        assertTrue(SessionReader.read(dir).expressions()
                 .refs().contains(exports.get(0).expressionRef()));
     }
 
@@ -1971,8 +1965,7 @@ public class RowRuntimeTest {
                 + " updateKeys()>#u2", 1, true, null);
         RowRuntime.closeSession();
 
-        List<DecisionRow> decisions = RowCodec.readAll(session().decisions(),
-                RowCodec::readDecision);
+        List<DecisionRow> decisions = SessionReader.read(session()).decisions();
         assertEquals(3, decisions.size());
         assertEquals("the cell this term reads, at what its mint recorded",
                 Collections.singletonMap("HDFS.KEY.NOW@nn0",
@@ -2092,8 +2085,8 @@ public class RowRuntimeTest {
                 "", recordedAddress("REGION.094a8e3d"));
         assertTrue("and while the fold stands, no activation starts here",
                 Identity.openedNone());
-        Identity.regionExit();
-        Identity.regionExit();
+        Identity.regionExit(null);
+        Identity.regionExit(null);
         assertFalse("and the enclosing occurrence is no fold",
                 Identity.openedNone());
 
@@ -2373,7 +2366,7 @@ public class RowRuntimeTest {
             // One nested activation, opened and closed as the entry hook
             // pairs them.
             Identity.occurrence(NN.key(), "REGION.apply", true);
-            Identity.regionExit();
+            Identity.regionExit(null);
             Identity.exitFrame(applying);
         }
         assertEquals("the pair left the enclosing region standing", 1,
@@ -2391,7 +2384,7 @@ public class RowRuntimeTest {
         // neither does the index, so the region depth is the only thing
         // that can name it.
         int frames = Identity.depth();
-        Identity.regionExit();
+        Identity.regionExit(null);
         assertEquals("the frames are untouched by a region pop", frames,
                 Identity.depth());
         assertEquals("but no region is open any more", 0,
@@ -2738,8 +2731,7 @@ public class RowRuntimeTest {
                     "Caller.body()#u9@1", null, null, false);
         }
         RowRuntime.closeSession();
-        List<WriteRow> writes = RowCodec.readAll(session().writes(),
-                RowCodec::readWrite);
+        List<WriteRow> writes = SessionReader.read(session()).writes();
         assertEquals(2, writes.size());
         for (WriteRow write : writes) {
             assertEquals("the deepest node states the type", "J",

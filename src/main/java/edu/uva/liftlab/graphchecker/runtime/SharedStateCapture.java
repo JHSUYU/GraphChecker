@@ -19,7 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmRecords;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.members;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
@@ -310,9 +310,9 @@ final class SharedStateCapture {
         }
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                 // A blank subject would refuse inside Fields.text.
-                firstNonBlank(safe(locationKey), STAGE_VERSIONS,
+                firstNonBlank(nonNull(locationKey), STAGE_VERSIONS,
                         RowRuntime.sessionId()),
-                reason(status) + ": " + safe(detail));
+                reason(status) + ": " + nonNull(detail));
     }
 
     /**
@@ -529,7 +529,7 @@ final class SharedStateCapture {
      */
     static LocationId locationId(
             String locationKey) {
-        String key = safe(locationKey);
+        String key = nonNull(locationKey);
         int separator = key.indexOf('/');
         int slot = key.lastIndexOf('#');
         if (separator <= 0 || slot <= separator) return null;

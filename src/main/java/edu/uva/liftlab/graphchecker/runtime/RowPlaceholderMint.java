@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
@@ -316,7 +316,7 @@ final class RowPlaceholderMint {
         // activations can share one OccurrenceAddress.  A mint with no
         // version answers to its symbol (already an invariant-7 failure).
         long event = optionalLongInteger(row, "eventSeq", 0L);
-        String mintKey = mintVersion < 0L ? "symbol#" + safe(symbol)
+        String mintKey = mintVersion < 0L ? "symbol#" + nonNull(symbol)
                 : locationKey + "#" + mintVersion;
         if (!RowRuntime.claimEvent("placeholder", mintKey)) {
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
@@ -344,7 +344,7 @@ final class RowPlaceholderMint {
      * symbol spells no sort and claims none.
      */
     private static String mintedSort(String symbol) {
-        String name = safe(symbol);
+        String name = nonNull(symbol);
         if (name.length() < 4 || name.charAt(1) != '_') return "";
         char sort = name.charAt(2);
         char after = name.charAt(3);
@@ -455,7 +455,7 @@ final class RowPlaceholderMint {
      * an unstated type first, because the descriptor drives the sort.
      */
     private static String javaDescriptor(String javaType) {
-        String type = safe(javaType);
+        String type = nonNull(javaType);
         if (type.length() == 1) return type;
         if ("boolean".equals(type)) return "Z";
         if ("byte".equals(type)) return "B";

@@ -87,11 +87,6 @@ public final class Validity extends Value {
         return value;
     }
 
-    /** Whether no value is admitted: a lower bound above the upper. */
-    public boolean empty() {
-        return min != null && max != null && min.compareTo(max) > 0;
-    }
-
     /** The lower bound, or null. */
     public BigInteger min() {
         return min;

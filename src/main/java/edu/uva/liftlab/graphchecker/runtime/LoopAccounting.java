@@ -14,7 +14,7 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
@@ -50,7 +50,7 @@ final class LoopAccounting {
             String backedgeId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
-        String edge = safe(backedgeId);
+        String edge = nonNull(backedgeId);
         account(active, () -> {
             if (edge.isEmpty() || !active.activation.loopBound
                     .acceptsInstrumentedBound(instrumentedMaxTraversals)) {
@@ -70,7 +70,7 @@ final class LoopAccounting {
             String loopId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
-        String loop = safe(loopId);
+        String loop = nonNull(loopId);
         // Instrumented under a different policy: loop ids untrusted.
         account(active, () -> loop.isEmpty() || instrumentedMaxTraversals
                 != active.activation.loopBound.maxBackedgeTraversals()
@@ -210,7 +210,7 @@ final class LoopAccounting {
      */
     static boolean bodiesAddressedHere(String groupKey) {
         for (LoopRootInvocationContext context : LOOP_ROOT_INVOCATIONS.get()) {
-            if (context.groupKey.equals(safe(groupKey))) {
+            if (context.groupKey.equals(nonNull(groupKey))) {
                 return !context.foldedEntry;
             }
         }
@@ -232,7 +232,7 @@ final class LoopAccounting {
                 long token, String groupKey, Set<String> offeredTaskIds,
                 boolean foldedEntry) {
             this.token = token;
-            this.groupKey = safe(groupKey);
+            this.groupKey = nonNull(groupKey);
             this.offeredTaskIds = Collections.unmodifiableSet(
                     new LinkedHashSet<>(offeredTaskIds));
             this.foldedEntry = foldedEntry;
@@ -268,7 +268,7 @@ final class LoopAccounting {
         }
 
         static String scoped(String loopId, long frame) {
-            return safe(loopId) + SCOPE_SEPARATOR + frame;
+            return nonNull(loopId) + SCOPE_SEPARATOR + frame;
         }
 
         /** Counts one body against the cap; returns the body number. */
@@ -287,7 +287,7 @@ final class LoopAccounting {
 
         ReplayLoopResourceCut(String loopId, int maxBodies,
                               long attemptedBody, String reason) {
-            super(safe(reason) + " at " + safe(loopId) + ": body "
+            super(nonNull(reason) + " at " + nonNull(loopId) + ": body "
                     + attemptedBody + " exceeds " + maxBodies);
         }
 
@@ -298,7 +298,7 @@ final class LoopAccounting {
         private static final long serialVersionUID = 1L;
 
         LoopBoundCut(String backedgeId, int maxTraversals, String reason) {
-            super(safe(reason) + " at " + safe(backedgeId)
+            super(nonNull(reason) + " at " + nonNull(backedgeId)
                     + " after " + maxTraversals
                     + " loop body iterations");
         }

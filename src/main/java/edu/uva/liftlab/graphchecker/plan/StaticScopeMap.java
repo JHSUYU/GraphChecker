@@ -35,6 +35,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 /**
  * What the static slice knows about the sites the target's demand can reach:
@@ -458,20 +459,16 @@ public final class StaticScopeMap {
                         String implementationMethod, String javaType,
                         String inputKind, Clock clock, ConfigCall config,
                         String marker) {
-            this.kind = safe(kind);
-            this.edgeId = safe(edgeId);
-            this.dependencyCell = safe(dependencyCell);
-            this.implementationMethod = safe(implementationMethod);
-            this.javaType = safe(javaType);
-            this.inputKind = safe(inputKind);
+            this.kind = nonNull(kind);
+            this.edgeId = nonNull(edgeId);
+            this.dependencyCell = nonNull(dependencyCell);
+            this.implementationMethod = nonNull(implementationMethod);
+            this.javaType = nonNull(javaType);
+            this.inputKind = nonNull(inputKind);
             this.clock = CLOCK_INPUT.equals(this.inputKind) ? clock : null;
             this.config = CONFIG_INPUT.equals(this.inputKind) ? config : null;
-            this.marker = FAULT_INPUT.equals(this.inputKind) ? safe(marker)
+            this.marker = FAULT_INPUT.equals(this.inputKind) ? nonNull(marker)
                     : "";
-        }
-
-        private static String safe(String value) {
-            return value == null ? "" : value;
         }
     }
 

@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CARRIER_CLASS;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.pauseObservation;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.resumeObservation;
@@ -116,7 +116,7 @@ final class HandoffMint {
     private static ActiveRegion attachConsumerRegion(
             CommunicationHandoffSpec site) {
         return ConcolicRegionRuntime.declaringRegion(
-                new ConcolicRegionRuntime.Declares.Port(safe(site.portId())));
+                new ConcolicRegionRuntime.Declares.Port(nonNull(site.portId())));
     }
 
     /**
@@ -127,7 +127,7 @@ final class HandoffMint {
     private static void mintHandoffVariable(
             ActiveRegion active, CommunicationHandoffSpec site,
             Object carrier, String field, String descriptor) {
-        String portId = safe(site.portId());
+        String portId = nonNull(site.portId());
         for (HandoffLeaf leaf : handoffLeaves(portId, carrier, field,
                 descriptor)) {
             mintHandoffLeaf(active, portId, leaf);
@@ -240,8 +240,8 @@ final class HandoffMint {
                                          String consumerAddress,
                                          int attachOrdinal,
                                          String elementPath) {
-        if (safe(portId).isEmpty() || safe(consumerAddress).isEmpty()
-                || safe(elementPath).isEmpty() || attachOrdinal < 1) {
+        if (nonNull(portId).isEmpty() || nonNull(consumerAddress).isEmpty()
+                || nonNull(elementPath).isEmpty() || attachOrdinal < 1) {
             return "";
         }
         String identity = portId + "\n" + consumerAddress + "\n"
@@ -257,7 +257,7 @@ final class HandoffMint {
      */
     private static String mintLabel(String mintKey, String portId) {
         return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
-                + safe(portId));
+                + nonNull(portId));
     }
 
     /**
@@ -292,7 +292,7 @@ final class HandoffMint {
     private static void mintAmbient(
             CommunicationHandoffSpec site, Object carrier, String field,
             String descriptor) {
-        String portId = safe(site.portId());
+        String portId = nonNull(site.portId());
         if (!RowRuntime.open()) return;
         RuntimeTraceContext.View view = RuntimeTraceContext.current();
         OccurrenceAddress consumer = RowRuntime.occurrenceHere(
@@ -338,8 +338,8 @@ final class HandoffMint {
      */
     static int nextAttach(String consumer, String portId,
                           String elementPath) {
-        String element = safe(consumer) + "\n" + safe(portId) + "\n"
-                + safe(elementPath);
+        String element = nonNull(consumer) + "\n" + nonNull(portId) + "\n"
+                + nonNull(elementPath);
         synchronized (ATTACHES) {
             Integer previous = ATTACHES.get(element);
             int ordinal = previous == null ? 1 : previous + 1;

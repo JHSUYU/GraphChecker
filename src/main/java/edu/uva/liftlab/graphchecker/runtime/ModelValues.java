@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
 import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
 
@@ -19,8 +19,8 @@ final class ModelValues {
 
     static Object coerce(String valueType, String value,
                          Class<?> requestedType) {
-        String type = safe(valueType).toUpperCase();
-        String raw = safe(value).trim();
+        String type = nonNull(valueType).toUpperCase();
+        String raw = nonNull(value).trim();
         try {
             // Reference null is decided before String decoding.
             if ((requestedType == null || !requestedType.isPrimitive())

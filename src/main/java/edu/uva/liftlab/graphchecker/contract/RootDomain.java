@@ -10,7 +10,6 @@ import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -73,17 +72,8 @@ public final class RootDomain extends Value {
      * One minted root's absolute domain: the case's declaration if any, its
      * {@code +k}/{@code -k} read off the reading, else the mint's bounds,
      * which are absolute ({@code -2} is minus two), never both.  Kind and
-     * recorded value are the mint's.
-     */
-    public static RootDomain resolved(RootMintRow row,
-                                      Map<String, RootDomain> declared) {
-        return resolved(row, declared,
-                Collections.<BigInteger>emptyList());
-    }
-
-    /**
-     * The same, for an integral configuration widened by {@code compared}:
-     * each literal a recorded decision compared the root with, its {@code
+     * recorded value are the mint's.  An integral configuration is widened
+     * by {@code compared}: each literal a recorded decision compared the root with, its {@code
      * c - 1, c, c + 1} joining the mint's hull and its reading (a comparison
      * with a value the slice does not state, a live replica count, is one
      * with the literal the run had: SYMBOL-SCOPE §4.3), the whole within

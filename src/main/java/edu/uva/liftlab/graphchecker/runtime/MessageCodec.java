@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * A door's walk of the protobuf message it carries (SYMBOL-SCOPE §6.3).
@@ -231,8 +232,8 @@ final class MessageCodec {
         static Element received(long handle) {
             MessageDoors.Inbound inbound = MessageDoors.current();
             return new Element(handle,
-                    inbound == null ? "" : Text.safe(inbound.correlationId),
-                    inbound == null ? "" : Text.safe(inbound.half));
+                    inbound == null ? "" : trimmed(inbound.correlationId),
+                    inbound == null ? "" : trimmed(inbound.half));
         }
     }
 

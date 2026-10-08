@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * The control lineage of the running activation: the chain of scope frames
@@ -135,9 +136,9 @@ public final class Lineage {
     private static long push(String nodeKey, Role role, String api,
                              boolean root, boolean turn) {
         List<Frame> stack = STACK.get();
-        String node = Text.safe(nodeKey);
+        String node = trimmed(nodeKey);
         Role kind = role == null ? Role.UNKNOWN : role;
-        String family = Text.safe(api);
+        String family = trimmed(api);
         int window = RecordingWindow.index();
         AtomicInteger counter = root
                 ? COUNTERS.computeIfAbsent(window + "\n" + node + "\n"
@@ -274,8 +275,8 @@ public final class Lineage {
         List<Frame> stack = STACK.get();
         if (stack.isEmpty()) return;
         Frame frame = stack.get(stack.size() - 1);
-        frame.anchor = Text.safe(producerEndpointId);
-        frame.rpcSite = Text.safe(rpcSite);
+        frame.anchor = trimmed(producerEndpointId);
+        frame.rpcSite = trimmed(rpcSite);
     }
 
     /** What the scope running here stands on, read in one scan. */

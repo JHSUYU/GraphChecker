@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * Within-run pairing evidence of a WIRE interaction: which export an attach
@@ -140,11 +141,11 @@ public final class Interactions {
     /** The message key of one port, or "" when the message names none. */
     private static String messageKey(String portId, String correlationId,
                                      String half) {
-        String port = Text.safe(portId);
-        String correlation = Text.safe(correlationId);
+        String port = trimmed(portId);
+        String correlation = trimmed(correlationId);
         if (correlation.isEmpty() || port.isEmpty()) return "";
         return "C\n" + correlation + "\n"
-                + Text.safe(half).toUpperCase(Locale.ROOT) + "\n" + port;
+                + trimmed(half).toUpperCase(Locale.ROOT) + "\n" + port;
     }
 
     /**
@@ -162,8 +163,8 @@ public final class Interactions {
      */
     public static void delivering(long handle, String correlationId,
                                   String half) {
-        DELIVERY.set(new Delivery(handle, Text.safe(correlationId),
-                Text.safe(half)));
+        DELIVERY.set(new Delivery(handle, trimmed(correlationId),
+                trimmed(half)));
     }
 
     /** States the VM ledger entry this delivery was attached at. */
@@ -247,7 +248,7 @@ public final class Interactions {
     /** The whole endpoint a message's anchor names, or {@code null} when
      *  this run filed no message under it. */
     public static synchronized Endpoint producer(String endpointId) {
-        return SENDERS.get(Text.safe(endpointId));
+        return SENDERS.get(trimmed(endpointId));
     }
 
     /** The producers this run has filed, for a refusal to search. */
@@ -257,10 +258,10 @@ public final class Interactions {
 
     private static String message(String transport, String correlationId,
                                   String half) {
-        String correlation = Text.safe(correlationId);
+        String correlation = trimmed(correlationId);
         if (correlation.isEmpty()) return "";
-        return Text.safe(transport) + "\n" + correlation + "\n"
-                + Text.safe(half);
+        return trimmed(transport) + "\n" + correlation + "\n"
+                + trimmed(half);
     }
 
     private static final Bounded<Endpoint> MESSAGES = bounded();

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import java.util.Map;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * What a refusal about a WIRE interaction must be able to say; nothing a
@@ -65,7 +66,7 @@ final class InteractionRefusals {
      * {@code synchronized}: the lock order above.
      */
     static Endpoint endpoint(String endpointId) {
-        String id = Text.safe(endpointId);
+        String id = trimmed(endpointId);
         if (id.isEmpty()) return null;
         for (Endpoint producer : Interactions.filedProducers()) {
             if (id.equals(producer.id())) return producer;

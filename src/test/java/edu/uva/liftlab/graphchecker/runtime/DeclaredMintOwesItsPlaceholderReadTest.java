@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.RowInvariants;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -731,11 +732,11 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
     }
 
     private List<ReadRow> reads() throws Exception {
-        return RowCodec.readAll(session().reads(), RowCodec::readRead);
+        return SessionReader.read(session()).reads();
     }
 
     private List<WriteRow> writes() throws Exception {
-        return RowCodec.readAll(session().writes(), RowCodec::readWrite);
+        return SessionReader.read(session()).writes();
     }
 
     private Path sessionFile() throws Exception {

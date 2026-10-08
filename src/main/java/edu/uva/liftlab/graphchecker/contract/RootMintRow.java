@@ -202,11 +202,6 @@ public final class RootMintRow extends Value {
                 .subtract(java.math.BigInteger.valueOf(clockSkew)).toString();
     }
 
-    /** Whether the root may move at all: an undeclared or undomained root. */
-    public boolean pinned() {
-        return domainMin == null && domainMax == null;
-    }
-
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,

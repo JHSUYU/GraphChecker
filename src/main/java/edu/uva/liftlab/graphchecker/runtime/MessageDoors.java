@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * THE message doors a system's transports call, whatever the system: a
@@ -164,7 +165,7 @@ public final class MessageDoors {
         MessageCodec.send(message);
         String trace = CausynthTraceRecorder.outboundExchange(transport,
                 correlationId, attemptId, half, localOwner, scope,
-                Text.safe(verb));
+                trimmed(verb));
         String symbolic = SymbolicMessageEnvelope.takeOutbound();
         return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
                 : new Outbound(correlationId, attemptId, trace, symbolic);
@@ -190,7 +191,7 @@ public final class MessageDoors {
         Inbound served = CURRENT.get();
         if (served != null && RESPONSE.equals(served.half)) endInbound();
         return Identity.requestStarting(Endpoint.messageSite(
-                Text.safe(transport), REQUEST, Text.safe(verb)), verb,
+                trimmed(transport), REQUEST, trimmed(verb)), verb,
                 attempt);
     }
 
@@ -214,10 +215,10 @@ public final class MessageDoors {
      */
     public static Object handingOff(String transport, String correlationId,
                                     String half) {
-        String sender = Interactions.sender(Text.safe(transport),
-                Text.safe(correlationId), Text.safe(half));
+        String sender = Interactions.sender(trimmed(transport),
+                trimmed(correlationId), trimmed(half));
         return Identity.handoffStarting(sender.isEmpty() ? ""
-                : Text.safe(transport) + "." + sender);
+                : trimmed(transport) + "." + sender);
     }
 
     /** The hand-off {@link #handingOff} began is over. */
@@ -243,7 +244,7 @@ public final class MessageDoors {
         if (!keepSymbolic) {
             SymbolicMessageEnvelope.clearInbound();
         }
-        String declared = Text.safe(symbolic);
+        String declared = trimmed(symbolic);
         boolean hasTrace = trace != null && !trace.isEmpty();
         if (!hasTrace && declared.isEmpty()) {
             return Inbound.EMPTY;
@@ -277,8 +278,8 @@ public final class MessageDoors {
                                    Object localOwner) {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
-        String declared = Text.safe(symbolic);
-        boolean correlated = !Text.safe(correlationId).isEmpty();
+        String declared = trimmed(symbolic);
+        boolean correlated = !trimmed(correlationId).isEmpty();
         if (!correlated && declared.isEmpty()) {
             return Inbound.EMPTY;
         }
@@ -350,7 +351,7 @@ public final class MessageDoors {
             STORING.computeIfAbsent(transport,
                     none -> new HashMap<Long, Write>())
                     .put(store, new Write(Thread.currentThread(),
-                            Text.safe(location)));
+                            trimmed(location)));
         }
         return store;
     }
@@ -478,7 +479,7 @@ public final class MessageDoors {
      *             each an occurrence of its own
      */
     public static void notified(String kind, Runnable callback) {
-        NOTIFIED.set(Text.safe(kind));
+        NOTIFIED.set(trimmed(kind));
         try {
             callback.run();
         } finally {

@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CARRIER_CLASS;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.pauseObservation;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.resumeObservation;
@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 
 import java.lang.reflect.Field;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
  * The wire's near half (SYMBOL-SCOPE §6.3): a value crossing one declared
@@ -84,7 +85,7 @@ final class WireExport {
      */
     static void exportLeaf(String portId, Object carrier, String field,
                            String descriptor, Object builder) {
-        if (carrier == null || Text.safe(portId).isEmpty()) return;
+        if (carrier == null || trimmed(portId).isEmpty()) return;
         Leaf leaf = new Leaf(carrier, CARRIER_CLASS, field, descriptor);
         if (builder == null) {
             export(portId, leaf);
@@ -239,7 +240,7 @@ final class WireExport {
     /** The transport's retry number for this leg, or 0. */
     static int attemptOf(RuntimeTraceContext.View view) {
         try {
-            return Integer.parseInt(safe(view.exchangeAttemptId));
+            return Integer.parseInt(nonNull(view.exchangeAttemptId));
         } catch (NumberFormatException none) {
             return 0;
         }
@@ -277,7 +278,7 @@ final class WireExport {
         if (site == null) {
             // An undeclared attach is named, not silent.
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    Text.safe(portId),
+                    trimmed(portId),
                     "a wire attach ran for a port no task of this campaign "
                             + "declares, so it filed nothing");
             return;
@@ -338,7 +339,7 @@ final class WireExport {
      * propagates.</p>
      */
     private static CommunicationHandoffSpec attachSite(String portId) {
-        if (safe(portId).isEmpty()) return null;
+        if (nonNull(portId).isEmpty()) return null;
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (active != null) {
             CommunicationHandoffSpec declared =

@@ -743,18 +743,6 @@ public final class SmtLowering {
     }
 
     /**
-     * One published term (a decision's or phi) as {@link #statedTerm}
-     * lowers it, with what it reaches ({@link Lowered#reach}): the
-     * closure's question about a term.
-     */
-    public Lowered lowerTerm(String term, String origin) {
-        Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
-        String text = commit(lowered);
-        return text.isEmpty() ? Lowered.refused("UNSTATED_TERM:" + origin)
-                : new Lowered(text, null, lowered);
-    }
-
-    /**
      * One expression of the open conjunction's session, by {@link
      * #reference}: its definedness is a side condition of that conjunction,
      * answered by {@link #end} with the rest.  Null when the table lacks it.
@@ -900,8 +888,7 @@ public final class SmtLowering {
 
         /**
          * The value with its Java-level facts (a String's nullness, an
-         * integral's width), in this session's names; null for a published
-         * term ({@link #lowerTerm}) or a refusal.
+         * integral's width), in this session's names; null for a refusal.
          */
         public Term value() {
             return value;

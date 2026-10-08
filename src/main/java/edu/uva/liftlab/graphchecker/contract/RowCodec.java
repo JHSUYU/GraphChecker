@@ -197,10 +197,6 @@ public final class RowCodec {
         return json;
     }
 
-    public static ActivationRow readActivation(JsonObject json) {
-        return readActivation(json, new RowPool());
-    }
-
     /** One row, its parts taken from the pool of the read it is part of;
      *  so for each kind below. */
     static ActivationRow readActivation(JsonObject json, RowPool pool) {
@@ -229,10 +225,6 @@ public final class RowCodec {
         return json;
     }
 
-    public static DecisionRow readDecision(JsonObject json) {
-        return readDecision(json, new RowPool());
-    }
-
     static DecisionRow readDecision(JsonObject json, RowPool pool) {
         Map<String, Long> clocks = new LinkedHashMap<>();
         JsonObject readings = object(json, "clockReadings");
@@ -253,10 +245,6 @@ public final class RowCodec {
         json.addProperty("handle", row.handle());
         json.addProperty("recordedValue", row.recordedValue());
         return json;
-    }
-
-    public static ExportRow readExport(JsonObject json) {
-        return readExport(json, new RowPool());
     }
 
     static ExportRow readExport(JsonObject json, RowPool pool) {
@@ -285,10 +273,6 @@ public final class RowCodec {
             json.addProperty("pairedBy", row.pairedBy());
         }
         return json;
-    }
-
-    public static AttachRow readAttach(JsonObject json) {
-        return readAttach(json, new RowPool());
     }
 
     static AttachRow readAttach(JsonObject json, RowPool pool) {
@@ -323,10 +307,6 @@ public final class RowCodec {
         }
         if (row.initial()) json.addProperty(INITIAL, true);
         return json;
-    }
-
-    public static WriteRow readWrite(JsonObject json) {
-        return readWrite(json, new RowPool());
     }
 
     static WriteRow readWrite(JsonObject json, RowPool pool) {
@@ -371,10 +351,6 @@ public final class RowCodec {
             json.addProperty("unnamedWriter", true);
         }
         return json;
-    }
-
-    public static ReadRow readRead(JsonObject json) {
-        return readRead(json, new RowPool());
     }
 
     static ReadRow readRead(JsonObject json, RowPool pool) {
@@ -701,12 +677,6 @@ public final class RowCodec {
             lines.addAll(log.lines(entry.getKey(), entry.getValue()));
         }
         writeJsonl(file, lines);
-    }
-
-    /** The session's expressions; a missing file is refused, never empty. */
-    public static ExpressionTable readExpressions(Path file)
-            throws IOException {
-        return SessionExpressionLog.read(file, new RowPool());
     }
 
     /** The role this session states, as one JSON object. */
