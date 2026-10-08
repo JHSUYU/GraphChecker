@@ -157,10 +157,17 @@ public final class LibraryCatalog {
         public final boolean demanded;
         /** The failing result, or {@link Result#NONE}. */
         public final Result result;
+        /**
+         * The catalog's door method a system's hook moved this door from
+         * ({@link #placed}), or null: every other call the hook's class
+         * family makes of it is a door too, after the hook's next call
+         * ({@code DoorWeave}).
+         */
+        public final String relocated;
 
         private Door(String transport, String direction, String method,
                      String anchor, boolean after, List<String> faults,
-                     boolean demanded, Result result) {
+                     boolean demanded, Result result, String relocated) {
             this.transport = transport;
             this.direction = direction;
             this.method = method;
@@ -169,6 +176,7 @@ public final class LibraryCatalog {
             this.faults = Collections.unmodifiableList(faults);
             this.demanded = demanded;
             this.result = result;
+            this.relocated = relocated;
         }
 
         /** {@code FAULT:<TRANSPORT>:<DIRECTION>}, the markers' stem. */
@@ -265,9 +273,15 @@ public final class LibraryCatalog {
      * One system's HOOK row: the catalog door ({@code transport},
      * {@code direction}, {@code door}, its method) is woven in {@code method}
      * after the first call of {@code after}, the system's own message or
-     * store hook, instead of at its library anchor.  It states where the
-     * hook sits, nothing else: the door's kinds are the catalog's, and a
-     * door no hook names keeps its anchor.
+     * store hook, instead of at its library anchor -- and, in every other
+     * method of {@code method}'s class family, after the first call of
+     * {@code after} that follows a call of the door method there (Solr's
+     * {@code SolrZkClient#makePath} creates each node itself, its retry
+     * lambda included; with the door moved out of {@code ZooKeeper#create},
+     * those creates had none, and solr-bugs-overseer-lock-leak's {@code
+     * OperationTimeout} at {@code DistributedMap#put} could not be flipped).
+     * It states where the hook sits, nothing else: the door's kinds are the
+     * catalog's, and a door no hook names keeps its anchor.
      */
     static final class Hook {
         final String transport;
@@ -307,7 +321,7 @@ public final class LibraryCatalog {
                 if (!hook.places(door)) continue;
                 placed = new Door(door.transport, door.direction,
                         hook.method, hook.after, true, door.faults,
-                        door.demanded, door.result);
+                        door.demanded, door.result, door.method);
                 used.add(hook);
             }
             doors.add(placed);
@@ -516,7 +530,7 @@ public final class LibraryCatalog {
                 .group(), matching(NAME, text(row, "direction"), "direction")
                 .group(), method == null ? null : signature(method).group(),
                 signature(after != null ? after : before).group(),
-                after != null, faults, demanded, result);
+                after != null, faults, demanded, result, null);
     }
 
     /** A door's {@code result}: {@code false} or {@code null} when stated. */

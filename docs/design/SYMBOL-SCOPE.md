@@ -406,6 +406,14 @@ library anchor cannot be there, and the system states only where its hook sits: 
 door (`transport`, `direction`, `door`: its method) and the system call after which it is woven
 (`method`, `after`); the door keeps the catalog's kinds, no door is added or dropped, and a `HOOK`
 naming no catalog door, or a `DOOR` row in a system's file, is refused (`LibraryCatalog#placed`).
+Moved out of the library, the door would leave every other call of its method doorless: in every
+other method of the hook method's class family (its nested classes and lambdas included) that calls
+the door method itself -- through a subclass's reference too -- it is woven after each first call of
+the hook that follows such a call (`DoorWeave#hookCalls`, `LibraryCatalog.Door#relocated`): Solr's
+`SolrZkClient#makePath` creates each node itself, its retry lambda included, and without it
+solr-bugs-overseer-lock-leak's `OperationTimeout` at `DistributedMap#put` could not be flipped. The
+library door is not kept for them instead: it is woven inside the door method, where it would fire
+for the hook method's call too, before the hook, and break the pairing the hook keeps.
 Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`
 and `#multi` after `causynthWrote` (the store hook `MessageDoors.stored`; in `multi`, after the first
 operation's, so a multi's later operations are unpaired under a fault); the `SOLR_HTTP` and

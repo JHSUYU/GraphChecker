@@ -105,6 +105,14 @@ final class DoorWeave {
             if (miss.isEmpty()) {
                 doorMethods.add(door.doorMethod());
                 woven.add(door.name() + " at " + door.method);
+                for (Map.Entry<SootMethod, List<Stmt>> hooked
+                        : hookCalls(door).entrySet()) {
+                    for (Stmt call : hooked.getValue()) {
+                        weave(door, hooked.getKey(), call);
+                    }
+                    woven.add(door.name() + " at "
+                            + hooked.getKey().getSignature());
+                }
             } else {
                 missed.computeIfAbsent(door.doorMethod(),
                         method -> new ArrayList<>()).add(miss);
@@ -235,6 +243,75 @@ final class DoorWeave {
             }
         }
         return found;
+    }
+
+    /**
+     * A door a system's hook moved ({@link LibraryCatalog.Door#relocated}):
+     * every other method of the hook method's class family -- its nested
+     * classes and lambdas included -- that calls the door method itself,
+     * with the hook calls it is woven after: each first call of the hook
+     * that follows a call of the door method in body order.  A call no hook
+     * call follows in its own method has none here: the hook method's own
+     * retry lambda ({@code SolrZkClient#create}'s), whose hook call is the
+     * hook method's, already doored.
+     */
+    static Map<SootMethod, List<Stmt>> hookCalls(LibraryCatalog.Door door) {
+        Map<SootMethod, List<Stmt>> found = new LinkedHashMap<>();
+        if (door.relocated == null) return found;
+        SootMethod hook = CausynthStaticFacts.method(door.method);
+        SootMethod moved = Scene.v().grabMethod(door.relocated);
+        if (hook == null || moved == null) return found;
+        String family = door.family();
+        List<SootClass> types = new ArrayList<>();
+        for (SootClass type : Scene.v().getApplicationClasses()) {
+            String name = type.getName();
+            if ((name.equals(family) || name.startsWith(family + "$"))
+                    && analysed(type)) {
+                types.add(type);
+            }
+        }
+        types.sort((a, b) -> a.getName().compareTo(b.getName()));
+        for (SootClass type : types) {
+            List<SootMethod> methods = new ArrayList<>(type.getMethods());
+            methods.sort((a, b) -> a.getSignature().compareTo(
+                    b.getSignature()));
+            for (SootMethod method : methods) {
+                if (method.equals(hook)) continue;
+                Body body = CausynthStaticFacts.activeBody(method);
+                if (body == null) continue;
+                boolean called = false;
+                List<Stmt> hooks = new ArrayList<>();
+                for (Unit unit : body.getUnits()) {
+                    Stmt stmt = (Stmt) unit;
+                    if (!stmt.containsInvokeExpr()) continue;
+                    SootMethodRef ref = stmt.getInvokeExpr().getMethodRef();
+                    if (calls(ref, moved)) {
+                        called = true;
+                    } else if (called && door.anchor.equals(
+                            ref.getSignature())) {
+                        hooks.add(stmt);
+                        called = false;
+                    }
+                }
+                if (!hooks.isEmpty()) found.put(method, hooks);
+            }
+        }
+        return found;
+    }
+
+    /** Whether {@code ref} calls {@code target}: its name and parameters,
+     *  on its class or a subclass of it (a call through a subclass's
+     *  reference, {@code SolrZooKeeper} for {@code ZooKeeper}). */
+    private static boolean calls(SootMethodRef ref, SootMethod target) {
+        if (!ref.getSubSignature().equals(target.getNumberedSubSignature())) {
+            return false;
+        }
+        for (SootClass type = ref.getDeclaringClass(); type != null;
+             type = type.hasSuperclass() ? type.getSuperclass() : null) {
+            if (type.equals(target.getDeclaringClass())) return true;
+            if (type.isPhantom()) return false;
+        }
+        return false;
     }
 
     /** Weaves one door into its method; "" when woven, else why not. */

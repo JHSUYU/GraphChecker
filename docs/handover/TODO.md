@@ -184,7 +184,8 @@ tree as is) passed solr-18406 and solr-18413 on it. Branch `solr-body` (agent M)
 `solr-bug-reindex` by intent and closes the body's Solr gaps; its Solr side is `gc/solr-body`: `RECORDING_STALLED`, the
 store-write turn (`WRITE`, `RunNames`/`spelledAs`; a conflict ends when the earlier write is taken or given up -- the
 branch's LATE state was solr-18413's 103,812-stall regression), a consumed queue item as the message it serves, the
-Solr request start (`CausynthHttp#requestStarting`, `outboundRequest` of the request's verb). Still open there:
+Solr request start (`CausynthHttp#requestStarting`, `outboundRequest` of the request's verb) and the door at every
+call a hook's class makes of a moved door method (`SolrZkClient#makePath`). Still open there:
 - the recording size of the growth cases (solr-bugs-reindex-cleanup's 2.1 GB on `main`, SBR26b): port
   `solr-bug-reindex`'s state roots at writers and non-accessors, trace rows only inside an occurrence and scope growth
   stopping at a declared codec (JavaBin) only if reindex-cleanup's SEED on this body measures too large;
