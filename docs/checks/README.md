@@ -152,14 +152,14 @@ None of these study points is marked in its system's tree yet, except solr-adhoc
 
 | case | bug | mechanism | state |
 | --- | --- | --- | --- |
-| solr-18406 (= solr-adhoc-22) | the leader deletes a generation after the reservation expires | CLOCK_SKEW | PASS on main (V25) |
-| solr-18413 | a MIGRATE route rule expires; the update looks up a deleted collection | CLOCK_SKEW | PASS on main (V25); regressed on branch solr-bug-reindex (seed replay stalls) |
-| solr-bugs-reindex-cleanup | #04: a failed same-target reindex leaves the alias; cleanup throws | ZK/HTTP door fault | no witness yet (branch solr-bug-reindex) |
-| solr-bugs-migrate-buffer-leak | #17: a failure after REQUESTBUFFERUPDATES leaves the target core BUFFERING | door fault | admitted, no case |
-| solr-bugs-overseer-lock-leak | #50: OperationTimeout in markTaskAsRunning leaks the lock | ZK door fault | admitted, no case |
-| solr-bugs-snapshot-no-active | #16: CREATESNAPSHOT skips non-ACTIVE replicas and reports success | stale Overseer view | admitted, no case |
-| solr-bugs-restore-construction | #26: a failed RESTORE leaves slices in CONSTRUCTION | HTTP door fault | admitted, no case |
-| solr-bugs-tra-start-overwrite | #20: TimeRoutedAlias writes a stale aliases snapshot over a newer alias | STATE re-pairing | admitted, no case |
+| solr-18406 (= solr-adhoc-22) | SOLR-18406 (apache/solr PR 4820): the leader deletes a generation after the reservation expires | CLOCK_SKEW | PASS on main (V25) |
+| solr-18413 | SOLR-18413 (apache/solr PR 4862): an unexpired MIGRATE route rule names a deleted target collection | CLOCK_SKEW | PASS on main (V25); regressed on branch solr-bug-reindex (seed replay stalls) |
+| solr-bugs-reindex-cleanup | owner #5 (#04): a reindex's cleanup cannot delete a target an alias names; the source stays read-only | STATE re-pairing (the owner's ABORT + CREATEALIAS) | no witness yet (branch solr-bug-reindex); workload to rewrite (TODO Solr) |
+| solr-bugs-migrate-buffer-leak | owner #6 (#17): a failure after REQUESTBUFFERUPDATES leaves the target core BUFFERING | door fault | admitted, no case |
+| solr-bugs-overseer-lock-leak | owner #7 (#50): OperationTimeout in markTaskAsRunning leaks the lock | ZK door fault | admitted, no case |
+| solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and reports success | stale Overseer view | admitted, no case |
+| solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves slices in CONSTRUCTION | HTTP door fault | admitted, no case |
+| solr-bugs-tra-start-overwrite | owner #10 (#20): TimeRoutedAlias writes a stale aliases snapshot over a newer alias | STATE re-pairing | admitted, no case |
 | hbase-bugs-master-active-time | #14: a non-monotonic activeTime makes the new master reject an old OPENED report | CLOCK | branch hbase-startup, blocked on two design questions (TODO HBase) |
 | hbase-bugs-backup-lock-reply-lost | HBase-2 #16: a lost CAS reply makes the retry fail on its own lock | HBase RPC RESPONSE door | admitted, no case (needs the door) |
 | hbase-bugs-ns-rsgroup-removal | HBase-2 #01: rsgroup removal cannot see an in-flight namespace creation | STATE re-pairing | admitted, no case |

@@ -127,39 +127,78 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - `offline-ab.sh` `ab_stage_seed_static` tests `-s GROWN` on the gate host right after another host wrote it; over NFS
   it can miss the file (one spurious SEED.static difference on 2026-10-08): wait for it, or read it on the writer.
 
-## Solr (next; `system/solr` = main today)
+## Solr (next; `system/solr` = `system/hdfs1` `da152b3cb`, worktree `/bigtemp/vnr3ne/wt/gc-solr`)
 
-**1. Bring the body.** Merge `system/hdfs1` (the newest body; the HDFS work ends as two branches and does not go
-to `main`, owner 2026-10-06) into `system/solr`, and merge the parked `hdfs1-confirm-first` first if Solr's long
-campaigns show a confirmation waiting behind witness attempts. The WIRE-CODEC runtime is gone from the
-body; check that no Solr tree hook calls a removed door (`MessageDoors` payload/bytes overloads; the 3-arg
-`stored`/`fetched` stay). Close the `MessageDoors.consumed` gap (a consumed Overseer item states its message key).
-The Solr trees' `CausynthHttp` ends the served exchange by hand before each send: replace it by the request start at
-the client's invoke point (`MessageDoors#requestStarting`/`#requestEnded`, IDENTITY §3), ending a received response only.
-Rebase `solr-bug-reindex` onto it and fix its solr-18413 regression first:
+The owner (2026-10-08): "跑完solr上所有adhoc check对应的unit test ... adhoc check必须要包含这些bug。也就是他们的.smt必须是sat。
+然后要么用已有的unit test。如果没有，你写一个合适的cluster based unit test。我们远端不是已经有fork的solr吗。你就在上面类似地创建
+分支即可，类似hdfs". The Solr group is these 20 cases (counts as `docs/checks/SELECTION.md`); it is finished when:
+- each of the 8 bug checks ends `SAT_CANDIDATE`: its witness confirmed by a replay and reproduced natively, its `.smt`'s
+  chain the bug's (read against the 8.11.4 code, CHECKING.md);
+- each of the 12 study checks has a right `.smt`: SAT confirmed, or UNSAT at its fixed point;
+- the group runs with no regression (solr-18406 and solr-18413 first: both passed on `main`, V25).
+
+The 8 bug checks (the owner's bug reports 5-10 of 2026-10-08 and two merged upstream fixes). A workload passes
+natively: the recording does not throw at the target, the witness is the engine's (a fault, a clock, a re-paired
+read). Where no existing test reaches the path, write a MiniSolrCloudCluster test in the tree (`TestCausynth*`, as the
+two named cases did); its shape below is the counterfactual's need, the test's details are yours:
+
+| case | bug | target (8.11.4) | workload | the witness the `.smt` must allow | state |
+| --- | --- | --- | --- | --- | --- |
+| solr-18406 (= solr-adhoc-22) | SOLR-18406, apache/solr PR 4820: a follower's `filecontent(G)` after the leader deleted G (reservation expired) | `IndexDeletionPolicyWrapper:179` via `ReplicationHandler:1626` (`DirectoryFileStream.initWrite`); marked | `TestCausynthPullReplicaReservation#pullReplicaFetchesAcrossALeaderCommit` (ours, exists) | CLOCK_SKEW on the reservation | PASS on `main` (V25); not run on this body |
+| solr-18413 | SOLR-18413, apache/solr PR 4862: an unexpired MIGRATE routing rule names a deleted target; the source leader's update throws after applying locally | `DistributedZkUpdateProcessor:934` (`getNodesByRoutingRules`: "Could not find collection"); marked | `TestCausynthMigrateRuleTarget#updateAfterRuleExpiryAndTargetDeletion` (ours, exists; the recorded rule has expired) | CLOCK_SKEW on the rule's expiry | PASS on `main` (V25); seed replay stalls on `solr-bug-reindex` |
+| solr-bugs-reindex-cleanup | owner #5 (bug study #04): cleanup's `DELETE(T)` refuses a T an alias names, so S stays read-only | `DeleteCollectionCmd:246` (the alias-reference check) inside `ReindexCollectionCmd#cleanup`; marked on `gc/solr-bugs` | write one from `ReindexCollectionTest#testAbort`: REINDEX S->T async, `CREATEALIAS A->T`, `DELETEALIAS A`, ABORT, an add to S succeeds (replaces `testSameTargetReindexing`) | the alias read at the DELETE re-paired with A's write (STATE) | case exists, no witness yet |
+| solr-bugs-migrate-buffer-leak | owner #6 (#17): a failure after REQUESTBUFFERUPDATES leaves T BUFFERING; a retried MIGRATE is refused | `CoreAdminOperation:186` "not in active state" at the second MIGRATE's buffer request | write one from `MigrateRouteKeyTest`: two MIGRATEs into the same target, both succeed | a FAULT at a door after the first MIGRATE's buffer step (routing-rule offer, source-leader lookup, a shard request) | no case |
+| solr-bugs-overseer-lock-leak | owner #7 (#50): `OperationTimeout` in `markTaskAsRunning` leaks the collection lock; later tasks never run | settle by reading `OverseerTaskProcessor`/`LockTree`: the later task's failure (`CollectionsHandler` sync wait timeout, :382-) is a liveness effect (a task that never runs), the hardest of the eight | write one: an async task on C, then a sync task on C | ZooKeeper `OperationTimeout` at `runningMap.put` (`DistributedMap.put`) | no case |
+| solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and records success | `BackupCmd:205` "Unable to find any live replica with a snapshot" | write one from `TestSolrCloudSnapshots`: CREATESNAPSHOT M, then BACKUP with commitName M | the Overseer's view of a replica non-ACTIVE at CREATESNAPSHOT (STATE/CLOCK on its cluster-state read) | no case |
+| solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves T's shards CONSTRUCTION; the retry takes the existing-collection path, which never activates them | `HashBasedRouter:67` "No active slice" at an add to T | write one from `TestLocalFSCloudBackupRestore`: RESTORE B->T, RESTORE B->T again, add to T | a FAULT at the first RESTORE's RESTORECORE / apply-buffer request | no case |
+| solr-bugs-tra-start-overwrite | owner #10 (#20): the date-math start rewrite writes a stale aliases snapshot over a newer alias | `BaseCloudSolrClient:1140` "Collection not found: B" at a request via B | write one from `TimeRoutedAliasUpdateProcessorTest#testDateMathInStart` (`@AwaitsFix` in 8.11): first ADD rewrites the start, `CREATEALIAS B->D`, a request via B | the ADD thread's `getAliases()` re-paired with the version before B (STATE) | no case |
+
+The 12 study checks (existing tests; rows with guard and site in [../checks/README.md](../checks/README.md) "solr"):
+
+| case | site (8.11.4) | workload |
+| --- | --- | --- |
+| solr-adhoc-05 | `ZkController:1274` (`register`) | `AddReplicaTest#testAddMultipleReplicas` |
+| solr-adhoc-07 | `ZkController:1326` (`register`) | `AddReplicaTest#testAddMultipleReplicas` |
+| solr-adhoc-09 | `DeleteReplicaCmd:278` (`deleteCore`) | `DeleteReplicaTest#deleteReplicaAndVerifyDirectoryCleanup` |
+| solr-adhoc-10 | `MaintainRoutedAliasCmd:117` | `TimeRoutedAliasUpdateProcessorTest#test` |
+| solr-adhoc-13 | `RoutedAlias:350` (`doSynchronous`) | `TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation` |
+| solr-adhoc-14 | `SplitShardCmd:167` (`split`) | `SplitShardTest#doTest` |
+| solr-adhoc-19 | `CoreContainer:1330` (`create`) | `AddReplicaTest#testAddMultipleReplicas` |
+| solr-adhoc-21 | `CoreContainer:1765` (`reload`, an assert) | `CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss` |
+| solr-adhoc-31 | `CollectionsHandler:1477` (`forceLeaderElection`) | `ForceLeaderTest#testReplicasInLowerTerms` (`@Nightly`) |
+| solr-adhoc-38 | `DistributedZkUpdateProcessor:1031` (`doDefensiveChecks`) | `TestPullReplica#testAddDocs` |
+| solr-adhoc-39 | `RoutedAliasUpdateProcessor:247` | `TimeRoutedAliasUpdateProcessorTest#test` |
+| solr-adhoc-40 | `RoutedAliasUpdateProcessor:133` | `TimeRoutedAliasUpdateProcessorTest#test` |
+
+**1. The body.** `system/solr` is `system/hdfs1` (fast-forwarded 2026-10-08). The WIRE-CODEC runtime is gone from
+it: check that no Solr tree hook calls a removed door (`MessageDoors` payload/bytes overloads; the 3-arg
+`stored`/`fetched` stay). Close the `MessageDoors.consumed` gap (a consumed Overseer item states its message key). The
+Solr trees' `CausynthHttp` ends the served exchange by hand before each send: replace it by the request start at the
+client's invoke point (`MessageDoors#requestStarting`/`#requestEnded`, IDENTITY §3), ending a received response only.
+Bring `solr-bug-reindex`'s Solr replay fidelity (46 commits on `main`'s body, STATE §2) onto it and fix its
+solr-18413 regression first:
 - The seed replay stalls 103,812 times. A store-write slot is held while the Overseer's
   `waitForCoreAdminAsyncCallToComplete` poll outruns its recorded WAKE count. Read the jstacks in
   `gc-out/sbr/evidence/` (the time model of HDFS §3 may cover it).
-- Then SBR26b: give SEED's trace aggregation the heap a 2.1 GB trace needs, or stream it.
+- SEED's trace aggregation needs the heap a 2.1 GB trace takes (SBR26b), or streams it.
+Merge the parked `hdfs1-confirm-first` if a confirmation is seen waiting behind witness attempts.
 
-**2. Mark the checks.** Mark the 13 checked study points in one Solr tree branch, from `docs/checks/SOLR.md` and
-`SELECTION.md`:
+**2. One tree, on the fork.** One Solr tree for all 20 cases: `gc/solr-bugs` (`f65aaf7`: the storing line, the
+`spelledAs` adapter, the reindex marker, both named workloads) plus the study markers
+(`@CausynthExceptionTarget("solr-adhoc-NN")`), the five new bug markers and the new workloads. It goes to the fork
+`https://github.com/JHSUYU/solr.git` as `graphchecker/solr-checks` (more branches only for a case that needs its own
+tree, as HDFS's `trees.tsv`), never to an apache remote. `~/lucene-solr-8_11` is a shallow clone of
+`apache/lucene-solr` `branch_8_11` (`faca81b`, 8.11.4), a history `apache/solr` does not hold: unshallow it
+(`git fetch --unshallow https://github.com/apache/lucene-solr.git branch_8_11`) before the push. Then the Solr side
+of [../REPRODUCE.md](../REPRODUCE.md): `experiments/solr/trees.tsv`, a `prepare-trees.sh` that clones the tree to
+`$GC_TREES` and runs every case's workload once natively (Ant, `experiments/solr/build.sh`), `solr-cases.tsv`
+(case, budget) for `run-series.sh`.
 
-```
-05 07 09 10 13 14 19 21 22 31 38 39 40
-```
-
-22 is solr-18406's throw (already marked). Each point gets its cluster test as the workload and an experiment
-directory like `experiments/hadoop/hdfs-adhoc` (a `checks.tsv`).
-
-**3. The five admitted bugs:** migrate-buffer-leak #17, overseer-lock-leak #50, snapshot-no-active #16,
-restore-construction #26, tra-start-overwrite #20. For each: the marker, the workload (an existing test where one
-reaches it), the doors or roots its counterfactual needs (`docs/checks/VERIFIED-BUGS.md`), then a dev run.
-
-**4. reindex-cleanup (#04).** The witness is #2's post-alias `setData` door faults.
-
-**5. Run the group.** All 20 cases with no regression of solr-18406 and solr-18413, `.smt` checks (CHECKING.md), then
-the final round of the group (concurrently, through the ledger).
+**3. The cases.** One experiment directory per case under `experiments/solr/` (`case.sh` with `repo=${GC_TREES}/...`,
+`workflow.properties`), the study checks in one `solr-adhoc` directory like `experiments/hadoop/hdfs-adhoc`. Dev runs
+one case at a time, then the group of 20 (concurrently, through the ledger). A bug check that ends UNSAT is not done:
+find which link of its chain the formula lacks (a door, a root, a writer the closure cut) and fix it generally. The
+cross-cutting "Force the fatal arm" item below is for this system.
 
 ## HBase (`system/hbase` = main today)
 

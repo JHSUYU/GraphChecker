@@ -76,7 +76,8 @@ branches still exist (`git branch`, their worktrees in `git worktree list`); tho
 
 | local branch | head | state |
 | --- | --- | --- |
-| `system/solr`, `system/hbase`, `system/zookeeper` | `fe3a5f1a0` (= `main`) | each system's branch-to-be: `system/hdfs1` is merged into it when its turn comes (TODO) |
+| `system/solr` | `system/hdfs1` + the Solr plan (worktree `/bigtemp/vnr3ne/wt/gc-solr`) | the Solr group's branch (TODO Solr): 20 cases, the 8 bug checks SAT |
+| `system/hbase`, `system/zookeeper` | `fe3a5f1a0` (= `main`) | each system's branch-to-be: `system/hdfs1` is merged into it when its turn comes (TODO) |
 | `hdfs1-confirm-first` | `da913cd7c` | no witness attempt starts while a confirmation is queued, running or returned; merge only if a confirmation is seen waiting > 10 min (TODO HDFS §5) |
 | `hdfs1-prefix-span`, `hdfs-rule1`, `hdfs-u18-fix` | `40127e2b5`, `7d2819214`, `8ed56ddeb` | not for merge: the merged-span prefix (superseded by TODO HDFS §3's design), rule 1 and the own-fault key (missed the throughput bar, open defect 51) |
 | `solr-bug-reindex` | `12283e3f1` | Solr #04 and Solr replay fidelity; SBR26 13/14 (solr-18413 regressed). For the Solr turn |
@@ -100,7 +101,8 @@ any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8` | `gc/hdfs-study-r8` `e3dab6266a7` | `graphchecker/hdfs-checks-adhoc07` | hdfs-adhoc-07 only (`case.sh`): r7 + QJM's reply maps in the loggers' order. Maven repo `/bigtemp/vnr3ne/m2/hdfs-study-r8` |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-21` | `gc/hdfs-study-r7-21` `c360d869629` | `graphchecker/hdfs-checks-adhoc21` | hdfs-adhoc-21 only (`case.sh`): r7 + the DataNode handshake on its own joined thread |
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-11741-r6` `6c86fca9a2b` | `graphchecker/hdfs-11741` | hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6` |
-| `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none (never push: apache remote) | solr-18406, solr-18413 (`main`); study markers not added yet |
+| `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
+| `/bigtemp/vnr3ne/wt/lucene-solr-bugs` | `gc/solr-bugs` `f65aaf7` | to be `graphchecker/solr-checks` on the fork `JHSUYU/solr` (owner 2026-10-08; TODO Solr §2), never an apache remote | the Solr group's one tree: `gc/solr-unified-storing2` + the reindex marker; study markers and the five new bug cases not added yet |
 | `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
 | `/bigtemp/vnr3ne/wt/hbase-unified` | `gc/hbase-unified` `1051825287` | none (never push: apache remote) | HBase cases; must drop `CausynthRpc.java:61-62`'s `, call.param` before any run on the new body |
 
