@@ -135,7 +135,10 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    125 -> 71). Live hdfs-adhoc-09 (INC1, beside other runs: 280 waits for ledger room): 76 rounds and 443 s of
    planning, at most 11 s a round, against EX1's 16 rounds, 234 s, at most 46 s; EXPLORE 1892 s against 845 s,
    with 675 verdicts (634 flips) against 566 (535): rounds come more often, each over fewer new sessions, and
-   the corpus's landing order decides what each proposes (STATUS R4). What a served late 07e round still spends:
+   the corpus's landing order decides what each proposes (STATUS R4). Live solr-18413 (INC2, SAT confirmed):
+   17 rounds, 298 s of planning, 150 s of it round 0 waiting for its 8 GB start, the rest 2-3 s a round, against
+   SC1's 8 rounds and 348 s (one 185 s); EXPLORE 1113 s against 775 s beside other runs (94 waits for room).
+   What a served late 07e round still spends:
    `Value#hashCode` recomputing deep part hashes (half its samples) and the closure.
 1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it, the slot table
    (07: 314,758 slots, now its rounds' changes folded) most of the rest; `Corpus#index` re-reads each session's
