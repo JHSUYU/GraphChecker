@@ -110,7 +110,6 @@ def classify(row, result_path, lines, root, text):
         row["refuted"] = len(refuted)
         row["bounded"] = ",".join((result.get("bounded") or {}).get("by", []))
         if claim == "SAT_CANDIDATE" and confirmation.get("confirmed") is True:
-            # A result written before COMPOSE stated the rank states none.
             row["class"] = ("CONFIG_ONLY"
                             if result.get("configurationOnly") is True
                             else "CONFIRMED")
@@ -135,13 +134,9 @@ def classify(row, result_path, lines, root, text):
                     row["reason"])).rstrip("; ")
         else:
             # A confirmation that published no verdict refuted nothing: a
-            # defect of the run (EMIT names it CONFIRM_NO_VERDICT; an older
-            # EMIT published it SAT_UNCONFIRMED with refutes false).
+            # defect of the run (EMIT names it CONFIRM_NO_VERDICT).
             row["class"] = "RUN_DEFECT"
             defects = result.get("defects") or []
-            if not defects and claim == "SAT_UNCONFIRMED":
-                defects = [{"code": "CONFIRM_NO_VERDICT",
-                            "detail": confirmation.get("reason", "")}]
             if defects:
                 row["reason"] = re.sub(r"\S*/region/\S*", "<occ>",
                                        defects[0].get("code", "") + " "

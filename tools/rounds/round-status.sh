@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # round-status.sh <round>: per started case, its age, current stage and seed-replay give-ups (or its verdict when done).
-out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}; round=$1; now=$(date +%s)
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+out=${GC_OUT}; round=$1; now=$(date +%s)
 while IFS=$'\t' read -r n c; do
   d=$out/accept-$round-$n; [[ -d $d ]] || continue
   s=$d/summary.tsv

@@ -4,8 +4,6 @@ set -euo pipefail
 repo=${1:?missing Hadoop checkout}
 test_class=${2:?missing test class}
 test_method=${3:?missing test method}
-# The javac the Hadoop build uses: the case's own when it declares one.
-declared_javac=${4-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
@@ -21,10 +19,9 @@ export PATH=${JAVA_HOME}/bin:${PATH}
 cd "${repo}"
 maven=(mvn)
 [[ ! -x ./mvnw ]] || maven=(./mvnw)
-javac=${declared_javac:-${CAUSYNTH_HADOOP_JAVAC:-${here}/javac8-filter-crc32c.sh}}
 common=(-q -Djavac.version=8 -DskipShade -Dskip.npm -Dskip.yarn
   -Dmaven.compiler.fork=true
-  "-Dmaven.compiler.executable=${javac}")
+  "-Dmaven.compiler.executable=${here}/javac8-filter-crc32c.sh")
 # MAVEN_REPO_LOCAL: a local repository of this build's own, so several trees
 # can build at once without two installs racing on one repository's metadata.
 [[ -z "${MAVEN_REPO_LOCAL:-}" ]] \

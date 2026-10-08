@@ -47,12 +47,12 @@ fi
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 
 # Where the JVM puts its temp files and the cluster its data
-# (system_jvm_properties).  The worker directory is on the shared home, so
-# by default this is an fsync-heavy little filesystem per concurrent replay
-# on one NFS mount; CAUSYNTH_LOCAL_SCRATCH moves it to a local disk instead.
-# Nothing downstream reads either: what a replay PUBLISHES is its session and
-# its result rows, both under the worker directory.  Opt-in, and it degrades
-# rather than fails.
+# (system_jvm_properties): a replay's on its host's local disk, under the
+# CAUSYNTH_LOCAL_SCRATCH its campaign hands it (one fsync-heavy little
+# filesystem per concurrent replay on the shared NFS mount, otherwise), a
+# recording's in its own temp directory.  Nothing downstream reads either:
+# what a replay PUBLISHES is its session and its result rows, both under the
+# worker directory.  A scratch root that cannot be made fails the JVM by name.
 remove_local_scratch() {
   [[ -z ${scratch_owned} ]] || rm -rf -- "${scratch_owned}"
 }
@@ -60,16 +60,10 @@ trap remove_local_scratch EXIT
 tmpdir="${work}/temp"
 datadir="${work}/data"
 if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
-  if mkdir -p "${CAUSYNTH_LOCAL_SCRATCH}" 2>/dev/null \
-      && scratch_owned=$(mktemp -d "${CAUSYNTH_LOCAL_SCRATCH}/replay.XXXXXXXX" \
-        2>/dev/null); then
-    tmpdir="${scratch_owned}/temp"
-    datadir="${scratch_owned}/data"
-  else
-    scratch_owned=""
-    echo "${tag}: CAUSYNTH_LOCAL_SCRATCH=${CAUSYNTH_LOCAL_SCRATCH} is not\
- usable on $(hostname); replay scratch stays under ${work}" >&2
-  fi
+  mkdir -p "${CAUSYNTH_LOCAL_SCRATCH}"
+  scratch_owned=$(mktemp -d "${CAUSYNTH_LOCAL_SCRATCH}/replay.XXXXXXXX")
+  tmpdir="${scratch_owned}/temp"
+  datadir="${scratch_owned}/data"
 fi
 mkdir -p "${tmpdir}" "${datadir}"
 system_jvm_properties "${tmpdir}" "${datadir}"

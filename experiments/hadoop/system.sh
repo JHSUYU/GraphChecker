@@ -3,13 +3,11 @@
 # lib/case-env.sh before a case's case.sh.
 #
 # A Hadoop case.sh may also set
-#   hadoop_javac        the javac the Hadoop build uses (default: the filter)
 #   cluster_automatic   true for a cluster test of the tree as it is written:
 #                       every MiniDFSCluster it builds is made reproducible,
 #                       registered whole and opens the window by itself
 #                       (CausynthCluster#AUTOMATIC)
 
-hadoop_javac=
 cluster_automatic=
 # THE block-key family's shared scope: the SASL data-transfer handshake and
 # the block-token key managers every case of the family turns on, and the IPC
@@ -68,8 +66,7 @@ system_classpath() {
 }
 
 system_build() {
-  bash "${system_dir}/build.sh" "${repo}" "${test_class}" "${test_method}" \
-    "${hadoop_javac}"
+  bash "${system_dir}/build.sh" "${repo}" "${test_class}" "${test_method}"
 }
 
 # MiniDFSCluster puts its name directories, edit logs and block data under

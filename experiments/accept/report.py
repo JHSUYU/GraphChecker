@@ -108,9 +108,6 @@ EXPECTED_MECHANISM = {
     # before the reconfiguration to 0 lands (its INITIAL, 1) publishes the
     # SSD, which no later turn clears, so the ALL_SSD write has no volume.
     "hdfs-bugs-slowdisk-zero": {"kinds": ("STATE_PAIRING_FLIPPED",)},
-    # HDFS bug study HDFS-2 #09: the re-encryption throttle's stopwatch
-    # readings (nn0's clock) make its sleep negative, the handler dies, and
-    # the zone's next START is refused as already submitted.
 }
 
 

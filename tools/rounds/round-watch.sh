@@ -2,7 +2,9 @@
 # round-watch.sh <round> [<baseline round>]: one line per finished case (its claim and verdict), per seed replay past
 # 30/80 stalls, and, given a baseline round, per seed replay past twice the baseline's stalls of the same case (at
 # least 20): a replay that departs from its recording more than it used to is a regression to read at once.
-out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+out=${GC_OUT}
 round=$1 base=${2:-}
 declare -A basestalls
 if [[ -n $base && -f $out/sweep-$base-cases.tsv ]]; then

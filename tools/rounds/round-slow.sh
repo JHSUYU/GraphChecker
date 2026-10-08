@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # round-slow.sh <round> <baseline-round>: one line when a running case passes 2x (and 4x) its baseline time (or 30/60 min
 # with no baseline row). Per-case state under $out/.watch-<round>, so a re-armed watcher does not repeat itself.
-out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+out=${GC_OUT}
 round=$1 base=$2
 state=$out/.watch-$round; mkdir -p "$state"
 declare -A basesec

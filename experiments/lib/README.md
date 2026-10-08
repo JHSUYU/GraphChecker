@@ -4,9 +4,9 @@ A case directory under `experiments/<system>/` holds DECLARATIONS only:
 
 | file | what it declares |
 | --- | --- |
-| `case.sh` | per case id: the system's worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec` (and Hadoop's `hadoop_javac`) |
+| `case.sh` | per case id: the system's worktree (`repo`), the workload (`test_class`, `test_method`), the declared target (`target_occurrence`), the analysis `scope`, and optionally `loop_bounds`, `target_spec` (and Hadoop's `cluster_automatic`) |
 | `workflow.properties` | the campaign's budgets and inputs |
-| `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`, no tree rebuild), communication mappings, symbolic inputs, root domains, loop bounds |
+| `target.yaml`, `*.jsonl` | the target (`exception_target: <name> <binary class name> <source line> [<thrown type>]`, no tree rebuild), communication mappings, root domains, loop bounds |
 
 A case directory with no `target.yaml` (and no `target_spec`) is a known
 bug's: its tree marks the bug's target throw with

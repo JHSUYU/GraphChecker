@@ -7,7 +7,9 @@
 # UNBOUND:<n> counts the distinct boundary variables a fatal condition names that no message family binds (cone.py's
 # `unbound`: a broken causal chain, so the case is not done whatever its verdict); the last line counts those cases
 # too. No case: every finished case of the round.
-out=${GC_OUT:-/bigtemp/vnr3ne/gc-out/hdfs-study}; round=$1; shift
+# shellcheck source=../lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gc-env.sh"
+out=${GC_OUT}; round=$1; shift
 want=" $* "; cases=0; bounded=0; unbound=0
 while IFS=$'\t' read -r n c; do
   [[ $# -eq 0 || "$want" == *" $c "* ]] || continue

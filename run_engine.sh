@@ -759,7 +759,6 @@ integer: ${region_path_max_world_depth}" ;;
 
 do_analyze() {
   require_file "target specification" "${causynth_target_spec}"
-  local input_flag
   local concolic_plan=${CAUSYNTH_CONCOLIC_TASK_PLAN:-}
   local concolic_task_ids=${CAUSYNTH_CONCOLIC_TASK_ID:-}
   local concolic_selected=false
@@ -773,13 +772,7 @@ do_analyze() {
     require_file "concolic execution task plan" "${concolic_plan}"
     concolic_selected=true
   fi
-  if [[ -d "${project_classes_dir}" ]]; then
-    input_flag=-i
-  elif [[ -f "${project_classes_dir}" ]]; then
-    input_flag=-j
-  else
-    die "project classes input not found: ${project_classes_dir}"
-  fi
+  require_directory "project classes" "${project_classes_dir}"
   ensure_output_directory "${analysis_classes_dir}"
   local -a system_properties
   system_properties=(
@@ -858,7 +851,7 @@ do_analyze() {
     "${system_properties[@]}" \
     -cp "${graphchecker_jar}" \
     edu.uva.liftlab.graphchecker.GraphCheckerMain \
-    "${input_flag}" "${project_classes_dir}" \
+    -i "${project_classes_dir}" \
     -x "${project_classpath}" \
     -o "${analysis_classes_dir}"
 }
@@ -1470,8 +1463,7 @@ campaign_preflight() {
   campaign_log "obligation pool: host(s) \
 ${campaign_worker_hosts:-$(hostname) (local only)}, each as many as its \
 memory admits, up to its cores"
-  campaign_log "replay scratch: \
-${campaign_local_scratch_root:-<shared home, as before>}"
+  campaign_log "replay scratch: ${campaign_local_scratch_root}"
   # Every peer is reached once before the seed replay, not for the first time
   # somewhere inside round 0 with a hundred obligations already planned.
   local worker_host
@@ -1569,14 +1561,12 @@ campaign_end_process_group() {
 #
 # The root is per USER and per RUN, because two campaigns may share a
 # cluster, and the per-obligation leaf below makes it per OBLIGATION as well.
-# Stated by the environment when the operator states one -- and an explicitly
-# EMPTY CAUSYNTH_LOCAL_SCRATCH turns the whole thing off, which is why this
-# tests for the variable being SET rather than for it being non-empty.
+# A peer is handed its head's root (CAUSYNTH_LOCAL_SCRATCH).
 campaign_local_scratch_root=""
 
 campaign_init_local_scratch_root() {
   local run_key
-  if [[ -n "${CAUSYNTH_LOCAL_SCRATCH+x}" ]]; then
+  if [[ -n "${CAUSYNTH_LOCAL_SCRATCH:-}" ]]; then
     campaign_local_scratch_root=${CAUSYNTH_LOCAL_SCRATCH}
     return 0
   fi
@@ -2445,8 +2435,8 @@ campaign_replay() {
     "CAUSYNTH_TRACE_MODE=replay-context" \
     "CAUSYNTH_SCHEDULE_PREFIX=${campaign_schedule_prefix:-}" \
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
-    "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+\
-${campaign_local_scratch_root}/$(basename "${worker}")}" \
+    "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root}/$(basename \
+      "${worker}")" \
     >"${worker}/replay.log" 2>&1
   # The one exit code that is NOT the workload's own: this replay outlived
   # the wall clock its caller gave it and the process group was killed.  Said
@@ -7222,7 +7212,7 @@ ${actual_sha}, the campaign says ${jar_sha}"
   # per-run root every other worker of the run uses.
   campaign_init_local_scratch_root
   campaign_log "peer $(hostname): jar ${graphchecker_jar} (${actual_sha}), \
-scratch ${campaign_local_scratch_root:-<shared home>}"
+scratch ${campaign_local_scratch_root}"
   campaign_peer_args=("$@")
 }
 

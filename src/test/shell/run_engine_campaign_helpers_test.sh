@@ -633,12 +633,10 @@ $(jq -c '{claim, findingKind, accepted}' "${campaign_final}/result.json")"
 
 # DECISIVE-2: triage reads the verdict: UNSAT (the concrete anchor as its
 # reason), RUN_DEFECT (the first defect), CONFIRMED, REFUTED only where the
-# confirmation refutes -- one that published no verdict is a RUN_DEFECT,
-# also in a result an older EMIT downgraded; no NO_ROOT or NO_WITNESS class
-# is left.
+# confirmation refutes; no NO_ROOT or NO_WITNESS class is left.
 triage_out="${test_tmp}/triage"
 mkdir -p "${triage_out}"
-printf '1\tcase-unsat\n2\tcase-defect\n3\tcase-sat\n4\tcase-refuted\n5\tcase-noverdict\n' \
+printf '1\tcase-unsat\n2\tcase-defect\n3\tcase-sat\n4\tcase-refuted\n' \
   >"${triage_out}/sweep-T1-cases.tsv"
 triage_case() {
   local dir="${triage_out}/accept-T1-$1/out/$2/schedule/final"
@@ -658,17 +656,13 @@ triage_case 3 case-sat '{"claim": "SAT_CANDIDATE",
   "confirmation": {"confirmed": true}, "findingKind": "MARKER_FLIPPED"}'
 triage_case 4 case-refuted '{"claim": "SAT_UNCONFIRMED",
   "confirmation": {"confirmed": false, "refutes": true, "reason": "WIRE e1"}}'
-triage_case 5 case-noverdict '{"claim": "SAT_UNCONFIRMED",
-  "confirmation": {"confirmed": false, "refutes": false,
-    "reason": "the confirmation replay published no verdict"}}'
 triage_rows=$(python3 "${repo}/tools/adhoc/triage.py" T1 "${triage_out}" \
   2>"${triage_out}/counts" | tr -d '\r' \
   | awk -F'\t' 'NR > 1 {print $2 "=" $3 "|" $8 "|" $NF}')
 [[ "${triage_rows}" == "case-unsat=UNSAT|region_path_max_waves,schedule_max_jobs|rests on 1 refuted claim(s) P1; the anchor was decided on no symbol: 1 of 1 path(s) decided it, 2 read(s) demanded
 case-defect=RUN_DEFECT||ADMISSION_GAP no session reached the declared occurrence
 case-sat=CONFIRMED||
-case-refuted=REFUTED||WIRE e1
-case-noverdict=RUN_DEFECT||CONFIRM_NO_VERDICT the confirmation replay published no verdict" ]] \
+case-refuted=REFUTED||WIRE e1" ]] \
   && grep -q ' BOUNDED=1$' "${triage_out}/counts" \
   || fail "triage did not class the verdicts: ${triage_rows} \
 $(<"${triage_out}/counts")"
@@ -1112,10 +1106,6 @@ schedule_max_jobs=8
 declared_target_occurrence=""
 do_schedule
 eval "${real_run_java_main}"
-for retired_option in --retain-regions --summaries --refined-graph --closure-mode; do
-  [[ "${scheduler_args}" != *"${retired_option}"* ]] \
-    || fail "PLAN still passes ${retired_option}: ${scheduler_args}"
-done
 # GUARD-1: one guard authority.  The scheduler reads the fatal arm of the
 # declared target branch off static_scope_map's TARGET_SITE row, so PLAN has
 # to hand it the same file EXPLORE and the workload JVM are handed.
@@ -1126,14 +1116,6 @@ ${scheduler_args}"
 [[ "${scheduler_args}" == *"--candidate-graph ${plan2_dir}/candidate.jsonl.gz"* ]] \
   || fail "PLAN did not hand the scheduler the candidate graph: \
 ${scheduler_args}"
-for retired_function in campaign_seeding_results campaign_seeding_replay \
-    campaign_retained_growth campaign_unplannable_regions \
-    campaign_union_regions campaign_topology_divergences \
-    campaign_publish_pending_refinement campaign_publish_epoch_final \
-    campaign_restore_seed_cache campaign_store_seed_cache; do
-  [[ "$(type -t "${retired_function}")" != function ]] \
-    || fail "${retired_function} survived the epoch loop"
-done
 
 # STOP-1: `campaign_stop_after` is a declared workflow key, so it answers the
 # four table questions, resolves from a config file, and resolves from
@@ -4045,18 +4027,7 @@ mkdir -p "${scratch_probe}"
   [[ "${one}" == */"$(id -un)"/* ]] \
     || fail "the replay scratch root is not per user: ${one}"
 ) || exit 1
-# An explicitly EMPTY CAUSYNTH_LOCAL_SCRATCH turns it off; that is what
-# `${VAR+x}` is for and what `${VAR:-default}` would have got wrong.
-(
-  CAUSYNTH_LOCAL_SCRATCH=""
-  campaign_root="${scratch_probe}/run-three"
-  campaign_init_local_scratch_root
-  [[ -z "${campaign_local_scratch_root}" ]] \
-    || fail "an empty CAUSYNTH_LOCAL_SCRATCH did not turn local scratch off: \
-${campaign_local_scratch_root}"
-) || exit 1
-# And a stated one is taken as the root, which is how the peer gets the
-# head's.
+# A stated one is taken as the root, which is how the peer gets the head's.
 (
   CAUSYNTH_LOCAL_SCRATCH=/localtmp/stated
   campaign_root="${scratch_probe}/run-four"
@@ -4086,7 +4057,7 @@ would leave its MiniDFSCluster data behind on every host it ran on"
 bash -n "${execute_sh}" || fail "the adapter is not valid bash"
 # The campaign hands it one, per obligation, and hands the peers the same
 # root so a remote replay's scratch is on the PEER's local disk.
-grep -q 'CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+' \
+grep -q 'CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root}/$(basename' \
   "${repo}/run_engine.sh" \
   || fail "the campaign does not hand the adapter a per-worker scratch path"
 grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
@@ -5014,8 +4985,6 @@ unset -f hostname campaign_host_available_mb campaign_host_total_mb
 # head's, lift14's and lift15's MemAvailable, the step's need, and where it
 # runs.
 place_dir="${memory_dir}/place"
-! grep -q 'campaign_head_placing' "${repo}/run_engine.sh" \
-  || fail "a head step is placed by a second rule"
 while read -r place_own place_14 place_15 place_need place_expected; do
   rm -rf -- "${place_dir}"
   mkdir -p "${place_dir}"

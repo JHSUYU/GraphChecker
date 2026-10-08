@@ -2,8 +2,8 @@
 # launch-round.sh <snapshot> <round>
 #
 # Starts the acceptance campaigns of one round from one snapshot worktree --
-# the eleven cases (nine HDFS, two Solr), or the cases CASES names (any case
-# id a case directory declares) -- each detached on its
+# the ten named HDFS cases, or the cases CASES names (any case id a case
+# directory declares) -- each detached on its
 # head host, every one with its obligations spread over every host in LIFTS:
 #
 #   CAUSYNTH_CUSTOM_JDK_HOME=<image> tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22
@@ -49,7 +49,7 @@ vm=${CAUSYNTH_CUSTOM_JDK_HOME:?launch-round.sh: name the concolic VM image as CA
 owner_host=lift11
 round_cases=(hdfs-11741 hdfs-17960 hdfs-17967-pathA hdfs-17967-pathB
   hdfs-17967-pathC hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3
-  hdfs-17897 solr-18413 solr-18406)
+  hdfs-17897 hdfs-bugs-slowdisk-zero)
 read -r -a cases <<<"${CASES:-${round_cases[*]}}"
 (( ${#cases[@]} > 0 )) || { echo "CASES names no case" >&2; exit 2; }
 
