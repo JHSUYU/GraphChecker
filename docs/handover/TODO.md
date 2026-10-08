@@ -102,8 +102,9 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   `offline-ab.sh` `EXPLORE.serve`. Phase 0 (a late 07e round, ~900 s): rows 140-172 s, indexes 24-39 s, closure
   190 s, slot table read 38-51 s and rewritten 194-208 s, frontier 168-177 s and candidates 88-95 s (one
   `dependence` computed twice per arm, `feeders` per call). Done: what each session's rows alone give is
-  carried with it (`Corpus.Derived`). Still owed there: within a round `dependence` and the closure's walks
-  computed once.
+  carried with it (`Corpus.Derived`), and within a round `dependence`, a task's feeders and the closure's
+  groups, group reads and eligible writes are computed once. Still owed: the live check (solr-18413,
+  hdfs-adhoc-09) and the merge.
 - **A host solver answers one question at a time** at 12-14 GB resident on 07's corpus: more answers per solver JVM
   (or a smaller one) would lift the solve throughput and the memory every lift gives replays.
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).

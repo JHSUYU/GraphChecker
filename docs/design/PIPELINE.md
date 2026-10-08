@@ -382,7 +382,11 @@ session's rows never change, so only the sessions new to the listing are parsed,
 -- a GROW swap, after-witness trimming -- is dropped) with what was derived from each session's rows
 alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
 expressions: symbols, leaves, read locations and events, state reads), the static map while its
-file reads the same (by digest), and the slot table it changed (step 4). Every index across sessions
+file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
+round asks again of the same corpus is answered once: an arm's dependence per task and decision
+(`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and
+the closure's walks of a demand that grew reuse its group, the group's reads and each read's
+eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). Every index across sessions
 is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
 iteration then, writes (`ExploreMain --round N --output-dir ...`, the offline stages' entry over the
 same code; gated by `offline-ab.sh` `EXPLORE.serve`). A late hdfs-adhoc-07 round, rebuilt whole by a

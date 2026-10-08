@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.Task;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -638,6 +639,57 @@ public final class Corpus implements Arms.Rows {
         return ArtifactIO.digest(text.toString(), 16);
     }
 
+    /**
+     * What this corpus answered about one task (the planner's, or the
+     * solver's {@code ClosurePlanner#taskOf}), by the task object: the
+     * frontier keys every arm its recorded paths took and the candidates
+     * key the same arms again ({@link ObligationFactory#dependence}:
+     * hdfs-adhoc-07 EX1, 227,681 asks and ~260 s of a ~900 s round, and
+     * the task's feeders asked anew each time).  A corpus does not change
+     * once read, so each answer is its rows' and the task's.
+     */
+    private static final class OfTask {
+        /** {@link #feeders(Task)}, once asked. */
+        List<OccurrenceAddress> feeders;
+        /** path id#decision index -> its dependence. */
+        final Map<String, String> dependence = new HashMap<String, String>();
+    }
+
+    private final Map<Task, OfTask> ofTask =
+            new java.util.IdentityHashMap<Task, OfTask>();
+
+    private synchronized OfTask ofTask(Task task) {
+        return ofTask.computeIfAbsent(task, key -> new OfTask());
+    }
+
+    /** One arm's dependence ({@code ObligationFactory#dependence}) of one
+     *  task, by its path and decision: computed once. */
+    String dependence(Task task, String decision, Supplier<String> compute) {
+        OfTask of = ofTask(task);
+        synchronized (of) {
+            String held = of.dependence.get(decision);
+            if (held != null) return held;
+        }
+        String keyed = compute.get();
+        synchronized (of) {
+            of.dependence.put(decision, keyed);
+        }
+        return keyed;
+    }
+
+    /** {@link #feeders(OccurrenceAddress, List)} of one task's occurrence
+     *  and factor, once per task. */
+    public List<OccurrenceAddress> feeders(Task task) {
+        OfTask of = ofTask(task);
+        synchronized (of) {
+            if (of.feeders == null) {
+                of.feeders = Collections.unmodifiableList(
+                        feeders(task.focused(), task.factor()));
+            }
+            return of.feeders;
+        }
+    }
+
     /** The members of a factor that WRITE state the occurrence reads, in
      *  any session: through them the world flows in. */
     public List<OccurrenceAddress> feeders(OccurrenceAddress occurrence,
@@ -1152,6 +1204,25 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> eligibleWrites(String sessionId, String locationKey,
                                          long observedVersion,
                                          OccurrenceAddress reader) {
+        String key = sessionId + "|" + locationKey + "|" + observedVersion
+                + "|" + (reader == null ? "" : reader.id());
+        List<WriteRow> held = eligible.get(key);
+        if (held != null) return held;
+        List<WriteRow> found = Collections.unmodifiableList(eligibleOf(
+                sessionId, locationKey, observedVersion, reader));
+        eligible.put(key, found);
+        return found;
+    }
+
+    /** session|location|version|reader -> {@link #eligibleWrites}: the
+     *  closure asks every demanded read again each time a demand grows,
+     *  and once per walk of its group. */
+    private final Map<String, List<WriteRow>> eligible =
+            new ConcurrentHashMap<String, List<WriteRow>>();
+
+    private List<WriteRow> eligibleOf(String sessionId, String locationKey,
+                                      long observedVersion,
+                                      OccurrenceAddress reader) {
         List<WriteRow> writes = writesOf(sessionId, locationKey);
         List<WriteRow> eligible = new ArrayList<WriteRow>();
         for (WriteRow write : writes) {

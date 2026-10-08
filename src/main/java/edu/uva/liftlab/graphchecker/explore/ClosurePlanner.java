@@ -588,6 +588,13 @@ public final class ClosurePlanner {
         /** Doors said to decide no fault, once each ({@link
          *  #controlProducer}). */
         private final Set<String> faultless = new LinkedHashSet<String>();
+        /** occurrence id -> its group (it and its state-connected factor)
+         *  and the group's reads: a demand is walked again each time it
+         *  grows (hdfs-adhoc-07 EX1: 93 walks of 31 demands). */
+        private final Map<String, List<OccurrenceAddress>> groups =
+                new HashMap<String, List<OccurrenceAddress>>();
+        private final Map<String, GroupReads> groupReads =
+                new HashMap<String, GroupReads>();
 
         private Walk(Corpus corpus, StaticScopeMap map,
                      OccurrenceAddress anchor) {
@@ -601,6 +608,24 @@ public final class ClosurePlanner {
         private boolean faulted(OccurrenceAddress occurrence) {
             return faults.computeIfAbsent(occurrence.id(),
                     id -> !corpus.faultSites(occurrence).isEmpty());
+        }
+
+        /** The occurrence and its state-connected factor: one symbolic
+         *  unit ({@link #successors}). */
+        private List<OccurrenceAddress> group(OccurrenceAddress occurrence) {
+            return groups.computeIfAbsent(occurrence.id(), id -> {
+                List<OccurrenceAddress> group =
+                        new ArrayList<OccurrenceAddress>();
+                group.add(occurrence);
+                group.addAll(stateConnected(corpus, occurrence));
+                return Collections.unmodifiableList(group);
+            });
+        }
+
+        /** {@link GroupReads} of an occurrence's {@link #group}. */
+        private GroupReads reads(OccurrenceAddress occurrence) {
+            return groupReads.computeIfAbsent(occurrence.id(),
+                    id -> new GroupReads(corpus, group(occurrence)));
         }
 
         /** {@link StaticScopeMap#carriersAt}. */
@@ -698,12 +723,10 @@ public final class ClosurePlanner {
      */
     private static List<Demand> successors(Walk walk, Demand demand) {
         Corpus corpus = walk.corpus;
-        List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
-        group.add(demand.occurrence);
-        group.addAll(stateConnected(corpus, demand.occurrence));
+        List<OccurrenceAddress> group = walk.group(demand.occurrence);
         Map<String, Set<String>> kept = new LinkedHashMap<String,
                 Set<String>>();
-        Set<String> demanded = demanded(walk, demand, group, kept);
+        Set<String> demanded = demanded(walk, demand, kept);
         List<Demand> next = new ArrayList<Demand>();
         Set<String> paired = new LinkedHashSet<String>();
         for (OccurrenceAddress member : group) {
@@ -828,11 +851,10 @@ public final class ClosurePlanner {
      *  and demands nothing here. Terms are EXPR references, asked of their
      *  expressions' DAG ({@link Corpus#termSymbols}), never rendered. */
     private static Set<String> demanded(Walk walk, Demand demand,
-                                        List<OccurrenceAddress> group,
                                         Map<String, Set<String>> kept) {
         Corpus corpus = walk.corpus;
         Set<String> named = new LinkedHashSet<String>();
-        GroupReads reads = new GroupReads(corpus, group);
+        GroupReads reads = walk.reads(demand.occurrence);
         for (Corpus.RecordedPath path : corpus.pathsOf(demand.occurrence)) {
             for (DecisionRow decision : path.decisions) {
                 if (!FlipQuery.asks(demand.flipSites, decision)) continue;
