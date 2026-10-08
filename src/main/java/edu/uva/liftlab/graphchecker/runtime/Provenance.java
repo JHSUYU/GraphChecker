@@ -45,10 +45,13 @@ final class Provenance {
     /** One version of one store location. */
     static final class Version {
         final LocationId location;
+        /** The path as this run spells it: the recording's rows'. */
+        final String path;
         final long version;
 
-        Version(LocationId location, long version) {
+        Version(LocationId location, String path, long version) {
             this.location = location;
+            this.path = path;
             this.version = version;
         }
 
@@ -77,6 +80,23 @@ final class Provenance {
     /** The version {@code value} was decoded from, or null. */
     static Version of(Object value) {
         return value == null ? null : DECODED.get(value);
+    }
+
+    /**
+     * A provenance site's read of {@code receiver} (SYMBOL-SCOPE §5.7): the
+     * version it holds, or null; a {@code holder} -- the object a
+     * constructor is building from what it reads -- holds that version from
+     * then on, unless it already holds one ({@code derived} says whether it
+     * took it now), so a guard reading the holder's copy reads the version
+     * (a processor's {@code readOnlyCollection}, copied from its
+     * collection's).
+     */
+    static Version observe(Object receiver, Object holder, boolean[] derived) {
+        Version version = of(receiver);
+        if (version != null && holder != null && holder != receiver) {
+            derived[0] = DECODED.putIfAbsent(holder, version) == null;
+        }
+        return version;
     }
 
     /**

@@ -82,6 +82,7 @@ import soot.validation.ValidationException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -432,6 +433,7 @@ public final class CausynthPipeline {
                     instrumentFieldTrace(body, method, recordFieldRef,
                             units, lowerBound);
                 });
+        instrumentRecordedProvenance(refs);
         // Same scope as the replay, woven last.
         instrumentApplicationScope(refs);
         LOG.info("Instrumented {} of {} candidate methods for "
@@ -2255,6 +2257,13 @@ public final class CausynthPipeline {
         for (ObservedSite target : selection.observedSites()) {
             Body body = selectedBody(target.method,
                     "OBSERVED_SITE_METHOD", target.siteId);
+            if (target.provenance) {
+                if (!weaveProvenance(body, target, refs,
+                        Hook.OBSERVE_PROVENANCE)) {
+                    unobserved++;
+                }
+                continue;
+            }
             Stmt selected;
             Value owner;
             if (target.declaredCallee.isEmpty()) {
@@ -2280,25 +2289,11 @@ public final class CausynthPipeline {
                         target.siteId);
                 InvokeExpr invocation = selected.getInvokeExpr();
                 if (!(invocation instanceof InstanceInvokeExpr)) {
-                    // A static call out of scope has no receiver to say
-                    // which decoded object it read.
-                    if (target.provenance) {
-                        unobserved++;
-                        continue;
-                    }
                     throw new IllegalStateException(
                             "OBSERVED_SITE_REQUIRES_INSTANCE_RECEIVER: "
                                     + target.siteId);
                 }
                 owner = ((InstanceInvokeExpr) invocation).getBase();
-            }
-            if (target.provenance) {
-                List<Unit> before = new ArrayList<>();
-                refs.bracket(before, Hook.OBSERVE_PROVENANCE,
-                        StringConstant.v(target.siteId),
-                        objectArg(body, owner, before));
-                insertBeforeSequence(body, selected, before);
-                continue;
             }
             if (target.field) {
                 List<Unit> before = new ArrayList<>();
@@ -2341,6 +2336,90 @@ public final class CausynthPipeline {
                     + "getfield of its cell, or a container read whose value "
                     + "nothing holds", unobserved);
         }
+    }
+
+    /**
+     * Weaves {@code hook(siteId, receiver, holder)} before one provenance
+     * site (SYMBOL-SCOPE §5.7): the object read or called on, and, in a
+     * constructor past its this/super call, the object under construction,
+     * which holds what it copies of the receiver ({@code runtime.Provenance
+     * #observe}).  A read before the constructor call, a read that is no
+     * getfield of its cell, and a static call name no object: unwoven.
+     *
+     * @return whether it was woven
+     */
+    private static boolean weaveProvenance(Body body, ObservedSite target,
+                                           HookCatalog refs, Hook hook) {
+        Stmt selected;
+        Value owner;
+        if (target.declaredCallee.isEmpty()) {
+            selected = originalAccess(body, target);
+            FieldRef field = selected == null ? null
+                    : accessedField((AssignStmt) selected, true);
+            if (!(field instanceof InstanceFieldRef)) return false;
+            owner = ((InstanceFieldRef) field).getBase();
+        } else {
+            selected = originalCall(body, target.unitIndex, target.siteId,
+                    "OBSERVED_SITE_NOT_UNIQUE",
+                    "OBSERVED_SITE_INVOKE_NOT_FOUND");
+            requireCallee(selected, target.declaredCallee,
+                    "OBSERVED_SITE_DECLARED_CALLEE_MISMATCH", target.siteId);
+            InvokeExpr invocation = selected.getInvokeExpr();
+            if (!(invocation instanceof InstanceInvokeExpr)) return false;
+            owner = ((InstanceInvokeExpr) invocation).getBase();
+        }
+        List<Unit> before = new ArrayList<>();
+        Value receiver = objectArg(body, owner, before);
+        refs.bracket(before, hook, StringConstant.v(target.siteId), receiver,
+                constructedBefore(body, selected) ? body.getThisLocal()
+                        : NullConstant.v());
+        insertBeforeSequence(body, selected, before);
+        return true;
+    }
+
+    /** Whether {@code unit} runs in a constructor past its own this/super
+     *  constructor call, where {@code this} is an object. */
+    private static boolean constructedBefore(Body body, Unit unit) {
+        if (!body.getMethod().isConstructor()) return false;
+        for (Unit at : body.getUnits()) {
+            if (at == unit) return false;
+            if (constructorCall(body, at)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The recording's half of the provenance sites (SYMBOL-SCOPE §5.7): in
+     * a constructor, the object under construction holds what it copies of
+     * a decoded receiver, so the recorder states it as that version's
+     * (runtime.CausynthTraceRecorder#observeProvenance), and PLAN joins the
+     * objects a target read a field on with it; the reads themselves are
+     * the field and call rows the recording already writes.
+     */
+    private void instrumentRecordedProvenance(HookCatalog refs)
+            throws IOException {
+        String declared = System.getProperty("causynth.output.dir", "");
+        Path scopeMap = Paths.get(declared.trim()).resolve(
+                StaticScopeMap.FILE);
+        if (declared.trim().isEmpty() || !Files.isRegularFile(scopeMap)) {
+            return;
+        }
+        int woven = 0;
+        for (StaticScopeMap.Site site
+                : StaticScopeMap.read(scopeMap).provenanceSites()) {
+            String method = SiteId.methodOf(site.siteId);
+            if (!method.contains(" <init>(")) continue;
+            ObservedSite target = new ObservedSite(method,
+                    SiteId.unitIndexOf(site.siteId), site.siteId,
+                    site.declaredCallee, site.cell, true, false, false,
+                    false, true);
+            if (weaveProvenance(selectedBody(method, "PROVENANCE_SITE_METHOD",
+                    site.siteId), target, refs, Hook.RECORD_PROVENANCE)) {
+                woven++;
+            }
+        }
+        LOG.info("Wove {} provenance site(s) in constructors for the "
+                + "recording", woven);
     }
 
     /**
@@ -3722,6 +3801,7 @@ public final class CausynthPipeline {
         OBSERVE_TRACKED_SITE,
         OBSERVE_TRACKED_CONTAINER,
         OBSERVE_PROVENANCE,
+        RECORD_PROVENANCE,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3842,7 +3922,10 @@ public final class CausynthPipeline {
                             RefType.v("java.lang.Throwable"))
                     .add(Hook.RECORD_FIELD, recorder, "recordField",
                             VoidType.v(), string, string, IntType.v(), string,
-                            object, object, object, string);
+                            object, object, object, string)
+                    .add(Hook.RECORD_PROVENANCE, recorder,
+                            "observeProvenance", VoidType.v(), string, object,
+                            object);
         }
 
         private static HookCatalog concolic() {
@@ -3897,7 +3980,8 @@ public final class CausynthPipeline {
                             "observeTrackedContainer", VoidType.v(), string,
                             string, object, BooleanType.v())
                     .add(Hook.OBSERVE_PROVENANCE, runtime,
-                            "observeProvenance", VoidType.v(), string, object)
+                            "observeProvenance", VoidType.v(), string, object,
+                            object)
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),
                             IntType.v(), object, string)

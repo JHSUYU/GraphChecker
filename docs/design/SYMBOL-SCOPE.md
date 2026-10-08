@@ -1089,7 +1089,11 @@ parsed from (IDENTITY §7.2), so:
   nothing in the slice stores it, observed by its receiver alone
   (`ConcolicRegionRuntime.observeProvenance`, no VM call): a receiver a decode registered
   (`runtime/Provenance`) makes a STORE read row of that version at the site, in the reading
-  occurrence;
+  occurrence; in a constructor the object it builds holds the version too (`Provenance#observe`), so
+  a copy read later reads it (lock-leak: the processor built outside every occurrence, its
+  `readOnlyCollection` read in the add's) -- the recording weaves the same hook at the constructor
+  sites alone (`CausynthPipeline#instrumentRecordedProvenance`), each new holder a `STORE_DECODED`
+  row;
 - the concrete anchor's demand joins such a row at its site (`StaticScopeMap#demandedAt`), and
   PLAN joins the objects the recording saw the target read the field on with the objects each
   decode registered (`causynth/RecordedStore`).

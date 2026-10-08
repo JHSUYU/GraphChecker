@@ -569,7 +569,7 @@ public final class MessageDoors {
         if (version < 0L || product == null) return;
         String path = location(key);
         List<Object> registered = Provenance.register(new Provenance.Version(
-                storeLocation(transport, path), version), product);
+                storeLocation(transport, path), path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered);
     }

@@ -19,8 +19,9 @@ import static org.junit.Assert.assertSame;
  * none.
  */
 public class ProvenanceTest {
+    private static final String PATH = "/collections/t/state.json";
     private static final LocationId STATE = LocationId.of(LocationKind.STORE,
-            "SOLR_ZK", "/collections/t/state.json");
+            "SOLR_ZK", PATH);
 
     @After
     public void reset() {
@@ -33,11 +34,11 @@ public class ProvenanceTest {
         Decoded.Slice one = new Decoded.Slice("shard1", "active");
         Decoded.Collection first = new Decoded.Collection(client, one);
         List<Object> registered = Provenance.register(
-                new Provenance.Version(STATE, 3L), first);
+                new Provenance.Version(STATE, PATH, 3L), first);
         Decoded.Slice two = new Decoded.Slice("shard2", "construction");
         // A later parse that still holds the first slice.
         Decoded.Collection later = new Decoded.Collection(client, one, two);
-        Provenance.register(new Provenance.Version(STATE, 4L), later);
+        Provenance.register(new Provenance.Version(STATE, PATH, 4L), later);
         Object[][] rows = {
             {"the collection, its slice, its inner object", 3,
                 registered.size()},
@@ -57,5 +58,28 @@ public class ProvenanceTest {
         assertNull("a lambda's capture is none", Provenance.of(client));
         assertNull("nor what it holds", Provenance.of(client.connection));
         assertNull("an object no decode made", Provenance.of(new Object()));
+    }
+
+    /**
+     * SYMBOL-SCOPE §5.7: an object a constructor builds from a decoded
+     * receiver it reads holds the receiver's version (a processor's copy of
+     * its collection's read-only flag), once: it keeps the first.
+     */
+    @Test
+    public void aConstructorsCopyOfADecodedObjectHoldsItsVersion() {
+        Decoded.Slice one = new Decoded.Slice("shard1", "active");
+        Provenance.register(new Provenance.Version(STATE, PATH, 7L), one);
+        Object processor = new Object();
+        boolean[] derived = new boolean[1];
+        assertEquals(7L, Provenance.observe(one, processor, derived).version);
+        assertEquals("taken now", true, derived[0]);
+        Decoded.Slice two = new Decoded.Slice("shard2", "active");
+        Provenance.register(new Provenance.Version(STATE, PATH, 9L), two);
+        derived[0] = false;
+        Provenance.observe(two, processor, derived);
+        assertEquals("the first kept", 7L, Provenance.of(processor).version);
+        assertEquals("not taken again", false, derived[0]);
+        assertNull("an object no decode made derives nothing",
+                Provenance.observe(new Object(), new Object(), derived));
     }
 }

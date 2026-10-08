@@ -1759,6 +1759,11 @@ public final class StaticScopeMap {
         return reads;
     }
 
+    /** Every {@link #PROVENANCE_SITE}. */
+    public List<Site> provenanceSites() {
+        return ofRole(PROVENANCE_SITE, read -> true);
+    }
+
     /** The {@link #PROVENANCE_SITE} calls, each site with its return cell:
      *  the call's receiver is the object observed. */
     public Map<String, String> provenanceCalls() {

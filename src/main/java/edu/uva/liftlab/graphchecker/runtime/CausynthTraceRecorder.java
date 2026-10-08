@@ -416,6 +416,22 @@ public final class CausynthTraceRecorder {
     }
 
     /**
+     * The recording's half of a provenance site in a constructor (SYMBOL-
+     * SCOPE §5.7): the object it builds from a decoded receiver holds that
+     * version, stated as a decode of it alone, which PLAN joins with the
+     * objects a target read a field on.
+     */
+    public static void observeProvenance(String siteId, Object receiver,
+                                         Object holder) {
+        boolean[] derived = new boolean[1];
+        Provenance.Version version = Provenance.observe(receiver, holder,
+                derived);
+        if (version == null || !derived[0]) return;
+        storeDecoded(version.location.owner(), version.path, version.version,
+                Collections.singletonList(holder));
+    }
+
+    /**
      * The recording's half of a decode ({@link MessageDoors#decoded}): the
      * objects it registered, by the identity every other row names them by,
      * which PLAN joins with the objects an occurrence read a field on.
