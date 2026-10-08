@@ -154,7 +154,14 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    trace over other artifacts by name (`TRACED_ROWS_MISMATCH`: a site or port they add would find
    no rows); a schema-1 trace wrote every row. A frame
    writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
-   take a frame's decisions as a set, its first, or "more than once" for a loop). Its trace is
+   take a frame's decisions as a set, its first, or "more than once" for a loop). A method or
+   field row is written only while its thread stands in an opened occurrence
+   (`CausynthTraceRecorder#written`, `Identity#inOccurrence`: an activation, a fold into one,
+   unnamed work inside one): method and field events count only there, so a row outside every
+   occurrence could become no closure task and no row a claim uses (solr-bugs-reindex-cleanup MB2:
+   1.78 of a 2.0 GB trace, a shared method run per document on request threads); exchange, gap
+   and source rows are always written, and the rows left out are counted and said when the
+   recording ends. Its trace is
    bounded: past `recording_max_trace_mb` its watcher (`campaign_watch_workload`) ends the
    workload (`RECORDING_BOUND`: a trace cut short is never aggregated), and so it does once the
    workload wrote nothing -- no trace row, no output, its sockets aside -- for
