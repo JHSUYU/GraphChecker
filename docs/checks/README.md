@@ -2,9 +2,14 @@
 
 The owner's goal is a set of ad hoc coordination checks per system, each run as one campaign whose exported `.smt` is
 right (SAT confirmed, or UNSAT at the fixed point; RULES.md "Only SAT or UNSAT"). The points come from the owner's
-static study (`study.txt`, branch `study`, 144 YES points with cluster tests), narrowed by the owner on 2026-10-04
+static study (`study.txt` here, 144 YES points with cluster tests), narrowed by the owner on 2026-10-04
 (`SELECTION.md`: control plane first, a good cluster test, GraphChecker covers it). Real bug_study bugs that
 GraphChecker can check are added (`VERIFIED-BUGS.md`). Ids never move: `<sys>-adhoc-NN` is study point NN.
+
+Source data kept here (formerly branch `study`): `study.txt` (the static study of the four systems' ad hoc
+coordination points and their cluster tests), `selection.txt` (the owner's narrowed selection, with every swap and
+its reason) and `new-bugs.txt` (the thirteen new ad hoc coordination bugs of the four systems admitted as bug checks).
+
 
 | file | holds |
 | --- | --- |

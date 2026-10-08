@@ -53,7 +53,7 @@ recommendation.
 - **Second-tier bugs are not a TODO** (owner 2026-10-03).
 
 **The 2026-10-04 goal's rulings** (owner, long-term; each one quoted)
-- **The checks are the study's points.** `study.txt` (branch `study`) lists the ad hoc coordination points with
+- **The checks are the study's points.** `study.txt` (`docs/checks/`) lists the ad hoc coordination points with
   their cluster tests; checks are those points, fine-tuned only, plus bug_study bugs that are real (hard to
   recover, verified in the system's code), ad hoc coordination, and checkable: the whole causal path and its
   symbolic propagation reach the `.smt` (an IO step that breaks propagation disqualifies a bug). A truly
@@ -62,7 +62,7 @@ recommendation.
 - **The narrowed selection** ("这些地方优先选择和control plane有交互的", "可能check的case多于我们的点位…这是好事"):
   HDFS 38 points / 36 checked, Solr 21 / 13, HBase 30 / 17, ZooKeeper 13 / 10; points that interact with the control
   plane, that GraphChecker covers, with a high-quality cluster test; every known bug stays a check; one point may
-  carry several checks. The lists are `selection.txt` on branch `study`; HDFS's are `experiments/hadoop/hdfs-adhoc/
+  carry several checks. The lists are `docs/checks/selection.txt`; HDFS's are `experiments/hadoop/hdfs-adhoc/
   checks.tsv` (46 HDFS cases with the 10 named ones).
 - **Swap the too-challenging** ("要是哪几个case实在是过于challenging。就从备选里挑一个质量也不错的。容易搞定的换上来"): a
   check still a RUN_DEFECT after a reasonable fix round is replaced by a good, easier alternate, counts kept (HDFS:

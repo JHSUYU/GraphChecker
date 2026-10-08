@@ -1,0 +1,641 @@
+GraphChecker: the ad hoc coordination points we check (owner selection, 2026-10-04)
+====================================================================================
+
+The owner narrowed study.txt's 144 YES points to a subset per system: HDFS 38 points (36 checked), Solr 21 (13),
+HBase 30 (17), ZooKeeper 13 (10). A point is preferred when it interacts with the control plane, GraphChecker adapts
+to and covers it, and a high-quality cluster unit test reaches its guard (a self-written test only for a
+high-quality bug without one). Every known bug stays a check, and every study point a known bug sits on is selected.
+One point may carry several checks (several cluster tests or bug paths). Ids are study.txt's: hdfs-adhoc-NN,
+solr-adhoc-NN, hbase-adhoc-NN, zk-adhoc-NN, each marked at its throw by @CausynthExceptionTarget("<id>").
+
+  system      points  checked  study checks  bug checks  cases
+  HDFS            38       36            36          10     46
+  Solr            21       13            13           7     20   (solr-adhoc-22 is solr-18406's throw)
+  HBase           30       17            17           3     20
+  ZooKeeper       13       10            10           3     13
+  TOTAL          102       76            76          23     99
+
+Every check ends SAT (a witness, validated by CONFIRM and a native reproduction) or UNSAT: the composed .smt decides.
+
+HDFS -- HDFS 3.4.3 (our tree: gc/hdfs-study-next): 38 points, 36 checked
+------------------------------------------------------------------------------------
+[HDFS-01] SWAPPED OUT (owner 2026-10-05, "可以把个别特别challenging的换成我们能处理的")  was: hdfs-adhoc-01
+  source: hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java:518
+  why: its seed replay never reached the target (TestPread client polling and DataNode IBR waits: 30-61 give-ups with the time model, 84-85 without). Replaced by HDFS-06 (the swap rule's alternates).
+
+[HDFS-05] CHECKED (swapped in for HDFS-32, owner 2026-10-05)  case: hdfs-adhoc-05
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumOutputStream.java:106
+  kind: assert; exception: java.lang.AssertionError (the double buffer's flush, NN -> JournalNodes)
+  cluster test: TestQuorumJournalManager.testSingleWriter
+  our workload: TestQuorumJournalManager#testSingleWriter (window up, target first); UNSAT at its fixed point (round HG8W)
+
+[HDFS-06] CHECKED (swapped in for HDFS-01, owner 2026-10-05)  case: hdfs-adhoc-06
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumOutputStream.java:112
+  kind: assert; exception: java.lang.AssertionError (the flushed buffer's backing array, NN -> JournalNodes)
+  cluster test: TestQuorumJournalManager.testSingleWriter
+  our workload: TestQuorumJournalManager#testSingleWriter (window up, target first); UNSAT at its fixed point (round SW1)
+
+[HDFS-07] CHECKED  case: hdfs-adhoc-07
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:932
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void acceptRecovery(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo,org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos$SegmentStateProto,java.net.URL)>#u116
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestQuorumJournalManager.testRecoverAfterIncompleteRecovery (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  our workload: TestQuorumJournalManager#testRecoverAfterIncompleteRecovery (window up, target first)
+
+[HDFS-08] CHECKED  case: hdfs-adhoc-08
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:489
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void checkRequest(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo)>#u23
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  our workload: TestQuorumJournalManager#testSingleWriter (window up, target first)
+
+[HDFS-09] CHECKED  case: hdfs-adhoc-09
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:504
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void checkRequest(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo)>#u78
+  kind: check; exception: <not recorded for direct check>; static rule: propagated-view
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  our workload: TestQuorumJournalManager#testSingleWriter (window up, target first)
+
+[HDFS-10] CHECKED  case: hdfs-adhoc-10
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:520
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void checkWriteRequest(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo)>#u23
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  our workload: TestQuorumJournalManager#testSingleWriter (window up, target first)
+
+[HDFS-11] CHECKED  case: hdfs-adhoc-11
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:555
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: byte[] retrieveDataEncryptionKey(int,byte[])>#u20
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException; static rule: propagated-view
+  cluster test: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java)
+  our workload: TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] (window up, target first)
+
+[HDFS-12] CHECKED  case: hdfs-adhoc-12
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:514
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: byte[] retrievePassword(org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier)>#u37
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  cluster test: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java)
+  our workload: TestCausynthDataTransferRpcFailure#testUnencryptedReplicationAfterModeledKeyRefreshRpcFailure (window up, target first)
+
+[HDFS-14] CHECKED  case: hdfs-adhoc-14
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:412
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void checkAccess(org.apache.hadoop.security.token.Token,java.lang.String,org.apache.hadoop.hdfs.protocol.ExtendedBlock,org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier$AccessMode,org.apache.hadoop.fs.StorageType[],java.lang.String[])>#u42
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  cluster test: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java)
+  our workload: TestEncryptedTransfer#testEncryptedReadDefaultAlgorithmCipherSuite[1] (window up, target first)
+
+[HDFS-15] CHECKED  case: hdfs-adhoc-15
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java:447
+  site: <org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo: java.util.List commitBlock(org.apache.hadoop.hdfs.protocol.Block)>#u23
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestBlockToken.testBlockTokenInLastLocatedBlockLegacy (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/security/token/block/TestBlockToken.java)
+  our workload: TestBlockToken#testBlockTokenInLastLocatedBlockLegacy (window up, target first)
+
+[HDFS-16] CHECKED  case: hdfs-adhoc-16
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java:428
+  site: <org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo: java.util.List setGenerationStampAndVerifyReplicas(long)>#u9
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestClientProtocolForPipelineRecovery.testUpdatePipeLineAfterDNReg (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  our workload: TestClientProtocolForPipelineRecovery#testUpdatePipeLineAfterDNReg (window up, target first)
+
+[HDFS-17] SWAPPED OUT (owner 2026-10-05, "可以把个别特别challenging的换成我们能处理的")  was: hdfs-adhoc-17
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java:2851
+  why: its seed replay never reached the target (every DataNode's first heartbeat not due after the NameNode restart: 18-122 give-ups with the time model). Replaced by HDFS-38 (the swap rule's alternates).
+
+[HDFS-19] CHECKED  case: hdfs-adhoc-19
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java:769
+  site: <org.apache.hadoop.hdfs.server.datanode.BPOfferService: boolean processCommandFromActive(org.apache.hadoop.hdfs.server.protocol.DatanodeCommand,java.net.InetSocketAddress)>#u97
+  kind: assert; exception: java.lang.AssertionError; static rule: remote-state-check
+  cluster test: TestDFSFinalize.testFinalize (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSFinalize.java)
+  our workload: TestDFSFinalize#testFinalize (window up, target first)
+
+[HDFS-20] CHECKED  case: hdfs-adhoc-20
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java:606
+  site: <org.apache.hadoop.hdfs.server.datanode.BPOfferService: void updateActorStatesFromHeartbeat(org.apache.hadoop.hdfs.server.datanode.BPServiceActor,org.apache.hadoop.hdfs.server.protocol.NNHAStatusHeartbeat)>#u98
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestClientProtocolForPipelineRecovery.testPipelineRecoveryOnOOB (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  our workload: TestClientProtocolForPipelineRecovery#testPipelineRecoveryOnOOB (window up, target first)
+
+[HDFS-21] CHECKED  case: hdfs-adhoc-21
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java:290
+  site: <org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void checkNNVersion(org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u12
+  kind: throw; exception: org.apache.hadoop.hdfs.server.common.IncorrectVersionException; static rule: state-read-and-update
+  cluster test: TestDFSInputStream.testSkipWithRemoteBlockReader (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInputStream.java)
+  our workload: TestDFSInputStream#testSkipWithRemoteBlockReader (window startup, target first)
+
+[HDFS-22] CHECKED  case: hdfs-adhoc-22
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:396
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u73
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  our workload: TestDFSStartupVersions#testVersions (window up, target first)
+
+[HDFS-23] CHECKED  case: hdfs-adhoc-23
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:401
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u93
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  our workload: TestDFSStartupVersions#testVersions (window up, target first)
+
+[HDFS-24] CHECKED  case: hdfs-adhoc-24
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:424
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u137
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestDFSUpgrade.testUpgrade (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUpgrade.java)
+  our workload: TestDFSUpgrade#testUpgrade (window up, target first)
+
+[HDFS-25] CHECKED  case: hdfs-adhoc-25
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:186
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory loadStorageDirectory(org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.datanode.StorageLocation,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u54
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  our workload: TestDFSStartupVersions#testVersions (window up, target first)
+
+[HDFS-26] CHECKED  case: hdfs-adhoc-26
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:626
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: void doRollback(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u37
+  kind: throw; exception: org.apache.hadoop.hdfs.server.common.InconsistentFSStateException; static rule: remote-state-check
+  cluster test: TestDFSRollback.testRollback (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRollback.java)
+  our workload: TestDFSRollback#testRollback (window up, target first)
+
+[HDFS-27] CHECKED  case: hdfs-adhoc-27
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:510
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: void doUpgrade(java.lang.String,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,java.io.File,java.io.File,java.io.File,int,org.apache.hadoop.conf.Configuration)>#u19
+  kind: assert; exception: java.lang.AssertionError; static rule: remote-state-check
+  cluster test: TestDatanodeLayoutUpgrade.testUpgradeToIdBasedLayout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDatanodeLayoutUpgrade.java)
+  our workload: TestDatanodeLayoutUpgrade#testUpgradeToIdBasedLayout (window startup, target first)
+
+[HDFS-28] CHECKED  case: hdfs-adhoc-28
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockRecoveryWorker.java:539
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker: org.apache.hadoop.hdfs.protocol.DatanodeID getDatanodeID(java.lang.String)>#u12
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestBlockRecovery2.testRecoveryTimeout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery2.java)
+  our workload: TestBlockRecovery2#testRecoveryTimeout (window up, target first)
+
+[HDFS-29] CHECKED  case: hdfs-adhoc-29
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockRecoveryWorker.java:578
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker: org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB getActiveNamenodeForBP(java.lang.String)>#u12
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestBlockRecovery2.testRecoveryTimeout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery2.java)
+  our workload: TestBlockRecovery2#testRecoveryTimeout (window up, target first)
+
+[HDFS-30] CHECKED  case: hdfs-adhoc-30
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockRecoveryWorker.java:583
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker: org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB getActiveNamenodeForBP(java.lang.String)>#u23
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestBlockRecovery2.testRecoveryTimeout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery2.java)
+  our workload: TestBlockRecovery2#testRecoveryTimeout (window up, target first)
+
+[HDFS-31] CHECKED  case: hdfs-adhoc-31
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java:1835
+  site: <org.apache.hadoop.hdfs.server.datanode.DataNode: org.apache.hadoop.hdfs.server.datanode.BPOfferService getBPOSForBlock(org.apache.hadoop.hdfs.protocol.ExtendedBlock)>#u15
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestDiskError.testDataTransferWhenBytesPerChecksumIsZero (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDiskError.java)
+  our workload: TestDiskError#testDataTransferWhenBytesPerChecksumIsZero (window up, target first)
+
+[HDFS-32] SWAPPED OUT (owner 2026-10-05, "32直接换成05吧")  was: hdfs-adhoc-32
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java:3822
+  why: the block pool's removal from bpByBlockPoolId runs in the exiting actor thread, which started before the
+  recording window (unnamed work), so no explored world reaches the throw; a startup window diverged in cluster
+  start-up. Replaced by HDFS-05 (the swap rule's first alternate).
+
+[HDFS-33] CHECKED  case: hdfs-adhoc-33
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:259
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage$VolumeBuilder: void build()>#u28
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestDataNodeHotSwapVolumes.testAddOneNewVolume (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDataNodeHotSwapVolumes.java)
+  our workload: TestDataNodeHotSwapVolumes#testAddOneNewVolume (window up, target first)
+
+[HDFS-34] CHECKED  case: hdfs-adhoc-34
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:744
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u49
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  our workload: TestDFSStartupVersions#testVersions (window up, target first)
+
+[HDFS-35] CHECKED  case: hdfs-adhoc-35
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:752
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u70
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  our workload: TestDFSStartupVersions#testVersions (window up, target first)
+
+[HDFS-37] CHECKED  case: hdfs-adhoc-37
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:947
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: void doRollback(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u48
+  kind: throw; exception: org.apache.hadoop.hdfs.server.common.InconsistentFSStateException; static rule: remote-state-check
+  cluster test: TestDFSRollback.testRollback (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRollback.java)
+  our workload: TestDFSRollback#testRollback (window up, target first)
+
+[HDFS-38] CHECKED (swapped in for HDFS-17, owner 2026-10-05)  case: hdfs-adhoc-38
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirAppendOp.java:123
+  kind: throw; exception: java.lang.UnsupportedOperationException (append to a LAZY_PERSIST file)
+  cluster test: TestFileAppend.testAppendTwice
+  our workload: TestFileAppend#testAppendTwice (window up, target first); UNSAT at its fixed point (round SW1)
+
+[HDFS-39] CHECKED  case: hdfs-adhoc-39
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirAppendOp.java:132
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirAppendOp: org.apache.hadoop.hdfs.protocol.LastBlockWithStatus appendFile(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker,java.lang.String,java.lang.String,boolean,boolean)>#u96
+  kind: throw; exception: org.apache.hadoop.ipc.RetriableException; static rule: independent-views
+  cluster test: TestFileAppend.testAppendTwice (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileAppend.java)
+  our workload: TestFileAppend#testAppendTwice (window up, target first)
+
+[HDFS-40] CHECKED  case: hdfs-adhoc-40
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirAppendOp.java:138
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirAppendOp: org.apache.hadoop.hdfs.protocol.LastBlockWithStatus appendFile(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker,java.lang.String,java.lang.String,boolean,boolean)>#u111
+  kind: throw; exception: java.io.IOException; static rule: independent-views
+  cluster test: TestFileAppend.testAppendTwice (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileAppend.java)
+  our workload: TestFileAppend#testAppendTwice (window up, target first)
+
+[HDFS-43] SWAPPED OUT (owner 2026-10-05, "可以把个别特别challenging的换成我们能处理的")  was: hdfs-adhoc-43
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirTruncateOp.java:117
+  why: its seed replay never reached the target (96 give-ups with the time model, 88-90 without; the truncate's recovery waits). Replaced by HDFS-45 (the swap rule's alternates).
+
+[HDFS-45] CHECKED (swapped in for HDFS-43, owner 2026-10-05)  case: hdfs-adhoc-45
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java:1471
+  kind: throw; exception: java.lang.IllegalStateException (endCurrentLogSegment with no open segment)
+  cluster test: TestEditLog.testSimpleEditLog
+  our workload: TestEditLog#testSimpleEditLog[1] (window up, target first); UNSAT at its fixed point (round SW1L)
+
+[HDFS-48] CHECKED  case: hdfs-adhoc-48
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java:356
+  site: <org.apache.hadoop.hdfs.server.namenode.INodeDirectory: void replaceChild(org.apache.hadoop.hdfs.server.namenode.INode,org.apache.hadoop.hdfs.server.namenode.INode,org.apache.hadoop.hdfs.server.namenode.INodeMap)>#u27
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestRenameWithSnapshots.testRenameUndo_1 (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java)
+  our workload: TestRenameWithSnapshots#testRenameUndo_1 (window up, target first)
+
+[HDFS-49] CHECKED  case: hdfs-adhoc-49
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java:189
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature: org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot addSnapshot(org.apache.hadoop.hdfs.server.namenode.INodeDirectory,org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager,java.lang.String,org.apache.hadoop.hdfs.server.namenode.LeaseManager,long)>#u21
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.SnapshotException; static rule: independent-views
+  cluster test: TestSnapshot.testSnapshot (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java)
+  our workload: TestNestedSnapshots#testNestedSnapshots (window up, target first)
+
+[HDFS-50] CHECKED  case: hdfs-adhoc-50
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java:199
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature: org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot addSnapshot(org.apache.hadoop.hdfs.server.namenode.INodeDirectory,org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager,java.lang.String,org.apache.hadoop.hdfs.server.namenode.LeaseManager,long)>#u38
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.SnapshotException; static rule: independent-views
+  cluster test: TestSnapshot.testSnapshot (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java)
+  our workload: TestNestedSnapshots#testNestedSnapshots (window up, target first)
+
+[HDFS-52] CHECKED  case: hdfs-adhoc-52
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver: void serializeSnapshotSection(java.io.OutputStream)>#u65
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestFSImageWithSnapshot.testSaveLoadImage (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java)
+  our workload: TestFSImageWithSnapshot#testSaveLoadImage (window up, target first)
+
+Selected points without a check (no cluster test reaches the guard, or the throw is dead):
+  [HDFS-13] NO_PATH; source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:432
+  [HDFS-18] WORKLOAD_UNCERTAIN; source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeDescriptor.java:537
+
+Not selected: 02, 03, 04, 06, 32 (swapped out), 36, 38, 41, 42, 44, 45, 46, 47, 51, 53 -- client-local stream state or ack timeout (02-04), local double buffer (06; 05 swapped in for 32), no test (36), request validation or file policy (38, 41, 42, 44), local state machine / format / fsimage load (45-47), debug dumps (51, 53).
+
+Bug checks on this system:
+  hdfs-11741 (on HDFS-11, its own tree)
+  hdfs-17897 (on HDFS-11)
+  hdfs-17899-bug1/2/3 (on HDFS-11)
+  hdfs-17967-pathA/B/C (on HDFS-11)
+  hdfs-17960 (on HDFS-52)
+  hdfs-bugs-slowdisk-zero (bug_study HDFS #15; RoundRobinVolumeChoosingPolicy:84, not a study point)
+
+SOLR -- Solr 8.11.4: 21 points, 13 checked
+------------------------------------------------------------------------------------
+[SOLR-05] CHECKED  case: solr-adhoc-05
+  source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1274
+  site: <org.apache.solr.cloud.ZkController: java.lang.String register(java.lang.String,org.apache.solr.core.CoreDescriptor,boolean,boolean,boolean)>#u43
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  our workload: AddReplicaTest#testAddMultipleReplicas -- C ZkController.java:1274
+
+[SOLR-07] CHECKED  case: solr-adhoc-07
+  source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1326
+  site: <org.apache.solr.cloud.ZkController: java.lang.String register(java.lang.String,org.apache.solr.core.CoreDescriptor,boolean,boolean,boolean)>#u113
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  our workload: same -- C ZkController.java:1326
+
+[SOLR-09] CHECKED  case: solr-adhoc-09
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/DeleteReplicaCmd.java:278
+  site: <org.apache.solr.cloud.api.collections.DeleteReplicaCmd: void deleteCore(org.apache.solr.common.cloud.Slice,java.lang.String,java.lang.String,org.apache.solr.common.cloud.ZkNodeProps,java.lang.String,org.apache.solr.common.util.NamedList,java.lang.Runnable,boolean)>#u118
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: DeleteReplicaTest.deleteReplicaAndVerifyDirectoryCleanup (solr/core/src/test/org/apache/solr/cloud/DeleteReplicaTest.java)
+  our workload: DeleteReplicaTest#deleteReplicaAndVerifyDirectoryCleanup -- C DeleteReplicaCmd.java:278
+
+[SOLR-10] CHECKED  case: solr-adhoc-10
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/MaintainRoutedAliasCmd.java:117
+  site: <org.apache.solr.cloud.api.collections.MaintainRoutedAliasCmd: void call(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u28
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  our workload: TimeRoutedAliasUpdateProcessorTest#test -- C MaintainRoutedAliasCmd.java:117
+
+[SOLR-13] CHECKED  case: solr-adhoc-13
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/RoutedAlias.java:350
+  site: <org.apache.solr.cloud.api.collections.RoutedAlias: org.apache.solr.cloud.api.collections.RoutedAlias$CandidateCollection doSynchronous(org.apache.solr.update.AddUpdateCommand,org.apache.solr.cloud.api.collections.RoutedAlias$CandidateCollection,org.apache.solr.core.CoreContainer)>#u29
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.testPreemptiveCreation (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  our workload: TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation -- C RoutedAlias.java:350
+
+[SOLR-14] CHECKED  case: solr-adhoc-14
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/SplitShardCmd.java:167
+  site: <org.apache.solr.cloud.api.collections.SplitShardCmd: boolean split(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u110
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: SplitShardTest.doTest (solr/core/src/test/org/apache/solr/cloud/SplitShardTest.java)
+  our workload: SplitShardTest#doTest -- C SplitShardCmd.java:167
+
+[SOLR-19] CHECKED  case: solr-adhoc-19
+  source: solr/core/src/java/org/apache/solr/core/CoreContainer.java:1330
+  site: <org.apache.solr.core.CoreContainer: org.apache.solr.core.SolrCore create(java.lang.String,java.nio.file.Path,java.util.Map,boolean)>#u65
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  our workload: named AddReplicaTest#testAddMultipleReplicas; **use DeleteReplicaTest#deleteReplicaFromClusterStateLegacy** -- C CoreContainer.java:1330
+
+[SOLR-21] CHECKED  case: solr-adhoc-21
+  source: solr/core/src/java/org/apache/solr/core/CoreContainer.java:1765
+  site: <org.apache.solr.core.CoreContainer: void reload(java.lang.String,java.util.UUID)>#u66
+  kind: assert; exception: java.lang.AssertionError; static rule: state-read-and-update
+  cluster test: CollectionReloadTest.testReloadedLeaderStateAfterZkSessionLoss (solr/core/src/test/org/apache/solr/cloud/api/collections/CollectionReloadTest.java)
+  our workload: CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss -- C CoreContainer.java:1765
+
+[SOLR-22] CHECKED  case: solr-adhoc-22
+  source: solr/core/src/java/org/apache/solr/core/IndexDeletionPolicyWrapper.java:177
+  site: <org.apache.solr.core.IndexDeletionPolicyWrapper: org.apache.lucene.index.IndexCommit getAndSaveCommitPoint(java.lang.Long)>#u28
+  kind: throw; exception: java.lang.IllegalStateException; static rule: propagated-view
+  cluster test: TestPullReplica.testAddDocs (solr/core/src/test/org/apache/solr/cloud/TestPullReplica.java)
+  our workload: = regression case solr-18406 (do not duplicate) -- C IndexDeletionPolicyWrapper.java:179
+
+[SOLR-31] CHECKED  case: solr-adhoc-31
+  source: solr/core/src/java/org/apache/solr/handler/admin/CollectionsHandler.java:1477
+  site: <org.apache.solr.handler.admin.CollectionsHandler: void forceLeaderElection(org.apache.solr.request.SolrQueryRequest,org.apache.solr.handler.admin.CollectionsHandler)>#u49
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: ForceLeaderTest.testReplicasInLowerTerms (solr/core/src/test/org/apache/solr/cloud/ForceLeaderTest.java)
+  our workload: ForceLeaderTest#testReplicasInLowerTerms (@Nightly, AbstractFullDistribZkTestBase: adapter must register its Jetty nodes and open the window) -- C CollectionsHandler.java:1477
+
+[SOLR-38] CHECKED  case: solr-adhoc-38
+  source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:1025
+  site: <org.apache.solr.update.processor.DistributedZkUpdateProcessor: void doDefensiveChecks(org.apache.solr.update.processor.DistributedUpdateProcessor$DistribPhase)>#u113
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: CloudHttp2SolrClientTest.testAliasHandling (solr/solrj/src/test/org/apache/solr/client/solrj/impl/CloudHttp2SolrClientTest.java)
+  our workload: named CloudHttp2SolrClientTest#testAliasHandling (solrj); **core: TestPullReplica#testAddDocs** -- C DistributedZkUpdateProcessor.java:1031
+
+[SOLR-39] CHECKED  case: solr-adhoc-39
+  source: solr/core/src/java/org/apache/solr/update/processor/RoutedAliasUpdateProcessor.java:247
+  site: <org.apache.solr.update.processor.RoutedAliasUpdateProcessor: java.util.List lookupShardLeadersOfCollections()>#u11
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  our workload: TimeRoutedAliasUpdateProcessorTest#test -- C RoutedAliasUpdateProcessor.java:247
+
+[SOLR-40] CHECKED  case: solr-adhoc-40
+  source: solr/core/src/java/org/apache/solr/update/processor/RoutedAliasUpdateProcessor.java:133
+  site: <org.apache.solr.update.processor.RoutedAliasUpdateProcessor: java.util.Map getAliasProps(org.apache.solr.request.SolrQueryRequest,java.lang.String)>#u10
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  our workload: TimeRoutedAliasUpdateProcessorTest#test -- C RoutedAliasUpdateProcessor.java:133
+
+Selected points without a check (no cluster test reaches the guard, or the throw is dead):
+  [SOLR-01] NO_PATH; source: solr/solrj/src/java/org/apache/solr/client/solrj/impl/BaseHttpClusterStateProvider.java:267
+  [SOLR-06] TESTED; source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1315
+  [SOLR-15] NO_PATH; source: solr/core/src/java/org/apache/solr/cloud/api/collections/SplitShardCmd.java:538
+  [SOLR-16] NO_PATH; source: solr/core/src/java/org/apache/solr/cloud/api/collections/SplitShardCmd.java:543
+  [SOLR-18] TESTED; source: solr/solrj/src/java/org/apache/solr/common/cloud/ZkStateReader.java:2347
+  [SOLR-34] NO_PATH; source: solr/core/src/java/org/apache/solr/servlet/CoordinatorHttpSolrCall.java:143
+  [SOLR-36] UNCERTAIN; source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:987
+  [SOLR-37] UNCERTAIN; source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:995
+
+Not selected: 02, 03, 04, 08, 11, 12, 17, 20, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 35 -- request validation, startup configuration, test hooks, local invariants, unreachable or untested.
+
+Bug checks on this system:
+  solr-18406 (= SOLR-22)
+  solr-18413 (DistributedZkUpdateProcessor route-rule lookup)
+  solr-bugs-reindex-cleanup (DeleteCollectionCmd checkAliasReference)
+  solr-bugs-migrate-buffer-leak (bug_study #17)
+  solr-bugs-overseer-lock-leak (#50)
+  solr-bugs-snapshot-no-active (#16)
+  solr-bugs-restore-construction (#26)
+  solr-bugs-tra-start-overwrite (#20)
+
+HBASE -- HBase 2.6.6 (our tree: hbase-unified): 30 points, 17 checked
+------------------------------------------------------------------------------------
+[HBASE-04] CHECKED  case: hbase-adhoc-04
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/HBaseAdmin.java:1263
+  site: <org.apache.hadoop.hbase.client.HBaseAdmin: java.util.concurrent.Future flushAsync(org.apache.hadoop.hbase.TableName,java.util.List)>#u8
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotEnabledException; static rule: remote-state-check
+  cluster test: TestMobStoreScanner.testMobStoreScanner (hbase-server/src/test/java/org/apache/hadoop/hbase/mob/TestMobStoreScanner.java)
+  note: the study's client site is absent in our tree; checked at its server re-site 04r (AbstractStateMachineTableProcedure.java:163)
+
+[HBASE-07] CHECKED  case: hbase-adhoc-07
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/HBaseAdmin.java:2788
+  site: <org.apache.hadoop.hbase.client.HBaseAdmin: void restoreSnapshot(java.lang.String,boolean,boolean)>#u13
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotDisabledException; static rule: remote-state-check
+  cluster test: TestRestoreFlushSnapshotFromClient.testRestoreSnapshot (hbase-server/src/test/java/org/apache/hadoop/hbase/snapshot/TestRestoreFlushSnapshotFromClient.java)
+  note: the study's client site is absent in our tree; checked at its server re-site 07r (SnapshotManager.java:1046)
+
+[HBASE-08] CHECKED  case: hbase-adhoc-08
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/ClusterSchemaServiceImpl.java:116
+  site: <org.apache.hadoop.hbase.master.ClusterSchemaServiceImpl: org.apache.hadoop.hbase.NamespaceDescriptor getNamespace(java.lang.String)>#u7
+  kind: throw; exception: org.apache.hadoop.hbase.NamespaceNotFoundException; static rule: propagated-view
+  cluster test: TestNamespaceAuditor.testTableOperations (hbase-server/src/test/java/org/apache/hadoop/hbase/namespace/TestNamespaceAuditor.java)
+  our workload: `ClusterSchemaServiceImpl.java:111`, `TestNamespaceAuditor#testTableOperations`; scope ClusterSchemaServiceImpl, TableNamespaceManager, procedure/CreateNamespaceProcedure, HMaster(createTable), MasterRpcServices. STATE INITIAL on the namespace cache. Fit C: HB-ordered, expect a refutation.
+
+[HBASE-10] CHECKED  case: hbase-adhoc-10
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/AssignmentManager.java:757
+  site: <org.apache.hadoop.hbase.master.assignment.AssignmentManager: void preTransitCheck(org.apache.hadoop.hbase.master.assignment.RegionStateNode,org.apache.hadoop.hbase.master.RegionState$State[])>#u15
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: message-state-check
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  our workload: `AssignmentManager.java:765`, `TestRegionMove#testDisableAndMove`; scope AssignmentManager, RegionStateNode, RegionStates, TransitRegionStateProcedure. STATE on regionNode.procedure. C/B-.
+
+[HBASE-11] CHECKED  case: hbase-adhoc-11
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/AssignmentManager.java:760
+  site: <org.apache.hadoop.hbase.master.assignment.AssignmentManager: void preTransitCheck(org.apache.hadoop.hbase.master.assignment.RegionStateNode,org.apache.hadoop.hbase.master.RegionState$State[])>#u25
+  kind: throw; exception: org.apache.hadoop.hbase.client.DoNotRetryRegionException; static rule: message-state-check
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  our workload: `AssignmentManager.java:769`, same test, selector = the `admin.assign` occurrence (the move throws by design); same scope. C.
+
+[HBASE-12] CHECKED  case: hbase-adhoc-12
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/AssignmentManager.java:763
+  site: <org.apache.hadoop.hbase.master.assignment.AssignmentManager: void preTransitCheck(org.apache.hadoop.hbase.master.assignment.RegionStateNode,org.apache.hadoop.hbase.master.RegionState$State[])>#u38
+  kind: throw; exception: org.apache.hadoop.hbase.DoNotRetryIOException; static rule: remote-state-check
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  our workload: `AssignmentManager.java:772`, same test and selector rule; scope + TableStateManager. C.
+
+[HBASE-13] CHECKED  case: hbase-adhoc-13
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/MergeTableRegionsProcedure.java:495
+  site: <org.apache.hadoop.hbase.master.assignment.MergeTableRegionsProcedure: boolean prepareMergeRegion(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv)>#u105
+  kind: throw; exception: org.apache.hadoop.hbase.exceptions.MergeRegionException; static rule: state-read-and-update
+  cluster test: TestMergeTableRegionsProcedure.testMergeTwoRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/assignment/TestMergeTableRegionsProcedure.java)
+  our workload: `MergeTableRegionsProcedure.java:499`, `TestMergeTableRegionsProcedure#testMergeTwoRegions`; scope MergeTableRegionsProcedure, RegionStateStore, CatalogFamilyFormat. C.
+
+[HBASE-14] CHECKED  case: hbase-adhoc-14
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/MergeTableRegionsProcedure.java:500
+  site: <org.apache.hadoop.hbase.master.assignment.MergeTableRegionsProcedure: boolean prepareMergeRegion(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv)>#u119
+  kind: throw; exception: org.apache.hadoop.hbase.UnknownRegionException; static rule: state-read-and-update
+  cluster test: TestMergeTableRegionsProcedure.testMergeTwoRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/assignment/TestMergeTableRegionsProcedure.java)
+  our workload: `:503`, same test; scope + RegionStates. C.
+
+[HBASE-15] CHECKED  case: hbase-adhoc-15
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/MergeTableRegionsProcedure.java:503
+  site: <org.apache.hadoop.hbase.master.assignment.MergeTableRegionsProcedure: boolean prepareMergeRegion(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv)>#u129
+  kind: throw; exception: org.apache.hadoop.hbase.exceptions.MergeRegionException; static rule: state-read-and-update
+  cluster test: TestMergeTableRegionsProcedure.testMergeTwoRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/assignment/TestMergeTableRegionsProcedure.java)
+  our workload: `:507`, same test; scope + RegionStateNode, AssignmentManager#reportRegionStateTransition, TransitRegionStateProcedure. STATE: the region state re-paired to OPENING (master view vs the RS's report). B: the best of the study items.
+
+[HBASE-19] CHECKED  case: hbase-adhoc-19
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/procedure/ModifyTableProcedure.java:135
+  site: <org.apache.hadoop.hbase.master.procedure.ModifyTableProcedure: void preflightChecks(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,java.lang.Boolean)>#u50
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: independent-views
+  cluster test: TestModifyTableProcedure.testModifyWillNotReopenRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/procedure/TestModifyTableProcedure.java)
+  our workload: `ModifyTableProcedure.java:134`, `TestModifyTableProcedure#testModifyWillNotReopenRegions`, selector = the 1st ModifyTableProcedure; scope ModifyTableProcedure, util/FSTableDescriptors. C.
+
+[HBASE-20] CHECKED  case: hbase-adhoc-20
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/procedure/ModifyTableProcedure.java:139
+  site: <org.apache.hadoop.hbase.master.procedure.ModifyTableProcedure: void preflightChecks(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,java.lang.Boolean)>#u55
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: independent-views
+  cluster test: TestModifyTableProcedure.testModifyWillNotReopenRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/procedure/TestModifyTableProcedure.java)
+  our workload: `ModifyTableProcedure.java:138`, same test (or `#testModifyTableWithCoprocessorAndColumnFamilyPropertyChange`); same scope. C.
+
+[HBASE-21] CHECKED  case: hbase-adhoc-21
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/namespace/NamespaceStateManager.java:133
+  site: <org.apache.hadoop.hbase.namespace.NamespaceStateManager: void checkAndUpdateNamespaceRegionCount(org.apache.hadoop.hbase.TableName,int)>#u30
+  kind: throw; exception: org.apache.hadoop.hbase.quotas.QuotaExceededException; static rule: state-read-and-update
+  cluster test: TestNamespaceAuditor.testRestoreSnapshotQuotaExceed (hbase-server/src/test/java/org/apache/hadoop/hbase/namespace/TestNamespaceAuditor.java)
+  our workload: `NamespaceStateManager.java:130`, `TestNamespaceAuditor#testRestoreSnapshot` (the named QuotaExceed test throws by design); scope NamespaceStateManager, NamespaceTableAndRegionInfo, NamespaceAuditor, quotas/MasterQuotaManager, procedure/RestoreSnapshotProcedure. C.
+
+[HBASE-22] CHECKED  case: hbase-adhoc-22
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/namespace/NamespaceStateManager.java:172
+  site: <org.apache.hadoop.hbase.namespace.NamespaceStateManager: void checkAndUpdateNamespaceTableCount(org.apache.hadoop.hbase.TableName,int)>#u54
+  kind: throw; exception: org.apache.hadoop.hbase.quotas.QuotaExceededException; static rule: state-read-and-update
+  cluster test: TestNamespaceAuditor.testTableOperations (hbase-server/src/test/java/org/apache/hadoop/hbase/namespace/TestNamespaceAuditor.java)
+  our workload: `NamespaceStateManager.java:168`, `TestNamespaceAuditor#testDeleteTable`; scope as 21 + CreateTableProcedure. Split-vs-create count. C/B-.
+
+[HBASE-24] CHECKED  case: hbase-adhoc-24
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/procedure/ZKProcedureMemberRpcs.java:210
+  site: <org.apache.hadoop.hbase.procedure.ZKProcedureMemberRpcs: void startNewSubprocedure(java.lang.String)>#u55
+  kind: throw; exception: java.lang.IllegalArgumentException; static rule: state-read-and-update
+  cluster test: TestFlushTableProcedureWithDoNotSupportFlushTableMaster.testFlushFallback (hbase-server/src/test/java/org/apache/hadoop/hbase/master/procedure/TestFlushTableProcedureWithDoNotSupportFlushTableMaster.java)
+  our workload: `ZKProcedureMemberRpcs.java:210`, `TestFlushTableProcedureWithDoNotSupportFlushTableMaster#testFlushFallback`; scope ZKProcedureMemberRpcs, ZKProcedureCoordinator, ZKProcedureUtil. C: ZK data lost, format check.
+
+[HBASE-31] CHECKED  case: hbase-adhoc-31
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/RSRpcServices.java:2011
+  site: <org.apache.hadoop.hbase.regionserver.RSRpcServices: void throwOnWrongStartCode(long)>#u21
+  kind: throw; exception: java.lang.Throwable; static rule: propagated-view
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  our workload: `RSRpcServices.java:1880` (thrown type ServiceException), `TestRegionMove#testDisableAndMove`; scope RSRpcServices, HRegionServer, procedure/RSProcedureDispatcher, ServerManager, MasterRpcServices. C: CLOCK moves both sides.
+
+[HBASE-34] CHECKED  case: hbase-adhoc-34
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.java:160
+  site: <org.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager: byte[] retrievePassword(org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier)>#u89
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  cluster test: TestGenerateDelegationToken.testOnlyToken (hbase-server/src/test/java/org/apache/hadoop/hbase/security/token/TestGenerateDelegationToken.java)
+  our workload: `AuthenticationTokenSecretManager.java:160`, `TestGenerateDelegationToken#testOnlyToken`, needs P2 + MiniKdc on the VM; scope AuthenticationTokenSecretManager, ZKSecretWatcher, ipc/ServerRpcConnection. C (the adjacent :135 expiry is the CLOCK-checkable sibling, not a study item).
+
+[HBASE-37] CHECKED  case: hbase-adhoc-37
+  source: hbase-zookeeper/src/main/java/org/apache/hadoop/hbase/zookeeper/MasterAddressTracker.java:206
+  site: <org.apache.hadoop.hbase.zookeeper.MasterAddressTracker: int getMasterInfoPort(org.apache.hadoop.hbase.zookeeper.ZKWatcher)>#u12
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  cluster test: TestRSStatusPage.testStatusPage (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/http/TestRSStatusPage.java)
+  our workload: `MasterAddressTracker.java:206`, `TestRSStatusPage#testStatusPage`, needs P2; scope zookeeper MasterAddressTracker, master/ActiveMasterManager, HMaster. C: ZK data lost.
+
+Selected points without a check (no cluster test reaches the guard, or the throw is dead):
+  [HBASE-01] TESTED; source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/ConnectionImplementation.java:1106
+  [HBASE-02] TESTED; source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/ConnectionImplementation.java:911
+  [HBASE-16] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/TransitRegionStateProcedure.java:371
+  [HBASE-17] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/TransitRegionStateProcedure.java:379
+  [HBASE-18] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/TransitRegionStateProcedure.java:325
+  [HBASE-23] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/procedure/ZKProcedureCoordinator.java:131
+  [HBASE-27] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java:1053
+  [HBASE-28] TESTED; source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java:2487
+  [HBASE-29] TESTED; source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/RSRpcServices.java:2263
+  [HBASE-30] TESTED; source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/RSRpcServices.java:2298
+  [HBASE-32] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/handler/RegionReplicaFlushHandler.java:136
+  [HBASE-33] UNCERTAIN; source: hbase-server/src/main/java/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.java:141
+  [HBASE-35] TESTED; source: hbase-server/src/main/java/org/apache/hadoop/hbase/util/HBaseFsck.java:2720
+
+Not selected: 03, 05, 06, 09, 25, 26, 36, 38 -- NO_PATH, no coordination.
+
+Bug checks on this system:
+  hbase-bugs-master-active-time (bug_study HBase #14; MasterRpcServices:2629)
+  hbase-bugs-backup-lock-reply-lost (HBase-2 #16)
+  hbase-bugs-ns-rsgroup-removal (HBase-2 #01)
+
+ZOOKEEPER -- ZooKeeper 3.8.7: 13 points, 10 checked
+------------------------------------------------------------------------------------
+[ZOOKEEPER-01] CHECKED  case: zk-adhoc-01
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/SessionTrackerImpl.java:317
+  site: <org.apache.zookeeper.server.SessionTrackerImpl: void checkSession(long,java.lang.Object)>#u18
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionExpiredException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  our workload: SessionTrackerImpl.java:317 (`throw new @CausynthExceptionTarget("zk-adhoc-01") KeeperException.SessionExpiredException()`). - Workload: QuorumPeerMainTest#testQuorum. It can also run today on a ClientBase test, CausynthQuotaRetryTest#raisesARetriedHardQuota (standalone tracker, no quorum adapter). 
+
+[ZOOKEEPER-02] CHECKED  case: zk-adhoc-02
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/SessionTrackerImpl.java:323
+  site: <org.apache.zookeeper.server.SessionTrackerImpl: void checkSession(long,java.lang.Object)>#u27
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionMovedException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  our workload: SessionTrackerImpl.java:323 (SessionMovedException). - Workload: testQuorum cannot throw. Use QuorumTest#testSessionMovedWithSynchronousSync and declare the new connection's request occurrence; the old connection's throw is the test's expectation. - Counterfactual: STATE re-pairing of `session.owner
+
+[ZOOKEEPER-03] CHECKED  case: zk-adhoc-03
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/SessionTrackerImpl.java:330
+  site: <org.apache.zookeeper.server.SessionTrackerImpl: void setOwner(long,java.lang.Object)>#u12
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionExpiredException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  our workload: SessionTrackerImpl.java:330. - Workload: testQuorum, or the ClientBase test above. - Counterfactual: CLOCK as 01, but inside the createSession-to-Prep gap. - Scope: SessionTrackerImpl, ExpiryQueue, PrepRequestProcessor (createSession case, :583). Fit C.
+
+[ZOOKEEPER-04] CHECKED  case: zk-adhoc-04
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/ZooKeeperServer.java:1441
+  site: <org.apache.zookeeper.server.ZooKeeperServer: void processConnectRequest(org.apache.zookeeper.server.ServerCnxn,java.nio.ByteBuffer)>#u97
+  kind: throw; exception: org.apache.zookeeper.server.ServerCnxn$CloseRequestException; static rule: message-state-check
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  our workload: ZooKeeperServer.java:1537 (CLIENT_ZXID_AHEAD). - Workload: testQuorum cannot throw (fresh clients send lastZxidSeen = 0). Use ReadOnlyModeTest#testSeekForRwServer. - Counterfactual: STATE re-pairing of the follower's `DataTree.lastProcessedZxid` with an older HB-concurrent apply. - Scope: ZooKeeperS
+
+[ZOOKEEPER-06] CHECKED  case: zk-adhoc-06
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/Leader.java:1475
+  site: <org.apache.zookeeper.server.quorum.Leader: void waitForEpochAck(long,org.apache.zookeeper.server.quorum.StateSummary)>#u29
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  our workload: quorum/Leader.java:1515. Workload: testQuorum. Counterfactual: none of our kinds (disk values plus ACKEPOCH and election streams). Scope: Leader (waitForEpochAck), StateSummary, LearnerHandler. Fit C; needs the QUORUM and ELECTION doors.
+
+[ZOOKEEPER-07] CHECKED  case: zk-adhoc-07
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/Learner.java:525
+  site: <org.apache.zookeeper.server.quorum.Learner: long registerWithLeader(int)>#u66
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: QuorumRestartTest.testRollingRestart (zookeeper-server/src/test/java/org/apache/zookeeper/test/QuorumRestartTest.java)
+  our workload: quorum/Learner.java:522. Workload: QuorumRestartTest#testRollingRestart. Counterfactual: none of our kinds (acceptedEpoch from a file at restart; epoch over LEADERINFO). Scope: Learner (registerWithLeader), Leader (getEpochToPropose), QuorumPeer (acceptedEpoch). Fit C.
+
+[ZOOKEEPER-10] CHECKED  case: zk-adhoc-10
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/ObserverMaster.java:371
+  site: <org.apache.zookeeper.server.quorum.ObserverMaster: org.apache.zookeeper.server.quorum.QuorumPacket removeProposedPacket(long)>#u28
+  kind: throw; exception: java.lang.RuntimeException; static rule: propagated-view
+  cluster test: ObserverMasterTest.testInOrderCommits(true) (zookeeper-server/src/test/java/org/apache/zookeeper/test/ObserverMasterTest.java)
+  our workload: quorum/ObserverMaster.java:371. Workload: ObserverMasterTest#testInOrderCommits(boolean) [true]. Counterfactual: none (writer and reader on one thread; zxids over the stream). Scope: ObserverMaster, Follower (processPacket). Fit C.
+
+[ZOOKEEPER-11] CHECKED  case: zk-adhoc-11
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/QuorumPeer.java:1175
+  site: <org.apache.zookeeper.server.quorum.QuorumPeer: void loadDataBase()>#u46
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: CurrentEpochWriteFailureTest.testReadCurrentEpochFromAcceptedEpochTmpFile (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/CurrentEpochWriteFailureTest.java)
+  our workload: quorum/QuorumPeer.java:1177. Workload: CurrentEpochWriteFailureTest#testReadCurrentEpochFromAcceptedEpochTmpFile. Disk only (IO rule). Scope: QuorumPeer (loadDataBase). Fit C.
+
+[ZOOKEEPER-12] CHECKED  case: zk-adhoc-12
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/QuorumPeer.java:1197
+  site: <org.apache.zookeeper.server.quorum.QuorumPeer: void loadDataBase()>#u76
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  our workload: quorum/QuorumPeer.java:1197. Workload: testQuorum. Disk only (IO rule). Scope: QuorumPeer (loadDataBase). Fit C.
+
+[ZOOKEEPER-13] CHECKED  case: zk-adhoc-13
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/ReadOnlyZooKeeperServer.java:126
+  site: <org.apache.zookeeper.server.quorum.ReadOnlyZooKeeperServer: void validateSession(org.apache.zookeeper.server.ServerCnxn,long)>#u18
+  kind: throw; exception: org.apache.zookeeper.server.ServerCnxn$CloseRequestException; static rule: event-root-view
+  cluster test: ReadOnlyModeTest.testGlobalSessionInRO (zookeeper-server/src/test/java/org/apache/zookeeper/test/ReadOnlyModeTest.java)
+  our workload: quorum/ReadOnlyZooKeeperServer.java:126. - Workload: ReadOnlyModeTest#testConnectionEvents. testGlobalSessionInRO throws in its recording (expected refusal). - Counterfactual: none in memory today. The global-session map is filled over the Zab stream, and the ConnectRequest has no door. - Scope: Rea
+
+Selected points without a check (no cluster test reaches the guard, or the throw is dead):
+  [ZOOKEEPER-05] TESTED; source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/Follower.java:103
+  [ZOOKEEPER-08] NO_PATH; source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/LearnerSessionTracker.java:174
+  [ZOOKEEPER-09] NO_PATH; source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/LearnerSessionTracker.java:191
+
+Bug checks on this system:
+  zk-bugs-quota-init (FinalRequestProcessor:709)
+  zk-bugs-election-offer (FinalRequestProcessor:709)
+  zk-bugs-container-reuse (bug_study ZooKeeper #33; FinalRequestProcessor:709)
+

@@ -1,0 +1,550 @@
+新 bug 汇总：四个系统中从 bug_study 引入为 GraphChecker 检查对象的 ad hoc coordination bug
+==========================================================================================
+
+整理时间：2026-10-06（GraphChecker system/hdfs ba8bacf46 交接时）。
+
+收录范围
+  * 只收 ~/bug_study 里由本研究新发现、并被引入为 GraphChecker bug check 的 bug（下称"新 bug"）。
+  * 不收 ASF JIRA 上已有的历史 bug：HDFS-11741、17897、17899 bug1/2/3、17960、17967 pathA/B/C，以及
+    SOLR-18406、SOLR-18413。它们在 GraphChecker 里也是检查对象，但不是新 bug。HDFS 只收 slowdisk-zero 一个。
+  * 不收未被接纳的 ZooKeeper #32（ZooInspector 的 retry-seq-quota：contrib GUI 工具，需要自写测试，质量不够）。
+  * 不收已放弃的 HDFS-2 #09（reencrypt-negative-sleep：链经过 JDK 内部的参数异常和"写的缺失"，不在当前模型内）。
+  * 不要求已被 GraphChecker 检出 SAT。每个 bug 都标明 GraphChecker 的检查状态。
+
+术语
+  * 致命 guard：系统代码里最终抛出异常、或拒绝请求的那个条件分支；GraphChecker 的检查目标（target）就标在它上面。
+  * SAT 已证实：GraphChecker 导出的 .smt 在 z3 下为 sat；CONFIRM 在真实程序里重放该世界并观察到致命 guard 触发；
+    cone.py 检查通过（移动的根在因果锥里，没有未绑定的跨进程值）。
+  * 新颖性：bug_study 中每个 bug 的先例检索都是"有界检索"（ASF JIRA 与源码关键词组合），不声称全球首次。
+  * 代码位置：bug_study 的复现基于各系统较新的上游源码（行号见各条）；"我们的树"指 GraphChecker 检查用的分支
+    （HDFS gc/hdfs-study-r5，ZooKeeper gc/zk-unified，Solr gc/solr-bugs，HBase gc/hbase-unified）。
+
+总览
+  #  系统       case id                              bug_study 出处     GraphChecker 状态
+  1  HDFS       hdfs-bugs-slowdisk-zero              HDFS.txt #15       SAT 已证实（STATE 重配对），原生复现 10/10
+  2  ZooKeeper  zk-bugs-quota-init                   ZooKeeper.txt #01  SAT 已证实（ZooKeeper 写门故障），原生复现 10/10
+  3  ZooKeeper  zk-bugs-election-offer               ZooKeeper.txt #05  SAT 已证实（STATE 重配对），未做原生复现（见条目）
+  4  ZooKeeper  zk-bugs-container-reuse              ZooKeeper.txt #33  已接纳，尚未建 case
+  5  Solr       solr-bugs-reindex-cleanup            Solr.txt #04       已建 case（分支 solr-bug-reindex），尚无 witness
+  6  Solr       solr-bugs-migrate-buffer-leak        Solr.txt #17       已接纳，尚未建 case
+  7  Solr       solr-bugs-overseer-lock-leak         Solr-3.txt #50     已接纳，尚未建 case
+  8  Solr       solr-bugs-snapshot-no-active         Solr.txt #16       已接纳，尚未建 case
+  9  Solr       solr-bugs-restore-construction       Solr.txt #26       已接纳，尚未建 case
+ 10  Solr       solr-bugs-tra-start-overwrite        Solr.txt #20       已接纳，尚未建 case
+ 11  HBase      hbase-bugs-master-active-time        HBase.txt #14      已建 case（分支 hbase-startup），被两个设计问题阻塞
+ 12  HBase      hbase-bugs-backup-lock-reply-lost    HBase-2.txt #16    已接纳，尚未建 case（需要 HBase RPC RESPONSE 门）
+ 13  HBase      hbase-bugs-ns-rsgroup-removal        HBase-2.txt #01    已接纳，尚未建 case
+
+系统按 owner 的顺序推进（HDFS -> Solr -> HBase -> ZooKeeper）。当前在做 HDFS；其余系统的新 bug 会在各自轮次里建 case。
+
+
+==========================================================================================
+1. HDFS — hdfs-bugs-slowdisk-zero（HDFS.txt #15）
+   把"最多排除慢盘数"改成 0 之后，旧的排除列表仍然生效，SSD 写入被持续否决
+==========================================================================================
+
+参与的状态
+  * 管理端配置 dfs.datanode.max.slowdisks.to.exclude：0 是文档定义的"不排除任何盘"（hdfs-default.xml）。
+  * DataNode 的慢盘检测线程：DataNodeDiskMetrics 周期性地计算慢盘，把结果发布到 slowDisksToExclude 列表。
+  * DataNode 的卷选择器：FsVolumeList 按 slowDisksToExclude 过滤候选卷，再交给 RoundRobinVolumeChoosingPolicy。
+  * NameNode 的块放置：按存储策略（ALL_SSD）把块分给有 SSD 的 DataNode，它不知道 DataNode 本地的否决列表。
+  这四处状态分别由管理员 RPC、检测线程、DataNode 写线程和 NameNode 维护，没有任何一处保证"最大值为 0 时列表为空"。
+
+因果链
+  1. 最大排除数为 1 时，检测线程把唯一的 SSD 判为慢盘，发布到 slowDisksToExclude。
+  2. 管理员调用公开的 DataNode.reconfigureProperty(max.slowdisks.to.exclude, "0") 并成功；
+     DataNode.reconfSlowDiskParameters 只更新 DataNodeDiskMetrics.maxSlowDisksToExclude。
+  3. 检测线程 DataNodeDiskMetrics.startDiskOutlierDetectionThread 只在 if (maxSlowDisksToExclude > 0) 分支内
+     替换 slowDisksToExclude。最大值变成 0 后，以后每一轮都跳过这个分支，旧列表永远留着，没有任何一处清空它。
+  4. 客户端写 ALL_SSD 文件，NameNode 正常分配 SSD 块。DataNode 上 FsVolumeList.getNextVolume / chooseVolume
+     按旧列表把唯一的 SSD 过滤掉，候选卷为空。
+  5. 致命 guard：RoundRobinVolumeChoosingPolicy.chooseVolume 的 if (volumes.size() < 1)，抛
+     DiskOutOfSpaceException("No more available volumes")；DataXceiver 写块失败，客户端得到 IOException。
+     同一路径的第二次写入会重新分配块，并再次命中同一 guard；同时普通 DISK 写入正常，说明集群其余部分健康。
+
+为什么难以自行恢复
+  配置已经是"不排除"，检测线程也在运行，但它永远不会再进入替换列表的分支。原样重试写入、等待检测周期都无效，
+  只能重启 DataNode，或做其他改变状态的修复。
+
+复现（bug_study）
+  上游 Hadoop b4daa4632196（3.6.0-SNAPSHOT）。一 NN、一 DN、一 SSD + 五 DISK 的 MiniDFSCluster；
+  TestDisabledSlowDiskExclusion 为 1/0/0。测试只用已有的 addSlowDiskForTesting 钩子提供一次历史慢盘样本，
+  不替换卷选择器、RPC 或重试。
+
+先例（有界检索）
+  HDFS-16397 引入慢盘参数的动态重配置，没有报告这个状态转换。HDFS-17936 报告了同一个终端异常，但它的根因是
+  排除开启时检测不区分存储类型；本例是关闭排除（设为 0）后旧列表残留，修复位置不同（0 的转换需要清空列表）。
+
+GraphChecker 检查：SAT 已证实
+  * 工作负载：自写的 TestCausynthSlowDiskZeroMax#testAllSsdWriteAfterSlowDiskExclusionTurnedOff（现有测试里，
+    TestFsVolumeList 发布了慢盘列表但从不改最大值，TestDataNodeReconfiguration 改了最大值但不发布列表、不写文件）。
+    流程：把唯一的 SSD 标为慢盘，立刻把最大值改成 0，等几轮检测后写 ALL_SSD 文件。录制的那次运行不失败：
+    重配置之后，每一轮检测读到的都是 0。
+  * 目标：RoundRobinVolumeChoosingPolicy 的 volumes.size() < 1 分支（我们树的第 84 行）。
+  * 找到的世界（STATE_PAIRING_FLIPPED）：把检测线程对 maxSlowDisksToExclude 的一次读取重新配对到重配置之前的值 1
+    （INITIAL arm），这一轮便把 SSD 发布进 slowDisksToExclude；卷选择器对 slowDisksToExclude 的读取再配对到这次发布。
+    之后各轮读到 0，跳过替换，旧列表留下，过滤后候选卷为空。也就是说，GraphChecker 没有用人为的慢盘样本时序，
+    而是在"检测线程与重配置之间的一次读写交错"上找到了同一个致命状态。
+  * 证据：round HG9B（system/hdfs aaa2befe7）；polarityDecides 为真；CONFIRM 已证实；cone.py 未绑定变量为 0；
+    原生复现（录制版织入，在原生 JDK 上植入 CONFIRM 的顺序行）10/10 在 anchor 触发致命 guard（NP7 与 HG9B 两轮）。
+    输出：/bigtemp/vnr3ne/gc-out/hdfs-study/accept-HG9B-11/。
+
+
+==========================================================================================
+2. ZooKeeper — zk-bugs-quota-init（ZooKeeper.txt #01）
+   配额的 limit 节点先于 stats 节点提交，中断后原样重试永远失败，硬配额也不再生效
+==========================================================================================
+
+参与的状态
+  * 客户端的 SetQuotaCommand.createQuota：先在 /zookeeper/quota/<path>/zookeeper_limits 创建 limit 节点，
+    再在另一个独立事务里创建 zookeeper_stats 节点。
+  * 服务端 DataTree：limit 节点一提交，就把路径登记进配额 trie。
+  * 服务端的配额检查 ZooKeeperServer.checkQuota 与 DataTree.updateQuotaStat：都依赖 stats 节点存在。
+
+因果链
+  1. createQuota 提交了 limit 节点；在创建 stats 节点之前，客户端被中断（bug_study 是一次 InterruptedException；
+     ConnectionLoss 等故障同样可以中断）。此时 limit 存在、stats 不存在，两个节点不是一个原子操作。
+  2. 同一个 createQuota 原样重试：发现 limit 已存在，进入"更新"分支，直接 getData(statPath)，不会补建 stats。
+  3. 致命 guard：服务端 DataTree.getData 的 if (n == null) throw NoNodeException。每次重试都命中，修复路径永远到不了。
+  4. 更糟的是，配额 trie 已登记该路径，但 checkQuota 和 updateQuotaStat 发现没有 stats 节点就直接返回：
+     硬计数上限为 1 的路径下，额外的子节点创建也会成功，配额失效。
+
+为什么难以自行恢复
+  原样重试 createQuota 进入的分支要求 stats 已存在，永远补不上它。只有运维人员手工创建或删除配额元数据才能修复。
+
+复现（bug_study）
+  上游 ZooKeeper aafd344e，真实五节点 QuorumBase、公开 API；
+  QuotaCoordinationRegressionTest.interruptedQuotaInitializationCannotBeRetriedAndDisablesEnforcement，BUILD SUCCESS。
+
+先例（有界检索）
+  ZOOKEEPER-1448（启动时 replay/trie 缺陷）和 ZOOKEEPER-2563（部分删除）都已修复，均不是"limit 先于 stats、中断后重试
+  永久失败"。
+
+GraphChecker 检查：SAT 已证实
+  * 工作负载：树里的 CausynthQuotaRetryTest#raisesARetriedHardQuota（owner 批准）：客户端设硬配额，遇 ConnectionLoss 时重试，
+    然后提高配额，由服务端执行配额。
+  * 目标：服务端 getData 在 NoNode guard 处的第 6 次出现（REGION.860d3eb6…#6），即走"更新"分支那次调用对 stats 的读取。
+  * 找到的世界（MARKER_FLIPPED）：在 limit 节点的 create 上翻转 ZooKeeper WRITE 门的 FAULT 根，即写已提交、客户端却收到
+    ConnectionLoss。于是没有 stats，客户端重试发现 limit 已存在，走更新分支读 stats，命中服务端 NoNode guard。
+    这与 bug_study 的中断点（limit 之后、stats 之前）是同一个状态窗口，故障形式不同。
+  * 证据：main 分支 round V25（自 V12 起持续 PASS）；polarityDecides 为真；CONFIRM 已证实；cone.py 通过；
+    原生复现 10/10（植入 10 次、10 次触发致命 guard、10 次在 anchor）。输出：/bigtemp/vnr3ne/gc-out/accept-V25-zk-bugs-quota-init/。
+
+
+==========================================================================================
+3. ZooKeeper — zk-bugs-election-offer（ZooKeeper.txt #05）
+   选主 recipe 列出竞争者后、读取其 offer 前，竞争者的 offer 消失；失败的 start() 留下自己的孤儿 offer，堵死选主
+==========================================================================================
+
+参与的状态
+  * 选主 recipe LeaderElectionSupport：内存字段 leaderOffer 只记住自己最新的 offer 路径。
+  * ZooKeeper 上的 ephemeral sequential offer 节点：每个候选者一个，按序号决定谁是 leader。
+  * 列表与读取是两次独立的 RPC：getChildren 列出所有 offer，然后对每个 offer 单独 getData。
+
+因果链
+  1. 工作者调用 start()：makeOffer 提交自己的 offer n_1，并记到 leaderOffer。
+  2. determineElectionStatus 列出子节点，其中包括竞争者的 n_0；toLeaderOffers 对每个子节点分别 getData。
+  3. 在列出之后、读取之前，竞争者正常 stop()，删除了 n_0。
+  4. 致命 guard：服务端 DataTree.getData 的 if (n == null) throw NoNodeException。start() 捕获异常后只发出 FAILED 事件，
+     不删除自己已提交的 offer n_1。
+  5. 后果：n_1 是孤儿但仍是最早的子节点。另一个独立会话的新候选者永远停在 READY，不能当选；同一工作者重试 start()
+     会再建 n_2，并覆盖 leaderOffer，于是 n_2 排在孤儿 n_1 之后，同样不能当选；stop() 只删记住的 n_2，孤儿留下。
+     在工作者会话过期之前，服务没有 leader。
+
+为什么难以自行恢复
+  失败的第一次调用已经堵死服务，而且发生在任何重试之前；原样重试只会多一个排在孤儿后面的 offer。
+  只能等会话过期，或手工删除孤儿节点。
+
+复现（bug_study）
+  上游 ZooKeeper aafd344e，真实五节点 QuorumBase；LeaderOfferReadRaceRegressionTest 为 1/0/0。
+  测试只在真实 getData RPC 之前暂停，通过另一个公开客户端删除竞争者，没有 mock 任何服务端方法。
+
+先例（有界检索）
+  ZOOKEEPER-1225 是"start() 成功后再次调用导致第二个 offer"；本例是第一次 start() 因竞争者正常删除而失败、留下孤儿，
+  而且在任何重复调用之前就堵死了服务。1225 提出的"拒绝重复 start()"修不了这里。ZOOKEEPER-1209 是断连客户端仍报 ELECTED。
+
+GraphChecker 检查：SAT 已证实
+  * 工作负载：recipe 自带的 LeaderElectionSupportTest#testNodes3（三个候选者，每个都列出 offer 并按顺序读取）。
+  * 目标：服务端对某个 offer 的第二次 getData（REGION.860d3eb6…#2）。前两次读的都是 n_0：先是创建者自己，然后是一个竞争者，
+    而后者的读取可能与创建者的 stop() 竞争。
+  * 找到的世界（STATE_PAIRING_FLIPPED）：把服务端对该 offer 的查找重新配对到创建者 stop() 的删除之后，命中 NoNode guard。
+    这是 bug 的触发点；孤儿 offer 堵死选主等后续后果，不在本检查的致命 guard 之内。
+  * 证据：main 分支 round V25（自 V18 起持续 PASS）；polarityDecides 为真；CONFIRM 已证实；cone.py 通过。
+    原生复现：V25 时 main 的原生植入还不支持只有重配对（不移动根）的世界（NATIVE_PLANT_UNSUPPORTED），所以没做；
+    system/hdfs 上的原生植入后来已能植入 CONFIRM 的顺序行，ZooKeeper 轮次时重跑即可补上。
+    输出：/bigtemp/vnr3ne/gc-out/accept-V25-zk-bugs-election-offer/。
+
+
+==========================================================================================
+4. ZooKeeper — zk-bugs-container-reuse（ZooKeeper.txt #33）
+   容器节点清理器按路径删除，删掉了同一路径上新建的下一代节点
+==========================================================================================
+
+参与的状态
+  * ContainerManager 的周期清理：getCandidates 先快照"空的容器节点"的路径集合，checkContainers 再逐个发送只含路径的
+    DeleteContainerRequest(P)，中间还会 sleep。
+  * 服务端预处理 PrepRequestProcessor.deleteContainer：只检查当前 P 的子节点数为 0、类型是容器；不检查 czxid、cversion
+    等"代"信息。
+  * 客户端：可以删除旧的 P，并在同一路径上建新节点。
+
+因果链
+  1. 旧容器 P 曾有子节点，子节点删光后为空（cversion > 0），被放进本轮候选。
+  2. 发送删除请求之前，客户端删掉旧 P，在同一路径上新建一个节点（bug_study 演示了新的空容器，以及新的 PERSISTENT 节点）。
+     新节点刚出生，本该受 maxNeverUsedIntervalMs 保护；重新扫描时它也确实不在候选里。
+  3. 清理器发出旧的 DeleteContainerRequest(P)。服务端只看到"当前 P 为空"（对 PERSISTENT 节点也成立），就把新一代删了。
+  4. 致命 guard：客户端随后 getData(P)，命中服务端 FinalRequestProcessor 的 NoNode。数据丢失，并且稳定复现。
+
+为什么难以自行恢复
+  被删的是用户新写入的节点，数据已经没了。请求里没有任何代信息，服务端无法分辨"旧代"和"新代"。
+
+复现（bug_study）
+  上游 ZooKeeper，五节点 quorum；ContainerReplacementCoordinationRegressionTest 的两个测试为 2/0/0。
+  测试只在 ContainerManager.postDeleteRequest 提交前暂停已选中的真实清理请求。
+
+我们的树（gc/zk-unified，branch-3.9）中的核对
+  ContainerManager.getCandidates :159-190，checkContainers :126-145，PrepRequestProcessor.deleteContainer :332-346
+  只检查 childCount > 0 与 EphemeralType NORMAL；新建的 PERSISTENT 节点 owner 为 0（VOID），同样会被删除；
+  客户端 getData 在 FinalRequestProcessor:709 得到 NoNode。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：客户端对 P 的读取与清理器删除之间的 STATE 重配对（与 election-offer 同类）。
+  * 需要：一个自写的 ClientBase 测试作为工作负载（没有现成测试同时覆盖清理和同路径重建）。ZooKeeper 轮次再做。
+
+
+==========================================================================================
+5. Solr — solr-bugs-reindex-cleanup（Solr.txt #04）
+   并发别名阻断 REINDEX 中止清理，源集合永久只读
+==========================================================================================
+
+参与的状态
+  * 异步 REINDEXCOLLECTION(S -> T)：先建目标 T 和 checkpoint 集合，再把源 S 标成只读；中止时 cleanup 应删除 T，
+    并清除 S 的只读属性和 reindex 状态。
+  * CREATEALIAS(A -> T)：只锁别名 A，不锁目标 T，可以在 reindex 建好 T 之后、清理之前成功。
+  * DeleteCollectionCmd.checkAliasReference：被别名引用的集合不许删除。
+
+因果链
+  1. REINDEXCOLLECTION 建出 T，并把 S 标成只读（REINDEXCOLLECTION 的锁级别是 NONE）。
+  2. 并发的 CREATEALIAS(A, T) 成功发布 A -> T。
+  3. 管理员发出 REINDEXCOLLECTION(cmd=abort)。cleanup 删除 T 时，checkAliasReference 发现 A 引用 T，抛
+     SolrException(BAD_REQUEST, "Collection : T is part of aliases")。
+  4. 这个异常从 cleanup 直接抛出，后面"清除 S 只读、删除 S 的 reindex 状态"的步骤都没执行。任务状态为 FAILED，S 仍只读。
+  5. 致命 guard：之后对 S 的公开 add 在 DistributedZkUpdateProcessor.processAdd 的 if (isReadOnly()) 处抛
+     SolrException(FORBIDDEN, "Collection S is read-only.")（HTTP 403）；原样重试相同 add 一样失败。
+
+为什么难以自行恢复
+  目标删除被别名保护本身是合理的；缺陷在于目标删除失败中断了对源集合的状态恢复，属于跨对象清理的部分提交。
+  没有任何后台过程会把 S 改回可写，需要管理员手工解除只读，并处理残留的 T 和 A。
+
+复现（bug_study）
+  上游 Solr 91cbb6a3（11.0.0-SNAPSHOT）。两节点 MiniSolrCloudCluster；TestReindexAbortAliasCleanupRace 为 BUILD SUCCESSFUL，
+  只用了 Solr 原有的 reindexLatch 固定时序，不注入异常。
+
+先例（有界检索）
+  SOLR-11127 是 REINDEXCOLLECTION 的功能设计，SOLR-18083 是只读集合的一般行为修复，都没有"目标别名阻断中止清理"的先例。
+
+GraphChecker 检查：已建 case，尚无 witness
+  * 分支 solr-bug-reindex（Solr 8.11 的 gc/solr-bugs 树）。预期 witness 是 cleanup 之前 CREATEALIAS 之后 setData 写门上的故障
+    （见 docs/handover/TODO.md 的 Solr 部分）。该分支另有 solr-18413 的回归（seed replay 停顿）需要先修。
+
+
+==========================================================================================
+6. Solr — solr-bugs-migrate-buffer-leak（Solr.txt #17）
+   MIGRATE 在发布转发规则后失败，目标 core 永久停在 BUFFERING，原样重试被状态检查拒绝
+==========================================================================================
+
+参与的状态
+  * 源集合 S 的 ZooKeeper ClusterState 中的 routingRules（route key -> 目标 T）：源 leader 据此转发更新。
+  * 目标 leader core 的 UpdateLog.State（ACTIVE / BUFFERING）及缓冲的 tlog（JVM 内存状态）。
+  * MIGRATE 的控制面执行器：按"目标缓冲 -> 发布路由规则 -> 找源 leader -> … -> 目标应用缓冲"的顺序推进，失败路径没有补偿。
+
+因果链
+  1. MigrateCmd.migrateKey 向目标 leader 发 REQUESTBUFFERUPDATES，目标的 UpdateLog 切到 BUFFERING。
+  2. 把 route key、目标 T 和过期时间写入 S 的 ZooKeeper 状态，并等待其可见。
+  3. 下一步（查找源 leader）遇到一次 ConnectionLoss，MIGRATE 失败；末尾的 REQUESTAPPLYUPDATES 永远不会发给 T，
+     也没有任何 finally 补偿前两步。
+  4. 之后对 S 的更新按已发布的规则转发到 T；T 在 BUFFERING 下只把更新写进 update log 就返回，T 的查询看不到新文档。
+  5. 致命 guard：原样重试 MIGRATE 时，第一步的 REQUESTBUFFERUPDATES 在 CoreAdminOperation 的
+     if (updateLog.getState() != UpdateLog.State.ACTIVE) 处抛 SolrException("Core ... not in active state")。重试两次都 FAILED，
+     T 仍在 BUFFERING。
+
+为什么难以自行恢复
+  规则会在 300 秒后过期，但过期不会对已缓冲的内容执行 apply；原样重试被 ACTIVE 检查挡住，需要人工的 core 级恢复或重启。
+  bug_study 只证明新转发的文档在观察期内不可见，不声称已从磁盘永久丢失。
+
+复现（bug_study）
+  上游 Solr 91cbb6a3。两节点集群；TestMigrateBufferLeakAfterRulePublication，run2 为 1/0/0。
+  只在规则发布后、源 leader 查找前注入一次 ConnectionLoss，不伪造 UpdateLog 状态或路由规则。
+
+我们的树（gc/solr-bugs，Solr 8.11）中的核对
+  MigrateCmd.migrateKey :186-193 发 REQUESTBUFFERUPDATES，:197-205 发 ADDROUTINGRULE，之后是临时集合、SPLIT、merge，直到
+  :362-370 才 REQUESTAPPLYUPDATES；每个 processResponses(..., true, ...) 都可能抛出，且没有 try/finally。
+  再次 MIGRATE 到同一目标时命中 CoreAdminOperation:186 的 "not in active state"。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：缓冲步骤之后任一门上的 FAULT（路由规则写入 ZooKeeper 的门，或 SOLR_HTTP 的 shard 请求）。Solr 轮次再做。
+
+
+==========================================================================================
+7. Solr — solr-bugs-overseer-lock-leak（Solr-3.txt #50）
+   旧版 Overseer 写运行状态失败，泄漏进程内的集合锁，后续请求持续失败
+==========================================================================================
+
+参与的状态
+  * Overseer 线程的 LockTree 集合锁和 runningTasks（JVM 内存状态）。
+  * ZooKeeper 上的异步任务 ID、队列，以及 /overseer/collection-map-running 运行状态 map。
+  * 集合的 readOnly 属性和数据面 core 的只读标志。
+
+因果链
+  1. 公开请求（例如异步 MODIFYCOLLECTION(readOnly=false)）已被接收：异步 ID 已预留、任务入队，客户端拿到 HTTP 200。
+  2. Overseer 为任务取得集合锁，在 markTaskAsRunning 里 runningTasks.add 之后写 runningMap.put
+     -> DistributedMap.put -> SolrZkClient.makePath。
+  3. 这次 ZooKeeper 写最终失败（ConnectionLoss 的终端失败，或 OperationTimeout）：ZkCmdExecutor.retryOperation 只重试
+     ConnectionLoss；能解锁的异常分支只有 NodeExists / Interrupted。外层 catch(KeeperException) 只记日志并继续循环：
+     LockTree 锁和 runningTasks 泄漏；该任务被排除在之后的每次 peek 之外，永远不会运行。
+  4. 致命 guard：
+     - 同一异步 ID 的重试在 CollectionsHandler 的 if (!claimAsyncId) 处抛 "Task with the same requestid already exists"（HTTP 400）；
+     - 新的同步 MODIFYCOLLECTION 被泄漏的集合锁挡住，在 if (elapsed >= timeout) 处抛超时（HTTP 500）；
+     - 集合仍只读，数据写入在 processAdd 的只读 guard 处得到 HTTP 403。
+
+为什么难以自行恢复
+  在同一个 Overseer 任期内，原样重试和新请求都不能自愈；只有 Overseer 重选或重启会重建内存 LockTree（bug_study 未实测这条路径）。
+  如果是 SessionExpired，Overseer 会退出循环，另起任期，就不是本 bug。
+
+复现（bug_study）
+  上游 Solr 91cbb6a3，两节点，.withOverseer(true)，真实 ZooKeeper；TestOverseerRunningMapFailureLeaksCollectionLock 为 1/0/0。
+
+我们的树（Solr 8.11）中的核对
+  OverseerTaskProcessor :301-325 取锁，markTaskAsRunning :480-492；makePath(failOnExists=false, retryOnConnLoss=true) 对
+  重试 create 时的 NodeExists 会吸收成 setData，那不是本 bug；本 bug 需要 OperationTimeoutException 这类会逃出的故障。
+  GraphChecker 的 ZOOKEEPER 门已包含 OperationTimeoutException 这一故障种类。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：ZooKeeper 写门上的 FAULT（OperationTimeout）。Solr 轮次再做。
+
+
+==========================================================================================
+8. Solr — solr-bugs-snapshot-no-active（Solr.txt #16）
+   所有副本都不在 ACTIVE 时，CREATESNAPSHOT 把空结果记成 Successful，同名快照再也建不了
+==========================================================================================
+
+参与的状态
+  * ZooKeeper ClusterState 里各副本的 Replica.State。
+  * 各 core 的真实索引与 core 快照。
+  * ZooKeeper /collections/C/snapshots/M：集合级快照状态和成功副本的元数据。
+
+因果链
+  1. 承载唯一副本的节点停机，ClusterState 把副本标为非 ACTIVE；另一节点正常处理管理请求。
+  2. CREATESNAPSHOT(C, M) 先在 ZooKeeper 写入 InProgress，然后遍历副本：非 ACTIVE 的一律跳过，既不发 core RPC，
+     也不进 shardByCoreName。
+  3. 没有任何 RPC，失败集合 failedShards 自然为空；!shardByCoreName.isEmpty() 为假，不检查"每个 shard 至少一个成功"；
+     failedShards.isEmpty() 为真，于是把 M 写成 Successful，replicas={}。源码注释本身要求每个 shard 至少有一个副本成功。
+  4. 节点恢复后，数据面正常；但原样重试 CREATESNAPSHOT(C, M)，在 CreateCollectionSnapshot 的
+     if (SolrSnapshotManager.snapshotExists(...)) 处抛 BAD_REQUEST "Snapshot ... already exists"（致命 guard）。
+     基于 M 的备份或恢复也找不到任何副本快照（我们的树：BackupCmd :202-208 找不到带快照的 live 副本而抛出）。
+
+为什么难以自行恢复
+  一个"成功"的空快照元数据被永久发布，占住了快照名，原样重试被拒；要靠管理员删除伪造的 M 再重建。
+
+复现（bug_study）
+  上游 Solr 91cbb6a3，两节点，真实节点停止与重启；TestSnapshotNoActiveReplicaFalseSuccess，run2 为 1/0/0。
+
+我们的树（Solr 8.11）中的核对
+  CreateSnapshotCmd :101-108 跳过 Overseer 视图里非 ACTIVE 的副本，:156-174 只对已发出的请求统计失败，
+  :176 写 SnapshotStatus.Successful。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：Overseer 对副本状态的陈旧视图，即惰性集合缓存上的 CLOCK，或 DocCollection 读取的 STATE 重配对。
+    Solr 轮次再做。
+
+
+==========================================================================================
+9. Solr — solr-bugs-restore-construction（Solr.txt #26）
+   首次 RESTORE 失败留下 CONSTRUCTION 状态的 shard，原样重试走"已有集合"分支并报告假成功
+==========================================================================================
+
+参与的状态
+  * ZooKeeper 中目标集合 T 是否存在，以及 T 的 shard 状态（CONSTRUCTION / ACTIVE）。
+  * 已建好的 replica/core，以及 CloudSolrClient 以 ACTIVE shard 构成的路由表。
+
+因果链
+  1. RESTORE(B, target=T)：T 不存在，走新集合路径，把 shard 标为 CONSTRUCTION，创建首个真实 core。
+  2. 接着某个 shard 请求失败（bug_study 在首次 INSTALLSHARDDATA 之前注入一次 ConnectionLoss；我们的树里任一失败的
+     RESTORECORE 都会让 processResponses(..., true) 抛出）。RESTORE 返回 500，失败路径不重置 CONSTRUCTION。
+  3. 原样重试 RESTORE(B, target=T)：T 已存在，于是走 RestoreOnExistingCollection。构造时只比较 shard 数量，
+     CONSTRUCTION 的 T 能通过；恢复数据的 RPC 都成功，RESTORE 返回 0。
+  4. 但只有新集合路径才调用 markAllShardsAsActive，"已有集合"路径从不把 shard 从 CONSTRUCTION 推到 ACTIVE。
+  5. 致命 guard：之后对 T 的每次更新都在路由处找不到 ACTIVE 的 slice（我们的树：HashBasedRouter:67 "No active slice
+     servicing hash code"；bug_study 中公开 ADD 两次都返回 400）。
+
+为什么难以自行恢复
+  重试显式成功，却留下不可写的集合；只能删除集合后重新 RESTORE。
+
+复现（bug_study）
+  上游 Solr 91cbb6a3，两节点；TestRestoreRetryLeavesConstructionShard，run6 为 1/0/0。对照：同一备份恢复到全新名字一切正常，
+  排除了备份本身损坏的可能。
+
+我们的树（Solr 8.11）中的核对
+  RestoreCmd 新集合路径 :263-285（markAllShardsAsConstruction … requestReplicasToRestore … markAllShardsAsActive），
+  call() :98 对已存在的集合选 RestoreOnExistingCollection（:587-612），该路径从不标 ACTIVE。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：RESTORECORE 或 apply-buffer shard 请求上的 SOLR_HTTP 门 FAULT。Solr 轮次再做。
+
+
+==========================================================================================
+10. Solr — solr-bugs-tra-start-overwrite（Solr.txt #20）
+    时间路由别名首次接受写入时，用旧的别名快照覆盖了 ZooKeeper 中更新的别名表，抹掉另一个新建的别名
+==========================================================================================
+
+参与的状态
+  * ZooKeeper /aliases.json：全部别名的映射及别名属性，带版本号。
+  * 时间路由别名 A 的 router.start（日期表达式需要在首次写入时固定下来）。
+  * AliasesManager.applyModificationAndExportToZk：以"读当前版本 -> 应用修改函数 -> 带版本 setData"的方式做 CAS。
+
+因果链
+  1. A 首次接受 ADD：TimeRoutedAlias 发现 router.start 是日期表达式，读取当时的整个 Aliases 快照，计算固定起点，
+     并异步提交属性更新。关键闭包是 (a) -> aliases.cloneWithCollectionAliasProperties(...)：传入的最新映射 a 完全没用。
+  2. 在异步写回之前，另一个请求成功执行 CREATEALIAS(B, D)，B 已写入 ZooKeeper。
+  3. A 的异步任务执行：applyModificationAndExportToZk 读到包含 B 的当前映射和当前版本号，但修改函数返回的是从旧快照克隆的
+     完整映射（cloneWithCollectionAliasProperties 只改属性，保留调用对象自己的 collectionAliases）。再用当前版本号 setData，
+     CAS 成功，B 被抹掉。
+  4. 致命 guard：之后查询 B 时，客户端把 B 当成集合名，CloudSolrClient 的 if (coll == null) 抛
+     "Collection not found: B"（BAD_REQUEST）。两次相同的查询都失败；直接查询 D 正常。
+
+为什么难以自行恢复
+  别名静默丢失；元数据刷新和查询重试都不会重建 B，只能重新 CREATEALIAS 或人工修补。
+
+复现（bug_study）
+  上游 Solr 91cbb6a3，两节点；TestTimeRoutedAliasStartOverwritesConcurrentAlias，run1 为 1/0/0。唯一的钩子只在旧快照捕获后、
+  写回前暂停，没有伪造别名或集合状态。
+
+我们的树（Solr 8.11）中的核对
+  TimeRoutedAlias :375-386 捕获 aliases = zkStateReader.getAliases()，再 runAsync(applyModificationAndExportToZk(a -> aliases.clone...))
+  且忽略 a；ZkStateReader :2271-2283 用最新 curAliases 的版本做 CAS；Aliases.cloneWithCollectionAliasProperties :414-431
+  保留快照里的 collectionAliases。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：把 ADD 线程的 getAliases() 读取 STATE 重配对到 B 创建之前的版本。
+  * 风险：B 的存在要经过 aliases.json 的字节（store 门的编解码）传到客户端，需要确认因果链能跨过这段字节。Solr 轮次再做。
+
+
+==========================================================================================
+11. HBase — hbase-bugs-master-active-time（HBase.txt #14）
+    Master 切换时 activeTime 不单调，新 Master 拒绝旧的 OPENED 报告，region 卡在 opening
+==========================================================================================
+
+参与的状态
+  * HMaster.masterActiveTime：用壁钟时间 EnvironmentEdgeManager.currentTime() 赋值，不是单调的 Master 代号。
+  * OpenRegionProcedure 把发起 Master 的 activeTime 带给 RegionServer；RS 在 PostOpenDeployContext 中保存它。
+  * RS 的 submittedRegionProcedures 去重表；RS 的 onlineRegions / regionsInTransitionInRS。
+
+因果链
+  1. 旧 Master 发起打开 region 的 procedure P，带上它的 activeTime T0。
+  2. RS 打开 region，先向 Master 报告 OPENED（postOpenDeployTasks），之后才 addRegion。
+  3. 旧 Master 失去会话，备用 Master 当选。它的机器时钟比旧 Master 慢 5 秒，所以它的 activeTime T1 < T0
+     （5 秒小于 RS 与 Master 默认 30 秒的时钟容忍，不触发其他检查）。
+  4. 致命 guard：新 Master 的 MasterRpcServices.throwOnOldMaster 判 if (initiatingMasterActiveTime > getMasterActiveTime())，
+     抛 MasterNotRunningException("Another master is active")。RS 用同一份请求（同一个旧时间戳）重试，bug_study 中重试了 170 多次。
+  5. 新 Master 重放同一个 procedure ID；RS 的 submittedRegionProcedures.putIfAbsent 认为已提交而忽略，不创建新的处理器。
+     region 永远不 addRegion。数据面的公开 Get 在 HRegionServer.getRegionByEncodedName 的"不在线且正在打开"分支抛
+     RegionOpeningException。
+
+为什么难以自行恢复
+  一个 Master 的 activeTime 在其任期内固定不变，等待或重试都不会改变 T0 > T1。只有再次 failover、RS 崩溃或运维介入才可能恢复。
+
+复现（bug_study）
+  上游 HBase，真实两 Master、两 RS；TestMasterActiveTimeFailoverSkewMiniCluster 为 1/0/0。测试只通过覆盖 getMasterActiveTime()
+  模拟跨主机 5 秒时钟差，不改生产代码。bug_study 把它标为"provisional new candidate, not counted"（暂定候选，不计数）。
+
+GraphChecker 检查：已建 case（分支 hbase-startup），被阻塞
+  * 预期机制：CLOCK，两个 Master 的时钟偏差由 solver 选择。owner 允许这个 case 打开启动阶段的录制窗口（2026-10-03），
+    因为致命值在集群启动时就已确定。
+  * 阻塞点（两个设计问题，见 docs/handover/TODO.md 的 HBase 部分）：
+    - 由库启动的线程（ZooKeeper 的 EventThread、Netty event loop）需要身份规则，不能继承创建它们的竞争线程的 frame；
+    - 在一个线程导出、由另一个线程经队列发送的值，需要按消息绑定的导出。
+
+
+==========================================================================================
+12. HBase — hbase-bugs-backup-lock-reply-lost（HBase-2.txt #16）
+    备份独占锁的提交回执丢失，留下没有会话的永久锁，repair 也不释放
+==========================================================================================
+
+参与的状态
+  * backup:system 表中的锁行 activesession:（值 YES / NO），由 checkAndMutate 原子修改。
+  * 备份会话记录（BackupState.RUNNING），在取得锁之后才写入。
+  * 客户端的 checkAndMutate 用 HConstants.NO_NONCE 发出，所以服务端不能识别"同一请求的重放"。
+
+因果链
+  1. FULL backup：TableBackupClient.init -> BackupManager.startBackupSession -> BackupSystemTable.startBackupExclusiveOperation，
+     用 checkAndMutate 把锁行从"不存在 / NO"改成 YES。RegionServer 已提交 YES。
+  2. 成功回执在送达客户端之前丢失（或变成一次 DoNotRetryIOException）。客户端从 init 抛出，根本没调用 beginBackup，
+     所以没有 RUNNING 会话记录。
+  3. 再次执行同一个备份：两个 CAS 条件（不存在；等于 NO）都不成立，因为值是自己留下的 YES，于是抛
+     ExclusiveOperationException。startBackupSession 只对这个异常等待，超时后抛
+     IOException("Failed to acquire backup system table exclusive lock")（致命 guard）。
+  4. 内置的 hbase backup repair 只在存在 RUNNING 记录或失败的 DELETE/MERGE 记录时才释放锁；这里三种记录都没有，
+     repair 返回成功，锁仍是 YES。以后所有 create / delete / merge 都被拒绝。
+
+为什么难以自行恢复
+  普通重试和官方 repair 命令都不会释放这把锁，只能人工改锁行。
+
+复现（bug_study）
+  上游 HBase MiniCluster；TestBackupLockCommitReplyLostMiniCluster 为 1/0/0。测试在真实 HRegion.checkAndMutate 已提交 Put 之后，
+  把一次 postCheckAndMutate 的返回改成 DoNotRetryIOException，不模拟"锁未写入"。
+
+我们的树（gc/hbase-unified）中的核对
+  BackupSystemTable.startBackupExclusiveOperation :489-506；RawAsyncTableImpl :360 以 NO_NONCE 发出 checkAndMutate；
+  BackupCommands repair :1137-1144 只通过 RUNNING 会话释放锁。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：第一次 CAS 的 HBase RPC RESPONSE 门上的 FAULT（写已提交、回执丢失）。
+  * 需要：HBase RPC 的 RESPONSE 门，以及 hbase-backup 的测试 harness。HBase 轮次再做。
+
+
+==========================================================================================
+13. HBase — hbase-bugs-ns-rsgroup-removal（HBase-2.txt #01）
+    CreateNamespace 与 removeRSGroup 交错，把指向已删除 RSGroup 的引用持久化
+==========================================================================================
+
+参与的状态
+  * CreateNamespaceProcedure：只在 PREPARE 阶段检查命名空间指定的 RSGroup G 是否存在且非空；之后在
+    INSERT_INTO_NS_TABLE 才把 N -> G 写进 hbase:namespace，中间不再检查。
+  * RSGroupInfoManagerImpl.removeRSGroup：只检查组内服务器、已有表描述符和已持久化的命名空间；看不到"正在创建"的命名空间。
+  * 建表时：从命名空间继承 RSGroup，并检查该组存在。
+
+因果链
+  1. 创建带 hbase.rsgroup.name=G 的命名空间 N：PREPARE 时 checkNamespaceRSGroup 确认 G 存在且非空。
+  2. 在 N 写入 hbase:namespace 之前，另一个管理员把服务器移出 G，并调用 removeRSGroup(G)。N 尚未持久化，
+     "没有命名空间引用 G"的条件成立，删除成功。
+  3. 第一个 procedure 继续执行，把 N -> G 持久化，不再检查 G。命名空间描述符与 RSGroup 配置从此分叉。
+  4. 致命 guard：之后对 N:T 的公开 createTable 在 CreateTableProcedure.prepareCreate 继承 G，在
+     MasterProcedureUtil.checkGroupExists 的 if (group == null) 处抛
+     ConstraintException("Region server group G ... does not exit")。两次独立建表都失败。
+
+为什么难以自行恢复
+  N -> G 留在 meta 里，重启也不会修复；需要重建 G 并配置服务器，或修改 N 的组属性。
+
+复现（bug_study）
+  上游 HBase，真实 Master、两个 RS、MiniDFS 与 ZooKeeper；TestCreateNamespaceRSGroupRemovalCoordination 为 1/0/0。
+  测试子类只在 PREPARE 之后插入一个 latch，其余全部由真实的 ProcedureExecutor 执行。
+
+我们的树（gc/hbase-unified）中的核对
+  CreateNamespaceProcedure prepareCreate :191 -> AbstractStateMachineNamespaceProcedure.checkNamespaceRSGroup :124-131；
+  RSGroupInfoManagerImpl.removeRSGroup :370-397 只看 getClusterSchema().getNamespaces()；
+  MasterProcedureUtil.checkGroupExists :231 抛 ConstraintException。
+
+GraphChecker 检查：已接纳，尚未建 case
+  * 预期机制：把 removeRSGroup 对命名空间集合的读取 STATE 重配对到 N 插入之前。
+  * 需要：自写测试作为工作负载（没有现成测试覆盖这个交错）。HBase 轮次再做。
+
+
+==========================================================================================
+附：GraphChecker 对新 bug 的检查方法（简述）
+==========================================================================================
+  * 每个 bug 在系统树里用 @CausynthExceptionTarget("<case id>") 标出致命 guard 的那个 throw；工作负载尽量用系统自带的
+    cluster 测试，没有现成测试时才自写（例如 slowdisk-zero）。
+  * GraphChecker 从一次不失败的录制出发，系统地翻转切片上的符号分支和决定它们的根：门上的故障、时钟、配置，以及消息和
+    共享状态读的配对。每个翻转后的世界都在 concolic JVM 上重放，被接纳的重放最终融合成一个 candidate.smt2，由 z3 判定。
+  * SAT 必须经 CONFIRM 在真实程序里重放证实；再做原生复现：用录制版织入在原生 JDK 上植入 CONFIRM 的世界，跑 10 次，
+    统计在 anchor 处触发致命 guard 的次数。
+  * 检查与验收的完整规则和踩过的坑：GraphChecker 仓库 docs/handover/CHECKING.md；每个 check 的实时状态：docs/checks/README.md。

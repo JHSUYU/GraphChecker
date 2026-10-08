@@ -1,0 +1,1224 @@
+GRAPHChecker study: heuristic discovery of ad hoc coordination checks
+=====================================================================
+
+Snapshot and meaning of the numbers
+-----------------------------------
+This note records the existing independent classifier under
+tools/coordination_classifier in the local GraphChecker workspace, its
+exact-version inputs, and every one of its 144 final YES sites. It is a
+research inventory, not a claim that any listed check is buggy.
+
+The broad input inventory contains 26,536 explicit Java failure sites:
+throw, Java assert, direct check calls, and process-exit sites. The
+recorded broad scan retained 1,251 candidate sites. The second Soot
+fact pass inspected 8,382 sites (broad YES sites plus selected checks
+with guard/read evidence), resolving all 8,382 target methods in this
+local artifact set. The final binary rule labels 144 YES:
+
+                   all checks  broad YES  final YES  named workload  guard confirmed
+  HDFS 3.4.3           10,718        532         53              51               50
+  HBase 2.6.6           6,657        225         38              23               23
+  Solr 8.11.4           8,034        375         40              26               26
+  ZooKeeper 3.8.7       1,127        119         13              11               11
+  TOTAL                26,536      1,251        144             111              110
+
+There are 111 sites with a named existing cluster-based JUnit workload.
+For 110 of them, manual reading gives a production path that evaluates
+the relevant guard, regardless of whether it takes the failure branch.
+HDFS-18 has a named workload but its guard requires a second provided-
+storage update not guaranteed by that test; it is marked
+WORKLOAD_UNCERTAIN rather than TESTED. The 33 sites with no identified
+workload comprise 24 NO_PATH and 9 UNCERTAIN. Thus the strict source
+audit has 110 confirmed, 24 with no path found, and 10 unresolved.
+These are source-derived judgments, not observed JaCoCo/JVM condition
+hits. A test that only mocks a component, or enters a method but
+returns before the guard, does not establish guard coverage.
+For this audit a cluster test starts MiniDFSCluster or MiniJournalCluster
+(HDFS), MiniHBaseCluster/LocalHBaseCluster (HBase), a SolrCloud cluster
+including its ZooKeeper/Jetty nodes (Solr), or live ZooKeeper quorum
+peers (ZooKeeper). A check evaluated during @BeforeClass/@BeforeAll
+cluster startup counts for the named test that uses that setup.
+Solr's TestPullReplica.testAddDocs is a valid JUnit3-style test method:
+LuceneTestCase selects RandomizedRunner with LuceneJUnit3MethodProvider,
+which discovers public non-static no-argument test* methods even without
+an @Test annotation. Its @BeforeClass starts a two-node SolrCloud cluster.
+
+The source/JAR versions used for this snapshot are:
+  HDFS:       Hadoop rel/release-3.4.3, commit
+              9d50c6884666e794e45102260a4017bb31802e1b
+  HBase:      rel/2.6.6, commit
+              d5f63f523c065f963992ea4e74db268d17816631
+  Solr:       releases/lucene-solr/8.11.4, commit
+              e27f44e3d78dfcec230c97e0a1240e3751daeff9
+  ZooKeeper:  release-3.8.7, commit
+              9085db92dd679e1e90a63bfe6ae6345ab6cbc4ae
+All production JARs in the manifest have Java class major version 52
+(JDK 8). Catalog source paths are relative to those four source roots.
+
+Implemented static-analysis algorithm
+-------------------------------------
+1. Candidate inventory. The cached out/<system>.decisions.jsonl files
+   record site ID, bytecode/Jimple unit index, source line, site kind,
+   exception, candidate guards, and conservative evidence gathered by
+   the earlier CoordinationScanMain pass. The broad scanner is present
+   in the existing GraphChecker assembly JAR, but its Java source is
+   absent from the current checkout. Thus this note describes the
+   second-stage implementation precisely and does not invent details
+   of the earlier scanner. --rescan calls that prebuilt scanner.
+
+2. Site-local Soot facts. InteractionFacts.java configures Soot with
+   the listed JARs, permits phantom references for missing optional
+   dependencies, constructs a BriefUnitGraph and SimpleLocalDefs for
+   each concrete target method, and re-resolves the actual IfStmt
+   operands controlling the failure. An IfStmt is a failure gate when
+   exactly one CFG successor reaches the target without revisiting the
+   branch. Direct checkState/checkArgument/assertTrue/assertFalse calls
+   use their first argument as the predicate; the pass also recovers
+   javac-materialized boolean constants from their selecting branches.
+   Each condition is traced backward through local definitions,
+   arithmetic/casts, fields, parameters, calls and up to three levels
+   of short getter/return summaries (callee <=160 Jimple units;
+   recursion/visit limits 18/128). The pass records left/right operand
+   provenance, collection lookups, and the nearest failure-gate
+   distance. It searches concrete field stores and common Map/Set/
+   atomic-container mutations, including an enclosing class for a
+   nested class. It records candidate writer conditions and whether
+   declared event-root methods directly call a writer. A writer is
+   considered branch-controlled when a condition-bearing branch's two
+   successors have different reachability to that write. These are
+   bounded, conservative facts, not a complete alias or dependence
+   analysis.
+
+3. One binary YES/NO decision, with no ranking or top-k quota.
+   Unresolved targets and configured expected request errors are NO.
+   A considered guard must be resolved, be a failure gate, be at most
+   40 CFG edges from the target, and be no more than 15 edges farther
+   than the closest gate. Constructor and class-initializer stores do
+   not establish later mutable state. Assertion-enabling fields and
+   value-object fields are filtered. The remaining direct writers
+   establish retained mutable views. A relational predicate can use
+   two fields, a field and a parameter, a two-sided comparison, or a
+   collection lookup. The decision returns YES on any of these actual
+   implementation witnesses:
+
+   propagated-view: a retained view is updated by a carried value,
+     branch-dependent state read, or verified event callback, and the
+     failure guard relates that view to another input/view.
+   event-root-view: an event-root callback updates retained state from
+     a parameter and a control-component guard relates the result.
+     This captures primitive event values without requiring a DTO.
+   independent-views: a control-component guard compares two separately
+     writable histories, with branch dependence; local numeric
+     capacity comparisons need additional interaction evidence.
+   state-read-and-update: a guard reads state through a configured API
+     while a retained field also has a branch-controlled writer.
+   message-state-check: a received message/version/epoch value is
+     compared with mutable state written in a separate event; a
+     deliberately thrown transition signal is excluded.
+   remote-state-check: an interaction API supplies the state used in
+     the guard, even if the producer's internal field writer is opaque;
+     carrier types and state-getter/predicate signatures provide the
+     connection.
+   cached-refresh: an exhausted remote refresh is checked against a
+     mutable cached view (used by the Solr adapter).
+
+   If no witness matches, the answer is NO = insufficient interaction
+   evidence. YES is a candidate ad hoc coordination check, not a
+   reachability proof; NO is not proof of absence. Several independent
+   states can participate, and the rule does not require all
+   authoritative states to reside in a control-plane process. A
+   control-plane participant is represented by configured component
+   roles or state APIs, but a data-plane check can qualify through
+   propagated/interacting state. The shared-state, RPC, watch, HTTP,
+   and durable-read links here are approximated by field writes,
+   carrier types, event roots and API signatures. This standalone
+   classifier does NOT pair individual RPC sends/receives, build a
+   dynamic causal graph, or implement GraphChecker's iterative
+   exploration closure.
+
+4. Validation and iteration. Five source-audited revisions changed
+   the final totals 191 -> 149 -> 170 -> 140 -> 144; the final rule
+   excludes simple type/enum checks, parser/configuration checks,
+   generic request payloads, allocator/capacity checks, and distant
+   unrelated cluster-state conditions unless the actual failure
+   predicate has an interaction witness. validate_results.py checks
+   24 manually audited positive/negative controls and all four counts.
+
+Per-system adaptations used to run this analysis
+------------------------------------------------
+All systems use the SAME decision code. boundary_adapters.json contains
+regex descriptions of component roles, communication/state APIs, event
+callers/roots, carrier types, and excluded value types. It contains no
+per-site YES whitelist. artifact_manifest.json fixes the local JAR
+inputs. Its source revision and SHA-256 values are provenance
+metadata; run_analysis.py checks path existence but does not recompute
+those hashes or verify the source revision.
+
+HDFS 3.4.3:
+  Production: hadoop-hdfs and hadoop-hdfs-client 3.4.3 JARs.
+  Auxiliary classpath: hadoop-common 3.4.3.
+  Control-side roles: NameNode, block management, QJournal.
+  Event hints: DataStreamer.ResponseProcessor, BPServiceActor
+  heartbeat/offer loop, Balancer KeyManager's BlockKeyUpdater.
+  Carriers/read APIs: ExportedBlockKeys, DataEncryptionKey,
+  NNHAStatusHeartbeat, NamespaceInfo, DataNode commands,
+  LocatedBlock, HDFS protocol APIs, FSImage/EditLog and journal reads.
+  Exclusions: tools and fsck-only components, plus simple HDFS
+  value-object types. These hints keep heartbeats, key refresh,
+  recovery, namespace and journal history visible without calling
+  every wire value a coordination dependency.
+
+HBase 2.6.6:
+  Production: hbase-server, hbase-client, hbase-common,
+  hbase-zookeeper and hbase-procedure 2.6.6 JARs.
+  Auxiliary classpath: Hadoop common 3.4.3 and ZooKeeper 3.8.7.
+  Control-side roles: master, namespace/quota, procedure2.
+  Event hints: ZKSecretWatcher node/refresh callbacks and
+  RegionServerStatusService calls. Carriers: AuthenticationKey,
+  RegionState/RegionStateNode and RegionServerStartupResponse.
+  State APIs: ZKUtil znode reads, MetaTableAccessor, TableStateManager,
+  HBaseAdmin/ConnectionImplementation table-state predicates and
+  ClusterSchema namespace lookup. TableName, descriptors, state
+  value objects and shaded protobuf types are not by themselves
+  retained mutable views.
+
+Solr 8.11.4:
+  Production: solr-core and solr-solrj 8.11.4 JARs.
+  Auxiliary classpath: lucene-core 8.11.4 and ZooKeeper 3.8.7.
+  Control-side roles: cloud/common.cloud, core and handlers.
+  Event hints: ZkStateReader process/refresh and
+  IndexDeletionPolicyWrapper.onCommit. Carriers: Aliases,
+  ClusterState, DocCollection and ZkNodeProps. State APIs:
+  SolrZkClient, ZkStateReader, replication file-list/index reads and
+  HttpSolrClient requests. The adapter recognizes getAliases and
+  fetchLiveNodes as remote cache refreshes. It excludes simulation/
+  designer components and conservatively rejects BAD_REQUEST checks
+  as expected request errors; this may lose some true coordination
+  cases.
+
+ZooKeeper 3.8.7:
+  Production: zookeeper and zookeeper-jute 3.8.7 JARs.
+  No extra auxiliary JAR is listed in the manifest.
+  Control-side roles: quorum/persistence, ZKDatabase/DataTree and
+  ZooKeeperServer. Event hints: Follower/Leader packet processing,
+  SessionTrackerImpl.run, Leader.lead and LearnerSessionTracker
+  session commit/removal roots. Carriers: QuorumPacket, StateSummary
+  and ReplyHeader. State APIs: packet reads, transaction-log/snapshot
+  reads, committed-log and epoch-file reads. The primitive-valued
+  event-root treatment is needed for session and epoch checks.
+  Configuration-only QuorumPeerConfig and the intentional
+  processReconfig transition signal are excluded.
+
+Reproducing the local classification (not included on this study branch):
+  python3 tools/coordination_classifier/run_analysis.py
+  python3 tools/coordination_classifier/validate_results.py
+
+Use JDK 8 and the existing GraphChecker assembly JAR. The default run
+reuses ignored out/*.decisions.jsonl files, compiles InteractionFacts,
+extracts Soot facts, then classifies. --rescan asks the prebuilt
+assembly JAR's CoordinationScanMain to regenerate the broad scan;
+--reuse-facts only reruns the final Python decision. This study branch
+intentionally contains only this TXT, not the local independent tool,
+ignored outputs, release source trees or Maven cache. A clean checkout
+of this branch alone therefore cannot regenerate the numbers.
+
+Catalog format
+--------------
+Each item below is one final YES-classified candidate, ordered exactly
+as its system's classified.jsonl YES rows. The location is the
+release-relative Java source path and the recorded SOURCE LINE OF THE
+FAILURE SITE, followed by the complete Soot method signature and
+#uN unit ID; a guarding IfStmt can have a different line. The
+siteKind/exception and YES rule are included. TESTED marks one of the
+110 sites with a confirmed cluster JUnit path; its test name is
+spelled out on that item. WORKLOAD_UNCERTAIN identifies HDFS-18, the
+one additional named workload whose guard is not source-confirmed.
+NO_PATH and UNCERTAIN are audit judgments, not different static-
+classifier labels. The short audit note explains why the named test
+reaches the guard or why coverage was not established.
+
+HDFS (53 candidate checks)
+------------------------------
+[HDFS-01] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DFSInputStream.java:518
+  site: <org.apache.hadoop.hdfs.DFSInputStream: org.apache.hadoop.hdfs.protocol.LocatedBlock fetchBlockAt(long,long,boolean)>#u33
+  kind: throw; exception: java.io.EOFException; static rule: state-read-and-update
+  cluster test: TestPread.testPreadDFS (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestPread.java)
+  audit: TestPread.testPreadDFS configures 4096-byte blocks and 4096-byte location prefetch, creates a 12-block file in MiniDFSCluster, and positionally reads the uncached tenth block. DFSInputStream.fetchBlockAt must request fresh locations and evaluate the target EOF guard. The previous single-block testSkipWithRemoteBlockReader did not establish the noncache branch.
+
+[HDFS-02] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DataStreamer.java:428
+  site: <org.apache.hadoop.hdfs.DataStreamer$ErrorState: void adjustState4RestartingNode()>#u29
+  kind: throw; exception: java.lang.IllegalStateException; static rule: propagated-view
+  cluster test: TestClientProtocolForPipelineRecovery.testPipelineRecoveryOnRemoteDatanodeUpgrade (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  audit: TestClientProtocolForPipelineRecovery.testPipelineRecoveryOnRemoteDatanodeUpgrade: restart path with skipRollingRestartWait=true invokes adjustment; waitForRestart branch is evaluated false.
+
+[HDFS-03] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DataStreamer.java:1430
+  site: <org.apache.hadoop.hdfs.DataStreamer: boolean processDatanodeOrExternalError()>#u103
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestClientProtocolForPipelineRecovery.testAddingDatanodeDuringClosing (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  audit: TestClientProtocolForPipelineRecovery.testAddingDatanodeDuringClosing: closes stream with delayed last ACK / failed pipeline, entering close-stage recovery and evaluating assert.
+
+[HDFS-04] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DataStreamer.java:974
+  site: <org.apache.hadoop.hdfs.DataStreamer: void waitForAckedSeqno(long)>#u73
+  kind: throw; exception: java.io.InterruptedIOException; static rule: propagated-view
+  cluster test: TestClientProtocolForPipelineRecovery.testAddingDatanodeDuringClosing (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  audit: Same closing test delays final ACK, so close waits and evaluates timeout check.
+
+[HDFS-05] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumOutputStream.java:106
+  site: <org.apache.hadoop.hdfs.qjournal.client.QuorumOutputStream: void flushAndSync(boolean)>#u25
+  kind: assert; exception: java.lang.AssertionError; static rule: independent-views
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  audit: TestQuorumJournalManager.testSingleWriter: writeSegment flushes transaction stream in a real MiniJournalCluster; assertion evaluated.
+
+[HDFS-06] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/client/QuorumOutputStream.java:108
+  site: <org.apache.hadoop.hdfs.qjournal.client.QuorumOutputStream: void flushAndSync(boolean)>#u34
+  kind: assert; exception: java.lang.AssertionError; static rule: independent-views
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  audit: Same flush after setReadyToFlush; second assertion evaluated.
+
+[HDFS-07] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:932
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void acceptRecovery(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo,org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos$SegmentStateProto,java.net.URL)>#u116
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestQuorumJournalManager.testRecoverAfterIncompleteRecovery (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  audit: TestQuorumJournalManager.testRecoverAfterIncompleteRecovery: setupLoggers345 creates unequal segment lengths and recovery proposes accepted segment, evaluating committed transaction guard.
+
+[HDFS-08] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:489
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void checkRequest(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo)>#u23
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  audit: TestQuorumJournalManager.testSingleWriter: QJM write RPCs invoke epoch check.
+
+[HDFS-09] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:504
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void checkRequest(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo)>#u78
+  kind: check; exception: <not recorded for direct check>; static rule: propagated-view
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  audit: Same test's subsequent segment/write carries committedTxId after setCommittedTxId, evaluating regression check.
+
+[HDFS-10] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/qjournal/server/Journal.java:520
+  site: <org.apache.hadoop.hdfs.qjournal.server.Journal: void checkWriteRequest(org.apache.hadoop.hdfs.qjournal.protocol.RequestInfo)>#u23
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestQuorumJournalManager.testSingleWriter (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/qjournal/client/TestQuorumJournalManager.java)
+  audit: Same QJM writer performs write RPC, evaluating writer-epoch equality.
+
+[HDFS-11] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:555
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: byte[] retrieveDataEncryptionKey(int,byte[])>#u20
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException; static rule: propagated-view
+  cluster test: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java)
+  audit: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite: encrypted transfer enabled, DN decrypts key during read.
+
+[HDFS-12] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:514
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: byte[] retrievePassword(org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier)>#u37
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  cluster test: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java)
+  audit: Same encrypted read validates block token, retrieving its signing key.
+
+[HDFS-13] NO_PATH
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:432
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void checkAccess(org.apache.hadoop.security.token.Token,java.lang.String,org.apache.hadoop.hdfs.protocol.ExtendedBlock,org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier$AccessMode)>#u40
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  audit: This four-argument overload is called by pure manager unit tests (TestBlockToken), while cluster data transfer calls the six-argument overload via DataXceiver:1452; no qualifying cluster call found.
+
+[HDFS-14] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java:412
+  site: <org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void checkAccess(org.apache.hadoop.security.token.Token,java.lang.String,org.apache.hadoop.hdfs.protocol.ExtendedBlock,org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier$AccessMode,org.apache.hadoop.fs.StorageType[],java.lang.String[])>#u42
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  cluster test: TestEncryptedTransfer.testEncryptedReadDefaultAlgorithmCipherSuite (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestEncryptedTransfer.java)
+  audit: Encrypted transfer test above; DataXceiver:1452 invokes this exact overload.
+
+[HDFS-15] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java:447
+  site: <org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo: java.util.List commitBlock(org.apache.hadoop.hdfs.protocol.Block)>#u23
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestBlockToken.testBlockTokenInLastLocatedBlockLegacy (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/security/token/block/TestBlockToken.java)
+  audit: TestBlockToken.testBlockTokenInLastLocatedBlockLegacy: MiniDFSCluster file write/close commits final block.
+
+[HDFS-16] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java:428
+  site: <org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo: java.util.List setGenerationStampAndVerifyReplicas(long)>#u9
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestClientProtocolForPipelineRecovery.testUpdatePipeLineAfterDNReg (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  audit: TestClientProtocolForPipelineRecovery.testUpdatePipeLineAfterDNReg opens a block in MiniDFSCluster and twice calls DFSOutputStream.getStreamer().updatePipeline after updateBlockForPipeline. NameNode updatePipeline -> FSNamesystem.updatePipelineInternal -> BlockManager.updateLastBlock reaches the target Preconditions.checkState in BlockInfo.setGenerationStampAndVerifyReplicas. The earlier testGetNewStamp only calls updateBlockForPipeline and is not the witness for this site.
+
+[HDFS-17] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java:2851
+  site: <org.apache.hadoop.hdfs.server.blockmanagement.BlockManager$StatefulBlockInfo: void <init>(org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo,org.apache.hadoop.hdfs.protocol.Block,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$ReplicaState)>#u10
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestAddStripedBlocks.testAddUCReplica (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestAddStripedBlocks.java)
+  audit: TestAddStripedBlocks.testAddUCReplica: MiniDFSCluster receives incremental RECEIVING_BLOCK report for under-construction block; BlockManager creates stateful info.
+
+[HDFS-18] WORKLOAD_UNCERTAIN
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/DatanodeDescriptor.java:537
+  site: <org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor: void injectStorage(org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo)>#u41
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestSecureAliasMap.testSecureConnectionToAliasMap (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/aliasmap/TestSecureAliasMap.java)
+  audit: TestSecureAliasMap.testSecureConnectionToAliasMap starts a MiniDFSCluster with PROVIDED storage, so the workload is relevant. However, DatanodeDescriptor.injectStorage evaluates its target assert only when that storage already exists. ProvidedStorageMap.getStorage calls injectStorage only on a missing storage; BlockManager.updateHeartbeat can later call ProvidedStorageMap.updateStorage, which injects again. MiniDFSCluster.waitActive guarantees the first heartbeat, not a second. This test has no explicit triggerHeartbeats call, so source alone does not establish evaluation of the assert.
+
+[HDFS-19] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java:769
+  site: <org.apache.hadoop.hdfs.server.datanode.BPOfferService: boolean processCommandFromActive(org.apache.hadoop.hdfs.server.protocol.DatanodeCommand,java.net.InetSocketAddress)>#u97
+  kind: assert; exception: java.lang.AssertionError; static rule: remote-state-check
+  cluster test: TestDFSFinalize.testFinalize (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSFinalize.java)
+  audit: TestDFSFinalize.testFinalize: cluster finalization sends DNA_FINALIZE to DN, evaluating block-pool command assertion.
+
+[HDFS-20] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPOfferService.java:606
+  site: <org.apache.hadoop.hdfs.server.datanode.BPOfferService: void updateActorStatesFromHeartbeat(org.apache.hadoop.hdfs.server.datanode.BPServiceActor,org.apache.hadoop.hdfs.server.protocol.NNHAStatusHeartbeat)>#u98
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestClientProtocolForPipelineRecovery.testPipelineRecoveryOnOOB (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestClientProtocolForPipelineRecovery.java)
+  audit: TestClientProtocolForPipelineRecovery.testPipelineRecoveryOnOOB: active NN/DN heartbeat in live MiniDFSCluster calls this method and evaluates active-actor txid assertion.
+
+[HDFS-21] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java:290
+  site: <org.apache.hadoop.hdfs.server.datanode.BPServiceActor: void checkNNVersion(org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u12
+  kind: throw; exception: org.apache.hadoop.hdfs.server.common.IncorrectVersionException; static rule: state-read-and-update
+  cluster test: TestDFSInputStream.testSkipWithRemoteBlockReader (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInputStream.java)
+  audit: TestDFSInputStream.testSkipWithRemoteBlockReader: MiniDFSCluster DN startup handshake receives NamespaceInfo and checks NN version.
+
+[HDFS-22] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:396
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u73
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  audit: TestDFSStartupVersions.testVersions: stored BP VERSION combinations and DN restarts evaluate namespaceID compatibility guard.
+
+[HDFS-23] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:401
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u93
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  audit: Same version matrix evaluates blockpoolID compatibility guard on supported versions.
+
+[HDFS-24] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:424
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u137
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestDFSUpgrade.testUpgrade (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSUpgrade.java)
+  audit: TestDFSUpgrade.testUpgrade: future BP cTime/version in VERSION file reaches unsupported-transition comparison during DN startup.
+
+[HDFS-25] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:186
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory loadStorageDirectory(org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.datanode.StorageLocation,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u54
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  audit: TestDFSStartupVersions.testVersions: current-version BP startup without transition evaluates cTime mismatch check.
+
+[HDFS-26] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:626
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: void doRollback(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u37
+  kind: throw; exception: org.apache.hadoop.hdfs.server.common.InconsistentFSStateException; static rule: remote-state-check
+  cluster test: TestDFSRollback.testRollback (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRollback.java)
+  audit: TestDFSRollback.testRollback: previous BP directory plus ROLLBACK startup evaluates rollback cTime guard.
+
+[HDFS-27] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockPoolSliceStorage.java:510
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockPoolSliceStorage: void doUpgrade(java.lang.String,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,java.io.File,java.io.File,java.io.File,int,org.apache.hadoop.conf.Configuration)>#u19
+  kind: assert; exception: java.lang.AssertionError; static rule: remote-state-check
+  cluster test: TestDatanodeLayoutUpgrade.testUpgradeToIdBasedLayout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDatanodeLayoutUpgrade.java)
+  audit: TestDatanodeLayoutUpgrade.testUpgradeToIdBasedLayout: old DN layout is upgraded by MiniDFSCluster startup, evaluating upgrade assertion.
+
+[HDFS-28] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockRecoveryWorker.java:539
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker: org.apache.hadoop.hdfs.protocol.DatanodeID getDatanodeID(java.lang.String)>#u12
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestBlockRecovery2.testRecoveryTimeout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery2.java)
+  audit: TestBlockRecovery2.testRecoveryTimeout: real MiniDFSCluster lease recovery enters DN recovery worker and resolves participating DN.
+
+[HDFS-29] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockRecoveryWorker.java:578
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker: org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB getActiveNamenodeForBP(java.lang.String)>#u12
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestBlockRecovery2.testRecoveryTimeout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery2.java)
+  audit: Same recovery path synchronizes block and selects active NN, evaluating null BPOfferService guard.
+
+[HDFS-30] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockRecoveryWorker.java:583
+  site: <org.apache.hadoop.hdfs.server.datanode.BlockRecoveryWorker: org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB getActiveNamenodeForBP(java.lang.String)>#u23
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestBlockRecovery2.testRecoveryTimeout (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestBlockRecovery2.java)
+  audit: Same selection path evaluates null active-NN guard.
+
+[HDFS-31] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java:1835
+  site: <org.apache.hadoop.hdfs.server.datanode.DataNode: org.apache.hadoop.hdfs.server.datanode.BPOfferService getBPOSForBlock(org.apache.hadoop.hdfs.protocol.ExtendedBlock)>#u15
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestDiskError.testDataTransferWhenBytesPerChecksumIsZero (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDiskError.java)
+  audit: TestDiskError.testDataTransferWhenBytesPerChecksumIsZero: real cluster test calls dn0.transferBlock, which resolves BPOfferService for block.
+
+[HDFS-32] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java:3822
+  site: <org.apache.hadoop.hdfs.server.datanode.DataNode: void deleteBlockPool(java.lang.String,boolean)>#u14
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestDeleteBlockPool.testDeleteBlockPool (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDeleteBlockPool.java)
+  audit: TestDeleteBlockPool.testDeleteBlockPool: two-NN two-DN MiniDFSCluster calls dn1.deleteBlockPool while service running, explicitly expects IOException.
+
+[HDFS-33] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:259
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage$VolumeBuilder: void build()>#u28
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestDataNodeHotSwapVolumes.testAddOneNewVolume (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/datanode/TestDataNodeHotSwapVolumes.java)
+  audit: TestDataNodeHotSwapVolumes.testAddOneNewVolume: live DN reconfigure adds volume, FsDatasetImpl.addVolume calls builder, evaluating block-pool assertion.
+
+[HDFS-34] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:744
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u49
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  audit: TestDFSStartupVersions.testVersions: pre-federation LAST_UPGRADABLE_LAYOUT_VERSION=-16 with wrong namespace IDs (cases 3–5) evaluates and triggers namespace guard; FEDERATION feature appeared at -35.
+
+[HDFS-35] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:752
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u70
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  cluster test: TestDFSStartupVersions.testVersions (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSStartupVersions.java)
+  audit: Same test's current-layout startup (case 7) evaluates cluster-ID guard.
+
+[HDFS-36] NO_PATH
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:779
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: boolean doTransition(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo,org.apache.hadoop.hdfs.server.common.HdfsServerConstants$StartupOption,java.util.List,org.apache.hadoop.conf.Configuration)>#u96
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  audit: Only identified candidate is future layout (Integer.MIN_VALUE) in TestDFSStartupVersions.testVersions; assert this.layoutVersion >= current at DataStorage:735 fires first under default enabled assertions, so terminal IOException check is not reached.
+
+[HDFS-37] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataStorage.java:947
+  site: <org.apache.hadoop.hdfs.server.datanode.DataStorage: void doRollback(org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.protocol.NamespaceInfo)>#u48
+  kind: throw; exception: org.apache.hadoop.hdfs.server.common.InconsistentFSStateException; static rule: remote-state-check
+  cluster test: TestDFSRollback.testRollback (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSRollback.java)
+  audit: TestDFSRollback.testRollback: previous DN storage and ROLLBACK startup evaluate rollback cTime guard.
+
+[HDFS-38] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirAppendOp.java:121
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirAppendOp: org.apache.hadoop.hdfs.protocol.LastBlockWithStatus appendFile(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker,java.lang.String,java.lang.String,boolean,boolean)>#u76
+  kind: throw; exception: java.lang.UnsupportedOperationException; static rule: independent-views
+  cluster test: TestFileAppend.testAppendTwice (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileAppend.java)
+  audit: TestFileAppend.testAppendTwice: completed ordinary file appended on MiniDFSCluster, evaluating LAZY_PERSIST policy check false.
+
+[HDFS-39] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirAppendOp.java:132
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirAppendOp: org.apache.hadoop.hdfs.protocol.LastBlockWithStatus appendFile(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker,java.lang.String,java.lang.String,boolean,boolean)>#u96
+  kind: throw; exception: org.apache.hadoop.ipc.RetriableException; static rule: independent-views
+  cluster test: TestFileAppend.testAppendTwice (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileAppend.java)
+  audit: Same first append after full block reaches nonnull lastBlock and evaluates COMMITTED-state check false.
+
+[HDFS-40] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirAppendOp.java:138
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirAppendOp: org.apache.hadoop.hdfs.protocol.LastBlockWithStatus appendFile(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker,java.lang.String,java.lang.String,boolean,boolean)>#u111
+  kind: throw; exception: java.io.IOException; static rule: independent-views
+  cluster test: TestFileAppend.testAppendTwice (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestFileAppend.java)
+  audit: Same first append reaches complete last block and evaluates sufficient-replication check false.
+
+[HDFS-41] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirRenameOp.java:853
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirRenameOp: void checkUnderSameSnapshottableRoot(org.apache.hadoop.hdfs.server.namenode.FSDirectory,org.apache.hadoop.hdfs.server.namenode.INodesInPath,org.apache.hadoop.hdfs.server.namenode.INodesInPath)>#u25
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.SnapshotException; static rule: independent-views
+  cluster test: TestRenameWithOrderedSnapshotDeletion.testRename (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithOrderedSnapshotDeletion.java)
+  audit: TestRenameWithOrderedSnapshotDeletion.testRename: ordered snapshot deletion enabled, rename across roots evaluates snapshottable-root identity guard.
+
+[HDFS-42] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirTruncateOp.java:100
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirTruncateOp: org.apache.hadoop.hdfs.server.namenode.FSDirTruncateOp$TruncateResult truncate(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,long,java.lang.String,java.lang.String,long,org.apache.hadoop.hdfs.server.namenode.INode$BlocksMapUpdateInfo,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker)>#u52
+  kind: throw; exception: java.lang.UnsupportedOperationException; static rule: independent-views
+  cluster test: TestFileTruncate.testTruncateTwiceTogether (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFileTruncate.java)
+  audit: TestFileTruncate.testTruncateTwiceTogether: ordinary file truncate in MiniDFSCluster evaluates LAZY_PERSIST policy guard.
+
+[HDFS-43] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirTruncateOp.java:117
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirTruncateOp: org.apache.hadoop.hdfs.server.namenode.FSDirTruncateOp$TruncateResult truncate(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,long,java.lang.String,java.lang.String,long,org.apache.hadoop.hdfs.server.namenode.INode$BlocksMapUpdateInfo,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker)>#u80
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.AlreadyBeingCreatedException; static rule: independent-views
+  cluster test: TestFileTruncate.testTruncateTwiceTogether (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFileTruncate.java)
+  audit: Same test invokes second truncate during first block's UNDER_RECOVERY state; evaluates inconsistent truncate-length guard and expects exception.
+
+[HDFS-44] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirTruncateOp.java:132
+  site: <org.apache.hadoop.hdfs.server.namenode.FSDirTruncateOp: org.apache.hadoop.hdfs.server.namenode.FSDirTruncateOp$TruncateResult truncate(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,long,java.lang.String,java.lang.String,long,org.apache.hadoop.hdfs.server.namenode.INode$BlocksMapUpdateInfo,org.apache.hadoop.hdfs.server.namenode.FSPermissionChecker)>#u104
+  kind: throw; exception: org.apache.hadoop.HadoopIllegalArgumentException; static rule: independent-views
+  cluster test: TestFileTruncate.testTruncateFailure (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFileTruncate.java)
+  audit: TestFileTruncate.testTruncateFailure: fs.truncate(p, startingFileSize + 1) on closed file evaluates and triggers larger-length check.
+
+[HDFS-45] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSEditLog.java:1483
+  site: <org.apache.hadoop.hdfs.server.namenode.FSEditLog: void endCurrentLogSegment(boolean)>#u38
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestEditLog.testSimpleEditLog (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestEditLog.java)
+  audit: TestEditLog test around line 402 builds MiniDFSCluster and calls editLog.rollEditLog, which ends current segment and evaluates guard.
+
+[HDFS-46] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImage.java:183
+  site: <org.apache.hadoop.hdfs.server.namenode.FSImage: void format(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,java.lang.String,boolean)>#u16
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestDFSInputStream.testSkipWithRemoteBlockReader (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestDFSInputStream.java)
+  audit: TestDFSInputStream.testSkipWithRemoteBlockReader: default MiniDFSCluster formatting invokes FSImage.format and evaluates namespace-root check.
+
+[HDFS-47] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSImageFormatPBINode.java:530
+  site: <org.apache.hadoop.hdfs.server.namenode.FSImageFormatPBINode$Loader: org.apache.hadoop.hdfs.server.namenode.INodeFile loadINodeFile(org.apache.hadoop.hdfs.server.namenode.FsImageProto$INodeSection$INode)>#u72
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestSafeModeWithStripedFile.testStripedFile0 (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestSafeModeWithStripedFile.java)
+  audit: TestSafeModeWithStripedFile.testStripedFile0: writes striped file with nonempty blocks, restarts NN, FSImage loader evaluates EC policy ID check for stored block.
+
+[HDFS-48] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/INodeDirectory.java:356
+  site: <org.apache.hadoop.hdfs.server.namenode.INodeDirectory: void replaceChild(org.apache.hadoop.hdfs.server.namenode.INode,org.apache.hadoop.hdfs.server.namenode.INode,org.apache.hadoop.hdfs.server.namenode.INodeMap)>#u27
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestRenameWithSnapshots.testRenameUndo_1 (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestRenameWithSnapshots.java)
+  audit: TestRenameWithSnapshots.testRenameUndo_1: real MiniDFSCluster fsdir root INode calls root.replaceChild(dir2, spy(dir2), inodeMap); check compares oldChild with actual root child before the spy is installed.
+
+[HDFS-49] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java:189
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature: org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot addSnapshot(org.apache.hadoop.hdfs.server.namenode.INodeDirectory,org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager,java.lang.String,org.apache.hadoop.hdfs.server.namenode.LeaseManager,long)>#u21
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.SnapshotException; static rule: independent-views
+  cluster test: TestSnapshot.testSnapshot (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java)
+  audit: TestSnapshot.testSnapshot: creates snapshots on real MiniDFSCluster, evaluating quota comparison.
+
+[HDFS-50] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java:199
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature: org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot addSnapshot(org.apache.hadoop.hdfs.server.namenode.INodeDirectory,org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager,java.lang.String,org.apache.hadoop.hdfs.server.namenode.LeaseManager,long)>#u38
+  kind: throw; exception: org.apache.hadoop.hdfs.protocol.SnapshotException; static rule: independent-views
+  cluster test: TestSnapshot.testSnapshot (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java)
+  audit: Same test creates another named snapshot, evaluating existing-name search.
+
+[HDFS-51] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/DirectorySnapshottableFeature.java:601
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature: void dumpTreeRecursively(org.apache.hadoop.hdfs.server.namenode.INodeDirectory,java.io.PrintWriter,java.lang.StringBuilder,int)>#u45
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestSnapshot.testSnapshot (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/snapshot/TestSnapshot.java)
+  audit: TestSnapshot.testSnapshot calls checkFSImage -> SnapshotTestHelper.dumpTree2File on snapshottable tree after snapshot creation; evaluates diff-count check.
+
+[HDFS-52] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467
+  site: <org.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver: void serializeSnapshotSection(java.io.OutputStream)>#u65
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestFSImageWithSnapshot.testSaveLoadImage (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java)
+  audit: TestFSImageWithSnapshot.testSaveLoadImage: creates snapshots and checkImage -> saveFSImageToTempFile; snapshot serializer checks serialized count.
+
+[HDFS-53] TESTED
+  source: hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/visitor/NamespacePrintVisitor.java:160
+  site: <org.apache.hadoop.hdfs.server.namenode.visitor.NamespacePrintVisitor: void visitSnapshottable(org.apache.hadoop.hdfs.server.namenode.INodeDirectory,org.apache.hadoop.hdfs.server.namenode.snapshot.DirectorySnapshottableFeature)>#u47
+  kind: check; exception: <not recorded for direct check>; static rule: independent-views
+  cluster test: TestFSImageWithSnapshot.testDoubleRename (hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/namenode/TestFSImageWithSnapshot.java)
+  audit: TestFSImageWithSnapshot.testDoubleRename: creates snapshots, then printTree -> NamespacePrintVisitor.print2Sting, evaluating snapshot-count check.
+
+
+HBASE (38 candidate checks)
+-------------------------------
+[HBASE-01] TESTED
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/ConnectionImplementation.java:1106
+  site: <org.apache.hadoop.hbase.client.ConnectionImplementation: org.apache.hadoop.hbase.RegionLocations locateRegionInMeta(org.apache.hadoop.hbase.TableName,byte[],boolean,boolean,int)>#u224
+  kind: throw; exception: org.apache.hadoop.hbase.regionserver.RegionServerStoppedException; static rule: state-read-and-update
+  cluster test: TestConnectionImplementation.testMetaLookupThreadPoolCreated (hbase-server/src/test/java/org/apache/hadoop/hbase/client/TestConnectionImplementation.java)
+  audit: TestConnectionImplementation.testMetaLookupThreadPoolCreated starts cluster and calls c.relocateRegion; valid table lookup goes through locateRegionInMeta, evaluates isDeadServer(serverName).
+
+[HBASE-02] TESTED
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/ConnectionImplementation.java:911
+  site: <org.apache.hadoop.hbase.client.ConnectionImplementation: org.apache.hadoop.hbase.RegionLocations relocateRegion(org.apache.hadoop.hbase.TableName,byte[],int)>#u17
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotEnabledException; static rule: remote-state-check
+  cluster test: TestConnectionImplementation.testMetaLookupThreadPoolCreated (hbase-server/src/test/java/org/apache/hadoop/hbase/client/TestConnectionImplementation.java)
+  audit: Same test calls c.relocateRegion; the non-meta table evaluates isTableDisabled.
+
+[HBASE-03] NO_PATH
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/ConnectionImplementation.java:2337
+  site: <org.apache.hadoop.hbase.client.ConnectionImplementation: org.apache.hadoop.hbase.client.TableState getTableState(org.apache.hadoop.hbase.TableName)>#u7
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotFoundException; static rule: state-read-and-update
+  audit: No Java call to this connection method found; apparent test references are to MetaTableAccessor.getTableState or master TableStateManager.getTableState, which are distinct.
+
+[HBASE-04] TESTED
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/HBaseAdmin.java:1263
+  site: <org.apache.hadoop.hbase.client.HBaseAdmin: java.util.concurrent.Future flushAsync(org.apache.hadoop.hbase.TableName,java.util.List)>#u8
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotEnabledException; static rule: remote-state-check
+  cluster test: TestMobStoreScanner.testMobStoreScanner (hbase-server/src/test/java/org/apache/hadoop/hbase/mob/TestMobStoreScanner.java)
+  audit: Cluster tests such as TestMobStoreScanner call admin.flush(table); HBaseAdmin.flush → Admin.flush(TableName,List) default → flushAsync, whose first statement evaluates isTableEnabled.
+
+[HBASE-05] NO_PATH
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/HBaseAdmin.java:2860
+  site: <org.apache.hadoop.hbase.client.HBaseAdmin: java.util.concurrent.Future restoreSnapshotAsync(java.lang.String)>#u11
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotDisabledException; static rule: remote-state-check
+  audit: No .restoreSnapshotAsync(...) test call found. The synchronous restoreSnapshot has a separate check at #7 and does not establish coverage here.
+
+[HBASE-06] NO_PATH
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/HBaseAdmin.java:3428
+  site: <org.apache.hadoop.hbase.client.HBaseAdmin: org.apache.hadoop.hbase.client.CompactionState getCompactionState(org.apache.hadoop.hbase.TableName,org.apache.hadoop.hbase.client.CompactType)>#u108
+  kind: throw; exception: java.lang.IllegalArgumentException; static rule: remote-state-check
+  audit: Cluster tests call the method, but candidate is the default: arm of a switch on the CompactType enum. Valid enum cases do not enter that arm. Method coverage is not condition coverage for this point.
+
+[HBASE-07] TESTED
+  source: hbase-client/src/main/java/org/apache/hadoop/hbase/client/HBaseAdmin.java:2788
+  site: <org.apache.hadoop.hbase.client.HBaseAdmin: void restoreSnapshot(java.lang.String,boolean,boolean)>#u13
+  kind: throw; exception: org.apache.hadoop.hbase.TableNotDisabledException; static rule: remote-state-check
+  cluster test: TestRestoreFlushSnapshotFromClient.testRestoreSnapshot (hbase-server/src/test/java/org/apache/hadoop/hbase/snapshot/TestRestoreFlushSnapshotFromClient.java)
+  audit: TestRestoreFlushSnapshotFromClient.testRestoreSnapshot starts a cluster, disables an existing table, then calls admin.restoreSnapshot, reaching isTableDisabled.
+
+[HBASE-08] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/ClusterSchemaServiceImpl.java:116
+  site: <org.apache.hadoop.hbase.master.ClusterSchemaServiceImpl: org.apache.hadoop.hbase.NamespaceDescriptor getNamespace(java.lang.String)>#u7
+  kind: throw; exception: org.apache.hadoop.hbase.NamespaceNotFoundException; static rule: propagated-view
+  cluster test: TestNamespaceAuditor.testTableOperations (hbase-server/src/test/java/org/apache/hadoop/hbase/namespace/TestNamespaceAuditor.java)
+  audit: TestNamespaceAuditor.testTableOperations starts a cluster, creates a namespace and calls ADMIN.getNamespaceDescriptor; master namespace lookup reaches the null check.
+
+[HBASE-09] NO_PATH
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/HMasterCommandLine.java:229
+  site: <org.apache.hadoop.hbase.master.HMasterCommandLine: int startMaster()>#u67
+  kind: throw; exception: java.io.IOException; static rule: independent-views
+  audit: Check is in standalone command-line startup when embedded ZooKeeper picks a port; HBaseTestingUtility.startMiniCluster uses LocalHBaseCluster instead. No HBase cluster test route found.
+
+[HBASE-10] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/AssignmentManager.java:757
+  site: <org.apache.hadoop.hbase.master.assignment.AssignmentManager: void preTransitCheck(org.apache.hadoop.hbase.master.assignment.RegionStateNode,org.apache.hadoop.hbase.master.RegionState$State[])>#u15
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: message-state-check
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  audit: TestRegionMove.testDisableAndMove starts a 2-RS cluster and calls admin.assign; AssignmentManager.assign → createAssignProcedure(...,false) → first check in preTransitCheck.
+
+[HBASE-11] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/AssignmentManager.java:760
+  site: <org.apache.hadoop.hbase.master.assignment.AssignmentManager: void preTransitCheck(org.apache.hadoop.hbase.master.assignment.RegionStateNode,org.apache.hadoop.hbase.master.RegionState$State[])>#u25
+  kind: throw; exception: org.apache.hadoop.hbase.client.DoNotRetryRegionException; static rule: message-state-check
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  audit: Same path with a region not already in transition evaluates expected-state check.
+
+[HBASE-12] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/AssignmentManager.java:763
+  site: <org.apache.hadoop.hbase.master.assignment.AssignmentManager: void preTransitCheck(org.apache.hadoop.hbase.master.assignment.RegionStateNode,org.apache.hadoop.hbase.master.RegionState$State[])>#u38
+  kind: throw; exception: org.apache.hadoop.hbase.DoNotRetryIOException; static rule: remote-state-check
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  audit: Same path when preceding checks pass evaluates table-disabled check; test deliberately disables then reassigns.
+
+[HBASE-13] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/MergeTableRegionsProcedure.java:495
+  site: <org.apache.hadoop.hbase.master.assignment.MergeTableRegionsProcedure: boolean prepareMergeRegion(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv)>#u105
+  kind: throw; exception: org.apache.hadoop.hbase.exceptions.MergeRegionException; static rule: state-read-and-update
+  cluster test: TestMergeTableRegionsProcedure.testMergeTwoRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/assignment/TestMergeTableRegionsProcedure.java)
+  audit: TestMergeTableRegionsProcedure.testMergeTwoRegions starts cluster and executes merge preparation, evaluating MetaTableAccessor.hasMergeRegions.
+
+[HBASE-14] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/MergeTableRegionsProcedure.java:500
+  site: <org.apache.hadoop.hbase.master.assignment.MergeTableRegionsProcedure: boolean prepareMergeRegion(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv)>#u119
+  kind: throw; exception: org.apache.hadoop.hbase.UnknownRegionException; static rule: state-read-and-update
+  cluster test: TestMergeTableRegionsProcedure.testMergeTwoRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/assignment/TestMergeTableRegionsProcedure.java)
+  audit: Same successful merge evaluates state == null for each region.
+
+[HBASE-15] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/MergeTableRegionsProcedure.java:503
+  site: <org.apache.hadoop.hbase.master.assignment.MergeTableRegionsProcedure: boolean prepareMergeRegion(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv)>#u129
+  kind: throw; exception: org.apache.hadoop.hbase.exceptions.MergeRegionException; static rule: state-read-and-update
+  cluster test: TestMergeTableRegionsProcedure.testMergeTwoRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/assignment/TestMergeTableRegionsProcedure.java)
+  audit: Same successful merge evaluates !state.isOpened() for each region.
+
+[HBASE-16] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/TransitRegionStateProcedure.java:371
+  site: <org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure: org.apache.hadoop.hbase.procedure2.StateMachineProcedure$Flow confirmClosed(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,org.apache.hadoop.hbase.master.assignment.RegionStateNode)>#u28
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: message-state-check
+  audit: TestTransitRegionStateProcedure is a cluster test, but this particular CLOSING check lies after the normal CLOSED early return; requires a failed close. No definite tested failure path traced.
+
+[HBASE-17] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/TransitRegionStateProcedure.java:379
+  site: <org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure: org.apache.hadoop.hbase.procedure2.StateMachineProcedure$Flow confirmClosed(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,org.apache.hadoop.hbase.master.assignment.RegionStateNode)>#u38
+  kind: assert; exception: java.lang.AssertionError; static rule: message-state-check
+  audit: Assertion is after both CLOSED and CLOSING early paths; requires abnormal closure. Normal moves do not suffice.
+
+[HBASE-18] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/assignment/TransitRegionStateProcedure.java:325
+  site: <org.apache.hadoop.hbase.master.assignment.TransitRegionStateProcedure: org.apache.hadoop.hbase.procedure2.StateMachineProcedure$Flow confirmOpened(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,org.apache.hadoop.hbase.master.assignment.RegionStateNode)>#u73
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: message-state-check
+  audit: Retry-threshold check lies after the normal OPEN early return; a failed-open sequence must be shown.
+
+[HBASE-19] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/procedure/ModifyTableProcedure.java:135
+  site: <org.apache.hadoop.hbase.master.procedure.ModifyTableProcedure: void preflightChecks(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,java.lang.Boolean)>#u50
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: independent-views
+  cluster test: TestModifyTableProcedure.testModifyWillNotReopenRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/procedure/TestModifyTableProcedure.java)
+  audit: TestModifyTableProcedure.testModifyWillNotReopenRegions uses a real cluster and submits ModifyTableProcedure(..., reopenRegions=false), evaluating column-family-count comparison.
+
+[HBASE-20] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/master/procedure/ModifyTableProcedure.java:139
+  site: <org.apache.hadoop.hbase.master.procedure.ModifyTableProcedure: void preflightChecks(org.apache.hadoop.hbase.master.procedure.MasterProcedureEnv,java.lang.Boolean)>#u55
+  kind: throw; exception: org.apache.hadoop.hbase.HBaseIOException; static rule: independent-views
+  cluster test: TestModifyTableProcedure.testModifyWillNotReopenRegions (hbase-server/src/test/java/org/apache/hadoop/hbase/master/procedure/TestModifyTableProcedure.java)
+  audit: Same test with unchanged family count proceeds to isCoprocModified; additional test testModifyTableWithCoprocessorAndColumnFamilyPropertyChange covers that path too.
+
+[HBASE-21] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/namespace/NamespaceStateManager.java:133
+  site: <org.apache.hadoop.hbase.namespace.NamespaceStateManager: void checkAndUpdateNamespaceRegionCount(org.apache.hadoop.hbase.TableName,int)>#u30
+  kind: throw; exception: org.apache.hadoop.hbase.quotas.QuotaExceededException; static rule: state-read-and-update
+  cluster test: TestNamespaceAuditor.testRestoreSnapshotQuotaExceed (hbase-server/src/test/java/org/apache/hadoop/hbase/namespace/TestNamespaceAuditor.java)
+  audit: TestNamespaceAuditor.testRestoreSnapshot / testRestoreSnapshotQuotaExceed: cluster, snapshot restore → RestoreSnapshotProcedure → MasterQuotaManager.checkAndUpdateNamespaceRegionQuota → NamespaceAuditor.checkQuotaToUpdateRegion → this count comparison.
+
+[HBASE-22] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/namespace/NamespaceStateManager.java:172
+  site: <org.apache.hadoop.hbase.namespace.NamespaceStateManager: void checkAndUpdateNamespaceTableCount(org.apache.hadoop.hbase.TableName,int)>#u54
+  kind: throw; exception: org.apache.hadoop.hbase.quotas.QuotaExceededException; static rule: state-read-and-update
+  cluster test: TestNamespaceAuditor.testTableOperations (hbase-server/src/test/java/org/apache/hadoop/hbase/namespace/TestNamespaceAuditor.java)
+  audit: TestNamespaceAuditor.testTableOperations: cluster + quota initialized + ADMIN.createTable, through NamespaceAuditor.checkQuotaToCreateTable to table/region limit comparison.
+
+[HBASE-23] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/procedure/ZKProcedureCoordinator.java:131
+  site: <org.apache.hadoop.hbase.procedure.ZKProcedureCoordinator: void sendGlobalBarrierReached(org.apache.hadoop.hbase.procedure.Procedure,java.util.List)>#u43
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  audit: Real HBase legacy flush/snapshot may use this method, but the target PB-magic guard requires a reached-child znode to exist already when the coordinator immediately scans after creating the parent. This is a timing race, not established by a named HBase test. sendMemberCompleted prepends PB magic **even to an empty payload**, so the empty insideBarrier() result does not prove the guard is unreachable.
+
+[HBASE-24] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/procedure/ZKProcedureMemberRpcs.java:210
+  site: <org.apache.hadoop.hbase.procedure.ZKProcedureMemberRpcs: void startNewSubprocedure(java.lang.String)>#u55
+  kind: throw; exception: java.lang.IllegalArgumentException; static rule: state-read-and-update
+  cluster test: TestFlushTableProcedureWithDoNotSupportFlushTableMaster.testFlushFallback (hbase-server/src/test/java/org/apache/hadoop/hbase/master/procedure/TestFlushTableProcedureWithDoNotSupportFlushTableMaster.java)
+  audit: TestFlushTableProcedureWithDoNotSupportFlushTableMaster.testFlushFallback starts MiniHBaseCluster and forces the legacy ZK flush procedure. Coordinator sendGlobalBarrierStart prepends PB magic to its acquire znode; RS member reads it and evaluates isPBMagicPrefix in startNewSubprocedure.
+
+[HBASE-25] NO_PATH
+  source: hbase-procedure/src/main/java/org/apache/hadoop/hbase/procedure2/store/wal/WALProcedureStore.java:725
+  site: <org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore: long pushData(org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore$PushType,org.apache.hadoop.hbase.procedure2.util.ByteSlot,long,long[])>#u22
+  kind: throw; exception: java.lang.RuntimeException; static rule: independent-views
+  audit: HMaster installs RegionProcedureStore, not WALProcedureStore. RegionProcedureStore's old-WAL migration opens WALProcedureStore only to **load** old procedures. Tests that write it (TestWALProcedureStoreOnHDFS, TestRegionProcedureStoreMigration, hbase-procedure tests) do not start an HBase cluster.
+
+[HBASE-26] NO_PATH
+  source: hbase-procedure/src/main/java/org/apache/hadoop/hbase/procedure2/store/wal/WALProcedureStore.java:727
+  site: <org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore: long pushData(org.apache.hadoop.hbase.procedure2.store.wal.WALProcedureStore$PushType,org.apache.hadoop.hbase.procedure2.util.ByteSlot,long,long[])>#u30
+  kind: throw; exception: java.lang.RuntimeException; static rule: independent-views
+  audit: Same production/test distinction as #25; this second guard additionally requires isRunning() to pass.
+
+[HBASE-27] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java:1053
+  site: <org.apache.hadoop.hbase.regionserver.HRegionServer: void blockAndCheckIfStopped(org.apache.hadoop.hbase.zookeeper.ZKNodeTracker)>#u10
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  audit: Every normal RS startup calls blockAndCheckIfStopped, but this.stopped guard executes only while the ZK tracker returns null; timing determines whether a cluster test reaches it.
+
+[HBASE-28] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/HRegionServer.java:2487
+  site: <org.apache.hadoop.hbase.regionserver.HRegionServer: void putUpWebUI()>#u33
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestInfoServers.testInfoServersRedirect (hbase-server/src/test/java/org/apache/hadoop/hbase/TestInfoServers.java)
+  audit: TestInfoServers sets positive ephemeral info ports then starts a mini HBase cluster, so putUpWebUI passes the port<0 early return and evaluates isLocalAddress.
+
+[HBASE-29] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/RSRpcServices.java:2263
+  site: <org.apache.hadoop.hbase.regionserver.RSRpcServices: org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos$ReplicateWALEntryResponse replay(org.apache.hbase.thirdparty.com.google.protobuf.RpcController,org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos$ReplicateWALEntryRequest)>#u66
+  kind: throw; exception: org.apache.hadoop.hbase.NotServingRegionException; static rule: propagated-view
+  cluster test: TestRegionReplicaReplicationEndpoint.testRegionReplicaReplicationWith2Replicas (hbase-server/src/test/java/org/apache/hadoop/hbase/replication/regionserver/TestRegionReplicaReplicationEndpoint.java)
+  audit: TestRegionReplicaReplicationEndpoint.testRegionReplicaReplicationWith2Replicas starts an HBase cluster, enables replica replication and writes data; RegionReplicaReplicationEndpoint sends ReplicateWALEntryRequest to RSRpcServices.replay, which checks encoded region names per entry.
+
+[HBASE-30] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/RSRpcServices.java:2298
+  site: <org.apache.hadoop.hbase.regionserver.RSRpcServices: org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos$ReplicateWALEntryResponse replay(org.apache.hbase.thirdparty.com.google.protobuf.RpcController,org.apache.hadoop.hbase.shaded.protobuf.generated.AdminProtos$ReplicateWALEntryRequest)>#u133
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: TestRegionReplicaReplicationEndpoint.testRegionReplicaReplicationWith2Replicas (hbase-server/src/test/java/org/apache/hadoop/hbase/replication/regionserver/TestRegionReplicaReplicationEndpoint.java)
+  audit: Same replicated write path replays edits and loops over doReplayBatchOp results, evaluating success status.
+
+[HBASE-31] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/RSRpcServices.java:2011
+  site: <org.apache.hadoop.hbase.regionserver.RSRpcServices: void throwOnWrongStartCode(long)>#u21
+  kind: throw; exception: java.lang.Throwable; static rule: propagated-view
+  cluster test: TestRegionMove.testDisableAndMove (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/TestRegionMove.java)
+  audit: Cluster region open/close RPC path: RSProcedureDispatcher sets serverStartCode in requests; RSRpcServices checks it. TestRegionMove opens/closes regions in a real cluster.
+
+[HBASE-32] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/regionserver/handler/RegionReplicaFlushHandler.java:136
+  site: <org.apache.hadoop.hbase.regionserver.handler.RegionReplicaFlushHandler: void triggerFlushInPrimaryRegion(org.apache.hadoop.hbase.regionserver.HRegion)>#u61
+  kind: throw; exception: java.io.IOException; static rule: remote-state-check
+  audit: Guard is in catch(IOException) after flush RPC; ordinary replica-flush tests do not prove the catch path occurred.
+
+[HBASE-33] UNCERTAIN
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.java:141
+  site: <org.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager: byte[] retrievePassword(org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier)>#u24
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  audit: TestTokenAuthentication calls retrievePassword but runs a token RPC server and MiniZK, not HBase mini cluster; this nested zkWatcher.isAborted check also requires missing key.
+
+[HBASE-34] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/security/token/AuthenticationTokenSecretManager.java:160
+  site: <org.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager: byte[] retrievePassword(org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier)>#u89
+  kind: throw; exception: org.apache.hadoop.security.token.SecretManager$InvalidToken; static rule: propagated-view
+  cluster test: TestGenerateDelegationToken.testOnlyToken (hbase-server/src/test/java/org/apache/hadoop/hbase/security/token/TestGenerateDelegationToken.java)
+  audit: SecureTestCluster starts MiniZK, MiniDFS **and LocalHBaseCluster**. TestGenerateDelegationToken.testOnlyToken authenticates to the cluster with a delegation token, reaching retrievePassword; even with the key present, execution evaluates the final masterKey == null guard.
+
+[HBASE-35] TESTED
+  source: hbase-server/src/main/java/org/apache/hadoop/hbase/util/HBaseFsck.java:2720
+  site: <org.apache.hadoop.hbase.util.HBaseFsck$3: boolean visit(org.apache.hadoop.hbase.client.Result)>#u88
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  cluster test: TestHBaseFsckReplication.test (hbase-server/src/test/java/org/apache/hadoop/hbase/util/TestHBaseFsckReplication.java)
+  audit: TestHBaseFsckReplication starts HBase mini cluster and calls HbckTestingUtil.doFsck → onlineHbck → onlineConsistencyRepair → loadMetaEntries, whose visitor evaluates duplicate meta-entry guard on scanned rows.
+
+[HBASE-36] NO_PATH
+  source: hbase-zookeeper/src/main/java/org/apache/hadoop/hbase/zookeeper/MasterAddressTracker.java:236
+  site: <org.apache.hadoop.hbase.zookeeper.MasterAddressTracker: int getBackupMasterInfoPort(org.apache.hadoop.hbase.zookeeper.ZKWatcher,org.apache.hadoop.hbase.ServerName)>#u15
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  audit: The direct tracker test uses MiniZK only. HBase HTTP page tests (TestInfoServers, TestMasterStatusPage) exercise backupMasterStatus.jsp with one master, so its backup-master loop is empty. No other HBase cluster test caller was found.
+
+[HBASE-37] TESTED
+  source: hbase-zookeeper/src/main/java/org/apache/hadoop/hbase/zookeeper/MasterAddressTracker.java:206
+  site: <org.apache.hadoop.hbase.zookeeper.MasterAddressTracker: int getMasterInfoPort(org.apache.hadoop.hbase.zookeeper.ZKWatcher)>#u12
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  cluster test: TestRSStatusPage.testStatusPage (hbase-server/src/test/java/org/apache/hadoop/hbase/regionserver/http/TestRSStatusPage.java)
+  audit: TestRSStatusPage.testStatusPage builds a LocalHBaseCluster with MiniZK/MiniDFS and calls master.getActiveMasterInfoPort → ActiveMasterManager → this static method. Do **not** infer this from instance getMasterInfoPort() tests; they are different methods.
+
+[HBASE-38] NO_PATH
+  source: hbase-zookeeper/src/main/java/org/apache/hadoop/hbase/zookeeper/MasterAddressTracker.java:177
+  site: <org.apache.hadoop.hbase.zookeeper.MasterAddressTracker: org.apache.hadoop.hbase.ServerName getMasterAddress(org.apache.hadoop.hbase.zookeeper.ZKWatcher)>#u12
+  kind: throw; exception: java.io.IOException; static rule: state-read-and-update
+  audit: TestActiveMasterManager invokes it directly with only MiniZK. The only full HBase cluster test found invoking HMaster.getActiveMaster is TestRSStatusPage, on the active master whose activeMasterServerName is populated during master registration; this bypasses the static fetch. No tested standby/master cache-miss route found.
+
+
+SOLR (40 candidate checks)
+------------------------------
+[SOLR-01] NO_PATH
+  source: solr/solrj/src/java/org/apache/solr/client/solrj/impl/BaseHttpClusterStateProvider.java:267
+  site: <org.apache.solr.client.solrj.impl.BaseHttpClusterStateProvider: java.util.Map getAliases(boolean)>#u93
+  kind: throw; exception: java.lang.RuntimeException; static rule: cached-refresh
+  audit: CloudHttp2SolrClientTest.testAliasHandling enters getAliases, but a successful first fetch returns within the node loop before this all-nodes-failed throw. No test found that exhausts every node.
+
+[SOLR-02] TESTED
+  source: solr/solrj/src/java/org/apache/solr/client/solrj/impl/BaseHttpClusterStateProvider.java:180
+  site: <org.apache.solr.client.solrj.impl.BaseHttpClusterStateProvider: java.util.Set getLiveNodes()>#u5
+  kind: throw; exception: java.lang.RuntimeException; static rule: cached-refresh
+  cluster test: CloudHttp2SolrClientTest.testParallelUpdateQTime (solr/solrj/src/test/org/apache/solr/client/solrj/impl/CloudHttp2SolrClientTest.java)
+  audit: CloudHttp2SolrClientTest.testParallelUpdateQTime: setupCluster creates an HTTP-based client; client requests use BaseCloudSolrClient's provider getLiveNodes, evaluating liveNodes == null.
+
+[SOLR-03] NO_PATH
+  source: solr/solrj/src/java/org/apache/solr/client/solrj/impl/BaseHttpClusterStateProvider.java:198
+  site: <org.apache.solr.client.solrj.impl.BaseHttpClusterStateProvider: java.util.Set getLiveNodes()>#u66
+  kind: throw; exception: java.lang.RuntimeException; static rule: cached-refresh
+  audit: The same HTTP client may refresh stale live nodes, but a successful refresh returns inside the loop. No cluster test found that expires the cache and exhausts every fetch target.
+
+[SOLR-04] TESTED
+  source: solr/solrj/src/java/org/apache/solr/client/solrj/impl/BaseHttpClusterStateProvider.java:75
+  site: <org.apache.solr.client.solrj.impl.BaseHttpClusterStateProvider: void init(java.util.List)>#u58
+  kind: throw; exception: java.lang.RuntimeException; static rule: cached-refresh
+  cluster test: HttpClusterStateSSLTest.testHttpClusterStateWithSSL (solr/solrj/src/test/org/apache/solr/client/solrj/impl/HttpClusterStateSSLTest.java)
+  audit: HttpClusterStateSSLTest.testHttpClusterStateWithSSL: starts a two-node cluster and constructs URL-based cloud clients; init evaluates whether fetched liveNodes is null/empty.
+
+[SOLR-05] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1274
+  site: <org.apache.solr.cloud.ZkController: java.lang.String register(java.lang.String,org.apache.solr.core.CoreDescriptor,boolean,boolean,boolean)>#u43
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  audit: AddReplicaTest.testAddMultipleReplicas: creates a collection/replicas; CoreContainer pre-registers and ZkContainer.registerInZk invokes ZkController.register, evaluating replica == null.
+
+[SOLR-06] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1315
+  site: <org.apache.solr.cloud.ZkController: java.lang.String register(java.lang.String,org.apache.solr.core.CoreDescriptor,boolean,boolean,boolean)>#u104
+  kind: assert; exception: java.lang.AssertionError; static rule: remote-state-check
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  audit: The same successful replica registration proceeds to the leader-vs-PULL assertion, with assertions enabled in Solr test JVMs.
+
+[SOLR-07] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1326
+  site: <org.apache.solr.cloud.ZkController: java.lang.String register(java.lang.String,org.apache.solr.core.CoreDescriptor,boolean,boolean,boolean)>#u113
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  audit: The same registration proceeds to CoreContainer.getCore and evaluates core == null.
+
+[SOLR-08] NO_PATH
+  source: solr/core/src/java/org/apache/solr/cloud/ZkController.java:1860
+  site: <org.apache.solr.cloud.ZkController: void waitForShardId(org.apache.solr.core.CoreDescriptor)>#u38
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: state-read-and-update
+  audit: Collection creation reaches waitForShardId, but returns as soon as a shard ID appears. The target failure requires all 320 retries to expire; no cluster test found doing that.
+
+[SOLR-09] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/DeleteReplicaCmd.java:278
+  site: <org.apache.solr.cloud.api.collections.DeleteReplicaCmd: void deleteCore(org.apache.solr.common.cloud.Slice,java.lang.String,java.lang.String,org.apache.solr.common.cloud.ZkNodeProps,java.lang.String,org.apache.solr.common.util.NamedList,java.lang.Runnable,boolean)>#u118
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: DeleteReplicaTest.deleteReplicaAndVerifyDirectoryCleanup (solr/core/src/test/org/apache/solr/cloud/DeleteReplicaTest.java)
+  audit: DeleteReplicaTest.deleteReplicaAndVerifyDirectoryCleanup: synchronous deleteReplica(...).process reaches deleteCore with default parallel=false, evaluates !callable.call().
+
+[SOLR-10] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/MaintainRoutedAliasCmd.java:117
+  site: <org.apache.solr.cloud.api.collections.MaintainRoutedAliasCmd: void call(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u28
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: TimeRoutedAliasUpdateProcessorTest.test adds routed documents. RoutedAlias.ensureCollection invokes MaintainRoutedAliasCmd.remoteInvoke; the Overseer handler evaluates ra == null.
+
+[SOLR-11] NO_PATH
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/MaintainRoutedAliasCmd.java:160
+  site: <org.apache.solr.cloud.api.collections.MaintainRoutedAliasCmd: void call(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u86
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  audit: The throw is the default of a switch over known RoutedAlias.Action enum values; normal routed-alias tests use recognized actions. No matching cluster-test path found.
+
+[SOLR-12] NO_PATH
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/OverseerCollectionMessageHandler.java:570
+  site: <org.apache.solr.cloud.api.collections.OverseerCollectionMessageHandler: java.lang.String waitForCoreNodeName(java.lang.String,java.lang.String,java.lang.String)>#u47
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  audit: AddReplicaTest.testAddMultipleReplicas calls waitForCoreNodeName, but successful replica creation returns before the terminal throw; no 320-retry exhaustion test found.
+
+[SOLR-13] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/RoutedAlias.java:350
+  site: <org.apache.solr.cloud.api.collections.RoutedAlias: org.apache.solr.cloud.api.collections.RoutedAlias$CandidateCollection doSynchronous(org.apache.solr.update.AddUpdateCommand,org.apache.solr.cloud.api.collections.RoutedAlias$CandidateCollection,org.apache.solr.core.CoreContainer)>#u29
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.testPreemptiveCreation (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: TimeRoutedAliasUpdateProcessorTest.testPreemptiveCreation: addOneDocSynchCreation enters doSynchronous, then checks refreshed alias membership with observedCols.contains(...).
+
+[SOLR-14] TESTED
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/SplitShardCmd.java:167
+  site: <org.apache.solr.cloud.api.collections.SplitShardCmd: boolean split(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u110
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  cluster test: SplitShardTest.doTest (solr/core/src/test/org/apache/solr/cloud/SplitShardTest.java)
+  audit: SplitShardTest.doTest successfully splits a shard; SplitShardCmd.split checks whether its selected leader's live-node znode exists.
+
+[SOLR-15] NO_PATH
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/SplitShardCmd.java:538
+  site: <org.apache.solr.cloud.api.collections.SplitShardCmd: boolean split(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u686
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  audit: This nested check is entered only when the leader znode disappears or its ZK session owner changes at the *second* split-time probe. Normal successful split tests bypass the whole failure block; no test found forcing this timing.
+
+[SOLR-16] NO_PATH
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/SplitShardCmd.java:543
+  site: <org.apache.solr.cloud.api.collections.SplitShardCmd: boolean split(org.apache.solr.common.cloud.ClusterState,org.apache.solr.common.cloud.ZkNodeProps,org.apache.solr.common.util.NamedList)>#u705
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: remote-state-check
+  audit: Same second-probe failure block; no cluster test found forcing a changed ZK session owner during split.
+
+[SOLR-17] NO_PATH
+  source: solr/core/src/java/org/apache/solr/cloud/api/collections/TimeRoutedAlias.java:579
+  site: <org.apache.solr.cloud.api.collections.TimeRoutedAlias: java.util.List calcDeletes(java.util.List)>#u80
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  audit: The assertion is under log.isDebugEnabled() *inside* calcDeletes's else loop arm. TimeRoutedAliasUpdateProcessorTest.test sets cloud DEBUG but its auto-delete action creates day 27 with newest existing day 26 and delBefore=day 27, so the loop takes its first if/break. Other auto-delete tests have no matching DEBUG override; the core test log4j2 root is INFO.
+
+[SOLR-18] TESTED
+  source: solr/solrj/src/java/org/apache/solr/common/cloud/ZkStateReader.java:2347
+  site: <org.apache.solr.common.cloud.ZkStateReader$AliasesManager: boolean setIfNewer(org.apache.solr.common.cloud.Aliases)>#u42
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: AliasIntegrationTest.testModifyPropertiesV2 (solr/core/src/test/org/apache/solr/cloud/AliasIntegrationTest.java)
+  audit: AliasIntegrationTest.testModifyPropertiesV2 calls createColectionsAndAlias: its cloud client has already used ZkClientClusterStateProvider.getZkStateReader, which initializes the reader via createClusterStateWatchersAndUpdate; the helper then explicitly calls createClusterStateWatchersAndUpdate again before any alias mutation. The second refreshAliases calls AliasesManager.update with the existing ZK version, reaching setIfNewer's cmp >= 0 assertion.
+
+[SOLR-19] TESTED
+  source: solr/core/src/java/org/apache/solr/core/CoreContainer.java:1330
+  site: <org.apache.solr.core.CoreContainer: org.apache.solr.core.SolrCore create(java.lang.String,java.nio.file.Path,java.util.Map,boolean)>#u65
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: AddReplicaTest.testAddMultipleReplicas (solr/core/src/test/org/apache/solr/cloud/AddReplicaTest.java)
+  audit: AddReplicaTest.testAddMultipleReplicas creates SolrCloud cores under default legacyCloud=false; CoreContainer.create evaluates missing coreNodeName in the nonlegacy branch.
+
+[SOLR-20] NO_PATH
+  source: solr/core/src/java/org/apache/solr/core/CoreContainer.java:1559
+  site: <org.apache.solr.core.CoreContainer: org.apache.solr.core.SolrCore processCoreCreateException(org.apache.solr.common.SolrException,org.apache.solr.core.CoreDescriptor,org.apache.solr.core.ConfigSet)>#u53
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: state-read-and-update
+  audit: TestCollectionAPI.testRecreateCollectionAfterFailure exercises an earlier bad-config throw, not this fromleader-corrupt-index fallthrough. MissingSegmentRecoveryTest.testLeaderRecovery takes the successful active-leader recovery return. No matching failure path found.
+
+[SOLR-21] TESTED
+  source: solr/core/src/java/org/apache/solr/core/CoreContainer.java:1765
+  site: <org.apache.solr.core.CoreContainer: void reload(java.lang.String,java.util.UUID)>#u66
+  kind: assert; exception: java.lang.AssertionError; static rule: state-read-and-update
+  cluster test: CollectionReloadTest.testReloadedLeaderStateAfterZkSessionLoss (solr/core/src/test/org/apache/solr/cloud/api/collections/CollectionReloadTest.java)
+  audit: CollectionReloadTest.testReloadedLeaderStateAfterZkSessionLoss creates a cloud collection then sends reloadCollection; CoreContainer.reload reads cluster collection and evaluates assert replica != null when assertions enabled.
+
+[SOLR-22] TESTED
+  source: solr/core/src/java/org/apache/solr/core/IndexDeletionPolicyWrapper.java:177
+  site: <org.apache.solr.core.IndexDeletionPolicyWrapper: org.apache.lucene.index.IndexCommit getAndSaveCommitPoint(java.lang.Long)>#u28
+  kind: throw; exception: java.lang.IllegalStateException; static rule: propagated-view
+  cluster test: TestPullReplica.testAddDocs (solr/core/src/test/org/apache/solr/cloud/TestPullReplica.java)
+  audit: TestPullReplica.testAddDocs is discovered by LuceneJUnit3MethodProvider under RandomizedRunner. It creates a PULL replica, commits documents, and waits for them there. The PULL replica's IndexFetcher.fetchLatestIndex requests the leader's filelist for latestGeneration (positive committed generation), ReplicationHandler.getFileList calls getAndSaveCommitPoint(gen), which evaluates the expired/deleted-generation guard.
+
+[SOLR-23] TESTED
+  source: solr/core/src/java/org/apache/solr/core/IndexDeletionPolicyWrapper.java:486
+  site: <org.apache.solr.core.IndexDeletionPolicyWrapper: void updateKnownCommitPoints(java.util.List)>#u40
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: CloudHttp2SolrClientTest.testAliasHandling (solr/solrj/src/test/org/apache/solr/client/solrj/impl/CloudHttp2SolrClientTest.java)
+  audit: CloudHttp2SolrClientTest.testAliasHandling commits indexed documents on real cluster cores; Lucene commit callback onCommit invokes updateKnownCommitPoints, reaching the consistency assertion with assertions enabled.
+
+[SOLR-24] TESTED
+  source: solr/core/src/java/org/apache/solr/core/ZkContainer.java:128
+  site: <org.apache.solr.core.ZkContainer: void initZooKeeper(org.apache.solr.core.CoreContainer,org.apache.solr.core.CloudConfig)>#u75
+  kind: throw; exception: org.apache.solr.common.cloud.ZooKeeperException; static rule: state-read-and-update
+  cluster test: HttpClusterStateSSLTest.testHttpClusterStateWithSSL (solr/solrj/src/test/org/apache/solr/client/solrj/impl/HttpClusterStateSSLTest.java)
+  audit: HttpClusterStateSSLTest.setupClusterWithSSL starts two SolrCloud nodes; their ZkContainer.initZooKeeper evaluates checkChrootPath.
+
+[SOLR-25] NO_PATH
+  source: solr/core/src/java/org/apache/solr/core/ZkContainer.java:157
+  site: <org.apache.solr.core.ZkContainer: void initZooKeeper(org.apache.solr.core.CoreContainer,org.apache.solr.core.CloudConfig)>#u104
+  kind: throw; exception: java.lang.IllegalArgumentException; static rule: state-read-and-update
+  audit: TestZkChroot.testWithUploadDir sets bootstrap_confdir, but uses a single CoreContainer plus ZkTestServer, not a SolrCloud cluster. No qualifying multi-node cluster test found setting this property.
+
+[SOLR-26] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/ReplicationHandler.java:679
+  site: <org.apache.solr.handler.ReplicationHandler: void getFileList(org.apache.solr.common.params.SolrParams,org.apache.solr.response.SolrQueryResponse)>#u43
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TestPullReplica.testAddDocs (solr/core/src/test/org/apache/solr/cloud/TestPullReplica.java)
+  audit: TestPullReplica.testAddDocs is discovered by LuceneJUnit3MethodProvider under RandomizedRunner. It verifies a committed document reaches a PULL replica; its IndexFetcher.fetchFileList(latestGeneration) sends command=filelist to the leader's ReplicationHandler.getFileList. A successful nonempty replication reaches assert commit != null.
+
+[SOLR-27] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/admin/CollectionsHandler.java:1134
+  site: <org.apache.solr.handler.admin.CollectionsHandler$CollectionOperation: java.util.Map lambda$static$33(org.apache.solr.request.SolrQueryRequest,org.apache.solr.response.SolrQueryResponse,org.apache.solr.handler.admin.CollectionsHandler)>#u72
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TestLocalFSCloudBackupRestore.test (solr/core/src/test/org/apache/solr/cloud/api/collections/TestLocalFSCloudBackupRestore.java)
+  audit: TestLocalFSCloudBackupRestore.test (via AbstractCloudBackupRestoreTestCase.test) sends backupCollection against an existing shared location; BACKUP operation evaluates repository.exists(uri).
+
+[SOLR-28] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/admin/CollectionsHandler.java:1183
+  site: <org.apache.solr.handler.admin.CollectionsHandler$CollectionOperation: java.util.Map lambda$static$34(org.apache.solr.request.SolrQueryRequest,org.apache.solr.response.SolrQueryResponse,org.apache.solr.handler.admin.CollectionsHandler)>#u62
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TestLocalFSCloudBackupRestore.test (solr/core/src/test/org/apache/solr/cloud/api/collections/TestLocalFSCloudBackupRestore.java)
+  audit: Same cluster test sends restoreCollection; RESTORE operation evaluates repository.exists(uri).
+
+[SOLR-29] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/admin/CollectionsHandler.java:681
+  site: <org.apache.solr.handler.admin.CollectionsHandler$CollectionOperation: java.util.Map lambda$static$7(org.apache.solr.request.SolrQueryRequest,org.apache.solr.response.SolrQueryResponse,org.apache.solr.handler.admin.CollectionsHandler)>#u86
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: TimeRoutedAliasUpdateProcessorTest.test calls createTimeRoutedAlias; CREATE operation evaluates if (ex != null) before routed-alias parameters.
+
+[SOLR-30] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/admin/CollectionsHandler.java:685
+  site: <org.apache.solr.handler.admin.CollectionsHandler$CollectionOperation: java.util.Map lambda$static$7(org.apache.solr.request.SolrQueryRequest,org.apache.solr.response.SolrQueryResponse,org.apache.solr.handler.admin.CollectionsHandler)>#u92
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: Same successful CREATE operation proceeds to assert routedAlias != null with assertions enabled.
+
+[SOLR-31] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/admin/CollectionsHandler.java:1477
+  site: <org.apache.solr.handler.admin.CollectionsHandler: void forceLeaderElection(org.apache.solr.request.SolrQueryRequest,org.apache.solr.handler.admin.CollectionsHandler)>#u49
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: ForceLeaderTest.testReplicasInLowerTerms (solr/core/src/test/org/apache/solr/cloud/ForceLeaderTest.java)
+  audit: ForceLeaderTest.testReplicasInLowerTerms sends forceLeaderElection on a leaderless shard, evaluating whether the current leader is active. This cluster test is marked @Nightly.
+
+[SOLR-32] TESTED
+  source: solr/core/src/java/org/apache/solr/handler/admin/ConfigSetsHandler.java:486
+  site: <org.apache.solr.handler.admin.ConfigSetsHandler$ConfigSetOperation$2: java.util.Map call(org.apache.solr.request.SolrQueryRequest,org.apache.solr.response.SolrQueryResponse,org.apache.solr.handler.admin.ConfigSetsHandler)>#u71
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: state-read-and-update
+  cluster test: TestConfigSetsAPI.testCreateWithTrust (solr/core/src/test/org/apache/solr/cloud/TestConfigSetsAPI.java)
+  audit: TestConfigSetsAPI.testCreateWithTrust runs a secured SolrCloud cluster and explicitly expects UNAUTHORIZED for an unauthenticated copy from a trusted config set; the exact guard is taken.
+
+[SOLR-33] NO_PATH
+  source: solr/core/src/java/org/apache/solr/servlet/CoordinatorHttpSolrCall.java:140
+  site: <org.apache.solr.servlet.CoordinatorHttpSolrCall: org.apache.solr.core.SolrCore getCore(org.apache.solr.servlet.CoordinatorHttpSolrCall$Factory,org.apache.solr.servlet.HttpSolrCall,java.lang.String,boolean)>#u59
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: state-read-and-update
+  audit: TestCoordinatorRole.testSimple creates a synthetic collection successfully. This rethrow is nested under the *failed post-creation* syntheticColl == null check; no matching failing cluster test found.
+
+[SOLR-34] NO_PATH
+  source: solr/core/src/java/org/apache/solr/servlet/CoordinatorHttpSolrCall.java:143
+  site: <org.apache.solr.servlet.CoordinatorHttpSolrCall: org.apache.solr.core.SolrCore getCore(org.apache.solr.servlet.CoordinatorHttpSolrCall$Factory,org.apache.solr.servlet.HttpSolrCall,java.lang.String,boolean)>#u69
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: state-read-and-update
+  audit: Same failed post-creation block, but requiring no createException; no matching failing cluster test found.
+
+[SOLR-35] TESTED
+  source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:631
+  site: <org.apache.solr.update.processor.DistributedZkUpdateProcessor: java.util.List setupRequest(java.lang.String,org.apache.solr.common.SolrInputDocument,java.lang.String)>#u67
+  kind: assert; exception: java.lang.AssertionError; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: TimeRoutedAliasUpdateProcessorTest.test creates a two-shard, two-replica collection and adds a routed document; a follower receives the leader's FROMLEADER update and evaluates assert TestInjection.injectFailReplicaRequests() with assertions enabled.
+
+[SOLR-36] UNCERTAIN
+  source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:987
+  site: <org.apache.solr.update.processor.DistributedZkUpdateProcessor: void doDefensiveChecks(org.apache.solr.update.processor.DistributedUpdateProcessor$DistribPhase)>#u40
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  audit: Successful shard-split tests exist, but this guard requires a FROMLEADER update delivered specifically to a locally leading sub-shard with DISTRIB_FROM_PARENT; the tested schedule is not established.
+
+[SOLR-37] UNCERTAIN
+  source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:995
+  site: <org.apache.solr.update.processor.DistributedZkUpdateProcessor: void doDefensiveChecks(org.apache.solr.update.processor.DistributedUpdateProcessor$DistribPhase)>#u56
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  audit: Same special sub-shard update context, plus passing the prior active-state check; no deterministic test path established.
+
+[SOLR-38] TESTED
+  source: solr/core/src/java/org/apache/solr/update/processor/DistributedZkUpdateProcessor.java:1025
+  site: <org.apache.solr.update.processor.DistributedZkUpdateProcessor: void doDefensiveChecks(org.apache.solr.update.processor.DistributedUpdateProcessor$DistribPhase)>#u113
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: CloudHttp2SolrClientTest.testAliasHandling (solr/solrj/src/test/org/apache/solr/client/solrj/impl/CloudHttp2SolrClientTest.java)
+  audit: CloudHttp2SolrClientTest.testAliasHandling indexes through DistributedZkUpdateProcessor; normal nonreplay setup calls doDefensiveChecks, which evaluates the cluster-vs-local leader predicate.
+
+[SOLR-39] TESTED
+  source: solr/core/src/java/org/apache/solr/update/processor/RoutedAliasUpdateProcessor.java:247
+  site: <org.apache.solr.update.processor.RoutedAliasUpdateProcessor: java.util.List lookupShardLeadersOfCollections()>#u11
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: TimeRoutedAliasUpdateProcessorTest.test commits through the routed alias (solrClient.commit(alias)); RoutedAliasUpdateProcessor.processCommit calls lookupShardLeadersOfCollections and evaluates collections == null.
+
+[SOLR-40] TESTED
+  source: solr/core/src/java/org/apache/solr/update/processor/RoutedAliasUpdateProcessor.java:133
+  site: <org.apache.solr.update.processor.RoutedAliasUpdateProcessor: java.util.Map getAliasProps(org.apache.solr.request.SolrQueryRequest,java.lang.String)>#u10
+  kind: throw; exception: org.apache.solr.common.SolrException; static rule: propagated-view
+  cluster test: TimeRoutedAliasUpdateProcessorTest.test (solr/core/src/test/org/apache/solr/update/processor/TimeRoutedAliasUpdateProcessorTest.java)
+  audit: Same routed-alias update creates the processor and evaluates whether current alias properties are empty in getAliasProps.
+
+
+ZOOKEEPER (13 candidate checks)
+-----------------------------------
+[ZOOKEEPER-01] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/SessionTrackerImpl.java:317
+  site: <org.apache.zookeeper.server.SessionTrackerImpl: void checkSession(long,java.lang.Object)>#u18
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionExpiredException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: QuorumPeerMainTest.testQuorum: live client persistent create goes through leader PrepRequestProcessor.validateCreateRequest to LeaderSessionTracker.checkSession and its SessionTrackerImpl.
+
+[ZOOKEEPER-02] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/SessionTrackerImpl.java:323
+  site: <org.apache.zookeeper.server.SessionTrackerImpl: void checkSession(long,java.lang.Object)>#u27
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionMovedException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: Same test sends multiple requests in the live session; the leader check reaches the owner comparison.
+
+[ZOOKEEPER-03] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/SessionTrackerImpl.java:330
+  site: <org.apache.zookeeper.server.SessionTrackerImpl: void setOwner(long,java.lang.Object)>#u12
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionExpiredException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: Same test establishes a global session; PrepRequestProcessor tracks the session then calls zks.setOwner.
+
+[ZOOKEEPER-04] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/ZooKeeperServer.java:1441
+  site: <org.apache.zookeeper.server.ZooKeeperServer: void processConnectRequest(org.apache.zookeeper.server.ServerCnxn,java.nio.ByteBuffer)>#u97
+  kind: throw; exception: org.apache.zookeeper.server.ServerCnxn$CloseRequestException; static rule: message-state-check
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: Same test creates live ZooKeeper clients to both peers, each entering processConnectRequest.
+
+[ZOOKEEPER-05] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/Follower.java:103
+  site: <org.apache.zookeeper.server.quorum.Follower: void followLeader()>#u68
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: Same test starts two quorum peers and waits for both servers to come up; the follower registers with the leader and evaluates the epoch guard.
+
+[ZOOKEEPER-06] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/Leader.java:1475
+  site: <org.apache.zookeeper.server.quorum.Leader: void waitForEpochAck(long,org.apache.zookeeper.server.quorum.StateSummary)>#u29
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: Same two-peer startup: the follower's ACKEPOCH is handled by the leader before the test observes a live quorum.
+
+[ZOOKEEPER-07] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/Learner.java:525
+  site: <org.apache.zookeeper.server.quorum.Learner: long registerWithLeader(int)>#u66
+  kind: throw; exception: java.io.IOException; static rule: message-state-check
+  cluster test: QuorumRestartTest.testRollingRestart (zookeeper-server/src/test/java/org/apache/zookeeper/test/QuorumRestartTest.java)
+  audit: QuorumRestartTest.testRollingRestart restarts each member while the other two retain quorum, including a follower rejoining its unchanged leader epoch.
+
+[ZOOKEEPER-08] NO_PATH
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/LearnerSessionTracker.java:174
+  site: <org.apache.zookeeper.server.quorum.LearnerSessionTracker: void checkSession(long,java.lang.Object)>#u13
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionExpiredException; static rule: event-root-view
+  audit: SessionTrackerCheckTest directly exercises the method but creates no quorum. In live quorum, follower/observer request processors bypass PrepRequestProcessor; the read-only server's cluster tests use local sessions for reads or reject global-session renewal at connection validation.
+
+[ZOOKEEPER-09] NO_PATH
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/LearnerSessionTracker.java:191
+  site: <org.apache.zookeeper.server.quorum.LearnerSessionTracker: void setOwner(long,java.lang.Object)>#u11
+  kind: throw; exception: org.apache.zookeeper.KeeperException$SessionExpiredException; static rule: event-root-view
+  audit: Direct test references are mock stubs in PrepRequestProcessorTest; live read-only session creation uses a locally known session, while a global session is refused during read-only reconnect.
+
+[ZOOKEEPER-10] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/ObserverMaster.java:371
+  site: <org.apache.zookeeper.server.quorum.ObserverMaster: org.apache.zookeeper.server.quorum.QuorumPacket removeProposedPacket(long)>#u28
+  kind: throw; exception: java.lang.RuntimeException; static rule: propagated-view
+  cluster test: ObserverMasterTest.testInOrderCommits(true) (zookeeper-server/src/test/java/org/apache/zookeeper/test/ObserverMasterTest.java)
+  audit: ObserverMasterTest.testInOrderCommits(true) starts a real observer-master ensemble and issues 10,001 async writes through observer and follower, so commits consume proposed packets.
+
+[ZOOKEEPER-11] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/QuorumPeer.java:1175
+  site: <org.apache.zookeeper.server.quorum.QuorumPeer: void loadDataBase()>#u46
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: CurrentEpochWriteFailureTest.testReadCurrentEpochFromAcceptedEpochTmpFile (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/CurrentEpochWriteFailureTest.java)
+  audit: CurrentEpochWriteFailureTest.testReadCurrentEpochFromAcceptedEpochTmpFile writes an older currentEpoch and matching .tmp, then restarts the three-peer ensemble.
+
+[ZOOKEEPER-12] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/QuorumPeer.java:1197
+  site: <org.apache.zookeeper.server.quorum.QuorumPeer: void loadDataBase()>#u76
+  kind: throw; exception: java.io.IOException; static rule: propagated-view
+  cluster test: QuorumPeerMainTest.testQuorum (zookeeper-server/src/test/java/org/apache/zookeeper/server/quorum/QuorumPeerMainTest.java)
+  audit: QuorumPeerMainTest.testQuorum starts both quorum peers, each loading the database and evaluating the epoch consistency guard.
+
+[ZOOKEEPER-13] TESTED
+  source: zookeeper-server/src/main/java/org/apache/zookeeper/server/quorum/ReadOnlyZooKeeperServer.java:126
+  site: <org.apache.zookeeper.server.quorum.ReadOnlyZooKeeperServer: void validateSession(org.apache.zookeeper.server.ServerCnxn,long)>#u18
+  kind: throw; exception: org.apache.zookeeper.server.ServerCnxn$CloseRequestException; static rule: event-root-view
+  cluster test: ReadOnlyModeTest.testGlobalSessionInRO (zookeeper-server/src/test/java/org/apache/zookeeper/test/ReadOnlyModeTest.java)
+  audit: ReadOnlyModeTest.testGlobalSessionInRO starts a quorum, drops it, and attempts to reconnect a preexisting global session through a read-only server.
