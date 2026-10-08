@@ -55,9 +55,9 @@ import glob, json, os, re, sys
 #             tree hook's source; CONFIG:<key>, causynth.ConfigRoots, once
 #             the tree drops the hook).
 #   fault  -- the moved roots must include a fault marker flipped to true
-#             whose declared site is a door of this transport's client
-#             class (the plan's input action states the site of every
-#             marker root).
+#             whose declared site is a door of one of these client classes,
+#             a tuple of class names (the plan's input action states the
+#             site of every marker root).
 #   clocks -- False: no clock cell may move.  The witness is the fault alone,
 #             with every clock where the recording read it.
 #
@@ -70,7 +70,7 @@ import glob, json, os, re, sys
 # branch flip reaches its fatal with no fault; 17960's mechanism is its
 # configured Boolean.
 RPC_FAILURE = {"kinds": ("MARKER_FLIPPED",),
-               "fault": "org.apache.hadoop.ipc.Client", "clocks": False}
+               "fault": ("org.apache.hadoop.ipc.Client",), "clocks": False}
 EXPECTED_MECHANISM = {
     "hdfs-17960":      {"kinds": ("MARKER_FLIPPED",),
                         "root": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
@@ -94,6 +94,18 @@ EXPECTED_MECHANISM = {
     # generation the follower asks for.
     "solr-18413":      {"kinds": ("CLOCK_SKEW",)},
     "solr-18406":      {"kinds": ("CLOCK_SKEW",)},
+    # Bug study #04: a REINDEXCOLLECTION that fails after its alias step
+    # cleans up by deleting its target, which an alias still names
+    # (DeleteCollectionCmd.checkAliasReference), so the source stays
+    # read-only.  What fails it is a transport fault after that step: an
+    # HTTP exchange (an operator's request) or a ZooKeeper write.
+    "solr-bugs-reindex-cleanup": {
+        "kinds": ("MARKER_FLIPPED",),
+        "fault": ("org.apache.solr.client.solrj.impl.HttpSolrClient",
+                  "org.apache.solr.client.solrj.impl.Http2SolrClient",
+                  "org.apache.solr.common.cloud.SolrZkClient",
+                  "org.apache.zookeeper.ZooKeeper"),
+        "clocks": False},
     # ZooKeeper 3.9.  zk-bugs-quota-init: createQuota's limit node is
     # written and its client sees the request fail (a ZooKeeper write door's
     # fault), so the stat node is never created and the retried call's
@@ -101,7 +113,7 @@ EXPECTED_MECHANISM = {
     # zk-bugs-election-offer: the server's lookup of an offer the election
     # listed is paired with a competitor's delete of it.
     "zk-bugs-quota-init": {"kinds": ("MARKER_FLIPPED",),
-                           "fault": "org.apache.zookeeper.ZooKeeper",
+                           "fault": ("org.apache.zookeeper.ZooKeeper",),
                            "clocks": False},
     "zk-bugs-election-offer": {"kinds": ("STATE_PAIRING_FLIPPED",)},
     # HDFS bug study #15: a detector turn that reads the slow-disk bound
@@ -109,6 +121,12 @@ EXPECTED_MECHANISM = {
     # SSD, which no later turn clears, so the ALL_SSD write has no volume.
     "hdfs-bugs-slowdisk-zero": {"kinds": ("STATE_PAIRING_FLIPPED",)},
 }
+# A rule's door list is a tuple of class names: a plain string there would be
+# matched as one, or iterated as its characters.
+for _case, _rule in EXPECTED_MECHANISM.items():
+    if not isinstance(_rule.get("fault", ()), tuple):
+        raise SystemExit("report.py: %s's fault rule must be a tuple of class"
+                         " names, not %r" % (_case, _rule["fault"]))
 
 
 case_id, case_dir, work = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -351,14 +369,14 @@ else:
             faults = [moved for moved, kind in moved_kinds.items()
                       if kind == "MARKER"
                       and str(moved_roots[moved]).lower() == "true"
-                      and expected.get("fault", "") in sites.get(
-                          root_of(moved, kinds), "")]
+                      and any(door in sites.get(root_of(moved, kinds), "")
+                              for door in expected.get("fault", ()))]
             clocks = [moved for moved, kind in moved_kinds.items()
                       if kind == "CLOCK"]
             if expected.get("fault") and not faults:
                 reasons.append("no %s door fault flipped to true in the"
                                " witness (moved %s)"
-                               % (expected["fault"], ", ".join(
+                               % (" or ".join(expected["fault"]), ", ".join(
                                    "%s[%s]=%s" % (r, moved_kinds[r] or "?",
                                                   moved_roots[r])
                                    for r in sorted(moved_roots))))

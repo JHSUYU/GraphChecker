@@ -2134,7 +2134,8 @@ reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.js
 ## 12. Acceptance: `experiments/accept/`
 
 `accept.sh` builds the jar, then per case (one at a time; `CASES`, default the nine HDFS cases of
-`ACCEPT_ALL_CASES`; `EXPECTED_MECHANISM` also names solr-18413 and solr-18406, both `CLOCK_SKEW`)
+`ACCEPT_ALL_CASES`; `EXPECTED_MECHANISM` also names solr-18413 and solr-18406, both `CLOCK_SKEW`, and
+solr-bugs-reindex-cleanup, a Solr door's fault)
 runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
 `probe.sh`, `cone.py` and `report.py`, and writes `summary.tsv`. `report.py` passes a case when all
 hold, read off `final/result.json`, `gaps.json` and `cone.json`:
@@ -2144,9 +2145,10 @@ hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 - `findingKind` is one of the four mechanisms and is the case's entry in `EXPECTED_MECHANISM` (a case
   the table does not name cannot pass); `polarityDecides` is true;
 - `movedRoots` is non-empty and `valuationOrdinal ≥ 1` unless `CLOCK_SKEW`; an expected `root`/`value`
-  must be moved to that value; for the RPC-failure entries (`fault: org.apache.hadoop.ipc.Client`,
-  `clocks: False`) a MARKER moved to true whose declared site (the plan's `EXPLICIT_SYMBOLIC_FAULT`
-  input action) is in that class, and no CLOCK cell moved;
+  must be moved to that value; for an entry naming fault doors (a tuple of client classes: the
+  RPC-failure entries' `org.apache.hadoop.ipc.Client`, the Solr and ZooKeeper doors; `clocks: False`)
+  a MARKER moved to true whose declared site (the plan's `EXPLICIT_SYMBOLIC_FAULT` input action) is in
+  one of those classes, and no CLOCK cell moved;
 - `cone.py`: every moved root is in the causal cone of the selected path — the constants its
   `path_fatal__i` assertion names (define-funs expanded, `let`/quantifier names bound), closed over
   the `message_family*` assertions under the same path selector that intersect it — and no

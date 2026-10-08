@@ -489,7 +489,7 @@ call; the client's own hand `endInbound()` before its send is gone. So in the So
 (`gc/solr-body`): `CausynthHttp#requestStarting`/`#requestEnded` wrap `HttpSolrClient#request`,
 `Http2SolrClient#request` and each stream of `ConcurrentUpdateHttp2SolrClient`'s runner, named by
 the request's operation (`CausynthHttp#verb`: its path, and an admin request's action,
-`/admin/collections:REQUESTSTATUS`), and its send is `outboundRequest` of that verb, so the Overseer's
+`admin.collections:REQUESTSTATUS`: a verb spells no `/`), and its send is `outboundRequest` of that verb, so the Overseer's
 extra status polls renumber no other request. The Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
