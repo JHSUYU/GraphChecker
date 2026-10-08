@@ -71,12 +71,19 @@ trap 'rm -rf "${scratch}"' EXIT
 
 python3 - "${tree}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports" "$@" <<'PY'
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 
+# JUnit 5 names an invocation m(String)[1], or plain m when the class is the
+# parameterized one: a report names a workload when the method matches with
+# parameters and invocation index set aside.
+def base(name):
+    return re.sub(r"(\(.*?\))?(\[.*\])?$", "", name)
+
 reports, specs = sys.argv[1], sys.argv[2:]
 missing = 0
-for spec in specs:
+for spec in dict.fromkeys(specs):
     class_name, method = spec.split("#", 1)
     path = os.path.join(reports, f"TEST-{class_name}.xml")
     if not os.path.exists(path):
@@ -84,8 +91,7 @@ for spec in specs:
         missing += 1
         continue
     cases = [c for c in ET.parse(path).getroot().iter("testcase")
-             if c.get("name") == method
-             or ("[" not in method and c.get("name", "").startswith(method + "["))]
+             if base(c.get("name", "")) == base(method)]
     if not cases:
         print(f"MISSING  {spec}: {path} does not name it")
         missing += 1

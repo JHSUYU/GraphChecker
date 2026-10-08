@@ -37,7 +37,7 @@ for name in "${names[@]}"; do
   tree=${GC_TREES}/${name}
   if [[ ! -d "${tree}/.git" && ! -f "${tree}/.git" ]]; then
     mkdir -p "${GC_TREES}"
-    git clone --branch "${branch}" --single-branch "${fork}" "${tree}"
+    git clone -q --branch "${branch}" --single-branch "${fork}" "${tree}"
   fi
   echo "== ${name}: ${branch} at $(git -C "${tree}" rev-parse --short HEAD), Maven repository ${GC_M2}/${name}, $(date +%T) on $(hostname)"
   # shellcheck disable=SC2086 # the specs are one word each
