@@ -27,6 +27,7 @@ lib/run.sh <case dir> <case id> build|config|validate|campaign
 | script | role |
 | --- | --- |
 | `case-env.sh` | sourced by every script: reads the system's `system.sh`, then `case.sh`, and derives paths |
+| `case-id.sh` | sourced by the harness and the tools: which case directory a case id names (`case_dir_of`: the longest `-`-prefix of the id holding a `case.sh`, the rest is the case argument) |
 | `run.sh` | the launcher: the case's declarations become the campaign environment, then `run_engine.sh` |
 | `execute.sh` | one workload JVM: the recording (with a native reproduction's plant, `CAUSYNTH_PLANT`), or a concolic replay; held to what its host was charged for it (`CAUSYNTH_CHARGED_MB`, `run_engine.sh` `campaign_watch_workload`) |
 | `prepare-analysis.sh` | copies the declared scope into the classes directory every static pass reads, `$CAUSYNTH_OUTPUT_DIR/declared-classes` (shared, so a pass placed on any host reads it) |
