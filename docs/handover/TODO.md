@@ -187,7 +187,10 @@ Solr request start (`CausynthHttp#requestStarting`, `outboundRequest` of the req
 call a hook's class makes of a moved door method (`SolrZkClient#makePath`, by control flow, every doorless call named),
 scope growth stopping at a codec (the catalog's `CODEC` rows: JavaBin) and trace rows only inside an opened occurrence
 (round MB2: 1.78 of reindex-cleanup's 2.0 GB trace was outside every occurrence, JavaBin's encode and decode most of
-it; the aggregation thrashed at 2 GB). Still open there:
+it; the aggregation thrashed at 2 GB), a workload's request that stands past the traced activation it began in
+(solr-adhoc-31's test request, begun in `createServers`), a cloud client's attempt free of the last response its thread
+read (`MessageDoors#callStarting`, solr-adhoc-13), and every jetty started in the window a node from its first moment
+(STATUS "Per-system surface"). Still open there:
 - `solr-bug-reindex`'s state roots at writers and non-accessors, only if PLAN still overflows after those two;
 - Seed-replay stalls of the study checks (round SG1, classified by `/bigtemp/vnr3ne/gc-out/solr-body/scripts/
   stall_summary.py`): a poll owing its own context's frontier now polls with no move, and a held wait is let go a grace
