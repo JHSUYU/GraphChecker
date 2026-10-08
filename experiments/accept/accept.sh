@@ -29,7 +29,7 @@
 #   CASE_TIMEOUT_SECONDS  per-case wall budget, default 21600 (6 h).  A
 #              runaway guard, not a schedule: hdfs-17899-bug1 takes ~1.8 h.
 #   SKIP_BUILD=1          use the jar already in <repo>/target, run no mvn
-#   Z3_BIN / Z3_TIMEOUT_SECONDS   default z3 (from PATH) and 600
+#   Z3_BIN / Z3_TIMEOUT_SECONDS   default tools/lib/gc-env.sh's and 600
 #   MIN_FREE_GB / DISK_WAIT_SECONDS   default 6 G and 1800 s, free on the
 #              filesystem OUT is written to (acc_free_gb)
 #   PRUNE=1 / CASE_CAP_MB DELETES every file of a finished case that is not
@@ -58,7 +58,9 @@ ACCEPT_ALL_CASES=(hdfs-17899-bug3 hdfs-17899-bug2 hdfs-17899-bug1 \
                   hdfs-17967-pathA hdfs-17967-pathB hdfs-17967-pathC \
                   hdfs-17960 hdfs-17897 hdfs-11741)
 ACCEPT_JAR_NAME=GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
-ACCEPT_Z3=${Z3_BIN:-z3}
+# shellcheck source=../../tools/lib/gc-env.sh
+source "$here/../../tools/lib/gc-env.sh"
+ACCEPT_Z3=${Z3_BIN}
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
 ACCEPT_MIN_FREE_GB=${MIN_FREE_GB:-6}
 ACCEPT_DISK_WAIT_S=${DISK_WAIT_SECONDS:-1800}

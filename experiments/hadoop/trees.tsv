@@ -1,0 +1,9 @@
+# The HDFS trees the cases run (each case.sh's repo=, under GC_TREES): the
+# directory name and the branch of the Hadoop fork (HADOOP_FORK,
+# prepare-trees.sh) it is checked out at.  All four stand on Apache Hadoop
+# trunk 734dd8a67cd (2026-05-13).
+# name	fork branch	what it is
+hadoop-hdfs-study-r7	graphchecker/hdfs-checks	every HDFS case but hdfs-adhoc-07, hdfs-adhoc-21 and hdfs-11741: the study checks' markers and workloads, the named cases' workloads, HDFS-17897's fix reverted, the time family's workarounds
+hadoop-hdfs-study-r8	graphchecker/hdfs-checks-adhoc07	hdfs-adhoc-07 only: r7 plus QJM reading the journal nodes' replies in its loggers' order
+hadoop-hdfs-21	graphchecker/hdfs-checks-adhoc21	hdfs-adhoc-21 only: r7 plus the DataNode handshake on a joined thread of its own
+hadoop-hdfs-11741-r6	graphchecker/hdfs-11741	hdfs-11741 only: trunk with HDFS-11741's fix reverted (an old bug) and its own hook generation

@@ -24,14 +24,14 @@
 # The window opens once the first cluster is up (`up`), or before it starts
 # (`startup`, the owner's opt-in for a guard that runs only while a cluster
 # starts: 21 the DataNode handshake, 27 a layout upgrade, 46 the format).
-repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7
+repo=${GC_TREES}/hadoop-hdfs-study-r7
 # hdfs-adhoc-21's per-case workarounds (STATUS): its tree (gc/hdfs-study-r7-21)
 # runs the DataNode handshake on a thread of its own, so the handshake, which
 # holds the guard, is an occurrence that ends rather than the prefix of the
 # actor's service loop; and its loop bounds declare the version check's
 # character loop.  No other check reads either.
 if [[ "$1" == 21 ]]; then
-  repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-21
+  repo=${GC_TREES}/hadoop-hdfs-21
   loop_bounds=${here}/loop-bounds-21.jsonl
 fi
 row=$(awk -F'\t' -v id="${1:?usage: case.sh <NN>}" '$1 == id' "${here}/checks.tsv")
@@ -44,7 +44,7 @@ IFS=$'\t' read -r _ test_class test_method window target_occurrence classes <<<"
 # depth of 3 (CC7: 181, 281, 62 and 15 sessions in worlds of 1-4 flips; each
 # depth cut from makes the next one's paths, so 6, not 4).
 if [[ "$1" == 07 ]]; then
-  repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r8
+  repo=${GC_TREES}/hadoop-hdfs-study-r8
   export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=6
 fi
 case "${window}" in

@@ -27,7 +27,7 @@ workload, so nothing but the declared clock and the block-key serial can open th
 
 ## Build and run
 
-Hadoop checkout `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6`, branch `gc/hdfs-11741-r6` (Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6`). From this
+Hadoop checkout `$GC_TREES/hadoop-hdfs-11741-r6`, the fork's branch `graphchecker/hdfs-11741` (experiments/hadoop/trees.tsv). From this
 directory:
 
 ```bash

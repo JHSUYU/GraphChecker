@@ -6,9 +6,9 @@
 # directory declares) -- each detached on its
 # head host, every one with its obligations spread over every host in LIFTS:
 #
-#   CAUSYNTH_CUSTOM_JDK_HOME=<image> tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22
+#   CAUSYNTH_CUSTOM_JDK_HOME=<image> tools/rounds/launch-round.sh ~/gc-run/<snapshot> v22
 #   CASES="hdfs-17960 hdfs-11741" CAUSYNTH_CUSTOM_JDK_HOME=<image> \
-#     tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22b
+#     tools/rounds/launch-round.sh ~/gc-run/<snapshot> v22b
 #
 # A campaign's HEAD is the shell that drives it.  Every heavy step it takes
 # -- an engine JVM of any stage, the seed and CONFIRM replays, REPRODUCE's

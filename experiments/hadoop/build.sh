@@ -1,45 +1,97 @@
 #!/usr/bin/env bash
+# build.sh <tree> [<test class>#<test method>...] -- an HDFS tree built for
+# GraphChecker, then the named workloads run once natively: a case's
+# classpath is read off its workload's surefire report (system.sh
+# system_classpath), so every case a tree serves needs its test run there
+# once after a build.
+#
+# GraphChecker's plain jar, from this checkout's target/ (run `mvn package`
+# first), is installed into the tree's own Maven repository: the tree's
+# hadoop-common, hadoop-hdfs-client and hadoop-hdfs compile against it
+# (provided).  The launcher puts the run's frozen jar ahead of the tree's
+# classpath, so the installed one only has to compile the tree.  Then
+# hadoop-hdfs and every module it needs are built (-am), Java 8, by the
+# tree's own Maven repository: no tree installs into ~/.m2, where it would
+# change the jars every other tree resolves.
+#
+#   MAVEN_REPO_LOCAL  the tree's Maven repository
+#                     (default $GC_M2/<tree's directory name>)
+#   SKIP_TREE_BUILD=1 only run the workloads (the tree is built)
 set -euo pipefail
 
-repo=${1:?missing Hadoop checkout}
-test_class=${2:?missing test class}
-test_method=${3:?missing test method}
+tree=$(cd "${1:?usage: build.sh <tree> [<class>#<method>...]}" && pwd -P)
+shift
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 graphchecker=$(cd "${here}/../.." && pwd -P)
+# shellcheck source=../../tools/lib/gc-env.sh
+source "${graphchecker}/tools/lib/gc-env.sh"
+m2=${MAVEN_REPO_LOCAL:-${GC_M2}/$(basename "${tree}")}
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export PATH=${JAVA_HOME}/bin:${PATH}
-
-# Hadoop's bridge compiles against this main checkout, not an older installed
-# GraphChecker API. The experiment launcher also loads its frozen jar first.
-# SKIP_GRAPHCHECKER_INSTALL=1 when the jar is already in this host's local
-# repository: several hosts building trees at once must not all rebuild the
-# one shared checkout's target/.
-[[ "${SKIP_GRAPHCHECKER_INSTALL:-0}" == 1 ]] \
-  || mvn -q -f "${graphchecker}/pom.xml" -DskipTests install
-cd "${repo}"
+cd "${tree}"
 maven=(mvn)
 [[ ! -x ./mvnw ]] || maven=(./mvnw)
-common=(-q -Djavac.version=8 -DskipShade -Dskip.npm -Dskip.yarn
-  -Dmaven.compiler.fork=true
+common=(-Dmaven.repo.local="${m2}" -Djavac.version=8 -DskipShade -Dskip.npm
+  -Dskip.yarn -Dmaven.compiler.fork=true
   "-Dmaven.compiler.executable=${here}/javac8-filter-crc32c.sh")
-# MAVEN_REPO_LOCAL: a local repository of this build's own, so several trees
-# can build at once without two installs racing on one repository's metadata.
-[[ -z "${MAVEN_REPO_LOCAL:-}" ]] \
-  || common+=("-Dmaven.repo.local=${MAVEN_REPO_LOCAL}")
-"${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
-  -am -DskipTests clean install
-# Surefire takes the method: a parameterized one (m[k]) runs every invocation.
-"${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
-  -Dtest="${test_class##*.}#${test_method%%\[*}" test
 
-python3 - "${repo}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports/TEST-${test_class}.xml" <<'PY'
+if [[ "${SKIP_TREE_BUILD:-0}" != 1 ]]; then
+  jar=${graphchecker}/target/GraphChecker-1.0-SNAPSHOT.jar
+  [[ -f "${jar}" ]] || { echo "no ${jar}: run mvn package in ${graphchecker} first" >&2; exit 2; }
+  (cd "${graphchecker}" && mvn -q install:install-file "-Dmaven.repo.local=${m2}" \
+    "-Dfile=${jar}" -DpomFile=pom.xml)
+  "${maven[@]}" -q "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs -am \
+    -DskipTests clean install
+fi
+(($# > 0)) || exit 0
+
+# One surefire run for every workload, grouped by class: -Dtest=A#m1*+m2*,B#m3*
+# (a parameterized method m[k] runs as m*, every invocation; surefire takes
+# the simple class name).  A test that fails natively still writes its
+# report; whether each one passed is printed below.
+declare -A methods=() seen=()
+for spec in "$@"; do
+  class=${spec%%#*}
+  method=${spec#*#}
+  [[ -z "${seen[${class}#${method%%\[*}]:-}" ]] || continue
+  seen[${class}#${method%%\[*}]=1
+  methods[${class}]+="${methods[${class}]:++}${method%%\[*}*"
+done
+filter=""
+for class in "${!methods[@]}"; do
+  filter+="${filter:+,}${class##*.}#${methods[${class}]}"
+done
+mkdir -p "/localtmp/$(id -un)"
+scratch=$(mktemp -d "/localtmp/$(id -un)/hdfs-workloads.XXXXXX")
+trap 'rm -rf "${scratch}"' EXIT
+"${maven[@]}" -q "${common[@]}" -DfailIfNoTests=false \
+  -Dsurefire.failIfNoSpecifiedTests=false -Dmaven.test.failure.ignore=true \
+  "-Dtest.build.dir=${scratch}" "-Dtest.build.data=${scratch}" \
+  -pl hadoop-hdfs-project/hadoop-hdfs surefire:test "-Dtest=${filter}"
+
+python3 - "${tree}/hadoop-hdfs-project/hadoop-hdfs/target/surefire-reports" "$@" <<'PY'
+import os
 import sys
 import xml.etree.ElementTree as ET
 
-root = ET.parse(sys.argv[1]).getroot()
-counts = {name: int(root.get(name, "0"))
-          for name in ("tests", "errors", "failures", "skipped")}
-if counts["tests"] < 1 or counts["errors"] or counts["failures"] or counts["skipped"]:
-    raise SystemExit(f"workload did not pass: {counts}")
-print(f"Workload passed: {root.get('name')}")
+reports, specs = sys.argv[1], sys.argv[2:]
+missing = 0
+for spec in specs:
+    class_name, method = spec.split("#", 1)
+    path = os.path.join(reports, f"TEST-{class_name}.xml")
+    if not os.path.exists(path):
+        print(f"MISSING  {spec}: no {path}")
+        missing += 1
+        continue
+    cases = [c for c in ET.parse(path).getroot().iter("testcase")
+             if c.get("name") == method
+             or ("[" not in method and c.get("name", "").startswith(method + "["))]
+    if not cases:
+        print(f"MISSING  {spec}: {path} does not name it")
+        missing += 1
+    elif any(c.find(k) is not None for c in cases for k in ("failure", "error", "skipped")):
+        print(f"FAILED   {spec} (natively; its report is still its classpath)")
+    else:
+        print(f"PASSED   {spec}")
+sys.exit(1 if missing else 0)
 PY

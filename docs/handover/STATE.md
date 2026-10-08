@@ -90,7 +90,9 @@ Every branch merged into `system/hdfs1` (`git branch --merged system/hdfs1`) and
 ## 3. System trees (the code under test)
 
 The HDFS trees are worktrees of `~/hadoop`; its remote `origin` is the fork `git@github.com:JHSUYU/hadoop.git`, which keeps
-four branches, one per tree a case reads (2026-10-08):
+four branches, one per tree a case reads (2026-10-08; `experiments/hadoop/trees.tsv`). Each case's `case.sh` names its
+tree as `$GC_TREES/<name>` (`tools/lib/gc-env.sh`: `/bigtemp/vnr3ne/wt` here); `experiments/hadoop/prepare-trees.sh` makes
+any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 
 | tree (worktree) | local branch, head | remote branch | used by |
 | --- | --- | --- | --- |
@@ -107,7 +109,8 @@ The fork's 16 older `gc/*` branches (the per-bug trees, `gc/hdfs-unified`, `gc/h
 `/bigtemp/vnr3ne/handover/2026-10-08/hadoop-gc-branches.bundle`; `main`'s cases read `gc/hdfs-unified-dtx`
 (`/bigtemp/vnr3ne/wt/hadoop-hdfs-dtx`, local). Any other Hadoop worktree under `/bigtemp/vnr3ne/wt/` is superseded.
 
-VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both HDFS branches (sources `hdfs-vm-hg5` 742f13363);
+VM image `/bigtemp/vnr3ne/vm-hg5/j2sdk-image` serves both HDFS branches (sources `hdfs-vm-hg5` 742f13363, the same in
+both branches' `third_party/`; `tools/vm/build-image.sh` rebuilds it from either);
 `vm-model-guards2` serves `main`. No VM change was made since. The VM's dead natives (VM.md §8) and
 `exportLeaf`/`mintLeaf` can go in the next VM build.
 

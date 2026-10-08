@@ -68,14 +68,16 @@
 # polarity asserted and where it came from, which report.py reads back); it
 # touches only copies of the published formula and never the case directory.
 #
-# Environment: Z3_BIN (default z3, from PATH), Z3_TIMEOUT_SECONDS (default
+# Environment: Z3_BIN (default tools/lib/gc-env.sh's), Z3_TIMEOUT_SECONDS (default
 # 600, z3's own -T: budget; the outer timeout is a hard backstop for a z3 that
 # wedges before it arms its own timer) and PROBE_WHOLE_SECONDS (default 60,
 # at most Z3_TIMEOUT_SECONDS): the budget of each question asked whole before
 # it is asked one path at a time, as ClaimPolicy#byDisjunct does.
 set -uo pipefail
 
-ACCEPT_Z3=${Z3_BIN:-z3}
+# shellcheck source=../../tools/lib/gc-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../tools/lib/gc-env.sh"
+ACCEPT_Z3=${Z3_BIN}
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
 ACCEPT_WHOLE=${PROBE_WHOLE_SECONDS:-60}
 (( ACCEPT_WHOLE > ACCEPT_Z3_TIMEOUT )) && ACCEPT_WHOLE=$ACCEPT_Z3_TIMEOUT

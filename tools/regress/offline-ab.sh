@@ -69,7 +69,7 @@
 # never ran).
 #
 # Environment
-#   AB_OUT        output root (default /bigtemp/vnr3ne/ab/<timestamp>), on a
+#   AB_OUT        output root (default $GC_BULK/ab/<timestamp>), on a
 #                 filesystem every lift shares
 #   AB_HOSTS      the hosts an engine JVM may be placed on (default LIFTS,
 #                 tools/lib/gc-env.sh; localhost: this machine only)
@@ -720,7 +720,7 @@ ab_main() {
   shift 2
   local -a cases=("$@") pids=() override
   local case_id dir side acc decl arg chain classpath repo base_repo
-  AB_OUT=${AB_OUT:-/bigtemp/vnr3ne/ab/$(date +%Y%m%d-%H%M%S)}
+  AB_OUT=${AB_OUT:-${GC_BULK}/ab/$(date +%Y%m%d-%H%M%S)}
   AB_ACCEPT_ROOT=${AB_ACCEPT_ROOT:-${GC_OUT}}
   AB_STAGES=${AB_STAGES:-${AB_CHAINS[*]}}
   for chain in ${AB_STAGES}; do

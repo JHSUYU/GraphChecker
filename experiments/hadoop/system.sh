@@ -66,7 +66,7 @@ system_classpath() {
 }
 
 system_build() {
-  bash "${system_dir}/build.sh" "${repo}" "${test_class}" "${test_method}"
+  bash "${system_dir}/build.sh" "${repo}" "${test_class}#${test_method}"
 }
 
 # MiniDFSCluster puts its name directories, edit logs and block data under

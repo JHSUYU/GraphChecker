@@ -1,7 +1,7 @@
 # HDFS bug-study cases on the study checks' tree, gc/hdfs-study-r7 (the
 # fork's graphchecker/hdfs-checks), which carries each case's workload and
 # target marker.  Declarations only.
-repo=/bigtemp/vnr3ne/wt/hadoop-hdfs-study-r7
+repo=${GC_TREES}/hadoop-hdfs-study-r7
 case "${1:?usage: case.sh slowdisk-zero}" in
   # Bug study #15: DataNodeDiskMetrics' detector publishes the top slow disks
   # only while dfs.datanode.max.slowdisks.to.exclude is positive, so a list

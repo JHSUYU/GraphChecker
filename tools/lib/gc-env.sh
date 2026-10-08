@@ -2,8 +2,14 @@
 # Sourced by run_engine.sh and by every tool that launches, fans out, watches
 # or stops runs; each value is the environment's when it is set.
 #
+#   GC_BULK               the bulk storage every lift mounts at the same
+#                         path; the defaults below live under it
 #   GC_OUT                a run's output root (accept-<round>-<n>/, sweep and
-#                         launch logs), on a filesystem every lift mounts
+#                         launch logs)
+#   GC_TREES              the systems' trees, each at the name its cases'
+#                         case.sh gives it (experiments/hadoop/trees.tsv)
+#   GC_M2                 the trees' Maven repositories, one per tree
+#   Z3_BIN                the z3 every stage and probe runs (4.14.1)
 #   CAUSYNTH_HOST_LEDGER  the per-host memory ledger every campaign head,
 #                         obligation and fanout job is charged to
 #                         (run_engine.sh campaign_host_try_start): one for
@@ -15,9 +21,12 @@
 #                         the most of a host's memory, in percent of its
 #                         MemTotal, that a start admitted by the ledger may
 #                         leave in use (the owner's ceiling: 70)
-gc_root=/bigtemp/vnr3ne/gc-out
-: "${GC_OUT:=${gc_root}}"
-: "${CAUSYNTH_HOST_LEDGER:=${gc_root}/hosts}"
+: "${GC_BULK:=/bigtemp/vnr3ne}"
+: "${GC_OUT:=${GC_BULK}/gc-out}"
+: "${GC_TREES:=${GC_BULK}/wt}"
+: "${GC_M2:=${GC_BULK}/m2}"
+: "${Z3_BIN:=${HOME}/.local/bin/z3}"
+: "${CAUSYNTH_HOST_LEDGER:=${GC_BULK}/gc-out/hosts}"
 : "${LIFTS:=lift06 lift07 lift08 lift09 lift10 lift11 lift12 lift13 lift14 lift15}"
 : "${CAUSYNTH_HOST_MAX_USED_PCT:=70}"
-export GC_OUT CAUSYNTH_HOST_LEDGER LIFTS CAUSYNTH_HOST_MAX_USED_PCT
+export GC_BULK GC_OUT GC_TREES GC_M2 Z3_BIN CAUSYNTH_HOST_LEDGER LIFTS CAUSYNTH_HOST_MAX_USED_PCT

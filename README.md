@@ -52,7 +52,9 @@ checks"; 07, the last, closed on 2026-10-07), and every case then ran alone on t
 (series EX1, [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) §6). The work ends as two branches, by the owner's
 ruling: `system/hdfs` (the locked body, 39 cases) and `system/hdfs1` (the newest body, the other 7 and every later
 engine change); nothing goes to `main`. The remote keeps `main`, `system/hdfs` and `system/hdfs1`; the Hadoop fork keeps
-the four trees the cases read (`graphchecker/*`, STATE §3). The next system (Solr) starts from `system/hdfs1` (TODO).
+the four trees the cases read (`graphchecker/*`, STATE §3). Everything a run of the 46 cases needs is on those
+branches: [docs/REPRODUCE.md](docs/REPRODUCE.md) rebuilds it from a fresh clone (the VM image, the four trees, both
+checkouts) and runs the series. The next system (Solr) starts from `system/hdfs1` (TODO).
 
 The README is an index. The handover documents hold the state, the plan and the rules. Every agent
 that works on this project takes [RULES.md](docs/handover/RULES.md),
@@ -72,6 +74,7 @@ that works on this project takes [RULES.md](docs/handover/RULES.md),
 | 8 | [docs/design/README.md](docs/design/README.md) | The design at a glance, stage by stage, and the index of the design specs (PIPELINE, SYMBOL-SCOPE, IDENTITY, CONTRACT-SPEC, VM, PERFORMANCE). |
 | 9 | [docs/design/PERFORMANCE.md](docs/design/PERFORMANCE.md) | Where a campaign's time goes, how ten lifts run many campaigns at once, why cases were slow, how to debug a slow case, the open speed items. |
 | 10 | [docs/STATUS.md](docs/STATUS.md) | Every capability: done / partial / not done, with code pointers and the per-system surface (adapters, workarounds); every HDFS case's verdict and its `.smt` read by hand ("HDFS checks"); the open defects. |
+| 11 | [docs/REPRODUCE.md](docs/REPRODUCE.md) | From the GitHub branches alone: the machines, both GraphChecker checkouts, the VM image, the four HDFS trees, running one case or all 46 (each alone, as series EX1), reading the results against `experiments/hadoop/hdfs-cases.tsv`. |
 
 The sections below are the user-level reference: the pipeline, running one case, running the bug
 checks, outputs, and the repository map.
@@ -253,17 +256,23 @@ third_party/OpenJDK-Concolic-Execution-Engine/   the concolic VM (hotspot/src/sh
                                   interpreter/bytecodeInterpreter.cpp) and its smoke tests
 experiments/lib/                  the one harness every case runs through
 experiments/accept/               accept.sh, report.py, cone.py, probe.sh
+experiments/hadoop/               trees.tsv (the HDFS trees: fork branches), prepare-trees.sh + build.sh (make one),
+                                  hdfs-cases.tsv (the 46 cases: branch, budget, EX1's result)
 experiments/{hadoop,solr,zookeeper}/  per-system scripts and cases (hadoop/hdfs-adhoc: the 36 HDFS study
                                   checks, checks.tsv; hadoop/hdfs-bugs, zookeeper/zk-bugs: the bug_study
                                   checks; HBase's harness is on branch hbase-startup)
-tools/lib/                        gc-env.sh (GC_OUT, host ledger, LIFTS for every tool), worktree-add.sh (a
+tools/onlift.sh, pick-lift.sh     run a command on the host of LIFTS with the most room (Java 8 + Maven)
+tools/vm/build-image.sh           the concolic VM image from third_party/, then its smoke suite
+tools/lib/                        gc-env.sh (where things live: GC_BULK, GC_OUT, GC_TREES, GC_M2, Z3_BIN, the
+                                  host ledger, LIFTS; for every tool and case), worktree-add.sh (a
                                   worktree or snapshot without third_party/), alive.sh
                                   (which runs a process on any lift still names), heads.sh (a
                                   case's configuration, its head's weight and
                                   room, and which host heads it)
 tools/rounds/                     launch, monitor and stop campaigns on the lifts (launch-round.sh, launch-run.sh,
                                   stop-run.sh, round-status.sh, round-watch.sh, round-slow.sh, round-verify.sh,
-                                  obl-times.py); snapshot-gc.sh
+                                  obl-times.py); run-series.sh + series-stats.py (cases one at a time, each alone,
+                                  and their time breakdown); snapshot-gc.sh
 tools/adhoc/                      sweep.sh (a list of cases over the lifts), fanout.sh, triage.py,
                                   findings.py
 tools/regress/                    offline-ab.sh: the offline merge gate
