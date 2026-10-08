@@ -24,7 +24,7 @@ solr-18406) = 20; HBase 30 / 17 + 3 = 20; ZooKeeper 13 / 10 + 3 = 13.
 
 ## HDFS (the current system): 36 study checks
 
-State at the end of the HDFS group (2026-10-06 night): every check but 07 (open, TODO HDFS §0) has an exported `.smt`
+State at the end of the HDFS group (2026-10-07): every check has an exported `.smt`
 read by hand against the code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks" (the branch that closed it -- `system/hdfs`, locked, or
 `system/hdfs1` -- its run, verdict and reading). Every verdict passed [../handover/CHECKING.md](../handover/CHECKING.md)
 §1; the time family (21 22 23 24 25 34 35 52) is accepted with an approximately right `.smt` (RULES), its residue named.
@@ -33,7 +33,7 @@ read by hand against the code, one row each in [../STATUS.md](../STATUS.md) "HDF
 | --- | --- | --- | --- | --- | --- |
 | hdfs-adhoc-05 | H/qjournal/client/QuorumOutputStream.java:106 | `bufToSend.getLength()==numReadyBytes` (the double buffer's flush) | TestQuorumJournalManager#testSingleWriter | up | UNSAT, FIXED_POINT, 2737 s, 64 leaves (hdfs / HL1-3); reading in STATUS "HDFS checks" |
 | hdfs-adhoc-06 | H/qjournal/client/QuorumOutputStream.java:112 | `data.length == bufToSend.getLength()` (the flushed buffer's backing array) | TestQuorumJournalManager#testSingleWriter | up | UNSAT, FIXED_POINT, 2790 s, 64 leaves (hdfs / HL1-4); reading in STATUS "HDFS checks" |
-| hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | OPEN: the final run (HF3, system/hdfs1, tree r8, depth 6) reached FIXED_POINT with z3 unsat and no BOUNDED/UNBOUND (r8 removed the reply-order divergences) but ended RUN_DEFECT: 38 of 235 paths contradict their own run, a journal file's read has no recorded value, 69 obligations unfinished (STATUS defects 61-63); TODO HDFS §0 |
+| hdfs-adhoc-07 | H/qjournal/server/Journal.java:926 | acceptRecovery would discard a committed txn | TestQuorumJournalManager#testRecoverAfterIncompleteRecovery | up | UNSAT, FIXED_POINT, 11113 s alone on the ten lifts, 3451 leaves, unbound 0 (hdfs1 / EX1-adhoc-07e); reading in STATUS "HDFS checks" |
 | hdfs-adhoc-08 | H/qjournal/server/Journal.java:487 | `reqInfo.epoch < lastPromisedEpoch` | TestQuorumJournalManager#testSingleWriter | up | UNSAT, FIXED_POINT, 5982 s, 787 leaves, unbounded (hdfs / HL1-1); reading in STATUS "HDFS checks" |
 | hdfs-adhoc-09 | H/qjournal/server/Journal.java:504 | `reqInfo.committedTxId >= committedTxnId` | TestQuorumJournalManager#testSingleWriter | up | UNSAT, FIXED_POINT, 6519 s, 1206 leaves, unbounded (hdfs / HL1-2); reading in STATUS "HDFS checks" |
 | hdfs-adhoc-10 | H/qjournal/server/Journal.java:518 | `reqInfo.epoch != lastWriterEpoch` | TestQuorumJournalManager#testSingleWriter | up | SAT MARKER_FLIPPED, confirmed, reproduced 10/10, 1377 s, cone unbound 0 (hdfs / HL1-19); reading in STATUS "HDFS checks" |
@@ -68,7 +68,7 @@ read by hand against the code, one row each in [../STATUS.md](../STATUS.md) "HDF
 | hdfs-adhoc-50 | same file :198 | duplicate snapshot name | TestNestedSnapshots#testNestedSnapshots | up | UNSAT, FIXED_POINT, 1866 s, 37 leaves (hdfs / HL1-41); reading in STATUS "HDFS checks" |
 | hdfs-adhoc-52 | H/server/namenode/snapshot/FSImageFormatPBSnapshot.java:467-468 (marked `hdfs-17960`) | serialized snapshots `i != sm.getNumSnapshots()` | TestFSImageWithSnapshot#testSaveLoadImage | up | UNSAT, FIXED_POINT, 1045 s, 4 leaves (time family) (hdfs / HL1-43); reading in STATUS "HDFS checks" |
 
-Summary: 35 of 36 closed; 10 and 12 SAT confirmed (no new bug), the other 33 UNSAT; 07 open (TODO HDFS §0). On
+Summary: 36 of 36 closed; 10 and 12 SAT confirmed (no new bug), the other 34 UNSAT. On
 `system/hdfs`: 05 06 08 09 10 11 12 14 15 16 19 20 22 23 24 25 26 27 28 31 33 34 35 37 38 45 48 49 50 52; on
 `system/hdfs1`: 21 29 30 39 40, and 07.
 Per-case workarounds: 21 (tree r7-21, its loop bounds), 07 (tree r8, world depth 6). Swapped: 32 for 05; 01 17 43 for

@@ -1,8 +1,8 @@
 # State at the end of the HDFS group (2026-10-06 night)
 
-The HDFS group is finished but for one case: 45 of its 46 cases have an exported `.smt` read by hand against the HDFS
-code, one row each in [../STATUS.md](../STATUS.md) "HDFS checks"; 07's final run ended RUN_DEFECT on 5 named BLOCKING
-gaps (TODO HDFS §0). The owner then stopped the work ("这3个跑完就可以停。然后更新所有文档里要更新的位置…存在的问题也要写好"; "07不用跑了。
+The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
+[../STATUS.md](../STATUS.md) "HDFS checks"; 07 closed on 2026-10-07 (EX1-adhoc-07e, on system/hdfs1 8c446418b), and
+every case ran alone on the ten lifts for its time breakdown (series EX1, `/bigtemp/vnr3ne/gc-out/hdfs-excl`). The owner then stopped the work ("这3个跑完就可以停。然后更新所有文档里要更新的位置…存在的问题也要写好"; "07不用跑了。
 留个todo就行。39跑完就完了"): nothing runs on any lift and every agent has stopped. Read this file, then
 [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [CHECKING.md](CHECKING.md), [AGENTS.md](AGENTS.md),
 [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in [../design/](../design/README.md);
@@ -15,7 +15,7 @@ every check's state is in [../checks/README.md](../checks/README.md); done / par
   -- the nine named bugs other than 11741 (17897, 17899-bug1/2/3, 17967-pathA/B/C, 17960, slowdisk-zero) and 30 study
   checks (05 06 08 09 10 11 12 14 15 16 19 20 22 23 24 25 26 27 28 31 33 34 35 37 38 45 48 49 50 52). Locked: only docs
   land on it.
-- **`system/hdfs1`** (this branch): the other 7 cases -- 11741, 21, 29, 30, 39, 40 closed, 07 open (TODO HDFS §0) -- and
+- **`system/hdfs1`** (this branch): the other 7 cases -- 07, 11741, 21, 29, 30, 39, 40 -- and
   every engine change made after the lock. Its STATUS carries all 46 rows, each naming the branch and run that closed it.
 - Nothing merges back into `system/hdfs` or `main` (owner: "最终就是两个分支，system/hdfs和system/hdfs1"). The next system
   starts from `system/hdfs1`, the newer body (TODO).
@@ -108,7 +108,8 @@ Outputs under `/bigtemp/vnr3ne/gc-out/<dir>/accept-<round>-<n>/` (`sweep-<round>
 | HF2 | the same, 14400 s | 11741 PASS (CLOCK_SKEW, 5168 s) |
 | W21 | `hdfs1-21-workaround`, `hdfs-21w` | 21 (time family, residue named) |
 | CC8-07 | `hdfs1-07-wa`, `hdfs-codec-capture` | none: stopped in COMPOSE after its fixed point |
-| HF3 | `system/hdfs1` afd8db1b5, `hdfs-study`, 10800 s | none: 07 RUN_DEFECT (FIXED_POINT, z3 unsat, no BOUNDED/UNBOUND; 38 self-contradictory paths, an unstated file read, 69 unfinished obligations; TODO HDFS §0) |
+| HF3 | `system/hdfs1` afd8db1b5, `hdfs-study`, 10800 s | none: 07 RUN_DEFECT (FIXED_POINT, z3 unsat, no BOUNDED/UNBOUND; 38 self-contradictory paths, an unstated file read, 69 unfinished obligations; STATUS 61-63) |
+| EX1 (2026-10-07) | exclusive series, one case at a time on the ten lifts, `/bigtemp/vnr3ne/gc-out/hdfs-excl`; driver `/bigtemp/vnr3ne/analysis/excl-2026-10-07/excl-driver.sh` | 07 (EX1-adhoc-07e, system/hdfs1 8c446418b: UNSAT), and every case's time breakdown and closure size (PERFORMANCE §6) |
 | OK3, OK4, OK5 | `hdfs1-open-arm-keys` fd0b0cd8a, `hdfs1-open-arm-keys` | 39 twice (UNSAT, clean), 40 (UNSAT) |
 | agents' gates | own `GC_OUT`s | OA2-OA5 (open arms), WD1-WD3 (wait deadline; WD3: 17897 PASS), CC1-CC8 (codec capture), PS1-PS2 (prefix span), P1A-P3C (time family probes) |
 
