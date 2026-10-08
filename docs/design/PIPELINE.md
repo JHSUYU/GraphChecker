@@ -379,9 +379,11 @@ ONE planner JVM serves an exploration's rounds (`ExploreMain --serve <dir> --ses
 `explore.Service`, the protocol the host solvers speak, §7.5; the driver's side is §7.9). What it read
 for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus)`: a landed
 session's rows never change, so only the sessions new to the listing are parsed, and one that left
--- a GROW swap, after-witness trimming -- is dropped), the static map while its file reads the same
-(by digest), and the slot table it changed (step 4). Every index across sessions is built anew each
-round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
+-- a GROW swap, after-witness trimming -- is dropped) with what was derived from each session's rows
+alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
+expressions: symbols, leaves, read locations and events, state reads), the static map while its
+file reads the same (by digest), and the slot table it changed (step 4). Every index across sessions
+is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
 iteration then, writes (`ExploreMain --round N --output-dir ...`, the offline stages' entry over the
 same code; gated by `offline-ab.sh` `EXPLORE.serve`). A late hdfs-adhoc-07 round, rebuilt whole by a
 JVM of its own, was ~15 min: 2.5 min reading 653 sessions' rows and 4 min reading and rewriting a

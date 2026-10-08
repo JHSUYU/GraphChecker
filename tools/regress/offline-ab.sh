@@ -559,9 +559,10 @@ ab_landings() {
     rm -rf -- "${served}"
     mkdir -p "${served}/requests"
     "${planner[@]}" --serve "${served}" >>"${dir}/planner.log" 2>&1 &
-    printf '%s\n' "$!" >"${served}/server"
-    trap 'kill "$(cat "${served}/server")" 2>/dev/null; rm -rf -- "${served}"' \
-      EXIT
+    ab_served_jvm=$!
+    ab_served_dir=${served}
+    printf '%s\n' "${ab_served_jvm}" >"${served}/server"
+    trap ab_landings_end EXIT
   fi
   for wave in "${ab_acc_it}"/obligations-*; do
     round=$(basename "${wave}")
@@ -598,7 +599,22 @@ ab_landings() {
       >>"${dir}/walls.tsv"
     (( code == 0 )) || break
   done
+  ab_landings_end
   return "${code}"
+}
+
+# The served planner of ab_landings, ended with its loop (or the loop's
+# shell): a planner left serving holds a host's memory no ledger charges.
+ab_served_jvm=""
+ab_served_dir=""
+ab_landings_end() {
+  if [[ -n "${ab_served_jvm}" ]]; then
+    kill "${ab_served_jvm}" 2>/dev/null
+    wait "${ab_served_jvm}" 2>/dev/null
+  fi
+  [[ -z "${ab_served_dir}" ]] || rm -rf -- "${ab_served_dir}"
+  ab_served_jvm=""
+  ab_served_dir=""
 }
 
 ab_stage_compose() {

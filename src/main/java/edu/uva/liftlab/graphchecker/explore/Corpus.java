@@ -55,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /** One iteration's sessions, indexed: the ONE corpus view both stages read.
@@ -157,10 +158,10 @@ public final class Corpus implements Arms.Rows {
     /** One lowering per session. */
     private final Map<String, SmtLowering> loweringById =
             new LinkedHashMap<String, SmtLowering>();
-    /** One state join per session, shared by the composer and the flip
-     *  lowering. */
-    private final Map<String, SmtLowering.SessionJoin> joinById =
-            new LinkedHashMap<String, SmtLowering.SessionJoin>();
+    /** session id -> what this corpus derives from that session's rows
+     *  alone ({@link Derived}). */
+    private final Map<String, Derived> bySession =
+            new LinkedHashMap<String, Derived>();
     /** occurrence id -> the activations of it, across sessions. */
     private final Map<String, List<ActivationRow>> activations =
             new LinkedHashMap<String, List<ActivationRow>>();
@@ -214,10 +215,6 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, Boolean> varied = new HashMap<String, Boolean>();
     /** {@link #derived}, once per root. */
     private final Map<String, Boolean> derived = new HashMap<String, Boolean>();
-    /** The variables one term or read rests on, per session: a flip's
-     *  dependence asks every earlier condition of its path again. */
-    private final Map<String, Set<String>> leaves =
-            new HashMap<String, Set<String>>();
     /** root id -> every session's mint of it, built on first ask. */
     private Map<String, List<RootMintRow>> roots;
     /** Root symbol -> every root id declared under it. */
@@ -297,10 +294,75 @@ public final class Corpus implements Arms.Rows {
 
     private final Arms arms;
 
-    private Corpus(Path iteration, List<SessionReader> sessions) {
+    /**
+     * WHAT ONE SESSION'S ROWS ALONE GIVE: its state join, the schedule facts
+     * the corpus indexes ({@link #indexSchedule}), and what a walk of its
+     * expressions found -- functions of those rows only, so a read of the
+     * same iteration takes them with the session it keeps ({@link
+     * #read(Path, Path, Corpus)}): a landed session's rows never change.
+     * Every index across sessions, and every lowering, is built anew.
+     */
+    private static final class Derived {
+        final SessionReader session;
+        final SmtLowering.SessionJoin join;
+        /** Its schedule, as the corpus indexes it: {@link Fact}s in
+         *  order. */
+        final List<Fact> schedule;
+        /** expression ref -> {@link #expressionSymbols}. */
+        final Map<String, Set<String>> symbolsByExpression =
+                new ConcurrentHashMap<String, Set<String>>();
+        /** {@link #leaves}: the variables one term or read rests on; a
+         *  flip's dependence asks every earlier condition of its path
+         *  again. */
+        final Map<String, Set<String>> leaves =
+                new ConcurrentHashMap<String, Set<String>>();
+        /** term -> {@link #readLocations}, {@link #readEvents}; expression
+         *  ref -> {@link #expressionStateReads}. */
+        final Map<String, Set<String>> readLocations =
+                new ConcurrentHashMap<String, Set<String>>();
+        final Map<String, Set<Long>> readEvents =
+                new ConcurrentHashMap<String, Set<Long>>();
+        final Map<String, List<StateRead>> stateReads =
+                new ConcurrentHashMap<String, List<StateRead>>();
+
+        Derived(SessionReader session) {
+            this.session = session;
+            this.join = SmtLowering.joinOf(session);
+            this.schedule = facts(session);
+        }
+    }
+
+    /** One schedule fact of a session: where a message was taken in,
+     *  sent from, sent by, or received by. */
+    private static final class Fact {
+        enum Kind { TAKEN_IN, SENDER_STANCE, SENDER, RECEIVER }
+
+        final Kind kind;
+        final String key;
+        final String occurrence;
+        final ContextShape.Stance stance;
+
+        Fact(Kind kind, String key, String occurrence,
+             ContextShape.Stance stance) {
+            this.kind = kind;
+            this.key = key;
+            this.occurrence = occurrence;
+            this.stance = stance;
+        }
+    }
+
+    private Corpus(Path iteration, List<SessionReader> sessions,
+                   Corpus previous) {
         this.iteration = iteration;
         this.sessions = Collections.unmodifiableList(sessions);
-        for (SessionReader session : sessions) index(session);
+        for (SessionReader session : sessions) {
+            Derived kept = previous == null ? null
+                    : previous.bySession.get(session.sessionId());
+            Derived of = kept != null && kept.session == session ? kept
+                    : new Derived(session);
+            bySession.put(session.sessionId(), of);
+            index(of);
+        }
         this.arms = new Arms(this);
     }
 
@@ -313,17 +375,19 @@ public final class Corpus implements Arms.Rows {
     /**
      * The same read, the sessions {@code previous} (a read of the same
      * iteration, or null) holds and the iteration still lists taken from
-     * it unread ({@link SessionReader#readAll(Path, List)}); every index is
-     * built anew.  The rows are most of a read: hdfs-11741 i1, 45 s for 175
-     * sessions, every time one landed while a host's solver served
-     * ({@code ObligationSolverMain#answerer}).
+     * it unread ({@link SessionReader#readAll(Path, List)}), with what was
+     * derived from each alone ({@link Derived}); every index across
+     * sessions is built anew.  The rows are most of a read: hdfs-11741 i1,
+     * 45 s for 175 sessions, every time one landed while a host's solver
+     * served ({@code ObligationSolverMain#answerer}); hdfs-adhoc-07 EX1,
+     * 140-172 s of a late round's ~900 s, every round its planner planned.
      */
     static Corpus read(Path iteration, Path rootDomains, Corpus previous)
             throws IOException {
         Corpus corpus = new Corpus(iteration, SessionReader.readAll(
                 iteration, previous == null
                         ? Collections.<SessionReader>emptyList()
-                        : previous.sessions));
+                        : previous.sessions), previous);
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));
@@ -679,13 +743,15 @@ public final class Corpus implements Arms.Rows {
         return receiver == null ? null : occurrenceById.get(receiver);
     }
 
-    private void indexSchedule(SessionReader session) {
+    /** One session's schedule as the corpus indexes it, read once. */
+    private static List<Fact> facts(SessionReader session) {
         List<ScheduleEvent> events;
         try {
             events = session.schedule();
         } catch (IOException unreadable) {
             throw new UncheckedIOException(unreadable);
         }
+        List<Fact> facts = new ArrayList<Fact>();
         for (ScheduleEvent event : events) {
             // A context that took a message into itself stands under it,
             // in or out of a region.
@@ -694,8 +760,8 @@ public final class Corpus implements Arms.Rows {
                         ContextShape.Stance.ofSend(event.context());
                 if (at != null
                         && !(at.context() instanceof CausalContext.Anchor)) {
-                    takenInByStance.putIfAbsent(at.render(),
-                            event.received());
+                    facts.add(new Fact(Fact.Kind.TAKEN_IN, at.render(),
+                            event.received(), null));
                 }
             }
             // Where every message was sent from, in or out of a region: a
@@ -705,27 +771,49 @@ public final class Corpus implements Arms.Rows {
                 ContextShape.Stance stance =
                         ContextShape.Stance.ofSend(event.context());
                 if (stance != null) {
-                    senderStanceByEndpoint.put(event.endpoint(), stance);
+                    facts.add(new Fact(Fact.Kind.SENDER_STANCE,
+                            event.endpoint(), "", stance));
                 }
             }
             if (event.occurrence().isEmpty()) continue;
             if (event.kind() == ScheduleEvent.Kind.SEND
                     && !event.endpoint().isEmpty()) {
-                senderByEndpoint.put(event.endpoint(), event.occurrence());
-                named(session.sessionId(), event.occurrence());
+                facts.add(new Fact(Fact.Kind.SENDER, event.endpoint(),
+                        event.occurrence(), null));
             } else if (!event.received().isEmpty()) {
-                receiverByEndpoint.put(event.received(), event.occurrence());
+                facts.add(new Fact(Fact.Kind.RECEIVER, event.received(),
+                        event.occurrence(), null));
+            }
+        }
+        return facts;
+    }
+
+    private void indexSchedule(String sessionId, List<Fact> facts) {
+        for (Fact fact : facts) {
+            switch (fact.kind) {
+                case TAKEN_IN:
+                    takenInByStance.putIfAbsent(fact.key, fact.occurrence);
+                    break;
+                case SENDER_STANCE:
+                    senderStanceByEndpoint.put(fact.key, fact.stance);
+                    break;
+                case SENDER:
+                    senderByEndpoint.put(fact.key, fact.occurrence);
+                    named(sessionId, fact.occurrence);
+                    break;
+                default:
+                    receiverByEndpoint.put(fact.key, fact.occurrence);
+                    break;
             }
         }
     }
 
-    private void index(SessionReader session) {
-        indexSchedule(session);
+    private void index(Derived of) {
+        SessionReader session = of.session;
+        indexSchedule(session.sessionId(), of.schedule);
         sessionById.put(session.sessionId(), session);
-        SmtLowering.SessionJoin join = SmtLowering.joinOf(session);
-        joinById.put(session.sessionId(), join);
         loweringById.put(session.sessionId(),
-                SmtLowering.forSession(session, join));
+                SmtLowering.forSession(session, of.join));
         for (ActivationRow row : session.activations()) {
             activationByOccurrence.putIfAbsent(session.sessionId() + "|"
                     + row.occurrence().id(), row);
@@ -931,13 +1019,14 @@ public final class Corpus implements Arms.Rows {
     void freshLowerings() {
         for (SessionReader session : sessions) {
             loweringById.put(session.sessionId(), SmtLowering.forSession(
-                    session, joinById.get(session.sessionId())));
+                    session, bySession.get(session.sessionId()).join));
         }
     }
 
     /** One session's state join; a session this corpus lacks joins nothing. */
     public SmtLowering.SessionJoin join(String sessionId) {
-        return joinById.getOrDefault(sessionId, SmtLowering.NO_JOIN);
+        Derived of = bySession.get(sessionId);
+        return of == null ? SmtLowering.NO_JOIN : of.join;
     }
 
     public List<SessionReader> sessions() {
@@ -1144,8 +1233,12 @@ public final class Corpus implements Arms.Rows {
      */
     public Set<String> expressionSymbols(String sessionId,
                                          String expressionRef) {
-        String key = sessionId + "|" + expressionRef;
-        Set<String> held = symbolsByExpression.get(key);
+        Derived of = bySession.get(sessionId);
+        // A session this corpus lacks, or no ref, states no expression.
+        if (of == null || expressionRef == null) {
+            return new LinkedHashSet<String>();
+        }
+        Set<String> held = of.symbolsByExpression.get(expressionRef);
         if (held != null) return held;
         Set<String> symbols = new LinkedHashSet<String>();
         SmtLowering.SessionJoin join = join(sessionId);
@@ -1192,13 +1285,9 @@ public final class Corpus implements Arms.Rows {
                 roots.add(written);
             }
         }
-        symbolsByExpression.put(key, symbols);
+        of.symbolsByExpression.put(expressionRef, symbols);
         return symbols;
     }
-
-    /** session|expression ref -> {@link #expressionSymbols}. */
-    private final Map<String, Set<String>> symbolsByExpression =
-            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
 
     /** The sites of every fault decision any session took at one occurrence. */
     public Set<String> faultSites(OccurrenceAddress occurrence) {
@@ -1230,11 +1319,12 @@ public final class Corpus implements Arms.Rows {
     /** What {@code key} rests on in one session, computed once. */
     public Set<String> leaves(String sessionId, String key,
                               Supplier<Set<String>> compute) {
-        String cached = sessionId + "\n" + key;
-        Set<String> found = leaves.get(cached);
+        Derived of = bySession.get(sessionId);
+        if (of == null) return compute.get();
+        Set<String> found = of.leaves.get(key);
         if (found == null) {
             found = compute.get();
-            leaves.put(cached, found);
+            of.leaves.put(key, found);
         }
         return found;
     }
@@ -1274,9 +1364,21 @@ public final class Corpus implements Arms.Rows {
      *  Locations the session never wrote are skipped (no version to guess). */
     public List<StateRead> expressionStateReads(String sessionId,
                                                 String expressionRef) {
+        Derived of = bySession.get(sessionId);
+        if (expressionRef == null) return Collections.emptyList();
+        List<StateRead> held = of == null ? null
+                : of.stateReads.get(expressionRef);
+        if (held != null) return held;
+        List<StateRead> found = stateReadsOf(sessionId, expressionRef);
+        if (of != null) of.stateReads.put(expressionRef, found);
+        return found;
+    }
+
+    private List<StateRead> stateReadsOf(String sessionId,
+                                         String expressionRef) {
         List<StateRead> found = new ArrayList<StateRead>();
         JsonObject expression = expression(sessionId, expressionRef);
-        if (expression == null) return found;
+        if (expression == null) return Collections.unmodifiableList(found);
         Map<String, Long> read = new LinkedHashMap<String, Long>();
         readNodes(expression, read, ExpressionWalk.identitySet());
         for (Map.Entry<String, Long> each : read.entrySet()) {
@@ -1291,7 +1393,7 @@ public final class Corpus implements Arms.Rows {
             found.add(new StateRead(each.getKey(),
                     each.getValue().longValue(), latest));
         }
-        return found;
+        return Collections.unmodifiableList(found);
     }
 
     /** The locations a term's expressions read, by their structure: every
@@ -1299,6 +1401,16 @@ public final class Corpus implements Arms.Rows {
      *  joins a scalar read to the value its version holds no longer names
      *  the read, and what a value rests on is the closure's question. */
     public Set<String> readLocations(String sessionId, String term) {
+        String key = term == null ? "" : term;
+        Derived of = bySession.get(sessionId);
+        Set<String> held = of == null ? null : of.readLocations.get(key);
+        if (held != null) return held;
+        Set<String> found = readLocationsOf(sessionId, key);
+        if (of != null) of.readLocations.put(key, found);
+        return found;
+    }
+
+    private Set<String> readLocationsOf(String sessionId, String term) {
         Map<String, Long> read = new LinkedHashMap<String, Long>();
         java.util.regex.Matcher refs = EXPRESSION_REF.matcher(
                 term == null ? "" : term);
@@ -1306,13 +1418,23 @@ public final class Corpus implements Arms.Rows {
         while (refs.find()) {
             readNodes(expression(sessionId, refs.group()), read, walked);
         }
-        return read.keySet();
+        return Collections.unmodifiableSet(read.keySet());
     }
 
     /** The read events a term's expressions name, by their structure
      *  (every {@code readEventId} under its {@code EXPR} references): what
      *  a predicate read, wherever it stands in the event order. */
     public Set<Long> readEvents(String sessionId, String term) {
+        String key = term == null ? "" : term;
+        Derived of = bySession.get(sessionId);
+        Set<Long> held = of == null ? null : of.readEvents.get(key);
+        if (held != null) return held;
+        Set<Long> found = readEventsOf(sessionId, key);
+        if (of != null) of.readEvents.put(key, found);
+        return found;
+    }
+
+    private Set<Long> readEventsOf(String sessionId, String term) {
         Set<Long> events = new LinkedHashSet<Long>();
         java.util.regex.Matcher refs = EXPRESSION_REF.matcher(
                 term == null ? "" : term);
@@ -1329,7 +1451,7 @@ public final class Corpus implements Arms.Rows {
                 }
             }
         }
-        return events;
+        return Collections.unmodifiableSet(events);
     }
 
     private static final java.util.regex.Pattern EXPRESSION_REF =
