@@ -2002,12 +2002,27 @@ After EMIT -- the verdict is published first, and nothing REPRODUCE does moves i
 VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map --plant
 <file>` writes the plant from what CONFIRM itself plants and holds (`ConfirmMain.Witness`, the one
 reading of the claim both make: the selected session's world under the model's moved roots, and
-the edges the model chose), each row numbered (`row`):
-- a `ROOT` per root the world assigns, naming the occurrence id it is minted at: a FAULT marker
-  `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
-  value: true|false}`, a tree hook's root `{category HOOK, rootId, occurrence, value}`;
+the edges the model chose), each row numbered (`row`); where a value is the return of a call it
+names the call as the task plan does (`explore.PlantSites`: the input action's `siteId`,
+`<method>#u<unit>`, and its `declaredCallee`, or an unwoven accessor's call):
+- a `ROOT` per root the world assigns or skews, naming the occurrence id it is minted at: a FAULT
+  marker `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
+  value: true|false}`; a tree hook's root `{category HOOK, rootId, occurrence, value}`; a
+  configuration `{category CONFIG, rootId, occurrence, sites: [{siteId, callee}], javaType, value}`
+  (its getter calls); an unwoven accessor's read `{category READ, rootId, occurrence, siteId,
+  callee, javaType, value}`; a clock the world skews `{category CLOCK, rootId, occurrence, siteId,
+  callee, javaType, clock: {nanos, source}, skew}` (the model's jumps and the selected session's
+  skews on cells the composition does not anchor, as CONFIRM plants them);
+- when the world skews a clock, a `CLOCK_SITE {siteId, callee, javaType, clock, regions}` per
+  declared clock reading of the plan (an observed one, as a replay mints it): context, applied by
+  nobody;
+- an `ANSWER {endpoint, port, siteId, callee, regions, value}` per attach the world answers, at its
+  port's call-return capture and the regions declaring it IN;
 - CONFIRM's own `ORDER` rows (`{before, after}`, §10: the join closure's at the locations the fatal
-  rests on, and those holding the pairings the world plants), each pair once;
+  rests on, and those holding the pairings the world plants -- an INITIAL pairing holds every
+  other writer of the location after the read), each pair once; a pairing at a placeholder (a mint
+  read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
+  plant's summary counts them (`placeholderPairings`);
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
   id>, siteId: <guard>, value: <its fatal arm>}`.
 
@@ -2017,13 +2032,15 @@ Refused, with no native run (`reproduce.json` `runs` 0 and the refusal as `reaso
   a moved root the recording mints nowhere or a moved clock no reading anchors, and the edges'
   refusals (`STATE_CONFLICT`, `PAIRING_UNSTATED`, a selected arm whose consumer its session states
   no attach for);
-- `NATIVE_PLANT_UNSUPPORTED`: a world that skews a clock or answers an attach (the recording weave
-  reads no clock through the model and answers no attach); a root of another category than FAULT
-  or HOOK -- a configuration (the recording weave has neither the configuration-read nor the
-  getter-call mint), an unwoven accessor's read, a clock; a FAULT root its plan input calls at no
-  site or at several, or assigned other than true or false; a root with no mint occurrence; a world
-  that plants no root and holds no order (it would repeat the recording); a scope map that states
-  no fatal arm;
+- `NATIVE_PLANT_UNSUPPORTED`: a root minted other than at a call's return (an argument, a field or
+  static read: the recording weave states no read there for a plant to take), a FAULT root its plan
+  input calls at no site or at several or assigns other than true or false, a READ root at several
+  calls, a clock read at other than one declared clock call or skewed by no integer, a root with no
+  mint occurrence; an answer whose capture is a method parameter, a call argument or a method's
+  return, or whose value a message getter's element carries (a codec port: which getter call
+  attaches is the decode's binding, `MessageCodec`, which a native run does not keep -- keeping it
+  would export on every send, which needs the VM); a world that plants no root and holds no order
+  (it would repeat the recording); a scope map that states no fatal arm;
 - a recording that measured no peak resident memory to charge a run with.
 
 `reproduce_runs` (10) runs go out at once, each a head step (§7.7, `campaign_reproduce_one`)
@@ -2034,8 +2051,16 @@ times the recording's own workload, at least `reproduce_min_s` (300: a short rec
 little of how long ten runs at once on a busy cluster take -- hdfs-17960's 8 s recording gave 24 s,
 and all ten runs of round NP1 were cut before their window opened; hdfs-17897's 9 s recording, ten
 runs of 119-187 s in NP7, each at the anchor; `campaign_reproduce_bound`). A
-run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` (`execute.sh`,
-`CAUSYNTH_PLANT`); inside the window:
+run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant` and the plant-run
+agent, `-javaagent` of the engine's jar (`execute.sh`, `CAUSYNTH_PLANT`; `runtime.PlantAgent`, the
+jar's `Premain-Class`; a JVM with no plant loads none). The agent rewrites, as they load, the caller
+classes the plant's call rows name: after every invoke of a callee named there, one call
+`RecordingPlant.returned(T)T` for the invoke's JVM return type (a reference through `Object` and a
+cast back), in ASM API 5 with the operand stack's types kept, so no frame is recomputed and no class
+loaded; the woven classes on disk, SEED's artifacts and the recording are untouched. Which call it
+is, the recording weave's own call-site context states at run time (`CausynthTraceRecorder
+#currentCallSiteContext`, pushed with that `siteId` and callee before the invoke), so no unit index is
+mapped to a bytecode offset; an invoke no context wraps matches no row. Inside the window:
 - `Debug.makeSymbolicBoolean` at a FAULT row's call site answers its value when an enclosing region
   occurrence (`CausynthTraceRecorder#enclosingOccurrences`) has the row's own id
   (`RecordingPlant#marker`);
@@ -2044,6 +2069,19 @@ run (`campaign_reproduce_run`) runs the recording command with `-Dcausynth.plant
   `RootMint#writeModeledField`) under any enclosing occurrence the confirmation focuses -- the
   anchor or the mint occurrence of any root of the plant -- as a replay's mint plants under a focused
   occurrence (`RootMint#focusedRootValue`); a write that fails is a `PLANT_UNWRITTEN` row;
+- at a call the plant reads (`RecordingPlant#returnedAt`): a CONFIG row's getter calls return its
+  value whatever occurrence reads them (a configuration is the world's, as in a replay); a READ row's
+  accessor call its value under its occurrence; a CLOCK row's first return under its occurrence is
+  the host's reading plus the skew and a jump of that occurrence's node's clock (`NodeClocks`), and
+  every declared clock reading (a CLOCK_SITE row) reads the host plus the skew of the latest jump at
+  or before it on its node's clock, its node the one of its innermost enclosing occurrence of a
+  declaring region (none: the host) -- "before" is this run's real order, a counter of declared
+  readings (`RecordingPlant#PLACES`), since a native run has no recorded place; an ANSWER row's
+  capture carries the call's value as the replay's weave carries it and names each leaf by the
+  endpoint a replay's attach names it by in its innermost enclosing occurrence of a declaring region
+  (`HandoffMint#answerNatively`: `Identity#endpointAt`, one per leaf, so the k-th attach is the
+  replay's k-th where the run attaches as the replay did), writing the answer at the endpoint the row
+  names; a value the call's type cannot hold is a `PLANT_UNWRITTEN` row;
 - `runtime.Confirmation` holds the ORDER rows at `Identity`'s frame hooks as in a CONFIRM run (it
   reads the plant in a planted run), each at most half the run's bound
   (`causynth.confirm.order.timeout.ms`, `CAUSYNTH_ORDER_TIMEOUT_MS`), each row stating what it came
@@ -2058,10 +2096,11 @@ A planted run is not the recording's world, so the workload's checks of that wor
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
 planted, rootsPlanted, fatal, atAnchor, reproduced}`, read off its trace's plant rows against the
-plant: the rows to apply (ROOT and ORDER), how many it applied, each it did not with why
-(`UNHELD`, `UNWRITTEN`, `HOLDING` at the run's end, `NOT_REACHED`), whether it applied every row
-and every ROOT row, whether it took the fatal arm and at the anchor, and whether it **reproduced**:
-the fatal arm at the claim's anchor with every ROOT row applied. A run that did not plant the
+plant: the rows to apply (ROOT, ANSWER and ORDER; CLOCK_SITE and TARGET rows are context), how many
+it applied, each it did not with why (`UNHELD`, `UNWRITTEN`, `HOLDING` at the run's end,
+`NOT_REACHED`), whether it applied every row and every ROOT and ANSWER row, whether it took the
+fatal arm and at the anchor, and whether it **reproduced**: the fatal arm at the claim's anchor
+with every ROOT and ANSWER row applied (clock jumps, configurations and answers included). A run that did not plant the
 model's roots and reaches the fatal all the same is the program's own race, never a reproduction.
 `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
 reproduced, unheld, holding, reason}` -- runs that applied the whole plant, took the fatal arm,
@@ -2070,7 +2109,11 @@ when they ended, and the runs that stated no answer as `reason`. A native run ho
 order, not the recording's, so the planted occurrence may not recur: the share of runs that
 reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside
 `result.json`) and never refutes it. Then the campaign exits by its verdict
-(`campaign_exit_verdict`).
+(`campaign_exit_verdict`). The stage also runs alone, again, over a finished campaign
+(`run_engine.sh ... reproduce`, `do_reproduce`; `tools/rounds/reproduce-again.sh <run> <case> <copy>`
+copies the case's output directory -- linking what REPRODUCE reads, writing `final/` afresh -- so
+the finished run is never written): its bound is a factor of SEED's whole time there, since the
+recording's own is not kept apart.
 
 ## 11. EMIT
 
