@@ -37,7 +37,7 @@ for spec in "$@"; do
   method=${spec#*#}
   # A test that fails natively still writes its report.
   "${ant}" -q -Dgraphchecker.jar="${jar}" test -Dtests.class="${class}" \
-    -Dtests.method="${method}" -Dtests.seed="${seed}" -Dtests.jvms=1 \
+    -Dtests.method="${method}" -Dtests.seed="${seed}" -Dtests.jvms=1 -Dtests.badapples=true -Dtests.awaitsfix=true \
     -Dtests.useSecurityManager=false -Dargs="-Dcausynth.cluster.automatic=true" || true
   python3 - "${tree}/solr/build/solr-core/test/TEST-${class}.xml" "${spec}" <<'PY' || missing=$((missing + 1))
 import os

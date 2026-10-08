@@ -103,19 +103,19 @@ or ZooKeeper study point is marked yet.
 ### solr
 | check | site (our tree) | guard | workload (test) | state |
 | --- | --- | --- | --- | --- |
-| solr-adhoc-05 | C cloud/ZkController.java:1274 | replica gone from the node's state right after `waitForState` saw it | AddReplicaTest#testAddMultipleReplicas | not marked yet (the system's turn: TODO) |
-| solr-adhoc-07 | same:1326 | `cc.getCore(name) == null` during register | same | not marked yet (the system's turn: TODO) |
-| solr-adhoc-09 | C cloud/api/collections/DeleteReplicaCmd.java:278 | `!callable.call()`: `waitForCoreNodeGone` false twice | DeleteReplicaTest#deleteReplicaAndVerifyDirectoryCleanup | not marked yet (the system's turn: TODO) |
-| solr-adhoc-10 | C cloud/api/collections/MaintainRoutedAliasCmd.java:117 | `RoutedAlias.fromProps(props) == null` with non-empty props | TimeRoutedAliasUpdateProcessorTest#test | not marked yet (the system's turn: TODO) |
-| solr-adhoc-13 | C cloud/api/collections/RoutedAlias.java:350 | after MAINTAINROUTEDALIAS + `aliasesManager.update()` the alias list lacks the new collection | TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation | not marked yet (the system's turn: TODO) |
-| solr-adhoc-14 | C cloud/api/collections/SplitShardCmd.java:167 | `exists(live_nodes/<leader node>) == null` | SplitShardTest#doTest | not marked yet (the system's turn: TODO) |
-| solr-adhoc-19 | C core/CoreContainer.java:1330 | node says non-legacy (`legacyCloud` != "true") and the CREATE carries no coreNodeName (Overseer s... | AddReplicaTest#testAddMultipleReplicas never sets legacyCloud (no w... | not marked yet (the system's turn: TODO) |
-| solr-adhoc-21 | same:1765 | this core's replica present in docCollection on reload | CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss | not marked yet (the system's turn: TODO) |
+| solr-adhoc-05 | C cloud/ZkController.java:1274 | replica gone from the node's state right after `waitForState` saw it | AddReplicaTest#testAddMultipleReplicas | marked; workload passes natively (6.9 s); not run |
+| solr-adhoc-07 | same:1326 | `cc.getCore(name) == null` during register | same | marked; workload passes natively (6.9 s); not run |
+| solr-adhoc-09 | C cloud/api/collections/DeleteReplicaCmd.java:278 | `!callable.call()`: `waitForCoreNodeGone` false twice | DeleteReplicaTest#deleteReplicaAndVerifyDirectoryCleanup | marked; workload passes natively (9.9 s); not run |
+| solr-adhoc-10 | C cloud/api/collections/MaintainRoutedAliasCmd.java:117 | `RoutedAlias.fromProps(props) == null` with non-empty props | TimeRoutedAliasUpdateProcessorTest#test | marked; workload passes natively (24.8 s; the configset made in ZooKeeper, STATUS); not run |
+| solr-adhoc-13 | C cloud/api/collections/RoutedAlias.java:350 | after MAINTAINROUTEDALIAS + `aliasesManager.update()` the alias list lacks the new collection | TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation | marked; workload passes natively (30.9 s; as 10); not run |
+| solr-adhoc-14 | C cloud/api/collections/SplitShardCmd.java:167 | `exists(live_nodes/<leader node>) == null` | SplitShardTest#doTest | marked; workload passes natively (8.9 s); not run |
+| solr-adhoc-19 | C core/CoreContainer.java:1330 | node says non-legacy (`legacyCloud` != "true") and the CREATE carries no coreNodeName (Overseer s... | DeleteReplicaTest#deleteReplicaFromClusterStateLegacy (AddReplicaTest never sets legacyCloud, so no writer of the guard's property) | marked; workload passes natively (10.0 s); not run |
+| solr-adhoc-21 | same:1765 | this core's replica present in docCollection on reload | api.collections.CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss | marked (the assert as its if/throw); workload passes natively (6.2 s); not run |
 | solr-adhoc-22 | C core/IndexDeletionPolicyWrapper.java:179 | requested generation deleted / older than latest | TestPullReplica#testAddDocs (study); our case TestCausynthPullRepli... | marked: = solr-18406 (PASS on main, V25) |
-| solr-adhoc-31 | same:1477 | FORCELEADER refused: slice leader ACTIVE in this node's view | ForceLeaderTest#testReplicasInLowerTerms (@Nightly; base AbstractFu... | not marked yet (the system's turn: TODO) |
-| solr-adhoc-38 | same:1031 | cluster state says we lead, `cloudDesc.isLeader()` still false after 5 x 500 ms | CloudHttp2SolrClientTest#testAliasHandling (solrj); core: TestPullR... | not marked yet (the system's turn: TODO) |
-| solr-adhoc-39 | C update/processor/RoutedAliasUpdateProcessor.java:247 (thrown at R... | node's alias view lacks the alias on a commit | TimeRoutedAliasUpdateProcessorTest#test | not marked yet (the system's turn: TODO) |
-| solr-adhoc-40 | same:133 (thrown at RoutedAlias.java:72, rewrapped :123) | same at processor creation | same | not marked yet (the system's turn: TODO) |
+| solr-adhoc-31 | C handler/admin/CollectionsHandler.java:1477 | FORCELEADER refused: slice leader ACTIVE in this node's view | ForceLeaderTest#testReplicasInLowerTerms (not `@Nightly` in our tree; its servers registered by AbstractFullDistribZkTestBase) | marked; workload passes natively (60.7 s); not run |
+| solr-adhoc-38 | C update/processor/DistributedZkUpdateProcessor.java:1031 | cluster state says we lead, `cloudDesc.isLeader()` still false after 5 x 500 ms | TestPullReplica#testAddDocs | marked; workload passes natively (7.3 s); not run |
+| solr-adhoc-39 | C update/processor/RoutedAliasUpdateProcessor.java:247 (thrown at R... | node's alias view lacks the alias on a commit | TimeRoutedAliasUpdateProcessorTest#test | marked (the factory's throw inline); workload as 10; not run |
+| solr-adhoc-40 | same:133 (thrown at RoutedAlias.java:72, rewrapped :123) | same at processor creation | same | marked (the factory's throw inline); workload as 10; not run |
 
 ### hbase
 | check | site (our tree) | guard | workload (test) | state |
@@ -158,12 +158,12 @@ or ZooKeeper study point is marked yet.
 | --- | --- | --- | --- |
 | solr-18406 (= solr-adhoc-22) | SOLR-18406 (apache/solr PR 4820): the leader deletes a generation after the reservation expires | CLOCK_SKEW | PASS on main (V25) |
 | solr-18413 | SOLR-18413 (apache/solr PR 4862): an unexpired MIGRATE route rule names a deleted target collection | CLOCK_SKEW | PASS on main (V25); regressed on branch solr-bug-reindex (seed replay stalls) |
-| solr-bugs-reindex-cleanup | owner #5 (#04): a reindex's cleanup cannot delete a target an alias names; the source stays read-only | STATE re-pairing (the owner's ABORT + CREATEALIAS) | no witness yet (branch solr-bug-reindex); workload to rewrite (TODO Solr) |
-| solr-bugs-migrate-buffer-leak | owner #6 (#17): a failure after REQUESTBUFFERUPDATES leaves the target core BUFFERING | door fault | admitted, no case |
-| solr-bugs-overseer-lock-leak | owner #7 (#50): OperationTimeout in markTaskAsRunning leaks the lock | ZK door fault | admitted, no case |
-| solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and reports success | stale Overseer view | admitted, no case |
-| solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves slices in CONSTRUCTION | HTTP door fault | admitted, no case |
-| solr-bugs-tra-start-overwrite | owner #10 (#20): TimeRoutedAlias writes a stale aliases snapshot over a newer alias | STATE re-pairing | admitted, no case |
+| solr-bugs-reindex-cleanup | owner #5 (#04): a reindex's cleanup cannot delete a target an alias names; the source stays read-only | SOLR_HTTP REQUEST fault on the operator's DELETEALIAS (the report's concurrent CREATEALIAS is ordered by HB here) | marked; `TestCausynthReindexAbortAlias` passes natively (6.1 s); not run |
+| solr-bugs-migrate-buffer-leak | owner #6 (#17): a failure after REQUESTBUFFERUPDATES leaves the target core BUFFERING | door fault | marked; `TestCausynthMigrateBufferLeak` passes natively (11.1 s); selector from its first recording |
+| solr-bugs-overseer-lock-leak | owner #7 (#50): OperationTimeout in markTaskAsRunning leaks the lock | ZK door fault | marked at the add's read-only refusal; `TestCausynthOverseerLockLeak` passes natively (3.1 s); not run |
+| solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and reports success | stale Overseer view | marked at BackupCmd:207 (1 shard x 2 replicas, the leader replica deleted before the backup); `TestCausynthSnapshotBackup` passes natively (6.1 s); not run |
+| solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves slices in CONSTRUCTION | HTTP door fault | marked; `TestCausynthRestoreRetry` passes natively (4.6 s); selector from its first recording |
+| solr-bugs-tra-start-overwrite | owner #10 (#20): TimeRoutedAlias writes a stale aliases snapshot over a newer alias | STATE re-pairing | marked at the client's BaseCloudSolrClient:901; `TestCausynthTraStartAlias` passes natively (2.8 s); selector from its first recording |
 | hbase-bugs-master-active-time | #14: a non-monotonic activeTime makes the new master reject an old OPENED report | CLOCK | branch hbase-startup, blocked on two design questions (TODO HBase) |
 | hbase-bugs-backup-lock-reply-lost | HBase-2 #16: a lost CAS reply makes the retry fail on its own lock | HBase RPC RESPONSE door | admitted, no case (needs the door) |
 | hbase-bugs-ns-rsgroup-removal | HBase-2 #01: rsgroup removal cannot see an in-flight namespace creation | STATE re-pairing | admitted, no case |
