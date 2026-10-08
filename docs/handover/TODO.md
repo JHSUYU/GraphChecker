@@ -186,10 +186,11 @@ tree as is) passed solr-18406 and solr-18413 on it. Branch `solr-body` (agent M)
 store-write turn (`WRITE`, `RunNames`/`spelledAs`; a conflict ends when the earlier write is taken or given up -- the
 branch's LATE state was solr-18413's 103,812-stall regression), a consumed queue item as the message it serves, the
 Solr request start (`CausynthHttp#requestStarting`, `outboundRequest` of the request's verb) and the door at every
-call a hook's class makes of a moved door method (`SolrZkClient#makePath`). Still open there:
-- the recording size of the growth cases (solr-bugs-reindex-cleanup's 2.1 GB on `main`, SBR26b): port
-  `solr-bug-reindex`'s state roots at writers and non-accessors, trace rows only inside an occurrence and scope growth
-  stopping at a declared codec (JavaBin) only if reindex-cleanup's SEED on this body measures too large;
+call a hook's class makes of a moved door method (`SolrZkClient#makePath`, by control flow, every doorless call named),
+scope growth stopping at a codec (the catalog's `CODEC` rows: JavaBin) and trace rows only inside an opened occurrence
+(round MB2: 1.78 of reindex-cleanup's 2.0 GB trace was outside every occurrence, JavaBin's encode and decode most of
+it; the aggregation thrashed at 2 GB). Still open there:
+- `solr-bug-reindex`'s state roots at writers and non-accessors, only if PLAN still overflows after those two;
 - `solr-bug-reindex`'s other seed-replay rules (`ScheduleReach`, `ScheduleWait`, the lock owner's early slot, the draw
   scope over the test's own classes, the queue order, `AT_QUESTION_CLOSED`) come in only when a Solr seed replay on this
   body shows the stall each answers.
