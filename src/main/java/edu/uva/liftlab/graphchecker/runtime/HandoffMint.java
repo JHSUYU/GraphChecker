@@ -199,6 +199,94 @@ final class HandoffMint {
         }
     }
 
+    /** What a native reproduction answers at its attaches
+     *  ({@link RecordingPlant}). */
+    interface NativeAnswers {
+        /** The answer of the attach {@code endpointId} names, or null. */
+        String answer(String endpointId);
+
+        /** One answer written into its leaf, or not. */
+        void planted(String endpointId, boolean written);
+    }
+
+    /**
+     * A native reproduction's attach: {@code value}, what a call returned at
+     * a port's call-return capture inside {@code consumer} (the occurrence
+     * of a region declaring it IN), carried as the replay's weave carries it
+     * ({@code CausynthPipeline#addCommunicationHandoff}), each primitive leaf
+     * named by the endpoint a replay's attach names it by
+     * ({@link #mintHandoffLeaf}: one per leaf, in the same order, so the
+     * k-th attach of a run is the replay's k-th); a leaf {@code answers}
+     * answers is written as the replay writes it.  Returns the value read
+     * back off the carrier: the answer, or the object its leaves were
+     * written into.
+     */
+    static Object answerNatively(String portId, Object value,
+                                 OccurrenceAddress consumer,
+                                 NativeAnswers answers) {
+        ConcolicRegionRuntime.HandoffLeafCarrier carrier = carrierOf(value);
+        String field = leafField(value);
+        int attempt = WireExport.attemptOf(RuntimeTraceContext.current());
+        String descriptor = "o".equals(field) ? "Ljava/lang/Object;"
+                : field.toUpperCase();
+        for (HandoffLeaf leaf : handoffLeaves(portId, carrier, field,
+                descriptor)) {
+            Endpoint endpoint = Identity.endpointAt(consumer, portId, attempt);
+            String answer = endpoint == null ? null
+                    : answers.answer(endpoint.id());
+            if (answer == null) continue;
+            answers.planted(endpoint.id(), RootMint.writeModeledField(
+                    leaf.owner, leaf.signature(), javaTypeDescriptor(
+                            leaf.field.getType().getTypeName()), answer));
+        }
+        return readBack(carrier, field);
+    }
+
+    /** The carrier a value of its runtime type crosses on. */
+    private static ConcolicRegionRuntime.HandoffLeafCarrier carrierOf(
+            Object value) {
+        if (value instanceof Long) {
+            return ConcolicRegionRuntime.HandoffLeafCarrier.of(
+                    ((Long) value).longValue());
+        }
+        if (value instanceof Integer) {
+            return ConcolicRegionRuntime.HandoffLeafCarrier.of(
+                    ((Integer) value).intValue());
+        }
+        if (value instanceof Boolean) {
+            return ConcolicRegionRuntime.HandoffLeafCarrier.of(
+                    ((Boolean) value).booleanValue());
+        }
+        if (value instanceof Float) {
+            return ConcolicRegionRuntime.HandoffLeafCarrier.of(
+                    ((Float) value).floatValue());
+        }
+        if (value instanceof Double) {
+            return ConcolicRegionRuntime.HandoffLeafCarrier.of(
+                    ((Double) value).doubleValue());
+        }
+        return ConcolicRegionRuntime.HandoffLeafCarrier.of(value);
+    }
+
+    /** The carrier field a value of its runtime type is the leaf of. */
+    private static String leafField(Object value) {
+        return value instanceof Long ? "j" : value instanceof Integer ? "i"
+                : value instanceof Boolean ? "z" : value instanceof Float
+                ? "f" : value instanceof Double ? "d" : "o";
+    }
+
+    private static Object readBack(
+            ConcolicRegionRuntime.HandoffLeafCarrier carrier, String field) {
+        switch (field) {
+            case "j": return carrier.j;
+            case "i": return carrier.i;
+            case "z": return carrier.z;
+            case "f": return carrier.f;
+            case "d": return carrier.d;
+            default: return carrier.o;
+        }
+    }
+
     /**
      * Names one attach inside {@code active} that minted no v_H: the value
      * crossed, but no row keys an arm by it.

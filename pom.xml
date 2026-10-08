@@ -127,6 +127,10 @@
                         <manifest>
                             <mainClass>edu.uva.liftlab.graphchecker.GraphCheckerMain</mainClass>
                         </manifest>
+                        <manifestEntries>
+                            <!-- A native reproduction's plant-run agent (execute.sh, CAUSYNTH_PLANT). -->
+                            <Premain-Class>edu.uva.liftlab.graphchecker.runtime.PlantAgent</Premain-Class>
+                        </manifestEntries>
                     </archive>
                     <descriptorRefs>
                         <descriptorRef>jar-with-dependencies</descriptorRef>

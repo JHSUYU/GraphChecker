@@ -104,8 +104,9 @@ CONFIRM     re-run the witness world, check its edges (explore/ConfirmMain)
 EMIT        final/result.json, gaps.json, run-manifest.json
 REPRODUCE   after the verdict: run a confirmed witness natively, N runs at once over
             the lifts, the recording weave on the stock JDK planting CONFIRM's world
-            (fault markers, tree hook roots, the model's order), each ending at the
-            fatal at its anchor (runtime/RecordingPlant)
+            (fault markers, hook roots, clocks, configurations, accessor reads,
+            call-return answers, the model's order), each ending at the fatal at
+            its anchor (runtime/RecordingPlant, the plant agent runtime/PlantAgent)
 ```
 
 The stages, their gates and the claim kinds are specified in

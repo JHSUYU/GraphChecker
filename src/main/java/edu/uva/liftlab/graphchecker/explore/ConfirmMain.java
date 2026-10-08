@@ -33,7 +33,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
-import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
@@ -484,18 +484,33 @@ public final class ConfirmMain {
      * A native reproduction's plant ({@code runtime.RecordingPlant}): what
      * CONFIRM's world plants and holds ({@link Witness}), as rows a run of
      * the recording weave on a stock JDK applies, each numbered so the run
-     * can say it applied it -- a ROOT per root the world assigns, naming
-     * the occurrence id it is minted at (a FAULT marker answered true or
-     * false at the call site its plan input action names, a tree HOOK's
-     * field written), the world's ORDER rows as CONFIRM holds them, each
-     * pair once, and one TARGET per guard of the scope map's TARGET_SITE
-     * rows, its fatal arm at the claim's anchor: the one question a native
-     * run answers.  Whatever CONFIRM decided, and whether or not it
-     * replayed.  A world the recording weave cannot plant is refused by name
-     * ({@code NATIVE_PLANT_UNSUPPORTED}): a clock skew, an attach's answer,
-     * a root of another category (a configuration, an unwoven accessor's
-     * read), a marker of no single site or no boolean value, a root with no
-     * mint; so is one that plants nothing, which would repeat the
+     * can say it applied it:
+     * <ul>
+     *   <li>a ROOT per root the world assigns or skews, naming the occurrence
+     *   id it is minted at: a FAULT marker answered true or false at the call
+     *   site its plan input action names; a tree HOOK's field written; a
+     *   CONFIG root's value returned by its getter calls; a READ root's by
+     *   its accessor call; a CLOCK root's skew, a jump of its node's clock
+     *   at its call -- a value at a call's return, which the plant-run agent
+     *   intercepts ({@code runtime.PlantAgent}, {@link PlantSites});</li>
+     *   <li>a CLOCK_SITE per declared clock reading of the plan, when the
+     *   world skews a clock: every such reading runs on its node's clock;</li>
+     *   <li>an ANSWER per attach the world answers, at its port's call-return
+     *   capture: the endpoint, the call and the regions declaring it;</li>
+     *   <li>the world's ORDER rows as CONFIRM holds them, each pair once;</li>
+     *   <li>one TARGET per guard of the scope map's TARGET_SITE rows, its
+     *   fatal arm at the claim's anchor: the one question a native run
+     *   answers.</li>
+     * </ul>
+     * Whatever CONFIRM decided, and whether or not it replayed.  A world the
+     * native run cannot plant is refused by name ({@code
+     * NATIVE_PLANT_UNSUPPORTED}): a root minted other than at a call's return
+     * (a parameter, a field or static read: the recording weave states no
+     * read there), a marker of no single site or no boolean value, a root
+     * with no mint, an answer whose capture is no call's return or whose
+     * value a message getter's element carries (a codec port: which getter
+     * call attaches is the decode's binding, MessageCodec, which only a
+     * replay keeps); so is one that plants nothing, which would repeat the
      * recording, and a scope map that states no fatal arm.
      */
     static JsonObject writePlant(Path iteration, Path claimFile,
@@ -505,51 +520,35 @@ public final class ConfirmMain {
         Witness witness = Witness.of(iteration, claim,
                 ExploreCodec.readObject(manifestFile));
         World world = witness.planted();
-        if (!world.clockDeltas.isEmpty() || !world.answers.isEmpty()) {
-            throw new Refused("NATIVE_PLANT_UNSUPPORTED: a native run plants "
-                    + "no clock and answers no attach, and this world skews "
-                    + "clocks " + world.clockDeltas.keySet()
-                    + " and answers attaches " + world.answers.keySet());
-        }
         Map<String, RootCategory> categories = witness.categories();
-        Map<String, Set<String>> sites = inputSites(
+        PlantSites sites = PlantSites.read(
                 iteration.resolve("execution_task_plan.jsonl"));
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<String, String> assigned
                 : world.assignments.entrySet()) {
-            String rootId = assigned.getKey();
-            RootCategory category = categories.get(rootId);
-            Set<String> site = sites.getOrDefault(rootId,
-                    Collections.<String>emptySet());
-            OccurrenceAddress mint = OccurrenceAddress.parse(
-                    world.mints.getOrDefault(rootId, ""));
-            String value = assigned.getValue().trim();
-            if (mint == null || !(category == RootCategory.HOOK
-                    || category == RootCategory.FAULT && site.size() == 1
-                    && ("true".equals(value) || "false".equals(value)))) {
-                throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
-                        + " is " + category + " at '" + value + "', called at "
-                        + site + ", minted at '" + world.mints.get(rootId)
-                        + "'; a native run plants a fault marker of one call "
-                        + "site at true or false, or a tree hook's field, at "
-                        + "an occurrence it is minted at");
-            }
-            JsonObject row = new JsonObject();
-            row.addProperty(RecordingPlant.KIND, RecordingPlant.ROOT);
-            row.addProperty(RecordingPlant.CATEGORY, category.name());
-            row.addProperty(RecordingPlant.ROOT_ID, rootId);
-            row.addProperty(RecordingPlant.OCCURRENCE, mint.id());
-            if (category == RootCategory.FAULT) {
-                row.addProperty(RecordingPlant.SITE, site.iterator().next());
-            }
-            row.addProperty(RecordingPlant.VALUE, value);
-            rows.add(row);
+            rows.add(assignedRoot(assigned.getKey(), assigned.getValue()
+                    .trim(), categories.get(assigned.getKey()), world, sites));
+        }
+        for (Map.Entry<String, String> skew : world.clockDeltas.entrySet()) {
+            rows.add(clockRoot(skew.getKey(), skew.getValue().trim(), world,
+                    sites));
+        }
+        if (!world.answers.isEmpty()) {
+            rows.addAll(answers(world.answers, witness, sites));
         }
         // One row per order: CONFIRM's closure and its pairings may state
-        // one twice, and a run holds it once.
+        // one twice, and a run holds it once.  A pairing at a placeholder
+        // (a mint read) holds no order in CONFIRM either, and natively
+        // nothing checks the version it read: counted, not planted.
         Set<String> orders = new LinkedHashSet<String>();
+        int placeholders = 0;
         for (JsonObject edge : witness.edges(iteration, world)) {
-            if (RecordingPlant.ORDER.equals(optionalString(edge, "kind"))
+            String kind = optionalString(edge, "kind");
+            if ("STATE".equals(kind) && edge.has("mint")
+                    && edge.get("mint").getAsBoolean()) {
+                placeholders++;
+            }
+            if (RecordingPlant.ORDER.equals(kind)
                     && orders.add(optionalString(edge, "before") + "\n"
                     + optionalString(edge, "after"))) {
                 rows.add(edge);
@@ -561,6 +560,16 @@ public final class ConfirmMain {
                     + "repeat the recording");
         }
         int planted = rows.size();
+        if (!world.clockDeltas.isEmpty()) {
+            for (Map.Entry<PlantSites.Call, Set<String>> reading
+                    : sites.clockReadings().entrySet()) {
+                JsonObject row = callRow(RecordingPlant.CLOCK_SITE,
+                        reading.getKey());
+                row.add(RecordingPlant.REGIONS, textArray(reading.getValue()));
+                rows.add(row);
+            }
+        }
+        int context = rows.size();
         for (StaticScopeMap.Site target
                 : StaticScopeMap.read(scopeMap).targetSites()) {
             for (int index = 0; index < target.guards.size()
@@ -575,7 +584,7 @@ public final class ConfirmMain {
                 rows.add(row);
             }
         }
-        if (rows.size() == planted) {
+        if (rows.size() == context) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: " + scopeMap
                     + " states no fatal arm of a TARGET_SITE guard, so a "
                     + "native run could not tell whether it reproduced");
@@ -586,28 +595,174 @@ public final class ConfirmMain {
         RowCodec.writeJsonl(out, rows);
         JsonObject summary = witness.summary();
         summary.addProperty("roots", world.assignments.size());
-        summary.addProperty("orders", planted - world.assignments.size());
-        summary.addProperty("fatalArms", rows.size() - planted);
+        summary.addProperty("clocks", world.clockDeltas.size());
+        summary.addProperty("answers", world.answers.size());
+        summary.addProperty("orders", orders.size());
+        summary.addProperty("clockReadings", context - planted);
+        summary.addProperty("fatalArms", rows.size() - context);
+        summary.addProperty("placeholderPairings", placeholders);
         return summary;
     }
 
-    /** Each input port of the plan: the call sites its input actions name. */
-    private static Map<String, Set<String>> inputSites(Path plan)
-            throws IOException {
-        Map<String, Set<String>> sites =
-                new LinkedHashMap<String, Set<String>>();
-        for (JsonObject task : ArtifactIO.readJsonl(plan)) {
-            for (JsonElement element : ExecutionTask.decode(task)
-                    .inputActions().all()) {
-                JsonObject action = element.getAsJsonObject();
-                String port = optionalString(action, "portId");
-                String site = optionalString(action, "siteId");
-                if (port.isEmpty() || site.isEmpty()) continue;
-                sites.computeIfAbsent(port,
-                        key -> new LinkedHashSet<String>()).add(site);
+    /** The ROOT row of one root the world assigns a value. */
+    private static JsonObject assignedRoot(String rootId, String value,
+                                           RootCategory category,
+                                           World world, PlantSites sites) {
+        OccurrenceAddress mint = mintOf(world, rootId);
+        Set<String> marked = sites.sites(rootId);
+        List<PlantSites.Call> calls = sites.calls(rootId);
+        boolean planted = mint != null && (category == RootCategory.HOOK
+                || category == RootCategory.FAULT && marked.size() == 1
+                && ("true".equals(value) || "false".equals(value))
+                || category == RootCategory.CONFIG && !calls.isEmpty()
+                || category == RootCategory.READ && calls.size() == 1);
+        if (!planted) {
+            throw new Refused("NATIVE_PLANT_UNSUPPORTED: root " + rootId
+                    + " is " + category + " at '" + value + "', minted at '"
+                    + world.mints.get(rootId) + "' at " + sites.locations(
+                    rootId) + ", called at " + marked + "; a native run "
+                    + "plants a fault marker of one call site at true or "
+                    + "false, a tree hook's field, or the return of a "
+                    + "configuration getter or an accessor call, at an "
+                    + "occurrence it is minted at");
+        }
+        JsonObject row = root(category, rootId, mint);
+        if (category == RootCategory.FAULT) {
+            row.addProperty(RecordingPlant.SITE, marked.iterator().next());
+        } else if (category == RootCategory.READ) {
+            PlantSites.Call call = calls.get(0);
+            row.addProperty(RecordingPlant.SITE, call.siteId);
+            row.addProperty(RecordingPlant.CALLEE, call.callee);
+            row.addProperty(RecordingPlant.JAVA_TYPE, call.javaType);
+        } else if (category == RootCategory.CONFIG) {
+            JsonArray getters = new JsonArray();
+            for (PlantSites.Call call : calls) {
+                getters.add(callRow(null, call));
+            }
+            row.add(RecordingPlant.SITES, getters);
+            row.addProperty(RecordingPlant.JAVA_TYPE, calls.get(0).javaType);
+        }
+        row.addProperty(RecordingPlant.VALUE, value);
+        return row;
+    }
+
+    /** The ROOT row of one clock the world skews: a jump of its node's
+     *  clock at the call it is read at, under its mint occurrence. */
+    private static JsonObject clockRoot(String rootId, String skew,
+                                        World world, PlantSites sites) {
+        OccurrenceAddress mint = mintOf(world, rootId);
+        List<PlantSites.Call> calls = new ArrayList<PlantSites.Call>();
+        for (PlantSites.Call call : sites.calls(rootId)) {
+            if (call.clock != null) calls.add(call);
+        }
+        if (mint == null || calls.size() != 1 || !skew.matches("-?\\d+")) {
+            throw new Refused("NATIVE_PLANT_UNSUPPORTED: clock " + rootId
+                    + " skewed by '" + skew + "', minted at '"
+                    + world.mints.get(rootId) + "', is read at "
+                    + sites.locations(rootId) + " with " + calls.size()
+                    + " declared clock call(s); a native run plants a skew "
+                    + "of one clock call's return at an occurrence it is "
+                    + "minted at");
+        }
+        JsonObject row = root(RootCategory.CLOCK, rootId, mint);
+        for (Map.Entry<String, JsonElement> field
+                : callRow(null, calls.get(0)).entrySet()) {
+            row.add(field.getKey(), field.getValue());
+        }
+        row.addProperty(RecordingPlant.SKEW, skew);
+        return row;
+    }
+
+    /**
+     * The ANSWER rows of the attaches the world answers: each endpoint as
+     * its session states it, at its port's call-return capture.
+     */
+    private static List<JsonObject> answers(Map<String, String> answers,
+                                            Witness witness,
+                                            PlantSites sites) {
+        Map<String, Endpoint> attached = new LinkedHashMap<String, Endpoint>();
+        for (SessionReader rows : Arrays.asList(witness.recording,
+                witness.session)) {
+            for (AttachRow attach : rows.attaches()) {
+                attached.putIfAbsent(attach.endpoint().id(),
+                        attach.endpoint());
             }
         }
-        return sites;
+        List<JsonObject> rows = new ArrayList<JsonObject>();
+        for (Map.Entry<String, String> answer : answers.entrySet()) {
+            Endpoint endpoint = attached.get(answer.getKey());
+            String port = endpoint == null ? "" : endpoint.site();
+            PlantSites.Capture capture = sites.capture(port);
+            if (capture == null || !CommunicationCatalogContract
+                    .CAPTURE_CALL_RETURN.equals(capture.kind)
+                    || !capture.codecField.isEmpty()) {
+                throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world answers"
+                        + " attach " + answer.getKey() + " of port '" + port
+                        + "', captured " + (capture == null ? "nowhere"
+                        : capture.kind + (capture.codecField.isEmpty() ? ""
+                        : " of message field " + capture.codecField))
+                        + "; a native run answers a value a call returns, "
+                        + "not a parameter, an argument, a method's return "
+                        + "or a message getter's element (which getter call "
+                        + "attaches is the decode's binding, kept only in a "
+                        + "replay)");
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty(RecordingPlant.KIND, RecordingPlant.ANSWER);
+            row.addProperty(RecordingPlant.ENDPOINT, answer.getKey());
+            row.addProperty(RecordingPlant.PORT, port);
+            row.addProperty(RecordingPlant.SITE, capture.siteId);
+            row.addProperty(RecordingPlant.CALLEE, capture.callee);
+            row.add(RecordingPlant.REGIONS, textArray(capture.regions));
+            row.addProperty(RecordingPlant.VALUE, answer.getValue());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /** The occurrence the world mints a root at, or null when it states
+     *  none it can name. */
+    private static OccurrenceAddress mintOf(World world, String rootId) {
+        String rendered = world.mints.getOrDefault(rootId, "");
+        try {
+            return rendered.isEmpty() ? null
+                    : OccurrenceAddress.parse(rendered);
+        } catch (IllegalArgumentException notAnOccurrence) {
+            return null;
+        }
+    }
+
+    private static JsonObject root(RootCategory category, String rootId,
+                                   OccurrenceAddress mint) {
+        JsonObject row = new JsonObject();
+        row.addProperty(RecordingPlant.KIND, RecordingPlant.ROOT);
+        row.addProperty(RecordingPlant.CATEGORY, category.name());
+        row.addProperty(RecordingPlant.ROOT_ID, rootId);
+        row.addProperty(RecordingPlant.OCCURRENCE, mint.id());
+        return row;
+    }
+
+    /** One call as a plant names it: its site, callee, JVM type and, for a
+     *  clock, its clock; {@code kind} when it is a row of its own. */
+    private static JsonObject callRow(String kind, PlantSites.Call call) {
+        JsonObject row = new JsonObject();
+        if (kind != null) row.addProperty(RecordingPlant.KIND, kind);
+        row.addProperty(RecordingPlant.SITE, call.siteId);
+        row.addProperty(RecordingPlant.CALLEE, call.callee);
+        row.addProperty(RecordingPlant.JAVA_TYPE, call.javaType);
+        if (call.clock != null) {
+            JsonObject clock = new JsonObject();
+            clock.addProperty(RecordingPlant.NANOS, call.clock.nanos());
+            clock.addProperty(RecordingPlant.SOURCE, call.clock.source());
+            row.add(RecordingPlant.CLOCK, clock);
+        }
+        return row;
+    }
+
+    private static JsonArray textArray(Iterable<String> texts) {
+        JsonArray array = new JsonArray();
+        for (String text : texts) array.add(text);
+        return array;
     }
 
     /** The claim's moved roots over the manifest's clock readings (every
