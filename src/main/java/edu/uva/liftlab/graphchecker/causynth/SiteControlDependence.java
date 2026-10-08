@@ -153,6 +153,16 @@ public final class SiteControlDependence {
                         ? Collections.<StaticScopeMap.Guard>emptyList()
                         : computed.chain(SiteId.unitIndexOf(siteId));
             }
+
+            @Override
+            public String switchCase(String switchSiteId, String siteId) {
+                MethodGuards computed = bySite.get(siteId);
+                return computed == null || !SiteId.methodOf(switchSiteId)
+                        .equals(SiteId.methodOf(siteId)) ? null
+                        : computed.switchCase(
+                                SiteId.unitIndexOf(switchSiteId),
+                                SiteId.unitIndexOf(siteId));
+            }
         };
     }
 
@@ -490,6 +500,39 @@ public final class SiteControlDependence {
                     new ArrayList<Integer>(found));
             reachingCache.put(key, computed);
             return computed;
+        }
+
+        /**
+         * The case of the switch at {@code switchIndex} from which the unit
+         * at {@code unitIndex} is reachable, the switch a barrier: its key
+         * (the first one of a target several keys share), {@link
+         * StaticScopeMap.Guards#DEFAULT_CASE}, or null where the unit is
+         * reachable from none or several of its successors.
+         */
+        String switchCase(int switchIndex, int unitIndex) {
+            Unit branch = byIndex.get(Integer.valueOf(switchIndex));
+            Unit site = byIndex.get(Integer.valueOf(unitIndex));
+            CausynthBranchShape shape = plain == null ? null
+                    : CausynthBranchShape.from(plain.cfg.getBody(), branch);
+            if (shape == null || !shape.isSwitch() || site == null) {
+                return null;
+            }
+            Unit reaching = null;
+            for (Unit successor : new LinkedHashSet<Unit>(shape.successors)) {
+                if (!plain.reachesWithoutRevisiting(successor, site,
+                        branch)) {
+                    continue;
+                }
+                if (reaching != null) return null;
+                reaching = successor;
+            }
+            if (reaching == null) return null;
+            for (int index = 0; index < shape.caseKeys.size(); index++) {
+                if (shape.successors.get(index) == reaching) {
+                    return String.valueOf(shape.caseKeys.get(index));
+                }
+            }
+            return StaticScopeMap.Guards.DEFAULT_CASE;
         }
 
         private List<StaticScopeMap.Guard> compute(int unitIndex) {

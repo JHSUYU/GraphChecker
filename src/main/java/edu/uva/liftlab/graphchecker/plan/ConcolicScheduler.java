@@ -140,6 +140,10 @@ public final class ConcolicScheduler {
                     }
                     target.add("guards", guards);
                 }
+                // The arms a forced replay forces on the way to the throw
+                // (ForcingTable): the replay plan carries them.
+                JsonArray force = loaded.staticScopeMap.forcing();
+                if (force.size() > 0) target.add("force", force);
                 executionTask.add("targetBranch", target);
             }
 

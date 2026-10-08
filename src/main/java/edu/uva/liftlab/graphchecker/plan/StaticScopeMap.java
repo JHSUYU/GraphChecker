@@ -161,6 +161,17 @@ public final class StaticScopeMap {
         default List<String> callersOf(String method) {
             return Collections.<String>emptyList();
         }
+
+        /** {@link #switchCase}'s answer for a switch's default arm. */
+        String DEFAULT_CASE = "default";
+
+        /** The case of the switch at {@code switchSiteId} from which
+         *  {@code siteId}, in the same method, is reachable (the switch a
+         *  barrier): its key, {@link #DEFAULT_CASE}, or null where none or
+         *  several are ({@link ForcingTable}). */
+        default String switchCase(String switchSiteId, String siteId) {
+            return null;
+        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -511,13 +522,23 @@ public final class StaticScopeMap {
     /** Each configuration root's reads no plant stands at, by source id. */
     private final Map<String, List<String>> concreteConfigurationReads;
 
+    /** The TARGET_SITE rows' forcing tables, one ({@link ForcingTable}). */
+    private final JsonArray forcing;
+
     private StaticScopeMap(List<Site> sites,
                            Map<String, Set<String>> regionMethods,
-                           Map<String, List<String>> concreteReads) {
+                           Map<String, List<String>> concreteReads,
+                           JsonArray forcing) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
                 Collections.unmodifiableMap(concreteReads);
+        this.forcing = forcing;
+    }
+
+    /** The declared throw's forcing table ({@link ForcingTable}), a copy. */
+    public JsonArray forcing() {
+        return forcing.deepCopy();
     }
 
     /** The kind of a configuration root's row. */
@@ -897,10 +918,18 @@ public final class StaticScopeMap {
                 guarded = guarded.withChain(targetChain(guards, site.siteId,
                         entry));
             }
-            rows.add(row(guarded));
+            JsonObject row = row(guarded);
+            if (TARGET_SITE.equals(site.role)) {
+                JsonArray force = ForcingTable.of(guarded, guards);
+                if (force.size() > 0) row.add(FORCE, force);
+            }
+            rows.add(row);
         }
         return rows;
     }
+
+    /** A TARGET_SITE row's forcing table ({@link ForcingTable}). */
+    static final String FORCE = "force";
 
     private static JsonObject row(Site site) {
         JsonObject row = new JsonObject();
@@ -1295,6 +1324,7 @@ public final class StaticScopeMap {
         List<Site> sites = new ArrayList<Site>();
         Map<String, List<String>> concreteReads =
                 new LinkedHashMap<String, List<String>>();
+        List<JsonArray> forcing = new ArrayList<JsonArray>();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
             if (CONFIG_KEY.equals(optionalString(row, "kind"))) {
                 concreteReads.put(optionalString(row, "sourceId"),
@@ -1303,6 +1333,9 @@ public final class StaticScopeMap {
                 continue;
             }
             if (!SITE_KIND.equals(optionalString(row, "kind"))) continue;
+            if (row.has(FORCE) && row.get(FORCE).isJsonArray()) {
+                forcing.add(row.getAsJsonArray(FORCE));
+            }
             List<String> guards = strings(row, "guards");
             List<Boolean> outcomes = new ArrayList<Boolean>();
             JsonElement statedOutcomes = row.get("guardOutcomes");
@@ -1346,7 +1379,8 @@ public final class StaticScopeMap {
                     optionalString(row, "publishedFrom"),
                     (int) optionalLongInteger(row, "demandDistance", -1L)));
         }
-        return new StaticScopeMap(sites, readRegions(file), concreteReads);
+        return new StaticScopeMap(sites, readRegions(file), concreteReads,
+                ForcingTable.union(forcing));
     }
 
     /** A row's {@code constructionOnly}. */
@@ -1406,7 +1440,8 @@ public final class StaticScopeMap {
     public static StaticScopeMap empty() {
         return new StaticScopeMap(new ArrayList<Site>(),
                 Collections.<String, Set<String>>emptyMap(),
-                Collections.<String, List<String>>emptyMap());
+                Collections.<String, List<String>>emptyMap(),
+                new JsonArray());
     }
 
     public boolean stated() {

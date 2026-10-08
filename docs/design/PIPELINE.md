@@ -137,7 +137,10 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    constant return, each with its verdict or open, nested (`guardDeciders`,
    `causynth.BooleanReturns`) and the `chain` of guards before them; `StaticScopeMap.Site.pathSites`
    = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
-   the one decision each target row's open decider arm names (`TargetRow.OpenArm`). Loop-bound
+   the one decision each target row's open decider arm names (`TargetRow.OpenArm`); and `force`,
+   the forcing table (each of those branches with the arm that leads to the throw,
+   `plan.ForcingTable`), which PLAN copies onto the declared task's `targetBranch.force` for the
+   forced replay (§7.10). Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
