@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**

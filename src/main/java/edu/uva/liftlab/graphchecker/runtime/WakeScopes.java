@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**

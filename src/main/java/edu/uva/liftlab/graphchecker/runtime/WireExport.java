@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 
 import java.lang.reflect.Field;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**

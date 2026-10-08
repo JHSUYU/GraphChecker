@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**

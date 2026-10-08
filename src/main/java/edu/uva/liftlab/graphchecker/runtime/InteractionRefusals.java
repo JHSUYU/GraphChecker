@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import java.util.Map;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**

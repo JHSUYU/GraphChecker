@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
+
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
 /**
