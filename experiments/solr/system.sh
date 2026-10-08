@@ -50,8 +50,7 @@ system_classpath() {
 }
 
 system_build() {
-  bash "${system_dir}/build.sh" "${repo}" "${test_class}" "${test_method}" \
-    "${solr_seed}"
+  bash "${system_dir}/build.sh" "${repo}" "${solr_seed}" "${test_class}#${test_method}"
 }
 
 # What the junit4 runner hands every test JVM of the tree, for a workload

@@ -21,8 +21,10 @@ How a check is declared and run: a check's throw is marked in the system's tree 
 `throw new @CausynthExceptionTarget("<check id>") E(...)`; its case directory names the tree, the test and the target
 occurrence (README "Run one case"). HDFS's 36 study checks are rows of `experiments/hadoop/hdfs-adhoc/checks.tsv`
 (id, test class, method, window, target occurrence, analysis scope); the named bugs have their own case directories
-(`experiments/hadoop/hdfs-*`). The HDFS trees mark all 49 study points; the Solr, HBase and ZooKeeper trees mark only
-their bug targets so far (their study markers are their turn's first TODO).
+(`experiments/hadoop/hdfs-*`). Solr's 12 are rows of `experiments/solr/solr-adhoc/checks.tsv`, its six bug-study checks
+cases of `experiments/solr/solr-bugs`. The HDFS trees mark all 49 study points, the Solr tree (`gc/solr-checks`) its 12
+checked points and 8 bug checks; the HBase and ZooKeeper trees mark only their bug targets so far (their study markers
+are their turn's first TODO).
 
 Counts: HDFS 38 points / 36 checked + 10 named bug checks = 46 cases; Solr 21 / 13 + 8 bug checks (solr-adhoc-22 is
 solr-18406) = 20; HBase 30 / 17 + 3 = 20; ZooKeeper 13 / 10 + 3 = 13.
@@ -94,7 +96,9 @@ Per-case workarounds: 21 (tree r7-21, its loop bounds), 07 (tree r8, world depth
 
 ## Solr, HBase, ZooKeeper: the study checks (their turn comes after HDFS)
 
-None of these study points is marked in its system's tree yet, except solr-adhoc-22 (solr-18406's throw).
+Solr's 12 are marked on `gc/solr-checks` (2026-10-08; solr-adhoc-22 is solr-18406's throw), each declared in
+`experiments/solr/solr-adhoc/checks.tsv` and its workload run natively there; none has run as a campaign yet. No HBase
+or ZooKeeper study point is marked yet.
 
 ### solr
 | check | site (our tree) | guard | workload (test) | state |

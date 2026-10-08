@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# run-series.sh <round> <system/hdfs checkout> <system/hdfs1 checkout> [case...]
-# -- the HDFS cases one at a time, each alone on the cluster (its obligations
+# run-series.sh <round> <cases.tsv> <branch>=<checkout>... [case...] -- a
+# system's cases one at a time, each alone on the cluster (its obligations
 # over every host of LIFTS, no shared pool), as series EX1 ran them
-# (docs/design/PERFORMANCE.md §6): every case of
-# experiments/hadoop/hdfs-cases.tsv, or the named ones, from the built
-# checkout of the branch the table names, with the table's budget.  Run
-# accept-<round>-<case without "hdfs-"> under GC_OUT.  A case whose run has
-# its summary row is not run again, so a stopped series resumes by the same
-# command.  Then: tools/rounds/round-verify.sh <round> and
-# tools/rounds/series-stats.py <round>.
+# (docs/design/PERFORMANCE.md §6): every case of the table
+# (experiments/hadoop/hdfs-cases.tsv, experiments/solr/solr-cases.tsv: case,
+# branch, budget, ...), or the named ones, from the built checkout of the
+# branch its row names, with its budget.  Run accept-<round>-<case without its
+# system's prefix> under GC_OUT.  A case whose run has its summary row is not
+# run again, so a stopped series resumes by the same command.  Then:
+# tools/rounds/round-verify.sh <round> and tools/rounds/series-stats.py <round>.
 #
 #   CAUSYNTH_CUSTOM_JDK_HOME  the concolic VM image (required)
 #   PRUNE                     accept.sh's (0 keeps every artifact, 1.5-6 GB a case)
@@ -17,17 +17,29 @@ set -uo pipefail
 self=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # shellcheck source=../lib/gc-env.sh
 source "${self}/tools/lib/gc-env.sh"
-round=${1:?usage: run-series.sh <round> <system/hdfs checkout> <system/hdfs1 checkout> [case...]}
-declare -A checkout=([system/hdfs]=$(cd "${2:?}" && pwd -P) [system/hdfs1]=$(cd "${3:?}" && pwd -P))
-shift 3
+usage="usage: run-series.sh <round> <cases.tsv> <branch>=<checkout>... [case...]"
+round=${1:?${usage}}
+table=${2:?${usage}}
+[[ -f "${table}" ]] || { echo "run-series.sh: no case table ${table}" >&2; exit 2; }
+shift 2
+declare -A checkout=()
+cases=()
+for arg in "$@"; do
+  if [[ "${arg}" == *=* ]]; then
+    checkout[${arg%%=*}]=$(cd "${arg#*=}" && pwd -P)
+  else
+    cases+=("${arg}")
+  fi
+done
 : "${CAUSYNTH_CUSTOM_JDK_HOME:?run-series.sh: name the concolic VM image as CAUSYNTH_CUSTOM_JDK_HOME}"
 log=${GC_OUT}/series-${round}.log
 mkdir -p "${GC_OUT}"
 while IFS=$'\t' read -r id branch budget _; do
   [[ -n "${id}" && "${id}" != \#* ]] || continue
-  (($# == 0)) || [[ " $* " == *" ${id} "* ]] || continue
+  ((${#cases[@]} == 0)) || [[ " ${cases[*]} " == *" ${id} "* ]] || continue
   [[ ! -e "${GC_OUT}/series-${round}.STOP" ]] || { echo "$(date +%F_%T) STOP" >>"${log}"; exit 0; }
-  suffix=${round}-${id#hdfs-}
+  [[ -n "${checkout[${branch}]:-}" ]] || { echo "run-series.sh: ${id}: no checkout named for ${branch}" >&2; exit 2; }
+  suffix=${round}-${id#*-}
   out=${GC_OUT}/accept-${suffix}
   (($(wc -l 2>/dev/null <"${out}/summary.tsv" || echo 0) < 2)) || continue
   snap=${checkout[${branch}]}
@@ -42,4 +54,4 @@ while IFS=$'\t' read -r id branch budget _; do
     waited=$((waited + 30))
   done
   echo "$(date +%F_%T) $(date +%s) END ${id} ${suffix} rows=$(wc -l 2>/dev/null <"${out}/summary.tsv")" >>"${log}"
-done <"${self}/experiments/hadoop/hdfs-cases.tsv"
+done <"${table}"

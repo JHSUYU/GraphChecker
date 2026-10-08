@@ -1,6 +1,6 @@
-# Reproducing the 46 HDFS checks from GitHub
+# Reproducing the 46 HDFS checks (and the Solr group, §6) from GitHub
 
-Everything a run of the 46 HDFS cases needs is in two GitHub repositories. Nothing on the cluster's disks is assumed
+Everything a run of the 46 HDFS cases needs is in two GitHub repositories (the Solr cases: §6). Nothing on the cluster's disks is assumed
 besides the operating system packages below.
 
 | repository | branch | what it holds |
@@ -105,11 +105,11 @@ All 46, each alone on the cluster, as series EX1 ran them:
 
 ```bash
 cd ~/GraphChecker-hdfs1
-(setsid nohup tools/rounds/run-series.sh R1 ~/GraphChecker-hdfs ~/GraphChecker-hdfs1 > $GC_OUT/series-R1.out 2>&1 \
-  < /dev/null &)
+(setsid nohup tools/rounds/run-series.sh R1 experiments/hadoop/hdfs-cases.tsv system/hdfs=$HOME/GraphChecker-hdfs \
+  system/hdfs1=$HOME/GraphChecker-hdfs1 > $GC_OUT/series-R1.out 2>&1 < /dev/null &)
 ```
 
-Each case runs from the checkout of its branch with its budget; naming case ids after the two checkouts runs only
+Each case runs from the checkout of its branch with its budget; naming case ids after the checkouts runs only
 those. The series took 15.2 h on the ten hosts (most cases 10-40 min, 11741 ~45 min, 07 ~3 h); a stopped series
 resumes by the same command (finished cases are skipped); `touch $GC_OUT/series-R1.STOP` ends it before its next
 case. Many cases at once instead: `tools/adhoc/sweep.sh` ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
@@ -129,3 +129,27 @@ says `FAIL` whatever its claim: the claim and round-verify decide, as [handover/
 says. What each `.smt` must contain (its causal chain, symbols and propagation, read by hand against the HDFS code)
 is each case's row in [STATUS.md](STATUS.md) "HDFS checks"; `tools/analysis/smt-legend.py <run>/out/<case>` names every symbol of a formula.
 Wall times vary run to run (replays race); the EX1 rows are in [design/PERFORMANCE.md](design/PERFORMANCE.md) §6.
+
+## 6. The Solr cases
+
+The 20 Solr cases ([`experiments/solr/solr-cases.tsv`](../experiments/solr/solr-cases.tsv): case, branch, budget) run
+on GraphChecker's `system/solr` and one Solr 8.11 tree, the branch `graphchecker/solr-checks` of the public fork
+`https://github.com/JHSUYU/solr.git` (tree `lucene-solr-checks`,
+[`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4) with the
+adapter, every case's target marker and the bug checks' workloads. Besides §0's packages the tree needs Apache Ant
+with Ivy (`ant ivy-bootstrap` once; Ant resolves the tree's libraries into `~/.ivy2`). From a checkout of
+`system/solr` built as in §1 (`~/GraphChecker-solr`), with the image of §2:
+
+```bash
+cd ~/GraphChecker-solr
+tools/onlift.sh -g 8 experiments/solr/prepare-trees.sh > $GC_BULK/prepare-solr.log 2>&1
+(setsid nohup tools/rounds/run-series.sh S1 experiments/solr/solr-cases.tsv system/solr=$HOME/GraphChecker-solr \
+  > $GC_OUT/series-S1.out 2>&1 < /dev/null &)
+```
+
+`prepare-trees.sh` clones the tree into `$GC_TREES`, builds solr-core and its tests (solrj, the test framework) with
+Ant on Java 8 against the checkout's jar, and runs every case's workload once natively under its seed, one Ant run
+each: a case's classpath is read off its workload's junit4 report. The log has one line per workload, `PASSED`,
+`FAILED` (natively; the report is still its classpath) or `MISSING` (the script fails). A bug check reproduces when it
+ends `SAT_CANDIDATE`; a study check when its `.smt` is right (each case's state: [checks/README.md](checks/README.md)
+"solr" and the bug checks' table; the witness each `.smt` must allow: [handover/TODO.md](handover/TODO.md) "Solr").

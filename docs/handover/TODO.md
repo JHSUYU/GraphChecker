@@ -155,12 +155,12 @@ two named cases did); its shape below is the counterfactual's need, the test's d
 | --- | --- | --- | --- | --- | --- |
 | solr-18406 (= solr-adhoc-22) | SOLR-18406, apache/solr PR 4820: a follower's `filecontent(G)` after the leader deleted G (reservation expired) | `IndexDeletionPolicyWrapper:179` via `ReplicationHandler:1626` (`DirectoryFileStream.initWrite`); marked | `TestCausynthPullReplicaReservation#pullReplicaFetchesAcrossALeaderCommit` (ours, exists) | CLOCK_SKEW on the reservation | PASS on `main` (V25); not run on this body |
 | solr-18413 | SOLR-18413, apache/solr PR 4862: an unexpired MIGRATE routing rule names a deleted target; the source leader's update throws after applying locally | `DistributedZkUpdateProcessor:934` (`getNodesByRoutingRules`: "Could not find collection"); marked | `TestCausynthMigrateRuleTarget#updateAfterRuleExpiryAndTargetDeletion` (ours, exists; the recorded rule has expired) | CLOCK_SKEW on the rule's expiry | PASS on `main` (V25); seed replay stalls on `solr-bug-reindex` |
-| solr-bugs-reindex-cleanup | owner #5 (bug study #04): cleanup's `DELETE(T)` refuses a T an alias names, so S stays read-only | `DeleteCollectionCmd:246` (the alias-reference check) inside `ReindexCollectionCmd#cleanup`; marked on `gc/solr-bugs` | write one from `ReindexCollectionTest#testAbort`: REINDEX S->T async, `CREATEALIAS A->T`, `DELETEALIAS A`, ABORT, an add to S succeeds (replaces `testSameTargetReindexing`) | the alias read at the DELETE re-paired with A's write (STATE) | case exists, no witness yet |
-| solr-bugs-migrate-buffer-leak | owner #6 (#17): a failure after REQUESTBUFFERUPDATES leaves T BUFFERING; a retried MIGRATE is refused | `CoreAdminOperation:186` "not in active state" at the second MIGRATE's buffer request | write one from `MigrateRouteKeyTest`: two MIGRATEs into the same target, both succeed | a FAULT at a door after the first MIGRATE's buffer step (routing-rule offer, source-leader lookup, a shard request) | no case |
-| solr-bugs-overseer-lock-leak | owner #7 (#50): `OperationTimeout` in `markTaskAsRunning` leaks the collection lock; later tasks never run | settle by reading `OverseerTaskProcessor`/`LockTree`: the later task's failure (`CollectionsHandler` sync wait timeout, :382-) is a liveness effect (a task that never runs), the hardest of the eight | write one: an async task on C, then a sync task on C | ZooKeeper `OperationTimeout` at `runningMap.put` (`DistributedMap.put`) | no case |
-| solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and records success | `BackupCmd:205` "Unable to find any live replica with a snapshot" | write one from `TestSolrCloudSnapshots`: CREATESNAPSHOT M, then BACKUP with commitName M | the Overseer's view of a replica non-ACTIVE at CREATESNAPSHOT (STATE/CLOCK on its cluster-state read) | no case |
-| solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves T's shards CONSTRUCTION; the retry takes the existing-collection path, which never activates them | `HashBasedRouter:67` "No active slice" at an add to T | write one from `TestLocalFSCloudBackupRestore`: RESTORE B->T, RESTORE B->T again, add to T | a FAULT at the first RESTORE's RESTORECORE / apply-buffer request | no case |
-| solr-bugs-tra-start-overwrite | owner #10 (#20): the date-math start rewrite writes a stale aliases snapshot over a newer alias | `BaseCloudSolrClient:1140` "Collection not found: B" at a request via B | write one from `TimeRoutedAliasUpdateProcessorTest#testDateMathInStart` (`@AwaitsFix` in 8.11): first ADD rewrites the start, `CREATEALIAS B->D`, a request via B | the ADD thread's `getAliases()` re-paired with the version before B (STATE) | no case |
+| solr-bugs-reindex-cleanup | owner #5 (bug study #04): cleanup's `DELETE(T)` refuses a T an alias names, so S stays read-only | `DeleteCollectionCmd:246` (the alias-reference check) inside `ReindexCollectionCmd#cleanup`, the window's first DELETE; marked | `TestCausynthReindexAbortAlias#abortAfterAnAliasOfTheTargetIsRemoved` (ours): REINDEX S->T async held at `TestInjection.reindexLatch` once S is read-only and T exists, `CREATEALIAS A->T`, `DELETEALIAS A` (a failure logged), ABORT, release, at most 30 status polls, an add to S (replaces `testSameTargetReindexing`) | a SOLR_HTTP REQUEST fault on DELETEALIAS (owner 2026-10-08; the report's concurrent CREATEALIAS is ordered by HB here: DELETEALIAS completes before ABORT, and `checkAliasReference` re-reads ZooKeeper after `update()`) | workload passes natively; not run |
+| solr-bugs-migrate-buffer-leak | owner #6 (#17): a failure after REQUESTBUFFERUPDATES leaves T BUFFERING; a retried MIGRATE is refused | `CoreAdminOperation:186` "not in active state" at the second MIGRATE's buffer request; marked; its selector from the first recording | `TestCausynthMigrateBufferLeak#twoMigratesIntoOneTarget` (ours): two synchronous MIGRATEs into one target, the first's outcome unchecked before the second | a FAULT at a door after the first MIGRATE's buffer step (routing-rule offer, source-leader lookup, a shard request) | workload passes natively; selector open |
+| solr-bugs-overseer-lock-leak | owner #7 (#50): `OperationTimeout` in `markTaskAsRunning` leaks the collection lock; later tasks never run | `DistributedZkUpdateProcessor:238` "is read-only" (8.11.4 :236), the add after the task that never ran: the leak's own throw, a sync wait's timeout (`CollectionsHandler:383`), never comes in an automatic cluster; marked | `TestCausynthOverseerLockLeak#addAfterAnAsyncReadOnlyOff` (ours): CREATE C, sync readOnly=true, async readOnly off under a fixed request id, at most 30 REQUESTSTATUS polls 1 s apart, ADD | ZooKeeper `OperationTimeout` at `runningMap.put` (`DistributedMap.put` -> `SolrZkClient#makePath`'s own `keeper.create`, no HOOK row: agent M checks the catalog door covers it) | workload passes natively; not run |
+| solr-bugs-snapshot-no-active | owner #8 (#16): CREATESNAPSHOT skips non-ACTIVE replicas and records success | `BackupCmd:207` "Unable to find any live replica with a snapshot"; the report's zero-request case reaches no throw (BACKUP skips a shard the snapshot lacks, :331-336); marked | `TestCausynthSnapshotBackup#backupFromASnapshotAfterItsLeaderIsGone` (ours): 1 shard x 2 replicas, CREATESNAPSHOT M, DELETEREPLICA the leader R1, BACKUP commitName=M incremental=false | the Overseer's view of R2 non-ACTIVE at `CreateSnapshotCmd:102` (STATE/CLOCK on its cluster-state read): M holds R1 only | workload passes natively; not run |
+| solr-bugs-restore-construction | owner #9 (#26): a failed RESTORE leaves T's shards CONSTRUCTION; the retry takes the existing-collection path, which never activates them | `HashBasedRouter:67` "No active slice" at the add to T; marked; its selector from the first recording | `TestCausynthRestoreRetry#restoreTwiceThenAdd` (ours): BACKUP S, RESTORE B->T twice, an add to T, nothing waiting for T's shards in between | a FAULT at the first RESTORE's RESTORECORE / apply-buffer request | workload passes natively; selector open |
+| solr-bugs-tra-start-overwrite | owner #10 (#20): the date-math start rewrite writes a stale aliases snapshot over a newer alias | `BaseCloudSolrClient:901` "Collection not found: B" (`requestWithRetryOnStaleState`, before `sendRequest`'s :1140) at the request via B; marked; its selector from the first recording | `TestCausynthTraStartAlias#requestViaAnAliasCreatedBeforeTheFirstDocument` (ours): a TRA whose start is date math on a fixed day, its collection off the Overseer's node, `CREATEALIAS B->D` before its first ADD, a request via B | the routing node's `getAliases()` capture re-paired with the version before B (STATE); the workload never reads that node's alias view | workload passes natively; selector open |
 
 The 12 study checks (existing tests; rows with guard and site in [../checks/README.md](../checks/README.md) "solr"):
 
@@ -173,9 +173,9 @@ The 12 study checks (existing tests; rows with guard and site in [../checks/READ
 | solr-adhoc-13 | `RoutedAlias:350` (`doSynchronous`) | `TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation` |
 | solr-adhoc-14 | `SplitShardCmd:167` (`split`) | `SplitShardTest#doTest` |
 | solr-adhoc-19 | `CoreContainer:1330` (`create`) | `DeleteReplicaTest#deleteReplicaFromClusterStateLegacy` (`AddReplicaTest` never sets `legacyCloud`, so no writer of the guard's property; SOLR.md) |
-| solr-adhoc-21 | `CoreContainer:1765` (`reload`, an assert) | `CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss` |
-| solr-adhoc-31 | `CollectionsHandler:1477` (`forceLeaderElection`) | `ForceLeaderTest#testReplicasInLowerTerms` (`@Nightly`; an `AbstractFullDistribZkTestBase` test: the adapter must register its Jetty nodes and open the window) |
-| solr-adhoc-38 | `DistributedZkUpdateProcessor:1031` (`doDefensiveChecks`) | `TestPullReplica#testAddDocs` |
+| solr-adhoc-21 | `CoreContainer:1765` (`reload`, an assert) | `api.collections.CollectionReloadTest#testReloadedLeaderStateAfterZkSessionLoss` |
+| solr-adhoc-31 | `CollectionsHandler:1477` (`forceLeaderElection`) | `ForceLeaderTest#testReplicasInLowerTerms` (not `@Nightly` in our tree; an `AbstractFullDistribZkTestBase` test: the base class registers its servers and opens the window, `CausynthSolrCluster#registerServers`) |
+| solr-adhoc-38 | `DistributedZkUpdateProcessor:1031` (8.11.4 :1023; `doDefensiveChecks`) | `TestPullReplica#testAddDocs` |
 | solr-adhoc-39 | `RoutedAliasUpdateProcessor:247` | `TimeRoutedAliasUpdateProcessorTest#test` |
 | solr-adhoc-40 | `RoutedAliasUpdateProcessor:133` | `TimeRoutedAliasUpdateProcessorTest#test` |
 
@@ -192,20 +192,24 @@ solr-18413 regression first:
 - SEED's trace aggregation needs the heap a 2.1 GB trace takes (SBR26b), or streams it.
 Merge the parked `hdfs1-confirm-first` if a confirmation is seen waiting behind witness attempts.
 
-**2. One tree, on the fork.** One Solr tree for all 20 cases: `gc/solr-bugs` (`f65aaf7`: the storing line, the
-`spelledAs` adapter, the reindex marker, both named workloads) plus the study markers
-(`@CausynthExceptionTarget("solr-adhoc-NN")`), the five new bug markers and the new workloads. It goes to the fork
+**2. One tree, on the fork.** Done on the cluster (2026-10-08): `gc/solr-checks` (`/bigtemp/vnr3ne/wt/lucene-solr-checks`,
+a worktree of `~/lucene-solr-8_11`) is `gc/solr-bugs` (`f65aaf7`: the storing line, the `spelledAs` adapter, the
+reindex marker, both named workloads) plus the 12 study markers, the five new bug markers, the six bug workloads, the
+AbstractFullDistribZkTestBase hook (solr-adhoc-31) and the reindex latch's bound (STATUS "Per-system surface"); every
+case's tree (`experiments/solr/trees.tsv`). Left to the lead: unshallow `~/lucene-solr-8_11` (a shallow clone of
+`apache/lucene-solr` `branch_8_11`, `faca81b`, 8.11.4, a history `apache/solr` does not hold: `git fetch --unshallow
+https://github.com/apache/lucene-solr.git branch_8_11`) and push the branch to the fork
 `https://github.com/JHSUYU/solr.git` as `graphchecker/solr-checks` (more branches only for a case that needs its own
-tree, as HDFS's `trees.tsv`), never to an apache remote. `~/lucene-solr-8_11` is a shallow clone of
-`apache/lucene-solr` `branch_8_11` (`faca81b`, 8.11.4), a history `apache/solr` does not hold: unshallow it
-(`git fetch --unshallow https://github.com/apache/lucene-solr.git branch_8_11`) before the push. Then the Solr side
-of [../REPRODUCE.md](../REPRODUCE.md): `experiments/solr/trees.tsv`, a `prepare-trees.sh` that clones the tree to
-`$GC_TREES` and runs every case's workload once natively (Ant, `experiments/solr/build.sh`), `solr-cases.tsv`
-(case, budget) for `run-series.sh`.
+tree; never an apache remote). The Solr side of [../REPRODUCE.md](../REPRODUCE.md) §6 is
+`experiments/solr/{trees.tsv,prepare-trees.sh,solr-cases.tsv}` and `run-series.sh`'s case table.
 
-**3. The cases.** One experiment directory per case under `experiments/solr/` (`case.sh` with `repo=${GC_TREES}/...`,
-`workflow.properties`), the study checks in one `solr-adhoc` directory like `experiments/hadoop/hdfs-adhoc`. Dev runs
-one case at a time, then the group of 20 (concurrently, through the ledger). A bug check that ends UNSAT is not done:
+**3. The cases.** Declared: `experiments/solr/solr-adhoc` (the 12 study checks, `checks.tsv`), `solr-bugs` (the six
+bug-study checks), `solr-18406`, `solr-18413`, all on `lucene-solr-checks`; every workload passes natively there
+(`/bigtemp/vnr3ne/gc-out/solr-cases/native-*`). Open: the selectors of migrate-buffer-leak, restore-construction and
+tra-start-overwrite (their target throw runs more than once in the window; each case declares none, so PLAN refuses
+and lists the occurrences, until its first recording names the one), read off a recording once `system/solr`'s jar
+has `MessageDoors#spelledAs` (agent M's port; until then the tree's workloads run only against `solr-bug-reindex`'s
+jar); and solr-18413's selector, read on `main`'s body, re-read there. Dev runs one case at a time, then the group of 20 (concurrently, through the ledger). A bug check that ends UNSAT is not done:
 find which link of its chain the formula lacks (a door, a root, a writer the closure cut) and fix it generally. The
 cross-cutting "Force the fatal arm" item below is for this system.
 
