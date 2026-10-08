@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;

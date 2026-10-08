@@ -40,7 +40,6 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import org.junit.Assume;
 import org.junit.Rule;

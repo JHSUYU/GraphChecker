@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
  * like a refuted one, but no run decided it: an UNSAT resting on it is no
  * verdict ({@code ComposeMain#campaignClaim}).
  */
-final class Refutations {
+public final class Refutations {
 
     static final String FILE = "refuted_claims.jsonl";
     static final String REFUSED_FILE = "refused_models.jsonl";
@@ -115,7 +115,7 @@ final class Refutations {
     }
 
     /** The path ordinal one selector names, or "". */
-    static String ordinal(String selector) {
+    public static String ordinal(String selector) {
         Matcher named = SELECTOR.matcher(selector == null ? "" : selector);
         return named.matches() ? named.group(2) : "";
     }

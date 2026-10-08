@@ -17,7 +17,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 

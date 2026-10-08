@@ -70,6 +70,12 @@ public final class VmRows {
         return id == null || !id.isJsonPrimitive() ? -1L : id.getAsLong();
     }
 
+    /** The version a read node joins its writer on ({@link #joinable}),
+     *  or -1. */
+    public static long joinedVersion(JsonObject read) {
+        return joinable(read) ? recordedVersion(read) : -1L;
+    }
+
     /** Whether a read's location had its whole writer set when it read. */
     private static boolean writerSetComplete(JsonObject read) {
         return flag(read, WRITER_SET_COMPLETE, true);

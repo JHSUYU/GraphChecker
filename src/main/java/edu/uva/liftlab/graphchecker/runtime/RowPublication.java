@@ -410,7 +410,7 @@ final class RowPublication {
                                Set<String> published) {
         LocationId location = locationId(locationKey);
         if (location == null) return;
-        long observed = versionOf(node);
+        long observed = VmRows.joinedVersion(node);
         long event = eventOf(node);
         String identity = readIdentity(locationKey, observed, event);
         if (!published.add(identity)) return;
@@ -462,7 +462,7 @@ final class RowPublication {
         // joinability included: the projection's own observedVersion states
         // no unnamedWriter, and once VM f11 found a location incomplete
         // the two spelled one read event as two rows (SOLR-18406 s48).
-        long observed = versionOf(read);
+        long observed = VmRows.joinedVersion(read);
         long event = eventOf(node);
         if (event < 0L) event = eventOf(value);
         if (event < 0L && read != null) event = eventOf(read);
@@ -527,11 +527,6 @@ final class RowPublication {
     private static String readIdentity(String locationKey, long observed,
                                        long event) {
         return locationKey + "#" + observed + "#" + event;
-    }
-
-    /** The version a node observed, or {@code -1}. */
-    static long versionOf(JsonObject node) {
-        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** The VM event a node names, or {@code -1} ({@link VmRows#readEvent},

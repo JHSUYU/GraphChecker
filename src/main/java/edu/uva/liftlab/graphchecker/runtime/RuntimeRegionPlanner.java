@@ -27,17 +27,15 @@ import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -293,29 +291,16 @@ public final class RuntimeRegionPlanner {
             }
             if (events.isEmpty()) continue;
             events.sort(Map.Entry.comparingByKey());
-            MessageDigest digest = sha256();
+            StringBuilder signed = new StringBuilder();
             for (Map.Entry<Long, String> event : events) {
-                digest.update((event.getValue() + "\n").getBytes(
-                        StandardCharsets.UTF_8));
-            }
-            StringBuilder hex = new StringBuilder();
-            for (byte value : Arrays.copyOf(digest.digest(), 16)) {
-                hex.append(String.format("%02x", value & 0xff));
+                signed.append(event.getValue()).append('\n');
             }
             activation.put(RuntimeSelectedRegionFinalizer.SIGNATURE,
-                    hex.toString());
+                    ArtifactIO.digest(signed.toString(), 32));
             activation.put(RuntimeSelectedRegionFinalizer.FIRST_SEQ,
                     events.get(0).getKey());
             activation.put(RuntimeSelectedRegionFinalizer.LAST_SEQ,
                     events.get(events.size() - 1).getKey());
-        }
-    }
-
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
         }
     }
 

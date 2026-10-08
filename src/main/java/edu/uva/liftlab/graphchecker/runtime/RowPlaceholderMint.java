@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -34,7 +35,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 // One reader per VM value spelling, shared with RowPublication.
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.literal;
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.nestedRead;
-import static edu.uva.liftlab.graphchecker.runtime.RowPublication.versionOf;
 
 /**
  * The mints of one activation: which are roots, and which are the read
@@ -233,7 +233,7 @@ final class RowPlaceholderMint {
                             object(read, "location"));
             location = locationId(locationKey);
             observed = location == null ? ReadRow.UNKNOWN_VERSION
-                    : versionOf(read);
+                    : VmRows.joinedVersion(read);
         }
         if (location == null) {
             // Only the VM may name the location: the mint table, else the

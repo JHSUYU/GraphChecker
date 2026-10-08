@@ -54,7 +54,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.setting;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.objectWithoutNulls;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 

@@ -1870,7 +1870,7 @@ public final class SmtLowering {
             if (VmRows.GUARDED_READ_TYPE.equals(type)) {
                 String key = locationKey(JsonFields.object(object,
                         "location"));
-                long version = observedVersion(object);
+                long version = VmRows.joinedVersion(object);
                 if (join.repaired(key, VmRows.readEvent(object))) {
                     found.add("read " + key + "@" + version);
                     if (!all) return found;
@@ -1900,7 +1900,7 @@ public final class SmtLowering {
                                  String origin) {
         JsonObject location = JsonFields.object(expression, "location");
         String key = locationKey(location);
-        long version = observedVersion(expression);
+        long version = VmRows.joinedVersion(expression);
         String javaType = primitiveString(expression, "_java_type");
         long event = VmRows.readEvent(expression);
         return bind(key, version, event,
@@ -2458,7 +2458,7 @@ public final class SmtLowering {
                             JsonElement written = join.writeExpression(
                                     locationKey(JsonFields.object(node,
                                             "location")),
-                                    observedVersion(node));
+                                    VmRows.joinedVersion(node));
                             if (written != null) roots.add(written);
                         }
                     }
@@ -3123,7 +3123,7 @@ public final class SmtLowering {
                 }
                 JsonObject read = found.getAsJsonObject();
                 return join.writeExpression(locationKey(JsonFields.object(
-                        read, "location")), observedVersion(read));
+                        read, "location")), VmRows.joinedVersion(read));
             }
 
             @Override
@@ -3828,10 +3828,6 @@ public final class SmtLowering {
         JsonElement observed = node.get(VmRows.OBSERVED_VERSION);
         if (observed == null || !observed.isJsonObject()) return null;
         return observed.getAsJsonObject().get("expression");
-    }
-
-    private static long observedVersion(JsonObject node) {
-        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** What separates the parts of a minted name's identity. */

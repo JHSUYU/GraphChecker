@@ -1904,7 +1904,8 @@ public final class StaticScopeMap {
         return declared == null ? "" : declared.signature();
     }
 
-    private static String text(Object value) {
+    /** A row value as trimmed text; "" for none. */
+    static String text(Object value) {
         return value == null ? "" : String.valueOf(value).trim();
     }
 
