@@ -265,12 +265,13 @@ def spell_kinds(kinds):
 
 expected = EXPECTED_MECHANISM.get(case_id)
 reasons = []
-# A recording whose trace passed its bound was ended by its watcher, which
-# left its marker beside the trace (run_engine.sh campaign_watch_workload):
-# the verdict names it, before the claim it never reached.
-bound_marker = os.path.join(case_dir, "runtime", "RECORDING_BOUND")
-if os.path.isfile(bound_marker):
-    with open(bound_marker) as marker:
+# A recording its watcher ended -- its trace past its bound, or nothing
+# written for minutes -- left its marker beside the trace, the reason first
+# (run_engine.sh campaign_watch_workload): the verdict names it, before the
+# claim it never reached.
+end_marker = os.path.join(case_dir, "runtime", "RECORDING_ENDED")
+if os.path.isfile(end_marker):
+    with open(end_marker) as marker:
         reasons.append(marker.read().strip())
 if claim != "SAT_CANDIDATE":
     reasons.append("claim=%s" % claim)

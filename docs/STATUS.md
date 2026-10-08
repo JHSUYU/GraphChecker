@@ -347,8 +347,7 @@ Correctness:
     apply; still on Solr main, the symptom of SOLR-12544). Under `CausynthBounds` a delete's
     `waitForState` then never ends (natively it times out after 60 s). Worked around in both Solr
     trees by a per-collection refresh lock (`gc/solr-unified-storing` `04f8489`, `gc/solr-bugs`
-    `9d572a4`); a recording silent for 600 s is ended by name (`RECORDING_STALLED`, branch
-    `solr-bug-reindex`).
+    `9d572a4`); a recording silent for 600 s is ended by name (`RECORDING_STALLED`, PIPELINE §2).
 50. A queue item `gc/runtime/MessageDoors#consumed` installs (the Solr Overseer's state-update
     queue) states no message: the consumer thread's `MessageDoors#current` stays what it served
     before, so an attach of a concrete element the item carried has no message to pair by

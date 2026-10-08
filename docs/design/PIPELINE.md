@@ -156,8 +156,13 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
    take a frame's decisions as a set, its first, or "more than once" for a loop). Its trace is
    bounded: past `recording_max_trace_mb` its watcher (`campaign_watch_workload`) ends the
-   workload and leaves `runtime/RECORDING_BOUND` saying so, and SEED fails by that name (a trace
-   cut short is never aggregated). Then
+   workload (`RECORDING_BOUND`: a trace cut short is never aggregated), and so it does once the
+   workload wrote nothing -- no trace row, no output, its sockets aside -- for
+   `campaign_unbounded_stall_s` (600 s; `RECORDING_STALLED`, its threads first dumped on its
+   output): the trees' `CausynthBounds` lift every wait's timeout, so a cluster test waiting for a
+   notification it lost would wait out its 6 h bound (solr-bugs-reindex-cleanup SB16: an Overseer
+   command's `waitForState` after its source's deletion, an hour without a byte). Either end leaves
+   `runtime/RECORDING_ENDED`, the reason first, and SEED fails by that reason. Then
    `runtime.CausynthTraceRecorder` aggregates the trace into `runtime/concolic_region_plan.jsonl`
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.

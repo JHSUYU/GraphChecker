@@ -1864,21 +1864,27 @@ done <<'EOF'
 28000|0|0|400,486|ran|0|
 EOF
 
-# RECORDING-BOUND: a recording whose trace passes recording_max_trace_mb is
-# ended by its watcher, which says so beside the trace (the reason SEED
-# fails by); one under it runs to its end and leaves no marker.  Per row:
-# the bound in MB, the MB the "recording" writes, ended or ran.
-while IFS='|' read -r bound_mb bound_writes bound_ended; do
+# RECORDING-END: a JVM with a trace directory (a recording; a native run,
+# bound 0) is ended by its watcher, which says why beside the trace, the
+# reason first (what SEED fails by): once its trace passes
+# recording_max_trace_mb (RECORDING_BOUND), or once it wrote nothing there
+# or on its output for campaign_unbounded_stall_s (RECORDING_STALLED); one
+# that stays under its bound and keeps writing runs to its end and leaves no
+# marker.  Per row: the bound in MB, the MB the "recording" writes, the
+# seconds it then stays alive writing nothing, the stall bound, and the
+# reason it is ended for (- for none).
+while IFS='|' read -r bound_mb bound_writes bound_quiet bound_stall bound_ended; do
   bound_dir="${test_tmp}/bound"
   rm -rf -- "${bound_dir}"
   mkdir -p "${bound_dir}/trace"
   (
     campaign_watch_interval_s=0.1
+    campaign_unbounded_stall_s=${bound_stall}
     ( for (( mb = 0; mb < bound_writes; mb++ )); do
         head -c 1048576 /dev/zero >>"${bound_dir}/trace/runtime_trace.jsonl"
         sleep 0.05
       done
-      sleep 1 ) &
+      sleep "${bound_quiet}" ) &
     bound_jvm=$!
     campaign_watch_workload "${bound_jvm}" 0 "${bound_dir}/trace" \
       "${bound_mb}" 2>"${bound_dir}/said" &
@@ -1887,23 +1893,29 @@ while IFS='|' read -r bound_mb bound_writes bound_ended; do
     wait "${bound_jvm}" 2>/dev/null || bound_exit=$?
     wait "${bound_watch}"
     echo "${bound_exit}" >"${bound_dir}/exit"
-  ) || fail "a bounded recording's watch failed"
-  if [[ "${bound_ended}" == ended ]]; then
+  ) || fail "a traced JVM's watch failed"
+  if [[ "${bound_ended}" != - ]]; then
     [[ "$(cat "${bound_dir}/exit")" == 137 ]] \
-      || fail "a recording past its ${bound_mb} MB bound was not ended"
-    grep -q "^RECORDING_BOUND: the recording's trace passed recording_max_trace_mb (${bound_mb} MB) at [0-9]* MB" \
-      "${bound_dir}/trace/${campaign_recording_bound_marker}" \
-      || fail "a bounded recording does not say why beside its trace"
+      || fail "a traced JVM to be ended ${bound_ended} was not ended"
+    grep -q "^${bound_ended}: " \
+      "${bound_dir}/trace/${campaign_recording_end_marker}" \
+      || fail "a traced JVM ended ${bound_ended} does not say so beside its \
+trace: $(cat "${bound_dir}/trace/${campaign_recording_end_marker}" 2>&1)"
+    grep -q "^causynth: ${bound_ended}: " "${bound_dir}/said" \
+      || fail "a traced JVM ended ${bound_ended} does not say so on stderr"
   else
     [[ "$(cat "${bound_dir}/exit")" == 0 \
-        && ! -e "${bound_dir}/trace/${campaign_recording_bound_marker}" ]] \
-      || fail "a recording under its ${bound_mb} MB bound was ended or marked"
+        && ! -e "${bound_dir}/trace/${campaign_recording_end_marker}" ]] \
+      || fail "a traced JVM under its ${bound_mb} MB bound, quiet for \
+${bound_quiet}s, was ended or marked"
   fi
-done <<'EOF'
-2|40|ended
-50|3|ran
-0|5|ran
-EOF
+done <<'EOF2'
+2|40|1|600|RECORDING_BOUND
+50|3|1|600|-
+0|5|1|600|-
+50|0|5|1|RECORDING_STALLED
+0|1|5|1|RECORDING_STALLED
+EOF2
 
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
 # and corpus (ObligationSolverMain --serve), started by the first question
