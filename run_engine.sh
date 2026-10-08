@@ -4744,8 +4744,12 @@ campaign_planner_serve() {
     [[ "${args[index]}" != --sessions ]] || sessions=${args[index + 1]}
   done
   dir=$(campaign_planner_dir "${sessions}" "${id}")
-  # The exploration's planners that ended here before this one.
-  rm -rf -- "${dir%.*}".*
+  # The exploration's planners that ended here before this one; never its
+  # own, where its first question may already wait.
+  local ended
+  for ended in "${dir%.*}".*; do
+    [[ "${ended}" == "${dir}" ]] || rm -rf -- "${ended}"
+  done
   mkdir -p "${dir}/requests"
   require_file "GraphChecker jar" "${graphchecker_jar}"
   (cd "${graphchecker_work_dir}" \

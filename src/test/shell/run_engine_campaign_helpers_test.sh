@@ -2466,6 +2466,8 @@ stream_fixture() {
   declared_target_occurrence=""
   campaign_host_poll_s=1
   campaign_adapter_kill_grace_s=1
+  # Where the planner's questions wait (campaign_planner_dir).
+  TMPDIR=${test_tmp}
 }
 # Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
 # <id> <peak> <log> <args...>): it names itself where its rounds are asked

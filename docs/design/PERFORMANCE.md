@@ -122,12 +122,21 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
 
 ## 5. Open performance items (also in TODO.md)
 
-0. **Incremental planning** (TODO HDFS §6, first; in progress): in EX1-adhoc-07d the 16 planners took 1h51m of
-   EXPLORE's 2h25m (a round 2 s early, 19-22 min at ~640 sessions), so more lifts would buy 10-20 % at most. A late
-   07e round offline (~900 s): the corpus's rows 140-172 s, its indexes 24-39 s, the closure 190 s, the slot
-   table read 38-51 s and rewritten 194-208 s, the frontier 168-177 s and the candidates 88-95 s. One planner
-   now serves the exploration (PIPELINE §7.1), keeping the rows, the static map and the slot table, whose rounds
-   write only their changes.
+0. **Incremental planning** (TODO HDFS §6, first; branch `solr-incr-plan`): in EX1-adhoc-07d the 16 planners took
+   1h51m of EXPLORE's 2h25m (a round 2 s early, 19-22 min at ~640 sessions), so more lifts would buy 10-20 % at
+   most. A late 07e round offline (~900 s): the corpus's rows 140-172 s, its indexes 24-39 s, the closure 190 s,
+   the slot table read 38-51 s and rewritten 194-208 s, the frontier 168-177 s and the candidates 88-95 s (one
+   `dependence` computed twice per arm, 227,681 asks). One planner now serves the exploration (PIPELINE §7.1),
+   keeping the rows with what each session's rows alone give, the static map and the slot table, whose rounds
+   write only their changes; within a round, `dependence` and the closure's re-walked pieces are computed once.
+   07e's landing order replayed (`offline-ab.sh` EXPLORE.serve, no answers): 20 rounds, 2960 s with a planner of
+   its own per round against 1667 s served, the late rounds 300-360 s against 150-180 s, every round's files
+   identical (11741 60 -> 47 s, 09 162 -> 78, 39 76 -> 41, 17899-bug2 11 -> 7, solr-18406 94 -> 40, solr-18413
+   125 -> 71). Live hdfs-adhoc-09 (INC1, beside other runs: 280 waits for ledger room): 76 rounds and 443 s of
+   planning, at most 11 s a round, against EX1's 16 rounds, 234 s, at most 46 s; EXPLORE 1892 s against 845 s,
+   with 675 verdicts (634 flips) against 566 (535): rounds come more often, each over fewer new sessions, and
+   the corpus's landing order decides what each proposes (STATUS R4). What a served late 07e round still spends:
+   `Value#hashCode` recomputing deep part hashes (half its samples) and the closure.
 1. COMPOSE on a large corpus (07: 556 sessions, 2-3 min offline): the corpus read is most of it, the slot table
    (07: 314,758 slots, now its rounds' changes folded) most of the rest; `Corpus#index` re-reads each session's
    schedule on one thread.

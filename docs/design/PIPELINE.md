@@ -995,8 +995,9 @@ it waits, saying so once. A step on a peer runs through the remote worker script
 head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back as its own: a
 program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
 every engine JVM of every stage -- SEED's static passes, scope growth and trace aggregation, PLAN,
-INSTRUMENT and its verifier, the import gate, the planner, COMPOSE, CONFIRM's and REPRODUCE's
-`ConfirmMain`, GROW's planner and weave -- each charged while it runs at the heap
+INSTRUMENT and its verifier, the import gate, the planner (one service held for the exploration,
+§7.9), COMPOSE, CONFIRM's and REPRODUCE's `ConfirmMain`, GROW's planner and weave -- each charged
+while it runs at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
