@@ -1303,10 +1303,15 @@ public class ExploreTest {
         Endpoint negotiated = at(WRITER,
                 Endpoint.stateSite("DigestMD5Base", "<init>", 31, true),
                 "DigestMD5Base#<init>#31");
+        OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
+                "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
+                        3), "o.a.h.h.s.d.DataXceiver#run#57");
         // session, Near#u2, Far#u4, writes of the map, writes of the qop,
-        // handoffs to a co-reader of the map
+        // handoffs to a co-reader of the map; s-idle also runs the late
+        // feeder, which delivers it nothing
         String[][] sessions = {
             {"s-seed", "true", "true", "1", "1", "0"},
+            {"s-idle", "true", "true", "1", "1", "0"},
             {"s-far", "true", "false", "1", "1", "0"},
             {"s-noise", "true", "true", "1", "3", "0"},
             {"s-coreader", "true", "true", "1", "1", "1"},
@@ -1340,6 +1345,7 @@ public class ExploreTest {
                     Boolean.parseBoolean(row[2]), "(> M_B 1)");
             session.decision(TARGET, "Guard#u8", 1, false,
                     "(> (+ M_A M_READ_KEY) 3)");
+            if ("s-idle".equals(row[0])) session.activation(lateWriter, false);
             session.flush();
         }
         Corpus corpus = Corpus.read(iteration, null);
@@ -1396,9 +1402,6 @@ public class ExploreTest {
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
-        OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
-                "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
-                        3), "o.a.h.h.s.d.DataXceiver#run#57");
         late.activation(lateWriter, false);
         late.symbolic("e.late", "M_A");
         late.write(at(lateWriter, Endpoint.stateSite("BlockTokenSecretManager",
@@ -1411,6 +1414,10 @@ public class ExploreTest {
                 later.factor().contains(lateWriter));
         assertEquals("one the seed never ran re-keys none of its arms", seed,
                 dependence(grown, later, "s-seed", "Guard#u8"));
+        assertEquals("nor does one a session ran that delivered nothing"
+                        + " (solr-bugs-reindex-cleanup SG1: 87 % of its"
+                        + " re-keyed ids)", seed,
+                dependence(grown, later, "s-idle", "Guard#u8"));
         // The wave names an obligation once: a solver reading the corpus
         // mid-wave (a larger factor, another dependence) keeps that id.
         ObligationFactory.Candidate located = ObligationFactory.locate(corpus,

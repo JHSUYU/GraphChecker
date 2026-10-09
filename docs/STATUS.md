@@ -400,6 +400,12 @@ Correctness:
     flip's answers land under several ids (hdfs-adhoc-39 WD2: the re-ask of 0562399f's refuted
     world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
     under the next. The open-arm judgment reads answers by flip; the proposal side is unchanged.
+64. An arm's key names a factor member only by what it delivered the task (`gc/explore/Corpus#inputShape`:
+    its handoffs, its writes at the guard's locations, whether it wrote state the task read), not by
+    having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and delivered
+    nothing). Known limit: a member's write the recording states at no write site (unwoven code, an
+    unrecorded store) re-keys no arm, so an arm settled in one world may stand for another whose
+    member wrote differently there.
 60. hdfs-adhoc-39's verdict varies run to run on one body: its open arm (`BlockInfo.getBlockUCState()`
     `#u2=true` at nn0's append) closes only when every path's flip is answered, and which paths
     the closure grows and which worlds they ask differ between runs (base: OA4 RUN_DEFECT, OA5

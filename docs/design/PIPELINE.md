@@ -600,12 +600,16 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
 outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
 share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
-(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and, for
-each factor member that writes state it reads and that this session ran, the same and its write
-counts at the locations the guard reads — never delivered values, and a function of the session
-alone: the members and each one's producers as sets (replies to one call arrive in any order), and none the session never ran (the corpus finds feeders as sessions
-land, and such a member's line, the same in every session that did not run it, re-keyed every arm of
-the session). Never the session. An arm is
+(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and each
+factor member that writes state it reads by what it delivered in this session: its handoff sites and
+producers, its write counts at the locations the guard reads, and whether it wrote any state the
+occurrence read (the arm reads it after the flip; how often varies run to run) — never delivered
+values, and a function of the session alone: the members and each one's producers as sets (replies
+to one call arrive in any order), and none that delivered nothing, never run or run to no such
+handoff or write (the corpus finds feeders as sessions land, and such a member's line, the same in
+every session that did not run it, re-keyed every arm of the session; solr-bugs-reindex-cleanup SG1:
+most of its 8,802 re-keyed ids were members that ran and delivered nothing). Known limit (STATUS open
+defect 64): a member's write the recording states at no write site re-keys no arm. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
