@@ -135,12 +135,12 @@ final class SymbolicRegionPlanner {
             if (!target.isEmpty()) {
                 authorities.putIfAbsent(target, FAILURE_TARGET_ENTRY);
             }
-            // A demanded door's marker roots nothing (fold).
+            // A demanded or a data-flow door's marker roots nothing (fold).
             for (Map<String, Object> edge : program.edges) {
                 String method = text(edge.get("method"));
                 if (selected.contains(method) && Boolean.TRUE.equals(
                         edge.get("explicitSymbolicFault"))
-                        && !LibraryCatalog.demandedMarker(
+                        && !LibraryCatalog.rootsNothing(
                         text(edge.get("symbolicName")))) {
                     faults.add(method);
                     authorities.putIfAbsent(method, EXPLICIT_FAULT_ENTRY);

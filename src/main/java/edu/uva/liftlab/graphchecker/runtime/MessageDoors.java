@@ -601,8 +601,11 @@ public final class MessageDoors {
         String path = location(key);
         List<Object> registered = Provenance.register(new Provenance.Version(
                 storeLocation(transport, path), path, version), product);
+        // The decode runs on the fetching thread right after the read: the
+        // occurrence running it is the fetch's.
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
-                registered);
+                registered, Identity.currentOccurrence(
+                        RuntimeTraceContext.nodeHere()));
     }
 
     /** A store location as every run spells it. */

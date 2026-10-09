@@ -1373,6 +1373,7 @@ public final class ConcolicScheduler {
                                 StaticScopeMap scopeMap,
                                 Set<String> regionMethods) {
             List<JsonObject> ports = new ArrayList<>();
+            Set<String> fetches = storeFetches(plan);
             for (DeclaredSiteCapture capture
                     : DeclaredSiteCapture.decode(plan.json())) {
                 // The region's own text must hold the site.
@@ -1383,10 +1384,39 @@ public final class ConcolicScheduler {
                 for (StaticScopeMap.Site site : accessorFirst(
                         scopeMap.declaredSitesAt(capture.siteId(),
                                 capture.declaredCallee()))) {
+                    // A store read's door mints only where PLAN found its
+                    // fetch on the data flow.
+                    if (dataFlowDoor(site) && !fetches.contains(
+                            capture.siteId() + "@" + capture.ordinal())) {
+                        continue;
+                    }
                     ports.add(capture.port(plan, site));
                 }
             }
             return admittedPorts(ports);
+        }
+
+        /** The data-flow door captures PLAN asked of this occurrence
+         *  ({@code RuntimeSelectedRegionFinalizer#STORE_FETCHES}), each
+         *  {@code siteId@ordinal}. */
+        private Set<String> storeFetches(RegionInstancePlan plan) {
+            Set<String> asked = new LinkedHashSet<>();
+            JsonElement rows = plan.json().get(
+                    RuntimeSelectedRegionFinalizer.STORE_FETCHES);
+            if (rows == null || !rows.isJsonArray()) return asked;
+            for (JsonElement row : rows.getAsJsonArray()) {
+                JsonObject fetch = row.getAsJsonObject();
+                asked.add(optionalString(fetch, SiteId.MEMBER) + "@"
+                        + fetch.get(DeclaredSiteCapture.ORDINAL).getAsInt());
+            }
+            return asked;
+        }
+
+        /** Whether a declared site is a data-flow door's marker. */
+        private boolean dataFlowDoor(StaticScopeMap.Site site) {
+            return StaticScopeMap.FAULT_INPUT.equals(site.declared.inputKind)
+                    && edu.uva.liftlab.graphchecker.causynth.LibraryCatalog
+                    .dataFlowMarker(site.declared.marker);
         }
 
         /** The same rule for an exposed occurrence (PIPELINE §7.8): one
@@ -1397,9 +1427,10 @@ public final class ConcolicScheduler {
                                     Set<String> regionMethods) {
             List<JsonObject> ports = new ArrayList<>();
             for (StaticScopeMap.Site site : scopeMap.declaredSites()) {
+                // No recording places a fetch of it on the data flow.
                 if (regionMethods.contains(SiteId.methodOf(site.siteId))
                         && StaticScopeMap.CALL_RETURN.equals(
-                        site.declared.kind)) {
+                        site.declared.kind) && !dataFlowDoor(site)) {
                     ports.add(DeclaredSiteCapture.declaredPort(plan, site));
                 }
             }

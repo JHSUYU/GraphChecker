@@ -45,6 +45,8 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
 /** Builds executable region state exclusively from a runtime-refined graph. */
 public final class RuntimeSelectedRegionFinalizer {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory
+            .getLogger(RuntimeSelectedRegionFinalizer.class);
     private static final String REFINED_KIND = "RUNTIME_REFINED_DATAFLOW";
 
     /** A boolean returned by the explicit application-side fault marker. */
@@ -97,6 +99,28 @@ public final class RuntimeSelectedRegionFinalizer {
      * location ({@link RecordedStore}, {@link #crossStore}).
      */
     private static final String STORE_WRITER_ADMISSION = "STORE_WRITER_V1";
+    /**
+     * {@code admissionBasis} of an activation carried because it fetched a
+     * version the question's target read through an object that fetch's
+     * decode registered ({@link RecordedStore#fetchesOf}): its store read's
+     * door is on the data flow ({@link #STORE_FETCHES}).
+     */
+    private static final String STORE_FETCH_ADMISSION = "STORE_FETCH_V1";
+    /**
+     * Activation member: the data-flow doors' captures ({@code
+     * LibraryCatalog#dataFlowMarker}, a shared store's read) this occurrence
+     * mints, each {@code siteId}, {@code ordinal}, {@code fetch} (why:
+     * {@value #PROVENANCE_FETCH} or {@value #LOCATION_FETCH}), {@code
+     * location} and {@code version}.  Every other capture of such a door is
+     * woven but never asked: no port is planned for it ({@code
+     * plan.ConcolicScheduler#declaredPorts}), so the read never fails.
+     */
+    public static final String STORE_FETCHES = "storeFetches";
+    /** The fetch whose decode registered an object the target read. */
+    static final String PROVENANCE_FETCH = "PROVENANCE";
+    /** Another fetch, on the target's node, of a location the target read
+     *  through a decoded object. */
+    static final String LOCATION_FETCH = "LOCATION";
     /**
      * Activation member, in memory only: per field the recording saw it read
      * or write, the objects it did so on ({@code
@@ -994,6 +1018,7 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         stateShapes(instances, walk.reached, context -> shapes.computeIfAbsent(
                 context, messages::shape));
+        LOG.info("PLAN {}", dataFlowDoors(program, walk.reached, scopeMap));
         return walk.reached;
     }
 
@@ -1075,6 +1100,13 @@ public final class RuntimeSelectedRegionFinalizer {
                     text(capture.get(SiteId.MEMBER)),
                     text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
                 String kind = site.declared.inputKind;
+                // A store read's door is a root only where its fetch lies
+                // on the data flow (crossStore): read anywhere else -- a
+                // poll, a refresh -- it admits nothing.
+                if (StaticScopeMap.FAULT_INPUT.equals(kind)
+                        && LibraryCatalog.dataFlowMarker(site.declared.marker)) {
+                    continue;
+                }
                 if (StaticScopeMap.CLOCK_INPUT.equals(kind)
                         || StaticScopeMap.FAULT_INPUT.equals(kind)
                         || StaticScopeMap.CONFIG_INPUT.equals(kind)) {
@@ -1122,6 +1154,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 objects.addAll(objectsOf(activation, cell, false));
             }
             int depth = walk.depth(target) + 1;
+            askFetches(program, walk, scopeMap, store, byId, target, objects,
+                    depth);
             for (Map.Entry<String, Long> version
                     : store.versionsOf(objects).entrySet()) {
                 for (String writer : store.writersUpTo(version.getKey(),
@@ -1147,6 +1181,173 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
         }
+    }
+
+    /**
+     * The store reads on the data flow of what {@code target} read through
+     * {@code objects} (SYMBOL-SCOPE §4.2, a {@code DATA_FLOW} door): the
+     * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH};
+     * its occurrence is admitted, {@value #STORE_FETCH_ADMISSION}) and every
+     * other fetch of that location on the target's node ({@value
+     * #LOCATION_FETCH}): a read that fails registers no watch, so the next
+     * version is never fetched and the node reads the one before (an
+     * alias's watcher whose re-read failed: solr-adhoc-40's "alias must
+     * exist").  Each fetch's door is the data-flow door call its occurrence
+     * made last before the decode ({@link #fetchDoor}); its captures are
+     * stated ({@link #STORE_FETCHES}), and only they mint.
+     */
+    private static void askFetches(StaticProgram program, DemandWalk walk,
+                                   StaticScopeMap scopeMap,
+                                   RecordedStore store,
+                                   Map<String, String> byId, String target,
+                                   Set<Integer> objects, int depth) {
+        String node = OccurrenceAddress.parse(target).node().render();
+        Set<RecordedStore.Fetch> asked = new LinkedHashSet<>();
+        for (RecordedStore.Fetch fetch : store.fetchesOf(objects)) {
+            asked.add(fetch);
+            String held = ask(program, scopeMap, byId, fetch,
+                    PROVENANCE_FETCH);
+            if (held != null && !walk.reached.contains(held)
+                    && !walk.excluded.contains(held)) {
+                walk.admit(held, depth, STORE_FETCH_ADMISSION);
+            }
+        }
+        for (RecordedStore.Fetch provenance : new ArrayList<>(asked)) {
+            for (RecordedStore.Fetch fetch
+                    : store.fetchesAt(provenance.location)) {
+                if (asked.add(fetch) && node.equals(OccurrenceAddress.parse(
+                        fetch.occurrence).node().render())) {
+                    ask(program, scopeMap, byId, fetch, LOCATION_FETCH);
+                }
+            }
+        }
+    }
+
+    /** States {@code fetch}'s door captures on the activation that made
+     *  it; that activation, or null where it made none (a fetch outside
+     *  every region, or one no data-flow door is woven into). */
+    @SuppressWarnings("unchecked")
+    private static String ask(StaticProgram program, StaticScopeMap scopeMap,
+                              Map<String, String> byId,
+                              RecordedStore.Fetch fetch, String why) {
+        String held = byId.get(OccurrenceAddress.parse(fetch.occurrence)
+                .id());
+        if (held == null) return null;
+        Map<String, Object> activation = program.activations.get(held);
+        List<Map<String, Object>> door = fetchDoor(activation, scopeMap,
+                fetch.seq);
+        if (door.isEmpty()) return null;
+        List<Map<String, Object>> stated = (List<Map<String, Object>>)
+                activation.computeIfAbsent(STORE_FETCHES,
+                        ignored -> new ArrayList<Map<String, Object>>());
+        for (Map<String, Object> capture : door) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put(SiteId.MEMBER, capture.get(SiteId.MEMBER));
+            row.put(DeclaredSiteCapture.ORDINAL,
+                    capture.get(DeclaredSiteCapture.ORDINAL));
+            row.put("fetch", why);
+            row.put("location", fetch.location.replace('\n', ':'));
+            row.put("version", fetch.version);
+            boolean known = false;
+            for (Map<String, Object> each : stated) {
+                known |= each.get(SiteId.MEMBER).equals(row.get(
+                        SiteId.MEMBER)) && each.get(DeclaredSiteCapture
+                        .ORDINAL).equals(row.get(DeclaredSiteCapture.ORDINAL));
+            }
+            if (!known) stated.add(row);
+        }
+        return held;
+    }
+
+    /**
+     * The captures of the data-flow door call an activation made last
+     * before {@code seq} (its fetch's decode): the door method that latest
+     * capture is in, and in it each of the door's marker sites' latest
+     * capture before {@code seq} -- one call runs every marker of its door.
+     */
+    static List<Map<String, Object>> fetchDoor(
+            Map<String, Object> activation, StaticScopeMap scopeMap,
+            long seq) {
+        Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
+        Map<String, Object> last = null;
+        for (Map<String, Object> capture
+                : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
+            long at = longNumber(capture.get(DeclaredSiteCapture.EVENT_SEQ), 0L);
+            if (at >= seq || !dataFlowCapture(capture, scopeMap)) continue;
+            String site = text(capture.get(SiteId.MEMBER));
+            Map<String, Object> held = latest.get(site);
+            if (held == null || longNumber(held.get(
+                    DeclaredSiteCapture.EVENT_SEQ), 0L) < at) {
+                latest.put(site, capture);
+            }
+            if (last == null || longNumber(last.get(
+                    DeclaredSiteCapture.EVENT_SEQ), 0L) < at) {
+                last = capture;
+            }
+        }
+        List<Map<String, Object>> door = new ArrayList<>();
+        if (last == null) return door;
+        String method = SiteId.methodOf(text(last.get(SiteId.MEMBER)));
+        for (Map.Entry<String, Map<String, Object>> site : latest.entrySet()) {
+            if (SiteId.methodOf(site.getKey()).equals(method)) {
+                door.add(site.getValue());
+            }
+        }
+        return door;
+    }
+
+    /** Whether a capture reads a data-flow door's marker. */
+    static boolean dataFlowCapture(Map<String, Object> capture,
+                                   StaticScopeMap scopeMap) {
+        for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
+                text(capture.get(SiteId.MEMBER)),
+                text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
+            if (StaticScopeMap.FAULT_INPUT.equals(site.declared.inputKind)
+                    && LibraryCatalog.dataFlowMarker(site.declared.marker)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The plan log's count of the data-flow doors' calls the planned
+     * occurrences made: those asked, by why, and those woven but never
+     * asked (a poll of a queue, every refresh of a cluster state no target
+     * read).
+     */
+    static String dataFlowDoors(StaticProgram program, Collection<String> planned,
+                                StaticScopeMap scopeMap) {
+        int calls = 0;
+        Map<String, Integer> asked = new TreeMap<>();
+        for (String occurrence : planned) {
+            Map<String, Object> activation = program.activations.get(
+                    occurrence);
+            Set<String> doors = new HashSet<>();
+            for (Map<String, Object> capture : rows(activation.get(
+                    DeclaredSiteCapture.PLAN_FIELD))) {
+                if (dataFlowCapture(capture, scopeMap)) {
+                    doors.add(SiteId.methodOf(text(capture.get(
+                            SiteId.MEMBER))) + "@" + number(capture.get(
+                            DeclaredSiteCapture.ORDINAL), -1));
+                }
+            }
+            calls += doors.size();
+            Set<String> fetched = new HashSet<>();
+            for (Map<String, Object> row : rows(activation.get(
+                    STORE_FETCHES))) {
+                if (fetched.add(SiteId.methodOf(text(row.get(SiteId.MEMBER)))
+                        + "@" + number(row.get(DeclaredSiteCapture.ORDINAL), -1))) {
+                    asked.merge(text(row.get("fetch")), 1, Integer::sum);
+                }
+            }
+        }
+        int total = 0;
+        for (int each : asked.values()) total += each;
+        return "data-flow doors: " + calls + " store read(s) in the "
+                + planned.size() + " planned occurrence(s), " + total
+                + " asked " + asked + ", " + (calls - total)
+                + " woven but never asked";
     }
 
     /**

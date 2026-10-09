@@ -225,6 +225,14 @@ otherwise. Only a target depth that does not fit fails the stage. Outputs: `exec
 decodes the membership once into `campaign_member_rows`). The seed replay's plan and every worker's
 plan are hard links of the one task plan file, so a row GROW appends reaches all of them.
 
+A door marker mints where its occurrence is planned (`ConcolicScheduler#declaredPorts`), but a store
+read's door (a `DATA_FLOW` door, SYMBOL-SCOPE.md §4.2) only at the captures the seed's closure states
+on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read, and
+the other fetches of that location on its node, `RuntimeSelectedRegionFinalizer#askFetches`); its
+other captures are woven but never asked, and the seed's log line counts them (`data-flow doors: N
+store read(s) in the M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never
+asked`).
+
 ## 4. INSTRUMENT
 
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with

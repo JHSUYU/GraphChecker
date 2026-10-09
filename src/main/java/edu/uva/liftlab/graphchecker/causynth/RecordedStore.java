@@ -20,6 +20,9 @@ import java.util.TreeMap;
  * per location and each write modifies the one before it (Solr's state
  * writer, aliases and every compare-and-set write), the rule COMPOSE's
  * closure applies to every location ({@code compose.RestsOn#closure}).
+ * And which fetch made each decode: the occurrence that read the version and
+ * when, whose store-read doors PLAN asks where the fetch lies on the data
+ * flow ({@link #fetchesOf}, {@link #fetchesAt}).
  */
 public final class RecordedStore {
     /** One STORE trace row. */
@@ -28,30 +31,36 @@ public final class RecordedStore {
         final String transport;
         final String location;
         final long version;
-        /** A write's occurrence address, rendered. */
+        /** A write's occurrence address, rendered; a decode's fetch's, or
+         *  "" (a provenance site's derived object). */
         final String occurrence;
+        /** The row's trace seq: a decode's comes right after its fetch. */
+        final long seq;
         /** A decode's objects, renamed as every row names them. */
         public final int[] objects;
 
         private Event(boolean write, String transport, String location,
-                      long version, String occurrence, int[] objects) {
+                      long version, String occurrence, long seq,
+                      int[] objects) {
             this.write = write;
             this.transport = transport;
             this.location = location;
             this.version = version;
-            this.occurrence = occurrence;
+            this.occurrence = occurrence == null ? "" : occurrence;
+            this.seq = seq;
             this.objects = objects;
         }
 
         public static Event written(String transport, String location,
                                     long version, String occurrence) {
             return new Event(true, transport, location, version, occurrence,
-                    new int[0]);
+                    0L, new int[0]);
         }
 
         public static Event decoded(String transport, String location,
-                                    long version, int[] objects) {
-            return new Event(false, transport, location, version, "",
+                                    long version, int[] objects,
+                                    String fetch, long seq) {
+            return new Event(false, transport, location, version, fetch, seq,
                     objects);
         }
 
@@ -60,11 +69,33 @@ public final class RecordedStore {
         }
     }
 
+    /** One fetch of a version, as its decode states it. */
+    static final class Fetch {
+        /** transport + location. */
+        final String location;
+        final long version;
+        /** The fetching occurrence's address, rendered. */
+        final String occurrence;
+        /** Its decode's trace seq: the fetch is the store read just before. */
+        final long seq;
+
+        private Fetch(Event decode) {
+            this.location = decode.key();
+            this.version = decode.version;
+            this.occurrence = decode.occurrence;
+            this.seq = decode.seq;
+        }
+    }
+
     /** transport + location -> version -> the occurrences that made it. */
     private final Map<String, TreeMap<Long, Set<String>>> writers =
             new HashMap<>();
     /** object -> the versions (transport + location -> version) it holds. */
     private final Map<Integer, Map<String, Long>> decoded = new HashMap<>();
+    /** object -> the fetch whose decode registered it first. */
+    private final Map<Integer, Fetch> fetchedBy = new HashMap<>();
+    /** transport + location -> its fetches, in trace order. */
+    private final Map<String, List<Fetch>> fetches = new HashMap<>();
 
     public RecordedStore(Collection<Event> events) {
         for (Event event : events == null
@@ -77,12 +108,19 @@ public final class RecordedStore {
                         .add(event.occurrence);
                 continue;
             }
+            Fetch fetch = event.occurrence.isEmpty() ? null
+                    : new Fetch(event);
+            if (fetch != null) {
+                fetches.computeIfAbsent(event.key(),
+                        ignored -> new ArrayList<>()).add(fetch);
+            }
             for (int object : event.objects) {
                 if (object == 0) continue;
                 // The first decode that registered it keeps it (runtime.
                 // Provenance): a later row naming it again names no object.
                 decoded.computeIfAbsent(object, ignored -> new HashMap<>())
                         .putIfAbsent(event.key(), event.version);
+                if (fetch != null) fetchedBy.putIfAbsent(object, fetch);
             }
         }
     }
@@ -103,6 +141,22 @@ public final class RecordedStore {
             }
         }
         return versions;
+    }
+
+    /** The fetches whose decodes registered {@code objects}. */
+    List<Fetch> fetchesOf(Collection<Integer> objects) {
+        Set<Fetch> found = new LinkedHashSet<>();
+        for (Integer object : objects) {
+            Fetch fetch = fetchedBy.get(object);
+            if (fetch != null) found.add(fetch);
+        }
+        return new ArrayList<>(found);
+    }
+
+    /** Every fetch of {@code location} (transport + location). */
+    List<Fetch> fetchesAt(String location) {
+        return fetches.getOrDefault(location,
+                Collections.<Fetch>emptyList());
     }
 
     /** The occurrences (rendered addresses) that made {@code location}'s

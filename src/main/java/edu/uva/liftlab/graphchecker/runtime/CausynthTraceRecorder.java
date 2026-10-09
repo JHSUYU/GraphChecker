@@ -429,16 +429,20 @@ public final class CausynthTraceRecorder {
                 derived);
         if (version == null || !derived[0]) return;
         storeDecoded(version.location.owner(), version.path, version.version,
-                Collections.singletonList(holder));
+                Collections.singletonList(holder), null);
     }
 
     /**
      * The recording's half of a decode ({@link MessageDoors#decoded}): the
      * objects it registered, by the identity every other row names them by,
-     * which PLAN joins with the objects an occurrence read a field on.
+     * which PLAN joins with the objects an occurrence read a field on; and,
+     * for a fetch's decode, the occurrence that fetched it, which PLAN asks
+     * the store read's doors of where the fetch lies on the data flow
+     * ({@code RuntimeSelectedRegionFinalizer#crossStore}).  A provenance
+     * site's derived object was fetched by no one ({@code fetch} null).
      */
     static void storeDecoded(String transport, String location, long version,
-                             List<Object> objects) {
+                             List<Object> objects, OccurrenceAddress fetch) {
         if (!RecordingWindow.opened() || objects.isEmpty()) return;
         synchronized (LOCK) {
             StringBuilder ids = new StringBuilder();
@@ -453,7 +457,9 @@ public final class CausynthTraceRecorder {
                     "transport", nonNull(transport),
                     "location", nonNull(location),
                     "version", version,
-                    "objects", ids.toString());
+                    "objects", ids.toString(),
+                    "occurrenceAddress", fetch == null ? ""
+                            : fetch.render());
         }
     }
 
@@ -2228,7 +2234,9 @@ public final class CausynthTraceRecorder {
             }
             trace.store.add(RecordedStore.Event.decoded(
                     row.stringValue("transport"), row.stringValue("location"),
-                    row.longValue("version", -1L), objects));
+                    row.longValue("version", -1L), objects,
+                    row.stringValue("occurrenceAddress"),
+                    row.longValue("seq", 0L)));
         } else if (GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);

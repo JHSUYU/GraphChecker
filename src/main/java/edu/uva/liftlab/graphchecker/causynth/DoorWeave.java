@@ -264,11 +264,13 @@ final class DoorWeave {
 
     /**
      * Where else a door a system's hook moved goes ({@link
-     * LibraryCatalog.Door#relocated}): after the hook call each direct call
-     * of the door method reaches by control flow, in every method of the
-     * hook method's class family -- its nested classes and lambdas included,
-     * a call through a subclass's reference too ({@code SolrZooKeeper} for
-     * {@code ZooKeeper}) -- but the hook method, whose placement is its own.
+     * LibraryCatalog.Door#relocated}): at the hook call each direct call of
+     * the door method reaches by control flow -- after the first one that
+     * follows it, or, for a door before its hook (a store read's), before
+     * the last one that precedes it -- in every method of the hook method's
+     * class family -- its nested classes and lambdas included, a call
+     * through a subclass's reference too ({@code SolrZooKeeper} for {@code
+     * ZooKeeper}) -- but the hook method, whose placement is its own.
      * A door method that calls the hook method itself (Solr's HTTP/2 request
      * parsing its response) carries the door in every call of it, so none is
      * moved.  A direct call that reaches no hook call or several, or is made
@@ -316,7 +318,8 @@ final class DoorWeave {
                     }
                     if (graph == null) graph = new BriefUnitGraph(body);
                     Set<Stmt> reached = hookCallsReached(graph, stmt,
-                            door.anchor, target.group(1), target.group(2));
+                            door.anchor, target.group(1), target.group(2),
+                            door.after);
                     if (reached.size() == 1) {
                         found.computeIfAbsent(method,
                                 ignored -> new LinkedHashSet<>())
@@ -324,7 +327,8 @@ final class DoorWeave {
                     } else {
                         unplaced(door, method, body, stmt, reached.isEmpty()
                                 ? "no call of its hook " + door.anchor
-                                        + " follows it in its method: its"
+                                        + (door.after ? " follows" : " precedes")
+                                        + " it in its method: its"
                                         + " door is the one its caller's"
                                         + " hook call carries, if any"
                                 : "it reaches " + reached.size() + " calls"
@@ -351,16 +355,17 @@ final class DoorWeave {
         return woven;
     }
 
-    /** The hook calls {@code call} reaches by normal control flow, each the
-     *  first on its path; a path through another call of the door method
-     *  is that call's. */
+    /** The hook calls {@code call} reaches by normal control flow, forward
+     *  ({@code after}) or backward, each the first on its path; a path
+     *  through another call of the door method is that call's. */
     private static Set<Stmt> hookCallsReached(UnitGraph graph, Stmt call,
                                               String anchor, String owner,
-                                              String subSignature) {
+                                              String subSignature,
+                                              boolean after) {
         Set<Stmt> reached = new LinkedHashSet<>();
         Set<Unit> seen = new java.util.HashSet<>();
-        java.util.ArrayDeque<Unit> pending =
-                new java.util.ArrayDeque<>(graph.getSuccsOf(call));
+        java.util.ArrayDeque<Unit> pending = new java.util.ArrayDeque<>(
+                after ? graph.getSuccsOf(call) : graph.getPredsOf(call));
         while (!pending.isEmpty()) {
             Stmt next = (Stmt) pending.poll();
             if (!seen.add(next)) continue;
@@ -372,7 +377,8 @@ final class DoorWeave {
                 }
                 if (calls(ref, owner, subSignature)) continue;
             }
-            pending.addAll(graph.getSuccsOf(next));
+            pending.addAll(after ? graph.getSuccsOf(next)
+                    : graph.getPredsOf(next));
         }
         return reached;
     }

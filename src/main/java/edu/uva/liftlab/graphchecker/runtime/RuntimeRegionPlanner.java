@@ -1413,12 +1413,14 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
-            // The equivalent deciders this occurrence is planned for, and
-            // the writers it did not cross to as confined.
+            // The equivalent deciders this occurrence is planned for, the
+            // writers it did not cross to as confined, and the store reads
+            // whose doors it asks.
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
                     RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
-                    RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS}) {
+                    RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
+                    RuntimeSelectedRegionFinalizer.STORE_FETCHES}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
                 }

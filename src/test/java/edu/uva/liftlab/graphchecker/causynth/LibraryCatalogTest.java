@@ -54,6 +54,38 @@ public class LibraryCatalogTest {
                         + rename.faults + " " + rename.result);
         assertEquals(null, LibraryCatalog.demandedDoor(
                 "<java.io.File: boolean exists()>"));
+        // A store read is a door at its method, before its request (a
+        // failed read registers no watch), asked only on the data flow; it
+        // roots no region, as a demanded door does not.
+        List<String> reads = new ArrayList<>();
+        for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
+            if (door.dataFlow) {
+                reads.add(door.name() + " " + door.method.substring(
+                        door.method.indexOf(' ') + 1) + " " + door.after);
+            }
+        }
+        assertEquals(Arrays.asList(
+                "FAULT:ZOOKEEPER:READ byte[] getData(java.lang.String,org."
+                        + "apache.zookeeper.Watcher,org.apache.zookeeper.data."
+                        + "Stat)> false",
+                "FAULT:ZOOKEEPER:READ org.apache.zookeeper.data.Stat exists("
+                        + "java.lang.String,org.apache.zookeeper.Watcher)> false",
+                "FAULT:ZOOKEEPER:READ java.util.List getChildren(java.lang."
+                        + "String,org.apache.zookeeper.Watcher)> false",
+                "FAULT:ZOOKEEPER:READ java.util.List getChildren(java.lang."
+                        + "String,org.apache.zookeeper.Watcher,org.apache."
+                        + "zookeeper.data.Stat)> false"), reads);
+        String[][] markers = {
+            {"FAULT:ZOOKEEPER:READ:ConnectionLossException", "true true"},
+            {"FAULT:ZOOKEEPER:WRITE:ConnectionLossException", "false false"},
+            {"FAULT:LOCAL_IO:OPEN:FileNotFoundException", "false true"},
+            {"FAULT:SOLR_HTTP:REQUEST", "false false"},
+        };
+        for (String[] marker : markers) {
+            assertEquals(marker[0], marker[1],
+                    LibraryCatalog.dataFlowMarker(marker[0]) + " "
+                            + LibraryCatalog.rootsNothing(marker[0]));
+        }
         LinkedHashSet<String> response = new LinkedHashSet<>();
         List<String> dataTransfer = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
@@ -122,6 +154,18 @@ public class LibraryCatalogTest {
                         placed.method);
                 assertEquals(door.name(), placed.name());
                 assertEquals(door.faults, placed.faults);
+                assertEquals(door.dataFlow, placed.dataFlow);
+                if (hook != null) {
+                    assertEquals(hook.anchor, placed.anchor);
+                    assertEquals(hook.after, placed.after);
+                }
+                // Solr's store reads go before its read turn's hook.
+                if (system.equals("solr") && door.dataFlow) {
+                    assertEquals(door.method, "<org.apache.solr.common.cloud."
+                            + "SolrZkClient: void causynthReading(java.lang."
+                            + "String)> false", placed.anchor + " "
+                            + placed.after);
+                }
             }
         }
         String[][] refused = {
@@ -130,7 +174,13 @@ public class LibraryCatalogTest {
                     + "\"<a.B: void none(int)>\", \"method\": \"<a.B: void "
                     + "send(int)>\", \"after\": \"<a.C: void hook()>\"}",
                     "names no catalog door"},
-            {DOOR + "}", "never a door"}};
+            {DOOR + "}", "never a door"},
+            {"{\"schemaVersion\": 1, \"kind\": \"HOOK\", \"transport\": "
+                    + "\"T\", \"direction\": \"SEND\", \"door\": "
+                    + "\"<a.B: void send(int)>\", \"method\": \"<a.B: void "
+                    + "send(int)>\", \"after\": \"<a.C: void hook()>\", "
+                    + "\"before\": \"<a.C: void hook()>\"}",
+                    "one of before and after"}};
         for (String[] row : refused) {
             try {
                 LibraryCatalog.placed(catalog,
@@ -169,6 +219,10 @@ public class LibraryCatalogTest {
             {AT_CALLS.replace("before", "after")
                     + ", \"sites\": \"DEMANDED\"}", "no method, before"},
             {AT_CALLS + ", \"result\": false}", "a failing result"},
+            {AT_CALLS + ", \"sites\": \"DATA_FLOW\"}", "a door at a method"},
+            {DOOR.replace("before", "after") + ", \"sites\": \"DATA_FLOW\"}",
+                    "a door at a method"},
+            {DOOR + ", \"sites\": \"SOME\"}", "sites is DEMANDED or"},
             {AT_CALLS.replace(", \"faults\": [\"java.io.IOException\"]",
                     "") + ", \"sites\": \"DEMANDED\", \"result\": true}",
                     "result is false or null"},
