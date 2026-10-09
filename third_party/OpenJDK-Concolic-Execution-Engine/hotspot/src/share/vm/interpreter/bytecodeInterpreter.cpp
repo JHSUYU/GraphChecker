@@ -3193,6 +3193,16 @@ run:
               sym_rid_t sym_rid = sym_inst->get_sym_rid();
               Expression* sym_exp = sym_inst->get(field_offset);
               if (sym_exp == NULL) sym_exp = box_value;
+              // An unmodeled method of a symbolic String or builder
+              // (codePointAt, ...) reads its representation: the read is
+              // concrete, its loss named (VM.md §9).
+              if (sym_exp == NULL && !sym_inst->keeps_field_shadows()
+                  && sym_inst->has_semantic_expression()) {
+                ResourceMark rm;
+                ConcolicMngr::ctx->note_model_gap(
+                    std::string("STRING_REPRESENTATION_READ:")
+                    + obj->klass()->name()->as_C_string());
+              }
               if (sym_exp == NULL
                   && sym_inst->demand_symbolic_fields_enabled()
                   && !sym_inst->field_written(field_offset)) {

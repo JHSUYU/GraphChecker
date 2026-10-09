@@ -22,6 +22,8 @@ public:
   SymStrBuilder(sym_rid_t sym_rid);
   ~SymStrBuilder();
 
+  bool keeps_field_shadows() const { return false; }
+
   Expression *get_ref_exp() { return _ref_exp; };
   void set_ref_exp(Expression *exp) {
     _ref_exp = exp;
