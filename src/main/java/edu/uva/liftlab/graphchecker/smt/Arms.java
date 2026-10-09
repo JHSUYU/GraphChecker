@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -71,6 +72,21 @@ public final class Arms {
         /** The exports at this producer endpoint, any session. */
         List<ExportRow> exportsOf(Endpoint producer);
 
+        /** A forced session's own attaches of this interaction from before
+         *  its forced world ({@code explore.Corpus}): its own path's
+         *  messages, in no other's view; none for any other session. */
+        default List<AttachRow> ownAttachesOf(String sessionId,
+                                              Interaction interaction) {
+            return Collections.emptyList();
+        }
+
+        /** A forced session's own exports at this producer endpoint from
+         *  before its forced world, as {@link #ownAttachesOf}. */
+        default List<ExportRow> ownExportsOf(String sessionId,
+                                             Endpoint producer) {
+            return Collections.emptyList();
+        }
+
         /** The writes of this location in this session, any version. */
         List<WriteRow> writesOf(String sessionId, String locationKey);
 
@@ -97,6 +113,13 @@ public final class Arms {
 
         /** Every root the corpus minted, by root id. */
         Map<String, List<RootMintRow>> roots();
+
+        /** Where a forced session's forced world begins ({@code
+         *  explore.Corpus#forcedFrom}): no write from there on is an arm
+         *  of another writer; {@link Long#MAX_VALUE} for any other. */
+        default long forcedFrom(String sessionId) {
+            return Long.MAX_VALUE;
+        }
 
         /**
          * What one session RAN one root at, or {@code ""}.  Not the mint's
@@ -304,21 +327,31 @@ public final class Arms {
      * Every arm of ONE wire slot, not closed over {@link Arm#nested}:
      * nested arms belong under the selector of the delivery that names them
      * (PIPELINE §8), which only the caller ({@code ComposedFamilies}) knows.
+     * A forced session's own messages are arms of its own path alone
+     * ({@code scope}, the session of the path asking).
      *
      * @param symbol the consumer's own variable for this slot
      */
-    public List<Arm> armsAt(Interaction slot, String symbol) {
+    public List<Arm> armsAt(Interaction slot, String symbol, String scope) {
         List<Arm> arms = new ArrayList<Arm>();
-        for (AttachRow paired : rows.attachesOf(slot)) {
+        List<AttachRow> attaches = new ArrayList<AttachRow>(
+                rows.attachesOf(slot));
+        attaches.addAll(rows.ownAttachesOf(scope, slot));
+        for (AttachRow paired : attaches) {
             // Selection (IDENTITY §4): only a run whose OWN pairing named
             // this consumer; the guard and the attestation are the arm's own.
             String session = paired.sessionId();
-            for (ExportRow export : rows.exportsOf(slot.producer())) {
-                if (!export.sessionId().equals(session)) continue;
-                Arm arm = arm(slot.id(), symbol, session,
-                        slot.producer().occurrence(), export.expressionRef(),
-                        export.seq(), null, paired);
-                if (arm != null) arms.add(arm);
+            List<ExportRow> own = rows.ownExportsOf(session, slot.producer());
+            for (List<ExportRow> exports : Arrays.asList(
+                    rows.exportsOf(slot.producer()), own)) {
+                for (ExportRow export : exports) {
+                    if (!export.sessionId().equals(session)) continue;
+                    Arm arm = arm(slot.id(), symbol, session,
+                            slot.producer().occurrence(),
+                            export.expressionRef(), export.seq(), null,
+                            paired);
+                    if (arm != null) arms.add(arm);
+                }
             }
         }
         return arms;
@@ -328,7 +361,7 @@ public final class Arms {
      * {@link #armsAt} closed transitively over nested slots, as one flat
      * list: the shape a FLIP query wants (no case split).
      */
-    public List<Arm> wireArms(Interaction slot, String symbol) {
+    public List<Arm> wireArms(Interaction slot, String symbol, String scope) {
         List<Arm> arms = new ArrayList<Arm>();
         List<String> queue = new ArrayList<String>();
         Map<String, Interaction> slots =
@@ -341,7 +374,7 @@ public final class Arms {
             if (!closed.add(variable)) continue;
             Interaction interaction = slots.get(variable);
             if (interaction == null) continue;
-            for (Arm arm : armsAt(interaction, variable)) {
+            for (Arm arm : armsAt(interaction, variable, scope)) {
                 arms.add(arm);
                 for (String nested : arm.nested()) {
                     if (nested.equals(variable)) continue;
@@ -484,6 +517,9 @@ public final class Arms {
                             String location, List<WriteRow> writes,
                             long observedVersion, WriteRow state) {
         if (state.version() == observedVersion) return true;
+        // A forced world's write is what its own forced path read, never
+        // another writer a read could have seen (PIPELINE §7.10).
+        if (state.seq() >= rows.forcedFrom(session)) return false;
         if (!state.initial() && (constructs(state) || !concurrent(reader,
                 state.endpoint().occurrence(), session))) {
             return false;

@@ -248,6 +248,9 @@ final class ConcolicResultPublisher {
     private enum Conclusion {
         /** The case's declared occurrence observed the fatal. */
         AT_WITNESS("the declared occurrence observed the fatal"),
+        /** A FORCE run's declared occurrence published its forced target
+         *  ({@code ForcedArms}). */
+        AT_FORCED_TARGET("the declared occurrence reached its target forced"),
         /** A refusal decided every obligation the replay carries
          *  ({@code FocusedReplay#refusedAt}). */
         AT_REFUSAL("a refusal decided every obligation this replay carries");
@@ -269,6 +272,15 @@ final class ConcolicResultPublisher {
      */
     static void concludeAtWitness() {
         conclude(Conclusion.AT_WITNESS);
+    }
+
+    /**
+     * Ends a FORCE run at its forced target (PIPELINE §7.10): the forced
+     * path condition is stated, and what the forced world does after it no
+     * stage reads.  Its session is read whole up to there, as a witness's.
+     */
+    static void concludeAtForcedTarget() {
+        conclude(Conclusion.AT_FORCED_TARGET);
     }
 
     /**
@@ -300,12 +312,12 @@ final class ConcolicResultPublisher {
         synchronized (PUBLICATION_LOCK) {
             if (concluded != null) return;
             concluded = end;
-            submittedAtEnd = end == Conclusion.AT_WITNESS ? submitted : 0L;
+            submittedAtEnd = end == Conclusion.AT_REFUSAL ? 0L : submitted;
             // A settle already waiting for the live stops waiting for them.
             PUBLICATION_LOCK.notifyAll();
         }
         ConcolicRegionRuntime.endAdmission();
-        if (end == Conclusion.AT_WITNESS) ScheduleLog.witnessed();
+        if (end != Conclusion.AT_REFUSAL) ScheduleLog.witnessed();
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
         new Thread(root, new Runnable() {

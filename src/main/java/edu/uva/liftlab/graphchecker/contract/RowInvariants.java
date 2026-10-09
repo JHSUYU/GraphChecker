@@ -474,7 +474,8 @@ public final class RowInvariants {
      * HELD; the runtime never pre-applies the polarity.  A term resting only
      * on declared roots and literals must agree with its row, judged at the
      * valuation the session RAN under ({@link #executed}), not at
-     * {@code recordedValue}.
+     * {@code recordedValue}; a FORCED decision with the arm its operands
+     * decided ({@code concreteOutcome}), not the one it was forced to.
      */
     private static void decisions(SessionReader session,
                                   Map<String, String> executed,
@@ -483,7 +484,10 @@ public final class RowInvariants {
         for (DecisionRow row : session.decisions()) {
             if (row.term().trim().isEmpty()) continue;
             Boolean held = truth(session, row.term(), executed);
-            if (held == null || held.booleanValue() == row.outcome()) continue;
+            if (held == null
+                    || held.booleanValue() == row.concreteOutcome()) {
+                continue;
+            }
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "decisions", row.seq(), "outcome",
                     row.siteId() + "#" + row.ordinal(),
@@ -491,7 +495,8 @@ public final class RowInvariants {
                             + "published term HELD; the conjunct is "
                             + "outcome ? term : (not term)): at the root "
                             + "values this session RAN under the term is "
-                            + held + " and the row says " + row.outcome()));
+                            + held + " and the row says "
+                            + row.concreteOutcome()));
         }
     }
 

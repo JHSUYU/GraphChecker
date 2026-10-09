@@ -349,6 +349,35 @@ public class ConfirmMainTest {
     }
 
     /**
+     * A forced path's claim (PIPELINE §7.10) is confirmed unforced, on the
+     * recording's schedule: its session ran a forced world to its forced
+     * target, and that tail is no order a run takes.
+     */
+    @Test
+    public void aForcedPathIsConfirmedUnforcedOnTheRecordingsSchedule()
+            throws Exception {
+        Path iteration = iteration();
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeAll(sel.targets(), Collections.singletonList(
+                TargetRow.of("sel", 40L, anchor, "<a.Handler: void handle()>"
+                        + "#u8#1", "EXPR.phi", false, true).forced()),
+                RowCodec::writeTarget);
+        manifest(sel, SessionManifest.Role.FORCED);
+        RowCodec.writeJsonl(SessionDir.of(iteration, "seed").schedule(),
+                Collections.singletonList(event(0, "recorded", "")));
+        Path out = folder.newFolder("forced-path").toPath();
+        JsonObject summary = ConfirmMain.write(iteration,
+                claim("FAULT:IPC", "true"), manifest(), out);
+        assertEquals("the recording's schedule, not the forced run's",
+                "seed", summary.getAsJsonObject("schedulePrefix")
+                        .get("sessionId").getAsString());
+        JsonObject focus = RowCodec.readJsonl(out.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertFalse("CONFIRM forces nothing", focus.has("force")
+                && focus.get("force").getAsBoolean());
+    }
+
+    /**
      * A model that chose a location's INITIAL for a read holds the read to
      * the INITIAL's version, which no occurrence wrote: every write of the
      * location goes after the read.  An obligation whose world pairs the

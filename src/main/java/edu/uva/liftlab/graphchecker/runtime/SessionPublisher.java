@@ -109,7 +109,8 @@ public final class SessionPublisher {
                             SessionExpressionLog.header());
                 }
                 manifest = SessionManifest.of(layout.sessionId(),
-                        FocusedReplay.focusedSession()
+                        FocusedReplay.forcing() ? SessionManifest.Role.FORCED
+                                : FocusedReplay.focusedSession()
                                 ? SessionManifest.Role.FOCUSED
                                 : SessionManifest.Role.SEED,
                         FocusedReplay.obligationIds());

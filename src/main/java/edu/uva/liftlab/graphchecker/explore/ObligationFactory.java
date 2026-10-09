@@ -97,23 +97,37 @@ public final class ObligationFactory {
         public final Corpus.RecordedPath path;
         public final int index;
         public final DecisionRow decision;
+        /** A forced path's flip ({@link #forced(Corpus, Task)}): the arm it
+         *  asks is the forced one, with the whole forced path condition. */
+        public final boolean forced;
 
         private Candidate(Corpus corpus, Task task,
-                          Corpus.RecordedPath path, int index) {
+                          Corpus.RecordedPath path, int index,
+                          boolean forced) {
+            // A forced flip asks the whole way to the throw: another
+            // question than the flip of its decision alone.
             this(task, path, index, obligationId(task.taskId(),
                     path.decisions.get(index).siteId(),
                     path.decisions.get(index).ordinal(),
-                    !path.decisions.get(index).outcome(),
-                    dependence(corpus, task, path, index)));
+                    path.decisions.get(index).outcome() == forced,
+                    dependence(corpus, task, path, index)
+                            + (forced ? "|forced" : "")), forced);
         }
 
         private Candidate(Task task, Corpus.RecordedPath path, int index,
-                          String obligationId) {
+                          String obligationId, boolean forced) {
             this.task = task;
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
             this.obligationId = obligationId;
+            this.forced = forced;
+        }
+
+        /** The arm it asks: the recorded one's other, or a forced flip's
+         *  forced one. */
+        public boolean flippedOutcome() {
+            return decision.outcome() == forced;
         }
 
         /** The row a round publishes: what to flip, no model yet (the solver
@@ -121,7 +135,7 @@ public final class ObligationFactory {
         public Obligation proposal() {
             return Obligation.of(obligationId, task.taskId(), path.pathId,
                     decision.siteId(), decision.ordinal(),
-                    !decision.outcome(),
+                    flippedOutcome(),
                     Collections.<String, String>emptyMap(),
                     Collections.<String, String>emptyMap(),
                     Collections.<String>emptyList());
@@ -384,7 +398,7 @@ public final class ObligationFactory {
     public static String flip(Candidate candidate) {
         return flip(candidate.task.taskId(), candidate.path.pathId,
                 candidate.decision.siteId(), candidate.decision.ordinal(),
-                !candidate.decision.outcome());
+                candidate.flippedOutcome());
     }
 
     /** {@link #flip(Candidate)} of an obligation row's fields. */
@@ -503,7 +517,7 @@ public final class ObligationFactory {
                     continue;
                 }
                 Candidate candidate =
-                        new Candidate(corpus, task, path, index);
+                        new Candidate(corpus, task, path, index, false);
                 if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
                 if (!reason.isEmpty()) {
@@ -842,18 +856,46 @@ public final class ObligationFactory {
     public static Candidate locate(Corpus corpus, Obligation obligation) {
         Task task = ClosurePlanner.taskOf(corpus, obligation.taskId());
         if (task == null) return null;
-        for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+        List<Corpus.RecordedPath> paths = new ArrayList<Corpus.RecordedPath>(
+                corpus.pathsOf(task.focused()));
+        List<Corpus.RecordedPath> forced =
+                corpus.forcedPaths(task.focused());
+        paths.addAll(forced);
+        for (Corpus.RecordedPath path : paths) {
             if (!path.pathId.equals(obligation.pathId())) continue;
             for (int index = 0; index < path.decisions.size(); index++) {
                 DecisionRow decision = path.decisions.get(index);
                 if (decision.siteId().equals(obligation.siteId())
                         && decision.ordinal() == obligation.ordinal()) {
                     return new Candidate(task, path, index,
-                            obligation.obligationId());
+                            obligation.obligationId(), forced.contains(path));
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * THE FORCED FLIP of one task's occurrence (PIPELINE §7.10), one per
+     * forced path of it: its first decision forced against its concrete arm,
+     * asked at the forced arm with the whole forced path condition ({@link
+     * FlipQuery#buildForced}).  Empty where no forced path reached it.
+     */
+    public static List<Candidate> forced(Corpus corpus, Task task) {
+        List<Candidate> candidates = new ArrayList<Candidate>();
+        for (Corpus.RecordedPath path
+                : corpus.forcedPaths(task.focused())) {
+            for (int index = 0; index < path.decisions.size(); index++) {
+                DecisionRow decision = path.decisions.get(index);
+                if (decision.isForced()
+                        && decision.concreteOutcome() != decision.outcome()) {
+                    candidates.add(new Candidate(corpus, task, path, index,
+                            true));
+                    break;
+                }
+            }
+        }
+        return candidates;
     }
 
     /**
@@ -869,10 +911,14 @@ public final class ObligationFactory {
                                 Map<String, ObligationDir.Answer> answered) {
         String id = candidate.obligationId;
         DecisionRow decision = candidate.decision;
-        FlipQuery.Built built = FlipQuery.build(corpus, candidate.task,
-                candidate.path, candidate.index);
-        boolean openArm = corpus.openArmFlip(candidate.task.focused(),
-                decision.siteId(), decision.ordinal(), !decision.outcome());
+        FlipQuery.Built built = candidate.forced
+                ? FlipQuery.buildForced(corpus, candidate.task,
+                candidate.path, candidate.index)
+                : FlipQuery.build(corpus, candidate.task, candidate.path,
+                candidate.index);
+        boolean openArm = !candidate.forced && corpus.openArmFlip(
+                candidate.task.focused(), decision.siteId(),
+                decision.ordinal(), !decision.outcome());
         // An open arm's flip is asked without each world a replay of it
         // refuted (WORLD_REFUTED): exactly that world, never the arm.
         List<Corpus.Refuted> refuted = openArm
@@ -962,7 +1008,10 @@ public final class ObligationFactory {
             List<String> rests = new ArrayList<String>();
             for (Corpus.Refuted world : refuted) rests.add(world.digest);
             return refused(candidate, Verdict.UNSAT,
-                    "no world of this corpus takes the other arm at "
+                    (candidate.forced ? "no world of this corpus takes the"
+                            + " forced way to the throw from "
+                            : "no world of this corpus takes the other arm"
+                            + " at ")
                             + decision.siteId() + "#" + decision.ordinal()
                             + (rests.isEmpty() ? "" : " but the "
                             + rests.size() + " world(s) its replays refuted "
@@ -1027,7 +1076,7 @@ public final class ObligationFactory {
             List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
             flips.add(new Corpus.Flip(candidate.task.focused().id(),
                     decision.siteId(), decision.ordinal(),
-                    !decision.outcome(), id));
+                    candidate.flippedOutcome(), id));
             flips.addAll(inherited.flips);
             String digest = wholeWorldDigest(new Corpus.World(roots,
                     clockDeltas, answers, pairings, flips));
@@ -1054,7 +1103,8 @@ public final class ObligationFactory {
         }
         Obligation solved = Obligation.of(id, candidate.task.taskId(),
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
-                !decision.outcome(), roots, answers, planted.unproducible);
+                candidate.flippedOutcome(), roots, answers,
+                planted.unproducible);
         // The focused set: each assigned root's mint occurrence, as the
         // RECORDING states it (the run every address is written about). A root
         // the recording mints nowhere cannot be planted: refused by name.

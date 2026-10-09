@@ -88,6 +88,7 @@ final class ConcolicVmBroker {
     private Method range;
     private Method trackedLocations;
     private Method installGuardedStoreSites;
+    private Method forceNextBranch;
 
     void requireCurrentCapabilities() {
         List<String> missing = new ArrayList<>();
@@ -294,6 +295,17 @@ final class ConcolicVmBroker {
         return String.valueOf(getBranchEvents.invoke(null));
     }
 
+    /**
+     * Forces the branch the next marker marks ({@code
+     * System.forceNextConcolicBranch}: jump, or fall through); zero, or a
+     * negative VM status.
+     */
+    int forceNextBranch(boolean jump) throws Exception {
+        Object status = forceNextBranch.invoke(null, jump);
+        return status instanceof Number ? ((Number) status).intValue()
+                : MALFORMED_RESULT;
+    }
+
     void cleanupAfterFailure() {
         if (cleanupEnd != null) {
             try {
@@ -412,6 +424,8 @@ final class ConcolicVmBroker {
                 int.class, int.class);
         api.installGuardedStoreSites = method(system,
                 "installGuardedStoreSites", String.class);
+        api.forceNextBranch = method(system, "forceNextConcolicBranch",
+                boolean.class);
         return api;
     }
 

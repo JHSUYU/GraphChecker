@@ -776,10 +776,21 @@ jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
   // method-symbolized frames rather than leaving a marker that a later frame
   // could accidentally claim.
   if (!can_do_concolic()) {
-    if (ctx != NULL) ctx->cancel_pending_branch();
+    if (ctx != NULL) {
+      ctx->cancel_pending_branch();
+      ctx->drop_next_force();
+    }
     return 0;
   }
   return ctx->mark_branch(site_id, occurrence);
+}
+
+jint ConcolicMngr::forceNextBranch(bool jump) {
+  // Called while the weave's prefix holds the path condition paused, before
+  // its marker: only the thread's context matters, not can_do_concolic().
+  if (!has_active_context()) return -1;
+  ctx->force_next_branch(jump);
+  return 0;
 }
 
 std::string ConcolicMngr::getBranchEvents() {

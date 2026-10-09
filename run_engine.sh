@@ -7224,6 +7224,11 @@ campaign_emit() {
      # The admitted paths COMPOSE refused by name, each with its first
      # refusal: no disjunct of the formula, never silent.
      refusedPaths: ($decided.refusedPaths // []),
+     # Whether the forced world reached the marked throw (PIPELINE §7.10):
+     # the state of the FORCE run, its verdict detail (FORCED_TARGET and how
+     # the occurrence ended, or FORCE_DIVERGED and where), its forced flip
+     # and the seed flips it deferred or that were asked after it.
+     force: ($exploreDocuments[0].force // null),
      # The declared bounds the search touched (campaign_bounds): null, or
      # {by, detail}.  A verdict over a search a bound cut is named, never
      # read as the end of the closure itself.

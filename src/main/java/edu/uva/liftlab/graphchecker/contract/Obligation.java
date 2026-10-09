@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -19,12 +20,14 @@ public final class Obligation extends Value {
     private final Map<String, String> rootAssignments;
     private final Map<String, String> answers;
     private final List<String> unproducible;
+    /** A FORCE run ({@link #forcing}). */
+    private final boolean force;
 
     private Obligation(String obligationId, String taskId, String pathId,
                        String siteId, int ordinal, boolean flippedOutcome,
                        Map<String, String> rootAssignments,
                        Map<String, String> answers,
-                       List<String> unproducible) {
+                       List<String> unproducible, boolean force) {
         this.obligationId = obligationId;
         this.taskId = taskId;
         this.pathId = pathId;
@@ -34,6 +37,7 @@ public final class Obligation extends Value {
         this.rootAssignments = rootAssignments;
         this.answers = answers;
         this.unproducible = unproducible;
+        this.force = force;
     }
 
     public static Obligation of(String obligationId, String taskId,
@@ -46,7 +50,7 @@ public final class Obligation extends Value {
                 Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
                 Fields.text(siteId, "siteId"), Fields.ordinal(ordinal, "ordinal"),
                 flippedOutcome, Fields.copy(rootAssignments),
-                Fields.copy(answers), Fields.copy(unproducible));
+                Fields.copy(answers), Fields.copy(unproducible), false);
     }
 
     /**
@@ -61,7 +65,26 @@ public final class Obligation extends Value {
         return new Obligation(Fields.text(obligationId, "obligationId"),
                 Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
                 "", 0, false, Fields.copy(rootAssignments),
-                Fields.copy(answers), Fields.copy(unproducible));
+                Fields.copy(answers), Fields.copy(unproducible), false);
+    }
+
+    /**
+     * A FORCE run (PIPELINE §7.10): the seed's world replayed with the
+     * declared occurrence's branches forced to the throw; it flips nothing
+     * and plants nothing.
+     */
+    public static Obligation forcing(String obligationId, String taskId,
+                                     String pathId) {
+        return new Obligation(Fields.text(obligationId, "obligationId"),
+                Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
+                "", 0, false, Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(),
+                Collections.<String>emptyList(), true);
+    }
+
+    /** Whether this is a FORCE run ({@link #forcing}). */
+    public boolean force() {
+        return force;
     }
 
     /** Whether this obligation owes a decision the other arm at all. */
@@ -115,12 +138,13 @@ public final class Obligation extends Value {
     @Override
     Object[] parts() {
         return new Object[] {obligationId, taskId, pathId, siteId, ordinal,
-                flippedOutcome, rootAssignments, answers, unproducible};
+                flippedOutcome, rootAssignments, answers, unproducible,
+                force};
     }
 
     @Override
     public String toString() {
-        return "Obligation{" + obligationId + " " + siteId + "#" + ordinal
-                + "->" + flippedOutcome + "}";
+        return "Obligation{" + obligationId + (force ? " FORCE}"
+                : " " + siteId + "#" + ordinal + "->" + flippedOutcome + "}");
     }
 }

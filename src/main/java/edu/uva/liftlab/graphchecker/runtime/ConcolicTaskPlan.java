@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.ForcingTable;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -987,6 +988,9 @@ final class ConcolicTaskPlan {
          *  open, and the nested helper's deciders under it
          *  (causynth.BooleanReturns); empty for none. */
         final List<StaticScopeMap.Guard> targetDeciders;
+        /** The arms a forced replay forces at this task's occurrence, by
+         *  branch site ({@code ForcingTable}, {@link ForcedArms}). */
+        final Map<String, ForcingTable.Arm> forcedArms;
         /** Every test of a disjunctive target guard and its fatal arm, the
          *  target branch first; empty for one guard. */
         final Map<String, Boolean> targetGuards = new LinkedHashMap<>();
@@ -1076,6 +1080,7 @@ final class ConcolicTaskPlan {
                     targetBranch, targetBranchSite);
             this.targetDeciders = StaticScopeMap.guardsOf(
                     targetBranch.get("decidedBy"));
+            this.forcedArms = ForcingTable.read(targetBranch.get("force"));
             for (JsonElement guard : array(targetBranch, "guards")) {
                 JsonObject row = guard.getAsJsonObject();
                 targetGuards.put(optionalString(row, "siteId"),
