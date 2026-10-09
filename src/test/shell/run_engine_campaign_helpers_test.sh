@@ -209,9 +209,40 @@ run_emit
 jq -e '.evidence.symbolicPropagationComplete == false
   and .gapCount == 0
   and .telemetryCount >= 2
-  and .bounded == null' \
+  and .bounded == null
+  and .confinedWriters == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+
+# CONFINED-1: the writers PLAN dropped as confined are DIAGNOSTIC rows of the
+# region plan's gaps, which EMIT carries into gaps.json, and result.json
+# counts them by owner class with the first rows (CHECKING trap 22).
+emit_fixture
+jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
+  edges: [], regions: [],
+  gaps: [{schemaVersion: 1, kind: "CLOSURE_CONFINED", cls: "DIAGNOSTIC",
+          subject: "CONTEXT <a.B: int x> @ r1", detail: "3 writer(s)",
+          scope: "CONTEXT", ownerClass: "a.B", field: "<a.B: int x>",
+          reader: "r1", writers: 3, first: ["w1", "w2", "w3"]},
+         {schemaVersion: 1, kind: "CLOSURE_CONFINED", cls: "DIAGNOSTIC",
+          subject: "CONTEXT <a.C: int y> @ r1", detail: "2 writer(s)",
+          scope: "CONTEXT", ownerClass: "a.C", field: "<a.C: int y>",
+          reader: "r1", writers: 2, first: ["w4", "w5"]}]}' \
+  >"${runtime_region_plan}"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a confined drop withheld the candidate: $(<"${emit_root}/emit.log")"
+jq -e '.confinedWriters.writers == 5 and .confinedWriters.rows == 2
+  and .confinedWriters.byOwnerClass == {"a.B": 3, "a.C": 2}
+  and (.confinedWriters.first | length) == 2
+  and .confinedWriters.first[0].first == ["w1", "w2", "w3"]
+  and .gapCount == 0' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the confined drops were not published: \
+$(jq -c '.confinedWriters' "${campaign_final}/result.json" 2>&1)"
+jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the confined drops are not DIAGNOSTIC rows of gaps.json"
 
 # BOUND-1: every declared bound that cut the search is named in result.json
 # by its configuration key (campaign_bounds), whatever the claim; a round's
@@ -2459,13 +2490,14 @@ stream_fixture() {
   TMPDIR=${test_tmp}
 }
 # Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
-# <id> <peak> <log> <args...>): it names itself where its rounds are asked
-# and answers each with stream_planner, until it is ended -- or until
-# stream_planner_dies <round> <heap> says it ends there with that status
+# <id> <peak> <log> <jvm_file> <args...>): it names itself where its rounds
+# are asked and answers each with stream_planner, until it is ended -- or
+# until stream_planner_dies <round> <heap> says it ends there with that status
 # (3: out of heap, its JVM's last words in its log).
 stream_planner_serve() {
   local heap=$1 id=$2 log=$4 sessions="" dir request name round status
-  shift 4
+  printf '%s\n' "${BASHPID}" >"$5"
+  shift 5
   while [[ $# -gt 0 ]]; do
     [[ "$1" != --sessions ]] || sessions=$2
     shift
@@ -2498,6 +2530,32 @@ space" >>"${log}"
   done
 }
 stream_planner_dies() { :; }
+
+# The planner's JVM is stopped by the pid it stated, on its host, whatever
+# still holds it (SG2: peers' planners outlived their campaigns by 75-105
+# minutes); a pid the host gave another process since is left alone.
+(
+  iteration_dir="${test_tmp}/planner-stop"
+  mkdir -p "${iteration_dir}/planner"
+  printf 'localhost\n' >"${iteration_dir}/planner/host"
+  printf '1791\n' >"${iteration_dir}/planner/id"
+  bash -c 'exec -a "ExploreMain --serve x.1791" sleep 600' &
+  served=$!
+  printf '%s\n' "${served}" >"${iteration_dir}/planner/jvm"
+  sleep 600 &
+  stranger=$!
+  campaign_planner_stop
+  sleep 0.2
+  ! kill -0 "${served}" 2>/dev/null \
+    || fail "campaign_planner_stop left the planner JVM it stated running"
+  [[ ! -e "${iteration_dir}/planner/jvm" ]] \
+    || fail "campaign_planner_stop kept the planner JVM's pid"
+  printf '%s\n' "${stranger}" >"${iteration_dir}/planner/jvm"
+  campaign_planner_stop
+  kill -0 "${stranger}" 2>/dev/null \
+    || fail "campaign_planner_stop ended a process not named by its id"
+  kill "${stranger}"
+)
 # Where explore.ExploreMain stands: the files it states every round.
 stream_planner() {
   local round="" out="" flying=""

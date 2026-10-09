@@ -11,6 +11,7 @@ import com.google.gson.ToNumberPolicy;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.RecordedAccesses;
+import edu.uva.liftlab.graphchecker.causynth.RecordedHeap;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -36,6 +37,7 @@ import java.nio.file.Path;
 import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
@@ -185,7 +187,10 @@ public final class RuntimeRegionPlanner {
      * returns a field (an unwoven accessor) or mutates one (an atomic's
      * value); and apart, the objects a reference field held ({@link
      * RuntimeSelectedRegionFinalizer#FIELD_REFERENTS}), whose state a
-     * mutation through the field writes.
+     * mutation through the field writes.  And every object its events name
+     * ({@link RuntimeSelectedRegionFinalizer#NAMED_OBJECTS}): the receivers
+     * of the methods it entered, the objects of its call rows, the receivers
+     * and values of its field accesses.
      */
     private static void stampFieldOwners(
             Collection<Map<String, Object>> activations, TraceIndex trace,
@@ -193,10 +198,15 @@ public final class RuntimeRegionPlanner {
         for (Map<String, Object> activation : activations) {
             Map<String, Set<Integer>> owners = new HashMap<>();
             Map<String, Set<Integer>> referents = new HashMap<>();
+            Set<Integer> named = new HashSet<>();
             for (Long call : MapFields.longValues(
                     activation.get("callIds"))) {
+                MethodEvent entered = trace.methodByCall.get(call);
+                if (entered != null) named.add(entered.objectId);
                 for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
                         call, Collections.<FieldAccessEvent>emptyList())) {
+                    named.add(event.receiverObjectId);
+                    named.add(event.valueObjectId);
                     owners.computeIfAbsent(event.field,
                             ignored -> new HashSet<>())
                             .add(event.receiverObjectId);
@@ -208,6 +218,7 @@ public final class RuntimeRegionPlanner {
                 }
                 for (RuntimeEvent event : trace.runtimeByCall.getOrDefault(
                         call, Collections.<RuntimeEvent>emptyList())) {
+                    named.add(event.objectId);
                     String field = fieldCalls.get(event.siteId);
                     if (field != null && event.objectId != 0
                             && "CALL_SITE_ENTER".equals(event.kind)) {
@@ -226,6 +237,13 @@ public final class RuntimeRegionPlanner {
                         RuntimeSelectedRegionFinalizer.FIELD_REFERENTS,
                         referents);
             }
+            named.remove(0);
+            int[] objects = new int[named.size()];
+            int next = 0;
+            for (int object : named) objects[next++] = object;
+            Arrays.sort(objects);
+            activation.put(RuntimeSelectedRegionFinalizer.NAMED_OBJECTS,
+                    objects);
         }
     }
 
@@ -336,6 +354,88 @@ public final class RuntimeRegionPlanner {
             }
         }
         return accesses.build();
+    }
+
+    /**
+     * The heap as the recording saw objects hold one another ({@link
+     * RecordedHeap}): each field access's receiver held its value (a static
+     * field's value is a root); the receiver of a call at a store site that
+     * mutates through the call ({@code storingCalls}) held each object it
+     * was handed, and that of a call at a site that returns a field ({@code
+     * fieldCalls}) held what it returned.  And the causal context each
+     * object was mentioned under: every object a method entry, a field
+     * access or a call row names, under its call's context ({@link
+     * #causalContext}); and each activation's, its root call's.
+     */
+    static RecordedHeap recordedHeap(Collection<MethodEvent> methods,
+                                     Collection<FieldAccessEvent> fields,
+                                     Collection<RuntimeEvent> runtime,
+                                     Collection<Map<String, Object>>
+                                             activations,
+                                     Map<String, String> storingCalls,
+                                     Map<String, String> fieldCalls) {
+        RecordedHeap.Builder heap = new RecordedHeap.Builder();
+        Map<Long, String> contexts = new HashMap<>();
+        for (MethodEvent event : methods) {
+            String context = causalContext(event);
+            contexts.put(event.callId, context);
+            heap.mention(event.objectId, context);
+        }
+        for (Map<String, Object> activation : activations) {
+            long root = longNumber(activation.get("rootCallId"), -1L);
+            heap.occurrence(root, contexts.getOrDefault(root, ""));
+        }
+        for (FieldAccessEvent event : fields) {
+            String context = contexts.getOrDefault(event.callId, "");
+            heap.mention(event.receiverObjectId, context);
+            heap.mention(event.valueObjectId, context);
+            if (event.receiverObjectId == 0) {
+                heap.root(event.valueObjectId);
+            } else {
+                heap.edge(event.receiverObjectId, event.valueObjectId);
+            }
+        }
+        // invocation -> its receiver, while its argument and return rows
+        // follow it in seq order.
+        Map<Long, Integer> storing = new HashMap<>();
+        Map<Long, Integer> returning = new HashMap<>();
+        for (RuntimeEvent event : sorted(runtime, value -> value.seq)) {
+            heap.mention(event.objectId,
+                    contexts.getOrDefault(event.callId, ""));
+            if ("CALL_SITE_ENTER".equals(event.kind)) {
+                if (storingCalls.containsKey(event.siteId)) {
+                    storing.put(event.invocationId, event.objectId);
+                } else if (fieldCalls.containsKey(event.siteId)) {
+                    returning.put(event.invocationId, event.objectId);
+                }
+            } else if ("CALL_ARGUMENT".equals(event.kind)) {
+                Integer holder = storing.get(event.invocationId);
+                if (holder != null) heap.edge(holder, event.objectId);
+            } else if ("CALL_SITE_RETURN".equals(event.kind)) {
+                storing.remove(event.invocationId);
+                Integer holder = returning.remove(event.invocationId);
+                if (holder != null) heap.edge(holder, event.objectId);
+            } else if (event.kind.startsWith("CALL_SITE_")) {
+                storing.remove(event.invocationId);
+                returning.remove(event.invocationId);
+            }
+        }
+        return heap.build();
+    }
+
+    /**
+     * The causal context one entry ran under, for the recorded heap: its
+     * request key ({@code source/request|tick|wake/api#k}) in its recording
+     * window, whose counters the key's {@code k} restarts with
+     * ({@code Lineage}); none ({@code ""}) for an entry under no key, or
+     * under a turn begun in an older window, which every window counts as
+     * {@code #0} ({@code Lineage#rootWindowIndex}) and so names no one
+     * context.
+     */
+    static String causalContext(MethodEvent event) {
+        String key = event.requestKey;
+        if (key.isEmpty() || key.endsWith("#0")) return "";
+        return event.window + "|" + key;
     }
 
     /** One recorded entry that opens an occurrence of one region. */
@@ -1313,10 +1413,15 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
-            // The equivalent deciders this occurrence is planned for.
-            String deciders = RuntimeSelectedRegionFinalizer.DECIDER_CLASS;
-            if (seed.containsKey(deciders)) {
-                plan.put(deciders, seed.get(deciders));
+            // The equivalent deciders this occurrence is planned for, and
+            // the writers it did not cross to as confined.
+            for (String stated : new String[] {
+                    RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
+                    RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
+                    RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS}) {
+                if (seed.containsKey(stated)) {
+                    plan.put(stated, seed.get(stated));
+                }
             }
             // The declaration, resolved once by the finalizer, the
             // occurrence's shape and those the recording opened beside it
@@ -2091,15 +2196,21 @@ public final class RuntimeRegionPlanner {
          * entered by unnamed work, which has no owner; not the same as an
          * empty {@link #occurrenceAddress}, which is a refused hole. */
         final boolean regionFolded;
+        /** The recording window the entry ran in ({@code
+         *  RecordingWindow#index}): a request key's ordinal restarts in
+         *  each, so a causal context is the pair. */
+        final int window;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
                     long laneId, long spanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
-                    String occurrenceAddress, boolean regionFolded) {
+                    String occurrenceAddress, boolean regionFolded,
+                    int window) {
             this.occurrenceAddress = nonNull(occurrenceAddress);
             this.regionFolded = regionFolded;
+            this.window = window;
             this.seq = seq;
             this.test = nonNull(test);
             this.threadName = nonNull(threadName);
@@ -2127,7 +2238,7 @@ public final class RuntimeRegionPlanner {
                     objectId, receiverType, callId, parentCallId,
                     parentSiteId, laneId, spanId, remoteParentSpanId,
                     source, receiverAttributed, requestKey, requestApi,
-                    occurrenceAddress, false);
+                    occurrenceAddress, false, window);
         }
     }
 

@@ -98,6 +98,9 @@ public final class ExploreMain {
     /** What the last round read, kept for the next. */
     private Corpus corpus;
     private StaticScopeMap scope;
+    /** The region plan PLAN froze in the iteration ({@code campaign_plan}):
+     *  its rows name the regions each one's occurrences folded. */
+    static final String REGION_PLAN = "concolic_region_plan.jsonl";
     private String scopeDigest;
     /** The slot table as the last round left it, and that round. */
     private SlotTable slots;
@@ -208,7 +211,11 @@ public final class ExploreMain {
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
         if (scope == null || !digest.equals(scopeDigest)) {
-            scope = StaticScopeMap.read(scopeMap);
+            // With the folds of the plan PLAN froze for this iteration: what
+            // an occurrence may read is its folded regions' too (an arm's
+            // key, Corpus#inputShape).
+            scope = StaticScopeMap.read(scopeMap).withFolds(
+                    iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
         }
         List<GapRow> gaps = new ArrayList<GapRow>();
@@ -276,7 +283,7 @@ public final class ExploreMain {
         gaps.addAll(skeleton.gaps);
 
         // The one ledger of owed arms (Frontier).
-        Frontier frontier = new Frontier(corpus, tasks, flipSites);
+        Frontier frontier = new Frontier(corpus, scope, tasks, flipSites);
         List<ObligationResult> answers = RowCodec.readAll(results,
                 RowCodec::readObligationResult);
         frontier.consume(answers);
@@ -287,7 +294,7 @@ public final class ExploreMain {
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
-            candidates.addAll(ObligationFactory.candidates(corpus, task,
+            candidates.addAll(ObligationFactory.candidates(corpus, scope, task,
                     flipSites.get(task.taskId()), bounds, branches, frontier,
                     gaps));
         }
@@ -350,8 +357,8 @@ public final class ExploreMain {
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
                 witnesses, wave(iteration, corpus), branches, concrete);
-        manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
-                open, byFlip));
+        manifest.add("openArms", openArms(corpus, scope, roots, tasks,
+                frontier, open, byFlip));
         manifest.add("force", forced.manifest);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
@@ -394,7 +401,8 @@ public final class ExploreMain {
      * (result.json concrete[] OPEN_ARM): an UNSAT closes over none but an
      * UNSAT one, and an UNANSWERED one leaves no verdict.
      */
-    static JsonArray openArms(Corpus corpus, List<OccurrenceAddress> roots,
+    static JsonArray openArms(Corpus corpus, StaticScopeMap scope,
+                              List<OccurrenceAddress> roots,
                               List<Task> tasks, Frontier frontier,
                               Frontier.Round open,
                               Map<String, List<ObligationResult>> answers) {
@@ -433,7 +441,8 @@ public final class ExploreMain {
                 String key = arm.siteId() + "=" + arm.outcome();
                 Map<String, JsonObject> worlds = refuted.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, JsonObject>());
-                String state = openArmState(corpus, task, root, row, arm,
+                String state = openArmState(corpus, scope, task, root, row,
+                        arm,
                         frontier, proposed, answers, worlds,
                         unrun.computeIfAbsent(key,
                                 k -> new LinkedHashSet<String>()));
@@ -511,7 +520,8 @@ public final class ExploreMain {
      * ObligationResult#worldUnrefuted}: asked once more, {@link
      * Frontier#consume}) to {@code unrun}, as obligation@session.
      */
-    private static String openArmState(Corpus corpus, Task task,
+    private static String openArmState(Corpus corpus, StaticScopeMap scope,
+                                       Task task,
                                        OccurrenceAddress root, TargetRow row,
                                        TargetRow.OpenArm arm,
                                        Frontier frontier,
@@ -540,7 +550,7 @@ public final class ExploreMain {
                 String id = ObligationFactory.obligationId(task.taskId(),
                         decision.siteId(), decision.ordinal(),
                         !decision.outcome(), ObligationFactory.dependence(
-                                corpus, task, path, index));
+                                corpus, scope, task, path, index));
                 Verdict shared = frontier.verdict(id);
                 if (frontier.recorded(id) || shared == Verdict.ADMITTED) {
                     return "TAKEN";
