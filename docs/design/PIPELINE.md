@@ -408,7 +408,13 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
    occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
    the session is admitted, else DIAGNOSTIC); another
-   world's pairing is a new slot. A slot stands on the session that opened it: the slots of a
+   world's pairing is a new slot. A closure member's code point (node, region, index) that a
+   session ran only under contexts of another shape (`Corpus#contextShape`, the rule of §7.4 and
+   IDENTITY §9: per anchor hop the RPC site and sending node, then the root's role and api, without
+   the per-site counts) is a `TOPOLOGY_DIVERGENCE` as well, BLOCKING when the session is admitted
+   and in a world where the member ran, else DIAGNOSTIC (a new occurrence); under the member's shape
+   it ran the member, whatever it counted (a poll's k-th wake is another k in every run), and under
+   that shape and another too it grew. A slot stands on the session that opened it: the slots of a
    session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
    where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
    replay answered by its shape (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the planned

@@ -2980,20 +2980,51 @@ public class ExploreTest {
                         Collections.singleton(firstRequest.id()), 5)
                         .replaced);
 
-        Path instead = tree.newFolder("closure-instead").toPath();
-        Session ranIt = new Session(instead, "s-seed");
-        ranIt.activation(firstRequest, false);
-        ranIt.flush();
-        Session ranOther = new Session(instead, "s-flip");
-        ranOther.activation(secondRequest, true);
-        ranOther.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
-                "s-flip", "the focused prefix reproduced"));
-        ranOther.flush();
-        assertTrue("a replay that did not run the member and ran another "
-                        + "context in its place IS a replacement",
-                new SlotTable().reconcile(Corpus.read(instead, null),
-                        Collections.singleton(firstRequest.id()), 6)
-                        .replaced);
+        // Contexts compare by their shape (Corpus#contextShape): a replay
+        // that ran the code point under the member's shape ran the member,
+        // whatever it counted (solr-adhoc-05: a poll's k-th wake is another
+        // k in every run); one that ran it only under another shape -- a
+        // client's root in place of a poll's wake -- replaced it.  A hop
+        // whose sender no row names is no known difference (two requests
+        // here, their senders unnamed).
+        OccurrenceAddress otherShape = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "", 1),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress wake12 = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.of("WAKE"),
+                        "ZkDistributedQueue.peekElements", 12),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress wake1 = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.of("WAKE"),
+                        "ZkDistributedQueue.peekElements", 1),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        // member, what the replay ran, whether it replaced the member
+        Object[][] instead = {
+                {otherShape, wake1, true},
+                {firstRequest, secondRequest, false},
+                {wake12, wake1, false},
+                {wake12, otherShape, true},
+        };
+        for (Object[] row : instead) {
+            OccurrenceAddress member = (OccurrenceAddress) row[0];
+            OccurrenceAddress ran = (OccurrenceAddress) row[1];
+            Path dir = tree.newFolder("closure-instead-"
+                    + member.context().render().hashCode() + "-"
+                    + ran.context().render().hashCode()).toPath();
+            Session ranIt = new Session(dir, "s-seed");
+            ranIt.activation(member, false);
+            ranIt.flush();
+            Session ranOther = new Session(dir, "s-flip");
+            ranOther.activation(ran, true);
+            ranOther.answered(ObligationResult.of("OBL.s-flip",
+                    Verdict.ADMITTED, "s-flip",
+                    "the focused prefix reproduced"));
+            ranOther.flush();
+            assertEquals(member.context().render() + " held, "
+                            + ran.context().render() + " ran",
+                    row[2], new SlotTable().reconcile(Corpus.read(dir, null),
+                            Collections.singleton(member.id()), 6).replaced);
+        }
 
         // The closure may hold TWO occurrences of one code point: hdfs-17897's
         // dn0 serves the client's SASL handshake and the checksum leader's
@@ -3024,35 +3055,40 @@ public class ExploreTest {
                     new SlotTable().reconcile(Corpus.read(oneMember, null),
                             bothMembers, 7).replaced);
         }
-        // With two members held there, a context the closure does NOT hold
-        // is still a replacement when it ran the code point alone, and still
-        // growth beside a member that ran.
-        OccurrenceAddress stranger = occurrence("hdfs-case/dn0",
-                "REGION.checksum",
-                CausalContext.of("ffeeddccbbaa9988", "HDFS_SASL/checksum"),
+        // With two members held there, a context of a shape the closure does
+        // NOT hold there is still a replacement when it ran the code point
+        // alone, and still growth beside a member that ran.
+        OccurrenceAddress firstCall = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "checksum", 1),
                 "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress secondCall = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "checksum", 2),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        Set<String> twoCalls = new LinkedHashSet<String>(Arrays.asList(
+                firstCall.id(), secondCall.id()));
+        OccurrenceAddress stranger = wake1;
         Path strangerAlone = tree.newFolder("closure-stranger-alone").toPath();
         Session seedTwo = new Session(strangerAlone, "s-seed");
-        seedTwo.activation(firstRequest, false);
-        seedTwo.activation(secondRequest, false);
+        seedTwo.activation(firstCall, false);
+        seedTwo.activation(secondCall, false);
         seedTwo.flush();
         Session ranStranger = new Session(strangerAlone, "s-flip");
         ranStranger.activation(stranger, true);
         ranStranger.answered(ObligationResult.of("OBL.s-flip",
                 Verdict.ADMITTED, "s-flip", "the focused prefix reproduced"));
         ranStranger.flush();
-        assertTrue("a code point the closure holds, run under no context "
-                        + "it holds there, IS a replacement",
+        assertTrue("a code point the closure holds, run under no shape it "
+                        + "holds there, IS a replacement",
                 new SlotTable().reconcile(Corpus.read(strangerAlone, null),
-                        bothMembers, 8).replaced);
+                        twoCalls, 8).replaced);
         Path strangerBeside = tree.newFolder("closure-stranger-beside")
                 .toPath();
         Session seedThree = new Session(strangerBeside, "s-seed");
-        seedThree.activation(firstRequest, false);
-        seedThree.activation(secondRequest, false);
+        seedThree.activation(firstCall, false);
+        seedThree.activation(secondCall, false);
         seedThree.flush();
         Session ranBeside = new Session(strangerBeside, "s-flip");
-        ranBeside.activation(secondRequest, true);
+        ranBeside.activation(secondCall, true);
         ranBeside.activation(stranger, false);
         ranBeside.answered(ObligationResult.of("OBL.s-flip",
                 Verdict.ADMITTED, "s-flip", "the focused prefix reproduced"));
@@ -3060,7 +3096,7 @@ public class ExploreTest {
         assertFalse("beside a member that ran, another context is a second "
                         + "request",
                 new SlotTable().reconcile(Corpus.read(strangerBeside, null),
-                        bothMembers, 9).replaced);
+                        twoCalls, 9).replaced);
 
         // An occurrence the corpus names ONLY in a write row -- no
         // activation, no decision -- cannot be a task: there is no recorded

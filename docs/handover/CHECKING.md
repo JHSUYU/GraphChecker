@@ -122,6 +122,9 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
 19. **A blocking divergence that is only read order** (07 CC7, 2026-10-06): 86 `TOPOLOGY_DIVERGENCE` rows, every one a
     client consumer of a quorum reply. QJM reads replies out of a `HashMap` keyed by identity hash, so the k-th read is
     another journal node in every JVM (STATUS open defect 57). Read the consumer sites before suspecting the data.
+    A member that ran under the same context shape with another count is not one (PIPELINE §7.1 step 4): in SG1,
+    solr-adhoc-05 rounds 5-9 had 22-44 BLOCKING rows and -21 round 4 one, at `SolrZkClient#getData` under
+    `Root:WAKE/...peekElements#k` (a poll's k-th wake); the shape rule leaves none (EXPLORE.drift, nothing else moved).
 20. **A residue that cannot move the verdict** (21, time family, 2026-10-06): RUN_DEFECT on 3 BLOCKING gaps from a
     stranded actor body, yet every one of the 5 fatal paths ends in the constant `false` (an untracked String
     compare), so no unexplored path can change UNSAT. Such a case is accepted only under the time-family license, with
