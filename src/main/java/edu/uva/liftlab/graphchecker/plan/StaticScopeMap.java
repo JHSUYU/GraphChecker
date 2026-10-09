@@ -170,11 +170,12 @@ public final class StaticScopeMap {
             return Collections.<Guard>emptyList();
         }
 
-        /** Of the branches {@link #targetChain} names for {@code siteId},
-         *  those each of whose arms reaches the site (or a call into its
-         *  method: {@link #choosingCallsInto} among them), so neither arm
-         *  leaves the way to it: an {@code assert}'s {@code
-         *  $assertionsDisabled} test.  None with no CFG. */
+        /** Of the branches {@link #targetChain} names for {@code siteId}
+         *  (never its own guards, the decisions the site stands at), those
+         *  each of whose arms reaches the site (or a call into its method:
+         *  {@link #choosingCallsInto} among them), so neither arm leaves the
+         *  way to it: an {@code assert}'s {@code $assertionsDisabled} test.
+         *  None with no CFG. */
         default Set<String> passable(String siteId,
                                      Predicate<String> entry) {
             return Collections.<String>emptySet();

@@ -177,16 +177,20 @@ public class ForcingTableTest {
      * the throw too, through the assert's own test (u3): it is passable,
      * never forced, so a forced world with assertions on states no {@code
      * false} for it (solr-adhoc-07 F2P2: ZkController.register's two
-     * asserts).  The assert's test and the throw's own guard (u5) are
-     * forced at their arms.  check(int x): u1 z0 = $assertionsDisabled;
-     * u2 if z0 goto u5; u3 if x != 0 goto u5; u4 return; u5 if x > 5 goto
-     * u8; u6 r1 = new X (the throw); u7 throw r1; u8 return.
+     * asserts).  The assert's test is forced at its arm, and so is each of
+     * the throw's own guards, {@code if (x > 5 || x < -5)}, though u5's other
+     * arm reaches the throw through u6: the throw stands at u5 (solr-18406
+     * F2V3: getAndSaveCommitPoint's u11, marked passable, was left to its
+     * operands and the FORCE run diverged).  check(int x): u1 z0 =
+     * $assertionsDisabled; u2 if z0 goto u5; u3 if x != 0 goto u5; u4
+     * return; u5 if x > 5 goto u7; u6 if x >= -5 goto u9; u7 r1 = new X (the
+     * throw); u8 throw r1; u9 return.
      */
     @Test
     public void aBranchBothOfWhoseArmsReachTheThrowIsNeverForced()
             throws IOException {
         String check = "<a.A: void check(int)>";
-        String thrown = check + "#u6";
+        String thrown = check + "#u7";
         try {
             assertBody();
             StaticScopeMap.Site target = read("{\"schemaVersion\":1,"
@@ -205,8 +209,11 @@ public class ForcingTableTest {
                             check + "#u2", "=true passable"},
                     {"the assert's own test: its other arm returns",
                             check + "#u3", "=true"},
-                    {"the throw's guard, at its fatal arm", check + "#u5",
-                            "=false"}};
+                    {"the throw's own guard, though its other arm reaches"
+                            + " the throw through u6", check + "#u5",
+                            "=true"},
+                    {"the throw's other guard, at its fatal arm",
+                            check + "#u6", "=false"}};
             for (Object[] expected : rows) {
                 ForcingTable.Arm arm = table.get((String) expected[1]);
                 assertEquals((String) expected[0], expected[2], arm == null
@@ -215,7 +222,7 @@ public class ForcingTableTest {
             }
             assertEquals("a passable branch is no forced site",
                     new java.util.LinkedHashSet<String>(Arrays.asList(
-                            check + "#u5", check + "#u3")),
+                            check + "#u5", check + "#u6", check + "#u3")),
                     read("{\"schemaVersion\":1,\"kind\":\"STATIC_SCOPE_SITE\","
                             + "\"role\":\"TARGET_SITE\",\"regionId\":\"R\","
                             + "\"siteId\":\"" + thrown + "\",\"vmSite\":\"\","
@@ -248,7 +255,9 @@ public class ForcingTableTest {
         Local r = j.newLocal("r1", thrown);
         body.getLocals().addAll(Arrays.asList(x, z, r));
         Unit end = j.newReturnVoidStmt();
-        Unit afterAssert = j.newIfStmt(j.newGtExpr(x, IntConstant.v(5)), end);
+        Unit throwing = j.newAssignStmt(r, j.newNewExpr(thrown));
+        Unit afterAssert = j.newIfStmt(j.newGtExpr(x, IntConstant.v(5)),
+                throwing);
         body.getUnits().addAll(Arrays.asList(
                 j.newIdentityStmt(x, j.newParameterRef(IntType.v(), 0)),
                 j.newAssignStmt(z, j.newStaticFieldRef(disabled.makeRef())),
@@ -256,7 +265,8 @@ public class ForcingTableTest {
                 j.newIfStmt(j.newNeExpr(x, IntConstant.v(0)), afterAssert),
                 j.newReturnVoidStmt(),
                 afterAssert,
-                j.newAssignStmt(r, j.newNewExpr(thrown)),
+                j.newIfStmt(j.newGeExpr(x, IntConstant.v(-5)), end),
+                throwing,
                 j.newThrowStmt(r),
                 end));
     }

@@ -139,10 +139,12 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
    the one decision each target row's open decider arm names (`TargetRow.OpenArm`); and `force`,
    the forcing table (each of those ifs with the arm that leads to the throw, a switch never,
-   `plan.ForcingTable`; an if each of whose arms reaches the throw within one occurrence -- an
+   `plan.ForcingTable`; a chain if each of whose arms reaches the throw within one occurrence -- an
    `assert`'s `$assertionsDisabled` test, a guard on its skip arm while its other arm reaches the
    throw through the assert's own test -- stated `passable` and never forced,
-   `SiteControlDependence.MethodGuards#passable`), one per TARGET_SITE row, which PLAN copies -- the task's own target's
+   `SiteControlDependence.MethodGuards#passable`; never one of the throw's own guards, the decisions
+   it stands at, though in `if (a || b) throw` `a`'s other arm reaches it through `b`: solr-18406's
+   `getAndSaveCommitPoint#u11` so marked was left to its operands and its FORCE run diverged), one per TARGET_SITE row, which PLAN copies -- the task's own target's
    (`ConcolicScheduler#ownTarget`) -- onto the declared task's `targetBranch.force` for the
    forced replay (§7.10), less a caller's chain guard where the recording's occurrence entered the
    throw's method (`ForcingTable#forOccurrence`: it reaches the method by some call, and forcing another

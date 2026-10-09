@@ -104,12 +104,13 @@ public final class SiteControlDependence {
                 Set<String> found = new LinkedHashSet<String>();
                 MethodGuards own = bySite.get(siteId);
                 if (own != null) {
-                    found.addAll(own.passable(SiteId.unitIndexOf(siteId)));
+                    found.addAll(own.passable(SiteId.unitIndexOf(siteId),
+                            false));
                 }
                 for (String call : callSitesInto(SiteId.methodOf(siteId),
                         entry.negate())) {
                     found.addAll(guardsOf(SiteId.methodOf(call)).passable(
-                            SiteId.unitIndexOf(call)));
+                            SiteId.unitIndexOf(call), true));
                 }
                 for (StaticScopeMap.Guard choosing
                         : choosingCallsInto(SiteId.methodOf(siteId))) {
@@ -514,19 +515,26 @@ public final class SiteControlDependence {
         }
 
         /**
-         * Of the unit's guards and their chain, those each of whose arms
-         * reaches it within one occurrence (the branch a barrier): an
-         * {@code assert}'s {@code $assertionsDisabled} test is a guard on its
-         * skip arm, the arm that alone makes the unit unavoidable, while its
-         * other arm reaches the unit too, through the assert's own test.
+         * Of the unit's chain (and, with {@code own}, its own guards), those
+         * each of whose arms reaches it within one occurrence (the branch a
+         * barrier): an {@code assert}'s {@code $assertionsDisabled} test is a
+         * chain guard on its skip arm, the arm that alone makes the unit
+         * unavoidable, while its other arm reaches the unit too, through the
+         * assert's own test.  A throw's own guards are never among them: in
+         * {@code if (a || b) throw}, {@code a}'s other arm reaches the throw
+         * through {@code b}, yet {@code a} is the decision the throw stands
+         * at (solr-18406's {@code getAndSaveCommitPoint#u11}); a call's own
+         * guards, with {@code own}, are the throw's chain.
          */
-        public Set<String> passable(int unitIndex) {
+        public Set<String> passable(int unitIndex, boolean own) {
             Set<String> found = new LinkedHashSet<String>();
             Unit site = byIndex.get(Integer.valueOf(unitIndex));
             if (site == null || plain == null) return found;
             Set<String> named = new LinkedHashSet<String>();
-            for (StaticScopeMap.Guard guard : at(unitIndex)) {
-                named.add(guard.siteId());
+            if (own) {
+                for (StaticScopeMap.Guard guard : at(unitIndex)) {
+                    named.add(guard.siteId());
+                }
             }
             for (StaticScopeMap.Guard guard : chain(unitIndex)) {
                 named.add(guard.siteId());
