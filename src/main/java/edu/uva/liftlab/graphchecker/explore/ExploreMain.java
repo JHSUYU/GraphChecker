@@ -25,11 +25,14 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -40,7 +43,8 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * EXPLORE, one planner round: plan the closure, propose the flips still open.
+ * EXPLORE's planner: plan the closure, propose the flips still open, one
+ * round at a time.
  *
  * <pre>
  *   --sessions &lt;dir&gt;           the corpus; its parent is the iteration
@@ -48,31 +52,76 @@ import java.util.TreeSet;
  *                              the ONE root of the closure
  *   --results &lt;file&gt;           earlier rounds' ObligationResults; an
  *                              answered query is never proposed again
- *   --in-flight &lt;file&gt;         the obligation rows the campaign has queued
- *                              or running; none is proposed again
  *   --static-scope-map &lt;file&gt;  the epoch's write/export sites and guards
  *                              (SYMBOL-SCOPE §3)
  *   --root-domains &lt;file&gt;      what the CASE says each root may be
- *   --round &lt;n&gt;                which round this is
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
- *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
- *                              graph.jsonl, growth.jsonl,
- *                              explore_manifest.json
  *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
  *   --max-world-depth
+ *   one round:
+ *   --round &lt;n&gt;                which round this is
+ *   --in-flight &lt;file&gt;         the obligation rows the campaign has queued
+ *                              or running; none is proposed again
+ *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
+ *                              graph.jsonl, growth.jsonl, slots.jsonl,
+ *                              explore_manifest.json
+ *   or every round of the exploration ({@link Service}):
+ *   --serve &lt;dir&gt;             answer the rounds asked there, each
+ *                              question naming its round, inFlight and
+ *                              outputDir, until the process is ended
  * </pre>
  *
- * <p>ONE invocation is ONE round; the campaign owns the loop, the workers and
- * every stop (PIPELINE §7.9).  This rebuilds the frontier from every session,
- * recorded verdict and arm in flight, writes the unanswered flips, and states
- * the round's wave and the witnesses the corpus holds.  It never solves
- * ({@link ObligationSolverMain} does, one worker per obligation).</p>
+ * <p>A round rebuilds the frontier from every session, recorded verdict and
+ * arm in flight, writes the unanswered flips, and states the round's wave
+ * and the witnesses the corpus holds.  The campaign owns the loop, the
+ * workers and every stop (PIPELINE §7.9); it never solves ({@link
+ * ObligationSolverMain} does).  ONE planner serves an exploration's rounds:
+ * what it read for one round it keeps for the next, so a round reads only
+ * the sessions landed since -- the corpus's rows ({@link Corpus#read(Path,
+ * Path, Corpus)}), the static map while its file reads the same, the slot
+ * table it folded and changed ({@link SlotTable}) -- and builds every index
+ * across sessions anew.  Each round's files are the ones a planner of its
+ * own, reading the iteration then, writes (offline-ab.sh EXPLORE.serve).</p>
  */
 public final class ExploreMain {
     /** One round's manifest: its anchors, tasks and verdict counts. */
     static final String MANIFEST_FILE = "explore_manifest.json";
 
-    private ExploreMain() {
+    private final Path iteration;
+    private final String declaredAnchor;
+    private final Path rootDomains;
+    private final Path results;
+    private final Path scopeMap;
+    private final String topologyEpoch;
+    private final int maxTasks;
+    private final ObligationFactory.Bounds bounds;
+    /** What the last round read, kept for the next. */
+    private Corpus corpus;
+    private StaticScopeMap scope;
+    private String scopeDigest;
+    /** The slot table as the last round left it, and that round. */
+    private SlotTable slots;
+    private int slotsRound = -1;
+
+    /**
+     * One exploration's planner.
+     *
+     * @param declaredAnchor the case's v1 declaration,
+     *                       the closure's only root (PIPELINE §7.1); resolved
+     *                       against the seed each round, so nothing
+     *                       downstream sees a selector
+     */
+    ExploreMain(Path iteration, String declaredAnchor, Path rootDomains,
+                Path results, Path scopeMap, String topologyEpoch,
+                int maxTasks, ObligationFactory.Bounds bounds) {
+        this.iteration = iteration;
+        this.declaredAnchor = declaredAnchor;
+        this.rootDomains = rootDomains;
+        this.results = results;
+        this.scopeMap = scopeMap;
+        this.topologyEpoch = topologyEpoch;
+        this.maxTasks = maxTasks;
+        this.bounds = bounds;
     }
 
     public static void main(String[] argv) throws Exception {
@@ -84,10 +133,6 @@ public final class ExploreMain {
         }
         Path iteration = sessions.getParent() == null
                 ? sessions : sessions.getParent();
-        Path out = options.path("output-dir");
-        if (out == null) {
-            throw new IllegalArgumentException("Missing --output-dir");
-        }
         String declaredAnchor = options.value("target-occurrence", "");
         if (declaredAnchor.isEmpty()) {
             throw new IllegalArgumentException("the closure has no root: "
@@ -104,11 +149,9 @@ public final class ExploreMain {
                     + "needs it to name the writers a replay has not run "
                     + "(PIPELINE §7.2)");
         }
-        JsonObject manifest = plan(iteration, declaredAnchor,
+        ExploreMain planner = new ExploreMain(iteration, declaredAnchor,
                 options.path("root-domains"), options.path("results"),
-                options.path("in-flight"), scopeMap, out,
-                (int) options.number("round", 0),
-                options.value("topology-epoch", ""),
+                scopeMap, options.value("topology-epoch", ""),
                 (int) options.number("max-tasks",
                         ClosurePlanner.DEFAULT_MAX_TASKS),
                 new ObligationFactory.Bounds(
@@ -118,19 +161,29 @@ public final class ExploreMain {
                                 ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH),
                         (int) options.number("max-world-depth",
                                 ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)));
-        System.out.println(pretty(manifest));
+        Path serve = options.path("serve");
+        if (serve != null) {
+            Service.serve(serve, 0L, (question, out) -> {
+                String flying = JsonFields.optionalString(question,
+                        "inFlight");
+                planner.round(question.get("round").getAsInt(),
+                        flying.isEmpty() ? null : Paths.get(flying),
+                        Paths.get(JsonFields.primitiveString(question,
+                                "outputDir")));
+            });
+            return;
+        }
+        Path out = options.path("output-dir");
+        if (out == null) {
+            throw new IllegalArgumentException("--serve, or --output-dir, "
+                    + "is required");
+        }
+        System.out.println(pretty(planner.round(
+                (int) options.number("round", 0), options.path("in-flight"),
+                out)));
     }
 
-    /**
-     * Plans one round.
-     *
-     * @param declaredAnchor the case's v1 declaration,
-     *                       the closure's only root (PIPELINE §7.1); resolved
-     *                       against the seed here, so nothing downstream sees a
-     *                       selector
-     * @param inFlight       the obligation rows queued or running, or null
-     *                       for none
-     */
+    /** One round by a planner of its own: {@link #round}. */
     public static JsonObject plan(Path iteration, String declaredAnchor,
                                   Path rootDomains, Path results,
                                   Path inFlight, Path scopeMap, Path out,
@@ -138,8 +191,26 @@ public final class ExploreMain {
                                   int maxTasks,
                                   ObligationFactory.Bounds bounds)
             throws IOException {
-        Corpus corpus = Corpus.read(iteration, rootDomains);
-        StaticScopeMap scope = StaticScopeMap.read(scopeMap);
+        return new ExploreMain(iteration, declaredAnchor, rootDomains,
+                results, scopeMap, topologyEpoch, maxTasks, bounds)
+                .round(round, inFlight, out);
+    }
+
+    /**
+     * Plans one round over the iteration as it stands, into {@code out}.
+     *
+     * @param inFlight the obligation rows queued or running, or null for
+     *                 none
+     */
+    JsonObject round(int round, Path inFlight, Path out) throws IOException {
+        corpus = Corpus.read(iteration, rootDomains, corpus);
+        // The map is read again only when its file changed.
+        String digest = Files.isRegularFile(scopeMap)
+                ? ArtifactIO.sha256(scopeMap) : "";
+        if (scope == null || !digest.equals(scopeDigest)) {
+            scope = StaticScopeMap.read(scopeMap);
+            scopeDigest = digest;
+        }
         List<GapRow> gaps = new ArrayList<GapRow>();
         gaps.addAll(unstableAddresses(corpus));
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
@@ -193,12 +264,16 @@ public final class ExploreMain {
         }
         Set<String> closure = closureOf(tasks);
         // Reconcile the skeleton; a same-world replacement is BLOCKING but
-        // never empties the round (PIPELINE §7.1).
-        SlotTable slots = SlotTable.read(iteration);
+        // never empties the round (PIPELINE §7.1).  The table this planner
+        // left is the rounds' before this one only when it planned the one
+        // before; any other round folds them from their files.
+        if (slots == null || slotsRound != round - 1) {
+            slots = SlotTable.read(iteration, round);
+        }
+        slotsRound = -1;
         SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
                 round);
         gaps.addAll(skeleton.gaps);
-        slots.write(iteration);
 
         // The one ledger of owed arms (Frontier).
         Frontier frontier = new Frontier(corpus, tasks, flipSites);
@@ -273,6 +348,10 @@ public final class ExploreMain {
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
+        // Last: the round's change of the slot table, so a round planned
+        // again starts from the table the rounds before it left.
+        slots.write(out);
+        slotsRound = round;
         return manifest;
     }
 

@@ -17,35 +17,40 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * One host's solver for one exploration: the questions its obligation workers
- * put in a directory on the host's own disk, answered in turn by one JVM over
- * the corpus as it stands ({@code ObligationSolverMain --serve}).  The directory is
- * shared with {@code run_engine.sh campaign_solve_obligation}, which asks and
- * starts the service:
+ * One JVM that answers an exploration's questions in turn, over state it
+ * keeps between them: a host's obligation solver ({@code
+ * ObligationSolverMain --serve}, the questions its obligation workers ask)
+ * and the exploration's planner ({@code ExploreMain --serve}, one question
+ * per round).  The questions are put in a directory on the host's own disk,
+ * shared with {@code run_engine.sh}, which asks (from that host) and starts
+ * the service:
  *
  * <pre>
  *   lock/                  an mkdir lock, held for the few lines that decide
  *                          who starts the service and whether it may end
  *   server                 the pid the service runs under, or "starting
- *                          &lt;pid&gt;" while the worker that starts it waits
- *                          for memory (written by that worker)
- *   requests/&lt;q&gt;.json     a question: obligations, obligationId, and the
- *                          waiting worker's pid
+ *                          &lt;pid&gt;" while the asker that starts it waits
+ *                          for memory (written by that asker)
+ *   requests/&lt;q&gt;.json     a question: what the answerer reads, and the
+ *                          waiting asker's pid ({@code waiter})
  *   requests/&lt;q&gt;.taken    the question being answered
- *   out/&lt;q&gt;/              its answer's files, which the waiting worker moves
- *                          into its own directory, the one writer there
+ *   out/&lt;q&gt;/              its answer's files where the answerer writes them
+ *                          there (the solver: the waiting worker moves them
+ *                          into its own directory, the one writer there)
  *   answers/&lt;q&gt;.json      {exit, error}: the answer is complete
  * </pre>
  *
  * <p>Questions are answered oldest first (a name starts with the instant it
- * was put in); one whose worker is gone is dropped unanswered, since nobody
- * would move its files.  The service ends once no question has come for its
- * idle time and none waits -- under the lock, so a question put in after
- * that finds no service and its worker starts one.  A question taken by a
- * service that died is its worker's to fail; one still waiting is the next
+ * was put in); one whose asker is gone is dropped unanswered, since nobody
+ * would read its answer.  A failure is that question's answer -- its error
+ * the deepest throwable -- never the service's end.  A service given an idle
+ * time ends once no question has come for it and none waits -- under the
+ * lock, so a question put in after that finds no service and its asker
+ * starts one; one given none serves until it is ended.  A question taken by
+ * a service that died is its asker's to fail; one still waiting is the next
  * service's.</p>
  */
-final class SolverService {
+final class Service {
     static final String LOCK = "lock";
     static final String SERVER = "server";
     static final String REQUESTS = "requests";
@@ -59,17 +64,19 @@ final class SolverService {
      *  ({@code run_engine.sh campaign_host_lock_stale_s}). */
     private static final long LOCK_STALE_MILLIS = 30_000L;
 
-    /** Answers one question into its own output directory. */
+    /** Answers one question, its files into {@code out} if it writes them
+     *  there. */
     interface Answerer {
         void answer(JsonObject question, Path out) throws Exception;
     }
 
-    private SolverService() {
+    private Service() {
     }
 
     /**
      * Serves the questions put in {@code dir} until none has come for
-     * {@code idleMillis} and none waits.
+     * {@code idleMillis} and none waits; with {@code idleMillis} 0 or less,
+     * until the process is ended.
      */
     static void serve(Path dir, long idleMillis, Answerer answerer)
             throws Exception {
@@ -80,8 +87,9 @@ final class SolverService {
         while (true) {
             List<Path> asked = waiting(dir, ASKED);
             if (asked.isEmpty()) {
-                if (System.currentTimeMillis() - idleSince >= idleMillis
-                        && retire(dir)) {
+                if (idleMillis > 0L
+                        && System.currentTimeMillis() - idleSince
+                        >= idleMillis && retire(dir)) {
                     return;
                 }
                 Thread.sleep(POLL_MILLIS);
@@ -94,8 +102,8 @@ final class SolverService {
 
     /**
      * One question: taken (one another service took is not this one's),
-     * answered into {@code out/<q>/} unless its worker is gone, and marked
-     * answered last.  A failure is the answer's, never the service's.
+     * answered unless its asker is gone, and marked answered last.  A
+     * failure is the answer's, never the service's.
      */
     private static void answer(Path dir, Path question, Answerer answerer)
             throws IOException {
@@ -117,7 +125,7 @@ final class SolverService {
             answerer.answer(asked, dir.resolve(OUT).resolve(name));
         } catch (Exception | Error failed) {
             failed.printStackTrace();
-            error = failed.toString();
+            error = deepest(failed).toString();
         }
         JsonObject answer = new JsonObject();
         answer.addProperty("exit", error.isEmpty() ? 0 : 1);
@@ -129,11 +137,20 @@ final class SolverService {
         Files.delete(taken);
     }
 
+    /** The cause at the bottom of a failure's chain: what failed first. */
+    private static Throwable deepest(Throwable failed) {
+        Throwable cause = failed;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
     /**
      * Ends the service when no question waits or is being answered, under
-     * the lock, so no worker puts one in between unseen: the directory then
-     * names no service, and the next question's worker starts one.  It is
-     * the only service of the directory -- a worker starts another only
+     * the lock, so no asker puts one in between unseen: the directory then
+     * names no service, and the next question's asker starts one.  It is
+     * the only service of the directory -- an asker starts another only
      * when the one named there has ended.
      */
     static boolean retire(Path dir) throws IOException,

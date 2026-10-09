@@ -14,19 +14,26 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
+
+import com.google.gson.JsonObject;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * The skeleton: one slot per (interaction, world), and what contradicts it.
@@ -49,6 +56,19 @@ import java.util.Set;
  * consumers with producers no session of the corpus states, and the re-run
  * and every later session of its world would read as replacing them.</p>
  *
+ * <p>THE TABLE ON DISK IS ITS ROUNDS' CHANGES: each round writes what it
+ * changed, in order, as {@code obligations-NNNN/slots.jsonl} beside its
+ * other outputs -- a slot opened or replaced ({@code SLOT}, the row the slot
+ * holds now) and a slot whose opening session left the corpus ({@code
+ * SLOT_DROPPED}) -- and the table is those rounds folded in round order
+ * ({@link #read}), after the table an iteration recorded before the rounds
+ * wrote theirs ({@code slots.jsonl} beside the sessions) when it has one.
+ * Rewritten whole every round, the table was a quarter of a late round's
+ * planner (hdfs-adhoc-07 EX1: 1.9 GB, read 38-51 s, written 194-208 s of
+ * ~900).  A round's planner folds the rounds before its own, so a round
+ * planned again (its planner ran out of heap) starts from the same table,
+ * and a round directory that goes takes its changes with it.</p>
+ *
  * <p>An occurrence a replay answered by its shape (IDENTITY §9) stands at
  * the planned address but ran under another chain of its shape, so its
  * consumers' producers are that chain's: its pairings open slots of their
@@ -61,6 +81,12 @@ import java.util.Set;
  */
 public final class SlotTable {
     public static final String FILE = "slots.jsonl";
+    /** A slot opened, or replaced by the row it holds now. */
+    static final String OPENED = "SLOT";
+    /** A slot whose opening session left the corpus ({@link #standing}). */
+    static final String DROPPED = "SLOT_DROPPED";
+    /** The rounds' directories, whose names carry their round. */
+    private static final String ROUNDS = "obligations-";
 
     /** One interaction the skeleton holds, in one world. */
     public static final class Slot {
@@ -117,20 +143,57 @@ public final class SlotTable {
     /** WIRE consumer endpoint id | world | session -> the slot an answered
      *  occurrence of that session opened for it. */
     private final Map<String, Slot> ownChainOf = new HashMap<String, Slot>();
+    /** What this table changed since it was read or last written, in
+     *  order: the rows of the round that writes it ({@link #write}). */
+    private final List<JsonObject> changes = new ArrayList<JsonObject>();
     private boolean stated;
 
     SlotTable() {
     }
 
-    /** The iteration's table, or an empty one before its first round. */
+    /** The iteration's table: every round's changes folded, or an empty
+     *  table before its first round. */
     public static SlotTable read(Path iteration) throws IOException {
+        return read(iteration, Integer.MAX_VALUE);
+    }
+
+    /**
+     * The table the rounds before {@code round} left: the iteration's
+     * recorded table if it has one, then the changes of each round below
+     * {@code round}, in round order.
+     */
+    public static SlotTable read(Path iteration, int round)
+            throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
-        Path file = iteration.resolve(FILE);
-        table.stated = Files.isRegularFile(file);
+        List<Path> files = new ArrayList<Path>();
+        files.add(iteration.resolve(FILE));
+        Map<Integer, Path> rounds = new TreeMap<Integer, Path>();
+        try (DirectoryStream<Path> dirs =
+                     Files.newDirectoryStream(iteration, ROUNDS + "*")) {
+            for (Path dir : dirs) {
+                String number = dir.getFileName().toString()
+                        .substring(ROUNDS.length());
+                if (!number.matches("[0-9]+")) continue;
+                int at = Integer.parseInt(number);
+                if (at < round) rounds.put(at, dir.resolve(FILE));
+            }
+        } catch (NoSuchFileException none) {
+            return table;
+        }
+        files.addAll(rounds.values());
         // Indexed by standing(), which knows the sessions they stand on.
-        for (Slot slot : RowCodec.readAll(file, ExploreCodec::readSlot)) {
-            table.byInteraction.put(key(slot), slot);
+        for (Path file : files) {
+            if (!Files.isRegularFile(file)) continue;
+            table.stated = true;
+            for (JsonObject row : RowCodec.readAll(file, json -> json)) {
+                Slot slot = ExploreCodec.readSlot(row);
+                if (DROPPED.equals(JsonFields.optionalString(row, "kind"))) {
+                    table.byInteraction.remove(key(slot));
+                } else {
+                    table.byInteraction.put(key(slot), slot);
+                }
+            }
         }
         return table;
     }
@@ -150,9 +213,11 @@ public final class SlotTable {
         return false;
     }
 
-    public void write(Path iteration) throws IOException {
-        RowCodec.writeAll(iteration.resolve(FILE), slots(),
-                ExploreCodec::writeSlot);
+    /** Writes what this table changed as one round's rows into that
+     *  round's directory; the table holds no change after. */
+    public void write(Path roundDir) throws IOException {
+        RowCodec.writeJsonl(roundDir.resolve(FILE), changes);
+        changes.clear();
     }
 
     public List<Slot> slots() {
@@ -167,11 +232,18 @@ public final class SlotTable {
         return slot.interactionId() + "|" + slot.world;
     }
 
+    /** Opens a slot, or replaces the one of its key: a change of the
+     *  round ({@link #write}).  {@code answered}: as {@link #index}. */
+    private void open(Slot slot, boolean answered) {
+        byInteraction.put(key(slot), slot);
+        changes.add(ExploreCodec.writeSlot(slot, OPENED));
+        index(slot, answered);
+    }
+
     /** {@code answered}: the slot's consumer stands in an occurrence its
      *  opening session answered by its question ({@link
      *  SessionReader#answered}). */
-    private void hold(Slot slot, boolean answered) {
-        byInteraction.put(key(slot), slot);
+    private void index(Slot slot, boolean answered) {
         if (answered) {
             answeredSlots.add(key(slot));
         } else {
@@ -200,15 +272,19 @@ public final class SlotTable {
         for (SessionReader session : corpus.sessions()) {
             answeredIn.put(session.sessionId(), session.answered());
         }
-        List<Slot> held = slots();
-        byInteraction.clear();
         answeredSlots.clear();
         slotOfConsumer.clear();
         ownChainOf.clear();
-        for (Slot slot : held) {
+        for (Iterator<Slot> held = byInteraction.values()
+                .iterator(); held.hasNext(); ) {
+            Slot slot = held.next();
             Set<String> answered = answeredIn.get(slot.openedBySession);
-            if (answered == null) continue;
-            hold(slot, slot.kind == InteractionKind.WIRE && answered.contains(
+            if (answered == null) {
+                held.remove();
+                changes.add(ExploreCodec.writeSlot(slot, DROPPED));
+                continue;
+            }
+            index(slot, slot.kind == InteractionKind.WIRE && answered.contains(
                     slot.consumer.occurrence().render()));
         }
         return answeredIn;
@@ -499,7 +575,7 @@ public final class SlotTable {
                             + "neither opens a slot"));
             return Outcome.AMBIGUOUS;
         }
-        hold(slot, answered);
+        open(slot, answered);
         opened.add(slot);
         return Outcome.OPENED;
     }

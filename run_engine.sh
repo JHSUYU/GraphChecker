@@ -537,7 +537,7 @@ engine_java() {
 # reached; none named outside a campaign), what the head's held room is
 # sized by (campaign_head_need_mb).  Its status is the JVM's.
 campaign_engine_jvm() {
-  local file=$1 jvm dir peak held status=0
+  local file=$1 jvm dir peak status=0
   shift
   dir=$(mktemp -d) || return
   "$@" &
@@ -546,14 +546,21 @@ campaign_engine_jvm() {
   wait "${jvm}" || status=$?
   read -r peak 2>/dev/null <"${dir}/workload_rss_mb" || peak=0
   rm -rf -- "${dir}"
-  if [[ -n "${file}" && "${peak}" =~ ^[0-9]+$ ]]; then
-    read -r held 2>/dev/null <"${file}" || held=0
-    if (( peak > ${held:-0} )); then
-      dir=$(mktemp "${file}.XXXXXX") \
-        && printf '%s\n' "${peak}" >"${dir}" && mv -f -- "${dir}" "${file}"
-    fi
-  fi
+  campaign_engine_peak "${file}" "${peak}"
   return "${status}"
+}
+
+# campaign_engine_peak <peak_file> <peak_mb>: an engine JVM's peak folded
+# into <peak_file>, the largest any of the campaign's reached (none named
+# outside a campaign).
+campaign_engine_peak() {
+  local file=$1 peak=$2 held tmp
+  [[ -n "${file}" && "${peak}" =~ ^[0-9]+$ ]] || return 0
+  read -r held 2>/dev/null <"${file}" || held=0
+  if (( peak > ${held:-0} )); then
+    tmp=$(mktemp "${file}.XXXXXX") \
+      && printf '%s\n' "${peak}" >"${tmp}" && mv -f -- "${tmp}" "${file}"
+  fi
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
@@ -2897,7 +2904,7 @@ names it; nothing withdrawn"
 # so its files are the ones a JVM of the question's own would write; and it
 # ends once none has come for campaign_solver_idle_s.  Its directory is on
 # the host's own disk, named by the corpus it answers from
-# (explore.SolverService states the layout); its log, solver-<host>.log, is
+# (explore.Service states the layout); its log, solver-<host>.log, is
 # beside the corpus.
 #
 # The service is charged to the host ledger what it holds: a start's worth
@@ -4407,7 +4414,7 @@ campaign_explore() {
   # A head that fails takes nothing it started with it: whatever still runs
   # is ended first, here and on every peer; then its share and its room go,
   # as they do when the head exits anywhere else (campaign_head_reserve).
-  trap 'campaign_stream_reap; campaign_stream_unenroll
+  trap 'campaign_stream_reap; campaign_planner_stop; campaign_stream_unenroll
     campaign_head_unreserve' EXIT
 
   while true; do
@@ -4452,6 +4459,7 @@ ${stream_stop_detail}"
     kill "${stream_ticker}" 2>/dev/null || true
     wait "${stream_ticker}" 2>/dev/null || true
   fi
+  campaign_planner_stop
   campaign_stream_unenroll
   trap campaign_head_unreserve EXIT
   campaign_stream_promote_generation
@@ -4569,7 +4577,8 @@ campaign_stream_step_dir() {
 # <dir>/gate names (one call: the head's), the verdicts on the confirmation
 # replays <dir>/confirms names (campaign_stream_decide), and -- unless one of
 # them confirmed its claim -- the round <dir>/round names, planned into
-# obligations-NNNN/.  An accepted witness (<dir>/witnessed) ends the
+# obligations-NNNN/ by the exploration's planner (campaign_stream_plan).  An
+# accepted witness (<dir>/witnessed) ends the
 # exploration.  A BLOCKING row fails the campaign at IMPORT here, and
 # a planner that fails fails it at EXPLORE -- but one that ran out of the
 # most heap a head JVM is given plans no round: the corpus outgrew what the
@@ -4599,12 +4608,8 @@ campaign_stream_step() {
       mkdir -p "${round_dir}"
       # Copied as the planner starts: the round's time is the planner's own.
       cp -- "${dir}/in_flight.jsonl" "${round_dir}/in_flight.jsonl"
-      run_java_main edu.uva.liftlab.graphchecker.explore.ExploreMain \
-        --sessions "${sessions}" --results "${results}" \
-        --in-flight "${round_dir}/in_flight.jsonl" \
-        --round "$((10#${round_dir##*-}))" --output-dir "${round_dir}" \
-        "${stream_round_args[@]}" \
-        >"${round_dir}/stdout.log" 2>"${round_dir}/stderr.log" || status=$?
+      campaign_stream_plan "${round_dir}" >"${round_dir}/stdout.log" \
+        2>"${round_dir}/stderr.log" || status=$?
       if (( status == campaign_jvm_out_of_heap_status )); then
         mv -- "${round_dir}/stdout.log" "${round_dir}/stderr.log" "${dir}/"
         rm -r -- "${round_dir}"
@@ -4620,6 +4625,278 @@ ${status}: $(campaign_thrown "${round_dir}/stderr.log")"
     fi
   fi
   printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
+}
+
+# ---------------------------------------------------------------------------
+# THE PLANNER SERVICE.  One planner JVM serves an exploration's rounds
+# (explore.ExploreMain --serve, explore.Service): what it read for a round it
+# keeps for the next -- the corpus's rows, the static map, the slot table --
+# so a round reads only the sessions landed since, and its files are the ones
+# a planner of its own writes (offline-ab.sh EXPLORE.serve).  A planner JVM
+# per round read the whole corpus each time: hdfs-adhoc-07 EX1-07d's 16
+# planners took 1h51m of EXPLORE's 2h25m, a late round ~15 min (PERFORMANCE
+# §5).  The round's step starts it when none lives, as a head step: placed by
+# the usual rule (campaign_head_place), at what the planner starts at
+# (campaign_engine_start_mb), charged there for its life (campaign_host_keep)
+# and grown as a watched JVM (campaign_watch_workload); a round is one
+# question, asked on its host, where its questions wait on that host's own
+# disk (campaign_planner_dir).  Its state, under ${iteration_dir}/planner/:
+#   pid      the head's shell that holds it (it ends with the service)
+#   host, charge, heap, id   where it runs, its charge, its heap, which start
+#   busy     the head's room it takes, when it runs on the head's host
+#   status   its exit, once it ended
+# Its log is ${iteration_dir}/planner.log.  It runs out of heap (exit 3):
+# started again at twice its heap up to engine_memory_mb, the round asked
+# again; at the engine heap the round is PLANNER_HEAP_EXCEEDED, as a planner
+# JVM's was.  Any other end fails EXPLORE with its deepest throwable.  The
+# exploration's end stops it (campaign_planner_stop), and so does the head's
+# EXIT trap.
+# ---------------------------------------------------------------------------
+
+# Where the planner instance <id> of the corpus <sessions> takes its
+# questions, on the host that runs it (explore.Service states the layout).
+campaign_planner_dir() {
+  printf '%s/graphchecker-planners-%s/%s.%s\n' "${TMPDIR:-/tmp}" \
+    "$(id -un)" "$(printf '%s' "$1" | sha256sum | cut -c1-16)" "$2"
+}
+
+# How long a question waits for a planner just started to name itself, in
+# seconds: its JVM names itself before it reads anything.
+campaign_planner_start_wait_s=300
+
+# The round <round_dir> (obligations-NNNN, its in_flight.jsonl copied in),
+# planned by the exploration's planner: started first when none lives -- at
+# twice its heap when the one before ran out of heap (campaign_planner_ended)
+# -- and asked again when it ended without answering.  Its status: 0
+# planned; 3 the planner ran out of the engine heap; anything else failed,
+# the deepest throwable said on stderr.
+campaign_stream_plan() {
+  local round_dir=$1 state="${iteration_dir}/planner" status since
+  local main=edu.uva.liftlab.graphchecker.explore.ExploreMain
+  mkdir -p "${state}"
+  while true; do
+    if ! campaign_planner_alive; then
+      if [[ -s "${state}/id" ]]; then
+        campaign_planner_ended "${round_dir}" || return
+      fi
+      campaign_planner_start "$(campaign_engine_start_mb "${main}")"
+    fi
+    status=0
+    campaign_planner_round "${round_dir}" || status=$?
+    (( status == 5 )) || return "${status}"
+    # The planner ended without answering: its holding shell states its
+    # exit once it is gone.
+    since=${SECONDS}
+    while campaign_planner_alive \
+        && (( SECONDS - since < campaign_adapter_kill_grace_s )); do
+      sleep 1
+    done
+    if campaign_planner_alive; then
+      printf 'the planner service on %s stopped answering %s and did not \
+end (its log: %s)\n' "$(cat "${state}/host")" "$(basename "${round_dir}")" \
+        "${iteration_dir}/planner.log" >&2
+      return 1
+    fi
+  done
+}
+
+# The exploration's planner ended: 0 when it ran out of a heap below the
+# engine heap (the next starts at twice it, campaign_engine_outgrown), else
+# its end said on stderr -- 3 when it ran out of the engine heap, 1 for any
+# other end -- with the deepest throwable of its log.
+campaign_planner_ended() {
+  local round_dir=$1 state="${iteration_dir}/planner" status heap next
+  local main=edu.uva.liftlab.graphchecker.explore.ExploreMain
+  local engine=${engine_memory_mb:-8192}
+  status=$(cat "${state}/status" 2>/dev/null) || status=""
+  heap=$(cat "${state}/heap")
+  if [[ "${status}" == "${campaign_jvm_out_of_heap_status}" ]] \
+      && (( heap < engine )); then
+    next=$(( 2 * heap < engine ? 2 * heap : engine ))
+    campaign_engine_outgrown="$(sed "s| ${main}=[0-9]*||" \
+      <<<"${campaign_engine_outgrown}") ${main}=${next}"
+    printf '[campaign] %s ran out of its %s MB heap; run again at %s MB\n' \
+      "${main##*.}" "${heap}" "${next}" >&2
+    return 0
+  fi
+  printf 'the planner service on %s ended with exit %s before %s (its log: \
+%s)\n' "$(cat "${state}/host")" "${status:-unknown}" \
+    "$(basename "${round_dir}")" "${iteration_dir}/planner.log" >&2
+  campaign_thrown "${iteration_dir}/planner.log" >&2
+  [[ "${status}" == "${campaign_jvm_out_of_heap_status}" ]] && return 3
+  return 1
+}
+
+# Whether the exploration's planner lives: its holding shell, on this host.
+campaign_planner_alive() {
+  local pid
+  pid=$(cat "${iteration_dir}/planner/pid" 2>/dev/null) || return 1
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+# Starts the exploration's planner at <heap_mb>, placed and charged as a
+# head step (campaign_head_place, waiting for room as one does), the charge
+# held by the shell that holds it for as long as it runs.
+campaign_planner_start() {
+  local heap=$1 state="${iteration_dir}/planner" host charge id busy=""
+  campaign_head_place "${heap}" >&2
+  host=${campaign_placed_host}
+  charge=${campaign_host_charge_id}
+  id="$(date +%s%N)"
+  rm -f -- "${state}/status"
+  printf '%s\n' "${host}" >"${state}/host"
+  printf '%s\n' "${charge}" >"${state}/charge"
+  printf '%s\n' "${heap}" >"${state}/heap"
+  printf '%s\n' "${id}" >"${state}/id"
+  {
+    campaign_host_keep "${host}" "${charge}"
+    if campaign_host_is_local "${host}" \
+        && [[ -n "${campaign_head_reservation}" ]]; then
+      busy="${campaign_head_reservation}.busy.${BASHPID}"
+      : >"${busy}"
+      printf '%s\n' "${busy}" >"${state}/busy"
+    fi
+    status=0
+    if campaign_host_is_local "${host}"; then
+      campaign_planner_serve "${heap}" "${id}" \
+        "${campaign_root:+${campaign_root}/engine_peak_mb}" \
+        "${iteration_dir}/planner.log" --sessions "${sessions}" \
+        --results "${results}" "${stream_round_args[@]}" || status=$?
+    else
+      campaign_run_placed "${host}" campaign_planner_serve "${heap}" "${id}" \
+        "${campaign_root:+${campaign_root}/engine_peak_mb}" \
+        "${iteration_dir}/planner.log" --sessions "${sessions}" \
+        --results "${results}" "${stream_round_args[@]}" || status=$?
+    fi
+    [[ -z "${busy}" ]] || rm -f -- "${busy}"
+    campaign_host_release "${host}" "${charge}"
+    printf '%s\n' "${status}" >"${state}/status.part"
+    mv -f -- "${state}/status.part" "${state}/status"
+  } </dev/null >>"${iteration_dir}/planner.log" 2>&1 &
+  printf '%s\n' "$!" >"${state}/pid"
+  campaign_log "the planner service starts on ${host} at ${heap} MB" >&2
+}
+
+# campaign_planner_serve <heap_mb> <id> <peak_file> <log> <ExploreMain
+# args...>: the planner instance <id>, run on this host until it is ended,
+# its questions in campaign_planner_dir: a JVM at <heap_mb> watched as it
+# grows past it (campaign_watch_workload), its peak folded into <peak_file>
+# (the head's step need, campaign_engine_peak), its output appended to <log>.
+# Its status is the JVM's.
+campaign_planner_serve() {
+  local heap=$1 id=$2 peak_file=$3 log=$4 dir watched jvm status=0 peak
+  shift 4
+  local sessions=""
+  local -a args=("$@")
+  local index
+  for (( index = 0; index < ${#args[@]} - 1; index++ )); do
+    [[ "${args[index]}" != --sessions ]] || sessions=${args[index + 1]}
+  done
+  dir=$(campaign_planner_dir "${sessions}" "${id}")
+  # The exploration's planners that ended here before this one; never its
+  # own, where its first question may already wait.
+  local ended
+  for ended in "${dir%.*}".*; do
+    [[ "${ended}" == "${dir}" ]] || rm -rf -- "${ended}"
+  done
+  mkdir -p "${dir}/requests"
+  require_file "GraphChecker jar" "${graphchecker_jar}"
+  (cd "${graphchecker_work_dir}" \
+    && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
+      -XX:+ExitOnOutOfMemoryError \
+      "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
+      "-Dcausynth.system.doors=${causynth_system_doors}" \
+      -cp "${graphchecker_jar}" \
+      edu.uva.liftlab.graphchecker.explore.ExploreMain --serve "${dir}" \
+      "$@") </dev/null >>"${log}" 2>&1 &
+  jvm=$!
+  printf '%s\n' "${jvm}" >"${dir}/server.part"
+  mv -f -- "${dir}/server.part" "${dir}/server"
+  watched=$(mktemp -d) || return
+  campaign_watch_workload "${jvm}" "${heap}" "${watched}" 2>>"${log}"
+  wait "${jvm}" || status=$?
+  read -r peak 2>/dev/null <"${watched}/workload_rss_mb" || peak=0
+  # Its server file stays, naming a pid gone: a question asked after says
+  # no planner answers there (campaign_planner_ask).
+  rm -rf -- "${watched}" "${dir}/requests" "${dir}/answers" "${dir}/out"
+  campaign_engine_peak "${peak_file}" "${peak}"
+  return "${status}"
+}
+
+# The round <round_dir> asked of the exploration's planner, on its host:
+# here, or there through the remote worker script (campaign_run_placed).
+# campaign_planner_ask's status.
+campaign_planner_round() {
+  local round_dir=$1 state="${iteration_dir}/planner" host id status=0
+  host=$(cat "${state}/host")
+  id=$(cat "${state}/id")
+  local -a ask=(campaign_planner_ask "${sessions}" "${id}" \
+    "$((10#${round_dir##*-}))" "${round_dir}/in_flight.jsonl" "${round_dir}")
+  if campaign_host_is_local "${host}"; then
+    "${ask[@]}" || status=$?
+  else
+    campaign_run_placed "${host}" "${ask[@]}" || status=$?
+  fi
+  return "${status}"
+}
+
+# campaign_planner_ask <sessions> <id> <round> <in_flight> <round_dir>, on
+# the planner's host: the round put to the planner instance <id> and its
+# answer waited for.  0 planned; 1 failed, its error on stderr; 5 no planner
+# answers there (none named itself within campaign_planner_start_wait_s, or
+# the one named is gone): the question is taken back.
+campaign_planner_ask() {
+  local sessions=$1 id=$2 round=$3 in_flight=$4 round_dir=$5
+  local dir name answer pid gone="" since=${SECONDS}
+  dir=$(campaign_planner_dir "${sessions}" "${id}")
+  mkdir -p "${dir}/requests"
+  name="$(date +%s%N).${BASHPID}"
+  answer="${dir}/answers/${name}.json"
+  jq -n -c --argjson round "${round}" --arg inFlight "${in_flight}" \
+    --arg outputDir "${round_dir}" --arg waiter "${BASHPID}" \
+    '{round: $round, inFlight: $inFlight, outputDir: $outputDir,
+      waiter: $waiter}' >"${dir}/requests/${name}.part"
+  mv -- "${dir}/requests/${name}.part" "${dir}/requests/${name}.json"
+  while [[ ! -e "${answer}" ]]; do
+    pid=$(cat "${dir}/server" 2>/dev/null) || pid=""
+    if [[ -n "${pid}" ]]; then
+      gone=$([[ -d "/proc/${pid}" ]] || echo 1)
+    else
+      gone=$(( SECONDS - since >= campaign_planner_start_wait_s ? 1 : 0 ))
+    fi
+    if [[ "${gone}" == 1 && ! -e "${answer}" ]]; then
+      rm -f -- "${dir}/requests/${name}.json" "${dir}/requests/${name}.taken"
+      return 5
+    fi
+    sleep 0.2
+  done
+  if [[ "$(jq -r '.exit' "${answer}")" != 0 ]]; then
+    printf '%s\n' "$(jq -r '.error' "${answer}")" >&2
+    rm -f -- "${answer}"
+    return 1
+  fi
+  rm -f -- "${answer}"
+}
+
+# The exploration's planner, ended: its holding shell and what it runs (a
+# peer's JVM ends with the remote worker script that ran it), its charge and
+# the head's room it took given back.
+campaign_planner_stop() {
+  local state="${iteration_dir}/planner" pid file
+  [[ -d "${state}" ]] || return 0
+  pid=$(cat "${state}/pid" 2>/dev/null) || pid=""
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    local -a tree=()
+    mapfile -t tree < <(campaign_process_tree "${pid}")
+    kill -TERM "${tree[@]}" 2>/dev/null || true
+    sleep 1
+    kill -KILL "${tree[@]}" 2>/dev/null || true
+  fi
+  [[ ! -s "${state}/charge" ]] || campaign_host_release \
+    "$(cat "${state}/host")" "$(cat "${state}/charge")"
+  file=$(cat "${state}/busy" 2>/dev/null) || file=""
+  [[ -z "${file}" ]] || rm -f -- "${file}"
+  rm -f -- "${state}/pid" "${state}/charge" "${state}/busy"
 }
 
 # The step returned: one that failed has said why on the campaign's stderr
