@@ -326,6 +326,17 @@ public final class ConcolicScheduler {
                         arguments.targetOccurrence);
         RuntimeWorkflowDiscovery.Workflow workflow =
                 closure.nearest(arguments.maxJobs);
+        Map<String, Map<String, Integer>> notCrossed =
+                new LinkedHashMap<>();
+        for (String[] member : WRITERS_NOT_CROSSED) {
+            Map<String, Integer> fields = writersNotCrossed(
+                    loaded.regionPlans, member[1]);
+            if (fields.isEmpty()) continue;
+            notCrossed.put(member[1], fields);
+            System.err.println(member[0] + " " + member[2] + ": by owner"
+                    + " class " + byOwnerClass(fields) + ", by field "
+                    + fields);
+        }
         if (workflow == null) {
             throw overMaxJobs(closure.scheduledTaskCount(),
                     arguments.maxJobs, loaded.regionPlans);
@@ -373,6 +384,10 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result,
                 loaded.regionPlanIdentity, taskPlanIdentity);
+        for (Map.Entry<String, Map<String, Integer>> member
+                : notCrossed.entrySet()) {
+            stateWritersNotCrossed(index, member.getKey(), member.getValue());
+        }
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -1051,6 +1066,66 @@ public final class ConcolicScheduler {
                     .append(anchors.get(index).getKey());
         }
         return summary.append(']').append(deciderClasses(rows)).toString();
+    }
+
+    /**
+     * The writers a reader that never touched a field was not crossed to,
+     * and those it was crossed to only for a mention: the log's name, the
+     * plan row's and index's member, what it means
+     * ({@code RuntimeSelectedRegionFinalizer}'s {@code DemandWalk
+     * #holdsOthersOnly}).
+     */
+    private static final String[][] WRITERS_NOT_CROSSED = {
+        {"CONFINED", RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
+            "writers not crossed to, every object they wrote the field on,"
+                + " with its recorded holders, mentioned under one causal"
+                + " context, not the reader's"},
+        {"ESCAPED", RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
+            "writers crossed to only because an object they wrote the field"
+                + " on, reachable from nothing the reader names, or a holder"
+                + " of it, was mentioned under a second causal context, the"
+                + " reader's, or none known"}};
+
+    /** Per field's owner class, the sum. */
+    private static Map<String, Integer> byOwnerClass(
+            Map<String, Integer> fields) {
+        Map<String, Integer> classes = new TreeMap<>();
+        for (Map.Entry<String, Integer> field : fields.entrySet()) {
+            classes.merge(RuntimeSelectedRegionFinalizer.ownerClass(
+                    field.getKey()), field.getValue(), Integer::sum);
+        }
+        return classes;
+    }
+
+    /** The index's {@code member}: per field, the count; none for none. */
+    private static void stateWritersNotCrossed(JsonObject index,
+                                               String member,
+                                               Map<String, Integer> counts) {
+        if (counts.isEmpty()) return;
+        JsonObject fields = new JsonObject();
+        for (Map.Entry<String, Integer> field : counts.entrySet()) {
+            fields.addProperty(field.getKey(), field.getValue());
+        }
+        index.add(member, fields);
+    }
+
+    /** Per field, the writers the plan rows' readers did not cross to,
+     *  or crossed to only for a mention, as their {@code member} states
+     *  them ({@link RuntimeSelectedRegionFinalizer#CONFINED_WRITERS} and
+     *  its kin), summed; empty for none. */
+    private static Map<String, Integer> writersNotCrossed(
+            List<RegionInstancePlan> rows, String member) {
+        Map<String, Integer> fields = new TreeMap<>();
+        for (RegionInstancePlan plan : rows) {
+            JsonElement held = plan.json().get(member);
+            if (held == null || !held.isJsonObject()) continue;
+            for (Map.Entry<String, JsonElement> field
+                    : held.getAsJsonObject().entrySet()) {
+                fields.merge(field.getKey(), field.getValue().getAsInt(),
+                        Integer::sum);
+            }
+        }
+        return fields;
     }
 
     /** The classes of equivalent deciders the plan rows stand for ({@link

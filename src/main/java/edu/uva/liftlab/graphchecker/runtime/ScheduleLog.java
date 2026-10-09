@@ -126,6 +126,8 @@ public final class ScheduleLog {
     private static final Map<String, Integer> COUNTS =
             new HashMap<String, Integer>();
     private static long seq;
+    /** {@link #steps}; guarded by {@link #LOCK}. */
+    private static long steps;
 
     // ---- the order, guarded by LOCK ---------------------------------------
     private static final byte OPEN = 0;
@@ -734,6 +736,10 @@ public final class ScheduleLog {
                 }
             }
         }
+        if (pending.kind != ScheduleEvent.Kind.WAKE
+                && pending.kind != ScheduleEvent.Kind.END) {
+            steps++;
+        }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
                 pending.endpoint);
@@ -822,9 +828,11 @@ public final class ScheduleLog {
     }
 
     /**
-     * Marks this run cut at its witness ({@link ScheduleEvent#WITNESS}):
-     * what it makes after the declared occurrence observed the fatal is not
-     * its question, and the run ends there.
+     * Marks this run cut where it ended with its session standing ({@link
+     * ScheduleEvent#WITNESS}): at its witness, at a FORCE run's forced
+     * target, or at a stall after a flip was taken ({@code
+     * ConcolicResultPublisher#conclude}).  What it would make after is not
+     * its question, and a replay held to its order waits for none of it.
      */
     static void witnessed() {
         if (!RecordingWindow.opened()) return;
@@ -1731,7 +1739,7 @@ public final class ScheduleLog {
     }
 
     /** The collectors' summed time so far, in ms. */
-    private static long collectedMillis() {
+    static long collectedMillis() {
         long millis = 0L;
         for (GarbageCollectorMXBean collector
                 : ManagementFactory.getGarbageCollectorMXBeans()) {
@@ -1748,6 +1756,48 @@ public final class ScheduleLog {
         } catch (Throwable unpublished) {
         }
         EngineConsole.println("Causynth schedule: " + detail);
+    }
+
+    /**
+     * How many steps this run has made so far: its events but the clock's,
+     * a WAKE (a timed wait's timeout) and a tick's END -- a poll that wakes
+     * and finds nothing makes only those (solr-bugs-reindex-cleanup: a hung
+     * replay's request handler woke once a minute).  What a replay's watch
+     * sees move ({@code ConcolicResultPublisher#watchProgress}).
+     */
+    static long steps() {
+        synchronized (LOCK) {
+            return steps;
+        }
+    }
+
+    /**
+     * The schedule's holds at this moment, for a stall's verdict ({@code
+     * FocusedReplay#noProgress}): how many threads wait for a turn, where
+     * the one waiting longest waits and since when, and how many of them
+     * the order holds with no slot or behind a held write to their
+     * location; {@code ""} when no thread waits, so a stall the engine's
+     * own hold made is told from one the workload made.
+     */
+    static String holding() {
+        synchronized (LOCK) {
+            if (WAITERS.isEmpty()) return "";
+            Thread longest = null;
+            long since = Long.MAX_VALUE;
+            for (Map.Entry<Thread, Long> arrived : ARRIVED.entrySet()) {
+                if (arrived.getValue() < since) {
+                    since = arrived.getValue();
+                    longest = arrived.getKey();
+                }
+            }
+            return WAITERS.size() + " thread(s) held for a turn"
+                    + (longest == null ? "" : ", the longest (\""
+                    + longest.getName() + "\") at slot "
+                    + WAITERS.get(longest) + " for "
+                    + (System.currentTimeMillis() - since) / 1000L + " s")
+                    + "; " + HELD.size() + " held with no slot, "
+                    + CONFLICTED.size() + " behind a held write";
+        }
     }
 
     /** Whether the replay is held right now: in the window, a slot holds. */
@@ -1966,6 +2016,7 @@ public final class ScheduleLog {
                 UNKNOWN_SENDERS.clear();
             }
             seq = 0L;
+            steps = 0L;
             loaded = false;
             holds = false;
             order = Collections.emptyList();

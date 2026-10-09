@@ -260,7 +260,7 @@ public final class CausynthTraceRecorder {
                         context.remoteParentSpanId, context.source,
                         receiverAttributed,
                         context.requestKey, context.requestApi, address,
-                        folded);
+                        folded, RecordingWindow.index());
         synchronized (LOCK) {
             writeTraceLine(event);
         }
@@ -345,7 +345,8 @@ public final class CausynthTraceRecorder {
                             && context.source.equals(RuntimeTraceContext
                             .sourceFor(call.receiver)), context.requestKey,
                             context.requestApi, opens ? address : "",
-                            call.regionFrame && !opens);
+                            call.regionFrame && !opens,
+                            RecordingWindow.index());
             synchronized (LOCK) {
                 writeTraceLine(event);
             }
@@ -1645,6 +1646,8 @@ public final class CausynthTraceRecorder {
         Map<String, String> fieldCalls =
                 RuntimeSelectedRegionFinalizer.fieldAccessingCalls(graph,
                         scopeMap);
+        Map<String, String> storingCalls =
+                RuntimeSelectedRegionFinalizer.storingCalls(scopeMap);
         RuntimeRegionPlanner.Result activationGraph =
                 RuntimeRegionPlanner.planSkeletonGraph(
                         skeletons, trace.methods,
@@ -1667,9 +1670,11 @@ public final class CausynthTraceRecorder {
                         scopeMap, declaredOccurrence, trace.schedule,
                         new RecordedStore(trace.store),
                         RuntimeRegionPlanner.recordedAccesses(trace.fields,
-                                trace.execution,
-                                RuntimeSelectedRegionFinalizer.storingCalls(
-                                        scopeMap), fieldCalls));
+                                trace.execution, storingCalls, fieldCalls),
+                        RuntimeRegionPlanner.recordedHeap(trace.methods,
+                                trace.fields, trace.execution,
+                                activationGraph.runtimeInstances,
+                                storingCalls, fieldCalls));
         // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
         planGaps.addAll(trace.lineageGaps);
@@ -1823,8 +1828,10 @@ public final class CausynthTraceRecorder {
 
     /**
      * Refuses to aggregate a pruned recording over other static artifacts
-     * than the weave decided its rows on: a declared site or port they add
-     * would find no rows, silently.  A schema-1 recording wrote every row.
+     * than the weave decided its rows on, or one traced by another row rule
+     * ({@code TracedRows#RULE}): a declared site or port they add would find
+     * no rows, and an older rule lacks rows a reader reads, silently.  A
+     * schema-1 recording wrote every row.
      */
     static void requireTracedOver(JsonObject manifest, File scopeMap,
                                   File graph, File skeletons)
@@ -1837,11 +1844,14 @@ public final class CausynthTraceRecorder {
         String own = TracedRows.inputsDigest(scopeMap, graph, skeletons);
         if (!own.equals(stated)) {
             throw new IOException("TRACED_ROWS_MISMATCH: the recording wrote"
-                    + " only the rows its weave's static artifacts read ("
+                    + " only the rows its weave's static artifacts and row"
+                    + " rule read ("
                     + (stated.isEmpty() ? "none stated" : stated) + "), and "
                     + "these are others (" + own + "): a site or port they "
-                    + "declare would find no rows; aggregate over the "
-                    + "artifacts it was woven from, or record again");
+                    + "declare would find no rows, or a recording traced by"
+                    + " an older row rule lacks rows this aggregation reads;"
+                    + " aggregate over the artifacts it was woven from, or"
+                    + " record again");
         }
     }
 
@@ -2165,7 +2175,8 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
                     row.stringValue("occurrenceAddress"),
-                    row.longValue("regionFolded", 0L) != 0L));
+                    row.longValue("regionFolded", 0L) != 0L,
+                    row.intValue("window", 0)));
         } else if (("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(
@@ -2300,7 +2311,9 @@ public final class CausynthTraceRecorder {
                 "occurrenceAddress", event.occurrenceAddress.isEmpty()
                         ? null : event.occurrenceAddress,
                 // IDENTITY §1: folded entry, no activation.
-                "regionFolded", event.regionFolded ? 1 : null);
+                "regionFolded", event.regionFolded ? 1 : null,
+                // The window a request key's ordinal counts in.
+                "window", event.window);
     }
 
     private static void writeFieldTraceLine(

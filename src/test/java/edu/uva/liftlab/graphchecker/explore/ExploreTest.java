@@ -437,9 +437,22 @@ public class ExploreTest {
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
-        // declared target, and nothing else (PIPELINE §7.2).
+        // declared target, and nothing else (PIPELINE §7.2).  The target's
+        // region reads the key map addKeys stores (a READ_SITE): what the
+        // writer delivers is part of every arm's world, whichever arm read
+        // it (Corpus#inputShape).
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
-                "Guard#u8", "Guard#u19"));
+                "Guard#u8", "Guard#u19"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                        "BlockTokenSecretManager#u8",
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                        "<example.Manager: example.Keys allKeys>",
+                        "<example.Manager: example.Keys allKeys>", ""));
 
         // M3c: the recorded symbols of a term are the ones REACHABLE from
         // it -- the tokens the text shows are only the first hop.  The one
@@ -1529,10 +1542,15 @@ public class ExploreTest {
         Endpoint negotiated = at(WRITER,
                 Endpoint.stateSite("DigestMD5Base", "<init>", 31, true),
                 "DigestMD5Base#<init>#31");
+        OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
+                "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
+                        3), "o.a.h.h.s.d.DataXceiver#run#57");
         // session, Near#u2, Far#u4, writes of the map, writes of the qop,
-        // handoffs to a co-reader of the map
+        // handoffs to a co-reader of the map; s-idle also runs the late
+        // feeder, which delivers it nothing
         String[][] sessions = {
             {"s-seed", "true", "true", "1", "1", "0"},
+            {"s-idle", "true", "true", "1", "1", "0"},
             {"s-far", "true", "false", "1", "1", "0"},
             {"s-noise", "true", "true", "1", "3", "0"},
             {"s-coreader", "true", "true", "1", "1", "1"},
@@ -1566,6 +1584,7 @@ public class ExploreTest {
                     Boolean.parseBoolean(row[2]), "(> M_B 1)");
             session.decision(TARGET, "Guard#u8", 1, false,
                     "(> (+ M_A M_READ_KEY) 3)");
+            if ("s-idle".equals(row[0])) session.activation(lateWriter, false);
             session.flush();
         }
         Corpus corpus = Corpus.read(iteration, null);
@@ -1595,8 +1614,10 @@ public class ExploreTest {
                 SmtLowering.locationKey(qop));
         assertEquals("the factor is a set: the order the corpus lists it in "
                         + "moves as sessions land",
-                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
-                corpus.inputShape("s-more", TARGET, reversed, qopKey));
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey,
+                        StaticScopeMap.empty()),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey,
+                        StaticScopeMap.empty()));
         // A member's replies from two producers, in either arrival order.
         Path raced = tree.newFolder("raced").toPath();
         for (String order : new String[] {"s-ab", "s-ba"}) {
@@ -1616,15 +1637,14 @@ public class ExploreTest {
         assertEquals("who delivered is a set: the order replies arrive in "
                         + "is a race",
                 racedCorpus.inputShape("s-ab", TARGET,
-                        Collections.singletonList(WRITER), qopKey),
+                        Collections.singletonList(WRITER), qopKey,
+                        StaticScopeMap.empty()),
                 racedCorpus.inputShape("s-ba", TARGET,
-                        Collections.singletonList(WRITER), qopKey));
+                        Collections.singletonList(WRITER), qopKey,
+                        StaticScopeMap.empty()));
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
-        OccurrenceAddress lateWriter = occurrence("hdfs-case/dn0",
-                "REGION.late", CausalContext.of(Role.of("DATA_XCEIVER"), "",
-                        3), "o.a.h.h.s.d.DataXceiver#run#57");
         late.activation(lateWriter, false);
         late.symbolic("e.late", "M_A");
         late.write(at(lateWriter, Endpoint.stateSite("BlockTokenSecretManager",
@@ -1637,6 +1657,10 @@ public class ExploreTest {
                 later.factor().contains(lateWriter));
         assertEquals("one the seed never ran re-keys none of its arms", seed,
                 dependence(grown, later, "s-seed", "Guard#u8"));
+        assertEquals("nor does one a session ran that delivered nothing"
+                        + " (solr-bugs-reindex-cleanup SG1: 87 % of its"
+                        + " re-keyed ids)", seed,
+                dependence(grown, later, "s-idle", "Guard#u8"));
         // The wave names an obligation once: a solver reading the corpus
         // mid-wave (a larger factor, another dependence) keeps that id.
         ObligationFactory.Candidate located = ObligationFactory.locate(corpus,
@@ -1819,16 +1843,106 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A MEMBER FEEDS WHAT THE REGION READS ON ANY ARM ({@link
+     * Corpus#inputShape}): a renewer that wrote the lease map in one session
+     * and did not run in another delivered different worlds, though the
+     * arm each session took never read the map -- the flipped arm (the
+     * expiry scan) does.  Judged by the region's static reads (a READ_SITE,
+     * a READ input, a folded region's), never by what one session's arm
+     * read: two such sessions share no answer.
+     */
+    @Test
+    public void aMemberFeedsWhatTheRegionReadsOnAnyArm() throws Exception {
+        Path iteration = tree.newFolder("fed-any-arm").toPath();
+        for (String id : new String[] {"s-renewed", "s-quiet"}) {
+            Session session = new Session(iteration, id);
+            session.activation(TARGET, false);
+            if ("s-renewed".equals(id)) {
+                session.activation(WRITER, false);
+                session.constant("e.stored", "7");
+                session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            }
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        StaticScopeMap reads = StaticScopeMap.read(scopeMap(iteration,
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                        "BlockTokenSecretManager#u8",
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                        "<example.Manager: example.Keys allKeys>",
+                        "<example.Manager: example.Keys allKeys>", "")));
+        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
+        Set<String> none = Collections.<String>emptySet();
+        assertFalse("the renewer's write is part of the world",
+                corpus.inputShape("s-renewed", TARGET, factor, none, reads)
+                        .equals(corpus.inputShape("s-quiet", TARGET, factor,
+                                none, reads)));
+        assertEquals("a region that reads no carrier it wrote is fed nothing",
+                corpus.inputShape("s-renewed", TARGET, factor, none,
+                        StaticScopeMap.empty()),
+                corpus.inputShape("s-quiet", TARGET, factor, none,
+                        StaticScopeMap.empty()));
+        // The same read as an accessor input (an atomic's get(), a READ
+        // input) of the target's region, and as a READ_SITE of a region the
+        // target's occurrences folded in the iteration's plan.
+        String write = put(scopeSite(StaticScopeMap.WRITE_SITE,
+                "REGION.addkeys", "BlockTokenSecretManager#u12",
+                "BlockTokenSecretManager#addKeys",
+                "<example.Keys: int value>",
+                "<example.Manager: example.Keys allKeys>", ""));
+        JsonObject input = com.google.gson.JsonParser.parseString(scopeSite(
+                StaticScopeMap.DECLARED_SITE, "REGION.target",
+                "BlockTokenSecretManager#u8",
+                "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                "<example.Keys: int value>", "", "")).getAsJsonObject();
+        input.addProperty("declaredKind", StaticScopeMap.ACCESSOR_RETURN);
+        input.addProperty("inputKind", StaticScopeMap.READ_INPUT);
+        String folded = scopeSite(StaticScopeMap.READ_SITE, "REGION.expiry",
+                "Expiry#u3", "Expiry#scan",
+                "<example.Manager: example.Keys allKeys>",
+                "<example.Manager: example.Keys allKeys>", "");
+        Path plan = iteration.resolve(ExploreMain.REGION_PLAN);
+        Files.write(plan, ("{\"kind\":\"CONCOLIC_REGION_PLAN\","
+                + "\"regionId\":\"REGION.target\",\"foldedRegionIds\":"
+                + "[\"REGION.expiry\"]}\n").getBytes("UTF-8"));
+        for (StaticScopeMap map : Arrays.asList(
+                StaticScopeMap.read(scopeMap(iteration, write,
+                        input.toString())),
+                StaticScopeMap.read(scopeMap(iteration, write, folded))
+                        .withFolds(plan))) {
+            assertFalse("an accessor input and a folded region's read feed"
+                            + " it too",
+                    corpus.inputShape("s-renewed", TARGET, factor, none, map)
+                            .equals(corpus.inputShape("s-quiet", TARGET,
+                                    factor, none, map)));
+        }
+        assertEquals("the folded region's read without the plan's folds",
+                corpus.inputShape("s-renewed", TARGET, factor, none,
+                        StaticScopeMap.read(scopeMap(iteration, write,
+                                folded))),
+                corpus.inputShape("s-quiet", TARGET, factor, none,
+                        StaticScopeMap.read(scopeMap(iteration, write,
+                                folded))));
+    }
+
     /** What the guard at {@code siteId} depends on in one session's path of
      *  the task ({@link ObligationFactory#dependence}). */
     private static String dependence(Corpus corpus, Task task,
-                                     String sessionId, String siteId) {
+                                     String sessionId, String siteId)
+            throws IOException {
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
             if (!path.sessionId.equals(sessionId)) continue;
             for (int index = 0; index < path.decisions.size(); index++) {
                 if (path.decisions.get(index).siteId().equals(siteId)) {
-                    return ObligationFactory.dependence(corpus, task, path,
-                            index);
+                    return ObligationFactory.dependence(corpus,
+                            StaticScopeMap.read(corpus.iteration().resolve(
+                                    StaticScopeMap.FILE)), task, path, index);
                 }
             }
         }
@@ -3206,20 +3320,51 @@ public class ExploreTest {
                         Collections.singleton(firstRequest.id()), 5)
                         .replaced);
 
-        Path instead = tree.newFolder("closure-instead").toPath();
-        Session ranIt = new Session(instead, "s-seed");
-        ranIt.activation(firstRequest, false);
-        ranIt.flush();
-        Session ranOther = new Session(instead, "s-flip");
-        ranOther.activation(secondRequest, true);
-        ranOther.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
-                "s-flip", "the focused prefix reproduced"));
-        ranOther.flush();
-        assertTrue("a replay that did not run the member and ran another "
-                        + "context in its place IS a replacement",
-                new SlotTable().reconcile(Corpus.read(instead, null),
-                        Collections.singleton(firstRequest.id()), 6)
-                        .replaced);
+        // Contexts compare by their shape (Corpus#contextShape): a replay
+        // that ran the code point under the member's shape ran the member,
+        // whatever it counted (solr-adhoc-05: a poll's k-th wake is another
+        // k in every run); one that ran it only under another shape -- a
+        // client's root in place of a poll's wake -- replaced it.  A hop
+        // whose sender no row names is no known difference (two requests
+        // here, their senders unnamed).
+        OccurrenceAddress otherShape = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "", 1),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress wake12 = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.of("WAKE"),
+                        "ZkDistributedQueue.peekElements", 12),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress wake1 = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.of("WAKE"),
+                        "ZkDistributedQueue.peekElements", 1),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        // member, what the replay ran, whether it replaced the member
+        Object[][] instead = {
+                {otherShape, wake1, true},
+                {firstRequest, secondRequest, false},
+                {wake12, wake1, false},
+                {wake12, otherShape, true},
+        };
+        for (Object[] row : instead) {
+            OccurrenceAddress member = (OccurrenceAddress) row[0];
+            OccurrenceAddress ran = (OccurrenceAddress) row[1];
+            Path dir = tree.newFolder("closure-instead-"
+                    + member.context().render().hashCode() + "-"
+                    + ran.context().render().hashCode()).toPath();
+            Session ranIt = new Session(dir, "s-seed");
+            ranIt.activation(member, false);
+            ranIt.flush();
+            Session ranOther = new Session(dir, "s-flip");
+            ranOther.activation(ran, true);
+            ranOther.answered(ObligationResult.of("OBL.s-flip",
+                    Verdict.ADMITTED, "s-flip",
+                    "the focused prefix reproduced"));
+            ranOther.flush();
+            assertEquals(member.context().render() + " held, "
+                            + ran.context().render() + " ran",
+                    row[2], new SlotTable().reconcile(Corpus.read(dir, null),
+                            Collections.singleton(member.id()), 6).replaced);
+        }
 
         // The closure may hold TWO occurrences of one code point: hdfs-17897's
         // dn0 serves the client's SASL handshake and the checksum leader's
@@ -3250,35 +3395,40 @@ public class ExploreTest {
                     new SlotTable().reconcile(Corpus.read(oneMember, null),
                             bothMembers, 7).replaced);
         }
-        // With two members held there, a context the closure does NOT hold
-        // is still a replacement when it ran the code point alone, and still
-        // growth beside a member that ran.
-        OccurrenceAddress stranger = occurrence("hdfs-case/dn0",
-                "REGION.checksum",
-                CausalContext.of("ffeeddccbbaa9988", "HDFS_SASL/checksum"),
+        // With two members held there, a context of a shape the closure does
+        // NOT hold there is still a replacement when it ran the code point
+        // alone, and still growth beside a member that ran.
+        OccurrenceAddress firstCall = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "checksum", 1),
                 "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress secondCall = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "checksum", 2),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        Set<String> twoCalls = new LinkedHashSet<String>(Arrays.asList(
+                firstCall.id(), secondCall.id()));
+        OccurrenceAddress stranger = wake1;
         Path strangerAlone = tree.newFolder("closure-stranger-alone").toPath();
         Session seedTwo = new Session(strangerAlone, "s-seed");
-        seedTwo.activation(firstRequest, false);
-        seedTwo.activation(secondRequest, false);
+        seedTwo.activation(firstCall, false);
+        seedTwo.activation(secondCall, false);
         seedTwo.flush();
         Session ranStranger = new Session(strangerAlone, "s-flip");
         ranStranger.activation(stranger, true);
         ranStranger.answered(ObligationResult.of("OBL.s-flip",
                 Verdict.ADMITTED, "s-flip", "the focused prefix reproduced"));
         ranStranger.flush();
-        assertTrue("a code point the closure holds, run under no context "
-                        + "it holds there, IS a replacement",
+        assertTrue("a code point the closure holds, run under no shape it "
+                        + "holds there, IS a replacement",
                 new SlotTable().reconcile(Corpus.read(strangerAlone, null),
-                        bothMembers, 8).replaced);
+                        twoCalls, 8).replaced);
         Path strangerBeside = tree.newFolder("closure-stranger-beside")
                 .toPath();
         Session seedThree = new Session(strangerBeside, "s-seed");
-        seedThree.activation(firstRequest, false);
-        seedThree.activation(secondRequest, false);
+        seedThree.activation(firstCall, false);
+        seedThree.activation(secondCall, false);
         seedThree.flush();
         Session ranBeside = new Session(strangerBeside, "s-flip");
-        ranBeside.activation(secondRequest, true);
+        ranBeside.activation(secondCall, true);
         ranBeside.activation(stranger, false);
         ranBeside.answered(ObligationResult.of("OBL.s-flip",
                 Verdict.ADMITTED, "s-flip", "the focused prefix reproduced"));
@@ -3286,7 +3436,7 @@ public class ExploreTest {
         assertFalse("beside a member that ran, another context is a second "
                         + "request",
                 new SlotTable().reconcile(Corpus.read(strangerBeside, null),
-                        bothMembers, 9).replaced);
+                        twoCalls, 9).replaced);
 
         // An occurrence the corpus names ONLY in a write row -- no
         // activation, no decision -- cannot be a task: there is no recorded

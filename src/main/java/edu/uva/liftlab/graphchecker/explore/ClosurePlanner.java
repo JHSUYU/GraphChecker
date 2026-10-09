@@ -615,8 +615,6 @@ public final class ClosurePlanner {
          *  wrote in that session. */
         private final Map<String, Set<String>> held =
                 new HashMap<String, Set<String>>();
-        private final Map<String, Set<String>> carriers =
-                new HashMap<String, Set<String>>();
         private final Map<String, Set<String>> guards =
                 new HashMap<String, Set<String>>();
         private final Map<String, List<StaticScopeMap.Site>> writers =
@@ -670,15 +668,6 @@ public final class ClosurePlanner {
         private GroupReads reads(OccurrenceAddress occurrence) {
             return groupReads.computeIfAbsent(occurrence.id(),
                     id -> new GroupReads(corpus, group(occurrence)));
-        }
-
-        /** {@link StaticScopeMap#carriersAt}. */
-        private Set<String> carriersAt(String recordedSite, String javaType,
-                                       LocationId location) {
-            return carriers.computeIfAbsent(recordedSite + "|" + javaType
-                            + "|" + location.kind(),
-                    key -> map.carriersAt(recordedSite, javaType,
-                            location.kind()));
         }
 
         /** A writer's flip sites: guards of every static write site in the
@@ -1132,8 +1121,8 @@ public final class ClosurePlanner {
         }
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
                 row.location(), row.observedVersion(),
-                walk.carriersAt(row.endpoint().site(), row.javaType(),
-                        row.location()),
+                walk.map.carriersAt(row.endpoint().site(), row.javaType(),
+                        row.location().kind()),
                 row, row.endpoint().toString(),
                 String.valueOf(row.location()), into);
     }
@@ -1166,8 +1155,8 @@ public final class ClosurePlanner {
         // read's own.
         Set<String> carriers = new LinkedHashSet<String>();
         for (WriteRow write : corpus.writeSitesOf(locationKey)) {
-            carriers.addAll(walk.carriersAt(write.endpoint().site(),
-                    write.javaType(), write.location()));
+            carriers.addAll(walk.map.carriersAt(write.endpoint().site(),
+                    write.javaType(), write.location().kind()));
         }
         carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,

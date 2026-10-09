@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RecordedAccesses;
 import edu.uva.liftlab.graphchecker.causynth.RecordedStore;
+import edu.uva.liftlab.graphchecker.causynth.RecordedHeap;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -353,7 +354,8 @@ public class RegionFoldPlanTest {
                 cutScopeMap(ambiguous), RuntimeWorkflowDiscovery.FIRST,
                 Collections.<ScheduleEvent>emptyList(),
                 new RecordedStore(null),
-                new RecordedAccesses.Builder().build());
+                new RecordedAccesses.Builder().build(),
+                new RecordedHeap.Builder().build());
     }
 
     /**
@@ -645,6 +647,6 @@ public class RegionFoldPlanTest {
         return new RuntimeRegionPlanner.MethodEvent(callId, "test", "main",
                 1L, method, 1, "o.a.h.BlockTokenSecretManager", callId,
                 parentCallId, 0L, 1L, 1L, 0L, stamp, receiverAttributed, "",
-                "", address, folded);
+                "", address, folded, 1);
     }
 }

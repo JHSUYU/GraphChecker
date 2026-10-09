@@ -160,7 +160,24 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   `getOrDefault`, `containsKey`, `computeIfAbsent`, `floorKey`, a view, `poll`, ...) depends on its
   receiver; a *mutation* (`put`, `merge`, `putIfAbsent`, a view's `removeIf`, `push`, ...)
   demands its arguments into its receiver (`container_mutation_argument`) and, through a field
-  alias, is a `field_mutation` of that field. An application class's calls run the body the slice
+  alias, is a `field_mutation` of that field. A local is a field's alias back through copies,
+  casts and the field's read, and through a call only to the operands its result may be
+  (`SeedBackwardStaticAnalyzer#aliasedOperands`): the receiver of a fluent call (declared return
+  type its own class or one above it but `Object`: a builder returning `this`,
+  `StringBuilder.append`, `List.subList`), of a `java.util` view or iterator, or of a Guava
+  multimap's view (`get`, `asMap`, `keySet`, `keys`, `values`, `entries`); an argument a library
+  call returns (`RETURNED_ARGUMENTS`: `Objects.requireNonNull`, `Preconditions.checkNotNull`,
+  `MoreObjects.firstNonNull`'s two, and the first of a JDK or Guava argument-backed view:
+  `Collections.unmodifiable*`, `synchronized*`, `checked*`, `newSetFromMap`, `asLifoQueue`,
+  `Arrays.asList`, `Maps.filterKeys`/`filterValues`/`filterEntries`/`transformValues`/
+  `transformEntries`, `Sets.filter`, `Lists.transform`, `Collections2`/`Iterables` `filter` and
+  `transform`); and the receiver or argument an application method's own body returns, through
+  copies and casts (`#returnedOperands`: a helper that returns what it checked; an abstract or
+  interface method's overrides are not read); never another argument (solr-adhoc-10 SG1:
+  `toStringHelper(this).add("autoDeleteAgeMath", autoDeleteAgeMath)` made the next `add` a
+  mutation of the String field, 518 deciders; a copy constructor's argument is a copy). A call on
+  an immutable JDK value (`String`, a box, `BigInteger`, `BigDecimal`, `UUID`, `java.time`, an
+  enum) mutates nothing, whatever its name. An application class's calls run the body the slice
   follows: it states no contract. Whether the VM models a class is decided at run time, never here.
   `Collection` and `Iterable` are contracts too (`stream()`, `parallelStream()`, `forEach`,
   `toArray`, ...: a map view's stream is `Collection.stream()`), and a *stream* is a query over
@@ -280,7 +297,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `marker` (a fault marker's name, §4.2), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
 | `PROVENANCE_SITE` | a read of a construction-only field the root demand chose (§5.7) | `declaredCallee` (an accessor read's), `demandDistance` |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1), `ownObject` (a store into the object its constructor builds, below) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -293,7 +310,18 @@ branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
-those callers (`Guards#callersOf`). A guard `v ==/!= c` (`c` an int, null or an enum constant --
+those callers (`Guards#callersOf`). A store into the object its constructor builds (`this.f` in an
+`<init>`, `ownObject`, `SeedBackwardStaticAnalyzer#storesOwnObject`) carries only those of the
+calls' guards both of whose arms run a call into the constructor (`Guards#choosingCallsInto`; a
+switch or a fault, which state no arm, too): they choose which call builds the object, and with it
+the arguments it stores (`if (isLeader) submit(new Task(LEADER)) else submit(new
+Task(REPLICA))`). A guard only one arm of which builds one decides whether the object exists, not
+what an existing object's field holds, and whether the new object reaches a reader goes through the
+location that hands it on, a store of its own (solr-bugs-reindex-cleanup SG1: `wrapWatcher`'s
+`instanceof ProcessWatchWithExecutor` guarded `new ProcessWatchWithExecutor(watcher)`, whose
+constructor stores `this.watcher`: 5,964 proposals, all refused). A constructor's store into
+another object's field, a static field, a mutation through a field and a store in a method the
+constructor calls keep them all. A guard `v ==/!= c` (`c` an int, null or an enum constant --
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,
@@ -677,11 +705,51 @@ reaches, to a fixed point:
     the reader did is not crossed to (`DemandWalk#holdsOthersOnly`): the holders for a store, the
     holders and what they held for a mutation through the field (a container's or an atomic's
     state); a referent shared by a store's holders is no shared location (Solr: every lambda
-    capturing one ZooKeeper client, every DocCollection holding one cached `Integer`). A side the
-    recording saw no access of the field on (a store on an arm it did not take, a static field's
-    one location `0`) says nothing either way. hdfs ad-hoc `DataStreamer-638`: 1147
+    capturing one ZooKeeper client, every DocCollection holding one cached `Integer`). A writer the
+    recording saw access the field on no object (a store on an arm it did not take) says nothing,
+    nor does a static field's one location `0`. hdfs ad-hoc `DataStreamer-638`: 1147
     `Configuration.get` occurrences ran the lazy store of `overlay`, on 10 objects; the reader read
     one.
+  - **A reader that never touched the field** read it on an arm the recording did not take, on an
+    object it could reach there: one its events name (`NAMED_OBJECTS`: the receivers of the methods
+    it entered, the objects of its call rows, its field accesses' receivers and values), one a static
+    field held, or one those held, over the **recorded heap** (`causynth/RecordedHeap`, built by
+    `RuntimeRegionPlanner#recordedHeap`: a field access's receiver holds its value; the receiver of
+    a call at a store site that mutates through the call holds each object it was handed --
+    `TracedRows` traces the call and argument rows at those sites, `#storingCalls` --; an accessor
+    call's receiver holds what it returned). Its writer is not crossed to only when no object it
+    wrote the field on is reachable, and each, with every recorded holder above it (a holder is
+    how an object is handed on: `RecordedHeap#confinement`), was mentioned -- as a receiver, an
+    argument, a return, a field's holder or value -- under ONE causal context that is not the
+    reader's (**confined**): the `c` of an occurrence's `(r,c,i)`, one tick, one served request,
+    one client root -- its calls' `requestKey` in the recording window it ran in, whose ordinal
+    restarts with each window (`RuntimeRegionPlanner#causalContext`; a turn begun in an older window,
+    which every window counts `#0`, names none) --, which the work it starts carries on any thread,
+    so a pooled thread serving two requests serves two contexts. solr-adhoc-10: a response the unwoven
+    javabin codec decodes inside one Overseer task, each of its `NamedList.add` calls an occurrence
+    of its own (the trace's call tree breaks at every untraced frame: the calls' `parentCallId` is
+    0), stays in that task's context. Any sign of a hand-off keeps the writer (**escaped**): a
+    mention under a second context (ZooKeeper watchers building `DocCollection`s across events,
+    `ClusterState`s the Overseer carries from one tick to the next), under the reader's context
+    whatever the thread, or under none known; a holder mentioned so, a capture into work started
+    under another context among them; a shared object the reader reaches; and a static field's
+    location. Known limit (STATUS open defect 65): the recorded heap is PARTIAL -- field events of
+    the trace methods only, container edges only at the scope map's store sites, accessor edges
+    only at `accessor_field_return` sites, mentions only where a row is traced -- so a hand-off
+    through untraced code between two contexts (an unwoven cache two requests share; code woven
+    outside the trace methods, a lambda's body included: `watchedCollectionStates.compute(lambda)`
+    publishes a `DocCollection` with no edge) is not seen, nor is one only a counterfactual world
+    would make. So every drop is published: a DIAGNOSTIC `CLOSURE_CONFINED` gap row per reader and
+    field (`scope` `CONTEXT`) with the count, the owner class and the first writers, and result.json
+    `confinedWriters` (CHECKING trap 22: an UNSAT reading looks at the anchor's demanded fields
+    among them). The reader's plan row states, per field, how many writers it did not cross to
+    (`confinedWriters`) and how many it crossed to only for a mention (`escapedWriters`); PLAN
+    prints each as `CONFINED` and `ESCAPED` by owner class and field,
+    and states them in `runtime_workflow_schedule_index.json`. This filter is PLAN's
+    only: EXPLORE's writers of a location a reader's recorded reads named (§5.5) are not filtered by
+    reachability or confinement. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,
+    `ModifiableSolrParams.vals` and `ClusterState.liveNodes` only on arms it did not take, and every
+    request handler's write of its own response (4,597 writers) was its writer.
   - **A message is one exchange leg**: at a cell the capture of a declared IN port names (an IN call
     return's assigned locals, any other's cut cell), in an occurrence performing a region that
     declares the port, it crosses to every occurrence whose capture of the port's export the
@@ -1047,7 +1115,8 @@ For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows fo
 and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
 reader's node only, held by an occurrence that may hold the read's object: one whose recorded
 accesses in that session name owners, none of them the location's, holds other objects only and is
-no candidate (Writers_W(ℓ) is per object: every state watcher's parse builds its own `Slice`s). A
+no candidate (Writers_W(ℓ) is per object: every state watcher's parse builds its own `Slice`s);
+PLAN's reachability and confinement filter (§4.4) is not applied here. A
 recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
 reference row (a stored null) (`StaticScopeMap#sameType`). A reference row states its object's

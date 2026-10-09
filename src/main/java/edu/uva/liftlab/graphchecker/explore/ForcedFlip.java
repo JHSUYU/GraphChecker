@@ -93,7 +93,7 @@ final class ForcedFlip {
             manifest.addProperty("sessionId", result.sessionId());
         }
         List<ObligationFactory.Candidate> forced =
-                ObligationFactory.forced(corpus, anchor);
+                ObligationFactory.forced(corpus, scope, anchor);
         boolean flipAnswered = false;
         for (ObligationFactory.Candidate flip : forced) {
             Verdict verdict = answer(answers.get(ObligationFactory.flip(flip)));
