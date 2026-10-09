@@ -1273,9 +1273,34 @@ public final class ScheduleLog {
     private static final Map<String, Integer> DEAD_BY_KEY =
             new HashMap<String, Integer>();
 
-    /** The contexts whose frontier event a stall gave up: a later frontier
-     *  of theirs stands a grace, not a timeout ({@link #watchdogLocked}). */
+    /** The context families whose frontier event a stall gave up: a later
+     *  frontier of theirs stands a grace, not a timeout ({@link
+     *  #watchdogLocked}). */
     private static final Set<String> FAILED = new HashSet<String>();
+
+    private static final java.util.regex.Pattern TURN_OR_ANCHOR =
+            java.util.regex.Pattern.compile("#[0-9]+|Anchor:[0-9a-f]+");
+
+    /**
+     * A context's family: its node and causal context, a root's turn number
+     * and an anchor's endpoint left out ({@code Root:WAKE/<wait>#*}, {@code
+     * Anchor:*@SOLR_HTTP/test}), its start frames too -- the turns of one
+     * daemon, the receipts of one kind of message on one node.  A replay
+     * that numbers a daemon's turns or mints a message's endpoint otherwise
+     * misses each of them in turn.
+     */
+    static String familyOf(String context) {
+        int node = context.indexOf('|');
+        int frames = node < 0 ? -1 : context.indexOf('|', node + 1);
+        String shape = frames < 0 ? context : context.substring(0, frames);
+        java.util.regex.Matcher numbered = TURN_OR_ANCHOR.matcher(shape);
+        StringBuffer family = new StringBuffer();
+        while (numbered.find()) {
+            numbered.appendReplacement(family,
+                    numbered.group().startsWith("#") ? "#*" : "Anchor:*");
+        }
+        return numbered.appendTail(family).toString();
+    }
 
     /** Whether {@code event}'s key has a dead slot left: then it takes it
      *  (the event runs free). */
@@ -1528,13 +1553,14 @@ public final class ScheduleLog {
             letGoHeldLocked(stood, now);
             return true;
         }
-        // A frontier in a context that missed its event in a stall before
-        // stands a grace, not a timeout: that context diverged from the
-        // recording, and each of its later slots cost a timeout of its own
-        // (SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63 of 19's 70, on
-        // a context that had failed one).
+        // A frontier in a context family that missed its event in a stall
+        // before stands a grace, not a timeout: that family diverged from
+        // the recording, and each of its later slots cost a timeout of its
+        // own (SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63 of 19's 70,
+        // on a context that had failed one; MB21s/MB22s: 26 of 31's 69, 34 of
+        // 10's 58, on another turn or anchor of a family that had).
         long bound = firstBlocking < order.size() && FAILED.contains(
-                order.get(firstBlocking).context())
+                familyOf(order.get(firstBlocking).context()))
                 ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
         if (stood < bound) return false;
         if (stood < CEILING * bound && computingLocked(now)) return false;
@@ -1568,7 +1594,7 @@ public final class ScheduleLog {
             if (state[write] != OPEN) return false;
             stalls++;
             giveUpLocked(write);
-            FAILED.add(order.get(write).context());
+            FAILED.add(familyOf(order.get(write).context()));
             stateLocked("schedule-write#" + write, "the write at slot "
                     + write + " (" + order.get(write).render() + ") did not"
                     + " happen in the " + stood + " ms the frontier stood at"
@@ -1606,7 +1632,7 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
-        if (frontierContext != null) FAILED.add(frontierContext);
+        if (frontierContext != null) FAILED.add(familyOf(frontierContext));
         if (earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"

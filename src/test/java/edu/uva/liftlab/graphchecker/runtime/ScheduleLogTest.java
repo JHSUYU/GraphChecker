@@ -2288,18 +2288,27 @@ public class ScheduleLogTest {
     }
 
     /**
-     * A context whose frontier event a stall gave up has diverged: its next
-     * frontier stands a grace, not a timeout (SG2: 69 of solr-adhoc-38's 138
-     * give-up stalls stood on a context that had failed one).
+     * A context family whose frontier event a stall gave up has diverged:
+     * its next frontier -- another turn of the same daemon, another anchor of
+     * the same kind of message on the node -- stands a grace, not a timeout
+     * (SG2: 69 of solr-adhoc-38's 138 give-up stalls stood on a context that
+     * had failed one; MB21s: 34 of 10's 58 on another turn or anchor of a
+     * family that had).
      */
     @Test(timeout = 60000L)
-    public void aContextThatFailedAStallStandsAGraceNext() throws Exception {
+    public void aContextFamilyThatFailedAStallStandsAGraceNext()
+            throws Exception {
+        assertEquals("n|Root:WAKE/q.peek#*", ScheduleLog.familyOf(
+                "n|Root:WAKE/q.peek#12|<a.B: void c()>#u3@0"));
+        assertEquals("n|Anchor:*@SOLR_HTTP/test", ScheduleLog.familyOf(
+                "n|Anchor:813cbf610082e340@SOLR_HTTP/test"));
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "6000");
-        String gone = "gone|Root:G";
         enforce(Arrays.asList(
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, gone, "n1", 0, ""),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#1",
+                        "n1", 0, ""),
                 event(ScheduleEvent.Kind.SEND, "a"),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, gone, "n2", 0, ""),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#2",
+                        "n2", 0, ""),
                 event(ScheduleEvent.Kind.SEND, "b")));
         long before = System.nanoTime();
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
@@ -2308,7 +2317,7 @@ public class ScheduleLogTest {
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "b");
         long second = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
         assertTrue("the first stall a timeout: " + first, first >= 6000L);
-        assertTrue("the failed context's next a grace: " + second,
+        assertTrue("the failed family's next a grace: " + second,
                 second >= ScheduleLog.LET_GO_GRACE_MS && second < 5000L);
         String progress = ScheduleLog.progress();
         assertTrue(progress, progress.contains("2 taken, 2 given up in 2"));
