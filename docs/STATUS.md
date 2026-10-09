@@ -92,6 +92,35 @@ remain, each named where it applies:
   first check.
 - **Codec capture's review items** (open defects 52-56) touch no closed case's path.
 
+## Solr checks: each case's `.smt`, read by hand (lead, 2026-10-08 on; branch, round, verdict, reading)
+
+The 20 cases of the Solr group (TODO "Solr"), on the tree `lucene-solr-checks` (`graphchecker/solr-checks`). A row is
+final once its `.smt` was read against Solr 8.11.4 (CHECKING §2); "open" names what is left. Rounds and their outputs:
+`/bigtemp/vnr3ne/gc-out/solr` (SC*, SG*), agents' rounds in `/bigtemp/vnr3ne/gc-out/solr-*`.
+
+| case | branch, round | verdict | reading |
+| --- | --- | --- | --- |
+| solr-18406 | system/solr, SC1/SC2/SG1 | SAT CLOCK_SKEW, confirmed, native 10/10 (SC1, SC2) | open: hand reading of the chain |
+| solr-18413 | system/solr, SC1/SC2/SG1 | SAT CLOCK_SKEW, confirmed, native 10/10 (SC1, SC2) | open: hand reading of the chain |
+| solr-bugs-migrate-buffer-leak | sg1b (solr-body 82df1f440), SG1R-0 | SAT MARKER_FLIPPED, confirmed (realized), native 10/10 | Root: the SOLR_HTTP RESPONSE door of the first MIGRATE's REQUESTBUFFERUPDATES shard request (`REGION.0ce1c41b…in.4383185f`, minted in `MigrateCmd.migrateKey` -> `ShardRequestTracker.sendShardRequest` -> `HttpSolrClient.executeMethod`, Overseer task #3 on node0) at `true`: the request ran on the target core (`CoreAdminOperation:185` `updateLog.bufferUpdates()`: BUFFERING) and its response was lost, so `processResponses(..., true, "MIGRATE failed to request node to buffer updates")` (`MigrateCmd:194`) aborts the MIGRATE before REQUESTAPPLYUPDATES (`:363`): the target's `UpdateLog.state` stays BUFFERING. The second MIGRATE's buffer request (Overseer task #4, the declared occurrence on node1) reads it at `CoreAdminOperation:183` and throws at `:184`. The formula: 13 paths, 18 leaves (the HTTP door markers of the MIGRATE occurrences); the witness path is the fault world's own run (confirmation realized by its session); the state read is concrete there (an enum compare, which states no VM term today: TODO Z2's enum model), so the chain from the marker to the fatal is the path's control flow, as for HDFS's MARKER_FLIPPED cases. The owner's trigger ("a FAULT at a door after the buffer step") with the buffer request's own lost response the smallest such world. |
+| solr-bugs-reindex-cleanup | solr-vm-models (vm-force2), VC1 | SAT MARKER_FLIPPED, confirmed; native 0/10 | open: the moved root is a ZooKeeper create fault inside the REINDEX Overseer task (`SolrZkClient.create#u27`), not the DELETEALIAS request fault the owner chose; the witness also needs the cleanup between CREATEALIAS and DELETEALIAS, an order no ORDER row states while aliases cross ZooKeeper unread (Z1); 39 no-op plant rows fixed (1d3e059dc) |
+| solr-bugs-overseer-lock-leak | solr-zk-state, Z1d/Z1e/Z2v | SAT MARKER_FLIPPED, confirmed, native 10/10 | open: check the moved root is markTaskAsRunning's ZooKeeper write (`REGION.6140aa2b…`) and read the chain |
+| solr-bugs-snapshot-no-active | - | SG1: UNSAT NO-SYMBOL (ZooKeeper JSON gap) | open: needs Z2 (stale Overseer view, enum model) |
+| solr-bugs-restore-construction | solr-zk-state, Z1d/Z2v | SAT MARKER_FLIPPED, confirmed, native 10/10 | open: check the moved root (`REGION.60e7e9e9…`, a setData region) is the RESTORE's failing request and read the chain |
+| solr-bugs-tra-start-overwrite | - | selector declared (6d8dfef8c), not run | open: needs Z2 (stale aliases view) |
+| solr-adhoc-05 | sg1, SG1 | RUN_DEFECT TOPOLOGY_DIVERGENCE (poll wake numbers; fixed on solr-explore e515eeddf) | rerun |
+| solr-adhoc-07 | sg1, SG1 | UNSAT_CLOSED, FIXED_POINT, z3 unsat, 4 leaves | open: hand reading |
+| solr-adhoc-09 | sg1, SG1 | UNSAT_CLOSED, FIXED_POINT, z3 unsat, 13 leaves | open: hand reading |
+| solr-adhoc-10 | sg1, SG1 | RUN_DEFECT: PLAN_CLOSURE_CUT (4339 occurrences > 1024; over-wide demand, solr-explore 1a/1b/3i) | rerun |
+| solr-adhoc-13 | sg1, SG1 | seed missed its anchor (unregistered test client; fixed solr-body/gc/solr-body) | rerun |
+| solr-adhoc-14 | sg1, SG1 | closure growth (re-keyed arms, solr-explore 3iii) | rerun |
+| solr-adhoc-19 | sg1, SG1 | stopped: seed replay 183 give-ups (Solr stall classes, solr-body) | rerun |
+| solr-adhoc-21 | sg1, SG1 | RUN_DEFECT TOPOLOGY_DIVERGENCE (as 05) | rerun |
+| solr-adhoc-31 | sg1, SG1 | FATAL_TARGET_NOT_IN_WINDOW (unregistered base client; fixed) | rerun |
+| solr-adhoc-38 | sg1, SG1 | the runner refused an unmarked JUnit 3 test (fixed 3679f380a) | rerun |
+| solr-adhoc-39 | sg1, SG1 | seed missed its anchor (as 13) | rerun |
+| solr-adhoc-40 | sg1, SG1 | seed missed its anchor (as 13) | rerun |
+
 ## R1. Symbols come automatically from the fatal slice
 
 | capability | status | where | missing |
