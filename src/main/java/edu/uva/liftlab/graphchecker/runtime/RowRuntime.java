@@ -564,8 +564,13 @@ public final class RowRuntime {
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         WRITTEN.add(Confirmation.key(location, version));
-        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, "", STORE_TYPE));
+        // Two writes of one location with no VM event between them (a
+        // counter node bumped in a loop) are two events: the second is
+        // numbered past every event the VM numbers, as an unsequenced row.
+        long numbered = STORE_WRITES.add(seq + "|" + location) ? seq
+                : UNSEQUENCED + UNSEQUENCED_ROWS.incrementAndGet();
+        session.write(WriteRow.of(sessionId(), sequence(numbered), at,
+                location, version, "", STORE_TYPE));
         Confirmation.wrote(location, version, at, false);
     }
 
@@ -600,6 +605,9 @@ public final class RowRuntime {
 
     /** seq|location of every store read stated: one per event. */
     private static final Set<String> STORE_READS =
+            ConcurrentHashMap.newKeySet();
+    /** seq|location of every store write stated under a VM event's seq. */
+    private static final Set<String> STORE_WRITES =
             ConcurrentHashMap.newKeySet();
 
     /** The symbol of one store version's reads. */
@@ -1371,6 +1379,7 @@ public final class RowRuntime {
             WRITTEN.clear();
             READERS.clear();
             STORE_READS.clear();
+            STORE_WRITES.clear();
             OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();

@@ -630,7 +630,7 @@ public final class StaticScopeMap {
             if (CALL_RETURN_KIND.equals(kind) && chosen(demand.at(
                     SiteId.of(method, unitIndex), text(edge.get("fromCell"))),
                     SCOPE_DEMAND) && !text(edge.get("invoke")).isEmpty()) {
-                add(found, seen, retained, new Site(PROVENANCE_SITE, "",
+                addProvenance(found, seen, retained, new Site(PROVENANCE_SITE, "",
                         SiteId.of(method, unitIndex), vmSite(method),
                         text(edge.get("fromCell")), "", "",
                         text(edge.get("invoke")), "", null, NO_GUARDS,
@@ -658,7 +658,7 @@ public final class StaticScopeMap {
                 // decoded object's, observed by which store version the
                 // object holds, at the read's own site.
                 if (chosen(mark, PROVENANCE_DEMAND)) {
-                    add(found, seen, retained, new Site(PROVENANCE_SITE, "",
+                    addProvenance(found, seen, retained, new Site(PROVENANCE_SITE, "",
                             siteId, vmSite(method), field, field, "",
                             ACCESSOR_READ.equals(kind)
                                     ? text(edge.get("invoke")) : "", "",
@@ -1241,6 +1241,21 @@ public final class StaticScopeMap {
                 continue;
             }
             into.add(site.inRegion(regionId));
+        }
+    }
+
+    /**
+     * A {@link #PROVENANCE_SITE}, in every region holding its method, else
+     * once in none: a constructor no region holds still copies what it reads
+     * of a decoded object into the object it builds (SYMBOL-SCOPE §5.7).
+     */
+    private static void addProvenance(List<Site> into, Set<String> seen,
+                                      List<Region> retained, Site site) {
+        if (!holders(retained, SiteId.methodOf(site.siteId)).isEmpty()) {
+            add(into, seen, retained, site);
+        } else if (seen.add(site.role + "||" + site.siteId + "|"
+                + site.carrier)) {
+            into.add(site);
         }
     }
 

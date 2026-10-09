@@ -290,28 +290,36 @@ public class SymbolicRootPolicyTest {
             throws Exception {
         String flag = "<D: java.lang.Boolean flag>";
         String readOnly = "<D: boolean isReadOnly()>";
+        final String BUILD = "<P: void <init>(D)>";
         StaticScopeMap map = map(Arrays.asList(read(flag, 7, "$r1"),
                 guard(GET_NUM + "::$r1"), edge("{\"kind\":\"call_return\","
                         + "\"method\":\"" + GET_NUM + "\",\"unitIndex\":9,"
                         + "\"invoke\":\"" + readOnly + "\",\"fromCell\":\""
                         + readOnly + ".return\",\"toCell\":\"" + GET_NUM
-                        + "::$z2\"}"), guard(GET_NUM + "::$z2")),
+                        + "::$z2\"}"), guard(GET_NUM + "::$z2"),
+                edge("{\"kind\":\"call_return\",\"method\":\"" + BUILD
+                        + "\",\"unitIndex\":4,\"invoke\":\"" + readOnly
+                        + "\",\"fromCell\":\"" + readOnly + ".return\","
+                        + "\"toCell\":\"" + BUILD + "::$z3\"}")),
                 Collections.singletonMap(NN, Collections.singletonList(
                         GET_NUM)), Collections.<String, Clock>emptyMap(),
                 method -> false, cell -> SharedFieldFlow.TrackedKind.NONE,
                 (demandSite, demandCell) -> (GET_NUM + "#u7").equals(
                         demandSite) ? new StaticScopeMap.Demanded(
                         "PROVENANCE", 3, true) : (GET_NUM + "#u9").equals(
-                        demandSite) ? new StaticScopeMap.Demanded("SCOPE", 2,
-                        true) : null);
+                        demandSite) || (BUILD + "#u4").equals(demandSite)
+                        ? new StaticScopeMap.Demanded("SCOPE", 2, true)
+                        : null);
         JsonArray observed = map.observedSites();
         Object[][] rows = {
             {"the cells a decoded object's guards read: a field, and a call"
                     + " out of scope on it",
                 new java.util.LinkedHashSet<>(Arrays.asList(flag,
                         readOnly + ".return")), map.provenanceCells()},
-            {"the call, by its site", Collections.singletonMap(GET_NUM
-                    + "#u9", readOnly + ".return"), map.provenanceCalls()},
+            {"the calls, by their sites: one in a constructor no region"
+                    + " holds too", "{" + GET_NUM + "#u9=" + readOnly
+                    + ".return, " + BUILD + "#u4=" + readOnly + ".return}",
+                map.provenanceCalls().toString()},
             {"observed at the call too", readOnly,
                 member(observed, 1, "declaredCallee")},
             {"observed by its receiver alone", "true/false/false",
