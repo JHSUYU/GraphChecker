@@ -108,7 +108,7 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 
 | opener | hop |
 |---|---|
-| `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call |
+| `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call. It stands until its end, past the traced activation it began in (`RuntimeTraceContext#exitRoot`: the thread's request flow stays its, where an exchange received in the activation ends with it) |
 | `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`), once the exchange the thread served has ended (§7.1) |
 | `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn (a request, a served message, a node startup are not: a wait inside them is a pause) |
 | `enterInbound` (a received message) | role = the transport, api = the request's `<source>/<api>`; the anchor is `Interactions.sender(transport, correlation, half)`, rpcSite `<TRANSPORT>[.<VIA>]/<api>` |
@@ -300,7 +300,9 @@ attach by `HANDLE`, else -- when the message it received (`MessageDoors#current`
 for the port -- `CORRELATION_PORT` (that message's correlation and half, and the port), else
 unpaired: an element the message did not carry (`SymbolicMessageEnvelope#take` `ABSENT`: a value its
 sender forwarded without exporting it) pairs with nothing and is named `LINEAGE_LOST`. A queue item
-`MessageDoors#consumed` installs states no message, so its concrete elements stay unpaired. The `WIRE_FLOW` header does not carry the producer endpoint.
+`MessageDoors#consumed` takes is the message its consumer serves, named by its key and `REQUEST` as
+its write sent it (`#stored`), so its elements pair by `CORRELATION_PORT` too. The `WIRE_FLOW`
+header does not carry the producer endpoint.
 
 **Interactions** (`contract/Interaction`): (kind, producer endpoint, consumer endpoint), `id =
 sha16(kind + producer.id + consumer.id)`, kind `WIRE` (export to attach, `AttachRow#interaction`)
@@ -483,8 +485,12 @@ the `doAs` region opened first, under the context the Reader carried with the qu
 the handler's start counts told two calls apart (round HG5A hdfs-adhoc-14: one address planned, another run each
 replay). The IPC client's requests start at the RPC engine's invoke point (`requestStarting`, §3,
 on `gc/hdfs-study-r5` and `gc/hdfs-11741-r5`), which ends a received response before the client's
-call; the client's own hand `endInbound()` before its send is gone (Solr's `CausynthHttp` still ends
-the served exchange by hand before its send: pending for the Solr turn). The Solr trees call
+call; the client's own hand `endInbound()` before its send is gone. So in the Solr tree
+(`gc/solr-body`): `CausynthHttp#requestStarting`/`#requestEnded` wrap `HttpSolrClient#request`,
+`Http2SolrClient#request` and each stream of `ConcurrentUpdateHttp2SolrClient`'s runner, named by
+the request's operation (`CausynthHttp#verb`: its path, and an admin request's action,
+`admin.collections:REQUESTSTATUS`: a verb spells no `/`), and its send is `outboundRequest` of that verb, so the Overseer's
+extra status polls renumber no other request. The Solr trees call
 `MessageDoors` directly (HTTP headers through `CausynthHttp`, ZooKeeper through `SolrZkClient`), and
 so does the ZooKeeper tree (`CausynthZk`: transport `ZOOKEEPER`, one `REQUEST` message per client
 request, sent where `ClientCnxn` queues it, its header beside the bytes under the session and xid
@@ -522,10 +528,25 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   store's timing, so CONFIRM names every delivery of one version alike,
   `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
   they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
-- `consumed(transport, key)`: a queue item's staged values arrive with it; the consumer keeps its
-  own context.
+- `consumed(transport, key)`: a queue item taken, as `received` takes a request: it ends what the
+  thread served and is the message the thread serves until the next (its key and `REQUEST`, as its
+  write sent it), its staged values with it; the consumer keeps its own context.
 - `storing(transport, location)` ... `storeEnded(transport, token)`: a write in flight at one
-  location (a sequential create's: the prefix the store completes). The store applies a write,
+  location (a sequential create's: the prefix the store completes). The write first takes its turn,
+  a `WRITE` event whose site is `<transport>:<location>` (§8), so writes to one location run in the
+  recorded order while the prefix holds them and the store decides each race they run -- whether a
+  create finds its node made -- as the recording's did (SB19, solr-bugs-reindex-cleanup on `main`: a
+  node created the collection's terms node the recording had another replica create, and the shard's
+  leader election went the other way). `storingChild(transport, location)` is the same for a write
+  that takes or frees a number of its location's parent -- a sequential create (the prefix), a delete
+  (the path) -- whose turn is keyed by the parent: every participant of one leader election, every
+  writer of one queue, takes its sequence number in the recorded order. The location is keyed as
+  every run spells it (`runtime/RunNames`): a name a node has only in this run -- its store session's
+  id, its host and port -- that its adapter stated (`MessageDoors#spelledAs(sourceId, spellings...)`,
+  only a spelling holding such a name, stated again on a node's restart) becomes the node's name; a
+  location still spelling a long number or a host and port takes no turn, and is named once
+  (DIAGNOSTIC `DECLARATION_MISSING`). Past the cut no slot holds: writes there are ordered only behind
+  the prefix's. The store applies a write,
   and notifies the version's watchers, before the write's call returns, so another thread can
   read the version before its writer files it (SOLR-18413 F2: node1's state watchers read the
   routing rule's version while the Overseer's turn was still in `stored`, and their work opened
@@ -564,7 +585,8 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 ## 8. The schedule
 
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
-`CLAIM`, `SEND` (with the producer endpoint), `RECV`, `WAKE` (a timed wait's timeout; a tick's
+`CLAIM`, `SEND` (with the producer endpoint), `WRITE` (a shared store's write taking its turn before
+the store's call, §7.2), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
@@ -634,17 +656,35 @@ order:
   the state the interrupted thread stood in when another thread's call came (a Hadoop IPC sender
   idle between calls stands in its last call's claim), and the interrupter's own events hold the
   order; it takes its slot if it comes;
+- a `WRITE` never passes an earlier held write to its location (`ScheduleLog#conflictLocked`): one
+  with a slot that holds is due only past it anyway; one whose slot holds nothing (past the cut), or
+  with no slot -- a write the recording did not make there: a create-if-absent another node's write
+  found made, a retry, an extra sequential create -- waits for the write that was next there when it
+  first asked (fixed then, never every later write there), at the slot after it, until that slot is
+  taken or given up. When such waiters are the earliest, a stall gives up that one write alone, never
+  the run of other events before it, and it counts as no stall past the cut. A write that never comes
+  costs a stall, never the run: on `solr-bug-reindex` a given-up write still conflicted (a LATE state,
+  never reversed), and SOLR-18413's seed replay stalled 103,812 times -- a core-admin CREATE's queue
+  write waited behind the Overseer task's, which the Overseer makes only once its
+  `waitForCoreAdminAsyncCallToComplete` poll sees that CREATE complete; the poll's requests are that
+  write's owner at work, so the cycle costs the stall's ceiling (`CEILING` timeouts, 120 s at the
+  default), then goes. Such a waiter passes none of its own context's slots there (where it waits is
+  the other write's place) and is never let go;
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
   (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
-  the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
+  the first poll past the count goes at once. A poll whose context's next slot is the frontier itself
+  owes it and goes with no move: held, it held the frontier until the watchdog (solr-adhoc-19, round
+  SG1: `ZkController#waitForCoreNodeName`, 66 stalls of 15 s). A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
   wait is missed; the methods are installed from the rows the session reads when it opens,
   `GuardedStoreSites#install`, never at a wait, where reading the map held a thread's first wait
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
-  still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an
+  still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
+  waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
+  give-up of the 4560 slots before it). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
@@ -686,7 +726,9 @@ order:
   unseen owner is one thread, so one such thread's CPU plus the collectors' time over half the
   look's span defers the give-up, not a sum: the traffic a free-running loop drives through threads
   that make no event (an IPC reader, a connection's receiver) is no one computing. The watchdog
-  first lets the waits held without a slot go; a grace (`LET_GO_GRACE_MS`, 2 s) later it gives up
+  first lets the waits held without a slot go -- a grace into a stall nothing computes toward, before
+  the timeout (round SG1: 92 stalls across six Solr study checks each waited a timeout to let a held
+  wait go) --; a grace (`LET_GO_GRACE_MS`, 2 s) after the timeout it gives up
   every open slot before the earliest waiter that waits for a slot. That is one let-go per
   frontier: a slot taken past it earns the held waits no second one, which would hold the give-up
   off for as long as anything ran elsewhere. A poll held past its count stands at a due slot and

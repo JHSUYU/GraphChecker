@@ -71,6 +71,9 @@ public final class LibraryCatalog {
     static final String DOOR = "DOOR";
     static final String CONFIG_SOURCE = "CONFIG_SOURCE";
     static final String CONFIG_FIELD_OWNER = "CONFIG_FIELD_OWNER";
+    /** A codec: the classes that serialize a message -- the wire, never
+     *  scope ({@code plan.ScopeGrowth}). */
+    static final String CODEC = "CODEC";
     /** A system's own row: where its hook sits relative to a catalog door. */
     static final String HOOK = "HOOK";
     /** A door's {@code sites}: only the calls the root demand chose. */
@@ -84,6 +87,7 @@ public final class LibraryCatalog {
                 "after", "faults", "result", "sites"));
         MEMBERS.put(CONFIG_SOURCE, names("method", "keyArg", "defaultArg"));
         MEMBERS.put(CONFIG_FIELD_OWNER, names("class"));
+        MEMBERS.put(CODEC, names("codec", "classes"));
         MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
                 "after"));
     }
@@ -110,13 +114,16 @@ public final class LibraryCatalog {
         final List<Door> doors;
         final List<ConfigSource> configSources;
         final Set<String> configFieldOwners;
+        final List<Pattern> codecClasses;
 
         private Contents(List<Door> doors, List<ConfigSource> configSources,
-                         Set<String> configFieldOwners) {
+                         Set<String> configFieldOwners,
+                         List<Pattern> codecClasses) {
             this.doors = Collections.unmodifiableList(doors);
             this.configSources = Collections.unmodifiableList(configSources);
             this.configFieldOwners =
                     Collections.unmodifiableSet(configFieldOwners);
+            this.codecClasses = Collections.unmodifiableList(codecClasses);
         }
     }
 
@@ -157,10 +164,17 @@ public final class LibraryCatalog {
         public final boolean demanded;
         /** The failing result, or {@link Result#NONE}. */
         public final Result result;
+        /**
+         * The catalog's door method a system's hook moved this door from
+         * ({@link #placed}), or null: every other call the hook's class
+         * family makes of it is a door too, after the hook's next call
+         * ({@code DoorWeave}).
+         */
+        public final String relocated;
 
         private Door(String transport, String direction, String method,
                      String anchor, boolean after, List<String> faults,
-                     boolean demanded, Result result) {
+                     boolean demanded, Result result, String relocated) {
             this.transport = transport;
             this.direction = direction;
             this.method = method;
@@ -169,6 +183,7 @@ public final class LibraryCatalog {
             this.faults = Collections.unmodifiableList(faults);
             this.demanded = demanded;
             this.result = result;
+            this.relocated = relocated;
         }
 
         /** {@code FAULT:<TRANSPORT>:<DIRECTION>}, the markers' stem. */
@@ -240,6 +255,17 @@ public final class LibraryCatalog {
         return shipped().configFieldOwners;
     }
 
+    /**
+     * The codecs' classes, as patterns over a class name ({@code CODEC}
+     * rows: each states globs, {@code *} any run of characters): protobuf's
+     * runtimes and the messages generated on them, SolrJ's JavaBin.  A value
+     * crosses a codec through its doors' staged exports, never through the
+     * codec's internals, so no codec class is scope.
+     */
+    public static List<Pattern> codecClasses() {
+        return shipped().codecClasses;
+    }
+
     /** The engine's catalog ({@value #RESOURCE}), read once. */
     private static Contents shipped() {
         Contents known = shipped;
@@ -265,9 +291,15 @@ public final class LibraryCatalog {
      * One system's HOOK row: the catalog door ({@code transport},
      * {@code direction}, {@code door}, its method) is woven in {@code method}
      * after the first call of {@code after}, the system's own message or
-     * store hook, instead of at its library anchor.  It states where the
-     * hook sits, nothing else: the door's kinds are the catalog's, and a
-     * door no hook names keeps its anchor.
+     * store hook, instead of at its library anchor -- and, in every other
+     * method of {@code method}'s class family, after the first call of
+     * {@code after} that follows a call of the door method there (Solr's
+     * {@code SolrZkClient#makePath} creates each node itself, its retry
+     * lambda included; with the door moved out of {@code ZooKeeper#create},
+     * those creates had none, and solr-bugs-overseer-lock-leak's {@code
+     * OperationTimeout} at {@code DistributedMap#put} could not be flipped).
+     * It states where the hook sits, nothing else: the door's kinds are the
+     * catalog's, and a door no hook names keeps its anchor.
      */
     static final class Hook {
         final String transport;
@@ -307,7 +339,7 @@ public final class LibraryCatalog {
                 if (!hook.places(door)) continue;
                 placed = new Door(door.transport, door.direction,
                         hook.method, hook.after, true, door.faults,
-                        door.demanded, door.result);
+                        door.demanded, door.result, door.method);
                 used.add(hook);
             }
             doors.add(placed);
@@ -416,6 +448,7 @@ public final class LibraryCatalog {
         List<Door> doors = new ArrayList<>();
         List<ConfigSource> configSources = new ArrayList<>();
         Set<String> owners = new LinkedHashSet<>();
+        List<Pattern> codecs = new ArrayList<>();
         Map<String, String> declaredAt = new LinkedHashMap<>();
         for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
             try {
@@ -434,6 +467,20 @@ public final class LibraryCatalog {
                     ConfigSource source = configSource(row);
                     configSources.add(source);
                     identity = CONFIG_SOURCE + " " + source.method;
+                } else if (CODEC.equals(kind)) {
+                    identity = CODEC + " " + matching(NAME, text(row,
+                            "codec"), "codec").group();
+                    JsonElement globs = row.get("classes");
+                    if (globs == null || !globs.isJsonArray()
+                            || globs.getAsJsonArray().size() == 0) {
+                        throw new IllegalArgumentException(
+                                "classes lists the codec's class globs");
+                    }
+                    for (JsonElement glob : globs.getAsJsonArray()) {
+                        codecs.add(Pattern.compile(Pattern.quote(
+                                string(glob, "classes"))
+                                .replace("*", "\\E.*\\Q")));
+                    }
                 } else {
                     String owner = matching(CLASS, text(row, "class"),
                             "class").group();
@@ -451,7 +498,7 @@ public final class LibraryCatalog {
                         malformed);
             }
         }
-        return new Contents(doors, configSources, owners);
+        return new Contents(doors, configSources, owners, codecs);
     }
 
     private static String kind(JsonObject row) {
@@ -516,7 +563,7 @@ public final class LibraryCatalog {
                 .group(), matching(NAME, text(row, "direction"), "direction")
                 .group(), method == null ? null : signature(method).group(),
                 signature(after != null ? after : before).group(),
-                after != null, faults, demanded, result);
+                after != null, faults, demanded, result, null);
     }
 
     /** A door's {@code result}: {@code false} or {@code null} when stated. */

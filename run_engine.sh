@@ -213,7 +213,8 @@ workflow_config_keys=(
   # sweeps finished took up to 38x their recording, one of 78 took 63x.
   "seed_replay_time_factor CAUSYNTH_SEED_REPLAY_TIME_FACTOR krp 40"
   # The most trace the recording may write, in MB: past it the workload is
-  # ended and SEED fails RECORDING_BOUND, by name (campaign_watch_workload).
+  # ended and SEED fails RECORDING_BOUND, by name (campaign_watch_workload;
+  # one that writes nothing for campaign_unbounded_stall_s, RECORDING_STALLED).
   # The aggregation holds every row it reads in memory, a little more than
   # their bytes: hdfs-adhoc-49 (TestSnapshot, 36 clusters) writes 8.5 GB
   # of the rows it reads, which no 8 GB aggregation held; the HDFS
@@ -1070,9 +1071,11 @@ do_workload() {
   run_configured_workload "${trace_dir}" "" "" "" "${recording_max_trace_mb}" \
     || status=$?
   campaign_recorded_workload_s=$(( SECONDS - started ))
-  [[ ! -s "${trace_dir}/${campaign_recording_bound_marker}" ]] \
-    || campaign_fail SEED RECORDING_BOUND "${trace_dir}" \
-      "$(cat "${trace_dir}/${campaign_recording_bound_marker}")"
+  local ended=""
+  ended=$(cat "${trace_dir}/${campaign_recording_end_marker}" 2>/dev/null) \
+    || ended=""
+  [[ -z "${ended}" ]] \
+    || campaign_fail SEED "${ended%%:*}" "${trace_dir}" "${ended}"
   (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
     "the recorded workload exited ${status}: the test failed, or its run" \
     "never opened a recording window (its output is above)"
@@ -3917,10 +3920,32 @@ campaign_process_rss_mb() {
 
 # How often a workload JVM's resident memory is read.
 campaign_watch_interval_s=2
-# The file a recording's watcher leaves in its trace directory when the trace
-# passed recording_max_trace_mb and it ended the workload, saying so: the
-# reason SEED fails by (do_workload).
-campaign_recording_bound_marker=RECORDING_BOUND
+# How long a JVM with a trace directory -- the recording, a native
+# reproduction: a cluster test whose waits never time out (the trees'
+# CausynthBounds) -- may write nothing at all, no trace row and no line of
+# output, before it is taken for hung.  A healthy one writes every few
+# seconds; one waiting for a notification it lost waits its 6 h bound
+# (solr-bugs-reindex-cleanup SB16: an Overseer command's waitForState after
+# its source's deletion, an hour without a byte).
+campaign_unbounded_stall_s=600
+# The file a trace directory's watcher leaves there when it ended the
+# workload, its first word the reason -- RECORDING_BOUND (the trace passed
+# recording_max_trace_mb), RECORDING_STALLED (it wrote nothing for
+# campaign_unbounded_stall_s) -- and the rest why: the reason SEED fails by
+# (do_workload), and the acceptance report's first.
+campaign_recording_end_marker=RECORDING_ENDED
+
+# How many bytes a JVM watched with trace directory <dir> has put where its
+# progress shows: the files of <dir> (its rows; a native run's output) and
+# its own output and error where they are files.  Never its sockets: a hung
+# cluster test still pings its ZooKeeper.
+campaign_workload_output_bytes() {
+  local pid=$1 dir=$2
+  {
+    find "${dir}" -type f -printf '%s\n' 2>/dev/null
+    stat -L -c '%s' "/proc/${pid}/fd/1" "/proc/${pid}/fd/2" 2>/dev/null
+  } | awk '{bytes += $1} END {print bytes + 0}'
+}
 
 # campaign_watch_workload <pid> <charged_mb> [dir] [max_trace_mb]: one
 # workload JVM watched until it ends (experiments/lib/execute.sh).  Its peak
@@ -3943,22 +3968,44 @@ campaign_recording_bound_marker=RECORDING_BOUND
 # What it was granted is held by the watcher (campaign_host_hold) and
 # released when it ends; its peak is campaign_watch_peak_mb once it has
 # (a solver asked again places its JVM by it, campaign_obligation_worker).
-# A recording given <max_trace_mb> whose trace
-# (<dir>/runtime_trace.jsonl) passes it is ended there, RECORDING_BOUND, said
-# in <dir>/${campaign_recording_bound_marker}: never a trace cut short and
-# aggregated as if whole.
+# A JVM given <max_trace_mb> (a recording's, 0 for none: a native run's)
+# is one with a trace directory <dir> and no bound on its waits.  It is ended,
+# saying why in <dir>/${campaign_recording_end_marker}, once its trace
+# (<dir>/runtime_trace.jsonl) passes <max_trace_mb> (RECORDING_BOUND: never a
+# trace cut short and aggregated as if whole), or once it added nothing to
+# <dir> or its output for campaign_unbounded_stall_s (RECORDING_STALLED,
+# campaign_workload_output_bytes), its threads first dumped on its own
+# output (SIGQUIT).
 campaign_watch_peak_mb=0
 campaign_watch_workload() {
-  local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} peak=0 held=$2 mb id
-  local status=0 refused="" written=0 bounded=""
+  local pid=$1 charged=$2 dir=${3:-} max_mb=${4:-0} traced=${4:+1}
+  local peak=0 held=$2 mb id status=0 refused="" written=0 ended=""
+  local output="" wrote="" since=${SECONDS}
   local -a grants=()
-  (( max_mb == 0 )) || rm -f -- "${dir}/${campaign_recording_bound_marker}"
+  [[ -z "${traced}" ]] || rm -f -- "${dir}/${campaign_recording_end_marker}"
   while kill -0 "${pid}" 2>/dev/null; do
     if (( max_mb > 0 )); then
       written=$(stat -c %s "${dir}/runtime_trace.jsonl" 2>/dev/null) \
         || written=0
       if (( written > max_mb * 1048576 )); then
-        bounded=$(( written / 1048576 ))
+        ended="RECORDING_BOUND: the recording's trace passed \
+recording_max_trace_mb (${max_mb} MB) at $(( written / 1048576 )) MB, more \
+rows than SEED's aggregation holds; the workload was ended"
+        kill -KILL "${pid}" 2>/dev/null || true
+        break
+      fi
+    fi
+    if [[ -n "${traced}" ]]; then
+      output=$(campaign_workload_output_bytes "${pid}" "${dir}")
+      if [[ "${output}" != "${wrote}" ]]; then
+        wrote=${output}
+        since=${SECONDS}
+      elif (( SECONDS - since >= campaign_unbounded_stall_s )); then
+        ended="RECORDING_STALLED: the workload JVM wrote nothing -- no \
+trace row, no output -- for $(( SECONDS - since ))s, and nothing it waits for \
+ever times out; its threads are dumped on its output; ended"
+        kill -QUIT "${pid}" 2>/dev/null || true
+        sleep 2
         kill -KILL "${pid}" 2>/dev/null || true
         break
       fi
@@ -3987,12 +4034,9 @@ campaign_watch_workload() {
     campaign_host_release localhost "${id}"
   done
   campaign_watch_peak_mb=${peak}
-  if [[ -n "${bounded}" ]]; then
-    echo "RECORDING_BOUND: the recording's trace passed \
-recording_max_trace_mb (${max_mb} MB) at ${bounded} MB, more rows than SEED's \
-aggregation holds; the workload was ended" \
-      >"${dir}/${campaign_recording_bound_marker}"
-    echo "causynth: $(cat "${dir}/${campaign_recording_bound_marker}")" >&2
+  if [[ -n "${ended}" ]]; then
+    printf '%s\n' "${ended}" >"${dir}/${campaign_recording_end_marker}"
+    echo "causynth: ${ended}" >&2
   fi
   (( charged > 0 )) || return 0
   [[ -z "${refused}" ]] || echo "causynth: the workload JVM's resident \

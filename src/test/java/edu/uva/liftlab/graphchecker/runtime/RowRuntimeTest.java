@@ -430,7 +430,9 @@ public class RowRuntimeTest {
      * is its original's k at a site naming its attempt, and one whose
      * original this level did not count is counted there.  Starting, it
      * ends a RESPONSE its thread received, so it stands in the thread's own
-     * context; a REQUEST the thread serves stands.
+     * context, as a client's call does whose requests start below it ({@code
+     * MessageDoors#callStarting}, a cloud client's attempt); a REQUEST the
+     * thread serves stands.
      */
     @Test
     public void aRequestIsItsVerbsKthInItsThreadsOwnContext()
@@ -492,6 +494,13 @@ public class RowRuntimeTest {
             Identity.exitFrame(after);
             assertEquals("a frame after the requests is plain", call + "@0",
                     later.get(later.size() - 1).render());
+            String last = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                    "corr-last", "0", "RESPONSE", owner, null, "");
+            MessageDoors.inbound(last, "", "HADOOP_IPC", "corr-last", "0",
+                    "RESPONSE", owner, false);
+            MessageDoors.callStarting();
+            assertEquals("a client's call is the thread's own", own,
+                    Identity.contextHere().render());
             RuntimeTraceContext.endRequest(test);
             RecordingWindow.reset();
         }
@@ -914,6 +923,35 @@ public class RowRuntimeTest {
                     pairing.producer());
             assertEquals(String.join(" ", row), row[5], pairing.key());
         }
+    }
+
+    /**
+     * A queue item its consumer takes is the message it serves, named as its
+     * write sent it: an element the item carried pairs with the writer's
+     * export by the item and the port (CORRELATION_PORT), where before the
+     * consumer's message stayed whatever it served before (STATUS 50).
+     */
+    @Test
+    public void aConsumedItemPairsWhatItCarriedByItsKey() throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        long request = RuntimeTraceContext.beginRequest(owner, "offer");
+        Endpoint writer = RowRuntime.exported(address("q/node0#epoch0",
+                "REGION.w", CausalContext.of(Role.of("NODE"), "", 1),
+                ExecutionIndex.parse("W.offer()#u1@0")), 1L, "XCH.item", 0L,
+                0, null, "J", "3");
+        assertTrue(SymbolicMessageEnvelope.stage("XCH.item", 0L, writer));
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner);
+        RuntimeTraceContext.endRequest(request);
+        MessageDoors.consumed("STORE", "/q/qn-1@0");
+        MessageDoors.Inbound item = MessageDoors.current();
+        Interactions.Pairing pairing = Interactions.pairing("XCH.item", 0L,
+                item.correlationId, item.half);
+        assertEquals("CORRELATION_PORT", pairing.key());
+        assertEquals(writer, pairing.producer());
+        RowRuntime.closeSession();
     }
 
     /**

@@ -246,7 +246,13 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
    - an IO row: the class whose body runs the called method, only when that body itself calls a
      demanded door's anchor (listed as `IO` in `GROWN`), else it is skipped and named in the
      step's summary (one level per growth round);
-   - never a generated protobuf class (a supertype in `*.protobuf.*`).
+   - never a codec's class: it or a supertype matches a library catalog `CODEC` row's globs
+     (`LibraryCatalog#codecClasses`: protobuf's runtimes and the messages generated on them,
+     `*.protobuf.*`; SolrJ's `JavaBinCodec` and its nested classes). A value crosses a
+     serialization through its doors' staged exports, never the codec's internals, and a codec
+     grown into scope makes every encode and decode in the cluster a writer region
+     (solr-bugs-reindex-cleanup SB2: `JavaBinCodec`, grown as the body of `ZkNodeProps#load`'s
+     JavaBin branch, 68 % of a 6.5 GB recording).
    Each class taken is copied into `<causynth_output_dir>/scope-classes/` and listed in `GROWN`
    (`class`, `kind`, `signature`, `distance`) until `causynth_scope_growth_budget` classes
    (default 24; `0` disables growth) are grown, taking the rows in the frontier's order.
@@ -406,6 +412,22 @@ library anchor cannot be there, and the system states only where its hook sits: 
 door (`transport`, `direction`, `door`: its method) and the system call after which it is woven
 (`method`, `after`); the door keeps the catalog's kinds, no door is added or dropped, and a `HOOK`
 naming no catalog door, or a `DOOR` row in a system's file, is refused (`LibraryCatalog#placed`).
+Moved out of the library, the door would leave every other call of its method doorless: in every
+other method of the hook method's class family (its nested classes and lambdas included) that calls
+the door method itself -- through a subclass's reference too -- it is woven after each first call of
+the hook call it reaches by control flow (`DoorWeave#moved`, `LibraryCatalog.Door#relocated`):
+Solr's `SolrZkClient#makePath` creates each node itself, its retry lambda included, and without it
+solr-bugs-overseer-lock-leak's `OperationTimeout` at `DistributedMap#put` could not be flipped. A door
+method that calls the hook method itself (Solr's HTTP/2 request parsing its response) carries the door
+in every call of it, so none is moved. A direct call that reaches no hook call or several, or is made
+outside the hook's class family, carries no door and is named, DIAGNOSTIC `DOOR_UNPLACED` in the
+catalog gaps: `SolrZkClient#create`'s own retry lambda is one, covered by the door after the hook call
+`create` makes once the retry returns. So a fault injected in `create` is not retried, while one in
+`makePath`'s retry lambda is, as `ZkCmdExecutor` retries a real `ConnectionLoss`; the retry's second
+store bracket is a write the recording did not make, which waits for the next write at its location
+at most a stall (IDENTITY §8). The library door is not kept for these calls instead: it is woven
+inside the door method, where it would fire for the hook method's call too, before the hook, and
+break the pairing the hook keeps.
 Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`
 and `#multi` after `causynthWrote` (the store hook `MessageDoors.stored`; in `multi`, after the first
 operation's, so a multi's later operations are unpaired under a fault); the `SOLR_HTTP` and
