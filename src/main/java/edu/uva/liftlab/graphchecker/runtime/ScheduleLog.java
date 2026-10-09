@@ -1080,7 +1080,13 @@ public final class ScheduleLog {
         if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
-            if (conflict >= 0) {
+            // A writer whose own context holds the frontier owes it: held
+            // behind a later write to its location, it held the frontier
+            // until the watchdog, and every later slot of its context with
+            // it (solr-adhoc-19 MB14s: a node's extra compare-and-set retry
+            // at its terms node, then its eight registration slots, a stall
+            // each).
+            if (conflict >= 0 && !owesFrontierLocked(event)) {
                 CONFLICTED.add(self);
                 return conflict + 1;
             }
@@ -1104,6 +1110,12 @@ public final class ScheduleLog {
         if (LET_GO.contains(self)) return GO;
         HELD.put(self, event);
         return next >= 0 ? next : AT_THE_LINE;
+    }
+
+    /** Whether the frontier is a slot of {@code event}'s own context. */
+    private static boolean owesFrontierLocked(Pending event) {
+        return firstBlocking < order.size()
+                && event.context.equals(order.get(firstBlocking).context());
     }
 
     /** Whether the order moved since the last WAKE of {@code event}'s key. */

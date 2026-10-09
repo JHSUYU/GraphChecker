@@ -2288,6 +2288,33 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A write the order lacks whose own context holds the frontier owes it:
+     * it goes at once, never behind a later write to its location (another
+     * context's), which held the frontier -- and every later slot of its
+     * context -- until the watchdog (solr-adhoc-19 MB14s: a node's extra
+     * compare-and-set retry at its terms node).
+     */
+    @Test(timeout = 30000L)
+    public void aWriteOwingTheFrontierPassesNoLaterWrite() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        enforce(Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "x"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
+                        ScheduleEvent.written("STORE", "/p"), 0, ""),
+                event(ScheduleEvent.Kind.SEND, "y")));
+        long before = System.nanoTime();
+        written("/p");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertTrue("the extra write went, then x took the frontier",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 2000L);
+        assertEquals(here, ScheduleLog.contextOf(Identity.contextHere()));
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains(": 1 taken, 0 given up"));
+    }
+
+    /**
      * A write whose slot its occurrence's close settled runs free: it is no
      * write the recording never made there, which would wait behind the
      * next write to its location (another context's, that may never come),

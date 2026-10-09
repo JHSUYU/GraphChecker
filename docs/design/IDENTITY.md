@@ -669,7 +669,9 @@ order:
   `waitForCoreAdminAsyncCallToComplete` poll sees that CREATE complete; the poll's requests are that
   write's owner at work, so the cycle costs the stall's ceiling (`CEILING` timeouts, 120 s at the
   default), then goes. Such a waiter passes none of its own context's slots there (where it waits is
-  the other write's place) and is never let go;
+  the other write's place) and is never let go; it waits for no later write while the frontier is a slot of its
+  own context, which it owes (solr-adhoc-19, round MB14s: a node's extra compare-and-set retry at its terms node
+  waited behind another node's later write there, and its eight registration slots stalled one by one);
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
