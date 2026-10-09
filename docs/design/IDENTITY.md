@@ -669,7 +669,10 @@ order:
   `waitForCoreAdminAsyncCallToComplete` poll sees that CREATE complete; the poll's requests are that
   write's owner at work, so the cycle costs the stall's ceiling (`CEILING` timeouts, 120 s at the
   default), then goes. Such a waiter passes none of its own context's slots there (where it waits is
-  the other write's place) and is never let go;
+  the other write's place) and is never let go; it waits for no later write while its own context holds an open
+  slot before that write, which only it makes (solr-adhoc-19, round MB14s: a node's extra compare-and-set retry at
+  its terms node waited behind another node's later write there, and its eight registration slots stalled one by
+  one; 39, MB18s: 45 such writes given up one by one, behind writes up to 970 slots past the frontier);
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
@@ -684,14 +687,21 @@ order:
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
   still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
   waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
-  give-up of the 4560 slots before it). Past the cut a `WAKE` with no slot runs free, except in an
+  give-up of the 4560 slots before it). A frontier whose context family -- its node and causal context, a root's turn
+  number, an anchor's endpoint and the start frames left out -- missed its event in a stall before stands a grace,
+  not a timeout: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63
+  of 19's 70, stood on a context that had failed one; MB21s/MB22s: 34 of 10's 58 and 26 of 31's 69 on another turn
+  or anchor of a family that had). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
   order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
-- settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
+- settling: a closed occurrence's untaken slots are dead, and an event of a key whose slot died runs free: the
+  order no longer holds its place, so it is neither a write the recording never made there nor a poll past its
+  count (an occurrence's id can name other work in the replay: solr-adhoc-19 MB8s, the Overseer's state.json
+  write, its slot dead with the region its turns shared in the recording, waited behind its own write 110 slots on); a turn's `END` gives up what the turn did
   not do; a waiter gives up what its own occurrence did not make before its slot. A waiter no
   occurrence names gives up the earlier slots of its own exact context, no occurrence naming them,
   at any kind and site it made since it last entered that context (`ScheduleLog.Made`), so the rest

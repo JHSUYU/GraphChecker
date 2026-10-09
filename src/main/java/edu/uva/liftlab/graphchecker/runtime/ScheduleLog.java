@@ -1085,9 +1085,17 @@ public final class ScheduleLog {
         HELD.remove(self);
         CONFLICTED.remove(self);
         if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) return slot;
+        if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
-            if (conflict >= 0) {
+            // A writer whose own context holds a slot before that write
+            // owes it: held behind the later write, it held the order there
+            // until the watchdog, and every later slot of its context with
+            // it (solr-adhoc-19 MB14s: a node's extra compare-and-set retry
+            // at its terms node, then its eight registration slots, a stall
+            // each; 39 MB18s: 45 such writes given up one by one, behind
+            // writes up to 970 slots past the frontier).
+            if (conflict >= 0 && !owesBeforeLocked(event, conflict)) {
                 CONFLICTED.add(self);
                 return conflict + 1;
             }
@@ -1111,6 +1119,20 @@ public final class ScheduleLog {
         if (LET_GO.contains(self)) return GO;
         HELD.put(self, event);
         return next >= 0 ? next : AT_THE_LINE;
+    }
+
+    /** Whether {@code event}'s own context holds an open slot that blocks
+     *  before {@code slot}: only its thread makes it. */
+    private static boolean owesBeforeLocked(Pending event, int slot) {
+        List<Integer> own = BY_CONTEXT.get(event.context);
+        if (own == null) return false;
+        for (int at : own) {
+            if (at >= slot) return false;
+            if (at >= firstOpen && state[at] == OPEN && blocking(at)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether the order moved since the last WAKE of {@code event}'s key. */
@@ -1236,8 +1258,69 @@ public final class ScheduleLog {
         if (state[slot] == OPEN && heldKind(slot)) openHeld--;
         state[slot] = next;
         if (next == GIVEN_UP) return;
-        ArrayDeque<Integer> keyed = SLOTS.get(order.get(slot).key());
+        String key = order.get(slot).key();
+        ArrayDeque<Integer> keyed = SLOTS.get(key);
         if (keyed != null) keyed.remove(Integer.valueOf(slot));
+        if (next == DEAD) DEAD_BY_KEY.merge(key, 1, Integer::sum);
+    }
+
+    /**
+     * Per key, the slots settled dead ({@link #closed}) that no event of
+     * the key took since.  Such an event runs free: the order no longer
+     * holds its place, so it is neither a write the recording never made
+     * there, which waits behind the next write to its location, nor a poll
+     * past its recorded count.  An occurrence's id can name other work in
+     * the replay than in the recording -- a daemon's loop region left and
+     * entered again between two turns -- and its close then kills slots
+     * whose events still come (solr-adhoc-19, round MB8s: the Overseer's
+     * state.json write, its slot dead with the region its turns shared in
+     * the recording, waited behind its own write 110 slots on, and the
+     * three nodes polling for the replica names it wrote stalled the order
+     * thirty times, then failed their registrations).
+     */
+    private static final Map<String, Integer> DEAD_BY_KEY =
+            new HashMap<String, Integer>();
+
+    /** The context families whose frontier event a stall gave up: a later
+     *  frontier of theirs stands a grace, not a timeout ({@link
+     *  #watchdogLocked}). */
+    private static final Set<String> FAILED = new HashSet<String>();
+
+    private static final java.util.regex.Pattern TURN_OR_ANCHOR =
+            java.util.regex.Pattern.compile("#[0-9]+|Anchor:[0-9a-f]+");
+
+    /**
+     * A context's family: its node and causal context, a root's turn number
+     * and an anchor's endpoint left out ({@code Root:WAKE/<wait>#*}, {@code
+     * Anchor:*@SOLR_HTTP/test}), its start frames too -- the turns of one
+     * daemon, the receipts of one kind of message on one node.  A replay
+     * that numbers a daemon's turns or mints a message's endpoint otherwise
+     * misses each of them in turn.
+     */
+    static String familyOf(String context) {
+        int node = context.indexOf('|');
+        int frames = node < 0 ? -1 : context.indexOf('|', node + 1);
+        String shape = frames < 0 ? context : context.substring(0, frames);
+        java.util.regex.Matcher numbered = TURN_OR_ANCHOR.matcher(shape);
+        StringBuffer family = new StringBuffer();
+        while (numbered.find()) {
+            numbered.appendReplacement(family,
+                    numbered.group().startsWith("#") ? "#*" : "Anchor:*");
+        }
+        return numbered.appendTail(family).toString();
+    }
+
+    /** Whether {@code event}'s key has a dead slot left: then it takes it
+     *  (the event runs free). */
+    private static boolean deadLocked(Pending event) {
+        Integer dead = DEAD_BY_KEY.get(event.key);
+        if (dead == null) return false;
+        if (dead == 1) {
+            DEAD_BY_KEY.remove(event.key);
+        } else {
+            DEAD_BY_KEY.put(event.key, dead - 1);
+        }
+        return true;
     }
 
     /** An open slot is given up: its event may still come and take it. */
@@ -1478,8 +1561,17 @@ public final class ScheduleLog {
             letGoHeldLocked(stood, now);
             return true;
         }
-        if (stood < timeout) return false;
-        if (stood < CEILING * timeout && computingLocked(now)) return false;
+        // A frontier in a context family that missed its event in a stall
+        // before stands a grace, not a timeout: that family diverged from
+        // the recording, and each of its later slots cost a timeout of its
+        // own (SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63 of 19's 70,
+        // on a context that had failed one; MB21s/MB22s: 26 of 31's 69, 34 of
+        // 10's 58, on another turn or anchor of a family that had).
+        long bound = firstBlocking < order.size() && FAILED.contains(
+                familyOf(order.get(firstBlocking).context()))
+                ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
+        if (stood < bound) return false;
+        if (stood < CEILING * bound && computingLocked(now)) return false;
         // A wait held without a slot -- a poll past its recorded count at
         // its context's due slot, or at the line -- waits for no slot's
         // event, so it bounds no give-up: at a slot it would shadow the
@@ -1510,6 +1602,7 @@ public final class ScheduleLog {
             if (state[write] != OPEN) return false;
             stalls++;
             giveUpLocked(write);
+            FAILED.add(familyOf(order.get(write).context()));
             stateLocked("schedule-write#" + write, "the write at slot "
                     + write + " (" + order.get(write).render() + ") did not"
                     + " happen in the " + stood + " ms the frontier stood at"
@@ -1536,6 +1629,8 @@ public final class ScheduleLog {
             settleLocked();
             return true;
         }
+        String frontierContext = firstBlocking < order.size()
+                ? order.get(firstBlocking).context() : null;
         int first = -1;
         int count = 0;
         for (int index = firstOpen; index < earliest; index++) {
@@ -1545,6 +1640,7 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
+        if (frontierContext != null) FAILED.add(familyOf(frontierContext));
         if (earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
@@ -1805,6 +1901,8 @@ public final class ScheduleLog {
         LET_GO.clear();
         CONFLICTED.clear();
         BY_LOCATION.clear();
+        DEAD_BY_KEY.clear();
+        FAILED.clear();
         POLLED.clear();
         PASSED_BY_CONTEXT.clear();
         PASSED_SLOTS.clear();
@@ -1961,6 +2059,8 @@ public final class ScheduleLog {
             LET_GO.clear();
             CONFLICTED.clear();
             BY_LOCATION.clear();
+            DEAD_BY_KEY.clear();
+            FAILED.clear();
             POLLED.clear();
             PASSED_BY_CONTEXT.clear();
             PASSED_SLOTS.clear();

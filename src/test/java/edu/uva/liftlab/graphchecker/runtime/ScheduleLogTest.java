@@ -2290,6 +2290,119 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A context family whose frontier event a stall gave up has diverged:
+     * its next frontier -- another turn of the same daemon, another anchor of
+     * the same kind of message on the node -- stands a grace, not a timeout
+     * (SG2: 69 of solr-adhoc-38's 138 give-up stalls stood on a context that
+     * had failed one; MB21s: 34 of 10's 58 on another turn or anchor of a
+     * family that had).
+     */
+    @Test(timeout = 60000L)
+    public void aContextFamilyThatFailedAStallStandsAGraceNext()
+            throws Exception {
+        assertEquals("n|Root:WAKE/q.peek#*", ScheduleLog.familyOf(
+                "n|Root:WAKE/q.peek#12|<a.B: void c()>#u3@0"));
+        assertEquals("n|Anchor:*@SOLR_HTTP/test", ScheduleLog.familyOf(
+                "n|Anchor:813cbf610082e340@SOLR_HTTP/test"));
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "6000");
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#1",
+                        "n1", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "a"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#2",
+                        "n2", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "b")));
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        long first = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "b");
+        long second = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("the first stall a timeout: " + first, first >= 6000L);
+        assertTrue("the failed family's next a grace: " + second,
+                second >= ScheduleLog.LET_GO_GRACE_MS && second < 5000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 2 given up in 2"));
+    }
+
+    /**
+     * A write the order lacks whose own context holds an open slot before
+     * the next write to its location owes that slot: it goes at once, never
+     * behind that later write (another context's), which held the order --
+     * and every later slot of its context -- until the watchdog
+     * (solr-adhoc-19 MB14s: a node's extra compare-and-set retry at its
+     * terms node).  Per row: whether its own slot is the frontier; one that
+     * owes nothing before the write still waits for it.
+     */
+    @Test(timeout = 60000L)
+    public void aWriteOwingASlotBeforeTheNextWriteThereGoes() throws Exception {
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        ScheduleEvent other = ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE,
+                "other|Root:X", ScheduleEvent.written("STORE", "/p"), 0, "");
+        ScheduleEvent far = ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                "far|Root:F", "f", 0, "");
+        Object[][] rows = {
+            {"its own slot the frontier",
+                Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"), other), true},
+            {"its own slot behind another's",
+                Arrays.asList(far, event(ScheduleEvent.Kind.SEND, "x"), other),
+                true},
+            {"no own slot before the write",
+                Arrays.asList(far, other, event(ScheduleEvent.Kind.SEND, "x")),
+                false},
+        };
+        for (Object[] row : rows) {
+            restart();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            @SuppressWarnings("unchecked")
+            List<ScheduleEvent> order = (List<ScheduleEvent>) row[1];
+            enforce(order);
+            Thread writer = new Thread(() -> written("/p"));
+            writer.start();
+            writer.join(2000L);
+            assertEquals(row[0] + ": " + here, !(Boolean) row[2],
+                    writer.isAlive());
+            writer.interrupt();
+            writer.join(5000L);
+        }
+    }
+
+    /**
+     * A write whose slot its occurrence's close settled runs free: it is no
+     * write the recording never made there, which would wait behind the
+     * next write to its location (another context's, that may never come),
+     * and a poll whose slot died is no poll past its count (solr-adhoc-19
+     * MB8s: the Overseer's state.json write waited behind its own write 110
+     * slots on).
+     */
+    @Test(timeout = 30000L)
+    public void anEventWhoseSlotDiedRunsFree() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        String p = ScheduleEvent.written("STORE", "/p");
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, here, p, 0, "o1"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE, here, "tick.w", 0,
+                        "o1"),
+                event(ScheduleEvent.Kind.SEND, "x"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
+                        p, 0, ""),
+                event(ScheduleEvent.Kind.SEND, "y")));
+        ScheduleLog.closed("o1");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long before = System.nanoTime();
+        written("/p");
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.w");
+        assertTrue("no wait behind the other context's write, no hold",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 2000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 settled by their"
+                + " occurrence's close"));
+        assertTrue(progress, progress.contains("2 event(s) ran free"));
+    }
+
+    /**
      * A waiter gives up at once what its own occurrence passed: only its
      * thread could make it, and that thread waits beyond it.
      */

@@ -1180,6 +1180,9 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
                 if (!served.add(occurrence)) continue;
+                stateDoorsOutside(program, walk, messages.sentOutsideRegion(
+                        OccurrenceAddress.parse(occurrence)), occurrence,
+                        reading);
                 for (String door : messages.doorsOf(
                         OccurrenceAddress.parse(occurrence))) {
                     String held = occurrenceById.get(door);
@@ -1196,6 +1199,39 @@ public final class RuntimeSelectedRegionFinalizer {
             progressed |= !seeds.isEmpty();
             walk.walk(seeds);
         } while (progressed);
+    }
+
+    /**
+     * The message that started {@code occurrence} was sent from {@code
+     * sentFrom} in no region occurrence ({@link
+     * RecordedMessages#sentOutsideRegion}; null: it was not): each
+     * occurrence the walk has not reached that read a fault marker in that
+     * same context is a door {@link #CONTROL_PRODUCER_ADMISSION} cannot
+     * reach, stated {@link GapKind#DOOR_SEND_OUTSIDE_REGION}.
+     */
+    private static void stateDoorsOutside(StaticProgram program,
+            DemandWalk walk, ContextShape.Stance sentFrom, String occurrence,
+            Map<String, List<RootRead>> reading) {
+        if (sentFrom == null) return;
+        String context = sentFrom.render();
+        for (Map.Entry<String, List<RootRead>> door : reading.entrySet()) {
+            if (walk.reached.contains(door.getKey())
+                    || !readsAFault(door.getValue()) || !context.equals(
+                    ContextShape.Stance.of(OccurrenceAddress.parse(
+                            door.getKey())).render())) {
+                continue;
+            }
+            planGap(program.planGaps, GapKind.DOOR_SEND_OUTSIDE_REGION,
+                    GapClass.DIAGNOSTIC, door.getKey(), "this occurrence read"
+                            + " a fault marker in " + context + ", the context"
+                            + " the message that started " + occurrence
+                            + " was sent from, but that send stood in no"
+                            + " region occurrence: no occurrence is the"
+                            + " message's sender, so no door of it is"
+                            + " admitted as its producer's and its fault is"
+                            + " never planned (a send hook outside the method"
+                            + " that holds the door's call)");
+        }
     }
 
     private static boolean readsAFault(List<RootRead> reads) {
