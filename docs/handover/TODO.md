@@ -198,7 +198,12 @@ read (`MessageDoors#callStarting`, solr-adhoc-13), and every jetty started in th
   stall_summary.py`): a poll owing its own context's frontier now polls with no move, and a held wait is let go a grace
   into an idle stall, and a held wait bounds no give-up at the line (IDENTITY §8: SG1's 13, 39, 40, 05 and 07 each gave
   up every slot before the cut once, 11,245 slots); the writes keyed by a queue item's own path went with
-  `storingChild`. Still to measure before/after on solr-adhoc-19 and -07; `solr-bug-reindex`'s other rules (`ScheduleReach`, `ScheduleWait`, the
+  `storingChild`. Measured on snapshot sbm9 (rounds MB8s/MB10s/MB13s, seed replays to IMPORT) against SG1: 19
+  183 -> 104 give-ups (stalls plus let-gos; let-gos 80 -> 13), seed REPLAY 1792 -> 1385 s; 07 80 -> 91 (stalls 51 -> 65,
+  16 of them single conflicted writes), REPLAY 1478 -> 1167 s; 13 now reaches its anchor and keeps 1903 of 5073 slots
+  (382 before the line rule) at 81 stalls (43 single conflicted writes). What is left is the store's own races: writes of
+  replicas registering at once (`terms/shard1`, `leader_elect`, compare-and-set retries) and Overseer `WAKE` roots whose
+  counts follow the run's timing; `solr-bug-reindex`'s other rules (`ScheduleReach`, `ScheduleWait`, the
   lock owner's early slot, the draw scope over the test's own classes, the queue order, `AT_QUESTION_CLOSED`) come in
   only when a Solr seed replay on this body shows the stall each answers.
 Merge the parked `hdfs1-confirm-first` if a confirmation is seen waiting behind witness attempts.
