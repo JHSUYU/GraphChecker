@@ -94,17 +94,19 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
 - A possible flake: Mockito `UnfinishedStubbingException` in `TestBlockRecovery2`.
 
 ### 6. Speed (PERFORMANCE.md §5)
-- **Incremental planning** (owner 2026-10-07: "这个优化记做todo吧"; the first speed item). Each EXPLORE round's planner
-  is a fresh `ExploreMain` JVM that reads the whole corpus from disk, builds every index (slot table, branches,
-  frontier, writer arms) and plans, then exits; only the sessions that landed since the last round are new. In
-  EX1-adhoc-07d (exclusive, 2h50m) the 16 rounds' planners took 1h51m of EXPLORE's 2h25m: a round grew from 2 s to
-  19-22 min as the corpus reached ~640 sessions (17 min of it waiting for memory beside 12-14 GB host solvers),
-  while the ten lifts ran 4-71 solves and replays at once. More lifts would save at most 10-20 %. Design: keep the
-  planner's corpus and indexes across rounds (a serving planner, as the host solver already reads only the
-  sessions that landed since its last question, `Corpus#read(Path, Path, Corpus)`), read only the new sessions,
-  update only the tasks and arms they touch, and stop rewriting `slots.jsonl` whole; gate: the incremental rounds'
-  outputs byte-identical to the full recomputation on recorded corpora (`offline-ab.sh` `EXPLORE.N`,
-  `EXPLORE.drift`), since dependence keys and the fixed point are corpus-wide.
+- **Incremental planning** (owner 2026-10-07: "这个优化记做todo吧"; the first speed item): on branch
+  `solr-incr-plan`, for the lead's merge. One planner JVM serves an exploration's rounds (`ExploreMain --serve`,
+  PIPELINE §7.1/§7.9), keeping the corpus's rows with what each session's rows alone give, the static map and the
+  slot table, whose rounds write only their changes; within a round `dependence` and the closure's re-walked
+  pieces are computed once. Gate `offline-ab.sh` `EXPLORE.serve` identical on EX1 07e, 11741, 09, 17899-bug2, 39
+  and SC1 solr-18406/18413 (07e: 2960 s fresh against 1667 s served, late rounds 300-360 against 150-180 s;
+  PERFORMANCE §5 item 0). Live (`/bigtemp/vnr3ne/gc-out/solr-incr-plan`): INC1-adhoc-09 UNSAT_CLOSED as EX1,
+  76 rounds and 443 s of planning (EX1: 16 rounds, 234 s); INC2-solr-18413 SAT_CANDIDATE CLOCK_SKEW confirmed.
+  Still open: (1) rounds now come more often, each over fewer new sessions, and 09 asked 675 obligations (634
+  flips) against EX1's 566 (535): measure whether frequent rounds propose arms under keys that later drift, and
+  whether a round should wait for more landings; (2) `Value#hashCode` recomputes deep part hashes, about half of
+  a late served 07e round's samples: a cached hash needs an immutability audit of the 35 contract values; (3) the
+  closure is still built whole each round.
 - **A host solver answers one question at a time** at 12-14 GB resident on 07's corpus: more answers per solver JVM
   (or a smaller one) would lift the solve throughput and the memory every lift gives replays.
 - 11741 takes 1.5 h on the cluster (HF2: witness at ~60 min, confirmed at ~75 min, 5168 s in all).

@@ -384,11 +384,27 @@ witness (only COMPOSE and z3 do).
 
 ### 7.1 One round: `explore.ExploreMain`
 
-One JVM per round, `--sessions <iteration>/sessions --results obligation_results.jsonl --in-flight
-<round>/in_flight.jsonl --static-scope-map ... --target-occurrence <declared> --round N --output-dir
-obligations-NNNN` plus the root domains and bounds. It reads the whole corpus (`explore.Corpus.read`:
-every landed session, each worker's focus row as that session's world, the verdicts, the recorded
-schedule) and:
+ONE planner JVM serves an exploration's rounds (`ExploreMain --serve <dir> --sessions
+<iteration>/sessions --results obligation_results.jsonl --static-scope-map ... --target-occurrence
+<declared>` plus the root domains and bounds; each round one question naming its `round`, its
+`inFlight` (`<round>/in_flight.jsonl`) and its `outputDir` (`obligations-NNNN`), asked through
+`explore.Service`, the protocol the host solvers speak, §7.5; the driver's side is §7.9). What it read
+for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus)`: a landed
+session's rows never change, so only the sessions new to the listing are parsed, and one that left
+-- a GROW swap, after-witness trimming -- is dropped) with what was derived from each session's rows
+alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
+expressions: symbols, leaves, read locations and events, state reads), the static map while its
+file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
+round asks again of the same corpus is answered once: an arm's dependence per task and decision
+(`Corpus#dependence`: the frontier and the candidates key the same arms) and a task's feeders, and
+the closure's walks of a demand that grew reuse its group, the group's reads and each read's
+eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). Every index across sessions
+is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
+iteration then, writes (`ExploreMain --round N --output-dir ...`, the offline stages' entry over the
+same code; gated by `offline-ab.sh` `EXPLORE.serve`). A late hdfs-adhoc-07 round, rebuilt whole by a
+JVM of its own, was ~15 min: 2.5 min reading 653 sessions' rows and 4 min reading and rewriting a
+1.9 GB slot table (PERFORMANCE §5). A round reads the corpus (`explore.Corpus.read`: every landed
+session, each worker's focus row as that session's world, the verdicts, the recorded schedule) and:
 
 1. Names planned tasks answered at two addresses (`ADDRESS_UNSTABLE`, DIAGNOSTIC).
 2. Resolves the declaration against the seed session's activations (`plan.SelectorResolution`);
@@ -398,7 +414,7 @@ schedule) and:
    anchor's closure (§7.2). A closure truncated at `--max-tasks` is the round's DIAGNOSTIC
    `ADMISSION_GAP` and its manifest's `truncated` (the occurrences not planned); whether it blocks
    a claim is the exploration's end's to say (§7.9).
-4. Reconciles the slot table (`explore.SlotTable`, `iteration-0000/slots.jsonl`): one slot per
+4. Reconciles the slot table (`explore.SlotTable`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
    world is a replacement, and a read whose observed write the run orders after it (the two rows'
    seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
@@ -411,7 +427,13 @@ schedule) and:
    address under another chain, so its pairings are that chain's: they open slots beside the
    planned occurrence's and replace none, whichever session lands first, since each slot is
    indexed by whether its opening session answered its consumer's occurrence; only another
-   answered pairing fills such a slot.
+   answered pairing fills such a slot. On disk the table is its rounds' changes: each round writes,
+   last among its files, `obligations-NNNN/slots.jsonl`, the slots it opened or replaced (`SLOT`,
+   the row the slot holds now) and those it dropped (`SLOT_DROPPED`), in order; the table is those
+   files folded in round order, after an iteration's whole `slots.jsonl` where a run recorded before
+   the per-round files has one (`SlotTable#read`). A round's planner folds the rounds before its own
+   (the served one keeps the table it changed), so a round planned again starts from the same table
+   and a round directory that goes takes its changes with it; COMPOSE folds them all.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
    campaign has queued or running), builds the candidates (§7.4) and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
@@ -644,7 +666,10 @@ question.
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
 The obligations of an exploration that run on one host are answered by ONE solver JVM there
-(`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.SolverService`): the first
+(`campaign_solve_obligation`; `ObligationSolverMain --serve`, `explore.Service`, the one protocol of
+a JVM that answers an exploration's questions in turn over state it keeps, the planner's too, §7.1:
+questions on the serving host's own disk, oldest first, an answer `{exit, error}` whose error is the
+deepest throwable): the first
 question starts it if its host has room for a start's worth now (`campaign_start_solver`:
 `campaign_solve_obligation` never waits for memory to start one), charged at the host ledger
 `campaign_solver_start_mb` (1 GB) for as long as it runs (it holds the charge itself,
@@ -988,8 +1013,9 @@ it waits, saying so once. A step on a peer runs through the remote worker script
 head's exported `CAUSYNTH_`/`GRAPH_CHECKER_` variables, its output passed back as its own: a
 program, or a `run_engine.sh` function whose arguments are all it reads of the head. The steps are
 every engine JVM of every stage -- SEED's static passes, scope growth and trace aggregation, PLAN,
-INSTRUMENT and its verifier, the import gate, the planner, COMPOSE, CONFIRM's and REPRODUCE's
-`ConfirmMain`, GROW's planner and weave -- each charged while it runs at the heap
+INSTRUMENT and its verifier, the import gate, the planner (one service held for the exploration,
+§7.9), COMPOSE, CONFIRM's and REPRODUCE's `ConfirmMain`, GROW's planner and weave -- each charged
+while it runs at the heap
 it starts at (`engine_java`, `campaign_engine_start_mb`): its main's measured need
 (`campaign_engine_need_mb`: the static pass 4 GB, the planner and the composer 8 GB, the trace
 aggregation, scheduler, lineage scan, scope growth, woven-class verifier, CONFIRM, GROW's
@@ -1086,9 +1112,20 @@ everything that returned meanwhile lands: each verdict is appended to `obligatio
 (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the sessions the workers
 staged move into the corpus (`campaign_stream_move`). The next step then takes them in: ONE IMPORT
 gate (§6) over exactly them (the list `gate`, its summary `import_gate.json`; one BLOCKING violation
-fails the campaign at IMPORT) and the round now owed (`round`, planned by `ExploreMain` into
-`obligations-NNNN/`, §7.1) -- owed once a session has landed, or once nothing is queued or running
-and an answer came since the last round. A step after which witnesses wait is followed by an
+fails the campaign at IMPORT) and the round now owed (`round`, planned into `obligations-NNNN/` by
+the exploration's planner, §7.1) -- owed once a session has landed, or once nothing is queued or
+running and an answer came since the last round. THE PLANNER SERVICE (`campaign_stream_plan`): the
+step starts it when none lives, as a head step -- placed by the usual rule (`campaign_head_place`) at
+what the planner starts at (`campaign_engine_start_mb`), its charge held for its life by the shell
+that holds it (`campaign_host_keep`, as a host solver's), grown as a watched JVM
+(`campaign_watch_workload`), the head's room marked busy while it runs on the head's host -- and asks
+the round of it on its host (`campaign_planner_ask`, through the remote worker script when it runs on
+a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its state is
+`iteration-0000/planner/`, its log `planner.log`. One that ran out of a heap below `engine_memory_mb`
+(exit 3) is started again at twice it and the round asked again; out of the engine heap it is
+PLANNER_HEAP_EXCEEDED (below); any other end fails EXPLORE with its deepest throwable -- never a
+silent start of another. The exploration's end stops it (`campaign_planner_stop`), and so does the
+head's EXIT trap. A step after which witnesses wait is followed by an
 attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew its need in a step
 (§7.7) is the head's from then on (`outgrown`).
 When the step returns the head takes its round (`campaign_stream_take_round`): the wave budget,
@@ -1175,7 +1212,7 @@ cancelled or reaped, by id):
   `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
 - **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
   every answer, proposed and exposed nothing.
-- **PLANNER_HEAP_EXCEEDED.** A round's planner ran out of the most heap a head JVM is given
+- **PLANNER_HEAP_EXCEEDED.** The planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
   not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
   DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error -- rounds
@@ -2237,12 +2274,18 @@ workload and no replay; `ab_compare.py` prints one table and exits 1 when a gati
 2 when one could not be checked; the static pass's summary is the slice's size (edges, the methods
 they lie in, scope rows, READ_SITEs, CONFIG_KEYs, chosen/all root-demand boundaries, skeletons,
 grown classes), and `AB_STAGES=SEED.static` runs that pass alone. `AB_STAGES=EXPLORE.drift`
-replays a run's landing order: each recorded round planned again over the sessions landed before
-its planner started (a session's directory ctime is its landing), the waves before it and the plan
-generation then current, with no answer, so every flip it offers is keyed; the summary counts the
-flips offered under more than one id (an arm the run asks again on the same path) and the ids per
-arm -- what a change to an arm's key does to re-asks, which the run's own answers, keyed by the
-recording jar, cannot show. The trace chain (aggregation,
+replays a run's landing order (`ab_landings`, each side's whole loop on one host): one iteration
+that evolves as the run's did, each recorded round planned again over the sessions landed before
+its planner started (a session's directory ctime is its landing), the workers of the rounds before
+it and the plan generation then current, with no answer and nothing in flight, so every flip it
+offers is keyed, each round by a planner of its own; the summary counts the flips offered under
+more than one id (an arm the run asks again on the same path) and the ids per arm -- what a change
+to an arm's key does to re-asks, which the run's own answers, keyed by the recording jar, cannot
+show. `AB_STAGES=EXPLORE.serve` replays the same order with the baseline side planning each round
+in a JVM of its own and the candidate side asking every round of ONE served planner: run with one
+jar as both sides, every round's files (its slot-table changes among them) and the folded table
+must be identical, and `walls-<case>.EXPLORE.serve.tsv` holds both sides' per-round walls. Every
+EXPLORE stage's slot table is compared folded, since two jars may spell it differently. The trace chain (aggregation,
 PLAN, EXPLORE round 0) of both sides reads one set of static artifacts, the recording's own;
 `AB_FRESH_SLICE=1` gives each side its own fresh static pass, to see what a slice change does to
 the region plan and the closure. It runs beside live rounds, so each of its engine JVMs is placed

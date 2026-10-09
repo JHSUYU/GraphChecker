@@ -117,7 +117,8 @@ The stages, their gates and the claim kinds are specified in
 A case directory holds declarations only. `experiments/<system>/<case>/` contains:
 
 - `case.sh`: the tree, the workload test, the target occurrence and the analysis scope; the test
-  is a class and a method `m`, or one invocation of a parameterized test or class, `m[k]` (`m[i][j]`
+  is a class and a method `m` (marked `@Test`, or a public `test*()` where the class's randomizedtesting runner takes
+  JUnit 3 style methods, as Lucene's and Solr's `LuceneTestCase` does), or one invocation of a parameterized test or class, `m[k]` (`m[i][j]`
   when both are: the class's, then the method's), k from 1 in the argument sources' order, as JUnit
   numbers them (`runtime/JUnitInvocation`);
 - `workflow.properties`: budgets and inputs. `run_engine.sh` accepts only the keys it knows, so

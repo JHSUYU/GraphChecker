@@ -216,6 +216,8 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/iteration-*/sessions/*/manifest.json'
   'schedule/iteration-*/session_census.jsonl'
   'schedule/iteration-*/slots.jsonl'
+  'schedule/iteration-*/obligations-*/slots.jsonl'
+  'schedule/iteration-*/planner.log'
   'schedule/iteration-*/obligation_results.jsonl'
   'schedule/iteration-*/campaign_gaps.jsonl'
   'schedule/iteration-*/obligations-*/obligations.jsonl'
