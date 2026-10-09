@@ -335,9 +335,15 @@ public final class RowInvariants {
             twice(session, gaps, seen, "reads", row.seq(), "seq/location",
                     row.seq() + "|" + row.location(), row.location() + "");
         }
+        // A store's write is its version (IDENTITY §7.2): two versions of
+        // one path with no VM event between them, or with no VM clock at all
+        // (seq 0), are two events.
         for (WriteRow row : session.writes()) {
-            twice(session, gaps, seen, "writes", row.seq(), "seq/location",
-                    row.seq() + "|" + row.location(), row.location() + "");
+            boolean store = row.location().kind() == LocationKind.STORE;
+            twice(session, gaps, seen, "writes", row.seq(), store
+                    ? "seq/location/version" : "seq/location", row.seq() + "|"
+                    + row.location() + (store ? "|" + row.version() : ""),
+                    row.location() + "");
         }
         for (DecisionRow row : session.decisions()) {
             twice(session, gaps, seen, "decisions", row.seq(),

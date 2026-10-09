@@ -523,8 +523,11 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 - `stored(transport, key, owner)`: a write of `path@version` is a SEND; its staged values are kept
   with the version. It is also a version of the path's `STORE` location (CONTRACT-SPEC §1: owner the
   transport, slot the path as `RunNames` keys it, version the store's own): a write row at the
-  writer's occurrence in a replay, site `<transport>#WRITE:<path, dotted>`, no expression; a
-  `STORE_WRITE` trace row naming the writer's address in the recording.
+  writer's occurrence in a replay (the admitted activation's, else the one running there, stated as
+  an unselected activation), site `<transport>#WRITE:<path, dotted>`, no expression, seq the VM's
+  last event id (0 on a thread with no VM context: no order check reads it; two versions of one path
+  at one seq are two events, CONTRACT-SPEC §2.6); a `STORE_WRITE` trace row naming the writer's
+  address in the recording.
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
   `.<n>` from a node's second delivery of that version on; how many deliveries a run takes is the
@@ -547,7 +550,11 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   thread served and is the message the thread serves until the next (its key and `REQUEST`, as its
   write sent it), its staged values with it; the consumer keeps its own context, and its RECV names
   the item it took in (`CausynthTraceRecorder#receivedExchange`), so the item's sender is a door of
-  the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`).
+  the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`). A
+  RECV a turn makes at its root, before any of its regions opened, names no occurrence: every
+  occurrence the turn runs is then a receiver, a door of the item (`Corpus#receiversOf`,
+  `RecordedMessages#doorStancesOf`) -- the Overseer queue loop's turn, whose ZooKeeper door
+  (`markTaskAsRunning`) runs in a region of it, for the task's Runner, which took the same item in.
 
 A STORE read rests on the write that made its version and on every earlier version of its location:
 a store keeps one document per location, and each write modifies the one before it (Solr's state

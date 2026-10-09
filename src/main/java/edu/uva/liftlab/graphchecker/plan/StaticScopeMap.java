@@ -667,6 +667,18 @@ public final class StaticScopeMap {
                             false, "", distance(mark)));
                     continue;
                 }
+                // A decoded object's container: tracked by its state, and
+                // observed for the store version its holder was parsed from.
+                if (tracked == SharedFieldFlow.TrackedKind.CONTAINER
+                        && chosen(mark, TRACKED_DEMAND)) {
+                    addProvenance(found, seen, retained, new Site(
+                            PROVENANCE_SITE, "", siteId, vmSite(method),
+                            field, field, "", ACCESSOR_READ.equals(kind)
+                                    ? text(edge.get("invoke")) : "", "",
+                            null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
+                            NO_CHAIN, NO_CALLERS, "", staticField.test(field),
+                            false, "", distance(mark)));
+                }
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
                         && (tracked != SharedFieldFlow.TrackedKind.CONTAINER
                         && deciding.contains(text(edge.get("toCell")))
@@ -1668,7 +1680,7 @@ public final class StaticScopeMap {
             tracked.putIfAbsent(site.cell, site);
         }
         JsonArray found = new JsonArray();
-        Set<String> seen = new LinkedHashSet<String>();
+        Map<String, JsonObject> seen = new LinkedHashMap<String, JsonObject>();
         for (Site site : sites) {
             boolean read = READ_SITE.equals(site.role);
             Site cell = tracked.get(site.cell);
@@ -1684,7 +1696,9 @@ public final class StaticScopeMap {
                     ? !SharedFieldFlow.TrackedKind.CONTAINER.name()
                             .equals(cell.trackedKind)
                     : atomic;
-            if (!field && !container || !seen.add(site.siteId)) continue;
+            if (!field && !container || seen.containsKey(site.siteId)) {
+                continue;
+            }
             JsonObject row = new JsonObject();
             row.addProperty("method", SiteId.methodOf(site.siteId));
             row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
@@ -1696,12 +1710,18 @@ public final class StaticScopeMap {
             row.addProperty("container", container);
             row.addProperty("trackedKind", cell.trackedKind);
             if (cell.staticField) row.addProperty("static", true);
+            seen.put(site.siteId, row);
             found.add(row);
         }
-        // A provenance read is observed by its receiver alone, before the
-        // read: which store version the object holds.
+        // A provenance read is observed by its receiver, before the read:
+        // which store version the object holds; at a tracked read's site
+        // (a decoded object's container), as well as that read's.
         for (Site site : ofRole(PROVENANCE_SITE, read -> !read.staticField)) {
-            if (!seen.add(site.siteId)) continue;
+            JsonObject held = seen.get(site.siteId);
+            if (held != null) {
+                held.addProperty("provenance", true);
+                continue;
+            }
             JsonObject row = new JsonObject();
             row.addProperty("method", SiteId.methodOf(site.siteId));
             row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
@@ -1712,6 +1732,7 @@ public final class StaticScopeMap {
             row.addProperty("field", false);
             row.addProperty("container", false);
             row.addProperty("provenance", true);
+            seen.put(site.siteId, row);
             found.add(row);
         }
         return found;

@@ -292,6 +292,10 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, String>();
     /** Where a context anchored on nothing stands -> the message it took
      *  into itself (a DataNode's turn and its DataTransfer op). */
+    /** Producer endpoint id -> the stances of the turns that took it in
+     *  at their root, no occurrence open ({@link #receiversOf}). */
+    private final Map<String, Set<String>> receivingStances =
+            new LinkedHashMap<String, Set<String>>();
     private final Map<String, String> takenInByStance =
             new HashMap<String, String>();
 
@@ -679,6 +683,28 @@ public final class Corpus implements Arms.Rows {
         return receiver == null ? null : occurrenceById.get(receiver);
     }
 
+    /**
+     * Every occurrence that took the message in: its RECV's occurrence
+     * ({@link #receiverOf}), and every occurrence of a turn that took it in
+     * at its root, before any of its regions opened (an Overseer queue
+     * loop's turn and the task item it consumed, whose ZooKeeper door then
+     * runs in a region of the turn).
+     */
+    public List<OccurrenceAddress> receiversOf(String producerEndpointId) {
+        List<OccurrenceAddress> receivers = new ArrayList<OccurrenceAddress>();
+        OccurrenceAddress receiver = receiverOf(producerEndpointId);
+        if (receiver != null) receivers.add(receiver);
+        Set<String> stances = receivingStances.get(producerEndpointId);
+        if (stances == null) return receivers;
+        for (OccurrenceAddress occurrence : occurrenceById.values()) {
+            if (stances.contains(ContextShape.Stance.of(occurrence).render())
+                    && !receivers.contains(occurrence)) {
+                receivers.add(occurrence);
+            }
+        }
+        return receivers;
+    }
+
     private void indexSchedule(SessionReader session) {
         List<ScheduleEvent> events;
         try {
@@ -708,7 +734,19 @@ public final class Corpus implements Arms.Rows {
                     senderStanceByEndpoint.put(event.endpoint(), stance);
                 }
             }
-            if (event.occurrence().isEmpty()) continue;
+            if (event.occurrence().isEmpty()) {
+                // Taken in at a turn's root, before any region of it opened
+                // (a queue item a turn consumes first): the turn's every
+                // occurrence is its receiver.
+                ContextShape.Stance at =
+                        ContextShape.Stance.ofSend(event.context());
+                if (!event.received().isEmpty() && at != null) {
+                    receivingStances.computeIfAbsent(event.received(),
+                            key -> new LinkedHashSet<String>())
+                            .add(at.render());
+                }
+                continue;
+            }
             if (event.kind() == ScheduleEvent.Kind.SEND
                     && !event.endpoint().isEmpty()) {
                 senderByEndpoint.put(event.endpoint(), event.occurrence());

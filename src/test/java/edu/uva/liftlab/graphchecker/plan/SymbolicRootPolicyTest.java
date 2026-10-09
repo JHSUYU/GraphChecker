@@ -264,10 +264,14 @@ public class SymbolicRootPolicyTest {
         for (int index = 0; index < sites.size(); index++) {
             observed.put(member(sites, index, "siteId"),
                     member(sites, index, "field") + "/"
-                            + member(sites, index, "container"));
+                            + member(sites, index, "container")
+                            + (member(sites, index, "provenance").isEmpty()
+                            ? "" : "/provenance"));
         }
         Map<String, String> expected = new LinkedHashMap<>();
-        expected.put(GET_NUM + "#u8", "false/true");
+        // The chosen read of a construction-only container: its state, and
+        // the store version its holder was decoded from (SYMBOL-SCOPE §5.7).
+        expected.put(GET_NUM + "#u8", "false/true/provenance");
         // GET_NUM#u11 decides a branch too, but the demand chose no CONTAINER
         // read there: no read site, nothing observed.
         expected.put(DELETE + "#u50", "false/true");

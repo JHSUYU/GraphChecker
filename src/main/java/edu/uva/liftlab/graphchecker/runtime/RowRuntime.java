@@ -40,7 +40,6 @@ import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -503,28 +502,18 @@ public final class RowRuntime {
 
     /**
      * The seq a row the engine states itself takes (a store row): the VM's
-     * last event id on this thread, after every event before it and before
-     * every event after it.  A thread with no VM context states none: its
-     * row is numbered past every event the VM numbers ({@link
-     * #UNSEQUENCED}, one each), so no two such rows are one event and none
-     * stands before a decision it did not precede.  0 outside a session
-     * (the recording publishes no row).
+     * last event id, after every event before it and before every event
+     * after it; 0 -- no VM clock, which no order check reads (a thread with
+     * no VM context; outside a session, where no row is published).
      */
     static long currentEvent() {
         if (publisher == null) return 0L;
-        long event;
         try {
-            event = ConcolicVmBroker.engine().currentEventId();
+            return Math.max(0L, ConcolicVmBroker.engine().currentEventId());
         } catch (Throwable unavailable) {
-            event = 0L;
+            return 0L;
         }
-        return event > 0L ? event : UNSEQUENCED + UNSEQUENCED_ROWS
-                .incrementAndGet();
     }
-
-    /** Where rows no VM event numbers are numbered from. */
-    static final long UNSEQUENCED = 1L << 48;
-    private static final AtomicLong UNSEQUENCED_ROWS = new AtomicLong();
 
     /**
      * The occurrence a door's own event runs in: the admitted activation's,
@@ -564,13 +553,8 @@ public final class RowRuntime {
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         WRITTEN.add(Confirmation.key(location, version));
-        // Two writes of one location with no VM event between them (a
-        // counter node bumped in a loop) are two events: the second is
-        // numbered past every event the VM numbers, as an unsequenced row.
-        long numbered = STORE_WRITES.add(seq + "|" + location) ? seq
-                : UNSEQUENCED + UNSEQUENCED_ROWS.incrementAndGet();
-        session.write(WriteRow.of(sessionId(), sequence(numbered), at,
-                location, version, "", STORE_TYPE));
+        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
+                version, "", STORE_TYPE));
         Confirmation.wrote(location, version, at, false);
     }
 
@@ -606,9 +590,7 @@ public final class RowRuntime {
     /** seq|location of every store read stated: one per event. */
     private static final Set<String> STORE_READS =
             ConcurrentHashMap.newKeySet();
-    /** seq|location of every store write stated under a VM event's seq. */
-    private static final Set<String> STORE_WRITES =
-            ConcurrentHashMap.newKeySet();
+
 
     /** The symbol of one store version's reads. */
     static String storeSymbol(LocationId location, long version) {
@@ -1379,7 +1361,6 @@ public final class RowRuntime {
             WRITTEN.clear();
             READERS.clear();
             STORE_READS.clear();
-            STORE_WRITES.clear();
             OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();

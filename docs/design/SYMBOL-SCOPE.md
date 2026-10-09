@@ -1084,7 +1084,9 @@ parsed from (IDENTITY §7.2), so:
   through its constructor's store, where a copy names its source; a call into the system out of
   scope (a `SCOPE` boundary, §4.6) rests on its receiver's state, so the chosen ones are observed by
   their receiver too (`StaticScopeMap#provenanceCalls`: a processor's
-  `readOnlyCollection = coll.isReadOnly()`, `DocCollection` out of the scope);
+  `readOnlyCollection = coll.isReadOnly()`, `DocCollection` out of the scope); and a chosen
+  `TRACK_CONTAINER` read of a construction-only container (an `Aliases`' map) is observed both ways,
+  its state and its holder's version (one observed-site row, `provenance` beside `container`);
 - a chosen read of one is a `PROVENANCE_SITE` (`StaticScopeMap#provenanceCells`), kept though
   nothing in the slice stores it, observed by its receiver alone
   (`ConcolicRegionRuntime.observeProvenance`, no VM call): a receiver a decode registered

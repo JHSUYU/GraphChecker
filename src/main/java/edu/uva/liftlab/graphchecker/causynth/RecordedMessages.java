@@ -32,6 +32,9 @@ final class RecordedMessages {
     /** Where a context anchored on nothing stands -> the message it took
      *  into itself (a DataNode's turn and its DataTransfer op). */
     private final Map<String, String> takenIn = new HashMap<>();
+    /** Producer endpoint id -> the stances of the turns that took it in at
+     *  their root, no occurrence open ({@link #doorStancesOf}). */
+    private final Map<String, Set<String>> receivingStances = new HashMap<>();
 
     RecordedMessages(Collection<ScheduleEvent> schedule) {
         for (ScheduleEvent event : schedule) {
@@ -57,6 +60,10 @@ final class RecordedMessages {
                     receivers.computeIfAbsent(message,
                             ignored -> new LinkedHashSet<>())
                             .add(event.occurrence());
+                } else if (at != null) {
+                    receivingStances.computeIfAbsent(message,
+                            ignored -> new LinkedHashSet<>())
+                            .add(at.render());
                 }
             }
         }
@@ -81,6 +88,23 @@ final class RecordedMessages {
         if (sender != null) doors.add(sender);
         doors.remove(occurrence.id());
         return doors;
+    }
+
+    /**
+     * The stances of the turns that took in, at their root before any of
+     * their regions opened, the message that started {@code occurrence}:
+     * every occurrence of such a turn holds a door of it (an Overseer queue
+     * loop's turn, its task item, and the ZooKeeper door a region of the
+     * turn runs).
+     */
+    Set<String> doorStancesOf(OccurrenceAddress occurrence) {
+        String endpoint = occurrence.context() instanceof CausalContext.Anchor
+                ? ((CausalContext.Anchor) occurrence.context())
+                        .producerEndpointId()
+                : takenIn.getOrDefault(
+                        ContextShape.Stance.of(occurrence).render(), "");
+        Set<String> stances = receivingStances.get(endpoint);
+        return stances == null ? Collections.<String>emptySet() : stances;
     }
 
     /** The shape of {@code context} over the recording's senders. */

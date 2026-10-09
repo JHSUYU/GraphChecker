@@ -1100,7 +1100,7 @@ public final class RuntimeSelectedRegionFinalizer {
                             && !walk.excluded.contains(writer)) {
                         walk.admit(writer, depth, STORE_WRITER_ADMISSION);
                     }
-                    for (String door : messages.doorsOf(
+                    for (String door : doorsOf(messages, program,
                             OccurrenceAddress.parse(writer))) {
                         String held = byId.get(door);
                         if (held == null || walk.reached.contains(held)
@@ -1225,7 +1225,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
                 if (!served.add(occurrence)) continue;
-                for (String door : messages.doorsOf(
+                for (String door : doorsOf(messages, program,
                         OccurrenceAddress.parse(occurrence))) {
                     String held = occurrenceById.get(door);
                     if (held == null || walk.reached.contains(held)
@@ -1241,6 +1241,29 @@ public final class RuntimeSelectedRegionFinalizer {
             progressed |= !seeds.isEmpty();
             walk.walk(seeds);
         } while (progressed);
+    }
+
+    /**
+     * The occurrence ids at the doors of the message that started {@code
+     * occurrence} ({@link RecordedMessages#doorsOf}), and every activation
+     * of a turn that took it in at its root before any of its regions
+     * opened ({@link RecordedMessages#doorStancesOf}: the Overseer queue
+     * loop's turn, whose ZooKeeper door runs in a region of it).
+     */
+    private static Set<String> doorsOf(RecordedMessages messages,
+                                       StaticProgram program,
+                                       OccurrenceAddress occurrence) {
+        Set<String> doors = new LinkedHashSet<>(messages.doorsOf(occurrence));
+        Set<String> stances = messages.doorStancesOf(occurrence);
+        if (stances.isEmpty()) return doors;
+        for (String activation : program.activations.keySet()) {
+            OccurrenceAddress at = OccurrenceAddress.parse(activation);
+            if (stances.contains(ContextShape.Stance.of(at).render())
+                    && !at.id().equals(occurrence.id())) {
+                doors.add(at.id());
+            }
+        }
+        return doors;
     }
 
     private static boolean readsAFault(List<RootRead> reads) {

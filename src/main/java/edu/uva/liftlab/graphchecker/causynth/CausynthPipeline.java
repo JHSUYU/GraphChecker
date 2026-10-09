@@ -2262,7 +2262,7 @@ public final class CausynthPipeline {
                         Hook.OBSERVE_PROVENANCE)) {
                     unobserved++;
                 }
-                continue;
+                if (!target.field && !target.container) continue;
             }
             Stmt selected;
             Value owner;

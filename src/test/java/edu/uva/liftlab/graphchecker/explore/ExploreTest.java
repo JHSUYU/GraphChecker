@@ -5390,6 +5390,71 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * IDENTITY §7.2: a turn that takes a queue item in at its root, before
+     * any of its regions opened (the Overseer queue loop's turn), holds a
+     * door of that item in every occurrence it runs: the item's other
+     * consumer (the task's Runner, which wrote what the anchor read) names
+     * it as a control producer, and its door is asked
+     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write).
+     */
+    @Test
+    public void aTurnThatTookAnItemInAtItsRootHoldsItsDoors()
+            throws Exception {
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/c/state.json");
+        OccurrenceAddress client = occurrence("solr-case/node1",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Processor#add#1");
+        CausalContext runnerTurn = CausalContext.of(Role.of("OVERSEER_TASK"),
+                "", 1);
+        OccurrenceAddress runner = occurrence("solr-case/node0",
+                "REGION.task", runnerTurn, "Runner#run#1");
+        CausalContext queueTurn = CausalContext.of(
+                Role.of("OVERSEER_TASK_QUEUE"), "", 1);
+        OccurrenceAddress marking = occurrence("solr-case/node0",
+                "REGION.mark", queueTurn, "Queue#mark#1");
+        for (boolean rooted : new boolean[] {true, false}) {
+            Path iteration = tree.newFolder("turn-" + rooted).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(client, false);
+            seed.activation(runner, false, true, "runner");
+            seed.activation(marking, false, true, "queue");
+            seed.root(marking, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(marking, "Mark#u3", 1, false, "M_DOOR");
+            seed.write(at(runner, "SOLR_ZK#WRITE:.collections.c.state.json",
+                    "Runner#run#1"), state, 1L, "", "[B");
+            seed.read(at(client, "Processor#ro#u1", "Processor#ro#1"), state,
+                    1L, "S_c1", null);
+            seed.target(client, "Guard#u8#1", "false");
+            seed.flush();
+            List<JsonObject> schedule = new ArrayList<JsonObject>();
+            // Each turn takes the task item in at its root: no occurrence.
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(1L,
+                    ScheduleEvent.Kind.RECV, ContextShape.Stance.of(runner)
+                            .render(), "SOLR_ZK#REQUEST", 0, "", "e-task")));
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(2L,
+                    ScheduleEvent.Kind.RECV, ContextShape.Stance.of(marking)
+                            .render(), "SOLR_ZK#REQUEST", 0,
+                    rooted ? "" : runner.id(), "e-task")));
+            RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                    schedule);
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8"), scopeSite(StaticScopeMap.PROVENANCE_SITE, "",
+                    "Processor#ro#u1", "Processor#ro",
+                    "<P: boolean readOnly>", "<P: boolean readOnly>", ""));
+            Path out = tree.newFolder("turn-" + rooted + "-out").toPath();
+            Path results = out.resolve("obligation_results.jsonl");
+            Files.write(results, new byte[0]);
+            Path wave = out.resolve("obligations-0000");
+            plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1",
+                    null, results, wave, 0);
+            assertEquals("rooted=" + rooted, rooted,
+                    named(obligations(wave), "Mark#u3") != null);
+        }
+    }
+
     /** A phi whose expression names its own read (ConcreteAnchor case). */
     private static final String NAMES_ITS_READ = "EXPR.00000000000000a7";
 
