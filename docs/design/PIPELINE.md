@@ -272,8 +272,9 @@ order supersedes the recorded placement: the prefix ends before the first event 
 reorder, and past the cut such a run's reads take no slot (`ScheduleLog#readsHeld`), so a `READ`
 yields to a planted `ORDER` -- a flipped world that reads before the newer write is never held
 back to the recorded place -- while the writes keep their turns behind one another. A `READ` slot
-never blocks the frontier; both its waits (the read behind the earlier write, the next write behind
-the read) end when that slot is taken or given up, at the stall rule's bound. A replay publishes one session under
+never blocks the frontier, and both its waits are bounded by the stall rule's grace: the read behind
+the earlier write is let go a grace into a stall (the write keeps its slot), and the next write
+behind a read that does not come gives that read up a grace into one. A replay publishes one session under
 `iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
 focus row its `manifest.json` states role `SEED`. The seed replay runs under a wall clock of
 `seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than

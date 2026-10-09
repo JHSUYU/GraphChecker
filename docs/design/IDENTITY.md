@@ -686,9 +686,13 @@ order:
   one; 39, MB18s: 45 such writes given up one by one, behind writes up to 970 slots past the frontier);
 - a `READ` is held by its location alone: it waits while a write the order makes there before its slot is
   open and holds (the earliest such), and a `WRITE` waits so behind the reads there as behind the writes
-  (`#conflictLocked`; reads never wait for reads), each until that slot is taken or given up, with the write
-  rule's owing exception. Its slot is never
-  blocking (`#blocking`), so the frontier passes it and a stall gives that one wait up, never the run; a read
+  (`#conflictLocked`; reads never wait for reads), with the write rule's owing exception. Its slot is never
+  blocking (`#blocking`), so the frontier passes it. The read's wait is a held one: while the order moves it
+  waits for its write; a grace into a stall it is let go, the write's slot kept (`#letGoHeldLocked`): a
+  read's k-th slot is its context's k-th recorded read there, and a context that reads more often than
+  recorded -- a poll, a cache refresh -- waits for a later write than its own, which may wait on the reader
+  (solr-adhoc-39, MB29s: 37 such waits given their writes up, 447 s, and 145 write conflicts 1,710 s). A
+  write behind a read that does not come gives that read up a grace into the stall, not a timeout. A read
   with no slot runs free. Only the reads a run's recorded placement decides take slots: in a run the model
   orders (a world's planted pairings, CONFIRM, a reproduction's plant: `ScheduleLog#readsHeld`) the reads
   past the cut take none, and the model's `ORDER` rows place them (PIPELINE.md §5);
@@ -706,11 +710,13 @@ order:
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
   still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
   waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
-  give-up of the 4560 slots before it). A frontier whose context family -- its node and causal context, a root's turn
-  number, an anchor's endpoint and the start frames left out -- missed its event in a stall before stands a grace,
-  not a timeout: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63
-  of 19's 70, stood on a context that had failed one; MB21s/MB22s: 34 of 10's 58 and 26 of 31's 69 on another turn
-  or anchor of a family that had). Past the cut a `WAKE` with no slot runs free, except in an
+  give-up of the 4560 slots before it). The slot a stall would give up first -- the one write or read a conflicted
+  write waits behind, else the frontier -- stands a grace, not a timeout, when it is a `READ` or its context family
+  -- its node and causal context, a root's turn number, an anchor's endpoint and the start frames left out -- missed
+  its event in a stall before: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up
+  stalls, 63 of 19's 70, stood on a context that had failed one; MB21s/MB22s: 34 of 10's 58 and 26 of 31's 69 on
+  another turn or anchor of a family that had; MB29s: 102 of 39's 145 conflicts stood the timeout while the family
+  was judged by the waiting write's context, not the one it waited for). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the

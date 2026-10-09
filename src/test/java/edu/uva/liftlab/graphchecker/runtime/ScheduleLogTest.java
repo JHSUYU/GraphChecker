@@ -1036,7 +1036,7 @@ public class ScheduleLogTest {
      * replay's, in the order its threads come; the run (a seed, cut at its
      * end; a run the model orders, cut after the write or at its end; a
      * replay no model orders, cut after the write); the order the turns are
-     * made in; and the order's size.  Past the cut of a model's order (a
+     * made in; and the order's account.  Past the cut of a model's order (a
      * world's planted pairings, CONFIRM) a read takes no slot: the model's
      * ORDER rows place it.  A read of a location no write of the order
      * wrote takes none either.
@@ -1044,12 +1044,16 @@ public class ScheduleLogTest {
     @Test(timeout = 60000L)
     public void aReadTakesItsTurnAtItsLocation() throws Exception {
         String[][] rows = {
-            {"w:W r:R", "r:R w:W", "seed", "w r", "2 slot(s)"},
-            {"r:R w:W", "w:W r:R", "seed", "r w", "2 slot(s)"},
-            {"w:W r:R", "r:R w:W", "model", "r w", "1 slot(s)"},
-            {"w:W r:R", "r:R w:W", "suffix", "w r", "2 slot(s)"},
-            {"w:W r:R", "r:R w:W", "model prefix", "w r", "2 slot(s)"},
+            {"w:W r:R", "r:R w:W", "seed", "w r", "2 taken, 0 given up"},
+            {"r:R w:W", "w:W r:R", "seed", "r w", "2 taken, 0 given up"},
+            {"w:W r:R", "r:R w:W", "model", "r w", "1 slot(s) (prefix 1)"},
+            {"w:W r:R", "r:R w:W", "suffix", "w r", "2 taken, 0 given up"},
+            {"w:W r:R", "r:R w:W", "model prefix", "w r", "2 taken, 0 given up"},
             {"r:R", "r:R", "seed", "r", "no order"},
+            // The write never comes: the read is let go, the write's slot
+            // kept; the read never comes: the write gives it up, a grace in.
+            {"w:W r:R", "r:R", "seed", "r", "1 taken, 0 given up"},
+            {"r:R w:W", "w:W", "seed", "w", "1 taken, 1 given up"},
         };
         for (String[] row : rows) {
             noRequest();
@@ -1087,8 +1091,7 @@ public class ScheduleLogTest {
             assertEquals(Arrays.toString(row), Arrays.asList(row[3].split(" ")),
                     made);
             String progress = ScheduleLog.progress();
-            assertTrue(progress, progress.contains(row[4])
-                    && !progress.matches(".* [1-9][0-9]* given up.*"));
+            assertTrue(progress, progress.contains(row[4]));
         }
     }
 
