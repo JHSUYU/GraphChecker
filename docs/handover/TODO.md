@@ -83,9 +83,8 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   the id drifts as the corpus grows. 39 closes, but its closure varied run to run before the open-arm keys (CHECKING
   trap 18).
 - **51**: the arm key's u18#3 gap (rule 1 and the own-fault key missed the throughput bar; branches parked).
-- **Confirm-first** (`hdfs1-confirm-first` da913cd7c, parked): a returned confirmation is decided only by the next
-  step, behind any witness attempt in flight. With the Cone fix that costs minutes (HF2: 15 min from queue to
-  accepted); merge if a confirmation is seen waiting > 10 min.
+- **Confirm-first**: merged on `system/solr` (2026-10-08): solr-18406 SG3V's confirmation waited 46 min behind a witness
+  attempt's COMPOSE that waited for head memory.
 - **Scope (B)**, widening that would only make right formulas more flippable: 29/30 the block-pool map written at
   DataNode start-up and `bpServiceToActive`'s in-window writer gated by HA state; 17's lease and 39's IBR ordering
   (turns on threads with no schedule events); an identity compare of a tracked reference with an enum constant states

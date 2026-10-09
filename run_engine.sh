@@ -4510,10 +4510,26 @@ campaign_stream_plan_due() {
   done
 }
 
+# Whether a witness's confirmation is owed its verdict: queued, running, or
+# returned and not yet landed.  Its verdict goes first: no attempt starts
+# meanwhile, since one that confirms ends the exploration, and an attempt
+# composes the corpus again (hdfs-11741 CC7: attempt 0001 started a second
+# before attempt 0000's ADMITTED confirmation returned, and that verdict
+# waited behind it).
+campaign_stream_confirm_owed() {
+  local entry
+  for entry in "${stream_jobs[@]}" "${stream_queue[@]}" \
+      "${stream_pending[@]}"; do
+    [[ "${entry}" != CONFIRM\ * ]] || return 0
+  done
+  return 1
+}
+
 # Between two steps, in the head's hands, the next one, in steps/NNNN/.
 # Witnesses gated and not yet attempted make it an ATTEMPT (`witnesses`,
 # all of them, and `confirming`, the models whose confirmation is still
-# owed) unless a confirmation replay returned, whose verdict goes first:
+# owed) unless a confirmation is owed its verdict, which goes first
+# (campaign_stream_confirm_owed):
 # nothing lands while an attempt runs, so it composes the corpus as it
 # stood, and whatever returns meanwhile, a witness too, waits for the step
 # after it -- at most one attempt at a time, the witnesses that come during
@@ -4527,7 +4543,7 @@ campaign_stream_step_start() {
   local dir name="" row entry
   local -a stream_staged=() gate=() confirms=()
   if (( ${#stream_witnesses[@]} > 0 )) && [[ -z "${stream_stop}" ]] \
-      && [[ " ${stream_pending[*]} " != *" CONFIRM "* ]]; then
+      && ! campaign_stream_confirm_owed; then
     campaign_stream_step_dir
     printf '%s\n' "${stream_witnesses[@]}" >"${dir}/witnesses"
     for entry in "${stream_confirming[@]}"; do

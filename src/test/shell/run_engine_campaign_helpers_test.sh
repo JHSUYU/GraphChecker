@@ -2856,9 +2856,9 @@ jq -e -s 'map(.obligationId) | sort == ["A","N"]' \
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "what returned during the confirmation did not land"
 
-# STREAM-2d: A MODEL UNDER CONFIRMATION WAITS.  B's attempt claims the model
-# A's confirmation is still deciding: not confirmed twice, its witness waits,
-# and once A's verdict lands -- refuted -- B is attempted again, confirmed.
+# STREAM-2d: A CONFIRMATION OWED GOES FIRST.  B lands while A's confirmation
+# runs: no attempt starts until A's verdict lands -- refuted -- and then B is
+# attempted once, confirmed (campaign_stream_confirm_owed).
 stream_fixture stream-2d
 (
   stream_stubs
@@ -2881,16 +2881,12 @@ stream_fixture stream-2d
 $(cat "${stream_dir}/explore.log")"
 jq -e '.stop == "WITNESSED"
   and ([.witnessAttempts[] | [.attempt, .accepted, .confirmed]]
-       == [["0000", false, false], ["0001", false, null],
-           ["0002", true, true]])
+       == [["0000", false, false], ["0001", true, true]])
   and ([.witnessAttempts[].witnesses]
-       == [["SESSION.A"], ["SESSION.B"], ["SESSION.B"]])
-  and (.witnessAttempts[1].confirmReason | test("under confirmation"))' \
+       == [["SESSION.A"], ["SESSION.B"]])' \
   "${stream_dir}/exploration.json" >/dev/null \
-  || fail "a model under confirmation was confirmed twice, or its witness \
-was not attempted again: $(cat "${stream_dir}/exploration.json")"
-[[ ! -e "${campaign_root}/witness-confirm/0001" ]] \
-  || fail "the deferred attempt planned a confirmation"
+  || fail "an attempt started while a confirmation was owed, or B was not \
+attempted after A's refutation: $(cat "${stream_dir}/exploration.json")"
 
 # STREAM-2e: THE WITNESS BY ATTEMPT ORDER.  Of the confirmations that land
 # together, the earliest attempt confirmed is the witness, whatever their
@@ -3522,6 +3518,31 @@ done <<'EOF'
 SAT_MODEL_READY|0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
 UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
 SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
+EOF
+
+# STREAM-CONFIRM-FIRST: a confirmation queued, running or returned is owed
+# its verdict, and no witness attempt starts meanwhile
+# (campaign_stream_confirm_owed); obligations and replays owe none.  Per
+# row: a running job, the queue, what returned, and whether one is owed.
+while IFS='|' read -r owed_job owed_queue owed_pending owed_expect; do
+  owed_said=$(
+    declare -A stream_jobs=()
+    [[ "${owed_job}" == - ]] || stream_jobs[4242]=${owed_job}
+    stream_queue=()
+    [[ "${owed_queue}" == - ]] || stream_queue=("${owed_queue}")
+    stream_pending=()
+    [[ "${owed_pending}" == - ]] || stream_pending=("${owed_pending}")
+    if campaign_stream_confirm_owed; then echo owed; else echo none; fi
+  )
+  [[ "${owed_said}" == "${owed_expect}" ]] \
+    || fail "job '${owed_job}', queue '${owed_queue}', returned \
+'${owed_pending}': ${owed_said}, not ${owed_expect}"
+done <<'EOF'
+-|-|-|none
+OBLIGATION obligations-0003 A lift12 s|REPLAY obligations-0003 B|OBLIGATION obligations-0002 C lift13 0|none
+CONFIRM - 0000 lift09 s|-|-|owed
+-|CONFIRM - 0000|-|owed
+-|-|CONFIRM - 0000 lift09 0|owed
 EOF
 
 # STREAM-CHAIN: a witness attempt whose COMPOSE names an open chain (its
