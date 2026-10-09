@@ -125,7 +125,9 @@ public class RootDemandTest {
      * (a read of a decoded object's field reads the store version it was
      * parsed from), and the walk goes on through what its constructor stored
      * -- a processor's copy of its collection's read-only flag leads to the
-     * flag read, a boundary of its own.
+     * flag read, a boundary of its own, and a container field the flag's
+     * construction read holds what that copy's version holds: PROVENANCE,
+     * no tracked container (solr-18413 Z3: ZkNodeProps.propMap).
      */
     @Test
     public void aConstructionOnlyFieldIsWalkedThroughToWhatItsConstructorStored() {
@@ -134,13 +136,18 @@ public class RootDemandTest {
         String init = "<t.T: void <init>(t.D)>";
         String copy = field("boolean copy");
         String flag = "<t.D: java.lang.Boolean flag>";
+        String built = "<t.D: void <init>(java.util.Map)>";
+        String props = "<t.D: java.util.Map props>";
         List<Map<String, Object>> edges = Arrays.asList(
                 edge("exception_guard", z0, CHECK + "#u9#exception:E",
                         CHECK, 9, null),
                 edge("field_read", copy, z0, CHECK, 4, null),
                 edge("field_write", init + "::$z1", copy, init, 3, null),
                 edge("accessor_field_return", flag, init + "::$z1", init, 2,
-                        "<t.D: java.lang.Boolean isFlag()>"));
+                        "<t.D: java.lang.Boolean isFlag()>"),
+                edge("field_write", built + "::$r2", flag, built, 2, null),
+                edge("field_read", props, built + "::$r2", built, 1, null),
+                edge("field_write", RUN + "::$r3", props, RUN, 5, null));
         RootDemand demand = RootDemand.of(edges, Collections.singletonList(
                 region()), Collections.<String, Clock>emptyMap(),
                 ConfigRoots.of(edges, new LinkedHashMap<>()),
@@ -155,7 +162,8 @@ public class RootDemandTest {
                     + boundary.chosen + " " + boundary.cell);
         }
         assertEquals(Arrays.asList("PROVENANCE 1 true " + copy,
-                "PROVENANCE 3 true " + flag), found);
+                "PROVENANCE 3 true " + flag, "PROVENANCE 5 true " + props),
+                found);
         assertEquals("the read the scope map marks", "PROVENANCE 3 true",
                 mark(demand.marks().at(init + "#u2", flag)));
     }

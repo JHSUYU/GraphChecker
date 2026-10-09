@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -523,6 +524,9 @@ final class RootDemand {
         Map<String, Integer> distance = new HashMap<>();
         Map<String, Boundary> found = new LinkedHashMap<>();
         Deque<String> queue = new ArrayDeque<>();
+        // Cells first reached past a PROVENANCE boundary: what a
+        // construction copied.
+        Set<String> copied = new HashSet<>();
         for (String start : starts) {
             distance.put(start, 0);
             queue.add(start);
@@ -530,6 +534,7 @@ final class RootDemand {
         while (!queue.isEmpty()) {
             String cell = queue.removeFirst();
             int next = distance.get(cell) + 1;
+            boolean beyond = copied.contains(cell);
             for (Map<String, Object> edge : into.getOrDefault(cell,
                     Collections.<Map<String, Object>>emptyList())) {
                 if (!classes.follows(edge)) continue;
@@ -543,6 +548,13 @@ final class RootDemand {
                 String site = text(edge.get("siteId"));
                 if (!site.isEmpty()) demanded.merge(site, next, Math::min);
                 Kind kind = classes.of(from, edge);
+                // A container field a construction copied in holds what
+                // the copy's version holds (runtime.Provenance): no log of
+                // its own (solr-18413 Z3: ZkNodeProps.propMap, tracked in
+                // every parsed state object, held one makePath close 440 s).
+                boolean holds = beyond && kind == Kind.TRACK_CONTAINER
+                        && !RETURN.matcher(from).matches();
+                if (holds) kind = Kind.PROVENANCE;
                 if (kind != null) {
                     String siteId = text(edge.get("siteId"));
                     found.putIfAbsent(kind + "\n" + from + "\n" + siteId,
@@ -550,10 +562,11 @@ final class RootDemand {
                                     text(edge.get("kind")), next));
                     // A construction-only field is a copy its constructor
                     // made: the walk goes on to what that stored.
-                    if (kind != Kind.PROVENANCE) continue;
+                    if (kind != Kind.PROVENANCE || holds) continue;
                 }
                 if (distance.putIfAbsent(from, next) == null) {
                     queue.addLast(from);
+                    if (beyond || kind == Kind.PROVENANCE) copied.add(from);
                 }
             }
         }

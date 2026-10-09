@@ -832,7 +832,7 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
 | `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
 | `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
-| `PROVENANCE` | a construction-only field (§5.1) holding no container | a chosen read is a PROVENANCE_SITE (§5.7); the walk goes on through what the field's constructor stored, so a copy leads to its source |
+| `PROVENANCE` | a construction-only field (§5.1) holding no container; past one, a container field a construction copied in | a chosen read is a PROVENANCE_SITE (§5.7); the walk goes on through what the field's constructor stored, so a copy leads to its source, and stops at a container field there |
 | `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
 | `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
 | `IO` | a stream, file, socket, channel or native result | a demanded door where its outcome reaches the slice (below), else named (`NO_DOOR`) |
@@ -1087,7 +1087,12 @@ parsed from (IDENTITY §7.2), so:
   their receiver too (`StaticScopeMap#provenanceCalls`: a processor's
   `readOnlyCollection = coll.isReadOnly()`, `DocCollection` out of the scope); and a chosen
   `TRACK_CONTAINER` read of a construction-only container (an `Aliases`' map) is observed both ways,
-  its state and its holder's version (one observed-site row, `provenance` beside `container`);
+  its state and its holder's version (one observed-site row, `provenance` beside `container`); past
+  a `PROVENANCE` field, a container field the construction read (`ZkNodeProps.propMap`,
+  `DocCollection.slices`, `Slice.replicas` in their constructors) is `PROVENANCE` itself, its
+  holder's version standing for its contents, no log of its own: tracked, every state object a node
+  parsed logged its maps, and solr-18413's seed replay spent 440-740 s at single region closes
+  decoding them (round Z3);
 - a chosen read of one is a `PROVENANCE_SITE` (`StaticScopeMap#provenanceCells`), kept though
   nothing in the slice stores it, observed by its receiver alone
   (`ConcolicRegionRuntime.observeProvenance`, no VM call): a receiver a decode registered
