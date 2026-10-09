@@ -122,6 +122,19 @@ final class StoreContent {
     static void stored(String transport, String key, byte[] bytes) {
         Object document = bytes == null ? null : WRITTEN.remove(bytes);
         if (document == null || !RowRuntime.open()) return;
+        try {
+            export(transport, key, document);
+        } catch (Throwable failed) {
+            // A door never throws into the workload: what failed is named.
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    trimmed(transport) + " " + key, "the version's content"
+                            + " was not exported: "
+                            + ConcolicRegionRuntime.rootCause(failed));
+        }
+    }
+
+    private static void export(String transport, String key,
+                               Object document) {
         String location = MessageDoors.location(key);
         Map<String, Exported> leaves = new LinkedHashMap<String, Exported>();
         pauseObservation();
@@ -240,6 +253,18 @@ final class StoreContent {
         synchronized (EXPORTS) {
             exports = EXPORTS.get(version);
         }
+        try {
+            attach(transport, key, exports, tree);
+        } catch (Throwable failed) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    transport + " " + key, "the version's content was not"
+                            + " minted where it was parsed: "
+                            + ConcolicRegionRuntime.rootCause(failed));
+        }
+    }
+
+    private static void attach(String transport, String key,
+                               Map<String, Exported> exports, Object tree) {
         String location = MessageDoors.location(key);
         pauseObservation();
         try {
@@ -441,11 +466,23 @@ final class StoreContent {
 
     // ---- the documents ---------------------------------------------------
 
-    /** The port one leaf of a location crosses: the location as every run
-     *  spells it, and the leaf's JSON pointer. */
+    /**
+     * The port one leaf of a location crosses, a site as every run spells
+     * it: {@code <transport>#CONTENT:<location>#<pointer>}, the location as
+     * the store's turn keys it and the leaf's JSON pointer, each {@code /}
+     * spelled {@code |} since a site spells no {@code /} or {@code @}
+     * ({@code contract.Frame}; {@code %}, {@code |} and {@code @} are
+     * escaped first).
+     */
     static String port(String transport, String location, String pointer) {
-        return trimmed(transport) + ":" + MessageDoors.storeLocation(
-                transport, location).slot() + "#" + pointer;
+        return trimmed(transport) + "#CONTENT:" + site(MessageDoors
+                .storeLocation(transport, location).slot()) + "#"
+                + site(pointer);
+    }
+
+    private static String site(String path) {
+        return path.replace("%", "%25").replace("|", "%7C")
+                .replace("@", "%40").replace('/', '|');
     }
 
     /** One leaf of a document: its holder, its slot and its pointer. */

@@ -46,6 +46,15 @@ public class StoreContentTest {
                 "/c/shards/shard1/range/1=7:NUM"), pointers);
     }
 
+    /** A leaf's port is a site: no '/' or '@' (contract.Frame). */
+    @Test
+    public void aLeafsPortIsASite() {
+        assertEquals("SOLR_ZK#CONTENT:|aliases.json#|collection_metadata"
+                        + "|t|router.start%40x%7Cy",
+                StoreContent.port("SOLR_ZK", "/aliases.json",
+                        "/collection_metadata/t/router.start@x|y"));
+    }
+
     @Test
     public void aDocumentPastItsBoundCrossesTheRestAsConstants() {
         Map<String, Object> wide = new LinkedHashMap<String, Object>();

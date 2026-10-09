@@ -1339,9 +1339,10 @@ and `fetched`'s `data`), and the engine pairs them by identity: a write of bytes
 exports each leaf on the version it made, at the writer's occurrence; a fetch names the version its
 bytes are, and a parse of those bytes mints each leaf of the tree on its entry (the VM's leaf
 natives, VM.md §7: `exportLeaf`, `mintLeaf` ENTRY or POSITION) in the parsing occurrence. Each leaf
-is a port of its own, `<transport>:<location>#<JSON pointer>` (RFC 6901), and its attach pairs with
-the export of the version it was fetched at, by that version (the message) and the port
-(CORRELATION_PORT). Both tables are weak by the array: a document no store write or fetch takes (an
+is a port of its own, `<transport>#CONTENT:<location>#<JSON pointer>` (RFC 6901; each `/` spelled
+`|`, as a site spells none), and its attach pairs with the export of the version it was fetched
+at, by that version (the message) and the port (CORRELATION_PORT). A door step that fails names
+itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload. Both tables are weak by the array: a document no store write or fetch takes (an
 HTTP response, a log line) is dropped with its bytes. The codec builds a writer's document only on a
 thread inside an opened occurrence of a replay (`MessageDoors#capturingContent`, the rule trace rows
 follow); a fetched version's parse mints wherever a replay runs it, at the activation running there
