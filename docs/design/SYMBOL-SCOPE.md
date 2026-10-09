@@ -260,10 +260,12 @@ campaign_analyze_grown_scope` reruns the static pass until nothing is added or t
 
 Only classes under the lineage roots are indexed, so nothing else (the JDK, a library jar) is
 ever grown by a row. Before the first pass, outside the budget, the door step copies the class
-families of the library doors the system calls (§4.2), from a library jar too, and every family a
-system's `HOOK` row places a door in, whatever the scope calls (`ScopeGrowth#doors`): those doors
-are the system's transports, and a command in scope reaches them through layers out of it (Solr's
-RestoreCmd sends RESTORECORE through the shard handler into `Http2SolrClient`).
+families of the library doors the system calls (§4.2), from a library jar too (`ScopeGrowth#doors`).
+A family only layers out of the scope call (a request a command sends through Solr's shard
+handler) stays out: joined, every request of its client is a region whose occurrence lives as long
+as the request, and a region's close reads out every tracked version made meanwhile (solr-18413
+round Z5: `HttpSolrClient` joined, 45 such regions, the seed replay past its 2400 s bound; 485 s
+without them).
 
 ## 3. The static scope map
 
