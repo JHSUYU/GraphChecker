@@ -244,25 +244,28 @@ path holds models' concrete-answer conditions too), application code the body ra
 the recording and the rest runs as bytecode, named `STREAM_OPERATION_UNMODELED:<operation>` when the
 source's state or a symbolic bound was in it; and a terminal past the callback window stack runs as
 bytecode, `STREAM_PINNED:CALLBACK_DEPTH`. A pipeline nothing symbolic reached returns the run's
-result and names nothing. `Collectors.toList`/`toSet`/`toMap` are muted to name the kind of
-collector by its accumulator, the one non-capturing method reference every list or set collector
-holds and the lambda each `toMap` returns, so a collector kept in a field is known at every use.
+result and names nothing. `Collectors.toList`/`toSet` are muted to name the kind of collector by
+its accumulator, the one non-capturing method reference every such collector holds, so a collector
+kept in a field is known at every use; a `toMap` collector is known by its accumulator's shape.
 
-**`toMap`** (every overload: `toMap(k, v)` is `toMap(k, v, throwingMerger(), HashMap::new)`). Its
-accumulator `(map, e) -> map.merge(keyMapper.apply(e), valueMapper.apply(e), mergeFunction)`
-captured the three functions (the lambda's fields `arg$1..arg$3`; the collector's `supplier`
-field): the key and value mappers are two more stages, both seeded with the element, and the merge
-function and the supplier are callbacks of the terminal too (the supplier states nothing; it runs
-hooked). The result is the supplier's map, stated when it is one the map model states (else
-`STREAM_PINNED:MAP_UNMODELED`): from its stated empty base, each element as `HashMap.merge` stores
+**`toMap`** (every overload: `toMap(k, v)` is `toMap(k, v, throwingMerger(), HashMap::new)`; a
+`toConcurrentMap`'s is the same). Its accumulator, a `Collectors` lambda `(map, e) ->
+map.merge(keyMapper.apply(e), valueMapper.apply(e), mergeFunction)`, captured the three functions
+(the lambda's fields `arg$1..arg$3`; the collector's `supplier` field): the key and value mappers are
+two more stages, both seeded with the element, and the merge function and the supplier are callbacks
+of the terminal too (the supplier runs hooked). The result is the supplier's map, which must be an
+empty map the map model states, untracked when the supplier returns it (else the result is the run's
+own, `STREAM_PINNED:SUPPLIED_MAP`: a `TreeMap`, one already holding members): from its stated empty
+base, each element as `HashMap.merge` stores
 it, `PUT [k, v]` under the element's guard -- and, where an earlier key may equal this one (the run
 called the merge function for it, or a key so far is no constant), `PUT_IF [k, v]` under `MATCHES
 (chain, k, null)` and, under its negation, what the merge function answered (seeded with a `READ`
 of the members before it and the element's value; a null answer a `REMOVE_IF`) or, where the run
 never called it, an `UNKNOWN` cell, named `STREAM_PINNED:MERGE` (a throwing merger's world throws:
 over-approximated, CONFIRM decides). A merge function that throws unwinds the terminal
-(`STREAM_PINNED:UNWOUND`). A filter's symbolic drop before the mappers is pinned (`DROPPED`), as
-before any stage that calls back.
+(`STREAM_PINNED:UNWOUND`). A value that is no constant may be null in another world, where
+`HashMap.merge` throws and the chain states a `PUT`: named `STREAM_PINNED:NULL_VALUE`. A filter's
+symbolic drop before the mappers is pinned (`DROPPED`), as before any stage that calls back.
 
 ## 5. Shared-state versioning
 
@@ -720,8 +723,8 @@ collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, 
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
 pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, a `toMap`
-over constant and symbolic keys and with a merge function the run called, the pins and the model
-gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
+over constant and symbolic keys, with a merge function the run called (and one answering null),
+after a filter, and from a supplier's map that is no empty base, the pins and the model gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
 length past its element writes, a list's size past `set()` and at its `APPEND`/`REMOVE`),
 `RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
 named unknown cells, no version for a call that changed nothing, an `equals()` match, answers

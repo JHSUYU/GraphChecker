@@ -4,10 +4,12 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.TreeMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import java.util.stream.Collector;
 import java.util.stream.Collectors;
 
@@ -41,7 +43,10 @@ import java.util.stream.Collectors;
  * a PUT chain from its stated empty base; symbolic keys a run found new
  * stand where an earlier one may equal them, with an UNKNOWN cell for what
  * the merge function would have stored; a merge function the run called
- * is stated as what it answered over a READ of the map so far.</p>
+ * is stated as what it answered over a READ of the map so far, a null
+ * answer a removal; a filter's symbolic drop before the mappers is pinned;
+ * a supplier's map that is no empty modeled map (a TreeMap, one already
+ * holding members) leaves the result the run's own.</p>
  */
 public final class RegionStreamSmoke {
     private static final Collector<Object, ?, List<Object>> TO_LIST =
@@ -233,6 +238,29 @@ public final class RegionStreamSmoke {
                 .collect(Collectors.toMap(s -> s, s -> s,
                         (a, b) -> a.concat(b)));
         String mergedVersions = System.getSharedMapVersions(merged);
+        // 14d. A merge function answering null removes the key.
+        Map<String, String> removed = twice.stream()
+                .collect(Collectors.toMap(s -> s, s -> s, (a, b) -> null));
+        String removedVersions = System.getSharedMapVersions(removed);
+        // 14e. A filter before the mappers.
+        Map<String, String> filtered = two.stream()
+                .filter(s -> s.startsWith("/s"))
+                .collect(Collectors.toMap(s -> s, s -> s));
+        String filteredVersions = System.getSharedMapVersions(filtered);
+        // 14f, 14g. A supplier's map no empty modeled map: a TreeMap, and
+        // one already holding a member.
+        Map<String, String> sorted = aliases.entrySet().stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, e -> "v",
+                        (a, b) -> a, TreeMap::new));
+        Supplier<Map<String, String>> holding = () -> {
+            Map<String, String> held = new HashMap<String, String>();
+            held.put("pre", "x");
+            return held;
+        };
+        Map<String, String> prefilled = aliases.entrySet().stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, e -> "v",
+                        (a, b) -> a, holding));
+        String prefilledVersions = System.getSharedMapVersions(prefilled);
         String summary = System.getConcolicRegionSummary();
         System.endConcolic();
 
@@ -253,7 +281,9 @@ public final class RegionStreamSmoke {
                         && ordered.size() == 1 && reused.size() == 1
                         && joined.size() == 2 && lengths.size() == 2
                         && merged.size() == 1
-                        && merged.get(input.disk).length() == 8,
+                        && merged.get(input.disk).length() == 8
+                        && removed.isEmpty() && filtered.size() == 1
+                        && sorted.size() == 2 && prefilled.size() == 3,
                 "a modeled pipeline changed what the program computed");
         require(joinedVersions.contains("\"versionKind\":\"STATE_COLLECT\"")
                         && joinedVersions.contains("\"operation\":\"PUT")
@@ -277,6 +307,16 @@ public final class RegionStreamSmoke {
                                 + "\"UNKNOWN\""),
                 "a merge function the run called is not stated: "
                         + mergedVersions);
+        require(removedVersions.contains("\"operation\":\"REMOVE_IF\""),
+                "a merge function's null is no removal: " + removedVersions);
+        require(filteredVersions.contains("startsWith")
+                        && filteredVersions.contains("\"operation\":\"PIN\"")
+                        && summary.contains("STREAM_PINNED:DROPPED"),
+                "a filter before toMap is not stated: " + filteredVersions);
+        require(summary.contains("STREAM_PINNED:SUPPLIED_MAP")
+                        && prefilledVersions.contains("\"selected\":false"),
+                "a supplier's map no empty base was stated: "
+                        + prefilledVersions);
         require(sortedFastVersions.contains("\"selected\":false")
                         && summary.contains("STREAM_PINNED:SORTED"),
                 "a barrier ahead of the first callback was stated: "

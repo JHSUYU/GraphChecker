@@ -37,9 +37,7 @@ enum Terminal {
   ALL_MATCH, NONE_MATCH, FIND, FOR_EACH
 };
 
-enum CollectorKind {
-  COLLECTOR_TO_LIST = 1, COLLECTOR_TO_SET = 2, COLLECTOR_TO_MAP = 3
-};
+enum CollectorKind { COLLECTOR_TO_LIST = 1, COLLECTOR_TO_SET = 2 };
 
 bool named(const std::string &value, const char *name) {
   return value == name;
@@ -119,7 +117,7 @@ Expression *counted(int count) {
 // collector per call around the one accumulator their non-capturing method
 // reference (List::add, Set::add) always yields, so the accumulator names
 // the kind: one entry per kind, and a collector kept in a field is known
-// at every use.  Every toMap's is its own lambda, named as toMap returns.
+// at every use.
 oop accumulator_of(oop collector) {
   return collector == NULL ? (oop) NULL
       : OopUtils::obj_field_by_name(collector, "accumulator",
@@ -128,9 +126,10 @@ oop accumulator_of(oop collector) {
 
 // What a toMap collector calls back: its key and value mappers and its
 // merge function, which its accumulator `(map, element) -> map.merge(
-// keyMapper.apply(element), valueMapper.apply(element), mergeFunction)`
-// captured in that order (the lambda's fields arg$1..arg$3), and the map
-// supplier.  False when one is missing.
+// keyMapper.apply(element), valueMapper.apply(element), mergeFunction)` --
+// a Collectors lambda, one per call, known by its shape, never named in a
+// table -- captured in that order (the lambda's fields arg$1..arg$3), and
+// the map supplier.  False for any other collector.
 struct MapCollector {
   oop key;
   oop value;
@@ -138,9 +137,14 @@ struct MapCollector {
   oop supplier;
 };
 
+const char *const COLLECTORS_LAMBDA = "java/util/stream/Collectors$$Lambda$";
+
 bool map_collector(oop collector, MapCollector *parts) {
   oop accumulator = accumulator_of(collector);
-  if (accumulator == NULL) return false;
+  if (accumulator == NULL || !accumulator->klass()->name()->starts_with(
+          COLLECTORS_LAMBDA, (int) strlen(COLLECTORS_LAMBDA))) {
+    return false;
+  }
   parts->key = OopUtils::obj_field_by_name(accumulator, "arg$1",
                                            "Ljava/util/function/Function;");
   parts->value = OopUtils::obj_field_by_name(accumulator, "arg$2",
@@ -153,10 +157,11 @@ bool map_collector(oop collector, MapCollector *parts) {
       && parts->supplier != NULL;
 }
 
-// Whether `result` is a map the map model states (SymMap).
-bool modeled_map(oop result) {
+// Whether `map` is one the map model states (SymMap): the empty base a
+// toMap's chain starts at is its state.
+bool modeled_map(oop map) {
   const ContainerSupport::Capability capability =
-      ContainerSupport::capability(result);
+      ContainerSupport::capability(map);
   return capability == ContainerSupport::CAPABILITY_HASH_MAP
       || capability == ContainerSupport::CAPABILITY_CONCURRENT_MAP
       || capability == ContainerSupport::CAPABILITY_HASHTABLE;
@@ -243,10 +248,12 @@ struct Output {
 };
 
 const size_t NO_PENDING = (size_t) -1;
-// A callback no stage makes (toArray's array generator, toMap's supplier).
+// A callback no stage makes (toArray's array generator).
 const size_t IGNORED = (size_t) -2;
 // toMap's merge function, called for the member that arrived last.
 const size_t MERGING = (size_t) -3;
+// toMap's supplier, making the map the members go into.
+const size_t SUPPLYING = (size_t) -4;
 
 }  // namespace
 
@@ -261,7 +268,8 @@ public:
         _live(false), _pulled(0), _symbolic(false), _pinned(NULL),
         _barrier_met(false), _seen_callback(false), _stopped(false),
         _over_bound(false), _deciding(NULL), _guarded_action(false),
-        _merge(NULL_SYM_RID) {}
+        _merge(NULL_SYM_RID), _supplier(NULL_SYM_RID),
+        _nullable_value(false) {}
 
   ~StreamPipeline() {
     if (_source != NULL) JNIHandles::destroy_weak_global(_source);
@@ -308,7 +316,8 @@ public:
     if (terminal == TO_MAP && map_collector(handle.get_param<oop>(1), &parts)) {
       // Per element: the key mapper, the value mapper, and -- where the map
       // already holds the key -- the merge function.  The supplier is
-      // called back too, so an application's runs hooked; it states nothing.
+      // called back too, so an application's runs hooked, and the map it
+      // makes is checked to be the empty base the chain starts at.
       Stage key(KEY);
       key.function = ConcolicMngr::ctx->name_reference(parts.key);
       _stages.push_back(key);
@@ -317,7 +326,8 @@ public:
       _stages.push_back(value);
       _merge = ConcolicMngr::ctx->name_reference(parts.merge);
       handle.add_functional(_merge);
-      handle.add_functional(ConcolicMngr::ctx->name_reference(parts.supplier));
+      _supplier = ConcolicMngr::ctx->name_reference(parts.supplier);
+      handle.add_functional(_supplier);
     }
     for (size_t index = 0; index < _stages.size(); ++index) {
       if (_stages[index].function != NULL_SYM_RID) {
@@ -336,6 +346,10 @@ public:
              exp_list_t *seeds) {
     if (_terminal == TO_MAP && receiver == _merge) {
       merging(arguments, seeds);
+      return;
+    }
+    if (_terminal == TO_MAP && receiver == _supplier) {
+      _pending = SUPPLYING;
       return;
     }
     seeds->push_back(place(receiver,
@@ -549,6 +563,26 @@ private:
     const size_t at = _pending;
     _pending = NO_PENDING;
     if (at == NO_PENDING || at == IGNORED || _pinned != NULL) return;
+    if (at == SUPPLYING) {
+      // The chain starts at an exact empty map the map model states: a
+      // supplier's map of another class, one holding members (or none the
+      // walk can read), or one whose state is tracked, is no such base.
+      std::vector<oop> keys;
+      std::vector<oop> values;
+      const char *unreadable = NULL;
+      bool over_bound = false;
+      if (returned != NULL
+          && (!modeled_map(returned)
+              || !ContainerSupport::read_concrete_members(returned, &keys,
+                  &values, &unreadable, &over_bound)
+              || !keys.empty()
+              || ConcolicMngr::ctx->find_container_state(returned) != NULL
+              || SharedFieldVersions::is_tracked(
+                     ContainerSupport::state_location(returned)))) {
+        pin_all("SUPPLIED_MAP");
+      }
+      return;
+    }
     if (at == MERGING) {
       // What the run stored where the map held the key: the merge
       // function's answer, a null one removing it.
@@ -602,16 +636,19 @@ private:
       Expression *own = mapped(result, returned);
       Expression *named = own != NULL ? own
           : ContainerSupport::concrete_value(returned);
+      std::string text;
+      jint number;
+      // A value some world may spell otherwise: not a constant.
+      const bool varies = own != NULL && !own->concrete_string_value(&text)
+          && !own->concrete_int_value(&number);
       if (called.kind == KEY) {
-        // A key some world may spell otherwise: not a constant.
-        std::string text;
-        jint number;
         _current.key = named;
-        _current.symbolic_key = own != NULL
-            && !own->concrete_string_value(&text)
-            && !own->concrete_int_value(&number);
+        _current.symbolic_key = varies;
       } else {
         _current.mapped = named;
+        // HashMap.merge throws on a null value, which the chain states as a
+        // PUT: a world where this one is null is named, not stated.
+        _nullable_value = _nullable_value || varies;
       }
       ++_current.stage;
       advance();
@@ -852,8 +889,11 @@ private:
   std::vector<std::string> _pin_reasons;
   // The application method the body ran unhooked, or empty.
   std::string _muted;
-  // toMap's merge function, by session id.
+  // toMap's merge function and supplier, by session id, and whether a
+  // value it collected may be null in another world.
   sym_rid_t _merge;
+  sym_rid_t _supplier;
+  bool _nullable_value;
 };
 
 // The first `members` outputs as a map's chain on `base`, each as HashMap.
@@ -1138,12 +1178,8 @@ Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
       return NULL;
     }
     case TO_MAP: {
+      // The supplier's map, an empty modeled one (fold, SUPPLYING).
       if (result == NULL) return NULL;
-      if (!modeled_map(result)) {
-        // The supplier's map is no map the map model states.
-        name("MAP_UNMODELED");
-        return NULL;
-      }
       ContainerExpression *base = empty_base("ASSOCIATIVE",
           ConcolicMngr::ctx->container_state(result, "ASSOCIATIVE"));
       base->state_members(ContainerSupport::iteration_order(result), 0);
@@ -1151,6 +1187,7 @@ Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
       Expression *chain = map_chain(base, _outputs.size(), &unknown);
       // A cell no run stated, as the map model's merge names its own.
       if (unknown) name("MERGE");
+      if (_nullable_value) name("NULL_VALUE");
       ContainerSupport::publish_filled(result, base,
                                        with_pins("ASSOCIATIVE", chain),
                                        "COLLECT");
@@ -1260,10 +1297,7 @@ Terminal terminal_of(MethodSymbolizerHandle &handle) {
     if (kind == COLLECTOR_TO_LIST) return TO_LIST;
     if (kind == COLLECTOR_TO_SET) return TO_SET;
     MapCollector parts;
-    if (kind == COLLECTOR_TO_MAP
-        && map_collector(handle.get_param<oop>(1), &parts)) {
-      return TO_MAP;
-    }
+    if (map_collector(handle.get_param<oop>(1), &parts)) return TO_MAP;
   }
   return NO_TERMINAL;
 }
@@ -1318,7 +1352,7 @@ bool SymStream::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &holder = handle.get_callee_holder_name();
   const std::string &method = handle.get_callee_name();
   if (named(holder, COLLECTORS)) {
-    return method == "toList" || method == "toSet" || method == "toMap";
+    return method == "toList" || method == "toSet";
   }
   if (named(holder, UNMODIFIABLE_ENTRY_SET)) return invoke_source(handle);
   const bool stage = one_of(method, STAGES);
@@ -1418,8 +1452,7 @@ Expression *SymStream::finish_method_helper(MethodSymbolizerHandle &handle) {
     if (accumulator != NULL) {
       ConcolicMngr::ctx->streams(true)->name_collector(
           ConcolicMngr::ctx->name_reference(accumulator),
-          method == "toList" ? COLLECTOR_TO_LIST
-              : method == "toSet" ? COLLECTOR_TO_SET : COLLECTOR_TO_MAP);
+          method == "toList" ? COLLECTOR_TO_LIST : COLLECTOR_TO_SET);
     }
     return NULL;
   }
