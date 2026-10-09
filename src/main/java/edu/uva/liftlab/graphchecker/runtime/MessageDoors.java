@@ -596,9 +596,8 @@ public final class MessageDoors {
 
     /**
      * Whether a system's JSON codec hands this thread's documents over
-     * ({@link #jsonWritten}, {@link #jsonRead}): inside an opened occurrence
-     * of a replay, as a trace row is written only there.  The codec builds
-     * the writer's document only then.
+     * ({@link #jsonWritten}, {@link #jsonRead}): in a replay.  The codec
+     * builds the writer's document only then.
      */
     public static boolean capturingContent() {
         return StoreContent.capturing();

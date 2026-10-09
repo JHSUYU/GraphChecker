@@ -53,13 +53,13 @@ import java.util.WeakHashMap;
  * reader cannot mint so mints by its own text, unpaired.  At most
  * {@link #MAX_LEAVES} leaves and {@link #MAX_DEPTH} levels of one document
  * are walked; past them a DIAGNOSTIC gap names the location, and the rest
- * crosses as constants.  A writer's document is built only on a thread
- * inside an opened occurrence of a replay ({@link #capturing}), as trace
- * rows are written only there; a fetched version's parse mints wherever a
- * replay runs it, at the activation running there or, outside every one,
- * at the thread's occurrence stated unselected (HandoffMint's entry rule):
- * a node's watcher parses before any region reads the objects it
- * builds.</p>
+ * crosses as constants.  Both sides capture wherever a replay runs them
+ * ({@link #capturing}), at the activation running there or, outside every
+ * one, at the thread's occurrence stated unselected (HandoffMint's entry
+ * rule): the Overseer's state writer and queue offers write, and a node's
+ * watcher parses, outside every opened occurrence (solr-18413 Z2B: 142,295
+ * attaches and 332 exports, no expiry exported, when a writer captured only
+ * inside one).</p>
  */
 final class StoreContent {
     /** The most leaves one document is walked for. */
@@ -96,9 +96,9 @@ final class StoreContent {
         }
     }
 
-    /** Whether this thread captures a document now. */
+    /** Whether this thread captures a document now: in a replay. */
     static boolean capturing() {
-        return RowRuntime.open() && Identity.inOccurrence();
+        return RowRuntime.open();
     }
 
     /** The codec serialized {@code document} into {@code bytes}. */
@@ -121,7 +121,7 @@ final class StoreContent {
      */
     static void stored(String transport, String key, byte[] bytes) {
         Object document = bytes == null ? null : WRITTEN.remove(bytes);
-        if (document == null || !RowRuntime.open()) return;
+        if (document == null || !capturing()) return;
         try {
             export(transport, key, document);
         } catch (Throwable failed) {
@@ -245,7 +245,7 @@ final class StoreContent {
      */
     static void parsed(byte[] bytes, Object tree) {
         String version = bytes == null ? null : FETCHED.remove(bytes);
-        if (version == null || tree == null || !RowRuntime.open()) return;
+        if (version == null || tree == null || !capturing()) return;
         int cut = version.indexOf('\n');
         String transport = version.substring(0, cut);
         String key = version.substring(cut + 1);

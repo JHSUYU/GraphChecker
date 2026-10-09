@@ -1343,11 +1343,12 @@ is a port of its own, `<transport>#CONTENT:<location>#<JSON pointer>` (RFC 6901;
 `|`, as a site spells none), and its attach pairs with the export of the version it was fetched
 at, by that version (the message) and the port (CORRELATION_PORT). A door step that fails names
 itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload. Both tables are weak by the array: a document no store write or fetch takes (an
-HTTP response, a log line) is dropped with its bytes. The codec builds a writer's document only on a
-thread inside an opened occurrence of a replay (`MessageDoors#capturingContent`, the rule trace rows
-follow); a fetched version's parse mints wherever a replay runs it, at the activation running there
-or, outside every one, at the thread's occurrence stated unselected (§6.3's entry rule): a node's
-watcher parses before any region reads what it built.
+HTTP response, a log line) is dropped with its bytes. Both sides capture wherever a replay runs them
+(`MessageDoors#capturingContent`), at the activation running there or, outside every one, at the
+thread's occurrence stated unselected (§6.3's entry rule): the Overseer's state writer and queue
+offers write, and a node's watcher parses, outside every opened occurrence (solr-18413 Z2B, writers
+captured only inside one: 142,295 attaches, 332 exports, the routing rule's expiry exported
+nowhere).
 
 A leaf is a String, a number or a boolean. A String whose text is Java's decimal rendering of a long,
 or a boolean's, crosses as that value: its export is the value a lone rendering of the writer's
