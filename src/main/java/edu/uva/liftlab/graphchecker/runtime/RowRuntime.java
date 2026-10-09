@@ -1283,6 +1283,10 @@ public final class RowRuntime {
             EngineConsole.println("Causynth decoded walks: "
                     + Provenance.summary());
         }
+        if (SharedStateCapture.readOutsTaken()) {
+            EngineConsole.println("Causynth read-outs: "
+                    + SharedStateCapture.readOutSummary());
+        }
         Map<String, Integer> unnamed = new LinkedHashMap<String, Integer>();
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());
@@ -1381,6 +1385,7 @@ public final class RowRuntime {
         synchronized (LOCK) {
             AMBIENT.clear();
             CLAIMED_EVENTS.clear();
+            SharedStateCapture.resetForTests();
             ENDPOINTS.clear();
             WRITTEN.clear();
             READERS.clear();

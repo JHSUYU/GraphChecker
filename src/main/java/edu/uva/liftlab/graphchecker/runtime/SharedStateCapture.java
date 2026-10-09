@@ -18,6 +18,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmRecords;
@@ -66,9 +67,13 @@ final class SharedStateCapture {
         long after = active == null ? 0L : active.vmRegionEnterEventId;
         for (int page = 0; page < MAX_READ_OUT_PAGES; page++) {
             final String serialized;
+            long asked = System.nanoTime();
             try {
                 serialized = api.trackedLocationVersions(after,
                         READ_OUT_PAGE_BYTES);
+                READ_OUT_NANOS.addAndGet(System.nanoTime() - asked);
+                READ_OUT_PAGES.incrementAndGet();
+                READ_OUT_CHARS.addAndGet(serialized.length());
             } catch (Throwable throwable) {
                 fault = "tracked-location read-out failed: "
                         + rootCause(throwable);
@@ -101,6 +106,38 @@ final class SharedStateCapture {
         }
         readOut.fault = fault;
         return readOut;
+    }
+
+    /** What the region closes' read-outs cost this session ({@link
+     *  #readOutSummary}): the pages, their text, the VM's time serializing
+     *  them on the closing threads, the publication thread's decoding, the
+     *  versions they listed. */
+    private static final AtomicLong READ_OUT_PAGES = new AtomicLong();
+    private static final AtomicLong READ_OUT_CHARS = new AtomicLong();
+    private static final AtomicLong READ_OUT_NANOS = new AtomicLong();
+    private static final AtomicLong DECODE_NANOS = new AtomicLong();
+    private static final AtomicLong VERSIONS = new AtomicLong();
+
+    /** Whether any region close read out its log this session. */
+    static boolean readOutsTaken() {
+        return READ_OUT_PAGES.get() > 0L;
+    }
+
+    /** One line: what the session's read-outs cost (closeSession). */
+    static String readOutSummary() {
+        return String.format(java.util.Locale.ROOT, "%d page(s), %.1f MB,"
+                        + " %.1f s in the VM, %.1f s decoding, %d version(s)"
+                        + " listed",
+                READ_OUT_PAGES.get(), READ_OUT_CHARS.get() / 1e6,
+                READ_OUT_NANOS.get() / 1e9, DECODE_NANOS.get() / 1e9,
+                VERSIONS.get());
+    }
+
+    static void resetForTests() {
+        for (AtomicLong counter : new AtomicLong[] {READ_OUT_PAGES,
+                READ_OUT_CHARS, READ_OUT_NANOS, DECODE_NANOS, VERSIONS}) {
+            counter.set(0L);
+        }
     }
 
     /** A page's members that say whether it is the last, and where the
@@ -166,6 +203,16 @@ final class SharedStateCapture {
      */
     private static void decodeTrackedLocations(String serialized,
                                                ActiveRegion active) {
+        long started = System.nanoTime();
+        try {
+            decodePage(serialized, active);
+        } finally {
+            DECODE_NANOS.addAndGet(System.nanoTime() - started);
+        }
+    }
+
+    /** {@link #decodeTrackedLocations}, untimed. */
+    private static void decodePage(String serialized, ActiveRegion active) {
         // One page's versions share their subexpressions (one import): a
         // node scanned clean once is not scanned again.
         Set<JsonElement> clean = Collections.newSetFromMap(
@@ -210,6 +257,7 @@ final class SharedStateCapture {
     private static void fileVersionsEnvelope(JsonObject envelope,
                                              ActiveRegion active,
                                              Set<JsonElement> clean) {
+        VERSIONS.addAndGet(array(envelope, "versions").size());
         String fault = versionsFault(envelope, clean);
         String locationKey = locationKey(envelope);
         if (!fault.isEmpty()) {
