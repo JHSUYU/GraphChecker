@@ -299,14 +299,18 @@ branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
-those callers (`Guards#callersOf`) -- unless it stores into the object its constructor builds
-(`this.f` in an `<init>`, `ownObject`, `SeedBackwardStaticAnalyzer#storesOwnObject`): the calls
-into a constructor decide whether that object exists, not what an existing object's field holds,
-and whether the new object reaches a reader goes through the location that hands it on, a store of
-its own (solr-bugs-reindex-cleanup SG1: `wrapWatcher`'s `instanceof ProcessWatchWithExecutor`
-guarded `new ProcessWatchWithExecutor(watcher)`, whose constructor stores `this.watcher`: 5,964
-proposals, all refused). A constructor's store into another object's field, a static field, a
-mutation through a field and a store in a method the constructor calls keep them. A guard `v ==/!= c` (`c` an int, null or an enum constant --
+those callers (`Guards#callersOf`). A store into the object its constructor builds (`this.f` in an
+`<init>`, `ownObject`, `SeedBackwardStaticAnalyzer#storesOwnObject`) carries only those of the
+calls' guards both of whose arms run a call into the constructor (`Guards#choosingCallsInto`; a
+switch or a fault, which state no arm, too): they choose which call builds the object, and with it
+the arguments it stores (`if (isLeader) submit(new Task(LEADER)) else submit(new
+Task(REPLICA))`). A guard only one arm of which builds one decides whether the object exists, not
+what an existing object's field holds, and whether the new object reaches a reader goes through the
+location that hands it on, a store of its own (solr-bugs-reindex-cleanup SG1: `wrapWatcher`'s
+`instanceof ProcessWatchWithExecutor` guarded `new ProcessWatchWithExecutor(watcher)`, whose
+constructor stores `this.watcher`: 5,964 proposals, all refused). A constructor's store into
+another object's field, a static field, a mutation through a field and a store in a method the
+constructor calls keep them all. A guard `v ==/!= c` (`c` an int, null or an enum constant --
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,

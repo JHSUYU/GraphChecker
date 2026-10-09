@@ -162,6 +162,13 @@ public final class StaticScopeMap {
         default List<String> callersOf(String method) {
             return Collections.<String>emptyList();
         }
+
+        /** Those of {@link #callsInto} of which both arms run a call into
+         *  {@code method} (or which state no arm: a switch, a fault): they
+         *  choose WHICH call runs it, not whether one does. */
+        default List<Guard> choosingCallsInto(String method) {
+            return Collections.<Guard>emptyList();
+        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -894,17 +901,24 @@ public final class StaticScopeMap {
                     : guards.of(site.siteId);
             List<Guard> all = new ArrayList<Guard>(found == null
                     ? Collections.<Guard>emptyList() : found);
-            if (WRITE_SITE.equals(site.role) && guards != null
-                    && !site.ownObject) {
+            if (WRITE_SITE.equals(site.role) && guards != null) {
                 // A store is control-dependent on the calls into its
                 // method too: a commit point's `deleted` is set by its own
                 // delete(), which the deletion policy calls only when the
-                // commit's reservation (a clock) has run out.  Not a store
-                // into the object its constructor builds (ownObject).
+                // commit's reservation (a clock) has run out.  A store into
+                // the object its constructor builds (ownObject) only on the
+                // guards that choose which call builds it, and with it the
+                // arguments it stores (`if (isLeader) submit(new
+                // Task(LEADER)) else submit(new Task(REPLICA))`): a guard
+                // only one arm of which builds one decides whether the
+                // object exists, which reaches a reader through the store
+                // that hands it on.
+                String method = SiteId.methodOf(site.siteId);
                 Set<String> named = new LinkedHashSet<String>();
                 for (Guard guard : all) named.add(guard.siteId());
-                for (Guard guard : guards.callsInto(
-                        SiteId.methodOf(site.siteId), method -> true)) {
+                for (Guard guard : site.ownObject
+                        ? guards.choosingCallsInto(method)
+                        : guards.callsInto(method, callee -> true)) {
                     if (named.add(guard.siteId())) all.add(guard);
                 }
             }

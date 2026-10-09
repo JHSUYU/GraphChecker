@@ -1115,11 +1115,12 @@ final class SeedBackwardStaticAnalyzer {
      * method's place among those whose calls the store runs only under
      * ({@link #expandActivationGuards}).  A store into the object its
      * constructor builds ({@code ownObject}, {@link #storesOwnObject}) says
-     * so on its edges: the calls into a constructor decide whether that
+     * so on its edges: a call into a constructor decides whether that
      * object exists, not what an existing object's field holds, and whether
      * the new object reaches a reader goes through the location that hands
-     * it on, a store of its own; its scope-map row carries no guards of the
-     * calls into its method ({@code StaticScopeMap#rows}).
+     * it on, a store of its own; its scope-map row carries only the guards
+     * that choose which call builds it, both arms running one, and with it
+     * the arguments it stores ({@code StaticScopeMap#rows}).
      * solr-bugs-reindex-cleanup SG1: {@code wrapWatcher}'s {@code instanceof
      * ProcessWatchWithExecutor} guarded {@code new
      * ProcessWatchWithExecutor(watcher)}, whose constructor stores {@code

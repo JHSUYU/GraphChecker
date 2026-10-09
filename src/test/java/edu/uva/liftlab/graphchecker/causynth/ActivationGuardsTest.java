@@ -112,12 +112,14 @@ public class ActivationGuardsTest {
      * field); and no call on an immutable JDK value mutates it.  {@code
      * touch()} chains a helper over {@code name}, removes through {@code
      * items}' iterator, and replaces in {@code name}.  And a constructor's
-     * store into the object it builds is no store the guard of the call
-     * into it decides (solr-bugs-reindex-cleanup SG1: {@code wrapWatcher}'s
-     * {@code instanceof} before {@code new ProcessWatchWithExecutor}), where
-     * its store into another object's field is: {@code make} builds a
-     * {@code Box} under {@code gate}, whose constructor stores its own
-     * {@code v} and its owner's {@code w}.
+     * store into the object it builds is no store a guard of the call into
+     * it decides when only one arm builds one (solr-bugs-reindex-cleanup
+     * SG1: {@code wrapWatcher}'s {@code instanceof} before {@code new
+     * ProcessWatchWithExecutor}), but one is when both arms do, choosing
+     * the arguments it stores; its store into another object's field is
+     * decided by every such guard: {@code make} builds a {@code Box} under
+     * {@code gate}, {@code pick} one on each arm of it, whose constructor
+     * stores its own {@code v} and its owner's {@code w}.
      */
     @Test
     public void aCallsResultIsItsReceiverOnlyAndAValueIsNeverMutated()
@@ -164,10 +166,12 @@ public class ActivationGuardsTest {
                     + (row.has("ownObject") ? " ownObject" : ""), guarded);
         }
         Object[][] rows = {
-                {"the constructor's store of its owner's field: the guard of"
-                        + " the call into it", names(MAKE + "#u3"),
-                        storeGuards.get(other)},
-                {"its store of its own field: none", names(),
+                {"the constructor's store of its owner's field: the guards of"
+                        + " the calls into it", names(MAKE + "#u3",
+                        PICK + "#u3"), storeGuards.get(other)},
+                {"its store of its own field: only the guard both of whose"
+                        + " arms build one, choosing the arguments it stores",
+                        names(PICK + "#u3"),
                         storeGuards.get(own + " ownObject")},
                 {"the helper's add is no mutation of name", names(),
                         mutations(program, TOUCH, 4)},
@@ -183,6 +187,7 @@ public class ActivationGuardsTest {
 
     private static final String STORE = "a.S";
     private static final String MAKE = "<a.S: void make(a.S,int)>";
+    private static final String PICK = "<a.S: void pick(a.S,int)>";
     private static final String TOUCH = "<a.S: void touch()>";
     private static final String STORE_CHECK = "<a.S: void check()>";
 
@@ -207,7 +212,8 @@ public class ActivationGuardsTest {
      * items.iterator().remove(); name.replace("a", "b");}; {@code make(t,
      * k)} is {@code if (gate != 0) keep(new Box(t, k));}, {@code Box(owner,
      * p)} is {@code this.v = p; owner.w = p;}, {@code keep(b)} is {@code box
-     * = b}.
+     * = b}; {@code pick(t, k)} is {@code if (gate != 0) keep(new Box(t, 1));
+     * else keep(new Box(t, 2));}.
      */
     private static CausynthTargetContext storeScene() {
         G.reset();
@@ -300,6 +306,30 @@ public class ActivationGuardsTest {
                         mt, mk)),
                 J.newInvokeStmt(J.newStaticInvokeExpr(keep.makeRef(), fresh)),
                 leave);
+
+        SootMethod pick = method(type, "pick", Arrays.<Type>asList(
+                type.getType(), i), VoidType.v(), Modifier.STATIC);
+        Local pt = local(pick, "r0", type.getType());
+        Local pk = local(pick, "i1", i);
+        Local chosen = local(pick, "$i0", i);
+        Local first = local(pick, "$r1", box.getType());
+        Local second = local(pick, "$r2", box.getType());
+        Unit picked = J.newReturnVoidStmt();
+        Unit other = J.newAssignStmt(second, J.newNewExpr(box.getType()));
+        body(pick, J.newIdentityStmt(pt, J.newParameterRef(type.getType(), 0)),
+                J.newIdentityStmt(pk, J.newParameterRef(i, 1)),
+                J.newAssignStmt(chosen, J.newStaticFieldRef(gate.makeRef())),
+                J.newIfStmt(J.newEqExpr(chosen, IntConstant.v(0)), other),
+                J.newAssignStmt(first, J.newNewExpr(box.getType())),
+                J.newInvokeStmt(J.newSpecialInvokeExpr(first, build.makeRef(),
+                        pt, IntConstant.v(1))),
+                J.newInvokeStmt(J.newStaticInvokeExpr(keep.makeRef(), first)),
+                J.newGotoStmt(picked),
+                other,
+                J.newInvokeStmt(J.newSpecialInvokeExpr(second, build.makeRef(),
+                        pt, IntConstant.v(2))),
+                J.newInvokeStmt(J.newStaticInvokeExpr(keep.makeRef(), second)),
+                picked);
 
         SootMethod touch = method(type, "touch", Collections.<Type>emptyList(),
                 VoidType.v(), 0);
