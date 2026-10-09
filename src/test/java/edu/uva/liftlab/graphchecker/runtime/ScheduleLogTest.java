@@ -2288,6 +2288,33 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A context whose frontier event a stall gave up has diverged: its next
+     * frontier stands a grace, not a timeout (SG2: 69 of solr-adhoc-38's 138
+     * give-up stalls stood on a context that had failed one).
+     */
+    @Test(timeout = 60000L)
+    public void aContextThatFailedAStallStandsAGraceNext() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "6000");
+        String gone = "gone|Root:G";
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, gone, "n1", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "a"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, gone, "n2", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "b")));
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        long first = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "b");
+        long second = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("the first stall a timeout: " + first, first >= 6000L);
+        assertTrue("the failed context's next a grace: " + second,
+                second >= ScheduleLog.LET_GO_GRACE_MS && second < 5000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 2 given up in 2"));
+    }
+
+    /**
      * A write the order lacks whose own context holds the frontier owes it:
      * it goes at once, never behind a later write to its location (another
      * context's), which held the frontier -- and every later slot of its
