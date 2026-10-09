@@ -1219,8 +1219,8 @@ Capture kinds: `METHOD_PARAMETER` (`index`), `METHOD_RETURN` (no selector), `CAL
 (`callee`, `occurrence` = the k-th call of the callee in the method, `index`), `CALL_RETURN`
 (`callee`, `occurrence`). Both captures' types must equal `javaType`. Any other schema or kind is
 refused, never skipped. A declared row is for a value no protobuf message field carries (HDFS: the
-key id inside the SASL user name; Solr: the routing rule's expiry); a protobuf field is derived
-(§6.2), and a store's JSON content crosses leaf by leaf (§6.4).
+key id inside the SASL user name); a protobuf field is derived (§6.2), and a store's JSON content
+crosses leaf by leaf (§6.4: Solr's routing-rule expiry, once a declared row).
 
 SEED demands every capture and joins each producer to each consumer (`wire_handoff`,
 `wire_capture_argument` edges), so the slice continues on the sending side.
@@ -1342,9 +1342,11 @@ natives, VM.md §7: `exportLeaf`, `mintLeaf` ENTRY or POSITION) in the parsing o
 is a port of its own, `<transport>:<location>#<JSON pointer>` (RFC 6901), and its attach pairs with
 the export of the version it was fetched at, by that version (the message) and the port
 (CORRELATION_PORT). Both tables are weak by the array: a document no store write or fetch takes (an
-HTTP response, a log line) is dropped with its bytes. Only a thread inside an opened occurrence of a
-replay captures (`MessageDoors#capturingContent`, the rule trace rows follow), and the codec builds
-the writer's document only then.
+HTTP response, a log line) is dropped with its bytes. The codec builds a writer's document only on a
+thread inside an opened occurrence of a replay (`MessageDoors#capturingContent`, the rule trace rows
+follow); a fetched version's parse mints wherever a replay runs it, at the activation running there
+or, outside every one, at the thread's occurrence stated unselected (§6.3's entry rule): a node's
+watcher parses before any region reads what it built.
 
 A leaf is a String, a number or a boolean. A String whose text is Java's decimal rendering of a long,
 or a boolean's, crosses as that value: its export is the value a lone rendering of the writer's

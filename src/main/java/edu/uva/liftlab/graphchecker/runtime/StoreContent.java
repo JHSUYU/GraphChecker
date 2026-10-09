@@ -53,9 +53,13 @@ import java.util.WeakHashMap;
  * reader cannot mint so mints by its own text, unpaired.  At most
  * {@link #MAX_LEAVES} leaves and {@link #MAX_DEPTH} levels of one document
  * are walked; past them a DIAGNOSTIC gap names the location, and the rest
- * crosses as constants.  Only a thread inside an opened occurrence of a
- * replay captures ({@link #capturing}), as trace rows are written only
- * there.</p>
+ * crosses as constants.  A writer's document is built only on a thread
+ * inside an opened occurrence of a replay ({@link #capturing}), as trace
+ * rows are written only there; a fetched version's parse mints wherever a
+ * replay runs it, at the activation running there or, outside every one,
+ * at the thread's occurrence stated unselected (HandoffMint's entry rule):
+ * a node's watcher parses before any region reads the objects it
+ * builds.</p>
  */
 final class StoreContent {
     /** The most leaves one document is walked for. */
@@ -228,7 +232,7 @@ final class StoreContent {
      */
     static void parsed(byte[] bytes, Object tree) {
         String version = bytes == null ? null : FETCHED.remove(bytes);
-        if (version == null || tree == null || !capturing()) return;
+        if (version == null || tree == null || !RowRuntime.open()) return;
         int cut = version.indexOf('\n');
         String transport = version.substring(0, cut);
         String key = version.substring(cut + 1);
