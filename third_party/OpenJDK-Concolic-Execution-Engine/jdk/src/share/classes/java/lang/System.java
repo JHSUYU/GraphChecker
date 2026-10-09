@@ -542,19 +542,18 @@ public final class System {
                                                   int occurrence);
 
     /**
-     * Forces the branch the next {@link #markConcolicBranch} of this thread
-     * marks: the marked conditional bytecode takes the arm this states
-     * instead of the one its operands decide, and its branch event states
-     * {@code forced} and the concrete answer it overrode ({@code concrete}:
-     * the outcome, 1 or 0, of an {@code if}; the selector of a switch).  The
-     * condition it records is the forced arm's, as a run that took it would
-     * state it.  {@code kind} 1 is an {@code if}'s arm ({@code value} 1 jumps,
-     * 0 falls through), 2 a switch's case of key {@code value}, 3 a switch's
-     * default.  The next marker consumes it whether or not a branch follows;
-     * a branch no marker of the current frame owns is never forced.  Answers
-     * 0, -1 (no thread context) or -2 (an unknown kind).
+     * Forces the {@code if} the next {@link #markConcolicBranch} of this
+     * thread marks: the marked conditional bytecode jumps ({@code jump}) or
+     * falls through instead of what its operands decide, and its branch
+     * event states {@code forced} and the concrete outcome it overrode
+     * ({@code concrete}, 1 or 0).  The condition it records is the forced
+     * arm's, as a run that took it would state it.  The next marker consumes
+     * it whether or not a branch follows; a branch no marker of the current
+     * frame owns, one whose event is not recorded (recording paused or
+     * aborted), and a switch are never forced.  Answers 0, or -1 when the
+     * thread has no concolic context.
      */
-    public static native int forceNextConcolicBranch(int kind, int value);
+    public static native int forceNextConcolicBranch(boolean jump);
 
     /** Returns the branch events owned by the current concolic thread. */
     public static native String getConcolicBranchEvents();
