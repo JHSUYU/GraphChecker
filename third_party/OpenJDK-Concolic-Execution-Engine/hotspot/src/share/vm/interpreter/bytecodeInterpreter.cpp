@@ -1979,8 +1979,8 @@ run:
     Expression *right = ConcolicMngr::ctx->get_stack_slot(                   \
         stack_offset + (r_off));                                              \
     /* A constant Enum.valueOf named compares by its name (SymEnum). */       \
-    Expression *enum_equal =                                                  \
-        SymEnum::compare(left, left_obj, right, right_obj);                   \
+    Expression *enum_condition = SymEnum::compare(left, left_obj, right,      \
+        right_obj, op, outcome);                                              \
     if (left == NULL && left_obj != NULL) {                                  \
       SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(left_obj);     \
       if (instance != NULL) {                                                 \
@@ -2000,9 +2000,8 @@ run:
       right = SymbolExpression::get(Sym_NULL);                                \
     }                                                                         \
     Expression *condition = NULL;                                             \
-    if (enum_equal != NULL) {                                                 \
-      condition = new OpSymExpression(enum_equal,                             \
-          new ConExpression((jboolean) true), op, outcome);                   \
+    if (enum_condition != NULL) {                                             \
+      condition = enum_condition;                                             \
     } else if (left != NULL && right != NULL) {                               \
       condition = new OpSymExpression(left, right, op, outcome);              \
     }                                                                         \
@@ -3322,6 +3321,12 @@ run:
           }
 
 #ifdef ENABLE_CONCOLIC
+          // A switch map javac or ecj made, for SymEnum::table_read.
+          if ((Bytecodes::Code)opcode == Bytecodes::_getstatic
+              && tos_type == atos && ConcolicMngr::can_do_concolic()) {
+            SymEnum::loaded_static(cache->f1_as_klass(), field_offset,
+                                   STACK_OBJECT(-1));
+          }
           if (carrier_read) {
             // The word the load took, from the operand rather than the heap:
             // for a wrapper-typed carrier its box's value (or the null word),

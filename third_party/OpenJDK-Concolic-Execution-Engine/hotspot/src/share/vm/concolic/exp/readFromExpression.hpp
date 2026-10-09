@@ -56,8 +56,8 @@ public:
   }
   // A reference cell whose observed writer stored a constant Enum.valueOf
   // named: the read is of the names its writers stored.
-  virtual bool names_enum_constant() {
-    return _observed_value->names_enum_constant();
+  virtual const char *enum_constant_class() {
+    return _observed_value->enum_constant_class();
   }
   virtual std::string get_name();
 

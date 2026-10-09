@@ -458,7 +458,7 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
                                       "CALLBACK_REENTERS_CONTAINER");
       return false;
     }
-    handle.general_prepare_param();
+    handle.general_prepare_param(100, true);
     // Before the body runs: state what the container already holds, while
     // the receiver is still untouched by this operation.  A view is not a
     // location, so the container whose base this is is the one the view

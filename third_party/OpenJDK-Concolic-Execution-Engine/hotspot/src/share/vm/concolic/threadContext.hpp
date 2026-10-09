@@ -14,6 +14,7 @@
 #include "runtime/jniHandles.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -127,6 +128,7 @@ private:
   // through; and, once the branch took it, the concrete answer it overrode.
   int _next_force;
   int _pending_force;
+  std::set<sym_rid_t> _switch_maps;
   bool _pending_forced;
   jlong _pending_concrete;
 //  std::set<oop> _allocated_objs;
@@ -264,6 +266,13 @@ public:
   void drop_next_force();
   inline bool forcing() const { return _pending_force != FORCE_NONE; }
   bool forced_outcome(bool concrete, bool recorded);
+  // The switch maps (javac's $SwitchMap$, ecj's $SWITCH_TABLE$ arrays) this
+  // thread loaded, by session id (SymEnum::loaded_static, table_read).
+  void note_switch_map(sym_rid_t array) { _switch_maps.insert(array); }
+  bool switch_map(oop array) const {
+    return array != NULL && array->get_sym_rid() != NULL_SYM_RID
+        && _switch_maps.count(array->get_sym_rid()) > 0;
+  }
   // Whether a marked branch executing now records its event and
   // conditions: recording live, admitted, unpaused, in a region.
   bool recording_branches() const;

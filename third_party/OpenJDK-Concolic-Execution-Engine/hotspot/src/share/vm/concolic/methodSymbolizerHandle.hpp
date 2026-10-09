@@ -305,9 +305,13 @@ public:
   // symbolic object merely by observing an argument.
   Expression *get_reference_exp(int offset, oop obj);
 
-  void general_prepare_param(int max_param_num = 100);
+  // `members`: a container model's call, whose argument that is an enum
+  // constant reaching it with no expression is its name (SymEnum), as
+  // every member the container held is (ContainerSupport::concrete_value).
+  void general_prepare_param(int max_param_num = 100, bool members = false);
 
-  int general_prepare_param_helper(BasicType type, int locals_offset, bool is_this);
+  int general_prepare_param_helper(BasicType type, int locals_offset,
+                                   bool is_this, bool members = false);
 
   bool general_check_param_symbolized();
 

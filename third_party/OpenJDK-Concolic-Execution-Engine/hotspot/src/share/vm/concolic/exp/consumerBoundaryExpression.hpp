@@ -38,8 +38,8 @@ class ConsumerBoundaryExpression : public Expression {
   virtual bool derived_container_value(Expression **owner) {
     return _expression->derived_container_value(owner);
   }
-  virtual bool names_enum_constant() {
-    return _expression->names_enum_constant();
+  virtual const char *enum_constant_class() {
+    return _expression->enum_constant_class();
   }
   virtual bool is_enum_ordinal() { return _expression->is_enum_ordinal(); }
   virtual ContainerExpression *as_container_expression();
