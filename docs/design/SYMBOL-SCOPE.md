@@ -704,16 +704,22 @@ reaches, to a fixed point:
     `TracedRows` traces the call and argument rows at those sites, `#storingCalls` --; an accessor
     call's receiver holds what it returned). Its writer is not crossed to only when no object it
     wrote the field on is reachable, and each was seen held by something or, held by nothing
-    recorded, was **confined**: mentioned -- as a receiver, an argument, a return, a field's holder
-    or value -- by the writer's own occurrence alone (`RecordedHeap#confinedTo`, the activation whose
-    root call encloses the event nearest; solr-adhoc-10 PE1: 3,576 of the 3,711 response NamedLists
-    nothing recorded held, decoded by the unwoven javabin codec into a local, never left their
-    thread). An object nothing recorded held that any other occurrence mentioned, on any thread,
-    escaped where no recorded edge leads, and its writers stay; so do a static field's. Known limit
-    (STATUS open defect 65): an object that would escape only through unwoven code in a
-    counterfactual world is not followed. The reader's plan row states how many writers it did not
-    cross to, per field (`unreachableWriters`; of those confined, `confinedWriters`), and PLAN their
-    sums per field, in its log and in `runtime_workflow_schedule_index.json`. This filter is PLAN's
+    recorded, was never handed over: mentioned -- as a receiver, an argument, a return, a field's
+    holder or value -- on one thread alone, and that by the writer's own occurrence alone
+    (**confined**, `RecordedHeap#confinedTo`, the activation whose root call encloses the event
+    nearest) or on a thread that is not the reader's (**thread-confined**, `#threadOf`,
+    `#threadOfRoot`). solr-adhoc-10: the response NamedLists the unwoven javabin codec decodes into
+    a local -- its `NamedList.add` calls each an occurrence of their own, so the client occurrence
+    that returns the list mentions it too -- never leave their thread (PE1: 3,576 of the 3,711
+    nothing recorded held). Any sign of a hand-off keeps the writer: a recorded holder (a field, a
+    static, a container entry, a field of a task or `Runnable` it was captured into), a mention on a
+    second thread or on the reader's (**escaped**), a shared object the reader reaches; so does a
+    static field's location. Known limit (STATUS open defect 65): a hand-off inside unwoven code, or
+    one only a counterfactual world would make, is not followed. The reader's plan row states, per
+    field, how many writers it did not cross to by each rule (`unreachableWriters`, `confinedWriters`,
+    `threadConfinedWriters`) and how many it crossed to only for a mention (`escapedWriters`); PLAN
+    prints each as `UNREACHABLE`, `CONFINED`, `THREAD_CONFINED`, `ESCAPED` by owner class and field,
+    and states them in `runtime_workflow_schedule_index.json`. This filter is PLAN's
     only: EXPLORE's writers of a location a reader's recorded reads named (§5.5) are not filtered by
     reachability or confinement. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,
     `ModifiableSolrParams.vals` and `ClusterState.liveNodes` only on arms it did not take, and every

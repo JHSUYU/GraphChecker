@@ -408,10 +408,11 @@ Correctness:
     member wrote differently there.
 65. PLAN does not cross from a reader that never touched a demanded field to a writer whose objects
     are all unreachable from the reader over the recorded heap and held by something recorded or,
-    held by nothing recorded, mentioned by the writer's own occurrence alone (`gc/causynth/RecordedHeap`,
-    `DemandWalk#holdsOthersOnly`, counted `unreachableWriters`/`confinedWriters` in PLAN's log and
-    index). Known limit: an object that escapes only through unwoven code, or would only in a
-    counterfactual world, is not followed, and its writers are not crossed to.
+    held by nothing recorded, mentioned on one thread alone, by the writer's own occurrence or not
+    on the reader's thread (`gc/causynth/RecordedHeap`, `DemandWalk#holdsOthersOnly`; PLAN's log and
+    index count `UNREACHABLE`, `CONFINED`, `THREAD_CONFINED` and the `ESCAPED` writers kept). Known
+    limit: a hand-off inside unwoven code, or one only a counterfactual world would make, is not
+    followed, and its writers are not crossed to.
 60. hdfs-adhoc-39's verdict varies run to run on one body: its open arm (`BlockInfo.getBlockUCState()`
     `#u2=true` at nn0's append) closes only when every path's flip is answered, and which paths
     the closure grows and which worlds they ask differ between runs (base: OA4 RUN_DEFECT, OA5

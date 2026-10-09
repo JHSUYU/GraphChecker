@@ -288,24 +288,16 @@ public final class ConcolicScheduler {
                         arguments.targetOccurrence);
         RuntimeWorkflowDiscovery.Workflow workflow =
                 closure.nearest(arguments.maxJobs);
-        Map<String, Integer> unreachable = writersNotCrossed(
-                loaded.regionPlans,
-                RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS);
-        Map<String, Integer> confined = writersNotCrossed(
-                loaded.regionPlans,
-                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS);
-        if (!unreachable.isEmpty()) {
-            System.err.println("writers not crossed to, every object they"
-                    + " wrote the field on held and none reachable from a"
-                    + " reader that never touched it, per field: "
-                    + unreachable);
-        }
-        if (!confined.isEmpty()) {
-            System.err.println("writers not crossed to, an object they"
-                    + " wrote the field on held by nothing recorded and"
-                    + " mentioned by their own occurrence alone, the rest"
-                    + " held and none reachable from a reader that never"
-                    + " touched it, per field: " + confined);
+        Map<String, Map<String, Integer>> notCrossed =
+                new LinkedHashMap<>();
+        for (String[] member : WRITERS_NOT_CROSSED) {
+            Map<String, Integer> fields = writersNotCrossed(
+                    loaded.regionPlans, member[1]);
+            if (fields.isEmpty()) continue;
+            notCrossed.put(member[1], fields);
+            System.err.println(member[0] + " " + member[2] + ": by owner"
+                    + " class " + byOwnerClass(fields) + ", by field "
+                    + fields);
         }
         if (workflow == null) {
             throw overMaxJobs(closure.scheduledTaskCount(),
@@ -354,11 +346,10 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result,
                 loaded.regionPlanIdentity, taskPlanIdentity);
-        stateWritersNotCrossed(index,
-                RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
-                unreachable);
-        stateWritersNotCrossed(index,
-                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS, confined);
+        for (Map.Entry<String, Map<String, Integer>> member
+                : notCrossed.entrySet()) {
+            stateWritersNotCrossed(index, member.getKey(), member.getValue());
+        }
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -1037,6 +1028,45 @@ public final class ConcolicScheduler {
                     .append(anchors.get(index).getKey());
         }
         return summary.append(']').append(deciderClasses(rows)).toString();
+    }
+
+    /**
+     * The writers a reader that never touched a field was not crossed to,
+     * and those it was crossed to only for a mention: the log's name, the
+     * plan row's and index's member, what it means
+     * ({@code RuntimeSelectedRegionFinalizer}'s {@code DemandWalk
+     * #holdsOthersOnly}).
+     */
+    private static final String[][] WRITERS_NOT_CROSSED = {
+        {"UNREACHABLE", RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
+            "writers not crossed to, every object they wrote the field on"
+                + " held and none reachable from a reader that never"
+                + " touched it"},
+        {"CONFINED", RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
+            "writers not crossed to, an object they wrote the field on held"
+                + " by nothing recorded and mentioned by their own"
+                + " occurrence alone"},
+        {"THREAD_CONFINED",
+            RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS,
+            "writers not crossed to, an object they wrote the field on held"
+                + " by nothing recorded and mentioned on one thread alone,"
+                + " not the reader's"},
+        {"ESCAPED", RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
+            "writers crossed to only because an object they wrote the field"
+                + " on, held by nothing recorded, was mentioned on a second"
+                + " thread or the reader's"}};
+
+    /** Per field's owner class, the sum. */
+    private static Map<String, Integer> byOwnerClass(
+            Map<String, Integer> fields) {
+        Map<String, Integer> classes = new TreeMap<>();
+        for (Map.Entry<String, Integer> field : fields.entrySet()) {
+            String cell = field.getKey();
+            int colon = cell.indexOf(':');
+            classes.merge(colon > 1 ? cell.substring(1, colon) : cell,
+                    field.getValue(), Integer::sum);
+        }
+        return classes;
     }
 
     /** The index's {@code member}: per field, the count; none for none. */

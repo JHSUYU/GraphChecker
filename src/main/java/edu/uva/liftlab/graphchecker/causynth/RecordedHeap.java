@@ -22,9 +22,11 @@ import java.util.Set;
  * ({@code RuntimeSelectedRegionFinalizer}'s {@code DemandWalk
  * #holdsOthersOnly}).
  *
- * <p>And where each object was mentioned: the one occurrence whose events
- * alone name it -- as a receiver, an argument, a return, a field's holder
- * or value -- or none ({@link #confinedTo}).</p>
+ * <p>And where each object was mentioned -- as a receiver, an argument, a
+ * return, a field's holder or value: the one occurrence whose events alone
+ * name it, or none ({@link #confinedTo}), and the one thread, or none
+ * ({@link #threadOf}); and the thread each occurrence ran on ({@link
+ * #threadOfRoot}).</p>
  *
  * <p>An object named by content ({@code CausynthTraceRecorder
  * #nameObservedObjectsFromContent}) may stand for several: their edges are
@@ -43,19 +45,28 @@ public final class RecordedHeap {
     /** Object -> the root call of the one occurrence whose events alone
      *  mention it, or {@link #NOWHERE}. */
     private final Map<Integer, Long> mentioned;
+    /** Object -> the one thread every event mentioning it ran on, or
+     *  {@link #NOWHERE}. */
+    private final Map<Integer, Long> threads;
+    /** An occurrence's root call -> the thread it ran on. */
+    private final Map<Long, Long> rootThreads;
 
-    /** Mentioned by more than one occurrence, or outside every one. */
+    /** Mentioned in more than one scope, or in none. */
     public static final long NOWHERE = Long.MIN_VALUE;
 
     private RecordedHeap(int[] holders, int[] start, int[] held,
                          int[] heldAtAll, int[] roots,
-                         Map<Integer, Long> mentioned) {
+                         Map<Integer, Long> mentioned,
+                         Map<Integer, Long> threads,
+                         Map<Long, Long> rootThreads) {
         this.holders = holders;
         this.start = start;
         this.held = held;
         this.heldAtAll = heldAtAll;
         this.roots = roots;
         this.mentioned = mentioned;
+        this.threads = threads;
+        this.rootThreads = rootThreads;
     }
 
     /** The root call of the one occurrence whose events alone mention
@@ -63,6 +74,20 @@ public final class RecordedHeap {
     public long confinedTo(int object) {
         Long owner = mentioned.get(object);
         return owner == null ? NOWHERE : owner;
+    }
+
+    /** The one thread every event mentioning {@code object} ran on, or
+     *  {@link #NOWHERE}. */
+    public long threadOf(int object) {
+        Long thread = threads.get(object);
+        return thread == null ? NOWHERE : thread;
+    }
+
+    /** The thread the occurrence rooted at {@code rootCall} ran on, or
+     *  {@link #NOWHERE}. */
+    public long threadOfRoot(long rootCall) {
+        Long thread = rootThreads.get(rootCall);
+        return thread == null ? NOWHERE : thread;
     }
 
     /** Whether the recording saw anything hold {@code object}. */
@@ -99,14 +124,29 @@ public final class RecordedHeap {
         private int size;
         private final Set<Integer> roots = new HashSet<>();
         private final Map<Integer, Long> mentioned = new HashMap<>();
+        private final Map<Integer, Long> threads = new HashMap<>();
+        private final Map<Long, Long> rootThreads = new HashMap<>();
 
-        /** An event of the occurrence rooted at {@code owner} ({@link
-         *  #NOWHERE}: of none) mentioned {@code object}; 0 is no object. */
-        public void mention(int object, long owner) {
+        /** An event of the occurrence rooted at {@code owner}, on {@code
+         *  thread} ({@link #NOWHERE}: of none, on none known), mentioned
+         *  {@code object}; 0 is no object. */
+        public void mention(int object, long owner, long thread) {
             if (object == 0) return;
-            Long before = mentioned.putIfAbsent(object, owner);
-            if (before != null && before != owner) {
-                mentioned.put(object, NOWHERE);
+            once(mentioned, object, owner);
+            once(threads, object, thread);
+        }
+
+        /** The occurrence rooted at {@code rootCall} ran on {@code
+         *  thread}. */
+        public void rootThread(long rootCall, long thread) {
+            rootThreads.put(rootCall, thread);
+        }
+
+        private static void once(Map<Integer, Long> scopes, int object,
+                                 long scope) {
+            Long before = scopes.putIfAbsent(object, scope);
+            if (before != null && before != scope) {
+                scopes.put(object, NOWHERE);
             }
         }
 
@@ -166,7 +206,8 @@ public final class RecordedHeap {
             for (int root : roots) rootIds[next++] = root;
             Arrays.sort(rootIds);
             return new RecordedHeap(holders, start, held,
-                    Arrays.copyOf(heldAtAll, distinct), rootIds, mentioned);
+                    Arrays.copyOf(heldAtAll, distinct), rootIds, mentioned,
+                    threads, rootThreads);
         }
     }
 }

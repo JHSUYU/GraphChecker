@@ -362,10 +362,11 @@ public final class RuntimeRegionPlanner {
      * field's value is a root); the receiver of a call at a store site that
      * mutates through the call ({@code storingCalls}) held each object it
      * was handed, and that of a call at a site that returns a field ({@code
-     * fieldCalls}) held what it returned.  And which occurrence mentioned
-     * each object: every object a method entry, a field access or a call
-     * row names, under the activation whose root call encloses it nearest
-     * ({@code activations}; none encloses an ambient call).
+     * fieldCalls}) held what it returned.  And where each object was
+     * mentioned: every object a method entry, a field access or a call row
+     * names, under the activation whose root call encloses it nearest
+     * ({@code activations}; none encloses an ambient call), on its call's
+     * thread; and each activation's thread.
      */
     static RecordedHeap recordedHeap(Collection<MethodEvent> methods,
                                      Collection<FieldAccessEvent> fields,
@@ -376,15 +377,24 @@ public final class RuntimeRegionPlanner {
                                      Map<String, String> fieldCalls) {
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
         Map<Long, Long> owners = occurrenceRoots(methods, activations);
+        Map<Long, Long> threads = new HashMap<>();
+        for (MethodEvent event : methods) threads.put(event.callId, event.tid);
+        for (Map<String, Object> activation : activations) {
+            long root = longNumber(activation.get("rootCallId"), -1L);
+            Long thread = threads.get(root);
+            if (thread != null) heap.rootThread(root, thread);
+        }
         for (MethodEvent event : methods) {
             heap.mention(event.objectId, owners.getOrDefault(event.callId,
-                    RecordedHeap.NOWHERE));
+                    RecordedHeap.NOWHERE), event.tid);
         }
         for (FieldAccessEvent event : fields) {
             long owner = owners.getOrDefault(event.callId,
                     RecordedHeap.NOWHERE);
-            heap.mention(event.receiverObjectId, owner);
-            heap.mention(event.valueObjectId, owner);
+            long thread = threads.getOrDefault(event.callId,
+                    RecordedHeap.NOWHERE);
+            heap.mention(event.receiverObjectId, owner, thread);
+            heap.mention(event.valueObjectId, owner, thread);
             if (event.receiverObjectId == 0) {
                 heap.root(event.valueObjectId);
             } else {
@@ -397,6 +407,7 @@ public final class RuntimeRegionPlanner {
         Map<Long, Integer> returning = new HashMap<>();
         for (RuntimeEvent event : sorted(runtime, value -> value.seq)) {
             heap.mention(event.objectId, owners.getOrDefault(event.callId,
+                    RecordedHeap.NOWHERE), threads.getOrDefault(event.callId,
                     RecordedHeap.NOWHERE));
             if ("CALL_SITE_ENTER".equals(event.kind)) {
                 if (storingCalls.containsKey(event.siteId)) {
@@ -1430,7 +1441,9 @@ public final class RuntimeRegionPlanner {
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
                     RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
-                    RuntimeSelectedRegionFinalizer.CONFINED_WRITERS}) {
+                    RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
+                    RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS,
+                    RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
                 }
