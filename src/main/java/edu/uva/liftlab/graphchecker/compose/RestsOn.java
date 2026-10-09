@@ -107,6 +107,9 @@ public final class RestsOn {
             if (!settled(target.sessionId(), gaps)) continue;
             admitted.add(path);
         }
+        // And each forced path (PIPELINE §7.10): the recording's world with
+        // the anchor forced to the throw, its phi the forced path condition.
+        admitted.addAll(corpus.forcedPaths(anchor));
         return admitted;
     }
 

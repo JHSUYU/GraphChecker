@@ -426,6 +426,9 @@ final class ConcolicResultPublisher {
     private enum Conclusion {
         /** The case's declared occurrence observed the fatal. */
         AT_WITNESS("the declared occurrence observed the fatal"),
+        /** A FORCE run's declared occurrence published its forced target
+         *  ({@code ForcedArms}). */
+        AT_FORCED_TARGET("the declared occurrence reached its target forced"),
         /** A refusal decided every obligation the replay carries
          *  ({@code FocusedReplay#refusedAt}). */
         AT_REFUSAL("a refusal decided every obligation this replay carries"),
@@ -461,6 +464,15 @@ final class ConcolicResultPublisher {
     }
 
     /**
+     * Ends a FORCE run at its forced target (PIPELINE §7.10): the forced
+     * path condition is stated, and what the forced world does after it no
+     * stage reads.  Its session is read whole up to there, as a witness's.
+     */
+    static void concludeAtForcedTarget() {
+        conclude(Conclusion.AT_FORCED_TARGET);
+    }
+
+    /**
      * Ends a focused replay at the refusal that decided every obligation it
      * carries ({@code FocusedReplay#refusedAt}): each verdict is NOT_ADMITTED
      * whatever the run does next, and the session is published to no stage,
@@ -478,26 +490,32 @@ final class ConcolicResultPublisher {
      * whose settle, the end standing, waits only for the publications and
      * strands every activation still live.
      *
-     * <p>What still publishes differs.  At the witness, or at a stall
-     * after a flip was taken, every occurrence completed before it (the
-     * witness's own among them): its session is a corpus session, read
-     * whole up to there.  At a refusal or a stall before any flip, no
+     * <p>What still publishes differs.  At the witness, at a forced
+     * target, or at a stall after a flip was taken, every occurrence
+     * completed before it (the witness's own among them): its session is a
+     * corpus session, read whole up to there, and its schedule states the
+     * run cut there.  At a refusal or a stall before any flip, no
      * publication that has not started: the session is withdrawn, and
      * draining the queue
      * into it cost a Solr replay two to five minutes past the test's end
      * (solr-18413 r5, ee).  A withheld one's mints still publish.</p>
      */
+    /** Whether a replay ended so keeps its session ({@link #conclude}). */
+    private static boolean stands(Conclusion end) {
+        return end != Conclusion.AT_REFUSAL
+                && end != Conclusion.AT_NO_PROGRESS;
+    }
+
     private static void conclude(final Conclusion end) {
         synchronized (PUBLICATION_LOCK) {
             if (concluded != null) return;
             concluded = end;
-            submittedAtEnd = end == Conclusion.AT_WITNESS
-                    || end == Conclusion.STALLED_AFTER_FLIP ? submitted : 0L;
+            submittedAtEnd = stands(end) ? submitted : 0L;
             // A settle already waiting for the live stops waiting for them.
             PUBLICATION_LOCK.notifyAll();
         }
         ConcolicRegionRuntime.endAdmission();
-        if (end == Conclusion.AT_WITNESS) ScheduleLog.witnessed();
+        if (stands(end)) ScheduleLog.witnessed();
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
         new Thread(root, new Runnable() {

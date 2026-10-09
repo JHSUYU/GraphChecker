@@ -83,9 +83,8 @@ no stranded activation, so either touches only perpetual bodies like 21's actor.
   the id drifts as the corpus grows. 39 closes, but its closure varied run to run before the open-arm keys (CHECKING
   trap 18).
 - **51**: the arm key's u18#3 gap (rule 1 and the own-fault key missed the throughput bar; branches parked).
-- **Confirm-first** (`hdfs1-confirm-first` da913cd7c, parked): a returned confirmation is decided only by the next
-  step, behind any witness attempt in flight. With the Cone fix that costs minutes (HF2: 15 min from queue to
-  accepted); merge if a confirmation is seen waiting > 10 min.
+- **Confirm-first**: merged on `system/solr` (2026-10-08): solr-18406 SG3V's confirmation waited 46 min behind a witness
+  attempt's COMPOSE that waited for head memory.
 - **Scope (B)**, widening that would only make right formulas more flippable: 29/30 the block-pool map written at
   DataNode start-up and `bpServiceToActive`'s in-window writer gated by HA state; 17's lease and 39's IBR ordering
   (turns on threads with no schedule events); an identity compare of a tracked reference with an enum constant states
@@ -179,6 +178,8 @@ The 12 study checks (existing tests; rows with guard and site in [../checks/READ
 | solr-adhoc-38 | `DistributedZkUpdateProcessor:1031` (8.11.4 :1023; `doDefensiveChecks`) | `TestPullReplica#testAddDocs` |
 | solr-adhoc-39 | `RoutedAliasUpdateProcessor:247` | `TimeRoutedAliasUpdateProcessorTest#test` |
 | solr-adhoc-40 | `RoutedAliasUpdateProcessor:133` | `TimeRoutedAliasUpdateProcessorTest#test` |
+
+**Open from the hand readings** (STATUS "Solr checks"): solr-18406's leader `filelist(G)` request runs in no region (its `setReserveDuration` at `ReplicationHandler.java:764` is not in the formula; the indexversion reservation stands for it); Lucene's `IndexFileDeleter$CommitPoint.deleted` has no writer family.
 
 **1. The body.** `system/solr` is `system/hdfs1` (fast-forwarded 2026-10-08); round SC1 (2026-10-08, the storing
 tree as is) passed solr-18406 and solr-18413 on it. Branch `solr-body` (agent M) brings what the Solr cases need of
@@ -276,28 +277,14 @@ to the cleanup's delete, the election-offer mechanism.
 
 **Force the fatal arm inside the target region (owner 2026-10-08; from the next system on, HDFS stays as closed).** The
 owner: "事实上我觉得这里我们就可以直接针对这个region强制反转，记录条件然后throw出exception啊。即使他不符合真的因果。但我们会结合
-symbolic propagation联立的。请你把它设为todo"; "这样做也更加合理吧"; "hdfs就算了"; "这样绝对是doable的。我们完全可以做到强制
-反转，你可以通过soot,vm等结合实现。然后在那个target region里记录下path conditon即可。就可以之后直接用了".
-- Today: a check's fatal condition is the recorded predicate of each guard a run evaluated, asserted at its fatal
-  polarity in the formula; the throw itself never runs. A guard nested behind an outer one the recording did not pass
-  (`if (a) { if (b) { throw } }` with `a` false) has no predicate until a flip of `a` and a faithful replay reach it
-  (nested flips, at most 3 deep); a guard no replay reaches leaves the check without its condition.
-- Proposed: in a replay, at the declared target occurrence `(r, c, i)` only, every branch between the region's entry
-  and the marked throw is forced to the arm that leads to the throw; the VM records each forced guard's symbolic
-  predicate with the polarity it was forced to, and the throw fires. The forced path is not a causal world: COMPOSE
-  asserts each forced predicate at its fatal polarity, joined with the cross-node symbolic propagation over the same
-  leaves, and z3 decides whether one valuation of the roots makes them all true at once. CONFIRM is unchanged and
-  strict (a replay with the moved roots and no forcing must reach the throw).
-- How (Soot + VM): Soot computes, on the region's static fatal slice, which arm of each guard reaches the marked throw
-  and weaves the forcing points with the region's other hooks; the VM forces those arms at the declared occurrence and
-  records the region's path condition; that condition is kept as an artifact of the case and used directly by
-  EXPLORE's flip queries and by COMPOSE from then on, not rediscovered by nested flips.
-- To settle before coding: (1) forcing at the declared occurrence only, never at the region's other occurrences;
-  (2) a row recorded after the first forced branch is a forced world's (mark it `FORCED`): it may state a condition but never a writer arm or a handoff for other paths,
-  or infeasible states feed the closure; (3) the replay ends at the throw, as the first-witness stop does; (4) a
-  forced condition no replay confirms is at most `FORMULA_SAT`; (5) the VM's forcing directive (by branch site and
-  occurrence, in `bytecodeInterpreter.cpp`'s branch bytecodes, carried by the replay plan) is a VM change and a new
-  image; (6) measure on Solr's first cases whether nested flips and replays drop.
+symbolic propagation联立的。请你把它设为todo"; "这样绝对是doable的。我们完全可以做到强制反转，你可以通过soot,vm等结合实现。然后在那个
+target region里记录下path conditon即可。就可以之后直接用了". Built on branch `solr-force-arm` (PIPELINE §7.10; design
+`/bigtemp/vnr3ne/analysis/solr-2026-10-08/design-force-fatal-arm.md`, the lead's rulings: always run the FORCE replay, no
+transplant onto other paths, nested flips kept, no flip waiting for the forced ones): SEED's forcing table, the VM's forcing native (image
+`vm-force1`), the FORCE run first in every campaign, its forced session held apart, its forced flip asking the whole way to
+the throw, its path one more COMPOSE disjunct, CONFIRM unforced; solr-18413 and solr-18406 PASS with it (FA4). Left:
+count, per case, the seed flips at forced decisions asked after the forced flip was answered (`result.json` `force`
+`seedFlipsAfterForcedFlip`), which decides whether the seed path's anchor flips and open-arm asks can then be deleted.
 
 **WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** Resume only when a system's chain needs a
 codec hole (a value carried inside an opaque payload); then rebase it onto the body, which deleted its runtime.

@@ -597,7 +597,9 @@ public final class FocusedReplay {
         List<ObligationResult> results = new ArrayList<ObligationResult>();
         for (Obligation obligation : OBLIGATIONS) {
             String id = trimmed(obligation.obligationId());
-            if (REFUSALS.containsKey(id)) {
+            if (obligation.force()) {
+                results.add(ForcedArms.verdict(id, sessionId));
+            } else if (REFUSALS.containsKey(id)) {
                 results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, REFUSALS.get(id)));
             } else if (FLIPPED.contains(id)) {
@@ -901,7 +903,16 @@ public final class FocusedReplay {
                 if (obligationId.isEmpty()) {
                     obligationId = optionalString(row, "taskId");
                 }
-                if (row.get("flip").isJsonNull()) {
+                if (row.get("flip").isJsonNull() && row.has(FORCE)
+                        && row.get(FORCE).getAsBoolean()) {
+                    // A FORCE run (flip: null, force): nothing planted, no
+                    // decision owed; its verdict is ForcedArms'.
+                    OBLIGATIONS.add(Obligation.forcing(obligationId,
+                            optionalString(row, "taskId"),
+                            optionalString(row, "pathId")));
+                    FLIPPED.add(obligationId);
+                    forcing = true;
+                } else if (row.get("flip").isJsonNull()) {
                     // CONFIRM row (flip: null): roots planted, no decision
                     // owed, so it counts as flipped at load; agreement with
                     // the model is Confirmation's to read.
@@ -1063,9 +1074,34 @@ public final class FocusedReplay {
         load();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
-                if (!obligation.flips()) return true;
+                if (!obligation.flips() && !obligation.force()) return true;
             }
             return false;
+        }
+    }
+
+    /** The focus row's mark of a FORCE run ({@code ExploreCodec#FORCE}). */
+    static final String FORCE = "force";
+
+    /** Whether the focus row asks a FORCE run ({@link ForcedArms}). */
+    private static boolean forcing;
+
+    /** Whether this replay is a FORCE run: the declared occurrence forced
+     *  to the throw (PIPELINE §7.10). */
+    static boolean forcing() {
+        load();
+        synchronized (LOCK) {
+            return forcing;
+        }
+    }
+
+    /** A FORCE run decided FORCE_DIVERGED ({@link ForcedArms#finished}):
+     *  it ends there, and its session is withdrawn ({@link #refusedAt}).
+     *  @return whether this call decided it */
+    static boolean decideForced(String divergence) {
+        load();
+        synchronized (LOCK) {
+            return decide(divergence);
         }
     }
 
@@ -1239,6 +1275,7 @@ public final class FocusedReplay {
             loaded = false;
             handedAFocusRow = false;
             pairs = false;
+            forcing = false;
             PLANTED.clear();
             MINTED.clear();
             REACHED.clear();

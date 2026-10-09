@@ -37,6 +37,7 @@ import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WorldRefutation;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
@@ -210,6 +211,14 @@ public final class Corpus implements Arms.Rows {
     /** interaction id -> the interaction itself, for every pairing stated. */
     private final Map<String, Interaction> interactions =
             new LinkedHashMap<String, Interaction>();
+    /** {@code session|interaction id} -> a forced session's attaches from
+     *  before its forced world: its own path's messages alone. */
+    private final Map<String, List<AttachRow>> ownAttaches =
+            new LinkedHashMap<String, List<AttachRow>>();
+    /** {@code session|producer id} -> a forced session's exports from
+     *  before its forced world, as {@link #ownAttaches}. */
+    private final Map<String, List<ExportRow>> ownExports =
+            new LinkedHashMap<String, List<ExportRow>>();
     /** Every symbol the runtime declared, at the sort it minted it at. */
     private final Map<String, Sort> declaredSymbols =
             new LinkedHashMap<String, Sort>();
@@ -297,6 +306,24 @@ public final class Corpus implements Arms.Rows {
     private final Arms arms;
 
     /**
+     * THE FORCED SESSIONS (PIPELINE §7.10), held apart: the recording's world
+     * with the declared occurrence forced to the throw.  Every row of one is
+     * indexed under its session, so its forced path composes and is asked
+     * in its own scope ({@link #forcedPaths}), and none in the corpus-wide
+     * views -- {@link #sessions}, the rows of an occurrence across sessions,
+     * a location's writers and sites, the schedule's senders -- so no other
+     * path, arm, slot, closure, witness or verdict reads a forced world.  Its
+     * messages from before its forced world are its own path's alone
+     * ({@link #ownAttachesOf}, {@link #ownExportsOf}): its handoffs move with
+     * their producers there, and no other path pairs with them.  One with no
+     * forced target is no session at all.
+     */
+    private final List<SessionReader> forcedSessions;
+    /** Each forced session's forced world's first event: its forced target
+     *  row's seq ({@code TargetRow#forced}). */
+    private final Map<String, Long> forcedFrom = new HashMap<String, Long>();
+
+    /**
      * WHAT ONE SESSION'S ROWS ALONE GIVE: its state join, the schedule facts
      * the corpus indexes ({@link #indexSchedule}), and what a walk of its
      * expressions found -- functions of those rows only, so a read of the
@@ -353,19 +380,49 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
-    private Corpus(Path iteration, List<SessionReader> sessions,
+    private Corpus(Path iteration, List<SessionReader> read,
                    Corpus previous) {
         this.iteration = iteration;
-        this.sessions = Collections.unmodifiableList(sessions);
-        for (SessionReader session : sessions) {
-            Derived kept = previous == null ? null
-                    : previous.bySession.get(session.sessionId());
-            Derived of = kept != null && kept.session == session ? kept
-                    : new Derived(session);
-            bySession.put(session.sessionId(), of);
-            index(of);
+        List<SessionReader> real = new ArrayList<SessionReader>();
+        List<SessionReader> forced = new ArrayList<SessionReader>();
+        for (SessionReader session : read) {
+            // A forced session lands at its forced target only (its run
+            // withdraws it otherwise, RowRuntime#closeSession): one without
+            // states a forced world nothing fences, and is read as none.
+            if (!session.forced()) {
+                real.add(session);
+            } else if (forcedTarget(session)) {
+                forced.add(session);
+            }
+        }
+        this.sessions = Collections.unmodifiableList(real);
+        this.forcedSessions = Collections.unmodifiableList(forced);
+        for (SessionReader session : real) {
+            index(derived(session, previous), false);
+        }
+        for (SessionReader session : forced) {
+            index(derived(session, previous), true);
         }
         this.arms = new Arms(this);
+    }
+
+    /** What {@code previous} derived from one session's rows alone, else
+     *  derived anew; this corpus's from now on. */
+    private Derived derived(SessionReader session, Corpus previous) {
+        Derived kept = previous == null ? null
+                : previous.bySession.get(session.sessionId());
+        Derived of = kept != null && kept.session == session ? kept
+                : new Derived(session);
+        bySession.put(session.sessionId(), of);
+        return of;
+    }
+
+    /** Whether a session states a forced target row. */
+    private static boolean forcedTarget(SessionReader session) {
+        for (TargetRow row : session.targets()) {
+            if (row.isForced()) return true;
+        }
+        return false;
     }
 
     /** Reads an iteration and its case-declared root domains. */
@@ -389,7 +446,7 @@ public final class Corpus implements Arms.Rows {
         Corpus corpus = new Corpus(iteration, SessionReader.readAll(
                 iteration, previous == null
                         ? Collections.<SessionReader>emptyList()
-                        : previous.sessions), previous);
+                        : previous.everySession()), previous);
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));
@@ -889,15 +946,26 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
-    private void index(Derived of) {
+    /** One session's rows; {@code apart}: a forced one's, under its
+     *  session only ({@link #forcedSessions}), its messages from before its
+     *  forced world its own path's ({@code FlipQuery}'s own run). */
+    private void index(Derived of, boolean apart) {
         SessionReader session = of.session;
-        indexSchedule(session.sessionId(), of.schedule);
+        long world = Long.MAX_VALUE;
+        if (apart) {
+            for (TargetRow row : session.targets()) {
+                if (row.isForced()) world = Math.min(world, row.seq());
+            }
+        } else {
+            indexSchedule(session.sessionId(), of.schedule);
+        }
         sessionById.put(session.sessionId(), session);
         loweringById.put(session.sessionId(),
                 SmtLowering.forSession(session, of.join));
         for (ActivationRow row : session.activations()) {
             activationByOccurrence.putIfAbsent(session.sessionId() + "|"
                     + row.occurrence().id(), row);
+            if (apart) continue;
             remember(session.sessionId(), row.occurrence());
             // The sender an anchor names: a causal chain goes on through it.
             if (row.anchorProducer() != null) {
@@ -909,7 +977,7 @@ public final class Corpus implements Arms.Rows {
             add(activations, row.occurrence().id(), row);
         }
         for (DecisionRow row : session.decisions()) {
-            remember(session.sessionId(), row.occurrence());
+            if (!apart) remember(session.sessionId(), row.occurrence());
             add(decisions, session.sessionId() + "|" + row.occurrence().id(), row);
             // A decision's clock cells are corpus symbols at Int.
             for (String cell : row.clockReadings().keySet()) {
@@ -917,33 +985,45 @@ public final class Corpus implements Arms.Rows {
             }
         }
         for (ExportRow row : session.exports()) {
+            // A forced world's export is no message any arm delivers; one
+            // before it is its own path's alone (Arms#armsAt's scope).
+            if (row.seq() >= world) continue;
+            if (apart) {
+                add(ownExports, session.sessionId() + "|"
+                        + row.endpoint().id(), row);
+                continue;
+            }
+            add(exports, row.endpoint().id(), row);
             remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
-            add(exports, row.endpoint().id(), row);
         }
         for (AttachRow row : session.attaches()) {
+            attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
+            handoffSymbols.add(row.symbol());
+            attachesOn.add(row.endpoint().occurrence().id(), row.sessionId(),
+                    row, apart);
+            // One variable, one sort: from the JVM descriptor, never a value's
+            // spelling.
+            declaredSymbols.put(row.symbol(),
+                    JavaSmtSorts.sortOfJava(row.javaType()));
+            Interaction interaction = row.interaction();
+            if (interaction != null && apart && row.seq() < world) {
+                add(ownAttaches, session.sessionId() + "|"
+                        + interaction.id(), row);
+            } else if (interaction != null && !apart) {
+                interactions.put(interaction.id(), interaction);
+                add(attachesByInteraction, interaction.id(), row);
+            }
+            if (apart) continue;
             remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
             if (row.producer() != null) {
                 endpointById.put(row.producer().id(), row.producer());
                 remember(session.sessionId(), row.producer().occurrence());
             }
-            attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
-            handoffSymbols.add(row.symbol());
-            Interaction interaction = row.interaction();
-            if (interaction != null) {
-                interactions.put(interaction.id(), interaction);
-                add(attachesByInteraction, interaction.id(), row);
-            }
-            attachesOn.add(row.endpoint().occurrence().id(), row.sessionId(),
-                    row);
-            // One variable, one sort: from the JVM descriptor, never a value's
-            // spelling.
-            declaredSymbols.put(row.symbol(),
-                    JavaSmtSorts.sortOfJava(row.javaType()));
         }
         for (RootMintRow row : session.roots()) {
-            remember(session.sessionId(), row.occurrence());
+            if (!apart) remember(session.sessionId(), row.occurrence());
             rootBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             rootsById.computeIfAbsent(row.rootId(),
                     key -> new LinkedHashMap<String, RootMintRow>())
@@ -954,12 +1034,14 @@ public final class Corpus implements Arms.Rows {
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
         }
         for (WriteRow row : session.writes()) {
-            remember(session.sessionId(), row.endpoint().occurrence());
             String location = SmtLowering.locationKey(row.location());
             writeByVersion.put(versionKey(session.sessionId(), location,
                     row.version()), row);
-            writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
+            writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row,
+                    apart);
             add(writesByLocation, session.sessionId() + "|" + location, row);
+            if (apart) continue;
+            remember(session.sessionId(), row.endpoint().occurrence());
             // An INITIAL's endpoint observed the location; it wrote nothing.
             if (!row.initial()) {
                 located(writtenLocations, row.endpoint().occurrence(),
@@ -973,15 +1055,24 @@ public final class Corpus implements Arms.Rows {
             touch(row.endpoint().occurrence(), row.location());
         }
         for (TargetRow row : session.targets()) {
+            targetsOn.add(row.occurrence().id(), row.sessionId(), row, apart);
+            if (apart) {
+                if (row.isForced()) {
+                    forcedFrom.merge(session.sessionId(), row.seq(),
+                            Math::min);
+                }
+                continue;
+            }
             remember(session.sessionId(), row.occurrence());
-            targetsOn.add(row.occurrence().id(), row.sessionId(), row);
         }
         for (ReadRow row : session.reads()) {
-            remember(session.sessionId(), row.endpoint().occurrence());
             if (!row.symbol().isEmpty()) {
                 readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             }
-            readsOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
+            readsOn.add(row.endpoint().occurrence().id(), row.sessionId(), row,
+                    apart);
+            if (apart) continue;
+            remember(session.sessionId(), row.endpoint().occurrence());
             located(readLocations, row.endpoint().occurrence(),
                     SmtLowering.locationKey(row.location()));
             endpointById.put(row.endpoint().id(), row.endpoint());
@@ -1032,8 +1123,13 @@ public final class Corpus implements Arms.Rows {
     private static final class ByOccurrence<T> {
         private final Map<String, Map<String, List<T>>> rows =
                 new LinkedHashMap<String, Map<String, List<T>>>();
+        /** A forced session's rows ({@link #forcedSessions}): its own, in
+         *  no session's {@link #all}. */
+        private final Set<String> apart = new HashSet<String>();
 
-        void add(String occurrenceId, String sessionId, T row) {
+        void add(String occurrenceId, String sessionId, T row,
+                 boolean forced) {
+            if (forced) apart.add(sessionId);
             rows.computeIfAbsent(occurrenceId,
                             ignored -> new LinkedHashMap<String, List<T>>())
                     .computeIfAbsent(sessionId, ignored -> new ArrayList<T>())
@@ -1053,7 +1149,9 @@ public final class Corpus implements Arms.Rows {
             Map<String, List<T>> bySession = rows.get(occurrenceId);
             if (bySession == null) return Collections.<T>emptyList();
             List<T> all = new ArrayList<T>();
-            for (List<T> own : bySession.values()) all.addAll(own);
+            for (Map.Entry<String, List<T>> own : bySession.entrySet()) {
+                if (!apart.contains(own.getKey())) all.addAll(own.getValue());
+            }
             return all;
         }
     }
@@ -1098,7 +1196,7 @@ public final class Corpus implements Arms.Rows {
      * its rows alone.
      */
     void freshLowerings() {
-        for (SessionReader session : sessions) {
+        for (SessionReader session : everySession()) {
             loweringById.put(session.sessionId(), SmtLowering.forSession(
                     session, bySession.get(session.sessionId()).join));
         }
@@ -1112,6 +1210,58 @@ public final class Corpus implements Arms.Rows {
 
     public List<SessionReader> sessions() {
         return sessions;
+    }
+
+    /** {@link #sessions} and the forced ones, as read. */
+    private List<SessionReader> everySession() {
+        List<SessionReader> every = new ArrayList<SessionReader>(sessions);
+        every.addAll(forcedSessions);
+        return every;
+    }
+
+    /**
+     * The FORCED PATHS of one occurrence (PIPELINE §7.10): each forced
+     * session read whole whose own verdict admits it and whose target row
+     * reached the occurrence forced, its path there; a corpus-wide view
+     * lists none.
+     */
+    public List<RecordedPath> forcedPaths(OccurrenceAddress occurrence) {
+        List<RecordedPath> paths = new ArrayList<RecordedPath>();
+        for (SessionReader session : forcedSessions) {
+            TargetRow target = target(session.sessionId(), occurrence);
+            if (target == null || !target.isForced()
+                    || !target.reachedAnchor()
+                    || !session.incomplete().isEmpty()
+                    || !forcedReached(session)) {
+                continue;
+            }
+            RecordedPath path = path(session.sessionId(), occurrence);
+            if (path != null) paths.add(path);
+        }
+        return paths;
+    }
+
+    /** Whether a forced session's own verdict states its target reached
+     *  forced ({@code runtime.ForcedArms}). */
+    private static boolean forcedReached(SessionReader session) {
+        if (session.obligations().isEmpty()) return false;
+        for (ObligationResult result : session.obligations()) {
+            if (result.verdict() != Verdict.ADMITTED) return false;
+        }
+        return true;
+    }
+
+    /** Whether this session is a forced one (held apart). */
+    public boolean forced(String sessionId) {
+        return forcedFrom.containsKey(sessionId)
+                || sessionById.containsKey(sessionId)
+                && sessionById.get(sessionId).forced();
+    }
+
+    @Override
+    public long forcedFrom(String sessionId) {
+        Long from = forcedFrom.get(sessionId);
+        return from == null ? Long.MAX_VALUE : from.longValue();
     }
 
     public SessionReader session(String sessionId) {
@@ -1619,6 +1769,20 @@ public final class Corpus implements Arms.Rows {
     }
 
     @Override
+    public List<AttachRow> ownAttachesOf(String sessionId,
+                                         Interaction interaction) {
+        return ownAttaches.getOrDefault(sessionId + "|" + interaction.id(),
+                Collections.<AttachRow>emptyList());
+    }
+
+    @Override
+    public List<ExportRow> ownExportsOf(String sessionId, Endpoint producer) {
+        if (producer == null) return Collections.emptyList();
+        return ownExports.getOrDefault(sessionId + "|" + producer.id(),
+                Collections.<ExportRow>emptyList());
+    }
+
+    @Override
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
         return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
                 Collections.<WriteRow>emptyList());
@@ -1737,8 +1901,16 @@ public final class Corpus implements Arms.Rows {
                     new LinkedHashMap<String, List<RootMintRow>>();
             for (Map.Entry<String, Map<String, RootMintRow>> entry
                     : rootsById.entrySet()) {
-                byRoot.put(entry.getKey(), Collections.unmodifiableList(
-                        new ArrayList<RootMintRow>(entry.getValue().values())));
+                // A forced world's mint is no reading of a world any run
+                // takes (Composer places clocks from these).
+                List<RootMintRow> rows = new ArrayList<RootMintRow>();
+                for (RootMintRow row : entry.getValue().values()) {
+                    if (row.seq() < forcedFrom(row.sessionId())) rows.add(row);
+                }
+                if (!rows.isEmpty()) {
+                    byRoot.put(entry.getKey(),
+                            Collections.unmodifiableList(rows));
+                }
             }
             roots = Collections.unmodifiableMap(byRoot);
         }

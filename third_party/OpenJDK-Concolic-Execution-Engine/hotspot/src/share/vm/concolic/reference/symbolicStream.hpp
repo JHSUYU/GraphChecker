@@ -21,9 +21,11 @@ class StreamPipeline;
  * source (the container's state as the stream read it, its view, its
  * member count), and each modeled intermediate call (filter, map, limit,
  * sorted, distinct, unordered) one stage on the stream object it returns.
- * Their bodies run muted.  The terminal call (collect to a list or a set,
- * toArray, count, any/all/noneMatch, findFirst/findAny, forEach) runs
- * muted too, and every stage's functional object is a callback
+ * Their bodies run muted.  The terminal call (collect to a list, a set or
+ * a map -- toMap, whose key and value mappers are two more stages and whose
+ * merge function and supplier are callbacks too --, toArray, count,
+ * any/all/noneMatch, findFirst/findAny, forEach) runs muted too, and every
+ * stage's functional object is a callback
  * (MethodSymbolizer::enter_callback) seeded with what the element it is
  * called for is: the source's member (READ of the state at its position,
  * or the map entry or key, SymMap::visited_member), then the previous map
@@ -34,12 +36,15 @@ class StreamPipeline;
  * The terminal states the result as a container relation: an INDEXED chain
  * from the exact empty container with one APPEND_IF per element under the
  * conjunction of its filters' answers and its LIMIT positions (a set: a
- * guarded PUT_IF); count is that chain's SIZE, a match its IS_EMPTY.  What
- * the run decided and no relation can state -- an element no run pushed
- * past a filter that dropped it before a stage that calls back, the
- * members a LIMIT or a short-circuit never pulled, the members beyond the
- * source's end -- is a PIN node on the chain: its condition, in the run's
- * polarity, holds wherever the result is used.  A result that cannot be
+ * guarded PUT_IF; a map: each member as HashMap.merge stores it, its value
+ * where the key is absent and the merge function's answer, or an UNKNOWN
+ * cell, where an earlier member may hold it); count is that chain's SIZE,
+ * a match its IS_EMPTY.  What the run decided and no relation can state --
+ * an element no run pushed past a filter that dropped it before a stage
+ * that calls back, the members a LIMIT or a short-circuit never pulled, the
+ * members beyond the source's end -- is a PIN node on the chain: its
+ * condition, in the run's polarity, holds wherever the result is used.  A
+ * result that cannot be
  * stated at all (a symbolic element entering sorted or distinct, a
  * reconstruction the callbacks contradict, more members than the snapshot
  * bound, findFirst, forEach under a symbolic decision) is the run's own
@@ -74,9 +79,9 @@ private:
 
 /**
  * One thread's recorded pipelines, by the session id of the stream object
- * that holds them, and the collector kinds Collectors.toList/toSet named,
- * by their accumulator.  Owned by the thread's context, so a pipeline a
- * thread never ended dies with it.
+ * that holds them, and the collector kinds Collectors.toList/toSet/toMap
+ * named, by their accumulator.  Owned by the thread's context, so a
+ * pipeline a thread never ended dies with it.
  */
 class StreamTable {
 public:

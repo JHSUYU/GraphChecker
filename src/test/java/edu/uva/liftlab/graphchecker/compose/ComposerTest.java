@@ -1537,6 +1537,41 @@ public class ComposerTest {
     }
 
     /**
+     * A FORCED path (PIPELINE §7.10): the recording took the healthy arm of
+     * a concrete guard, so its path is no world; the forced session, its
+     * guard forced, stands at that guard with the whole way to the throw as
+     * phi.  Composed beside it over the same root names, the forced
+     * disjunct is the witness -- the marker flipped AND the counter past 5,
+     * nested behind it.
+     */
+    @Test
+    public void aForcedPathStatesTheWholeWayToTheThrow() throws Exception {
+        Path iteration = folder.newFolder("forced").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.marker("false");
+        seed.serial("0", "0", "10");
+        seed.target("false", false, true);
+        seed.write();
+        Session forced = new Session(iteration, "s-forced", false);
+        forced.marker("false");
+        forced.serial("0", "0", "10");
+        forced.forcedDecision(ANCHOR, "a#u1", MARKER);
+        forced.forcedTarget(3L, "(and " + MARKER + " (> " + SERIAL + " 5))");
+        forced.write();
+        // Pairs of moves are enumerated after the single ones.
+        Composer.Composition composition = compose(iteration, 64);
+        assertEquals("the seed's path and the forced one", 2,
+                composition.paths().size());
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, decision.claim().kind());
+        assertEquals("true", decision.claim().movedRoots().get(MARKER_ROOT));
+        assertTrue("and the counter nested behind it moved with it",
+                Integer.parseInt(decision.claim().movedRoots()
+                        .get(SERIAL_ROOT)) > 5);
+    }
+
+    /**
      * A DISJUNCTION is asked whole while that decides, else path by path,
      * and the answer is the first sat path in order.  A path refuted under
      * some assertions is not asked again under more of them; a refutation
@@ -6937,6 +6972,162 @@ public class ComposerTest {
     }
 
     /**
+     * A map a stream collected by {@code toMap} (VM SymStream) lowers as the
+     * merges its chain states: the second member's key where the first's
+     * may equal it is put where {@code MATCHES} says it is absent, and where
+     * it is present holds what the merge function answered, nothing where
+     * it answered null, or a free cell where the run never called it.
+     * {asked, sat?}.
+     */
+    @Test
+    public void aCollectedMapIsItsMerges() {
+        Z3 solver = solver();
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject m = vmLeaf("SymbolExpression", "m", "I");
+        JsonObject first = relation("ASSOCIATIVE", "PUT", relation(
+                "ASSOCIATIVE", "SNAPSHOT_BASE", relation("ASSOCIATIVE",
+                        "STATE", symbol("M_L'java/util/HashMap'_5",
+                                "java/util/HashMap"))), n, integer("I", 10L));
+        JsonObject absent = relation("ASSOCIATIVE", "MATCHES", "Z", first, m,
+                vmNull());
+        JsonObject present = binary("==", absent, integer("Z", 0L));
+        JsonObject second = guarded(relation("ASSOCIATIVE", "PUT_IF", first,
+                m, integer("I", 20L)), absent);
+        JsonObject unknownCell = relation("ASSOCIATIVE", "UNKNOWN", "L",
+                null);
+        unknownCell.addProperty(ContainerSmtCodec.ANSWER, 9L);
+        JsonObject never = guarded(relation("ASSOCIATIVE", "PUT_IF", second,
+                m, unknownCell), present);
+        JsonObject merged = guarded(relation("ASSOCIATIVE", "PUT_IF", second,
+                m, integer("I", 30L)), present);
+        JsonObject removed = guarded(relation("ASSOCIATIVE", "REMOVE_IF",
+                second, m), present);
+        Map<String, VmTermLowering.Sort> keys =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        keys.put("n", VmTermLowering.Sort.INT);
+        keys.put("m", VmTermLowering.Sort.INT);
+        String maps = query(keys, SmtLowering.NO_JOIN, false,
+                new String[] {"neverM", "mergedM", "removedHas",
+                        "removedSize"},
+                relation("ASSOCIATIVE", "READ", "I", never, m),
+                relation("ASSOCIATIVE", "READ", "I", merged, m),
+                relation("ASSOCIATIVE", "CONTAINS", "Z", removed, m),
+                relation("ASSOCIATIVE", "SIZE", "I", removed));
+        String[][] cases = {
+            {"(and (not (= n m)) (= neverM 20))", "sat"},
+            {"(and (not (= n m)) (not (= neverM 20)))", "unsat"},
+            {"(and (= n m) (= neverM 77))", "sat"},
+            {"(and (= n m) (= mergedM 30))", "sat"},
+            {"(and (= n m) (not (= mergedM 30)))", "unsat"},
+            {"(and (not (= n m)) (= mergedM 20))", "sat"},
+            {"(and (= n m) removedHas)", "unsat"},
+            {"(and (not (= n m)) removedHas (= removedSize 2))", "sat"},
+            {"(and (= n m) (not (= removedSize 0)))", "unsat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(maps + "\n(assert " + asked[0]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[0] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[1]));
+        }
+    }
+
+    /**
+     * A constant {@code Enum.valueOf} chose by a name (VM SymEnum) lowers to
+     * that name, defined where it is one of the enum's constants -- a name
+     * built by {@code toUpperCase} (Solr's {@code Replica.State.getState})
+     * matched letter by letter: a compare of it is a compare of names, its
+     * {@code toLowerCase} ({@code State.toString}) the chosen constant's,
+     * its ordinal where the name stands among them, and a switch map's read
+     * at that ordinal the case.  {asked, sat?}.
+     */
+    @Test
+    public void anEnumConstantIsItsName() {
+        Z3 solver = solver();
+        JsonObject named = enumCall("valueOf", vmString("toUpperCase",
+                symbol("s", "Ljava/lang/String;")), "pkg/State", "ACTIVE",
+                "DOWN", "RECOVERING");
+        JsonObject active = vmString("equals", vmLeaf("ConStringSymbolExp",
+                "Y_L'String'_ACTIVE", "java/lang/String"), named);
+        active.addProperty("_java_type", "Z");
+        JsonObject text = vmString("equals", vmLeaf("ConStringSymbolExp",
+                "Y_L'String'_active", "java/lang/String"),
+                vmString("toLowerCase", named));
+        text.addProperty("_java_type", "Z");
+        JsonObject ordinal = enumCall("ordinal", named, null, "ACTIVE",
+                "DOWN", "RECOVERING");
+        // javac's switch map: ACTIVE -> 1, DOWN -> 2, RECOVERING -> 0.
+        JsonObject map = relation("INDEXED", "SNAPSHOT_BASE", null);
+        for (long entry : new long[] {1L, 2L, 0L}) {
+            map = relation("INDEXED", "APPEND", map, integer("I", entry));
+        }
+        // A map the program filled with plain constants, keyed by name.
+        JsonObject weights = relation("ASSOCIATIVE", "SNAPSHOT_BASE",
+                relation("ASSOCIATIVE", "STATE", symbol(
+                        "M_L'java/util/HashMap'_8", "java/util/HashMap")));
+        weights = relation("ASSOCIATIVE", "PUT", weights, vmLeaf(
+                "ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                "java/lang/String"), integer("I", 1L));
+        weights = relation("ASSOCIATIVE", "PUT", weights, vmLeaf(
+                "ConStringSymbolExp", "Y_L'String'_DOWN",
+                "java/lang/String"), integer("I", 2L));
+        String enums = query(Collections.singletonMap("s",
+                VmTermLowering.Sort.STRING), SmtLowering.NO_JOIN, true,
+                new String[] {"isActive", "isActiveText", "ord", "caseKey",
+                        "weight"},
+                active, text, ordinal, relation("INDEXED", "READ", "I", map,
+                        ordinal), relation("ASSOCIATIVE", "READ", "I",
+                        weights, named));
+        String[][] cases = {
+            {"(and isActive (= s \"active\"))", "sat"},
+            {"(and isActive (= s \"AcTiVe\"))", "sat"},
+            {"(and isActive (= s \"down\"))", "unsat"},
+            {"(= s \"bogus\")", "unsat"},
+            {"(= s \"activ\")", "unsat"},
+            {"(and (= s \"down\") (= ord 1))", "sat"},
+            {"(and (= s \"down\") (not (= ord 1)))", "unsat"},
+            {"(and (= s \"Down\") (= caseKey 2))", "sat"},
+            {"(and (= s \"down\") (not (= caseKey 2)))", "unsat"},
+            {"(and isActiveText (= s \"ACTIVE\"))", "sat"},
+            {"(and isActiveText (= s \"down\"))", "unsat"},
+            {"(and (= s \"Down\") (= weight 2))", "sat"},
+            {"(and (= s \"down\") (not (= weight 2)))", "unsat"},
+            {"(and (= s \"active\") (= weight 1))", "sat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(enums + "\n(assert " + asked[0]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[0] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[1]));
+        }
+    }
+
+    /** {@code java/lang/Enum <method>}'s node as the VM states it: its
+     *  argument (the name, or the constant), the class when {@code owner}
+     *  names one, then the constants in ordinal order. */
+    private static JsonObject enumCall(String method, JsonObject argument,
+                                       String owner, String... constants) {
+        JsonObject call = new JsonObject();
+        call.addProperty("_type", "MethodExpression");
+        call.addProperty("_name", "java/lang/Enum " + method);
+        JsonArray arguments = new JsonArray();
+        if (owner != null) {
+            arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_"
+                    + owner, "java/lang/String"));
+        }
+        arguments.add(argument);
+        for (String constant : constants) {
+            arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_"
+                    + constant, "java/lang/String"));
+        }
+        call.add("_param_list", arguments);
+        call.add("_res_exp", owner != null ? vmLeaf("ConStringSymbolExp",
+                "Y_L'String'_" + constants[0], "java/lang/String")
+                : integer("I", 0L));
+        return call;
+    }
+
+    /**
      * The join of no session, where a witness may move {@code symbol} and
      * every version of {@code written}'s location wrote it.
      */
@@ -7012,13 +7203,21 @@ public class ComposerTest {
     private static String streamQuery(SmtLowering.SessionJoin join,
                                       String[] names,
                                       JsonObject... expressions) {
-        Map<String, VmTermLowering.Sort> declared =
-                new LinkedHashMap<String, VmTermLowering.Sort>();
-        declared.put("n", VmTermLowering.Sort.INT);
-        SmtLowering lowering = new SmtLowering(declared);
+        return query(Collections.singletonMap("n", VmTermLowering.Sort.INT),
+                join, false, names, expressions);
+    }
+
+    /** The same, over {@code declared} symbols; {@code defined}: each
+     *  named term asserted defined where it is (its precondition). */
+    private static String query(Map<String, VmTermLowering.Sort> declared,
+                                SmtLowering.SessionJoin join, boolean defined,
+                                String[] names, JsonObject... expressions) {
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>(declared));
         lowering.begin("t", join, ExpressionTable.empty());
         List<String> texts = new ArrayList<String>();
-        StringBuilder defined = new StringBuilder();
+        List<String> preconditions = new ArrayList<String>();
+        StringBuilder definitions = new StringBuilder();
         for (int index = 0; index < names.length; index++) {
             boolean truth = "Z".equals(JsonFields.optionalString(
                     expressions[index], "_java_type"));
@@ -7026,7 +7225,8 @@ public class ComposerTest {
                     truth ? VmTermLowering.Sort.BOOL
                             : VmTermLowering.Sort.INT, "test");
             texts.add(term.text);
-            defined.append("\n(define-fun ").append(names[index])
+            if (defined) preconditions.add(term.precondition);
+            definitions.append("\n(define-fun ").append(names[index])
                     .append(truth ? " () Bool " : " () Int ")
                     .append(term.text).append(')');
         }
@@ -7035,14 +7235,16 @@ public class ComposerTest {
                 lowering.openRefusals().isEmpty());
         List<String> conditions = lowering.end();
         texts.addAll(conditions);
+        texts.addAll(preconditions);
         StringBuilder query = new StringBuilder(lowering.body(texts));
         for (String fact : lowering.facts(texts)) {
             query.append("\n(assert ").append(fact).append(')');
         }
+        conditions.addAll(preconditions);
         for (String condition : conditions) {
             query.append("\n(assert ").append(condition).append(')');
         }
-        return query.append(defined).toString();
+        return query.append(definitions).toString();
     }
 
     /** A relation with its {@code guard}. */
@@ -7766,6 +7968,25 @@ public class ComposerTest {
                     observedFatal, reached));
         }
 
+        /** A FORCE run's (PIPELINE §7.10): this session states it ran
+         *  forced, its decision forced off the arm its operands took. */
+        void forcedDecision(OccurrenceAddress at, String site, String term) {
+            forced = true;
+            decisions.add(DecisionRow.of(id, ++seq, at, site,
+                    decisions.size() + 1, true, term,
+                    Collections.<String, Long>emptyMap()).forced(false));
+        }
+
+        /** A FORCE run's target, standing at {@code at}. */
+        void forcedTarget(long at, String phi) {
+            forced = true;
+            targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
+                    false, true).forced());
+        }
+
+        /** Whether this session states it ran forced. */
+        private boolean forced;
+
         /** A target standing at an earlier event (a helper decision's,
          *  runtime.RowPublication#decided). */
         void targetAt(long at, String phi, boolean observedFatal,
@@ -7801,16 +8022,17 @@ public class ComposerTest {
             // manifest does: an exploration replay is FOCUSED under the
             // obligation it ran, the recording is SEED.
             RowCodec.writeManifest(dir.manifest(), SessionManifest.of(id,
-                    explored ? SessionManifest.Role.FOCUSED
+                    forced ? SessionManifest.Role.FORCED : explored
+                            ? SessionManifest.Role.FOCUSED
                             : SessionManifest.Role.SEED,
-                    explored ? Collections.singletonList("OBL." + id)
+                    explored || forced ? Collections.singletonList("OBL." + id)
                             : Collections.<String>emptyList())
                     .atClose(Collections.<String, Integer>emptyMap(),
                             readings, derived));
             // And the VERDICT, which the replay owns: a focused session
             // that states none settled nothing, and the composition asks
             // the session's own row rather than the wave's copy of it.
-            RowCodec.writeAll(dir.obligations(), explored
+            RowCodec.writeAll(dir.obligations(), explored || forced
                             ? Collections.singletonList(settled)
                             : Collections.<ObligationResult>emptyList(),
                     RowCodec::writeObligationResult);

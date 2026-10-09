@@ -123,7 +123,10 @@ final class RowPublication {
             JsonObject written = object(mapping, "siteCondition");
             RowRuntime.decision(occurrence, seq, siteId, ordinal,
                     optionalBool(mapping, "outcome", false),
-                    written.size() > 0 ? written : null);
+                    written.size() > 0 ? written : null,
+                    optionalBool(mapping, "forced", false)
+                            ? Boolean.valueOf(optionalBool(mapping,
+                            "concreteOutcome", false)) : null);
         }
     }
 
@@ -633,6 +636,16 @@ final class RowPublication {
             phi = arms.isEmpty() ? "false" : arms.size() == 1 ? arms.get(0)
                     : "(or " + String.join(" ", arms) + ")";
         }
+        // A FORCE run's target (ForcedArms): phi is the forced path
+        // condition, every decision from the first one forced against its
+        // concrete arm on, and the row stands there.
+        long forcedFrom = reached ? ForcedArms.forcedFrom(active) : 0L;
+        if (forcedFrom > 0L) {
+            long from = Math.min(forcedFrom, at);
+            phi = forced(active.branchMappings, from, optionalLongInteger(
+                    reach, "vmEventId", 0L), phi);
+            at = from;
+        }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
         // last VM event, ActiveRegion#recordConcreteDecision).  The composer
         // cuts the prefix before target.seq() (PIPELINE §8), so at 0 pi_p
@@ -645,7 +658,41 @@ final class RowPublication {
                             + " before it cannot be cut");
         }
         RowRuntime.target(occurrence, at, anchor, phi, observedFatal,
-                reached, stated.openArm);
+                reached, stated.openArm, forcedFrom > 0L);
+    }
+
+    /**
+     * A forced target's phi: the conjunction of each decision the
+     * activation took from {@code from} up to the target's own ({@code
+     * target}, which {@code phi} states) -- as taken, forced or not, so the
+     * conjunction is one path to the throw -- and {@code phi}.  A decision
+     * stating no predicate is the constant of its arm: one forced against
+     * its concrete arm is {@code false} (that world cannot take it), the
+     * target's own included, any other adds nothing.
+     */
+    static String forced(List<JsonObject> mappings, long from, long target,
+                         String phi) {
+        List<String> conjuncts = new ArrayList<String>();
+        for (JsonObject mapping : mappings) {
+            long seq = optionalLongInteger(mapping, "vmEventId", 0L);
+            if (seq < from || seq > target || !mapping.has("outcome")) {
+                continue;
+            }
+            boolean outcome = optionalBool(mapping, "outcome", false);
+            JsonObject written = object(mapping, "siteCondition");
+            String ref = written.size() == 0 ? ""
+                    : trimmed(RowRuntime.expressionRef(written));
+            if (ref.isEmpty()) {
+                if (optionalBool(mapping, ForcedArms.AGAINST, false)) {
+                    conjuncts.add("false");
+                }
+            } else if (seq < target) {
+                conjuncts.add(Arms.conjunct(ref, outcome));
+            }
+        }
+        conjuncts.add(phi);
+        return conjuncts.size() == 1 ? phi
+                : "(and " + String.join(" ", conjuncts) + ")";
     }
 
     /** A reached target's phi, the event it stands at, and the open decider

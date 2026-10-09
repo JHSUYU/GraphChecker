@@ -347,7 +347,8 @@ public final class SessionReader {
      */
     public boolean admitted() {
         if (seed()) return true;
-        if (obligations.isEmpty()) return false;
+        // A forced world is no world: its rows are its forced path's alone.
+        if (forced() || obligations.isEmpty()) return false;
         for (ObligationResult result : obligations) {
             if (result.verdict() != Verdict.ADMITTED) return false;
         }
@@ -366,6 +367,11 @@ public final class SessionReader {
     /** Whether this session states it is the recording. */
     public boolean seed() {
         return manifest != null && manifest.seed();
+    }
+
+    /** Whether this session states it ran forced (PIPELINE §7.10). */
+    public boolean forced() {
+        return manifest != null && manifest.forced();
     }
 
     /** Why this session could not be read whole, or {@code ""}. */

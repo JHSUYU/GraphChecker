@@ -17,11 +17,15 @@ public final class DecisionRow extends Value {
     private final boolean outcome;
     private final String term;
     private final Map<String, Long> clockReadings;
+    /** The arm the run's operands decided where a forced replay forced
+     *  another ({@link #forced}); null otherwise. */
+    private final Boolean concreteOutcome;
 
     private DecisionRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String siteId,
                         int ordinal, boolean outcome, String term,
-                        Map<String, Long> clockReadings) {
+                        Map<String, Long> clockReadings,
+                        Boolean concreteOutcome) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -30,6 +34,7 @@ public final class DecisionRow extends Value {
         this.outcome = outcome;
         this.term = term;
         this.clockReadings = clockReadings;
+        this.concreteOutcome = concreteOutcome;
     }
 
     public static DecisionRow of(String sessionId, long seq,
@@ -41,7 +46,29 @@ public final class DecisionRow extends Value {
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(siteId, "siteId"),
                 Fields.ordinal(ordinal, "ordinal"), outcome,
-                Fields.required(term, "term"), Fields.copy(clockReadings));
+                Fields.required(term, "term"), Fields.copy(clockReadings),
+                null);
+    }
+
+    /**
+     * This decision, FORCED (PIPELINE §7.10): the run took {@code outcome}
+     * because the replay forced it, where its operands decided {@code
+     * concrete}; {@code term} is the predicate as written, as for any row.
+     */
+    public DecisionRow forced(boolean concrete) {
+        return new DecisionRow(sessionId, seq, occurrence, siteId, ordinal,
+                outcome, term, clockReadings, Boolean.valueOf(concrete));
+    }
+
+    /** Whether a forced replay forced this decision. */
+    public boolean isForced() {
+        return concreteOutcome != null;
+    }
+
+    /** The arm its operands decided: {@link #outcome} unless forced. */
+    public boolean concreteOutcome() {
+        return concreteOutcome == null ? outcome
+                : concreteOutcome.booleanValue();
     }
 
     public String sessionId() {
@@ -84,7 +111,7 @@ public final class DecisionRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, siteId, ordinal,
-                outcome, term, clockReadings};
+                outcome, term, clockReadings, concreteOutcome};
     }
 
     @Override

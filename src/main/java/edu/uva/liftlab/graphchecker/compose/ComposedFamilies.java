@@ -602,7 +602,8 @@ final class ComposedFamilies {
                 slotOf.put(slot.id(), slot);
                 symbolOf.put(slot.id(), attach.symbol());
                 attestedAt.put(slot.id(), new LinkedHashSet<String>());
-                for (Arms.Arm arm : arms.armsAt(slot, attach.symbol())) {
+                for (Arms.Arm arm : arms.armsAt(slot, attach.symbol(),
+                        attach.sessionId())) {
                     if (replacing.contains(arm.sessionId())) continue;
                     if (arm.producer() == null) continue;
                     if (!arm.attested()) {

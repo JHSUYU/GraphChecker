@@ -14,6 +14,7 @@
 #include "runtime/jniHandles.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,10 @@ private:
     int opcode;
     std::string code_position;
     std::vector<int> condition_indices;
+    // System.forceNextConcolicBranch forced this branch: it took `outcome`
+    // in place of what its operands decide, `concrete` (1 or 0).
+    bool forced;
+    jlong concrete;
   };
 
   struct RegionFrame {
@@ -117,6 +122,15 @@ private:
   const ZeroFrame *_pending_branch_owner_frame;
   std::string _pending_branch_site_id;
   int _pending_branch_occurrence;
+  // What System.forceNextConcolicBranch asked of the next marker
+  // (_next_force), and what that marker binds to its branch
+  // (_pending_force): FORCE_NONE, or the arm, 1 jumping and 0 falling
+  // through; and, once the branch took it, the concrete answer it overrode.
+  int _next_force;
+  int _pending_force;
+  std::set<sym_rid_t> _switch_maps;
+  bool _pending_forced;
+  jlong _pending_concrete;
 //  std::set<oop> _allocated_objs;
 
   // One in-flight conditional container removal, assembled across one
@@ -238,6 +252,30 @@ public:
   // exact event when the bytecode executes, so Java never has to guess from
   // method names or expression shape.
   jlong mark_branch(const char *site_id, int occurrence);
+
+  // Forcing (System.forceNextConcolicBranch): the runtime asks it of the
+  // next marker; the marked conditional bytecode then asks forced_outcome,
+  // which answers the forced arm instead of the concrete one only for a
+  // pending marker of the current frame whose branch is recorded (`recorded`:
+  // the interpreter records it, ConcolicMngr::can_do_concolic), and
+  // remembers the concrete answer for the branch's event.  A switch is never
+  // forced.
+  enum { FORCE_NONE = -1 };
+  void force_next_branch(bool jump);
+  // A forcing never outlives the marker it was asked of, nor one refused.
+  void drop_next_force();
+  inline bool forcing() const { return _pending_force != FORCE_NONE; }
+  bool forced_outcome(bool concrete, bool recorded);
+  // The switch maps (javac's $SwitchMap$, ecj's $SWITCH_TABLE$ arrays) this
+  // thread loaded, by session id (SymEnum::loaded_static, table_read).
+  void note_switch_map(sym_rid_t array) { _switch_maps.insert(array); }
+  bool switch_map(oop array) const {
+    return array != NULL && array->get_sym_rid() != NULL_SYM_RID
+        && _switch_maps.count(array->get_sym_rid()) > 0;
+  }
+  // Whether a marked branch executing now records its event and
+  // conditions: recording live, admitted, unpaused, in a region.
+  bool recording_branches() const;
   void record_branch_condition(Expression *expression, bool outcome,
                                int opcode);
   void record_branch_conditions(const exp_list_t &expressions, bool outcome,

@@ -535,13 +535,35 @@ public final class StaticScopeMap {
     private final Map<String, Set<String>> readCarriers =
             new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
 
+    /** Each TARGET_SITE row's forcing table ({@link ForcingTable}), by
+     *  its site id. */
+    private final Map<String, JsonArray> forcing;
+
     private StaticScopeMap(List<Site> sites,
                            Map<String, Set<String>> regionMethods,
-                           Map<String, List<String>> concreteReads) {
+                           Map<String, List<String>> concreteReads,
+                           Map<String, JsonArray> forcing) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
                 Collections.unmodifiableMap(concreteReads);
+        this.forcing = forcing;
+    }
+
+    /** The forcing table of the TARGET_SITE at {@code targetSiteId}
+     *  ({@link ForcingTable}), a copy; empty where it has none. */
+    public JsonArray forcing(String targetSiteId) {
+        JsonArray table = forcing.get(targetSiteId);
+        return table == null ? new JsonArray() : table.deepCopy();
+    }
+
+    /** Every site some TARGET_SITE row's table forces. */
+    public Set<String> forcedSites() {
+        Set<String> sites = new LinkedHashSet<String>();
+        for (JsonArray table : forcing.values()) {
+            sites.addAll(ForcingTable.read(table).keySet());
+        }
+        return sites;
     }
 
     /** The kind of a configuration root's row. */
@@ -931,10 +953,18 @@ public final class StaticScopeMap {
                 guarded = guarded.withChain(targetChain(guards, site.siteId,
                         entry));
             }
-            rows.add(row(guarded));
+            JsonObject row = row(guarded);
+            if (TARGET_SITE.equals(site.role)) {
+                JsonArray force = ForcingTable.of(guarded);
+                if (force.size() > 0) row.add(FORCE, force);
+            }
+            rows.add(row);
         }
         return rows;
     }
+
+    /** A TARGET_SITE row's forcing table ({@link ForcingTable}). */
+    static final String FORCE = "force";
 
     private static JsonObject row(Site site) {
         JsonObject row = new JsonObject();
@@ -1332,6 +1362,8 @@ public final class StaticScopeMap {
         List<Site> sites = new ArrayList<Site>();
         Map<String, List<String>> concreteReads =
                 new LinkedHashMap<String, List<String>>();
+        Map<String, JsonArray> forcing =
+                new LinkedHashMap<String, JsonArray>();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
             if (CONFIG_KEY.equals(optionalString(row, "kind"))) {
                 concreteReads.put(optionalString(row, "sourceId"),
@@ -1340,6 +1372,10 @@ public final class StaticScopeMap {
                 continue;
             }
             if (!SITE_KIND.equals(optionalString(row, "kind"))) continue;
+            if (row.has(FORCE) && row.get(FORCE).isJsonArray()) {
+                forcing.put(optionalString(row, "siteId"),
+                        row.getAsJsonArray(FORCE));
+            }
             List<String> guards = strings(row, "guards");
             List<Boolean> outcomes = new ArrayList<Boolean>();
             JsonElement statedOutcomes = row.get("guardOutcomes");
@@ -1384,7 +1420,8 @@ public final class StaticScopeMap {
                     (int) optionalLongInteger(row, "demandDistance", -1L),
                     optionalBool(row, "ownObject", false)));
         }
-        return new StaticScopeMap(sites, readRegions(file), concreteReads);
+        return new StaticScopeMap(sites, readRegions(file), concreteReads,
+                Collections.unmodifiableMap(forcing));
     }
 
     /** A row's {@code constructionOnly}. */
@@ -1444,7 +1481,8 @@ public final class StaticScopeMap {
     public static StaticScopeMap empty() {
         return new StaticScopeMap(new ArrayList<Site>(),
                 Collections.<String, Set<String>>emptyMap(),
-                Collections.<String, List<String>>emptyMap());
+                Collections.<String, List<String>>emptyMap(),
+                Collections.<String, JsonArray>emptyMap());
     }
 
     public boolean stated() {

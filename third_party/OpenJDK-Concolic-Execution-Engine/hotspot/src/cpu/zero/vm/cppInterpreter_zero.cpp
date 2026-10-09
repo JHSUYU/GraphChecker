@@ -746,6 +746,13 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
     if (sym_inst != NULL) {
       sym_rid = sym_inst->get_sym_rid();
       sym_exp = sym_inst->get(field_offset);
+      if (sym_exp == NULL && !sym_inst->keeps_field_shadows()
+          && sym_inst->has_semantic_expression()) {
+        ResourceMark rm;
+        ConcolicMngr::ctx->note_model_gap(
+            std::string("STRING_REPRESENTATION_READ:")
+            + object->klass()->name()->as_C_string());
+      }
       if (sym_exp == NULL
           && sym_inst->demand_symbolic_fields_enabled()
           && !sym_inst->field_written(field_offset)) {
