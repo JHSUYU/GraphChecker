@@ -1080,13 +1080,14 @@ public final class ScheduleLog {
         if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
-            // A writer whose own context holds the frontier owes it: held
-            // behind a later write to its location, it held the frontier
+            // A writer whose own context holds a slot before that write
+            // owes it: held behind the later write, it held the order there
             // until the watchdog, and every later slot of its context with
             // it (solr-adhoc-19 MB14s: a node's extra compare-and-set retry
             // at its terms node, then its eight registration slots, a stall
-            // each).
-            if (conflict >= 0 && !owesFrontierLocked(event)) {
+            // each; 39 MB18s: 45 such writes given up one by one, behind
+            // writes up to 970 slots past the frontier).
+            if (conflict >= 0 && !owesBeforeLocked(event, conflict)) {
                 CONFLICTED.add(self);
                 return conflict + 1;
             }
@@ -1112,10 +1113,18 @@ public final class ScheduleLog {
         return next >= 0 ? next : AT_THE_LINE;
     }
 
-    /** Whether the frontier is a slot of {@code event}'s own context. */
-    private static boolean owesFrontierLocked(Pending event) {
-        return firstBlocking < order.size()
-                && event.context.equals(order.get(firstBlocking).context());
+    /** Whether {@code event}'s own context holds an open slot that blocks
+     *  before {@code slot}: only its thread makes it. */
+    private static boolean owesBeforeLocked(Pending event, int slot) {
+        List<Integer> own = BY_CONTEXT.get(event.context);
+        if (own == null) return false;
+        for (int at : own) {
+            if (at >= slot) return false;
+            if (at >= firstOpen && state[at] == OPEN && blocking(at)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether the order moved since the last WAKE of {@code event}'s key. */

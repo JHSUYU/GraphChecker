@@ -2315,30 +2315,45 @@ public class ScheduleLogTest {
     }
 
     /**
-     * A write the order lacks whose own context holds the frontier owes it:
-     * it goes at once, never behind a later write to its location (another
-     * context's), which held the frontier -- and every later slot of its
-     * context -- until the watchdog (solr-adhoc-19 MB14s: a node's extra
-     * compare-and-set retry at its terms node).
+     * A write the order lacks whose own context holds an open slot before
+     * the next write to its location owes that slot: it goes at once, never
+     * behind that later write (another context's), which held the order --
+     * and every later slot of its context -- until the watchdog
+     * (solr-adhoc-19 MB14s: a node's extra compare-and-set retry at its
+     * terms node).  Per row: whether its own slot is the frontier; one that
+     * owes nothing before the write still waits for it.
      */
-    @Test(timeout = 30000L)
-    public void aWriteOwingTheFrontierPassesNoLaterWrite() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+    @Test(timeout = 60000L)
+    public void aWriteOwingASlotBeforeTheNextWriteThereGoes() throws Exception {
         String here = ScheduleLog.contextOf(Identity.contextHere());
-        enforce(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "x"),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
-                        ScheduleEvent.written("STORE", "/p"), 0, ""),
-                event(ScheduleEvent.Kind.SEND, "y")));
-        long before = System.nanoTime();
-        written("/p");
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        assertTrue("the extra write went, then x took the frontier",
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
-                        < 2000L);
-        assertEquals(here, ScheduleLog.contextOf(Identity.contextHere()));
-        String progress = ScheduleLog.progress();
-        assertTrue(progress, progress.contains(": 1 taken, 0 given up"));
+        ScheduleEvent other = ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE,
+                "other|Root:X", ScheduleEvent.written("STORE", "/p"), 0, "");
+        ScheduleEvent far = ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                "far|Root:F", "f", 0, "");
+        Object[][] rows = {
+            {"its own slot the frontier",
+                Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"), other), true},
+            {"its own slot behind another's",
+                Arrays.asList(far, event(ScheduleEvent.Kind.SEND, "x"), other),
+                true},
+            {"no own slot before the write",
+                Arrays.asList(far, other, event(ScheduleEvent.Kind.SEND, "x")),
+                false},
+        };
+        for (Object[] row : rows) {
+            restart();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            @SuppressWarnings("unchecked")
+            List<ScheduleEvent> order = (List<ScheduleEvent>) row[1];
+            enforce(order);
+            Thread writer = new Thread(() -> written("/p"));
+            writer.start();
+            writer.join(2000L);
+            assertEquals(row[0] + ": " + here, !(Boolean) row[2],
+                    writer.isAlive());
+            writer.interrupt();
+            writer.join(5000L);
+        }
     }
 
     /**
