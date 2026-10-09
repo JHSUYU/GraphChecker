@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -17,30 +18,52 @@ import java.util.Set;
  * THE ORDER THE CONFIRMED WORLD RAN IN, from its moved roots on (PIPELINE
  * §10b): what a native reproduction holds besides the model's own ORDER
  * rows, so that it runs the world CONFIRM saw and not merely its roots.  A
- * native run on the recording's timing plants the roots and still runs
- * another order (solr-bugs-restore-construction Z5: the old Overseer's first
- * RESTORE task waited, in the confirmed session, until the new Overseer had
- * run the second RESTORE, and the shutdown that followed interrupted it;
- * natively it finished first, 0/10).
+ * native run plants the roots and still runs the world at native speed
+ * (solr-bugs-restore-construction Z5: a fault ends the Overseer, a new one
+ * runs the second RESTORE, and the client's next update routes on the
+ * restored collection while the old Overseer's first RESTORE task still
+ * waits for its replicas -- in the confirmed session that task's wait woke
+ * only after the second RESTORE had answered; natively it finished first,
+ * and the update found the collection active, 0/10).
  *
  * <p>The order is the confirmed session's schedule (ScheduleLog's total
  * order of the events that cross a thread or a node: SEND, RECV, a store's
  * WRITE, START, CLAIM, WAKE, END, each named by kind, context, site and k,
  * the one identity both passes compute) from where a moved root's mint
  * occurrence opened on (its schedule mark, or its first event: a clock
- * read's occurrence makes no event of its own, solr-18406): every later
- * event is after the root's occurrence began in the world CONFIRM saw, and the root's effect reaches what the trace records
- * no edge of as well (restore's fault ends the Overseer, a new one is
- * elected and the old one's shutdown interrupts its task: no row states
- * either).  Before the roots the run is the recording's.  It is reduced:
- * each event, but a turn's END, after the latest earlier step -- an event
- * but a WAKE or an END, which are the clock (a poll's count is timing,
- * never a cause) -- when that step is in another context and the event's
- * own context does not already follow it.  By induction every step follows
- * every earlier one, so this is the transitive reduction of the realized
- * order: one edge per context switch.  Each edge is an {@code ORDER} row
- * of scope {@value #SCOPE}, {@code before} and {@code after} two events,
- * which the native run's ScheduleLog holds at admission.</p>
+ * read's occurrence makes no event of its own, solr-18406).  Its steps are
+ * its events but a WAKE or an END, which are the clock: a poll's count is
+ * timing, never a cause.</p>
+ *
+ * <p>Of it, a native run holds what keeps the world the roots found
+ * running from getting ahead of the confirmed one, between events a native
+ * run makes alike: each WAKE after the step just before it, once per step
+ * and context, where the WAKE and the step are as below.  (The whole order,
+ * one edge per context switch, reproduced 0/10 on restore, solr-18406 and
+ * solr-18413, each run's first unheld row an event it never made.)
+ * <ul>
+ *   <li>the WAKE in a context running at the start (an event before it): the
+ *   roots' effect races the contexts it found running, and the trace states
+ *   no edge of how it reaches them (restore: an Overseer's death, a new
+ *   one's election).  A context begun after the start is that effect or the
+ *   workload's next step and runs as the run makes it; its turns decide on
+ *   reads no event names (restore: a new Overseer's state-updater turn
+ *   found its queue empty natively and wrote nothing, so the order waiting
+ *   for that write never held);</li>
+ *   <li>a WAKE, the step in another context: a running context goes on by
+ *   itself only where a wait ends, on the wall clock or a signal, and
+ *   natively the wait ends before the world it waited on has got where the
+ *   confirmed one had; between waits it moves by its program and what it
+ *   receives;</li>
+ *   <li>the step the first of its kind and site in its context (k 0): a
+ *   later count is a loop's (a poll's, a retry's, one send per item), which
+ *   natively runs another number of times, so its k-th event is no fixed
+ *   point of the world (solr-18413: a request handler's sixth and
+ *   fourteenth SEND, which some native runs never made).</li>
+ * </ul>
+ * Each edge held is an {@code ORDER} row of scope {@value #SCOPE}, {@code
+ * before} and {@code after} two events, which the native run's ScheduleLog
+ * holds at admission.</p>
  */
 final class RealizedOrder {
     /** An ORDER row's scope when its ends are schedule events. */
@@ -101,28 +124,33 @@ final class RealizedOrder {
     }
 
     /**
-     * The reduced realized order of {@code schedule} from position {@code
-     * from} on (class comment): {before, after} pairs in schedule order.
+     * The edges of {@code schedule}'s realized order from position {@code
+     * from} on that a native run holds (class comment): {before, after}
+     * pairs in schedule order, one per WAKE held.
      */
     static List<ScheduleEvent[]> edges(List<ScheduleEvent> schedule,
                                        long from) {
+        Set<String> running = new HashSet<String>();
         List<ScheduleEvent[]> edges = new ArrayList<ScheduleEvent[]>();
-        Map<String, Integer> known = new HashMap<String, Integer>();
+        Map<String, Integer> held = new HashMap<String, Integer>();
         int latest = -1;
         for (int at = 0; at < schedule.size(); at++) {
             ScheduleEvent event = schedule.get(at);
-            if (event.seq() < from) continue;
-            if (event.kind() != ScheduleEvent.Kind.END && latest >= 0
-                    && !schedule.get(latest).context().equals(
-                    event.context())
-                    && latest > known.getOrDefault(event.context(), -1)) {
-                edges.add(new ScheduleEvent[] {schedule.get(latest), event});
-                known.put(event.context(), latest);
+            if (event.seq() < from) {
+                running.add(event.context());
+                continue;
             }
-            if (step(event)) {
-                latest = at;
-                known.merge(event.context(), at, Math::max);
+            if (event.kind() == ScheduleEvent.Kind.WAKE && latest >= 0
+                    && running.contains(event.context())) {
+                ScheduleEvent before = schedule.get(latest);
+                if (!before.context().equals(event.context())
+                        && before.k() == 0
+                        && latest > held.getOrDefault(event.context(), -1)) {
+                    edges.add(new ScheduleEvent[] {before, event});
+                    held.put(event.context(), latest);
+                }
             }
+            if (step(event)) latest = at;
         }
         return edges;
     }

@@ -2212,18 +2212,29 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   saw is `final/confirm.json`'s `sessionId` (`campaign_confirmed_session`): the selected session
   itself when it realized the claim, else CONFIRM's replay, in `final/confirm/sessions/` or an
   exploration attempt's `witness-confirm/NNNN/sessions/`; a session not there refuses the plant.
-  Its schedule from where a ROOT row's mint occurrence opened on is held (the occurrence's schedule
-  mark, or its first event: a clock read's occurrence makes no event of its own, solr-18406):
-  every later event is after the moved roots' occurrences began in that world, and a root's
-  effect reaches what the trace records no edge of too (solr-bugs-restore-construction: a ZooKeeper session fault at the Overseer's
-  `writePendingUpdates` ends that Overseer, a new one is elected and runs the second RESTORE, and
-  the old one's shutdown interrupts its first RESTORE task, which in the confirmed session waited
-  until then; natively that task finished first, 0/10, with every root planted). Before the roots
-  the run is the recording's own. The order is reduced to its transitive reduction, one edge per
-  context switch: an event (a turn's END never) after the latest earlier step -- an event but a
-  WAKE or an END, which are the clock, never a cause -- when that step is in another context and
-  the event's own context does not already follow it; by induction every step follows every
-  earlier one. The plant's summary counts them (`realizedOrders`);
+  Its schedule is read from where a ROOT row's mint occurrence opened on (the occurrence's schedule
+  mark, or its first event: a clock read's occurrence makes no event of its own, solr-18406); a
+  step is an event but a WAKE or an END, which are the clock. Each WAKE is held after the step just
+  before it, once per step and context, where the WAKE is in a context running before the start,
+  and the step is in another context and the first of its kind and site there (`k` 0):
+  - the roots' effect races the contexts it found running, and the trace states no edge of how it
+    reaches them; a context begun later is that effect or the workload's next step and runs as the
+    run makes it, its turns deciding on reads no event names;
+  - a running context goes on by itself only where a wait ends, on the wall clock or a signal, and
+    natively a wait ends before the world it waited on has got where the confirmed one had;
+  - a later count is a loop's (a poll's, a retry's, one send per item), which natively runs
+    another number of times.
+
+  solr-bugs-restore-construction: a ZooKeeper session fault ends the Overseer, a new one runs the
+  second RESTORE, and the client's next update routes on the restored collection while the old
+  Overseer's first RESTORE task still waits for its replicas -- in the confirmed session that wait
+  woke only after the second RESTORE had answered the client; natively the task finished first and
+  the update found the collection active (0/10 with every root planted). Its plant holds that wake
+  after the client's receipt of the answer. The whole order, one edge per context switch (restore
+  42 rows, solr-18406 366, solr-18413 497), reproduced 0/10 on each: every run's first unheld row
+  waited for an event the run never made (a new Overseer's state-updater turn that found its queue
+  empty natively, a request handler's sixth SEND, a select whose poll count differed). The plant's
+  summary counts the rows (`realizedOrders`);
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
   id>, siteId: <guard>, value: <its fatal arm>}`.
 
