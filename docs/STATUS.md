@@ -569,17 +569,15 @@ Scale and robustness:
     (`ConcolicResultPublisher#decodeBeforePublication`), and is decoded there one location at a time
     (`gc/runtime/SharedStateCapture`, 16 MB pages): SB12's obligation 0a1a085e98d056aa still read 50-60 MB per activation, and each
     page repeats the expression closure its locations share (1.6 times the text of 64 MB pages).
-    Asking for the locations the activation itself read or wrote, with one table across a
-    read-out's pages, needs the VM: publication rows a write by the occurrence that performed it,
-    whichever read-out found it first (`RowPublication#writes`), so a read-out cannot narrow itself
-    on the Java side. What it can skip: a version an earlier read-out published is listed again by
-    every later one whose activation began before it, and only its value and path guard were
-    expanded to be thrown away -- each is now dropped unexpanded before its record expands
-    (`SharedStateCapture#trimPublished`, the claim checked on the publication thread, which decodes
-    and publishes in order), except a version a read of the record observed and a symbol leaf. A
-    session's close prints what its read-outs cost (`Causynth read-outs:` pages, MB, the VM's
-    seconds on the closing threads, the publication thread's seconds decoding, the versions listed
-    and those published before; `SharedStateCapture#readOutSummary`).
+    The VM now states each selected location's versions and reads before the activation's entry
+    without their values (`beforeWindow`, image vm-force6; VM.md, PIPELINE §5): a whole log re-sent
+    every value of a hot location with every close, and 18413's seed replay spent 3-10 times MB7's
+    485 s parsing them. Still open: a location is selected whole whatever thread touched it, and
+    every page repeats its locations' closure; asking for the locations the activation itself read
+    or wrote, with one table across a read-out's pages, needs the VM again. A session's close prints
+    what its read-outs cost (`Causynth read-outs:` pages, MB, the VM's seconds on the closing
+    threads, the publication thread's seconds decoding, the versions listed and those before their
+    window; `SharedStateCapture#readOutSummary`).
 39. Which turn of a DataNode carries a request is its clock's: a block report the recording sent in
     turn #1 may ride turn #2 in a replay, and then every anchor below it differs in the root's k;
     its occurrences are answered by their shape (§9), but the request-scoped events the

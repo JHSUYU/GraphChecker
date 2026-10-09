@@ -286,11 +286,6 @@ public final class SharedExpressionTable {
             return expanded.containsKey(key);
         }
 
-        /** {@code key}'s expansion, or null before it is expanded. */
-        final JsonElement expansion(K key) {
-            return expanded.get(key);
-        }
-
         /** The key {@code object} references, or null for a plain object;
          *  {@code root}: it is the artifact itself. */
         abstract K reference(JsonObject object, boolean root);

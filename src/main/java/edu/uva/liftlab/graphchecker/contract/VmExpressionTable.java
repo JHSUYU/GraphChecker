@@ -25,7 +25,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
-import java.util.function.UnaryOperator;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -138,30 +137,8 @@ public final class VmExpressionTable {
         public JsonObject importRecords(String page, String records,
                                         Predicate<JsonObject> admit,
                                         Consumer<JsonElement> each) {
-            return importRecords(page, records, admit,
-                    (record, shape) -> record, each);
+            return rawResolver.importRecords(page, records, admit, each);
         }
-
-        /** {@link #importRecords}, each record {@link Trim trimmed} before
-         *  it is expanded. */
-        public JsonObject importRecords(String page, String records,
-                                        Predicate<JsonObject> admit,
-                                        Trim trim,
-                                        Consumer<JsonElement> each) {
-            return rawResolver.importRecords(page, records, admit, trim,
-                    each);
-        }
-    }
-
-    /**
-     * What a reader leaves of one record before it is expanded: a member
-     * it will not read is never expanded.  {@code shape} answers what an
-     * object of the record stands for -- a reference, its definition in the
-     * envelope's table, else the expansion the store already holds (null
-     * when neither); a plain object, itself.
-     */
-    public interface Trim {
-        JsonElement trim(JsonElement record, UnaryOperator<JsonObject> shape);
     }
 
     /** The member {@link Store#importRecords} states the record count in. */
@@ -249,7 +226,6 @@ public final class VmExpressionTable {
 
         private JsonObject importRecords(String page, String records,
                                          Predicate<JsonObject> admit,
-                                         Trim trim,
                                          Consumer<JsonElement> each) {
             Map<RawKey, JsonObject> table = new HashMap<>();
             Set<RawKey> supplied = new HashSet<>();
@@ -303,8 +279,7 @@ public final class VmExpressionTable {
                                                 + key);
                             }
                         });
-                        each.accept(expandAgainst(table, trim.trim(record,
-                                object -> shape(table, object))));
+                        each.accept(expandAgainst(table, record));
                     }
                     reader.endArray();
                     // One array of records: the table after it is read.
@@ -315,18 +290,6 @@ public final class VmExpressionTable {
                 throw new IllegalArgumentException(
                         "malformed VM read-out page", malformed);
             }
-        }
-
-        /** What {@code object} stands for ({@link Trim}). */
-        private JsonObject shape(Map<RawKey, JsonObject> table,
-                                 JsonObject object) {
-            RawKey key = reference(object, false);
-            if (key == null) return object;
-            JsonObject stated = table.get(key);
-            if (stated != null) return stated;
-            JsonElement held = expansion(key);
-            return held != null && held.isJsonObject()
-                    ? held.getAsJsonObject() : null;
         }
 
         /** One record expanded against its envelope's table, under the

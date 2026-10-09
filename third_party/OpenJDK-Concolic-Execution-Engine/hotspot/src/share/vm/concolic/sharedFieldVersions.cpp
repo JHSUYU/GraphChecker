@@ -3,6 +3,7 @@
 #include "concolic/sharedFieldVersions.hpp"
 
 #include <algorithm>
+#include <set>
 
 #include "classfile/javaClasses.hpp"
 #include "classfile/symbolTable.hpp"
@@ -1113,7 +1114,7 @@ bool SharedFieldVersions::write_versions_envelope(
     const rapidjson::StringBuffer &buffer,
     VmExpressionArtifactScope &expression_artifact,
     const Location &location, const Slot &slot, bool selected,
-    size_t budget_bytes) {
+    size_t budget_bytes, jlong window) {
   using namespace rapidjson;
   const size_t bound = envelope_bytes(buffer, expression_artifact)
       + (budget_bytes == 0 ? MAX_VERSION_ENVELOPE_BYTES : budget_bytes);
@@ -1150,6 +1151,19 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.Key("unnamedWriter");
     writer.Bool(slot.unnamed_writer);
   }
+  // A read-out's window: a version before it was in an earlier window,
+  // whose read-out published it, so it is stated without its value and
+  // guard -- the expressions are what a whole log re-sent with every
+  // read-out -- unless a read of the window observed it (the read's row
+  // states that value).
+  std::set<jlong> observed;
+  if (window > 0) {
+    for (size_t index = 0; index < slot.reads.size(); ++index) {
+      if (slot.reads[index].read_event_id >= window) {
+        observed.insert(slot.reads[index].observed_version_id);
+      }
+    }
+  }
   writer.Key("versions");
   writer.StartArray();
   bool serialization_truncated = false;
@@ -1160,7 +1174,13 @@ bool SharedFieldVersions::write_versions_envelope(
       break;
     }
     const Version &version = versions[index];
+    const bool before = window > 0 && version.version_id < window
+        && observed.count(version.version_id) == 0;
     writer.StartObject();
+    if (before) {
+      writer.Key("beforeWindow");
+      writer.Bool(true);
+    }
     writer.Key("fieldVersionId");
     writer.Int64(version.version_id);
     writer.Key("versionKind");
@@ -1212,6 +1232,10 @@ bool SharedFieldVersions::write_versions_envelope(
       writer.Key("referentStateRefused");
       writer.String(version.referent.refused.c_str());
     }
+    if (before) {
+      writer.EndObject();
+      continue;
+    }
     writer.Key("expression");
     if (version.value == NULL) {
       writer.Null();
@@ -1247,6 +1271,12 @@ bool SharedFieldVersions::write_versions_envelope(
     const ReadRecord &read =
         slot.reads[(slot.read_head + index) % slot.reads.size()];
     writer.StartObject();
+    if (window > 0 && read.read_event_id < window) {
+      // An earlier window's read: stated for the events it names, its row
+      // that window's read-out's.
+      writer.Key("beforeWindow");
+      writer.Bool(true);
+    }
     writer.Key("readEventId");
     writer.Int64(read.read_event_id);
     writer.Key("readerContextId");
@@ -1389,7 +1419,8 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
     // Each envelope keeps its own per-envelope bound: the document budget is
     // a boundary between locations, never a cut inside one.
     write_versions_envelope(writer, buffer, expression_artifact,
-                            entry.location, entry.slot, true, 0);
+                            entry.location, entry.slot, true, 0,
+                            after_event_id);
     writer.EndObject();
     emitted++;
   }
@@ -1423,7 +1454,7 @@ std::string SharedFieldVersions::describe(const Location &location) {
   Writer<StringBuffer> writer(buffer);
   VmExpressionArtifactScope expression_artifact;
   write_versions_envelope(writer, buffer, expression_artifact, location,
-                          copy, selected, 0);
+                          copy, selected, 0, 0);
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
