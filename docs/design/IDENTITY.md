@@ -682,7 +682,9 @@ order:
   wait is missed; the methods are installed from the rows the session reads when it opens,
   `GuardedStoreSites#install`, never at a wait, where reading the map held a thread's first wait
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
-  still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an
+  still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
+  waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
+  give-up of the 4560 slots before it). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the

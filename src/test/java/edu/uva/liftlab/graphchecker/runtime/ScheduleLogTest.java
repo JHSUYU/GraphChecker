@@ -2723,6 +2723,49 @@ public class ScheduleLogTest {
         }
     }
 
+    /**
+     * A poll held at the cut -- an unrecorded WAKE, its context with no slot
+     * left -- bounds no give-up, as a poll held at its context's slot does
+     * not: with the frontier's event never coming and nothing else waiting,
+     * the watchdog lets it go again, a grace apart, and gives up nothing;
+     * once y waits behind the frontier, the frontier's slot alone is given
+     * up and y takes its own (solr-adhoc-13 MB6: a replica poll held at the
+     * cut bounded a give-up of 4560 slots at once).
+     */
+    @Test(timeout = 60000L)
+    public void aPollHeldAtTheCutBoundsNoGiveUp() throws Exception {
+        final String loop = "<P: java.lang.Boolean call()>#u33";
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+        ClockLoops.useForTests(Collections.<String>emptySet());
+        enforce(prefix("never", "y"));
+        final boolean[] stop = new boolean[1];
+        Thread poll = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    while (!stop[0]) TimedWaits.sleep(50L, loop);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        poll.start();
+        // Past a timeout and two let-go graces: the line's give-up was due.
+        Thread.sleep(1000L + 2 * ScheduleLog.LET_GO_GRACE_MS + 500L);
+        String before = ScheduleLog.progress();
+        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+        y.join(20000L);
+        boolean waited = y.isAlive();
+        stop[0] = true;
+        poll.join(5000L);
+        assertFalse("y went", waited);
+        assertFalse("the poll ended", poll.isAlive());
+        assertTrue(before, before.contains(" 0 given up"));
+        String after = ScheduleLog.progress();
+        assertTrue(after, after.contains(" 1 given up"));
+        assertTrue(sites().toString(), sites().contains("y"));
+    }
+
     /** Burns this thread's CPU for {@code millis}. */
     private static void spin(long millis) {
         long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
