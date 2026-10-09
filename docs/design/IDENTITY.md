@@ -553,7 +553,8 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`). A
   RECV a turn makes at its root, before any of its regions opened, names no occurrence: unless the
   turn stands on the item (a request's handler, which the item started), every occurrence the turn
-  runs is then a receiver, a door of the item (`Corpus#doorsOf`,
+  runs is then a receiver, a door of the item for an occurrence of another turn (its own turn is
+  what the item started: solr-18413's Overseer state updates, each one consumer's) (`Corpus#doorsOf`,
   `RecordedMessages#doorStancesOf`) -- the Overseer queue loop's turn, whose ZooKeeper door
   (`markTaskAsRunning`) runs in a region of it, for the task's Runner, which took the same item in.
 

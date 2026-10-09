@@ -837,7 +837,8 @@ public final class ClosurePlanner {
         Corpus corpus = walk.corpus;
         String endpoint = corpus.startedBy(demand.occurrence);
         if (endpoint.isEmpty()) return;
-        for (OccurrenceAddress door : corpus.doorsOf(endpoint)) {
+        for (OccurrenceAddress door : corpus.doorsOf(endpoint,
+                demand.occurrence)) {
             if (door.equals(demand.occurrence)) continue;
             if (walk.faulted(door)) {
                 next.add(new Demand(door, CONTROL_PRODUCER, false));

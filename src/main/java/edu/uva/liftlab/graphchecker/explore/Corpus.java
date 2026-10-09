@@ -858,14 +858,17 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * Every door of a message (IDENTITY §7.3): the occurrence that sent it
-     * ({@link #senderOf}), the occurrence that took it in ({@link
-     * #receiverOf}), and every occurrence of a turn that took it in at its
-     * root, before any of its regions opened (an Overseer queue loop's turn
-     * and the task item it consumed, whose ZooKeeper door then runs in a
-     * region of the turn).
+     * Every door of the message that started {@code served} (IDENTITY
+     * §7.3): the occurrence that sent it ({@link #senderOf}), the occurrence
+     * that took it in ({@link #receiverOf}), and every occurrence of
+     * another turn that took it in at its root, before any of its regions
+     * opened (an Overseer queue loop's turn and the task item it consumed,
+     * whose ZooKeeper door then runs in a region of the turn).  The served
+     * occurrence's own turn holds no door of it: its other occurrences are
+     * what the message started too (an Overseer state update's turn).
      */
-    public List<OccurrenceAddress> doorsOf(String producerEndpointId) {
+    public List<OccurrenceAddress> doorsOf(String producerEndpointId,
+                                           OccurrenceAddress served) {
         List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
         for (OccurrenceAddress door : new OccurrenceAddress[] {
                 senderOf(producerEndpointId),
@@ -874,8 +877,10 @@ public final class Corpus implements Arms.Rows {
         }
         Set<String> stances = receivingStances.get(producerEndpointId);
         if (stances == null) return doors;
+        String own = ContextShape.Stance.of(served).render();
         for (OccurrenceAddress occurrence : occurrenceById.values()) {
-            if (stances.contains(ContextShape.Stance.of(occurrence).render())
+            String stance = ContextShape.Stance.of(occurrence).render();
+            if (stances.contains(stance) && !stance.equals(own)
                     && !doors.contains(occurrence)) {
                 doors.add(occurrence);
             }

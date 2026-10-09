@@ -1249,9 +1249,10 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * The occurrence ids at the doors of the message that started {@code
      * occurrence} ({@link RecordedMessages#doorsOf}), and every activation
-     * of a turn that took it in at its root before any of its regions
+     * of another turn that took it in at its root before any of its regions
      * opened ({@link RecordedMessages#doorStancesOf}: the Overseer queue
-     * loop's turn, whose ZooKeeper door runs in a region of it).
+     * loop's turn, whose ZooKeeper door runs in a region of it); the
+     * occurrence's own turn is what the message started.
      */
     private static Set<String> doorsOf(RecordedMessages messages,
                                        StaticProgram program,
@@ -1259,11 +1260,12 @@ public final class RuntimeSelectedRegionFinalizer {
         Set<String> doors = new LinkedHashSet<>(messages.doorsOf(occurrence));
         Set<String> stances = messages.doorStancesOf(occurrence);
         if (stances.isEmpty()) return doors;
+        String own = ContextShape.Stance.of(occurrence).render();
         for (String activation : program.activations.keySet()) {
-            OccurrenceAddress at = OccurrenceAddress.parse(activation);
-            if (stances.contains(ContextShape.Stance.of(at).render())
-                    && !at.id().equals(occurrence.id())) {
-                doors.add(at.id());
+            String stance = ContextShape.Stance.of(
+                    OccurrenceAddress.parse(activation)).render();
+            if (stances.contains(stance) && !stance.equals(own)) {
+                doors.add(OccurrenceAddress.parse(activation).id());
             }
         }
         return doors;

@@ -5735,8 +5735,9 @@ public class ExploreTest {
      * door of that item in every occurrence it runs: the item's other
      * consumer (the task's Runner, which wrote what the anchor read) names
      * it as a control producer, and its door is asked
-     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write).
-     * A turn that sent it so names no sender (DOOR_SEND_OUTSIDE_REGION).
+     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write);
+     * the Runner's own turn is what the item started, no door of it.  A
+     * turn that sent it so names no sender (DOOR_SEND_OUTSIDE_REGION).
      */
     @Test
     public void aTurnThatTookAnItemInAtItsRootHoldsItsDoors()
@@ -5754,6 +5755,9 @@ public class ExploreTest {
                 Role.of("OVERSEER_TASK_QUEUE"), "", 1);
         OccurrenceAddress marking = occurrence("solr-case/node0",
                 "REGION.mark", queueTurn, "Queue#mark#1");
+        // Another occurrence of the Runner's turn.
+        OccurrenceAddress sibling = occurrence("solr-case/node0",
+                "REGION.sib", runnerTurn, "Runner#sib#1");
         // Per row: the queue turn's row of the item, at its root (no
         // occurrence) or not; a RECV at its root has the turn's door asked,
         // a SEND there names no sender.
@@ -5773,6 +5777,10 @@ public class ExploreTest {
             seed.root(marking, "CASE.DOOR", "M_DOOR", RootKind.MARKER,
                     "false", null, null, true);
             seed.decision(marking, "Mark#u3", 1, false, "M_DOOR");
+            seed.activation(sibling, false, true, "runner");
+            seed.root(sibling, "CASE.SIB", "M_SIB", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(sibling, "Sib#u5", 1, false, "M_SIB");
             seed.write(at(runner, "SOLR_ZK#WRITE:.collections.c.state.json",
                     "Runner#run#1"), state, 1L, "", "[B");
             seed.read(at(client, "Processor#ro#u1", "Processor#ro#1"), state,
@@ -5804,6 +5812,11 @@ public class ExploreTest {
             assertEquals("case " + at, rooted
                             && kind == ScheduleEvent.Kind.RECV,
                     named(obligations(wave), "Mark#u3") != null);
+            // The Runner's own turn is no door of the item for the Runner,
+            // one for the queue turn's occurrence, another consumer of it.
+            assertEquals("case " + at + ": the Runner's own turn", rooted
+                            && kind == ScheduleEvent.Kind.RECV,
+                    named(obligations(wave), "Sib#u5") != null);
         }
     }
 
