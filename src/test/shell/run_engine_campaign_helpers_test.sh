@@ -2459,13 +2459,14 @@ stream_fixture() {
   TMPDIR=${test_tmp}
 }
 # Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
-# <id> <peak> <log> <args...>): it names itself where its rounds are asked
-# and answers each with stream_planner, until it is ended -- or until
-# stream_planner_dies <round> <heap> says it ends there with that status
+# <id> <peak> <log> <jvm_file> <args...>): it names itself where its rounds
+# are asked and answers each with stream_planner, until it is ended -- or
+# until stream_planner_dies <round> <heap> says it ends there with that status
 # (3: out of heap, its JVM's last words in its log).
 stream_planner_serve() {
   local heap=$1 id=$2 log=$4 sessions="" dir request name round status
-  shift 4
+  printf '%s\n' "${BASHPID}" >"$5"
+  shift 5
   while [[ $# -gt 0 ]]; do
     [[ "$1" != --sessions ]] || sessions=$2
     shift
@@ -2498,6 +2499,32 @@ space" >>"${log}"
   done
 }
 stream_planner_dies() { :; }
+
+# The planner's JVM is stopped by the pid it stated, on its host, whatever
+# still holds it (SG2: peers' planners outlived their campaigns by 75-105
+# minutes); a pid the host gave another process since is left alone.
+(
+  iteration_dir="${test_tmp}/planner-stop"
+  mkdir -p "${iteration_dir}/planner"
+  printf 'localhost\n' >"${iteration_dir}/planner/host"
+  printf '1791\n' >"${iteration_dir}/planner/id"
+  bash -c 'exec -a "ExploreMain --serve x.1791" sleep 600' &
+  served=$!
+  printf '%s\n' "${served}" >"${iteration_dir}/planner/jvm"
+  sleep 600 &
+  stranger=$!
+  campaign_planner_stop
+  sleep 0.2
+  ! kill -0 "${served}" 2>/dev/null \
+    || fail "campaign_planner_stop left the planner JVM it stated running"
+  [[ ! -e "${iteration_dir}/planner/jvm" ]] \
+    || fail "campaign_planner_stop kept the planner JVM's pid"
+  printf '%s\n' "${stranger}" >"${iteration_dir}/planner/jvm"
+  campaign_planner_stop
+  kill -0 "${stranger}" 2>/dev/null \
+    || fail "campaign_planner_stop ended a process not named by its id"
+  kill "${stranger}"
+)
 # Where explore.ExploreMain stands: the files it states every round.
 stream_planner() {
   local round="" out="" flying=""

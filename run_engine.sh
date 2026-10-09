@@ -4644,6 +4644,7 @@ ${status}: $(campaign_thrown "${round_dir}/stderr.log")"
 # question, asked on its host, where its questions wait on that host's own
 # disk (campaign_planner_dir).  Its state, under ${iteration_dir}/planner/:
 #   pid      the head's shell that holds it (it ends with the service)
+#   jvm      the planner JVM's pid on its host, as it states it
 #   host, charge, heap, id   where it runs, its charge, its heap, which start
 #   busy     the head's room it takes, when it runs on the head's host
 #   status   its exit, once it ended
@@ -4652,7 +4653,9 @@ ${status}: $(campaign_thrown "${round_dir}/stderr.log")"
 # again; at the engine heap the round is PLANNER_HEAP_EXCEEDED, as a planner
 # JVM's was.  Any other end fails EXPLORE with its deepest throwable.  The
 # exploration's end stops it (campaign_planner_stop), and so does the head's
-# EXIT trap.
+# EXIT trap: its JVM by the pid it stated, on its host, and the shell that
+# holds it.  stop-run.sh finds it as it finds the run's other processes, by
+# the run's output directory on its command line (--sessions).
 # ---------------------------------------------------------------------------
 
 # Where the planner instance <id> of the corpus <sessions> takes its
@@ -4762,13 +4765,15 @@ campaign_planner_start() {
     if campaign_host_is_local "${host}"; then
       campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
-        "${iteration_dir}/planner.log" --sessions "${sessions}" \
-        --results "${results}" "${stream_round_args[@]}" || status=$?
+        "${iteration_dir}/planner.log" "${state}/jvm" \
+        --sessions "${sessions}" --results "${results}" \
+        "${stream_round_args[@]}" || status=$?
     else
       campaign_run_placed "${host}" campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
-        "${iteration_dir}/planner.log" --sessions "${sessions}" \
-        --results "${results}" "${stream_round_args[@]}" || status=$?
+        "${iteration_dir}/planner.log" "${state}/jvm" \
+        --sessions "${sessions}" --results "${results}" \
+        "${stream_round_args[@]}" || status=$?
     fi
     [[ -z "${busy}" ]] || rm -f -- "${busy}"
     campaign_host_release "${host}" "${charge}"
@@ -4779,15 +4784,17 @@ campaign_planner_start() {
   campaign_log "the planner service starts on ${host} at ${heap} MB" >&2
 }
 
-# campaign_planner_serve <heap_mb> <id> <peak_file> <log> <ExploreMain
-# args...>: the planner instance <id>, run on this host until it is ended,
-# its questions in campaign_planner_dir: a JVM at <heap_mb> watched as it
-# grows past it (campaign_watch_workload), its peak folded into <peak_file>
-# (the head's step need, campaign_engine_peak), its output appended to <log>.
-# Its status is the JVM's.
+# campaign_planner_serve <heap_mb> <id> <peak_file> <log> <jvm_file>
+# <ExploreMain args...>: the planner instance <id>, run on this host until it
+# is ended, its questions in campaign_planner_dir: a JVM at <heap_mb> watched
+# as it grows past it (campaign_watch_workload), its pid stated in
+# <jvm_file> (the head stops it by it, campaign_planner_stop), its peak
+# folded into <peak_file> (the head's step need, campaign_engine_peak), its
+# output appended to <log>.  Its status is the JVM's.
 campaign_planner_serve() {
-  local heap=$1 id=$2 peak_file=$3 log=$4 dir watched jvm status=0 peak
-  shift 4
+  local heap=$1 id=$2 peak_file=$3 log=$4 jvm_file=$5 dir watched jvm
+  local status=0 peak
+  shift 5
   local sessions=""
   local -a args=("$@")
   local index
@@ -4814,6 +4821,7 @@ campaign_planner_serve() {
   jvm=$!
   printf '%s\n' "${jvm}" >"${dir}/server.part"
   mv -f -- "${dir}/server.part" "${dir}/server"
+  printf '%s\n' "${jvm}" >"${jvm_file}"
   watched=$(mktemp -d) || return
   campaign_watch_workload "${jvm}" "${heap}" "${watched}" 2>>"${log}"
   wait "${jvm}" || status=$?
@@ -4880,12 +4888,20 @@ campaign_planner_ask() {
   rm -f -- "${answer}"
 }
 
-# The exploration's planner, ended: its holding shell and what it runs (a
-# peer's JVM ends with the remote worker script that ran it), its charge and
-# the head's room it took given back.
+# The exploration's planner, ended: its JVM, by the pid it stated, on its
+# host -- a peer's outlived the shell that held it: the ssh session of its
+# remote worker stayed its parent, so the worker's watch never saw the head
+# go (SG2-3/-4/-6/-10, alive 75-105 minutes after their campaigns ended) --
+# then its holding shell and what it runs, its charge and the head's room it
+# took given back.
 campaign_planner_stop() {
-  local state="${iteration_dir}/planner" pid file
+  local state="${iteration_dir}/planner" pid file host
   [[ -d "${state}" ]] || return 0
+  pid=$(cat "${state}/jvm" 2>/dev/null) || pid=""
+  host=$(cat "${state}/host" 2>/dev/null) || host=""
+  if [[ -n "${pid}" && -n "${host}" ]]; then
+    campaign_planner_kill "${host}" "${pid}" "$(cat "${state}/id")"
+  fi
   pid=$(cat "${state}/pid" 2>/dev/null) || pid=""
   if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
     local -a tree=()
@@ -4898,7 +4914,22 @@ campaign_planner_stop() {
     "$(cat "${state}/host")" "$(cat "${state}/charge")"
   file=$(cat "${state}/busy" 2>/dev/null) || file=""
   [[ -z "${file}" ]] || rm -f -- "${file}"
-  rm -f -- "${state}/pid" "${state}/charge" "${state}/busy"
+  rm -f -- "${state}/pid" "${state}/jvm" "${state}/charge" "${state}/busy"
+}
+
+# campaign_planner_kill <host> <pid> <id>: the planner JVM <pid> on <host>
+# ended, TERM then KILL, while its command line names its instance <id> (a
+# pid the host gave another process since is left alone).
+campaign_planner_kill() {
+  local host=$1 pid=$2 id=$3 script
+  script="ps -o args= -p ${pid} 2>/dev/null | grep -qF -- ${id} || exit 0
+kill -TERM ${pid} 2>/dev/null; sleep 1; kill -KILL ${pid} 2>/dev/null; exit 0"
+  if campaign_host_is_local "${host}"; then
+    bash -c "${script}"
+  else
+    campaign_ssh "${campaign_ssh_options[@]}" -- "${host}" "${script}" \
+      </dev/null || true
+  fi
 }
 
 # The step returned: one that failed has said why on the campaign's stderr
