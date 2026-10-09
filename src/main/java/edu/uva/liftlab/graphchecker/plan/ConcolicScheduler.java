@@ -288,6 +288,14 @@ public final class ConcolicScheduler {
                         arguments.targetOccurrence);
         RuntimeWorkflowDiscovery.Workflow workflow =
                 closure.nearest(arguments.maxJobs);
+        Map<String, Integer> unreachable =
+                unreachableWriters(loaded.regionPlans);
+        if (!unreachable.isEmpty()) {
+            System.err.println("writers not crossed to, every object they"
+                    + " wrote the field on held and none reachable from a"
+                    + " reader that never touched it, per field: "
+                    + unreachable);
+        }
         if (workflow == null) {
             throw overMaxJobs(closure.scheduledTaskCount(),
                     arguments.maxJobs, loaded.regionPlans);
@@ -335,6 +343,14 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result,
                 loaded.regionPlanIdentity, taskPlanIdentity);
+        if (!unreachable.isEmpty()) {
+            JsonObject fields = new JsonObject();
+            for (Map.Entry<String, Integer> field : unreachable.entrySet()) {
+                fields.addProperty(field.getKey(), field.getValue());
+            }
+            index.add(RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
+                    fields);
+        }
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -1013,6 +1029,25 @@ public final class ConcolicScheduler {
                     .append(anchors.get(index).getKey());
         }
         return summary.append(']').append(deciderClasses(rows)).toString();
+    }
+
+    /** Per field, the writers the plan rows' readers did not cross to as
+     *  unreachable ({@link RuntimeSelectedRegionFinalizer
+     *  #UNREACHABLE_WRITERS}), summed; empty for none. */
+    private static Map<String, Integer> unreachableWriters(
+            List<RegionInstancePlan> rows) {
+        Map<String, Integer> fields = new TreeMap<>();
+        for (RegionInstancePlan plan : rows) {
+            JsonElement held = plan.json().get(
+                    RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS);
+            if (held == null || !held.isJsonObject()) continue;
+            for (Map.Entry<String, JsonElement> field
+                    : held.getAsJsonObject().entrySet()) {
+                fields.merge(field.getKey(), field.getValue().getAsInt(),
+                        Integer::sum);
+            }
+        }
+        return fields;
     }
 
     /** The classes of equivalent deciders the plan rows stand for ({@link

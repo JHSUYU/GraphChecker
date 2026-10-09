@@ -31,6 +31,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
@@ -117,6 +118,21 @@ public final class RuntimeSelectedRegionFinalizer {
     /** Activation member, in memory only: the seq of its last event. */
     public static final String LAST_SEQ = "lastSeq";
     /**
+     * Activation member, in memory only: every object its events name, as an
+     * ascending {@code int[]} ({@code RuntimeRegionPlanner#stampFieldOwners}):
+     * where a reader that never touched a demanded field in the recording
+     * reaches from ({@link DemandWalk#holdsOthersOnly}).
+     */
+    public static final String NAMED_OBJECTS = "namedObjects";
+    /**
+     * Activation and plan-row member of a reader: per demanded field it
+     * never touched in the recording, how many of the field's writers the
+     * walk did not cross to, each having written the field only on objects
+     * the recording saw held and none reachable from the reader's ({@link
+     * DemandWalk#holdsOthersOnly}).  PLAN states their sum per field.
+     */
+    public static final String UNREACHABLE_WRITERS = "unreachableWriters";
+    /**
      * Activation and plan-row member of an occurrence planned for a class of
      * equivalent deciders ({@link DemandWalk#classDeciders}): {@code
      * members}, the class's size, and its {@code first} (this occurrence)
@@ -200,6 +216,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * @param recordedSchedule the recording's schedule: who sent and who took
      *     in each message ({@link RecordedMessages})
      * @param accesses every field access the recording states
+     * @param heap which object the recording saw hold which
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
@@ -209,7 +226,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> branchObservations,
             StaticScopeMap scopeMap, String declaredOccurrence,
             Collection<ScheduleEvent> recordedSchedule,
-            RecordedAccesses accesses)
+            RecordedAccesses accesses, RecordedHeap heap)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
         if (observedMethods != null) {
@@ -308,7 +325,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 branchOrder);
         applyClosure(program, failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap, cutPorts, declaredOccurrence,
-                new RecordedMessages(recordedSchedule), accesses));
+                new RecordedMessages(recordedSchedule), accesses, heap));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -808,7 +825,7 @@ public final class RuntimeSelectedRegionFinalizer {
             StaticProgram program, RegionDemandIndex demands, String source,
             StaticScopeMap scopeMap, Map<String, List<CutPort>> cutPorts,
             String declaredOccurrence, RecordedMessages messages,
-            RecordedAccesses accesses)
+            RecordedAccesses accesses, RecordedHeap heap)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -924,7 +941,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         DemandWalk walk = new DemandWalk(program, demands, scopeMap,
-                cutPorts, unplannable);
+                cutPorts, unplannable, heap);
         List<Demand> seeds = new ArrayList<>();
         for (String target : targets) {
             // Stated once here; the plan builder publishes TARGET_REACH for
@@ -936,6 +953,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         walk.walk(seeds);
+        walk.stateUnreachableWriters();
         admitRelevantRoots(program, walk, scopeMap, messages);
         walk.stateUnpairedWires(program.planGaps);
         walk.stateFixedDeciders(program.planGaps);
@@ -1200,6 +1218,12 @@ public final class RuntimeSelectedRegionFinalizer {
                 : Collections.<Integer>emptySet();
     }
 
+    /** {@link #NAMED_OBJECTS} of one activation; none when not stamped. */
+    private static int[] namedObjects(Map<String, Object> activation) {
+        Object named = activation.get(NAMED_OBJECTS);
+        return named instanceof int[] ? (int[]) named : new int[0];
+    }
+
     /** The objects one stored location was demanded on, on one node: the
      *  holders and what they held, since a root's influence may reach it by
      *  a store or a mutation. */
@@ -1310,12 +1334,19 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Occurrences reached in any other role: a target, a wire
          *  producer, a root's or a control producer's admission. */
         private final Set<String> heldApart = new HashSet<>();
+        private final RecordedHeap heap;
+        /** Reader -> what it could reach ({@link #holdsOthersOnly}). */
+        private final Map<String, Set<Integer>> reachable = new HashMap<>();
+        /** Reader -> per field, the writers not crossed to as unreachable. */
+        private final Map<String, Map<String, Set<String>>> unreachable =
+                new LinkedHashMap<>();
 
         private DemandWalk(StaticProgram program, RegionDemandIndex demands,
                            StaticScopeMap scopeMap,
                            Map<String, List<CutPort>> cutPorts,
-                           Set<String> excluded) {
+                           Set<String> excluded, RecordedHeap heap) {
             this.program = program;
+            this.heap = heap;
             this.scopeMap = scopeMap;
             this.demands = demands;
             this.cutPorts = cutPorts;
@@ -1482,9 +1513,8 @@ public final class RuntimeSelectedRegionFinalizer {
                         if (writerOccurrence.equals(occurrenceId)
                                 || excluded.contains(writerOccurrence)
                                 || !node.equals(nodes.get(writerOccurrence))
-                                || holdsOthersOnly(instances.get(
-                                        writerOccurrence), reader, cell,
-                                        site)) {
+                                || holdsOthersOnly(writerOccurrence,
+                                        occurrenceId, cell, site)) {
                             continue;
                         }
                         if (!held.storers.contains(writerOccurrence)
@@ -1546,20 +1576,39 @@ public final class RuntimeSelectedRegionFinalizer {
 
         /**
          * Whether the recording saw {@code writer} access the field {@code
-         * cell} only on objects {@code reader} never accessed it on: a
-         * store reaches only an object its occurrence holds, so it cannot
-         * have written, nor on another arm write, what the reader read.  The
-         * objects are the field's holders, and for a mutation through the
-         * field ({@code declaredCallee}) what they held too, whose state it
-         * writes ({@link #FIELD_REFERENTS}).  A side the recording saw no
-         * access of the field on says nothing either way (an unwoven
-         * accessor, an atomic's or a container's state, a store on an arm it
-         * did not take).
+         * cell} only on objects {@code readerOccurrence} never accessed it
+         * on: a store reaches only an object its occurrence holds, so it
+         * cannot have written, nor on another arm write, what the reader
+         * read.  The objects are the field's holders, and for a mutation
+         * through the field ({@code declaredCallee}) what they held too,
+         * whose state it writes ({@link #FIELD_REFERENTS}).  A writer the
+         * recording saw access the field on no object says nothing (an
+         * unwoven accessor, an atomic's or a container's state, a store on an
+         * arm it did not take).
+         *
+         * <p>A reader the recording saw access the field on no object read
+         * it on an arm the recording did not take, on an object it could
+         * reach there: one its own events name ({@link #NAMED_OBJECTS}), one
+         * a static field held, or one those held, over the recorded heap
+         * ({@link RecordedHeap#reachable}).  Its writer is not crossed to
+         * only when every object it wrote the field on was seen held by
+         * something ({@link RecordedHeap#held}) and none is reachable so; one
+         * the recording saw nothing hold may sit where no recorded edge
+         * leads (a container filled inside unwoven code), and a static
+         * field's ({@code 0}) is one location every reader reads.  Counted
+         * per reader and field ({@link #UNREACHABLE_WRITERS}).  solr-adhoc-10
+         * SG1: the target reads NamedList.nvPairs only on an arm it did not
+         * take, and 3,815 request handlers' writes of their own responses
+         * were each a writer of it.</p>
          */
-        private static boolean holdsOthersOnly(Map<String, Object> writer,
-                                               Map<String, Object> reader,
-                                               String cell,
-                                               StaticScopeMap.Site site) {
+        private boolean holdsOthersOnly(String writerOccurrence,
+                                        String readerOccurrence,
+                                        String cell,
+                                        StaticScopeMap.Site site) {
+            Map<String, Object> writer =
+                    program.activations.get(writerOccurrence);
+            Map<String, Object> reader =
+                    program.activations.get(readerOccurrence);
             boolean mutation = !site.declaredCallee.isEmpty();
             Set<Integer> wroteOn = field(writer, FIELD_OWNERS, cell);
             Set<Integer> readOn = field(reader, FIELD_OWNERS, cell);
@@ -1569,14 +1618,54 @@ public final class RuntimeSelectedRegionFinalizer {
             Set<Integer> readHeld = mutation
                     ? field(reader, FIELD_REFERENTS, cell)
                     : Collections.<Integer>emptySet();
+            if (wroteOn.isEmpty() && wroteHeld.isEmpty()) return false;
+            if (readOn.isEmpty() && readHeld.isEmpty()) {
+                Set<Integer> reach = reachable.computeIfAbsent(
+                        readerOccurrence, ignored -> heap.reachable(
+                                namedObjects(reader)));
+                if (!unreachable(wroteOn, reach)
+                        || !unreachable(wroteHeld, reach)) {
+                    return false;
+                }
+                unreachable.computeIfAbsent(readerOccurrence,
+                        ignored -> new TreeMap<>()).computeIfAbsent(cell,
+                        ignored -> new HashSet<>()).add(writerOccurrence);
+                return true;
+            }
             // objectsOf's unions, compared without building them: asked
             // once per reader and writer of every demanded store.
-            return (!wroteOn.isEmpty() || !wroteHeld.isEmpty())
-                    && (!readOn.isEmpty() || !readHeld.isEmpty())
-                    && Collections.disjoint(wroteOn, readOn)
+            return Collections.disjoint(wroteOn, readOn)
                     && Collections.disjoint(wroteOn, readHeld)
                     && Collections.disjoint(wroteHeld, readOn)
                     && Collections.disjoint(wroteHeld, readHeld);
+        }
+
+        /** Whether every one of {@code objects} was seen held, none of them
+         *  a static field's location, and none is in {@code reach}. */
+        private boolean unreachable(Set<Integer> objects,
+                                    Set<Integer> reach) {
+            for (int object : objects) {
+                if (object == 0 || !heap.held(object)
+                        || reach.contains(object)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** States on each reader the writers it did not cross to as
+         *  unreachable, per field ({@link #UNREACHABLE_WRITERS}). */
+        private void stateUnreachableWriters() {
+            for (Map.Entry<String, Map<String, Set<String>>> reader
+                    : unreachable.entrySet()) {
+                Map<String, Integer> counts = new TreeMap<>();
+                for (Map.Entry<String, Set<String>> field
+                        : reader.getValue().entrySet()) {
+                    counts.put(field.getKey(), field.getValue().size());
+                }
+                program.activations.get(reader.getKey())
+                        .put(UNREACHABLE_WRITERS, counts);
+            }
         }
 
         /**

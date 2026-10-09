@@ -673,11 +673,26 @@ reaches, to a fixed point:
     the reader did is not crossed to (`DemandWalk#holdsOthersOnly`): the holders for a store, the
     holders and what they held for a mutation through the field (a container's or an atomic's
     state); a referent shared by a store's holders is no shared location (Solr: every lambda
-    capturing one ZooKeeper client, every DocCollection holding one cached `Integer`). A side the
-    recording saw no access of the field on (a store on an arm it did not take, a static field's
-    one location `0`) says nothing either way. hdfs ad-hoc `DataStreamer-638`: 1147
+    capturing one ZooKeeper client, every DocCollection holding one cached `Integer`). A writer the
+    recording saw access the field on no object (a store on an arm it did not take) says nothing,
+    nor does a static field's one location `0`. hdfs ad-hoc `DataStreamer-638`: 1147
     `Configuration.get` occurrences ran the lazy store of `overlay`, on 10 objects; the reader read
     one.
+  - **A reader that never touched the field** read it on an arm the recording did not take, on an
+    object it could reach there: one its events name (`NAMED_OBJECTS`: the receivers of the methods
+    it entered, the objects of its call rows, its field accesses' receivers and values), one a static
+    field held, or one those held, over the **recorded heap** (`causynth/RecordedHeap`, built by
+    `RuntimeRegionPlanner#recordedHeap`: a field access's receiver holds its value; the receiver of
+    a call at a store site that mutates through the call holds each object it was handed --
+    `TracedRows` traces the call and argument rows at those sites, `#storingCalls` --; an accessor
+    call's receiver holds what it returned). Its writer is not crossed to only when every object it
+    wrote the field on was seen held by something and none is reachable; an object nothing recorded
+    held (filled into a container inside unwoven code) may sit where no recorded edge leads, so its
+    writers stay, and so do a static field's. The reader's plan row states how many writers it did not
+    cross to, per field (`unreachableWriters`), and PLAN their sum per field, in its log and in
+    `runtime_workflow_schedule_index.json`. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,
+    `ModifiableSolrParams.vals` and `ClusterState.liveNodes` only on arms it did not take, and every
+    request handler's write of its own response (4,597 writers) was its writer.
   - **A message is one exchange leg**: at a cell the capture of a declared IN port names (an IN call
     return's assigned locals, any other's cut cell), in an occurrence performing a region that
     declares the port, it crosses to every occurrence whose capture of the port's export the

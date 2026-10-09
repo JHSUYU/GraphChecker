@@ -195,7 +195,10 @@ the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNE
 uses the address PLAN's index states for every later stage, whatever form the declaration had
 (`campaign_plan`). The seed's closure already plans one occurrence per class of equivalent deciders
 (SYMBOL-SCOPE.md §4.4, `deciderClass` on its row: `members`, `first`, `last`), and PLAN's log line
-and cut summary name the classes (`ConcolicScheduler#deciderClasses`). When the closure still holds
+and cut summary name the classes (`ConcolicScheduler#deciderClasses`). The writers a reader that never
+touched a field did not cross to, every object they wrote it on held and none reachable from it over
+the recorded heap (SYMBOL-SCOPE.md §4.4, `unreachableWriters` on the reader's row), are summed per
+field in PLAN's log and in the index (`unreachableWriters`). When the closure still holds
 more occurrences than
 `schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
 seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
