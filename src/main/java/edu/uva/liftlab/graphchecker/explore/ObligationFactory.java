@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
 import java.math.BigInteger;
@@ -98,13 +99,13 @@ public final class ObligationFactory {
         public final int index;
         public final DecisionRow decision;
 
-        private Candidate(Corpus corpus, Task task,
+        private Candidate(Corpus corpus, StaticScopeMap scope, Task task,
                           Corpus.RecordedPath path, int index) {
             this(task, path, index, obligationId(task.taskId(),
                     path.decisions.get(index).siteId(),
                     path.decisions.get(index).ordinal(),
                     !path.decisions.get(index).outcome(),
-                    dependence(corpus, task, path, index)));
+                    dependence(corpus, scope, task, path, index)));
         }
 
         private Candidate(Task task, Corpus.RecordedPath path, int index,
@@ -301,14 +302,16 @@ public final class ObligationFactory {
      * names none of it (hdfs-11741's witness, see {@link
      * Corpus#inputShape}).</p>
      */
-    public static String dependence(Corpus corpus, Task task,
-                                    Corpus.RecordedPath path, int index) {
+    public static String dependence(Corpus corpus, StaticScopeMap scope,
+                                    Task task, Corpus.RecordedPath path,
+                                    int index) {
         return corpus.dependence(task, path.pathId + "#" + index,
-                () -> keyed(corpus, task, path, index));
+                () -> keyed(corpus, scope, task, path, index));
     }
 
     /** {@link #dependence}, computed. */
-    private static String keyed(Corpus corpus, Task task,
+    private static String keyed(Corpus corpus, StaticScopeMap scope,
+                                Task task,
                                 Corpus.RecordedPath path, int index) {
         DecisionRow flipped = path.decisions.get(index);
         List<DecisionRow> conditions =
@@ -358,7 +361,7 @@ public final class ObligationFactory {
         }
         return ArtifactIO.digest(String.join("/", kept) + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
-                corpus.feeders(task), rests.locations())
+                corpus.feeders(task), rests.locations(), scope)
                 + (domains.isEmpty() ? "" : "\n" + domains), 16);
     }
 
@@ -465,7 +468,8 @@ public final class ObligationFactory {
      * @param gaps      receives settled candidates, so a shrinking round is
      * explained
      */
-    public static List<Candidate> candidates(Corpus corpus, Task task,
+    public static List<Candidate> candidates(Corpus corpus,
+                                             StaticScopeMap scope, Task task,
                                              Set<String> flipSites,
                                              Bounds bounds, Branches branches,
                                              Frontier owed,
@@ -503,7 +507,7 @@ public final class ObligationFactory {
                     continue;
                 }
                 Candidate candidate =
-                        new Candidate(corpus, task, path, index);
+                        new Candidate(corpus, scope, task, path, index);
                 if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
                 if (!reason.isEmpty()) {

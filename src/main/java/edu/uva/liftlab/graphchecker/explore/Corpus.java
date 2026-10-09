@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -596,45 +597,46 @@ public final class Corpus implements Arms.Rows {
      * ({@link #feeders}: they write state it reads) by what it delivered
      * it: the same handoffs, per-site counts of its writes to {@code
      * locations}, the state the flipped guard reads, and whether it wrote
-     * any state the occurrence read in this session -- not how often, which
-     * replays vary --, which the arm reads after the flip (hdfs-11741: dn1's
-     * expiry scan reads the map addKeys wrote, though its guard names only
-     * a clock); and whether it ran them as an activation. Their handoffs whole, not only those the guard names: the arm
-     * consumes them after the flip (hdfs-11741: dn1's expiry scan names only
-     * its own clock, and the witness is that scan flipped in the world whose
-     * key conversion delivered four keys instead of five). A co-reader feeds
+     * any state the occurrence's region reads on ANY arm -- a carrier of a
+     * READ_SITE its code holds ({@link StaticScopeMap#readCarriers}), not
+     * only what the arm this session took read, since the flipped arm reads
+     * what the taken one never did (a renewer's write of the lease map the
+     * expiry scan iterates only once a lease has expired) --, not how often,
+     * which replays vary; and whether it ran them as an activation.  Their
+     * handoffs whole, not only those the guard names: the arm consumes them
+     * after the flip (hdfs-11741: dn1's expiry scan names only its own
+     * clock, and the witness is that scan flipped in the world whose key
+     * conversion delivered four keys instead of five). A co-reader feeds
      * nothing (hdfs-17899-bug2: every RPC of the SPS reads the IPC
      * connection an IPC door reads, and keyed by all of them one door flip
-     * was 11 obligations). Trap: never a member's
-     * writes elsewhere (replays vary them: hdfs-11741's balancer members
-     * write SASL and HashMap internals a different number of times in
-     * almost every run), never the region's own reads or decisions
-     * (behaviour, not input), never delivered VALUES (carried symbolically;
-     * clock values differ every run).</p>
+     * was 11 obligations). Trap: never a member's writes elsewhere (replays
+     * vary them: hdfs-11741's balancer members write SASL and HashMap
+     * internals a different number of times in almost every run), never the
+     * region's own reads or decisions (behaviour, not input), never
+     * delivered VALUES (carried symbolically; clock values differ every
+     * run).</p>
      *
-     * <p>A function of the session alone, whatever the corpus has learned
-     * since: the members as a set (the order the corpus lists the factor
-     * in moves as sessions land), and none that delivered nothing, whether
-     * the session never ran it or ran it to no handoff and no write of
-     * state the occurrence read -- its line re-keyed every arm of the
-     * session once the corpus found it a feeder (solr-bugs-reindex-cleanup
-     * SG1: 627 arms under 8,868 ids, most of the re-keyed ones by members
-     * that ran and delivered nothing).  LIMIT: a member's write the
-     * recording states at no write site (unwoven) re-keys no arm.</p>
+     * <p>A function of the session and the epoch's static map alone,
+     * whatever the corpus has learned since: the members as a set (the
+     * order the corpus lists the factor in moves as sessions land), and
+     * none that delivered nothing, whether the session never ran it or ran
+     * it to no handoff and no write of state the occurrence's region reads
+     * -- its line re-keyed every arm of the session once the corpus found
+     * it a feeder (solr-bugs-reindex-cleanup SG1: 627 arms under 8,868 ids,
+     * most of the re-keyed ones by members that ran and delivered nothing).
+     * LIMIT: a member's write the recording states at no write site
+     * (unwoven) re-keys no arm.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
-                             Set<String> locations) {
-        Set<String> read = new HashSet<String>();
-        for (ReadRow row : readsOn(sessionId, occurrence)) {
-            read.add(SmtLowering.locationKey(row.location()));
-        }
+                             Set<String> locations, StaticScopeMap scope) {
+        Set<String> readable = scope.readCarriers(occurrence.regionId());
         List<String> members = new ArrayList<String>();
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
             List<String> handoffs = attachSites(sessionId, member);
             List<String> writes = writeSites(sessionId, member, locations);
-            boolean fed = !writeSites(sessionId, member, read).isEmpty();
+            boolean fed = feeds(sessionId, member, readable, scope);
             if (handoffs.isEmpty() && writes.isEmpty() && !fed) continue;
             boolean ran = activation(sessionId, member) != null;
             members.add(member.id() + ':' + ran + handoffs
@@ -648,6 +650,22 @@ public final class Corpus implements Arms.Rows {
                 .append(producers(sessionId, occurrence));
         for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(text.toString(), 16);
+    }
+
+    /** Whether one member's writes in one session store a carrier of
+     *  {@code readable} ({@link StaticScopeMap#carriersAt}); an INITIAL row
+     *  is no write. */
+    private boolean feeds(String sessionId, OccurrenceAddress member,
+                          Set<String> readable, StaticScopeMap scope) {
+        if (readable.isEmpty()) return false;
+        for (WriteRow write : writesOn.of(member.id(), sessionId)) {
+            if (!write.initial() && !Collections.disjoint(readable,
+                    scope.carriersAt(write.endpoint().site(),
+                            write.javaType(), write.location().kind()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

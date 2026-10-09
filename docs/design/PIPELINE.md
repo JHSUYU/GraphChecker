@@ -610,8 +610,11 @@ share a variable with the guard (`compose.Independence.ofGuard`), plus the input
 (`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and each
 factor member that writes state it reads by what it delivered in this session: its handoff sites and
 producers, its write counts at the locations the guard reads, and whether it wrote any state the
-occurrence read (the arm reads it after the flip; how often varies run to run) — never delivered
-values, and a function of the session alone: the members and each one's producers as sets (replies
+occurrence's region reads on any arm (a carrier of a READ_SITE its code holds,
+`StaticScopeMap#readCarriers`, joined to the write by `#carriersAt`: the flipped arm reads what the
+taken one never did, so a session's own reads would let a world where a renewer wrote the lease map
+share its answer with one where it did not run; how often varies run to run) — never delivered
+values, and a function of the session and the epoch's map alone: the members and each one's producers as sets (replies
 to one call arrive in any order), and none that delivered nothing, never run or run to no such
 handoff or write (the corpus finds feeders as sessions land, and such a member's line, the same in
 every session that did not run it, re-keyed every arm of the session; solr-bugs-reindex-cleanup SG1:

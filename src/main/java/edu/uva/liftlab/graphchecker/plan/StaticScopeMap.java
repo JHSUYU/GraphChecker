@@ -520,6 +520,13 @@ public final class StaticScopeMap {
 
     /** Each configuration root's reads no plant stands at, by source id. */
     private final Map<String, List<String>> concreteConfigurationReads;
+    /** {@link #carriersAt}, once asked: every caller asks it again for
+     *  every row of a site, and each answer scans every site. */
+    private final Map<String, Set<String>> carriers =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+    /** {@link #readCarriers}, once asked. */
+    private final Map<String, Set<String>> readCarriers =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
 
     private StaticScopeMap(List<Site> sites,
                            Map<String, Set<String>> regionMethods,
@@ -1439,8 +1446,16 @@ public final class StaticScopeMap {
      */
     public Set<String> carriersAt(String recordedSite, String javaType,
                                   LocationKind kind) {
-        Set<String> carriers = new LinkedHashSet<String>();
         String site = recordedSite == null ? "" : recordedSite;
+        return carriers.computeIfAbsent(site + "|" + javaType + "|" + kind,
+                key -> Collections.unmodifiableSet(
+                        joinCarriers(site, javaType, kind)));
+    }
+
+    /** {@link #carriersAt}, computed. */
+    private Set<String> joinCarriers(String site, String javaType,
+                                     LocationKind kind) {
+        Set<String> carriers = new LinkedHashSet<String>();
         // A version recorded at a read site is the INITIAL a read's
         // observation started the location's log with: its carrier is the
         // field read.
@@ -1451,6 +1466,28 @@ public final class StaticScopeMap {
             carriersInMethod(named, site, javaType, kind, carriers);
         }
         return carriers;
+    }
+
+    /**
+     * The carriers one region's code reads where a replay versions the
+     * read ({@link #READ_SITE}), on any arm: the READ_SITEs in the methods
+     * it holds ({@link #methodsOf}; by its id when the map knows none).
+     * A recorded write whose carriers ({@link #carriersAt}) meet them may
+     * feed what an occurrence of the region reads, whether or not the arm a
+     * session took read it.
+     */
+    public Set<String> readCarriers(String regionId) {
+        String region = regionId == null ? "" : regionId;
+        return readCarriers.computeIfAbsent(region, key -> {
+            Set<String> methods = methodsOf(region);
+            Set<String> found = new LinkedHashSet<String>();
+            for (Site read : ofRole(READ_SITE, row -> methods.isEmpty()
+                    ? region.equals(row.regionId)
+                    : methods.contains(SiteId.methodOf(row.siteId)))) {
+                found.add(read.carrier.isEmpty() ? read.cell : read.carrier);
+            }
+            return Collections.unmodifiableSet(found);
+        });
     }
 
     /**

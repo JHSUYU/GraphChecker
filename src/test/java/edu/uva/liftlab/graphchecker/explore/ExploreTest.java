@@ -211,9 +211,22 @@ public class ExploreTest {
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
-        // declared target, and nothing else (PIPELINE §7.2).
+        // declared target, and nothing else (PIPELINE §7.2).  The target's
+        // region reads the key map addKeys stores (a READ_SITE): what the
+        // writer delivers is part of every arm's world, whichever arm read
+        // it (Corpus#inputShape).
         scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
-                "Guard#u8", "Guard#u19"));
+                "Guard#u8", "Guard#u19"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                        "BlockTokenSecretManager#u8",
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                        "<example.Manager: example.Keys allKeys>",
+                        "<example.Manager: example.Keys allKeys>", ""));
 
         // M3c: the recorded symbols of a term are the ones REACHABLE from
         // it -- the tokens the text shows are only the first hop.  The one
@@ -1375,8 +1388,10 @@ public class ExploreTest {
                 SmtLowering.locationKey(qop));
         assertEquals("the factor is a set: the order the corpus lists it in "
                         + "moves as sessions land",
-                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
-                corpus.inputShape("s-more", TARGET, reversed, qopKey));
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey,
+                        StaticScopeMap.empty()),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey,
+                        StaticScopeMap.empty()));
         // A member's replies from two producers, in either arrival order.
         Path raced = tree.newFolder("raced").toPath();
         for (String order : new String[] {"s-ab", "s-ba"}) {
@@ -1396,9 +1411,11 @@ public class ExploreTest {
         assertEquals("who delivered is a set: the order replies arrive in "
                         + "is a race",
                 racedCorpus.inputShape("s-ab", TARGET,
-                        Collections.singletonList(WRITER), qopKey),
+                        Collections.singletonList(WRITER), qopKey,
+                        StaticScopeMap.empty()),
                 racedCorpus.inputShape("s-ba", TARGET,
-                        Collections.singletonList(WRITER), qopKey));
+                        Collections.singletonList(WRITER), qopKey,
+                        StaticScopeMap.empty()));
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
@@ -1600,16 +1617,65 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A MEMBER FEEDS WHAT THE REGION READS ON ANY ARM ({@link
+     * Corpus#inputShape}): a renewer that wrote the lease map in one session
+     * and did not run in another delivered different worlds, though the
+     * arm each session took never read the map -- the flipped arm (the
+     * expiry scan) does.  Judged by the region's static reads (a READ_SITE's
+     * carrier), never by what one session's arm read: two such sessions
+     * share no answer.
+     */
+    @Test
+    public void aMemberFeedsWhatTheRegionReadsOnAnyArm() throws Exception {
+        Path iteration = tree.newFolder("fed-any-arm").toPath();
+        for (String id : new String[] {"s-renewed", "s-quiet"}) {
+            Session session = new Session(iteration, id);
+            session.activation(TARGET, false);
+            if ("s-renewed".equals(id)) {
+                session.activation(WRITER, false);
+                session.constant("e.stored", "7");
+                session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            }
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        StaticScopeMap reads = StaticScopeMap.read(scopeMap(iteration,
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                        "BlockTokenSecretManager#u8",
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                        "<example.Manager: example.Keys allKeys>",
+                        "<example.Manager: example.Keys allKeys>", "")));
+        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
+        Set<String> none = Collections.<String>emptySet();
+        assertFalse("the renewer's write is part of the world",
+                corpus.inputShape("s-renewed", TARGET, factor, none, reads)
+                        .equals(corpus.inputShape("s-quiet", TARGET, factor,
+                                none, reads)));
+        assertEquals("a region that reads no carrier it wrote is fed nothing",
+                corpus.inputShape("s-renewed", TARGET, factor, none,
+                        StaticScopeMap.empty()),
+                corpus.inputShape("s-quiet", TARGET, factor, none,
+                        StaticScopeMap.empty()));
+    }
+
     /** What the guard at {@code siteId} depends on in one session's path of
      *  the task ({@link ObligationFactory#dependence}). */
     private static String dependence(Corpus corpus, Task task,
-                                     String sessionId, String siteId) {
+                                     String sessionId, String siteId)
+            throws IOException {
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
             if (!path.sessionId.equals(sessionId)) continue;
             for (int index = 0; index < path.decisions.size(); index++) {
                 if (path.decisions.get(index).siteId().equals(siteId)) {
-                    return ObligationFactory.dependence(corpus, task, path,
-                            index);
+                    return ObligationFactory.dependence(corpus,
+                            StaticScopeMap.read(corpus.iteration().resolve(
+                                    StaticScopeMap.FILE)), task, path, index);
                 }
             }
         }

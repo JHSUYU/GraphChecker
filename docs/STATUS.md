@@ -401,7 +401,8 @@ Correctness:
     world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
     under the next. The open-arm judgment reads answers by flip; the proposal side is unchanged.
 64. An arm's key names a factor member only by what it delivered the task (`gc/explore/Corpus#inputShape`:
-    its handoffs, its writes at the guard's locations, whether it wrote state the task read), not by
+    its handoffs, its writes at the guard's locations, whether it wrote state the task's region reads
+    on any arm, `StaticScopeMap#readCarriers`), not by
     having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and delivered
     nothing). Known limit: a member's write the recording states at no write site (unwoven code, an
     unrecorded store) re-keys no arm, so an arm settled in one world may stand for another whose

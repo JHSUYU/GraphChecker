@@ -276,7 +276,7 @@ public final class ExploreMain {
         gaps.addAll(skeleton.gaps);
 
         // The one ledger of owed arms (Frontier).
-        Frontier frontier = new Frontier(corpus, tasks, flipSites);
+        Frontier frontier = new Frontier(corpus, scope, tasks, flipSites);
         frontier.consume(RowCodec.readAll(results,
                 RowCodec::readObligationResult));
         if (inFlight != null) {
@@ -286,7 +286,7 @@ public final class ExploreMain {
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
-            candidates.addAll(ObligationFactory.candidates(corpus, task,
+            candidates.addAll(ObligationFactory.candidates(corpus, scope, task,
                     flipSites.get(task.taskId()), bounds, branches, frontier,
                     gaps));
         }
@@ -343,8 +343,8 @@ public final class ExploreMain {
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
                 witnesses, wave(iteration, corpus), branches, concrete);
-        manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
-                open, answersByFlip(iteration)));
+        manifest.add("openArms", openArms(corpus, scope, roots, tasks,
+                frontier, open, answersByFlip(iteration)));
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -377,7 +377,8 @@ public final class ExploreMain {
      * (result.json concrete[] OPEN_ARM): an UNSAT closes over none but an
      * UNSAT one, and an UNANSWERED one leaves no verdict.
      */
-    static JsonArray openArms(Corpus corpus, List<OccurrenceAddress> roots,
+    static JsonArray openArms(Corpus corpus, StaticScopeMap scope,
+                              List<OccurrenceAddress> roots,
                               List<Task> tasks, Frontier frontier,
                               Frontier.Round open,
                               Map<String, List<ObligationResult>> answers) {
@@ -416,7 +417,8 @@ public final class ExploreMain {
                 String key = arm.siteId() + "=" + arm.outcome();
                 Map<String, JsonObject> worlds = refuted.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, JsonObject>());
-                String state = openArmState(corpus, task, root, row, arm,
+                String state = openArmState(corpus, scope, task, root, row,
+                        arm,
                         frontier, proposed, answers, worlds,
                         unrun.computeIfAbsent(key,
                                 k -> new LinkedHashSet<String>()));
@@ -494,7 +496,8 @@ public final class ExploreMain {
      * ObligationResult#worldUnrefuted}: asked once more, {@link
      * Frontier#consume}) to {@code unrun}, as obligation@session.
      */
-    private static String openArmState(Corpus corpus, Task task,
+    private static String openArmState(Corpus corpus, StaticScopeMap scope,
+                                       Task task,
                                        OccurrenceAddress root, TargetRow row,
                                        TargetRow.OpenArm arm,
                                        Frontier frontier,
@@ -523,7 +526,7 @@ public final class ExploreMain {
                 String id = ObligationFactory.obligationId(task.taskId(),
                         decision.siteId(), decision.ordinal(),
                         !decision.outcome(), ObligationFactory.dependence(
-                                corpus, task, path, index));
+                                corpus, scope, task, path, index));
                 Verdict shared = frontier.verdict(id);
                 if (frontier.recorded(id) || shared == Verdict.ADMITTED) {
                     return "TAKEN";
