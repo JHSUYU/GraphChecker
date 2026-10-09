@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import org.junit.Test;
@@ -72,6 +73,29 @@ public class RecordedMessagesTest {
                     "s/n1#epoch0/region/REGION.h/ctx:" + row[1] + "/idx:");
             assertEquals((String) row[0], row[2],
                     messages.doorStancesOf(occurrence));
+        }
+    }
+
+    /**
+     * A message sent in no region occurrence names where it was sent from,
+     * the context PLAN states its unreachable doors in
+     * (DOOR_SEND_OUTSIDE_REGION: solr-bugs-migrate-buffer-leak SG2); one an
+     * occurrence sent, or none, names nothing.
+     */
+    @Test
+    public void aMessageSentInNoRegionNamesWhereItWasSent() {
+        RecordedMessages messages = new RecordedMessages(SCHEDULE);
+        String[][] rows = {
+            {"sent by an occurrence", "Anchor:e1@HADOOP_IPC/hb", null},
+            {"sent in no region", "Anchor:e2@HADOOP_IPC/hb",
+                "s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb"},
+            {"started by no message", "Root:CLIENT/hb#1", null},
+        };
+        for (String[] row : rows) {
+            ContextShape.Stance from = messages.sentOutsideRegion(
+                    OccurrenceAddress.parse("s/n1#epoch0/region/REGION.h/ctx:"
+                            + row[1] + "/idx:"));
+            assertEquals(row[0], row[2], from == null ? null : from.render());
         }
     }
 

@@ -2288,6 +2288,60 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A context whose frontier event a stall gave up has diverged: its next
+     * frontier stands a grace, not a timeout (SG2: 69 of solr-adhoc-38's 138
+     * give-up stalls stood on a context that had failed one).
+     */
+    @Test(timeout = 60000L)
+    public void aContextThatFailedAStallStandsAGraceNext() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "6000");
+        String gone = "gone|Root:G";
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, gone, "n1", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "a"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, gone, "n2", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "b")));
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        long first = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "b");
+        long second = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("the first stall a timeout: " + first, first >= 6000L);
+        assertTrue("the failed context's next a grace: " + second,
+                second >= ScheduleLog.LET_GO_GRACE_MS && second < 5000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 2 given up in 2"));
+    }
+
+    /**
+     * A write the order lacks whose own context holds the frontier owes it:
+     * it goes at once, never behind a later write to its location (another
+     * context's), which held the frontier -- and every later slot of its
+     * context -- until the watchdog (solr-adhoc-19 MB14s: a node's extra
+     * compare-and-set retry at its terms node).
+     */
+    @Test(timeout = 30000L)
+    public void aWriteOwingTheFrontierPassesNoLaterWrite() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        enforce(Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "x"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
+                        ScheduleEvent.written("STORE", "/p"), 0, ""),
+                event(ScheduleEvent.Kind.SEND, "y")));
+        long before = System.nanoTime();
+        written("/p");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertTrue("the extra write went, then x took the frontier",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 2000L);
+        assertEquals(here, ScheduleLog.contextOf(Identity.contextHere()));
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains(": 1 taken, 0 given up"));
+    }
+
+    /**
      * A write whose slot its occurrence's close settled runs free: it is no
      * write the recording never made there, which would wait behind the
      * next write to its location (another context's, that may never come),

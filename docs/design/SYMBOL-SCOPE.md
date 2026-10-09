@@ -732,7 +732,11 @@ reaches, to a fixed point:
   every occurrence of that turn: `#doorStancesOf`) is admitted
   (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
   producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
-  `MARKER_FLIPPED` witnesses move such an IPC door.
+  `MARKER_FLIPPED` witnesses move such an IPC door. A message sent in no region occurrence has no
+  sender, so no door of it is admitted: a fault-reading occurrence not reached in the context it was
+  sent from is named, DIAGNOSTIC `DOOR_SEND_OUTSIDE_REGION` (`RecordedMessages#sentOutsideRegion`;
+  solr-bugs-migrate-buffer-leak, round SG2: a send hook moved out of `HttpSolrClient#executeMethod`,
+  the method holding the door's call, left its fault unplanned).
 
 - **Equivalent deciders are one class** (`DemandWalk#classDeciders`). Occurrences the walk reached
   only as writers of a demanded store that stored no demanded cell in the recording (each left the

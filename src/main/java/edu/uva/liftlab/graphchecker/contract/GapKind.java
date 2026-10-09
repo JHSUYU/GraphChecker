@@ -63,6 +63,18 @@ public enum GapKind {
      * ({@code causynth.DoorWeave#moved}).  DIAGNOSTIC.
      */
     DOOR_UNPLACED,
+    /**
+     * The message that started an admitted occurrence was sent in no region
+     * occurrence, while an occurrence that read a fault marker -- a door --
+     * stands in the context it was sent from: PLAN admits a door's
+     * occurrence as the message's sender's ({@code
+     * RecordedMessages#doorsOf}, CONTROL_PRODUCER), so that door is never
+     * planned and its fault never flipped.  A system's send hook outside the
+     * method that holds the door's call (solr-bugs-migrate-buffer-leak,
+     * round SG2: HttpSolrClient's send moved before executeMethod).
+     * DIAGNOSTIC.
+     */
+    DOOR_SEND_OUTSIDE_REGION,
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
     /**

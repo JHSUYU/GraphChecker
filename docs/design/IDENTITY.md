@@ -704,7 +704,9 @@ order:
   `waitForCoreAdminAsyncCallToComplete` poll sees that CREATE complete; the poll's requests are that
   write's owner at work, so the cycle costs the stall's ceiling (`CEILING` timeouts, 120 s at the
   default), then goes. Such a waiter passes none of its own context's slots there (where it waits is
-  the other write's place) and is never let go;
+  the other write's place) and is never let go; it waits for no later write while the frontier is a slot of its
+  own context, which it owes (solr-adhoc-19, round MB14s: a node's extra compare-and-set retry at its terms node
+  waited behind another node's later write there, and its eight registration slots stalled one by one);
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
@@ -719,7 +721,9 @@ order:
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
   still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
   waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
-  give-up of the 4560 slots before it). Past the cut a `WAKE` with no slot runs free, except in an
+  give-up of the 4560 slots before it). A frontier whose context missed its event in a stall before stands a grace,
+  not a timeout: that context diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63
+  of 19's 70, stood on a context that had failed one). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the

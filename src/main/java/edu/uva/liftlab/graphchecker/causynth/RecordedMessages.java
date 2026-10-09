@@ -79,11 +79,7 @@ final class RecordedMessages {
      * None when no message started it.
      */
     Set<String> doorsOf(OccurrenceAddress occurrence) {
-        String endpoint = occurrence.context() instanceof CausalContext.Anchor
-                ? ((CausalContext.Anchor) occurrence.context())
-                        .producerEndpointId()
-                : takenIn.getOrDefault(
-                        ContextShape.Stance.of(occurrence).render(), "");
+        String endpoint = startedBy(occurrence);
         if (endpoint.isEmpty()) return Collections.emptySet();
         Set<String> doors = new LinkedHashSet<>(receivers.getOrDefault(
                 endpoint, Collections.<String>emptySet()));
@@ -101,13 +97,30 @@ final class RecordedMessages {
      * turn runs).
      */
     Set<String> doorStancesOf(OccurrenceAddress occurrence) {
-        String endpoint = occurrence.context() instanceof CausalContext.Anchor
+        Set<String> stances = receivingStances.get(startedBy(occurrence));
+        return stances == null ? Collections.<String>emptySet() : stances;
+    }
+
+    /**
+     * Where the message that started {@code occurrence} was sent from, when
+     * its SEND stood in no region occurrence -- so {@link #doorsOf} names no
+     * sender, and none of the sender's doors -- else null.
+     */
+    ContextShape.Stance sentOutsideRegion(OccurrenceAddress occurrence) {
+        String endpoint = startedBy(occurrence);
+        if (endpoint.isEmpty() || senders.containsKey(endpoint)) return null;
+        return stances.get(endpoint);
+    }
+
+    /** The producer endpoint of the message that started {@code
+     *  occurrence}: its context's anchor, else the message that context
+     *  took into itself; "" for none. */
+    private String startedBy(OccurrenceAddress occurrence) {
+        return occurrence.context() instanceof CausalContext.Anchor
                 ? ((CausalContext.Anchor) occurrence.context())
                         .producerEndpointId()
                 : takenIn.getOrDefault(
                         ContextShape.Stance.of(occurrence).render(), "");
-        Set<String> stances = receivingStances.get(endpoint);
-        return stances == null ? Collections.<String>emptySet() : stances;
     }
 
     /** The shape of {@code context} over the recording's senders. */

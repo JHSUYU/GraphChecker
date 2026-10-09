@@ -1080,7 +1080,13 @@ public final class ScheduleLog {
         if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
-            if (conflict >= 0) {
+            // A writer whose own context holds the frontier owes it: held
+            // behind a later write to its location, it held the frontier
+            // until the watchdog, and every later slot of its context with
+            // it (solr-adhoc-19 MB14s: a node's extra compare-and-set retry
+            // at its terms node, then its eight registration slots, a stall
+            // each).
+            if (conflict >= 0 && !owesFrontierLocked(event)) {
                 CONFLICTED.add(self);
                 return conflict + 1;
             }
@@ -1104,6 +1110,12 @@ public final class ScheduleLog {
         if (LET_GO.contains(self)) return GO;
         HELD.put(self, event);
         return next >= 0 ? next : AT_THE_LINE;
+    }
+
+    /** Whether the frontier is a slot of {@code event}'s own context. */
+    private static boolean owesFrontierLocked(Pending event) {
+        return firstBlocking < order.size()
+                && event.context.equals(order.get(firstBlocking).context());
     }
 
     /** Whether the order moved since the last WAKE of {@code event}'s key. */
@@ -1251,6 +1263,10 @@ public final class ScheduleLog {
      */
     private static final Map<String, Integer> DEAD_BY_KEY =
             new HashMap<String, Integer>();
+
+    /** The contexts whose frontier event a stall gave up: a later frontier
+     *  of theirs stands a grace, not a timeout ({@link #watchdogLocked}). */
+    private static final Set<String> FAILED = new HashSet<String>();
 
     /** Whether {@code event}'s key has a dead slot left: then it takes it
      *  (the event runs free). */
@@ -1503,8 +1519,16 @@ public final class ScheduleLog {
             letGoHeldLocked(stood, now);
             return true;
         }
-        if (stood < timeout) return false;
-        if (stood < CEILING * timeout && computingLocked(now)) return false;
+        // A frontier in a context that missed its event in a stall before
+        // stands a grace, not a timeout: that context diverged from the
+        // recording, and each of its later slots cost a timeout of its own
+        // (SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63 of 19's 70, on
+        // a context that had failed one).
+        long bound = firstBlocking < order.size() && FAILED.contains(
+                order.get(firstBlocking).context())
+                ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
+        if (stood < bound) return false;
+        if (stood < CEILING * bound && computingLocked(now)) return false;
         // A wait held without a slot -- a poll past its recorded count at
         // its context's due slot, or at the line -- waits for no slot's
         // event, so it bounds no give-up: at a slot it would shadow the
@@ -1535,6 +1559,7 @@ public final class ScheduleLog {
             if (state[write] != OPEN) return false;
             stalls++;
             giveUpLocked(write);
+            FAILED.add(order.get(write).context());
             stateLocked("schedule-write#" + write, "the write at slot "
                     + write + " (" + order.get(write).render() + ") did not"
                     + " happen in the " + stood + " ms the frontier stood at"
@@ -1561,6 +1586,8 @@ public final class ScheduleLog {
             settleLocked();
             return true;
         }
+        String frontierContext = firstBlocking < order.size()
+                ? order.get(firstBlocking).context() : null;
         int first = -1;
         int count = 0;
         for (int index = firstOpen; index < earliest; index++) {
@@ -1570,6 +1597,7 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
+        if (frontierContext != null) FAILED.add(frontierContext);
         if (earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
@@ -1789,6 +1817,7 @@ public final class ScheduleLog {
         CONFLICTED.clear();
         BY_LOCATION.clear();
         DEAD_BY_KEY.clear();
+        FAILED.clear();
         POLLED.clear();
         PASSED_BY_CONTEXT.clear();
         PASSED_SLOTS.clear();
@@ -1945,6 +1974,7 @@ public final class ScheduleLog {
             CONFLICTED.clear();
             BY_LOCATION.clear();
             DEAD_BY_KEY.clear();
+            FAILED.clear();
             POLLED.clear();
             PASSED_BY_CONTEXT.clear();
             PASSED_SLOTS.clear();
