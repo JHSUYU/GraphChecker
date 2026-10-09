@@ -56,6 +56,7 @@ import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.and;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.expressionJavaType;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.floatingKind;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.numeric;
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.or;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
@@ -1534,6 +1535,10 @@ public final class SmtLowering {
         if (RENDERINGS.contains(callee) && arguments.size() == 1) {
             return javaToString(arguments, origin);
         }
+        if (ENUM_VALUE_OF.equals(callee)) return enumName(arguments, origin);
+        if (ENUM_ORDINAL.equals(callee)) {
+            return enumOrdinal(arguments, origin);
+        }
         boolean integer = "java/lang/Integer parseInt".equals(callee);
         if (!integer && !"java/lang/Long parseLong".equals(callee)) {
             return null;
@@ -1584,6 +1589,73 @@ public final class SmtLowering {
                         "(<= 0 " + digits + ")",
                         VmTermLowering.integralRange(domain.lower, value,
                                 domain.upper))));
+    }
+
+    /** A constant {@code Enum.valueOf} chose by a name (VM SymEnum), its
+     *  arguments {@code [class, n, c0, ..., ck]}: the enum's constant names
+     *  in ordinal order after the call's own. */
+    private static final String ENUM_VALUE_OF = "java/lang/Enum valueOf";
+    /** Such a constant's ordinal, {@code [constant, c0, ..., ck]}. */
+    private static final String ENUM_ORDINAL = "java/lang/Enum ordinal";
+
+    /**
+     * A constant {@code Enum.valueOf} named is its name, a String never
+     * null, defined where the name is one of the enum's constants
+     * ({@code valueOf} throws otherwise): a compare of it is a compare of
+     * names, as the VM states it ({@code equals}).
+     */
+    private Term enumName(JsonArray arguments, String origin) {
+        if (arguments.size() < 3) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    ENUM_VALUE_OF + ":ARITY", Sort.STRING);
+        }
+        Term name = dispatch(arguments.get(1), null, origin + ":name");
+        List<Term> constants = enumConstants(arguments, 2, origin);
+        if (name.sort != Sort.STRING || constants == null
+                || nullnessUnknown(Collections.singletonList(name))) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    ENUM_VALUE_OF + ":NAME_UNSTATED", Sort.STRING);
+        }
+        List<String> member = new ArrayList<String>();
+        for (Term constant : constants) {
+            member.add("(= " + name.text + " " + constant.text + ")");
+        }
+        return definedResult(name.text, Sort.STRING, IntegralWidth.NONE,
+                and(Arrays.asList(stringNonNull(name), or(member))), name);
+    }
+
+    /** A named constant's ordinal: where its name stands among the enum's
+     *  constants. */
+    private Term enumOrdinal(JsonArray arguments, String origin) {
+        Term name = arguments.size() < 2 ? null
+                : dispatch(arguments.get(0), null, origin + ":constant");
+        List<Term> constants = enumConstants(arguments, 1, origin);
+        if (name == null || name.sort != Sort.STRING || constants == null) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    ENUM_ORDINAL + ":CONSTANT_UNSTATED", Sort.INT);
+        }
+        // Outside the constants the name is undefined (its valueOf threw).
+        String ordinal = "(- 1)";
+        for (int index = constants.size() - 1; index >= 0; index--) {
+            ordinal = "(ite (= " + name.text + " " + constants.get(index).text
+                    + ") " + index + " " + ordinal + ")";
+        }
+        return definedResult(ordinal, Sort.INT, IntegralWidth.JAVA_INT,
+                "true", name);
+    }
+
+    /** The constant names from {@code from} on, or null where one lowers
+     *  to no String. */
+    private List<Term> enumConstants(JsonArray arguments, int from,
+                                     String origin) {
+        List<Term> constants = new ArrayList<Term>();
+        for (int index = from; index < arguments.size(); index++) {
+            Term constant = dispatch(arguments.get(index), null,
+                    origin + ":constant" + (index - from));
+            if (constant.sort != Sort.STRING) return null;
+            constants.add(constant);
+        }
+        return constants;
     }
 
     /** The callees that render an integral as its decimal String. */
