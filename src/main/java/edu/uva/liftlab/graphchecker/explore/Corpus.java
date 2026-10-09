@@ -870,10 +870,13 @@ public final class Corpus implements Arms.Rows {
             if (event.occurrence().isEmpty()) {
                 // Taken in at a turn's root, before any region of it opened
                 // (a queue item a turn consumes first): the turn's every
-                // occurrence is its receiver.
+                // occurrence is its receiver.  A turn standing on the
+                // message (a request's handler) is what it started, no door
+                // of it.
                 ContextShape.Stance at =
                         ContextShape.Stance.ofSend(event.context());
-                if (!event.received().isEmpty() && at != null) {
+                if (!event.received().isEmpty() && at != null
+                        && !(at.context() instanceof CausalContext.Anchor)) {
                     facts.add(new Fact(Fact.Kind.RECEIVING_STANCE,
                             event.received(), "", at));
                 }

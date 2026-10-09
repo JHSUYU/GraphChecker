@@ -60,7 +60,10 @@ final class RecordedMessages {
                     receivers.computeIfAbsent(message,
                             ignored -> new LinkedHashSet<>())
                             .add(event.occurrence());
-                } else if (at != null) {
+                } else if (at != null
+                        && !(at.context() instanceof CausalContext.Anchor)) {
+                    // Taken in at a turn's root; a turn standing on the
+                    // message (a request's handler) is what it started.
                     receivingStances.computeIfAbsent(message,
                             ignored -> new LinkedHashSet<>())
                             .add(at.render());

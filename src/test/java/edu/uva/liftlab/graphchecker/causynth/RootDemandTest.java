@@ -127,7 +127,9 @@ public class RootDemandTest {
      * -- a processor's copy of its collection's read-only flag leads to the
      * flag read, a boundary of its own, and a container field the flag's
      * construction read holds what that copy's version holds: PROVENANCE,
-     * no tracked container (solr-18413 Z3: ZkNodeProps.propMap).
+     * no tracked container (solr-18413 Z3: ZkNodeProps.propMap).  A
+     * construction-only field a region stores and a replay versions stays
+     * tracked (solr-18413: RoutingRule.expireAt).
      */
     @Test
     public void aConstructionOnlyFieldIsWalkedThroughToWhatItsConstructorStored() {
@@ -138,34 +140,55 @@ public class RootDemandTest {
         String flag = "<t.D: java.lang.Boolean flag>";
         String built = "<t.D: void <init>(java.util.Map)>";
         String props = "<t.D: java.util.Map props>";
-        List<Map<String, Object>> edges = Arrays.asList(
-                edge("exception_guard", z0, CHECK + "#u9#exception:E",
-                        CHECK, 9, null),
-                edge("field_read", copy, z0, CHECK, 4, null),
-                edge("field_write", init + "::$z1", copy, init, 3, null),
-                edge("accessor_field_return", flag, init + "::$z1", init, 2,
-                        "<t.D: java.lang.Boolean isFlag()>"),
-                edge("field_write", built + "::$r2", flag, built, 2, null),
-                edge("field_read", props, built + "::$r2", built, 1, null),
-                edge("field_write", RUN + "::$r3", props, RUN, 5, null));
-        RootDemand demand = RootDemand.of(edges, Collections.singletonList(
-                region()), Collections.<String, Clock>emptyMap(),
-                ConfigRoots.of(edges, new LinkedHashMap<>()),
-                Collections.singleton(CHECK + "#u9"),
-                field -> SharedFieldFlow.TrackedKind.NONE,
-                field -> field.equals(copy) || field.equals(flag),
-                owner -> owner.startsWith("t."), new Faults(),
-                Collections.<DemandedDoors.Site>emptyList());
-        List<String> found = new ArrayList<>();
-        for (RootDemand.Boundary boundary : demand.boundaries()) {
-            found.add(boundary.kind + " " + boundary.distance + " "
-                    + boundary.chosen + " " + boundary.cell);
+        // Per row: whether a region stores the flag and a replay versions
+        // it, and the boundaries.
+        Object[][] rows = {
+            {false, Arrays.asList("PROVENANCE 1 true " + copy,
+                    "PROVENANCE 3 true " + flag,
+                    "PROVENANCE 5 true " + props)},
+            {true, Arrays.asList("PROVENANCE 1 true " + copy,
+                    "TRACK 3 true " + flag)},
+        };
+        for (Object[] row : rows) {
+            boolean stored = (Boolean) row[0];
+            List<Map<String, Object>> edges = new ArrayList<>(Arrays.asList(
+                    edge("exception_guard", z0, CHECK + "#u9#exception:E",
+                            CHECK, 9, null),
+                    edge("field_read", copy, z0, CHECK, 4, null),
+                    edge("field_write", init + "::$z1", copy, init, 3, null),
+                    edge("accessor_field_return", flag, init + "::$z1", init,
+                            2, "<t.D: java.lang.Boolean isFlag()>"),
+                    edge("field_write", built + "::$r2", flag, built, 2,
+                            null),
+                    edge("field_read", props, built + "::$r2", built, 1,
+                            null),
+                    edge("field_write", RUN + "::$r3", props, RUN, 5,
+                            null)));
+            if (stored) {
+                edges.add(edge("field_write", RUN + "::$z4", flag, RUN, 6,
+                        null));
+            }
+            RootDemand demand = RootDemand.of(edges,
+                    Collections.singletonList(region()),
+                    Collections.<String, Clock>emptyMap(),
+                    ConfigRoots.of(edges, new LinkedHashMap<>()),
+                    Collections.singleton(CHECK + "#u9"),
+                    field -> stored && field.equals(flag)
+                            ? SharedFieldFlow.TrackedKind.VALUE
+                            : SharedFieldFlow.TrackedKind.NONE,
+                    field -> field.equals(copy) || field.equals(flag),
+                    owner -> owner.startsWith("t."), new Faults(),
+                    Collections.<DemandedDoors.Site>emptyList());
+            List<String> found = new ArrayList<>();
+            for (RootDemand.Boundary boundary : demand.boundaries()) {
+                found.add(boundary.kind + " " + boundary.distance + " "
+                        + boundary.chosen + " " + boundary.cell);
+            }
+            assertEquals("stored=" + stored, row[1], found);
+            assertEquals("the read the scope map marks", (stored ? "TRACK"
+                    : "PROVENANCE") + " 3 true",
+                    mark(demand.marks().at(init + "#u2", flag)));
         }
-        assertEquals(Arrays.asList("PROVENANCE 1 true " + copy,
-                "PROVENANCE 3 true " + flag, "PROVENANCE 5 true " + props),
-                found);
-        assertEquals("the read the scope map marks", "PROVENANCE 3 true",
-                mark(demand.marks().at(init + "#u2", flag)));
     }
 
     private static String mark(StaticScopeMap.Demanded demanded) {

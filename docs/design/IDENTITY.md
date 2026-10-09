@@ -551,8 +551,9 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   write sent it), its staged values with it; the consumer keeps its own context, and its RECV names
   the item it took in (`CausynthTraceRecorder#receivedExchange`), so the item's sender is a door of
   the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`). A
-  RECV a turn makes at its root, before any of its regions opened, names no occurrence: every
-  occurrence the turn runs is then a receiver, a door of the item (`Corpus#doorsOf`,
+  RECV a turn makes at its root, before any of its regions opened, names no occurrence: unless the
+  turn stands on the item (a request's handler, which the item started), every occurrence the turn
+  runs is then a receiver, a door of the item (`Corpus#doorsOf`,
   `RecordedMessages#doorStancesOf`) -- the Overseer queue loop's turn, whose ZooKeeper door
   (`markTaskAsRunning`) runs in a region of it, for the task's Runner, which took the same item in.
   A SEND so made names no occurrence either, and every occurrence of the sending turn is then a

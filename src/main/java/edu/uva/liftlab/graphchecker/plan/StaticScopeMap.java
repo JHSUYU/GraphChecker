@@ -667,9 +667,11 @@ public final class StaticScopeMap {
                             false, "", distance(mark)));
                     continue;
                 }
-                // A decoded object's container: tracked by its state, and
-                // observed for the store version its holder was parsed from.
-                if (tracked == SharedFieldFlow.TrackedKind.CONTAINER
+                // A decoded object's container, or a construction-only
+                // field a region stores: tracked by its state, and observed
+                // for the store version its holder was parsed from.
+                if ((tracked == SharedFieldFlow.TrackedKind.CONTAINER
+                        || constructionOnly.test(field))
                         && chosen(mark, TRACKED_DEMAND)) {
                     addProvenance(found, seen, retained, new Site(
                             PROVENANCE_SITE, "", siteId, vmSite(method),

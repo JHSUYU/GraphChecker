@@ -832,7 +832,7 @@ followed only to a value-like receiver (a box, a `String`). The classes:
 | `TRACK` | an integral or boxed field a region stores | a chosen read is a READ_SITE (§5.1) however many flows from a branch |
 | `TRACK_IDENTITY` | a reference, `String` or enum field a region stores | a chosen read is a READ_SITE as well; its value is never freed (R3) |
 | `TRACK_CONTAINER` | a container's state (a field of a container type, a container query's return) | a chosen field read is a READ_SITE as well; its state is never freed (R3) |
-| `PROVENANCE` | a construction-only field (§5.1) holding no container; past one, a container field a construction copied in | a chosen read is a PROVENANCE_SITE (§5.7); the walk goes on through what the field's constructor stored, so a copy leads to its source, and stops at a container field there |
+| `PROVENANCE` | a construction-only field (§5.1) holding no container that no region stores or no replay versions; past one, a container field a construction copied in | a chosen read is a PROVENANCE_SITE (§5.7); the walk goes on through what the field's constructor stored, so a copy leads to its source, and stops at a container field there |
 | `PRE_WINDOW` | a field no region of the slice stores | chosen, first in scope growth (§2.4): a writer out of scope (a configuration holder's constructor) may store it |
 | `WIRE` | a region root's formal: what a message or a thread start hands over | named (R2) |
 | `IO` | a stream, file, socket, channel or native result | a demanded door where its outcome reaches the slice (below), else named (`NO_DOOR`) |
@@ -1082,7 +1082,10 @@ construction-only (§5.1): nothing re-pairs them, so a guard on one -- the clien
 parsed from (IDENTITY §7.2), so:
 
 - the root demand classes a construction-only instance field `PROVENANCE` (§4.6) and walks on
-  through its constructor's store, where a copy names its source; a call into the system out of
+  through its constructor's store, where a copy names its source; one a region stores and a replay
+  versions (a value, §5.1) stays `TRACK`, its chosen read observed both ways like a container's
+  (solr-18413: `RoutingRule.expireAt`, the Overseer's clock through its constructor, stays a tracked
+  read); a call into the system out of
   scope (a `SCOPE` boundary, §4.6) rests on its receiver's state, so the chosen ones are observed by
   their receiver too (`StaticScopeMap#provenanceCalls`: a processor's
   `readOnlyCollection = coll.isReadOnly()`, `DocCollection` out of the scope); and a chosen

@@ -47,14 +47,19 @@ public class RecordedMessagesTest {
     }
 
     /** IDENTITY §7.2: a message sent or taken in at a turn's root, no
-     *  occurrence open, has a door in every occurrence of that turn. */
+     *  occurrence open, has a door in every occurrence of that turn -- not
+     *  a turn standing on it, which it started. */
     @Test
     public void aMessageSentOrTakenInAtATurnsRootHasThatTurnsDoors() {
         RecordedMessages messages = new RecordedMessages(Arrays.asList(
                 SCHEDULE.get(0), SCHEDULE.get(1), SCHEDULE.get(2),
                 ScheduleEvent.of(3, ScheduleEvent.Kind.RECV,
                         "s/n2#epoch0|Root:QUEUE#4", "SOLR_ZK#REQUEST", 0, "",
-                        "e1")));
+                        "e1"),
+                // a handler's turn stands on the message: no door of it
+                ScheduleEvent.of(4, ScheduleEvent.Kind.RECV,
+                        "s/n3#epoch0|Anchor:e1@HADOOP_IPC/hb",
+                        "HADOOP_IPC#REQUEST", 0, "")));
         Object[][] rows = {
             {"sent in an occurrence, taken in at a root",
                 "Anchor:e1@HADOOP_IPC/hb", set("s/n2#epoch0|Root:QUEUE#4")},

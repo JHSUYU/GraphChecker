@@ -862,23 +862,27 @@ final class RootDemand {
                 // constant of its own type.
                 return null;
             }
-            // Only its construction stores it, and it holds no container:
-            // nothing re-pairs it, and an object a store's fetch was parsed
-            // into holds that version (runtime.Provenance).
-            if (constructionOnly.test(cell) && JavaContainerTypes.shape(type)
-                    == JavaContainerTypes.Shape.NONE) {
-                return Kind.PROVENANCE;
-            }
             boolean stored = false;
             for (String writer : writers) {
                 stored |= regionMethods.contains(writer);
             }
-            if (!stored) return Kind.PRE_WINDOW;
-            if (JavaContainerTypes.shape(type)
-                    != JavaContainerTypes.Shape.NONE) {
-                return Kind.TRACK_CONTAINER;
+            boolean container = JavaContainerTypes.shape(type)
+                    != JavaContainerTypes.Shape.NONE;
+            SharedFieldFlow.TrackedKind tracked = trackedKind.apply(cell);
+            // Only its construction stores it, it holds no container, and
+            // no region's store of it is versioned: nothing re-pairs it,
+            // and an object a store's fetch was parsed into holds that
+            // version (runtime.Provenance).  One a region stores and a
+            // replay versions stays tracked (solr-18413: RoutingRule.expireAt,
+            // the Overseer's clock through its constructor), its read
+            // observed for the version too (StaticScopeMap).
+            if (constructionOnly.test(cell) && !container && (!stored
+                    || tracked == SharedFieldFlow.TrackedKind.NONE)) {
+                return Kind.PROVENANCE;
             }
-            return trackedKind.apply(cell) == SharedFieldFlow.TrackedKind.VALUE
+            if (!stored) return Kind.PRE_WINDOW;
+            if (container) return Kind.TRACK_CONTAINER;
+            return tracked == SharedFieldFlow.TrackedKind.VALUE
                     ? Kind.TRACK : Kind.TRACK_IDENTITY;
         }
 
