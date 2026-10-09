@@ -397,6 +397,13 @@ public final class ScheduleLog {
                                   String endpoint, Stance at) {
         VACANT.remove();
         if (kind == null || !RecordingWindow.opened()) return false;
+        // A store read is no turn's first event: a turn that only reads --
+        // a poll's look at its queue, as often as the run's timing has it --
+        // stays vacant and takes no number (solr-adhoc-39, MB30s: every
+        // Overseer peekElements tick read the queue, its turns ran 62
+        // numbers ahead of the recording's, and a write of turn #82 waiting
+        // at turn #82's slot bounded a give-up of 3,776 slots).
+        if (kind == ScheduleEvent.Kind.READ && !turnWritten()) return false;
         mute();
         try {
             Pending event = pending(kind, site, endpoint, at);

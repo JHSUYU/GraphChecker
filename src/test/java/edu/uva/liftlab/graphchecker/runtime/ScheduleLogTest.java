@@ -1620,6 +1620,8 @@ public class ScheduleLogTest {
      * its END; the set-up's, none.  A turn that makes no event writes
      * nothing and gives its k back (hdfs-adhoc-16: an actor spinning through
      * empty turns), so the turn that acts after any number of them is #1.
+     * A store read is no turn's first event (solr-adhoc-39 MB30s: a poll's
+     * look at its queue numbered every poll); after one it is observed.
      */
     @Test
     public void aTurnThatActsStatesItsWakeAndEndAndAnEmptyOneNothing() {
@@ -1637,22 +1639,25 @@ public class ScheduleLogTest {
                     "HEARTBEAT_TICK");
             // A held wait's WAKE, which only a replay computes, names none.
             ScheduleLog.wake("<D: void poll()>#u3");
+            MessageDoors.reading("STORE", "/queue");
             RuntimeTraceContext.endTick(empty);
         }
         assertTrue("empty turns hold no slot", written.isEmpty());
         long tick = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        MessageDoors.reading("STORE", "/queue");
         RuntimeTraceContext.endTick(tick);
         List<ScheduleEvent> events = events();
         assertEquals(Arrays.asList(ScheduleEvent.Kind.WAKE,
-                ScheduleEvent.Kind.SEND, ScheduleEvent.Kind.END),
+                ScheduleEvent.Kind.SEND, ScheduleEvent.Kind.READ,
+                ScheduleEvent.Kind.END),
                 Arrays.asList(events.get(0).kind(), events.get(1).kind(),
-                        events.get(2).kind()));
+                        events.get(2).kind(), events.get(3).kind()));
         assertTrue(events.get(0).context(),
                 events.get(0).context().contains("Root:HEARTBEAT_TICK#1"));
         assertEquals("the END stands in the turn's own context",
-                events.get(0).context(), events.get(2).context());
-        assertEquals("tick.HEARTBEAT_TICK", events.get(2).site());
+                events.get(0).context(), events.get(3).context());
+        assertEquals("tick.HEARTBEAT_TICK", events.get(3).site());
 
         long carrying = RuntimeTraceContext.beginTick(daemon,
                 "HEARTBEAT_TICK");
@@ -1662,7 +1667,7 @@ public class ScheduleLogTest {
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
         RuntimeTraceContext.endTick(next);
         assertTrue("work captured in a turn keeps its k: " + events(),
-                events().get(3).context().contains("Root:HEARTBEAT_TICK#3"));
+                events().get(4).context().contains("Root:HEARTBEAT_TICK#3"));
     }
 
     @Test

@@ -564,7 +564,8 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   then names nothing and a DIAGNOSTIC `LINEAGE_LOST` row names the version and the writes still
   in flight. Writes at other locations, of the same transport or not, order nothing.
 - `reading(transport, location)`: a store read outside a callback -- whether a node exists, its data,
-  its children (the location is then the parent) -- takes its turn as a write does, a `READ` event at
+  its children (the location is then the parent) -- and not the first event of a tick's turn (§8)
+  takes its turn as a write does, a `READ` event at
   the same `<transport>:<location>` key (`RunNames#key`, one spelling with the write's and with the
   `STORE` location a version is filed under), before the store's call: it waits behind the write the
   recording made there before it, and the write the recording made there after it waits behind it
@@ -603,7 +604,11 @@ the turn's first event is admitted, before it, in both passes (`ScheduleLog#turn
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
 the turn is vacant is that first step), its `END` only if its `WAKE` was: a turn that makes no event
 holds no slot, and its begin shows its thread away from the frontier (`ELSEWHERE`), so a spinning
-loop defers no stall. In a replay the turn's first event first takes the `WAKE`'s slot; what the turn
+loop defers no stall. A store read is no turn's first event: a read before it is not observed, so a
+turn that only reads -- a poll's look at its queue, made as often as the run's timing has it -- stays
+vacant and takes no number (solr-adhoc-39, round MB30s: every Overseer `peekElements` tick read the
+queue, the replay's turns ran 62 numbers ahead of the recording's, and a write of turn #82 waiting at
+turn #82's slot bounded a give-up of 3,776 slots). In a replay the turn's first event first takes the `WAKE`'s slot; what the turn
 computes before it makes no event and is not held. `context` = `<node>|<ctx render>[|<start frames>]`
 (the claimed starts' levels from the scope base, each start's own frame after the starter's frames
 it was filed with) (`ScheduleLog#contextOf`, `Identity#handoffs`). Where a consumer claimed work
