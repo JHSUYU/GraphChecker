@@ -1027,6 +1027,81 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A store read takes its turn at its location as a write does (READ):
+     * it waits behind the write the recording made there before it, and the
+     * write the recording made after it waits behind it, so a
+     * create-if-absent's check, a compare-and-set's version or a client's
+     * view of an alias sees what the recording's read saw (solr-adhoc-39,
+     * MB23s).  Per row: the recording's turns (request:W or R); the
+     * replay's, in the order its threads come; the run (a seed, cut at its
+     * end; a run the model orders, cut after the write or at its end; a
+     * replay no model orders, cut after the write); the order the turns are
+     * made in; and the order's size.  Past the cut of a model's order (a
+     * world's planted pairings, CONFIRM) a read takes no slot: the model's
+     * ORDER rows place it.  A read of a location no write of the order
+     * wrote takes none either.
+     */
+    @Test(timeout = 60000L)
+    public void aReadTakesItsTurnAtItsLocation() throws Exception {
+        String[][] rows = {
+            {"w:W r:R", "r:R w:W", "seed", "w r", "2 slot(s)"},
+            {"r:R w:W", "w:W r:R", "seed", "r w", "2 slot(s)"},
+            {"w:W r:R", "r:R w:W", "model", "r w", "1 slot(s)"},
+            {"w:W r:R", "r:R w:W", "suffix", "w r", "2 slot(s)"},
+            {"w:W r:R", "r:R w:W", "model prefix", "w r", "2 slot(s)"},
+            {"r:R", "r:R", "seed", "r", "no order"},
+        };
+        for (String[] row : rows) {
+            noRequest();
+            for (String turn : row[0].split(" ")) {
+                String[] at = turn.split(":", 2);
+                request(at[0], () -> turn(at[1], "/p"));
+            }
+            List<ScheduleEvent> recorded = events();
+            noRequest();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            int cut = row[2].equals("model") || row[2].equals("suffix")
+                    ? 1 : recorded.size();
+            ScheduleLog.enforceForTests(recorded.subList(0, cut),
+                    recorded.subList(cut, recorded.size()), false,
+                    !row[2].startsWith("model"));
+            final Map<String, String> apis =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            List<Thread> turns = new ArrayList<Thread>();
+            for (String turn : row[1].split(" ")) {
+                String[] at = turn.split(":", 2);
+                Thread thread = new Thread(() -> request(at[0], () -> {
+                    apis.put(ScheduleLog.contextOf(Identity.contextHere()),
+                            at[0]);
+                    turn(at[1], "/p");
+                }));
+                thread.start();
+                turns.add(thread);
+                Thread.sleep(300L);
+            }
+            for (Thread thread : turns) thread.join(10000L);
+            List<String> made = new ArrayList<String>();
+            for (ScheduleEvent event : events()) {
+                made.add(apis.get(event.context()));
+            }
+            assertEquals(Arrays.toString(row), Arrays.asList(row[3].split(" ")),
+                    made);
+            String progress = ScheduleLog.progress();
+            assertTrue(progress, progress.contains(row[4])
+                    && !progress.matches(".* [1-9][0-9]* given up.*"));
+        }
+    }
+
+    /** A write ("W") or a read ("R") of {@code location} at its turn. */
+    private static void turn(String kind, String location) {
+        if (kind.equals("W")) {
+            written(location);
+        } else {
+            MessageDoors.reading("STORE", location);
+        }
+    }
+
+    /**
      * A write waiting behind the write to its location gives that one write
      * up when it stalls, never the run of other nodes' events before it: x
      * and y stay open and are taken when their threads come, and only o's

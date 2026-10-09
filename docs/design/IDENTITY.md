@@ -563,6 +563,17 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   writer may be held at its SEND while a reader waits for it -- costs the bound, and the read
   then names nothing and a DIAGNOSTIC `LINEAGE_LOST` row names the version and the writes still
   in flight. Writes at other locations, of the same transport or not, order nothing.
+- `reading(transport, location)`: a store read outside a callback -- whether a node exists, its data,
+  its children (the location is then the parent) -- takes its turn as a write does, a `READ` event at
+  the same `<transport>:<location>` key (`RunNames#key`, one spelling with the write's and with the
+  `STORE` location a version is filed under), before the store's call: it waits behind the write the
+  recording made there before it, and the write the recording made there after it waits behind it
+  (§8). What a create-if-absent's check, a compare-and-set's version or a client's view of an alias
+  or a collection's state finds is then the recording's (solr-adhoc-39, MB23s: the commit's node
+  followed the client's view of the alias, which a store read before or after the alias's write
+  decided). A read takes a slot only at a location a write of the order wrote (reads of every other
+  path take none and count as no step), and a `READ` slot holds no frontier: it is never blocking,
+  so a read that never comes holds nothing back.
 
 ### 7.3 Typed faults
 
@@ -586,7 +597,7 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `WRITE` (a shared store's write taking its turn before
-the store's call, §7.2), `RECV`, `WAKE` (a timed wait's timeout; a tick's
+the store's call, §7.2), `READ` (a store read's turn, at a location a `WRITE` of the order wrote), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
@@ -673,6 +684,14 @@ order:
   slot before that write, which only it makes (solr-adhoc-19, round MB14s: a node's extra compare-and-set retry at
   its terms node waited behind another node's later write there, and its eight registration slots stalled one by
   one; 39, MB18s: 45 such writes given up one by one, behind writes up to 970 slots past the frontier);
+- a `READ` is held by its location alone: it waits while a write the order makes there before its slot is
+  open and holds (the earliest such), and a `WRITE` waits so behind the reads there as behind the writes
+  (`#conflictLocked`; reads never wait for reads), each until that slot is taken or given up, with the write
+  rule's owing exception. Its slot is never
+  blocking (`#blocking`), so the frontier passes it and a stall gives that one wait up, never the run; a read
+  with no slot runs free. Only the reads a run's recorded placement decides take slots: in a run the model
+  orders (a world's planted pairings, CONFIRM, a reproduction's plant: `ScheduleLog#readsHeld`) the reads
+  past the cut take none, and the model's `ORDER` rows place them (PIPELINE.md §5);
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order

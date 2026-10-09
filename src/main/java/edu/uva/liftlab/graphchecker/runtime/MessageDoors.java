@@ -376,7 +376,7 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
-        turn(transport, location);
+        turn(ScheduleEvent.Kind.WRITE, transport, location);
         return inFlight(transport, location);
     }
 
@@ -396,23 +396,40 @@ public final class MessageDoors {
     public static long storingChild(String transport, String location) {
         String path = trimmed(location);
         int slash = path.lastIndexOf('/');
-        turn(transport, slash <= 0 ? "/" : path.substring(0, slash));
+        turn(ScheduleEvent.Kind.WRITE, transport,
+                slash <= 0 ? "/" : path.substring(0, slash));
         return inFlight(transport, location);
     }
 
-    /** A write's turn at {@code location}, keyed as every run spells it. */
-    private static void turn(String transport, String location) {
+    /**
+     * A read of {@code location} takes its turn before the store's call
+     * ({@link ScheduleEvent.Kind#READ}), keyed as the write turn is ({@link
+     * RunNames#key}): the read sees the version the recording's read saw --
+     * an exists() check before a create, a compare-and-set's version, a
+     * client's alias or cluster state (solr-adhoc-39, round MB23s: a cloud
+     * client read the alias the Overseer had not yet written, and its updates
+     * went to another node).
+     */
+    public static void reading(String transport, String location) {
+        turn(ScheduleEvent.Kind.READ, transport, location);
+    }
+
+    /** A write's or a read's turn at {@code location}, keyed as every run
+     *  spells it: one key for both, and for the STORE location a version is
+     *  filed under. */
+    private static void turn(ScheduleEvent.Kind kind, String transport,
+                             String location) {
         RunNames.Keyed keyed = RunNames.key(trimmed(location));
         if (keyed.unnamed.isEmpty()) {
-            ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
+            ScheduleLog.observe(kind,
                     ScheduleEvent.written(trimmed(transport), keyed.location));
         } else if (RunNames.firstUnstated(keyed.unnamed)) {
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    transport + " " + keyed.unnamed, "a write's location"
+                    transport + " " + keyed.unnamed, "a store location"
                             + " spells " + keyed.unnamed + ", a name only"
                             + " this run has that no adapter stated as a"
-                            + " node's (MessageDoors#spelledAs): its writes"
-                            + " take no turn before the store's call, so the"
+                            + " node's (MessageDoors#spelledAs): its reads and"
+                            + " writes take no turn before the store's call, so the"
                             + " store decides their races as this run's"
                             + " timing has it, held only by the SEND after"
                             + " each");

@@ -54,6 +54,17 @@ public final class ScheduleEvent extends Value {
          * SEND after the write names the version it made.
          */
         WRITE,
+        /**
+         * A read of a store location takes its turn, before the store's
+         * call: its site is {@link #written}, the WRITE turn's key, so a read
+         * runs after the writes to its location the recording made before it
+         * and before the one it made after it (a create-if-absent's check, a
+         * compare-and-set's version, a client's view of an alias).  Only a
+         * location some write of the order wrote takes a slot; a READ slot
+         * never holds the frontier, and in a run the model orders (a world's
+         * planted pairings, CONFIRM) no READ is held.
+         */
+        READ,
         /** A message is installed on the thread that serves it. */
         RECV,
         /**
@@ -120,7 +131,7 @@ public final class ScheduleEvent extends Value {
                 endpoint == null ? "" : endpoint);
     }
 
-    /** A WRITE's site: the store's transport and the location written. */
+    /** A WRITE's or READ's site: the store's transport and the location. */
     public static String written(String transport, String location) {
         return (transport == null ? "" : transport) + ":"
                 + (location == null ? "" : location);
