@@ -366,7 +366,8 @@ public final class RuntimeRegionPlanner {
      * mentioned: every object a method entry, a field access or a call row
      * names, under the activation whose root call encloses it nearest
      * ({@code activations}; none encloses an ambient call), on its call's
-     * thread; and each activation's thread.
+     * thread; and each activation's thread and the activation enclosing it
+     * nearest.
      */
     static RecordedHeap recordedHeap(Collection<MethodEvent> methods,
                                      Collection<FieldAccessEvent> fields,
@@ -376,13 +377,20 @@ public final class RuntimeRegionPlanner {
                                      Map<String, String> storingCalls,
                                      Map<String, String> fieldCalls) {
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
-        Map<Long, Long> owners = occurrenceRoots(methods, activations);
         Map<Long, Long> threads = new HashMap<>();
-        for (MethodEvent event : methods) threads.put(event.callId, event.tid);
+        Map<Long, Long> parents = new HashMap<>();
+        for (MethodEvent event : methods) {
+            threads.put(event.callId, event.tid);
+            parents.put(event.callId, event.parentCallId);
+        }
+        Map<Long, Long> owners = occurrenceRoots(parents, activations);
         for (Map<String, Object> activation : activations) {
             long root = longNumber(activation.get("rootCallId"), -1L);
-            Long thread = threads.get(root);
-            if (thread != null) heap.rootThread(root, thread);
+            Long parent = parents.get(root);
+            heap.occurrence(root, threads.getOrDefault(root,
+                    RecordedHeap.NOWHERE), parent == null
+                    ? RecordedHeap.NOWHERE : owners.getOrDefault(parent,
+                    RecordedHeap.NOWHERE));
         }
         for (MethodEvent event : methods) {
             heap.mention(event.objectId, owners.getOrDefault(event.callId,
@@ -433,12 +441,8 @@ public final class RuntimeRegionPlanner {
     /** Call -> the root call of the activation enclosing it nearest; a
      *  call no activation encloses has none. */
     private static Map<Long, Long> occurrenceRoots(
-            Collection<MethodEvent> methods,
+            Map<Long, Long> parents,
             Collection<Map<String, Object>> activations) {
-        Map<Long, Long> parents = new HashMap<>();
-        for (MethodEvent event : methods) {
-            parents.put(event.callId, event.parentCallId);
-        }
         Map<Long, Long> owners = new HashMap<>();
         for (Map<String, Object> activation : activations) {
             long root = longNumber(activation.get("rootCallId"), -1L);
@@ -1437,10 +1441,9 @@ public final class RuntimeRegionPlanner {
                 }
             }
             // The equivalent deciders this occurrence is planned for, and
-            // the writers it did not cross to as unreachable.
+            // the writers it did not cross to as confined.
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
-                    RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
                     RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
                     RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS,
                     RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS}) {

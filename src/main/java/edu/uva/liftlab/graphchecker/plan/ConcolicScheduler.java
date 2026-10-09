@@ -1038,33 +1038,28 @@ public final class ConcolicScheduler {
      * #holdsOthersOnly}).
      */
     private static final String[][] WRITERS_NOT_CROSSED = {
-        {"UNREACHABLE", RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
-            "writers not crossed to, every object they wrote the field on"
-                + " held and none reachable from a reader that never"
-                + " touched it"},
         {"CONFINED", RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
-            "writers not crossed to, an object they wrote the field on held"
-                + " by nothing recorded and mentioned by their own"
-                + " occurrence alone"},
+            "writers not crossed to, every object they wrote the field on,"
+                + " with its recorded holders, mentioned by their own"
+                + " occurrence alone, the reader not inside it"},
         {"THREAD_CONFINED",
             RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS,
-            "writers not crossed to, an object they wrote the field on held"
-                + " by nothing recorded and mentioned on one thread alone,"
-                + " not the reader's"},
+            "writers not crossed to, every object they wrote the field on,"
+                + " with its recorded holders, mentioned inside one"
+                + " occurrence tree on one thread, not the reader's"},
         {"ESCAPED", RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
             "writers crossed to only because an object they wrote the field"
-                + " on, held by nothing recorded, was mentioned on a second"
-                + " thread or the reader's"}};
+                + " on, reachable from nothing the reader names, or a holder"
+                + " of it, was mentioned in a second occurrence tree, on a"
+                + " second thread or the reader's, or under no occurrence"}};
 
     /** Per field's owner class, the sum. */
     private static Map<String, Integer> byOwnerClass(
             Map<String, Integer> fields) {
         Map<String, Integer> classes = new TreeMap<>();
         for (Map.Entry<String, Integer> field : fields.entrySet()) {
-            String cell = field.getKey();
-            int colon = cell.indexOf(':');
-            classes.merge(colon > 1 ? cell.substring(1, colon) : cell,
-                    field.getValue(), Integer::sum);
+            classes.merge(RuntimeSelectedRegionFinalizer.ownerClass(
+                    field.getKey()), field.getValue(), Integer::sum);
         }
         return classes;
     }
@@ -1082,10 +1077,9 @@ public final class ConcolicScheduler {
     }
 
     /** Per field, the writers the plan rows' readers did not cross to,
-     *  as their {@code member} states them ({@link
-     *  RuntimeSelectedRegionFinalizer#UNREACHABLE_WRITERS}, {@link
-     *  RuntimeSelectedRegionFinalizer#CONFINED_WRITERS}), summed; empty for
-     *  none. */
+     *  or crossed to only for a mention, as their {@code member} states
+     *  them ({@link RuntimeSelectedRegionFinalizer#CONFINED_WRITERS} and
+     *  its kin), summed; empty for none. */
     private static Map<String, Integer> writersNotCrossed(
             List<RegionInstancePlan> rows, String member) {
         Map<String, Integer> fields = new TreeMap<>();

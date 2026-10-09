@@ -7176,7 +7176,8 @@ campaign_emit() {
     --slurpfile refutedClaims "${refuted}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile exploreDocuments "${explored}" \
-    --slurpfile gapDocuments "${campaign_final}/gaps.json" '
+    --slurpfile gapDocuments "${campaign_final}/gaps.json" \
+    --slurpfile planCatalog <(head -n 1 -- "${runtime_region_plan}") '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
     $gapDocuments[0] as $gaps |
     ($r.campaignClaim) as $decided |
@@ -7261,6 +7262,21 @@ campaign_emit() {
      # {by, detail}.  A verdict over a search a bound cut is named, never
      # read as the end of the closure itself.
      bounded: $bounded,
+     # The writers PLAN did not cross to as confined (CLOSURE_CONFINED, the
+     # region plan catalog'"'"'s gap rows): null, or their sum, by scope, and
+     # the first rows.  An UNSAT reading looks at the anchor'"'"'s demanded
+     # fields among them: the recorded heap is partial.
+     confinedWriters: ([($planCatalog[0].gaps // [])[]
+         | select(.kind == "CLOSURE_CONFINED")] as $rows
+       | if ($rows | length) == 0 then null
+         else {writers: ($rows | map(.writers) | add),
+               rows: ($rows | length),
+               byScope: ($rows | group_by(.scope)
+                 | map({key: .[0].scope, value: (map(.writers) | add)})
+                 | from_entries),
+               first: [$rows[:3][]
+                 | {reader, field, scope, ownerClass, writers, first}]}
+         end),
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it

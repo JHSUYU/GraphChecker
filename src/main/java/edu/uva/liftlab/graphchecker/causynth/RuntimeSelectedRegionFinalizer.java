@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
@@ -128,29 +129,27 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * Activation and plan-row member of a reader: per demanded field it
      * never touched in the recording, how many of the field's writers the
-     * walk did not cross to, each having written the field only on objects
-     * the recording saw held and none reachable from the reader's ({@link
-     * DemandWalk#holdsOthersOnly}).  PLAN states their sum per field.
-     */
-    public static final String UNREACHABLE_WRITERS = "unreachableWriters";
-    /**
-     * The same, of the writers not crossed to because an object they wrote
-     * the field on, held by nothing recorded, was mentioned by their own
-     * occurrence alone ({@link RecordedHeap#confinedTo}).
+     * walk did not cross to, because every object they wrote the field on,
+     * and every recorded holder above it, was mentioned by their own
+     * occurrence alone, the reader not inside it ({@link
+     * RecordedHeap#confinement}, {@link DemandWalk#holdsOthersOnly}).  PLAN
+     * states their sum per field; each (reader, field) is a {@code
+     * CLOSURE_CONFINED} gap row ({@link GapKind#CLOSURE_CONFINED}).
      */
     public static final String CONFINED_WRITERS = "confinedWriters";
     /**
-     * The same, of the writers not crossed to because an object they wrote
-     * the field on, held by nothing recorded, was mentioned on one thread
-     * alone, not the reader's ({@link RecordedHeap#threadOf}).
+     * The same, of the writers not crossed to because every such object,
+     * and every holder above it, was mentioned inside one occurrence tree
+     * on one thread, not the reader's.
      */
     public static final String THREAD_CONFINED_WRITERS =
             "threadConfinedWriters";
     /**
      * The writers a reader that never touched the field DID cross to only
-     * because an object they wrote it on, held by nothing recorded and
-     * reachable from nothing the reader names, was mentioned on more than
-     * one thread or on the reader's: it may have been handed over.
+     * because an object they wrote it on, reachable from nothing the reader
+     * names, or a holder above it, was mentioned in more than one occurrence
+     * tree or on more than one thread, on the reader's, or under no
+     * occurrence at all: it may have been handed over.
      */
     public static final String ESCAPED_WRITERS = "escapedWriters";
     /**
@@ -975,7 +974,7 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         walk.walk(seeds);
         admitRelevantRoots(program, walk, scopeMap, messages);
-        walk.stateUnreachableWriters();
+        walk.stateConfinedWriters(program.planGaps);
         walk.stateUnpairedWires(program.planGaps);
         walk.stateFixedDeciders(program.planGaps);
         walk.classDeciders(accesses, context -> shapes.computeIfAbsent(
@@ -1245,18 +1244,15 @@ public final class RuntimeSelectedRegionFinalizer {
      * ({@code DemandWalk#holdsOthersOnly}).
      */
     private enum Scope {
-        /** Held by something recorded, none reachable. */
-        HELD(UNREACHABLE_WRITERS),
-        /** One held by nothing, mentioned by its writer's occurrence
-         *  alone, on one thread. */
+        /** It and every holder above it mentioned by the writer's own
+         *  occurrence alone, on one thread, the reader not inside it. */
         CONFINED(CONFINED_WRITERS),
-        /** One held by nothing, mentioned on one thread alone, not the
-         *  reader's. */
+        /** It and every holder above it mentioned inside one occurrence
+         *  tree, on one thread, not the reader's. */
         THREAD_CONFINED(THREAD_CONFINED_WRITERS),
-        /** One held by nothing, mentioned on a second thread or the
-         *  reader's: the writer is crossed to. */
+        /** Mentioned anywhere wider: the writer is crossed to. */
         ESCAPED(ESCAPED_WRITERS),
-        /** One reachable, or a static field's: crossed to, uncounted. */
+        /** Reachable, or a static field's: crossed to, uncounted. */
         REACHED("");
 
         private final String member;
@@ -1268,6 +1264,22 @@ public final class RuntimeSelectedRegionFinalizer {
         private Scope wider(Scope other) {
             return other.ordinal() > ordinal() ? other : this;
         }
+
+        /** Whether its writers are not crossed to. */
+        private boolean drops() {
+            return this == CONFINED || this == THREAD_CONFINED;
+        }
+    }
+
+    /** How many dropped writers a {@link GapKind#CLOSURE_CONFINED} row
+     *  names. */
+    private static final int CONFINED_FIRST = 3;
+
+    /** The class a field cell ({@code <Owner: type name>}) belongs to. */
+    public static String ownerClass(String cell) {
+        int colon = cell.indexOf(':');
+        return cell.startsWith("<") && colon > 1 ? cell.substring(1, colon)
+                : cell;
     }
 
     /** {@link #NAMED_OBJECTS} of one activation; none when not stamped. */
@@ -1389,10 +1401,10 @@ public final class RuntimeSelectedRegionFinalizer {
         private final RecordedHeap heap;
         /** Reader -> what it could reach ({@link #holdsOthersOnly}). */
         private final Map<String, Set<Integer>> reachable = new HashMap<>();
-        /** Reader -> member ({@link #UNREACHABLE_WRITERS}, {@link
-         *  #CONFINED_WRITERS}, {@link #THREAD_CONFINED_WRITERS}, {@link
-         *  #ESCAPED_WRITERS}) -> field -> the writers it names. */
-        private final Map<String, Map<String, Map<String, Set<String>>>>
+        /** Reader -> scope -> field -> the writers it did not cross to
+         *  ({@link Scope#drops}), or crossed to only for a mention
+         *  ({@link Scope#ESCAPED}). */
+        private final Map<String, Map<Scope, Map<String, Set<String>>>>
                 notCrossed = new LinkedHashMap<>();
 
         private DemandWalk(StaticProgram program, RegionDemandIndex demands,
@@ -1645,20 +1657,22 @@ public final class RuntimeSelectedRegionFinalizer {
          * reach there: one its own events name ({@link #NAMED_OBJECTS}), one
          * a static field held, or one those held, over the recorded heap
          * ({@link RecordedHeap#reachable}).  Its writer is not crossed to
-         * only when no object it wrote the field on is reachable so, and each
-         * was seen held by something ({@link RecordedHeap#held}) or, held by
-         * nothing recorded, never handed over: mentioned by the writer's own
-         * occurrence alone ({@link RecordedHeap#confinedTo}), or on one
-         * thread alone, not the reader's ({@link RecordedHeap#threadOf}: a
+         * only when no object it wrote the field on is reachable so, and
+         * each, with every recorded holder above it ({@link
+         * RecordedHeap#confinement}), was never handed over: mentioned by
+         * the writer's own occurrence alone, the reader not inside it, or
+         * inside one occurrence tree on one thread, not the reader's (a
          * response the unwoven javabin codec decoded into a local, its
-         * NamedList.add calls each an occurrence of their own).  A recorded
-         * holder, a capture into a task run elsewhere (a field of the task),
-         * a mention on a second thread or on the reader's, or a shared
-         * object the reader reaches is a hand-off, and the writer stays
-         * ({@link #ESCAPED_WRITERS} when a mention was it); so does a static
-         * field's ({@code 0}), one location every reader reads.  Counted per
-         * reader and field ({@link #UNREACHABLE_WRITERS}, {@link
-         * #CONFINED_WRITERS}, {@link #THREAD_CONFINED_WRITERS}).
+         * NamedList.add calls each an occurrence of their own).  A mention
+         * in a second occurrence tree, on a second thread or the reader's,
+         * or under no occurrence, a holder mentioned so, or a shared object
+         * the reader reaches is a hand-off, and the writer stays ({@link
+         * #ESCAPED_WRITERS} when a mention was it); so does a static
+         * field's ({@code 0}), one location every reader reads.  Every drop
+         * is counted per reader and field ({@link #CONFINED_WRITERS},
+         * {@link #THREAD_CONFINED_WRITERS}) and published ({@link
+         * #stateConfinedWriters}).  LIMIT: the recorded heap is partial
+         * ({@link RecordedHeap}): untraced code hands objects over unseen.
          * solr-adhoc-10 SG1: the target reads NamedList.nvPairs only on an
          * arm it did not take, and 3,815 request handlers' writes of their
          * own responses were each a writer of it.</p>
@@ -1685,24 +1699,23 @@ public final class RuntimeSelectedRegionFinalizer {
                 Set<Integer> reach = reachable.computeIfAbsent(
                         readerOccurrence, ignored -> heap.reachable(
                                 namedObjects(reader)));
-                Scope scope = Scope.HELD;
+                long writerRoot = longNumber(writer.get("rootCallId"), -1L);
+                long readerRoot = longNumber(reader.get("rootCallId"), -1L);
+                Scope scope = Scope.CONFINED;
                 for (Set<Integer> objects : Arrays.asList(wroteOn,
                         wroteHeld)) {
                     for (int object : objects) {
                         scope = scope.wider(scopeOf(object, reach,
-                                longNumber(writer.get("rootCallId"), -1L),
-                                heap.threadOfRoot(longNumber(
-                                        reader.get("rootCallId"), -1L))));
+                                writerRoot, readerRoot));
                     }
                 }
                 if (scope == Scope.REACHED) return false;
                 notCrossed.computeIfAbsent(readerOccurrence,
                         ignored -> new TreeMap<>())
-                        .computeIfAbsent(scope.member,
-                                ignored -> new TreeMap<>())
-                        .computeIfAbsent(cell, ignored -> new HashSet<>())
+                        .computeIfAbsent(scope, ignored -> new TreeMap<>())
+                        .computeIfAbsent(cell, ignored -> new TreeSet<>())
                         .add(writerOccurrence);
-                return scope != Scope.ESCAPED;
+                return scope.drops();
             }
             // objectsOf's unions, compared without building them: asked
             // once per reader and writer of every demanded store.
@@ -1712,40 +1725,85 @@ public final class RuntimeSelectedRegionFinalizer {
                     && Collections.disjoint(wroteHeld, readHeld);
         }
 
-        /** Where one object a writer wrote the field on is, for a reader
-         *  running on {@code readerThread}: {@code root} the writer's root
-         *  call. */
-        private Scope scopeOf(int object, Set<Integer> reach, long root,
-                              long readerThread) {
+        /** Where one object a writer, rooted at {@code writerRoot}, wrote
+         *  the field on is for a reader rooted at {@code readerRoot}. */
+        private Scope scopeOf(int object, Set<Integer> reach, long writerRoot,
+                              long readerRoot) {
             if (object == 0 || reach.contains(object)) return Scope.REACHED;
-            if (heap.held(object)) return Scope.HELD;
-            // A mention on a second thread is a hand-off, whoever made it.
-            long thread = heap.threadOf(object);
-            if (thread == RecordedHeap.NOWHERE) return Scope.ESCAPED;
-            if (root >= 0L && heap.confinedTo(object) == root) {
+            RecordedHeap.Confinement held = heap.confinement(object);
+            if (held.thread == RecordedHeap.NOWHERE) return Scope.ESCAPED;
+            if (writerRoot >= 0L && held.occurrence == writerRoot
+                    && !heap.within(readerRoot, writerRoot)) {
                 return Scope.CONFINED;
             }
-            return readerThread != RecordedHeap.NOWHERE
-                    && thread != readerThread
+            long readerThread = heap.threadOfRoot(readerRoot);
+            return held.tree != RecordedHeap.NOWHERE
+                    && readerThread != RecordedHeap.NOWHERE
+                    && held.thread != readerThread
                     ? Scope.THREAD_CONFINED : Scope.ESCAPED;
         }
 
-        /** States on each reader the writers it did not cross to, and those
-         *  it crossed to only for a mention, per field. */
-        private void stateUnreachableWriters() {
-            for (Map.Entry<String, Map<String, Map<String, Set<String>>>>
+        /**
+         * States on each reader the writers it did not cross to, and those
+         * it crossed to only for a mention, per field ({@link
+         * #CONFINED_WRITERS}, {@link #THREAD_CONFINED_WRITERS}, {@link
+         * #ESCAPED_WRITERS}); and publishes every drop: one DIAGNOSTIC
+         * {@link GapKind#CLOSURE_CONFINED} row per reader, field and scope,
+         * with the writers' count, its owner class and the first few, so a
+         * claim over the closure says what it rests on (the recorded heap is
+         * partial).
+         */
+        private void stateConfinedWriters(List<Map<String, Object>> gaps) {
+            for (Map.Entry<String, Map<Scope, Map<String, Set<String>>>>
                     reader : notCrossed.entrySet()) {
-                for (Map.Entry<String, Map<String, Set<String>>> member
+                Map<String, Object> activation =
+                        program.activations.get(reader.getKey());
+                for (Map.Entry<Scope, Map<String, Set<String>>> scope
                         : reader.getValue().entrySet()) {
                     Map<String, Integer> counts = new TreeMap<>();
                     for (Map.Entry<String, Set<String>> field
-                            : member.getValue().entrySet()) {
+                            : scope.getValue().entrySet()) {
                         counts.put(field.getKey(), field.getValue().size());
+                        if (scope.getKey().drops()) {
+                            confinedGap(gaps, reader.getKey(),
+                                    scope.getKey(), field.getKey(),
+                                    field.getValue());
+                        }
                     }
-                    program.activations.get(reader.getKey())
-                            .put(member.getKey(), counts);
+                    activation.put(scope.getKey().member, counts);
                 }
             }
+        }
+
+        /** The {@link GapKind#CLOSURE_CONFINED} row of one reader's dropped
+         *  writers of one field: their count and the first {@link
+         *  #CONFINED_FIRST}. */
+        private void confinedGap(List<Map<String, Object>> gaps,
+                                 String reader, Scope scope, String cell,
+                                 Set<String> writers) {
+            List<String> first = new ArrayList<>(writers).subList(0,
+                    Math.min(CONFINED_FIRST, writers.size()));
+            Map<String, Object> row = planGap(gaps,
+                    GapKind.CLOSURE_CONFINED, GapClass.DIAGNOSTIC,
+                    scope.name() + " " + cell + " @ " + reader,
+                    writers.size() + " writer(s) of " + cell + " were not"
+                            + " crossed to for this reader, which never"
+                            + " touched the field in the recording: each"
+                            + " wrote it only on objects that, with every"
+                            + " recorded holder above them, the recorded"
+                            + " events mention "
+                            + (scope == Scope.CONFINED
+                            ? "in the writer's own occurrence alone"
+                            : "inside one occurrence tree on one thread,"
+                                    + " not the reader's")
+                            + "; untraced code may have handed them over"
+                            + " (first: " + String.join(", ", first) + ")");
+            row.put("scope", scope.name());
+            row.put("ownerClass", ownerClass(cell));
+            row.put("field", cell);
+            row.put("reader", reader);
+            row.put("writers", writers.size());
+            row.put("first", first);
         }
 
         /**
@@ -2271,13 +2329,15 @@ public final class RuntimeSelectedRegionFinalizer {
      * Records one plan gap once per (kind, subject), stating its own class
      * like a {@link edu.uva.liftlab.graphchecker.contract.GapRow}; the one
      * spelling of a runtime plan's gap rows, the finalizer's and PLAN's.
+     * Returns the row, which a caller may give members of its own.
      */
-    public static void planGap(List<Map<String, Object>> gaps, GapKind kind,
-                               GapClass cls, String subject, String detail) {
+    public static Map<String, Object> planGap(
+            List<Map<String, Object>> gaps, GapKind kind, GapClass cls,
+            String subject, String detail) {
         for (Map<String, Object> existing : gaps) {
             if (kind.name().equals(text(existing.get("kind")))
                     && subject.equals(text(existing.get("subject")))) {
-                return;
+                return existing;
             }
         }
         Map<String, Object> row = new LinkedHashMap<>();
@@ -2287,6 +2347,7 @@ public final class RuntimeSelectedRegionFinalizer {
         row.put("subject", subject);
         row.put("detail", detail);
         gaps.add(row);
+        return row;
     }
 
     /** Recorded rows in observed order; unstamped rows sort last. */

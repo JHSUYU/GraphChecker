@@ -178,5 +178,16 @@ public enum GapKind {
      * claim is another model or none ({@code compose.Refutations}).
      * DIAGNOSTIC: the exclusion is the composition's own knowledge.
      */
-    CLAIM_REFUTED
+    CLAIM_REFUTED,
+    /**
+     * Writers of a demanded field PLAN did not cross to for a reader that
+     * never touched the field in the recording, every object they wrote it
+     * on confined, as far as the recorded heap shows, where the reader is
+     * not ({@code RuntimeSelectedRegionFinalizer.DemandWalk
+     * #holdsOthersOnly}): one row per reader, field and scope, with the
+     * writers' count and first few.  DIAGNOSTIC (a closure must converge),
+     * and what an UNSAT over the closure rests on: the recorded heap is
+     * partial, so untraced code may have handed such an object over.
+     */
+    CLOSURE_CONFINED
 }

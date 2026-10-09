@@ -308,47 +308,72 @@ public class RegionGraphOccurrenceKeyTest {
      * handlers' writes of their own responses were each its writer): one
      * its events name, one a static field held, or one those held over the
      * recorded heap.  A writer is not crossed to only when no object it
-     * wrote the field on is reachable, and each was seen held or, held by
-     * nothing recorded, was mentioned by its own occurrence alone or on one
-     * thread alone, not the reader's; one held by nothing and mentioned on
-     * a second thread or on the reader's, or a static field's location, is
+     * wrote the field on is reachable, and each, with every recorded holder
+     * above it, was mentioned by its own occurrence alone, the reader not
+     * inside it, or inside one occurrence tree on one thread, not the
+     * reader's.  A holder mentioned wider, a second tree, a second thread
+     * or the reader's, no mention at all, or a static field's location is
      * crossed to.  The reader states, per field, how many it did not cross
-     * to by each rule, and how many it crossed to for a mention.
+     * to by each rule, and how many it crossed to for a mention; each drop
+     * is a CLOSURE_CONFINED gap row.
      */
     @Test
     public void aReaderThatNeverTouchedTheFieldReachesWhatItNames()
             throws Exception {
         Object[][] activations = {
-                // name, region, owner of EPOCH (-1: none)
+                // name, region, owner of EPOCH (-1: none); root call index+1
                 {"target", "REGION.check", -1},
                 {"reachable", "REGION.bump", 7},
-                {"held-elsewhere", "REGION.bump", 8},
-                {"never-held", "REGION.bump", 9},
+                {"held-confined", "REGION.bump", 8},
+                {"held-escaped", "REGION.bump", 16},
+                {"never-mentioned", "REGION.bump", 9},
                 {"under-a-static", "REGION.bump", 11},
                 {"static", "REGION.bump", 0},
                 {"confined", "REGION.bump", 12},
                 {"thread-confined", "REGION.bump", 13},
-                {"escaped", "REGION.bump", 14},
+                {"two-trees", "REGION.bump", 17},
+                {"two-threads", "REGION.bump", 14},
                 {"on-the-readers-thread", "REGION.bump", 15},
+                {"reader-inside", "REGION.bump", 18},
         };
+        long none = RecordedHeap.NOWHERE;
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
+        // The reader (root call 1) runs on thread 50 inside occurrence 13.
+        heap.occurrence(1L, 50L, 13L);
+        heap.occurrence(13L, 50L, none);
+        heap.occurrence(9L, 51L, none);
+        heap.occurrence(98L, 51L, 9L);
+        heap.occurrence(10L, 51L, none);
+        heap.occurrence(97L, 51L, none);
+        heap.occurrence(99L, 51L, none);
+        heap.occurrence(12L, 50L, none);
+        heap.occurrence(96L, 50L, 12L);
         heap.edge(1, 7);
-        heap.edge(50, 8);
         heap.root(10);
         heap.edge(10, 11);
-        // Held by nothing recorded, the reader (root call 1) on thread 50:
-        // 12 mentioned by its writer (root call 7) alone; 13 by its writer
-        // (8) and another occurrence, both on thread 51; 14 by its writer
-        // (9) on threads 51 and 52; 15 by its writer (10) and another
-        // occurrence on the reader's thread.
-        heap.rootThread(1L, 50L);
-        heap.mention(12, 7L, 51L);
-        heap.mention(13, 8L, 51L);
-        heap.mention(13, 99L, 51L);
-        heap.mention(14, 9L, 51L);
-        heap.mention(14, 9L, 52L);
-        heap.mention(15, 10L, 50L);
-        heap.mention(15, 99L, 50L);
+        // 8 and its holder 60 mentioned by their writer (3) alone; 16 too,
+        // but its holder 61 by an unrelated occurrence (99) as well.
+        heap.edge(60, 8);
+        heap.mention(8, 3L, 51L);
+        heap.mention(60, 3L, 51L);
+        heap.edge(61, 16);
+        heap.mention(16, 4L, 51L);
+        heap.mention(61, 4L, 51L);
+        heap.mention(61, 99L, 51L);
+        heap.mention(12, 8L, 51L);
+        // 13 by its writer (9) and the occurrence nested in it (98).
+        heap.mention(13, 9L, 51L);
+        heap.mention(13, 98L, 51L);
+        // 17 by its writer (10) and an unrelated occurrence (97).
+        heap.mention(17, 10L, 51L);
+        heap.mention(17, 97L, 51L);
+        heap.mention(14, 11L, 51L);
+        heap.mention(14, 11L, 52L);
+        // 15 inside one tree (12) on the reader's thread.
+        heap.mention(15, 12L, 50L);
+        heap.mention(15, 96L, 50L);
+        // 18 by its writer (13) alone, which the reader runs inside.
+        heap.mention(18, 13L, 50L);
         List<Map<String, Object>> instances = new ArrayList<>();
         Map<String, String> addresses = new LinkedHashMap<>();
         for (int index = 0; index < activations.length; index++) {
@@ -403,19 +428,29 @@ public class RegionGraphOccurrenceKeyTest {
             }
         }
         Collections.sort(planned);
-        assertEquals(Arrays.asList("escaped", "never-held",
-                "on-the-readers-thread", "reachable", "static", "target",
+        assertEquals(Arrays.asList("held-escaped", "never-mentioned",
+                "on-the-readers-thread", "reachable", "reader-inside",
+                "static", "target", "two-threads", "two-trees",
                 "under-a-static"), planned);
-        for (String member : Arrays.asList(
-                RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
-                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
-                RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS)) {
-            assertEquals(member, Collections.singletonMap(EPOCH, 1),
-                    instances.get(0).get(member));
+        Map<String, Object> reader = instances.get(0);
+        assertEquals(Collections.singletonMap(EPOCH, 2), reader.get(
+                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS));
+        assertEquals(Collections.singletonMap(EPOCH, 1), reader.get(
+                RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS));
+        assertEquals(Collections.singletonMap(EPOCH, 6), reader.get(
+                RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS));
+        List<String> published = new ArrayList<>();
+        for (Map<String, Object> gap : closure.gaps) {
+            if ("CLOSURE_CONFINED".equals(gap.get("kind"))) {
+                assertEquals("DIAGNOSTIC", gap.get("cls"));
+                assertEquals(addresses.get("target"), gap.get("reader"));
+                published.add(gap.get("scope") + " " + gap.get("field")
+                        + " " + gap.get("writers") + " "
+                        + ((List<?>) gap.get("first")).size());
+            }
         }
-        assertEquals("never-held, escaped and on-the-readers-thread",
-                Collections.singletonMap(EPOCH, 3), instances.get(0).get(
-                        RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS));
+        assertEquals(Arrays.asList("CONFINED " + EPOCH + " 2 2",
+                "THREAD_CONFINED " + EPOCH + " 1 1"), published);
     }
 
     /**

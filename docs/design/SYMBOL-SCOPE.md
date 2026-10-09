@@ -703,22 +703,29 @@ reaches, to a fixed point:
     a call at a store site that mutates through the call holds each object it was handed --
     `TracedRows` traces the call and argument rows at those sites, `#storingCalls` --; an accessor
     call's receiver holds what it returned). Its writer is not crossed to only when no object it
-    wrote the field on is reachable, and each was seen held by something or, held by nothing
-    recorded, was never handed over: mentioned -- as a receiver, an argument, a return, a field's
-    holder or value -- on one thread alone, and that by the writer's own occurrence alone
-    (**confined**, `RecordedHeap#confinedTo`, the activation whose root call encloses the event
-    nearest) or on a thread that is not the reader's (**thread-confined**, `#threadOf`,
-    `#threadOfRoot`). solr-adhoc-10: the response NamedLists the unwoven javabin codec decodes into
-    a local -- its `NamedList.add` calls each an occurrence of their own, so the client occurrence
-    that returns the list mentions it too -- never leave their thread (PE1: 3,576 of the 3,711
-    nothing recorded held). Any sign of a hand-off keeps the writer: a recorded holder (a field, a
-    static, a container entry, a field of a task or `Runnable` it was captured into), a mention on a
-    second thread or on the reader's (**escaped**), a shared object the reader reaches; so does a
-    static field's location. Known limit (STATUS open defect 65): a hand-off inside unwoven code, or
-    one only a counterfactual world would make, is not followed. The reader's plan row states, per
-    field, how many writers it did not cross to by each rule (`unreachableWriters`, `confinedWriters`,
-    `threadConfinedWriters`) and how many it crossed to only for a mention (`escapedWriters`); PLAN
-    prints each as `UNREACHABLE`, `CONFINED`, `THREAD_CONFINED`, `ESCAPED` by owner class and field,
+    wrote the field on is reachable, and each, with every recorded holder above it (a holder is
+    how an object is handed on: `RecordedHeap#confinement`), was never handed over: every mention
+    of them -- as a receiver, an argument, a return, a field's holder or value -- on one thread and
+    by the writer's own occurrence alone, the reader not inside it (**confined**; the occurrence
+    enclosing an event nearest), or on one thread that is not the reader's inside one occurrence
+    tree (**thread-confined**: an occurrence and those its root call encloses, `#within`). Any sign
+    of a hand-off keeps the writer (**escaped**): a mention in a second occurrence tree (several
+    unrelated occurrences: ZooKeeper watchers building `DocCollection`s on one event thread), on a
+    second thread or on the reader's, or under no occurrence; a holder mentioned so (an object a
+    shared map holds is as escaped as the map); a shared object the reader reaches; and a static
+    field's location. Known limit (STATUS open defect 65): the recorded heap is PARTIAL -- field
+    events of the trace methods only, container edges only at the scope map's store sites,
+    accessor edges only at `accessor_field_return` sites, mentions only where a row is traced --
+    so code the trace does not record (unwoven, or woven outside the trace methods, a lambda's body
+    included: `watchedCollectionStates.compute(lambda)` publishes a `DocCollection` with no edge;
+    a capture handed to an executor records no field event) hands objects over unseen, as does a
+    hand-off only a counterfactual world would make. So every drop is published: a DIAGNOSTIC
+    `CLOSURE_CONFINED` gap row per reader, field and scope with the count, the owner class and the
+    first writers, and result.json `confinedWriters` (CHECKING trap 22: an UNSAT reading looks at
+    the anchor's demanded fields among them). The reader's plan row states, per field, how many
+    writers it did not cross to by each rule (`confinedWriters`, `threadConfinedWriters`) and how
+    many it crossed to only for a mention (`escapedWriters`); PLAN prints each as `CONFINED`,
+    `THREAD_CONFINED`, `ESCAPED` by owner class and field,
     and states them in `runtime_workflow_schedule_index.json`. This filter is PLAN's
     only: EXPLORE's writers of a location a reader's recorded reads named (§5.5) are not filtered by
     reachability or confinement. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,

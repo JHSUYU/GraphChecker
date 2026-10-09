@@ -196,12 +196,15 @@ uses the address PLAN's index states for every later stage, whatever form the de
 (`campaign_plan`). The seed's closure already plans one occurrence per class of equivalent deciders
 (SYMBOL-SCOPE.md §4.4, `deciderClass` on its row: `members`, `first`, `last`), and PLAN's log line
 and cut summary name the classes (`ConcolicScheduler#deciderClasses`). The writers a reader that never
-touched a field did not cross to, every object they wrote it on held and none reachable from it over
-the recorded heap, each held by something recorded or, held by nothing, mentioned on one thread
-alone by their own occurrence or not on the reader's (SYMBOL-SCOPE.md §4.4), and those crossed to
-only for a mention, are counted on the reader's row (`unreachableWriters`, `confinedWriters`,
-`threadConfinedWriters`, `escapedWriters`); PLAN prints them as `UNREACHABLE`, `CONFINED`,
-`THREAD_CONFINED` and `ESCAPED`, by owner class and field, and states them in the index. When the closure still holds
+touched a field did not cross to, every object they wrote it on unreachable from it over the
+recorded heap and, with its recorded holders, mentioned on one thread by their own occurrence alone
+(the reader not inside it) or inside one occurrence tree on a thread not the reader's
+(SYMBOL-SCOPE.md §4.4), and those crossed to only for a mention, are counted on the reader's row
+(`confinedWriters`, `threadConfinedWriters`, `escapedWriters`); PLAN prints them as `CONFINED`,
+`THREAD_CONFINED` and `ESCAPED`, by owner class and field, and states them in the index. Each drop
+is a DIAGNOSTIC `CLOSURE_CONFINED` row of the region plan's gaps, one per reader, field and scope
+(count, owner class, first writers), which EMIT carries into the campaign's gaps and result.json
+`confinedWriters` (the recorded heap is partial: CHECKING trap 22). When the closure still holds
 more occurrences than
 `schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
 seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
