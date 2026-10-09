@@ -52,11 +52,12 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 public final class TracedRows {
     /**
      * What the recording weave leaves beside the classes it wove: the
-     * digest of the static artifacts it decided its rows on ({@link
-     * #inputsDigest}).  The recorder states it in the trace's manifest, and
-     * the aggregation refuses a trace whose digest is not its own artifacts'
-     * ({@code TRACED_ROWS_MISMATCH}): over other artifacts, a declared site
-     * or port they add would find no rows and say nothing.
+     * digest of the static artifacts it decided its rows on and of the
+     * rule it traced by ({@link #inputsDigest}).  The recorder states it in
+     * the trace's manifest, and the aggregation refuses a trace whose digest
+     * is not its own ({@code TRACED_ROWS_MISMATCH}): over other artifacts, a
+     * declared site or port they add would find no rows and say nothing,
+     * and a recording traced by an older rule lacks rows a reader reads.
      */
     public static final String DIGEST_RESOURCE = "causynth-traced-rows.digest";
 
@@ -128,13 +129,25 @@ public final class TracedRows {
     }
 
     /**
-     * The digest of the three static artifacts the rows are decided on: the
-     * scope map, the candidate graph and the candidate skeletons, by their
-     * bytes.  The weave and the aggregation compute it alike.
+     * Which rows this class traces, by name: a recording made under another
+     * rule over the same artifacts lacks rows the aggregation reads (one
+     * before the storing calls' argument rows has no holder edge into a
+     * container's elements, and the recorded heap would call them held by
+     * nothing), so the rule is part of {@link #inputsDigest}.  Renamed with
+     * every change to which rows are traced.
+     */
+    static final String RULE = "storing calls' receivers and arguments";
+
+    /**
+     * The digest of the rows' rule ({@link #RULE}) and the three static
+     * artifacts the rows are decided on: the scope map, the candidate graph
+     * and the candidate skeletons, by their bytes.  The weave and the
+     * aggregation compute it alike.
      */
     public static String inputsDigest(File scopeMap, File graph,
                                       File skeletons) throws IOException {
-        return ArtifactIO.sha256(ArtifactIO.sha256(scopeMap.toPath()) + "\n"
+        return ArtifactIO.sha256(RULE + "\n"
+                + ArtifactIO.sha256(scopeMap.toPath()) + "\n"
                 + ArtifactIO.sha256(graph.toPath()) + "\n"
                 + ArtifactIO.sha256(skeletons.toPath()));
     }

@@ -4918,12 +4918,15 @@ campaign_planner_stop() {
 }
 
 # campaign_planner_kill <host> <pid> <id>: the planner JVM <pid> on <host>
-# ended, TERM then KILL, while its command line names its instance <id> (a
-# pid the host gave another process since is left alone).
+# ended, TERM then KILL, each only while its command line names its
+# instance <id> (a pid the host gave another process since, even in the
+# second between the two, is left alone).
 campaign_planner_kill() {
   local host=$1 pid=$2 id=$3 script
-  script="ps -o args= -p ${pid} 2>/dev/null | grep -qF -- ${id} || exit 0
-kill -TERM ${pid} 2>/dev/null; sleep 1; kill -KILL ${pid} 2>/dev/null; exit 0"
+  script="named() { ps -o args= -p ${pid} 2>/dev/null | grep -qF -- ${id}; }
+named || exit 0
+kill -TERM ${pid} 2>/dev/null; sleep 1
+named && kill -KILL ${pid} 2>/dev/null; exit 0"
   if campaign_host_is_local "${host}"; then
     bash -c "${script}"
   else

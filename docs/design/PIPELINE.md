@@ -146,13 +146,16 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    time in seconds is kept as `campaign_recorded_workload_s`, the base of the seed replay's
    bound, §5; the recording itself runs under no wall-clock bound). The weave writes only the rows
    the aggregation reads (`causynth/TracedRows`): call rows at a declared site, a field-accessing
-   call, a configured-source hook site or a port's capture, argument and normal-exit rows only
-   where a port captures them; every hook is still called, so each row keeps its number. The weave
-   leaves the digest of the three static artifacts it decided the rows on (scope map, candidate
-   graph, candidate skeletons: `TracedRows#inputsDigest`) beside the woven classes; the recorder
-   states it in the trace's manifest (schema 2, `tracedRows`), and the aggregation refuses a pruned
-   trace over other artifacts by name (`TRACED_ROWS_MISMATCH`: a site or port they add would find
-   no rows); a schema-1 trace wrote every row. A frame
+   call, a configured-source hook site, a store site that mutates through a call or a port's
+   capture, argument rows at such a store site and where a port captures them, normal-exit rows
+   only where a port captures them; every hook is still called, so each row keeps its number. The
+   weave leaves the digest of the rule it traced by (`TracedRows#RULE`) and the three static
+   artifacts it decided the rows on (scope map, candidate graph, candidate skeletons:
+   `TracedRows#inputsDigest`) beside the woven classes; the recorder states it in the trace's
+   manifest (schema 2, `tracedRows`), and the aggregation refuses a pruned trace over other
+   artifacts, or traced by another rule, by name (`TRACED_ROWS_MISMATCH`: a site or port they add
+   would find no rows; a recording made before the storing calls' argument rows lacks the holder
+   edges the recorded heap reads -- record again); a schema-1 trace wrote every row. A frame
    writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
    take a frame's decisions as a set, its first, or "more than once" for a loop). A method or
    field row is written only while its thread stands in an opened occurrence
