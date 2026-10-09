@@ -184,6 +184,8 @@ public final class ClosurePlanner {
                 }
             }
         }
+        start.predicate.addAll(storeReads(corpus, anchor, start.flipSites,
+                scope));
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
@@ -331,6 +333,44 @@ public final class ClosurePlanner {
         }
         return paths == 0 ? null
                 : new Concrete(paths, decided, reads, offCone);
+    }
+
+    /**
+     * The store versions the anchor read at its provenance sites before it
+     * decided, in each admitted path (SYMBOL-SCOPE §5.7), whether or not
+     * the anchor is concrete: a version's content is no value any term
+     * names, so a symbolic predicate's demand never reaches it, and what
+     * the guard read of a decoded object rests on that version all the
+     * same (solr-bugs-reindex-cleanup: the alias check reads the aliases a
+     * fetch parsed, beside the values it decides symbolically on).
+     */
+    private static Set<String> storeReads(Corpus corpus,
+                                          OccurrenceAddress anchor,
+                                          Set<String> flipSites,
+                                          StaticScopeMap scope) {
+        Set<String> symbols = new LinkedHashSet<String>();
+        for (TargetRow row : corpus.targetsOn(anchor)) {
+            SessionReader session = corpus.session(row.sessionId());
+            if (session == null || !session.admitted()) continue;
+            long at = row.reachedAnchor() ? row.seq() : 0L;
+            if (!row.reachedAnchor()) {
+                for (DecisionRow decision
+                        : corpus.decisionsOf(row.sessionId(), anchor)) {
+                    if (FlipQuery.asks(flipSites, decision)) {
+                        at = Math.max(at, decision.seq());
+                    }
+                }
+            }
+            for (ReadRow read : corpus.readsOn(row.sessionId(), anchor)) {
+                if (read.location().kind() == LocationKind.STORE
+                        && read.seq() < at && scope.demandedAt(
+                        read.endpoint().site(), read.javaType(),
+                        LocationKind.STORE)) {
+                    symbols.add(read.symbol());
+                }
+            }
+        }
+        return symbols;
     }
 
     /**

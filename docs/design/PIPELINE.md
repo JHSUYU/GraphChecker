@@ -512,7 +512,10 @@ read rows the anchor made, in each admitted path,
 before that path's deciding event, of the reads the root demand found on the throw's path guards
 (SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
 `demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins; a
-STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7).
+STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7). Every anchor, concrete or not,
+also demands the STORE reads it made at its provenance sites before it decided
+(`ClosurePlanner#storeReads`): a store version's content is no value a term names, so a symbolic
+predicate's demand never reaches it.
 A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
 only through a read on it, whose writers the closure then asks. Their symbols are demanded like
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault

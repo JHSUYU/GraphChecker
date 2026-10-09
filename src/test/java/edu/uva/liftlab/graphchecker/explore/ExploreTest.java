@@ -5431,14 +5431,19 @@ public class ExploreTest {
         OccurrenceAddress restore = occurrence("solr-case/node0",
                 "REGION.restore", CausalContext.of(Role.of("OVERSEER_TASK"),
                         "", 1), "Restore#run#1");
+        // Per row: the read on the anchor's provenance site, the earlier
+        // writer took the item in, the anchor's phi (a symbolic one demands
+        // the store version too: its content is no value a term names).
         Object[][] cases = {
-            {true, true, Arrays.asList(true, true, true)},
-            {true, false, Arrays.asList(true, true, false)},
-            {false, true, Arrays.asList(false, false, false)},
+            {true, true, Arrays.asList(true, true, true), "false"},
+            {true, false, Arrays.asList(true, true, false), "false"},
+            {false, true, Arrays.asList(false, false, false), "false"},
+            {true, true, Arrays.asList(true, true, true), "(= M_OTHER 0)"},
         };
         for (int at = 0; at < cases.length; at++) {
             boolean provenance = (Boolean) cases[at][0];
             boolean taken = (Boolean) cases[at][1];
+            String phi = (String) cases[at][3];
             Path iteration = tree.newFolder("store-" + at).toPath();
             Session seed = new Session(iteration, "s-seed");
             seed.activation(client, false);
@@ -5452,9 +5457,11 @@ public class ExploreTest {
                     "Overseer#run#1"), state, 1L, "", "[B");
             seed.write(at(last, "SOLR_ZK#WRITE:.collections.t.state.json",
                     "Overseer#run#2"), state, 2L, "", "[B");
+            seed.root(client, "CASE.OTHER", "M_OTHER", RootKind.INTEGRAL,
+                    "1", "0", "9", true);
             seed.read(at(client, "Router#hash#u2", "Router#hash#2"), state,
                     2L, "S_state2", null);
-            seed.target(client, "Guard#u8#1", "false");
+            seed.target(client, "Guard#u8#1", phi);
             seed.flush();
             List<JsonObject> schedule = new ArrayList<JsonObject>();
             schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
