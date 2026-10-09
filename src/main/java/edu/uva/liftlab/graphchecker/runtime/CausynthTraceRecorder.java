@@ -216,7 +216,6 @@ public final class CausynthTraceRecorder {
         Thread thread = Thread.currentThread();
         String threadName = thread.getName();
         long tid = thread.getId();
-        int objectId = identity(receiver);
         Deque<ActiveCall> calls = ACTIVE_CALLS.get();
         ActiveCall parent = calls.peek();
         Deque<ActiveCallSite> sites = ACTIVE_CALL_SITES.get();
@@ -250,18 +249,17 @@ public final class CausynthTraceRecorder {
                 receiver, context.spanId, parent == null,
                 region.isEmpty() ? -1 : Identity.regionDepth() - 1,
                 address));
+        // Asked once the entry stands: a root's own row is its occurrence's.
+        if (!written()) return id;
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
-                        threadName, tid, method, objectId,
+                        threadName, tid, method, identity(receiver),
                         runtimeType(receiver), id, parentCallId, parentSiteId,
                         context.laneId, context.spanId,
                         context.remoteParentSpanId, context.source,
                         receiverAttributed,
                         context.requestKey, context.requestApi, address,
                         folded);
-        if (contextOnlyConcolicReplay) {
-            return id;
-        }
         synchronized (LOCK) {
             writeTraceLine(event);
         }
@@ -436,7 +434,8 @@ public final class CausynthTraceRecorder {
     /**
      * The trace hooks below take {@code traced}: whether SEED's aggregation
      * reads the row ({@code causynth.TracedRows}, decided at the weave).  An
-     * untraced row is numbered like any other and not written.
+     * untraced row, or one outside every occurrence ({@link #written}), is
+     * numbered like any other and not written.
      */
     public static void recordMethodArgument(long callId, int argumentIndex,
                                             String declaredType, Object value,
@@ -445,7 +444,7 @@ public final class CausynthTraceRecorder {
         ActiveCall call = activeCall(callId);
         ExecutionEvent event = newExecutionEvent("METHOD_ARGUMENT",
                 call == null ? "" : call.method, callId);
-        if (!traced) return;
+        if (!traced || !written()) return;
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
@@ -465,7 +464,7 @@ public final class CausynthTraceRecorder {
         event.siteId = SiteId.render(event.method, unitIndex);
         event.declaredCallee = nonNull(declaredCallee);
         event.invocationId = event.id;
-        if (traced) {
+        if (traced && written()) {
             event.runtimeType = runtimeType(receiver);
             event.objectId = identity(receiver);
             emitExecutionEvent(event);
@@ -483,7 +482,7 @@ public final class CausynthTraceRecorder {
         ActiveCallSite site = activeCallSite(invocationId);
         ExecutionEvent event = callSiteEvent("CALL_ARGUMENT", site,
                 invocationId);
-        if (!traced) return;
+        if (!traced || !written()) return;
         event.argumentIndex = argumentIndex;
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
@@ -521,7 +520,7 @@ public final class CausynthTraceRecorder {
         ActiveCallSite site = activeCallSite(invocationId);
         ExecutionEvent event = callSiteEvent("CALL_SITE_RETURN", site,
                 invocationId);
-        if (site == null || site.traced) {
+        if ((site == null || site.traced) && written()) {
             event.runtimeType = runtimeType(returnValue);
             event.objectId = identity(returnValue);
             event.primitiveValue = nonNull(primitiveValue);
@@ -552,6 +551,7 @@ public final class CausynthTraceRecorder {
      */
     private static void emitDecision(long callId, ExecutionEvent event,
                                      String outcome) {
+        if (!written()) return;
         ActiveCall frame = activeCall(callId);
         if (frame == null || frame.decided(event.siteId + "\n" + outcome)
                 <= DECISION_ROWS_PER_FRAME) {
@@ -596,7 +596,8 @@ public final class CausynthTraceRecorder {
         closeCallSites(resolvedCallId, "CALL_SITE_INCOMPLETE");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_NORMAL",
                 call == null ? "" : call.method, resolvedCallId);
-        if (traced) {
+        // Asked before the call closes: a root's exit is its occurrence's.
+        if (traced && written()) {
             event.runtimeType = runtimeType(returnValue);
             event.objectId = identity(returnValue);
             event.primitiveValue = nonNull(primitiveValue);
@@ -629,9 +630,11 @@ public final class CausynthTraceRecorder {
         closeCallSites(resolvedCallId, "CALL_SITE_THROW");
         ExecutionEvent event = newExecutionEvent("METHOD_EXIT_THROW",
                 call == null ? "" : call.method, resolvedCallId);
-        event.runtimeType = exceptionType;
-        event.objectId = identity(throwable);
-        emitExecutionEvent(event);
+        if (written()) {
+            event.runtimeType = exceptionType;
+            event.objectId = identity(throwable);
+            emitExecutionEvent(event);
+        }
         if (call != null && call.parentSiteId > 0L) {
             ActiveCallSite parentSite = activeCallSite(call.parentSiteId);
             if (parentSite != null) {
@@ -649,9 +652,7 @@ public final class CausynthTraceRecorder {
             return;
         }
         initialize();
-        if (contextOnlyConcolicReplay) {
-            return;
-        }
+        if (!written()) return;
         long id = EVENT_COUNTER.incrementAndGet();
         int receiverObjectId = identity(fieldReceiver);
         int valueObjectId = identity(valueObject);
@@ -1107,6 +1108,32 @@ public final class CausynthTraceRecorder {
     }
 
     /** Writes one execution row unless this JVM is a context-only replay. */
+    /**
+     * Whether a method or field row is written: in the recording, only while
+     * this thread stands in an opened occurrence ({@link
+     * Identity#inOccurrence}: an activation, a fold into one, unnamed work
+     * inside one -- what the aggregation attributes to an occurrence).
+     * Method and field events count only there (activations, the demand walk
+     * over the methods that ran in an occurrence, recorded writers), so a row
+     * outside every occurrence could become no closure task and no row a
+     * claim uses -- a method shared by region roots and other callers, run
+     * per document on a request thread (solr-bugs-reindex-cleanup MB2: 1.78
+     * of a 2.0 GB trace, JavaBin's encode and decode most of it).  No root's
+     * own entry is among them: every entry that is no fold opens an
+     * occurrence.  Exchange, gap and source rows are always written; the
+     * rows left out are counted and said when the recording ends.
+     */
+    private static boolean written() {
+        if (contextOnlyConcolicReplay) return false;
+        if (Identity.inOccurrence()) return true;
+        if (RecordingWindow.opened()) OUTSIDE.incrementAndGet();
+        return false;
+    }
+
+    /** The method and field rows the recording left out ({@link
+     *  #written}). */
+    private static final AtomicLong OUTSIDE = new AtomicLong();
+
     private static void emitExecutionEvent(ExecutionEvent event) {
         if (contextOnlyConcolicReplay) return;
         synchronized (LOCK) {
@@ -1278,7 +1305,7 @@ public final class CausynthTraceRecorder {
             return;
         }
         ExecutionEvent event = callSiteEvent(kind, site, site.invocationId);
-        if (site.traced) emitExecutionEvent(event);
+        if (site.traced && written()) emitExecutionEvent(event);
         ACTIVE_CALL_SITES.get().remove(site);
     }
 
@@ -1461,6 +1488,11 @@ public final class CausynthTraceRecorder {
                     traceWriteFailure = true;
                 }
                 traceWriter = null;
+            }
+            if (OUTSIDE.get() > 0L) {
+                EngineConsole.println("Causynth recording: " + OUTSIDE.get()
+                        + " method and field row(s) ran outside every"
+                        + " occurrence and were not written");
             }
             if (outputDir != null) {
                 writeFileQuietly(new File(outputDir,
@@ -1910,6 +1942,7 @@ public final class CausynthTraceRecorder {
         RuntimeTraceContext.resetForTests();
         OBJECT_IDS.clear();
         nextObjectId = 1;
+        OUTSIDE.set(0L);
         contextOnlyConcolicReplay = false;
         traceWriteFailure = false;
         traceWriter = null;

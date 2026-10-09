@@ -1491,6 +1491,15 @@ public final class Identity {
     }
 
     /**
+     * Whether this thread stands in an opened occurrence: an activation, a
+     * fold into one, or unnamed work inside one -- the events the
+     * aggregation attributes to an occurrence (IDENTITY §1).
+     */
+    public static boolean inOccurrence() {
+        return state().activeRegion() != null;
+    }
+
+    /**
      * Whether the innermost region entry opened no occurrence (IDENTITY §1):
      * it FOLDED into the running one, or unnamed work entered it ({@link
      * #occurrence}), so neither pass records an activation for it.  Asked at

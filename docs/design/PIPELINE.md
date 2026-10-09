@@ -154,10 +154,22 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    trace over other artifacts by name (`TRACED_ROWS_MISMATCH`: a site or port they add would find
    no rows); a schema-1 trace wrote every row. A frame
    writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
-   take a frame's decisions as a set, its first, or "more than once" for a loop). Its trace is
+   take a frame's decisions as a set, its first, or "more than once" for a loop). A method or
+   field row is written only while its thread stands in an opened occurrence
+   (`CausynthTraceRecorder#written`, `Identity#inOccurrence`: an activation, a fold into one,
+   unnamed work inside one): method and field events count only there, so a row outside every
+   occurrence could become no closure task and no row a claim uses (solr-bugs-reindex-cleanup MB2:
+   1.78 of a 2.0 GB trace, a shared method run per document on request threads); exchange, gap
+   and source rows are always written, and the rows left out are counted and said when the
+   recording ends. Its trace is
    bounded: past `recording_max_trace_mb` its watcher (`campaign_watch_workload`) ends the
-   workload and leaves `runtime/RECORDING_BOUND` saying so, and SEED fails by that name (a trace
-   cut short is never aggregated). Then
+   workload (`RECORDING_BOUND`: a trace cut short is never aggregated), and so it does once the
+   workload wrote nothing -- no trace row, no output, its sockets aside -- for
+   `campaign_unbounded_stall_s` (600 s; `RECORDING_STALLED`, its threads first dumped on its
+   output): the trees' `CausynthBounds` lift every wait's timeout, so a cluster test waiting for a
+   notification it lost would wait out its 6 h bound (solr-bugs-reindex-cleanup SB16: an Overseer
+   command's `waitForState` after its source's deletion, an hour without a byte). Either end leaves
+   `runtime/RECORDING_ENDED`, the reason first, and SEED fails by that reason. Then
    `runtime.CausynthTraceRecorder` aggregates the trace into `runtime/concolic_region_plan.jsonl`
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.
@@ -2231,7 +2243,8 @@ recording's own is not kept apart.
 ## 12. Acceptance: `experiments/accept/`
 
 `accept.sh` builds the jar, then per case (one at a time; `CASES`, default the nine HDFS cases of
-`ACCEPT_ALL_CASES`; `EXPECTED_MECHANISM` also names solr-18413 and solr-18406, both `CLOCK_SKEW`)
+`ACCEPT_ALL_CASES`; `EXPECTED_MECHANISM` also names solr-18413 and solr-18406, both `CLOCK_SKEW`, and
+solr-bugs-reindex-cleanup, a Solr door's fault)
 runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
 `probe.sh`, `cone.py` and `report.py`, and writes `summary.tsv`. `report.py` passes a case when all
 hold, read off `final/result.json`, `gaps.json` and `cone.json`:
@@ -2241,9 +2254,10 @@ hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 - `findingKind` is one of the four mechanisms and is the case's entry in `EXPECTED_MECHANISM` (a case
   the table does not name cannot pass); `polarityDecides` is true;
 - `movedRoots` is non-empty and `valuationOrdinal ≥ 1` unless `CLOCK_SKEW`; an expected `root`/`value`
-  must be moved to that value; for the RPC-failure entries (`fault: org.apache.hadoop.ipc.Client`,
-  `clocks: False`) a MARKER moved to true whose declared site (the plan's `EXPLICIT_SYMBOLIC_FAULT`
-  input action) is in that class, and no CLOCK cell moved;
+  must be moved to that value; for an entry naming fault doors (a tuple of client classes: the
+  RPC-failure entries' `org.apache.hadoop.ipc.Client`, the Solr and ZooKeeper doors; `clocks: False`)
+  a MARKER moved to true whose declared site (the plan's `EXPLICIT_SYMBOLIC_FAULT` input action) is in
+  one of those classes, and no CLOCK cell moved;
 - `cone.py`: every moved root is in the causal cone of the selected path — the constants its
   `path_fatal__i` assertion names (define-funs expanded, `let`/quantifier names bound), closed over
   the `message_family*` assertions under the same path selector that intersect it — and no

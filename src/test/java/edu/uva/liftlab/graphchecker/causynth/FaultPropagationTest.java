@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import org.junit.After;
 import org.junit.Test;
 import soot.BooleanType;
@@ -154,6 +155,174 @@ public class FaultPropagationTest {
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }
+    }
+
+    /**
+     * SYMBOL-SCOPE §4.2: a door a system's hook moved (Solr's ZooKeeper
+     * create, woven in {@code SolrZkClient#create} after its store hook) is
+     * also a door at every other direct call of the door method in that
+     * class family -- through a subclass's reference, in a retry lambda --
+     * after the hook call the door call reaches by control flow, its markers
+     * woven right after that call: makePath's creates
+     * (solr-bugs-overseer-lock-leak's {@code DistributedMap#put}) had none.
+     * A call no hook call follows (create's own retry lambda, whose hook its
+     * caller makes) or one outside the family carries none, and is named.
+     */
+    @Test
+    public void aMovedDoorIsADoorAtEveryOtherCallItsHookFollows()
+            throws Exception {
+        G.reset();
+        soot.options.Options.v().set_allow_phantom_refs(true);
+        SootClass object = library("java.lang.Object", null, 0);
+        SootClass throwable = library("java.lang.Throwable", object, 0);
+        SootClass exception = library("java.lang.Exception", throwable, 0);
+        for (String kind : new String[]{"ConnectionLossException",
+                "SessionExpiredException", "OperationTimeoutException"}) {
+            method(library("org.apache.zookeeper.KeeperException$" + kind,
+                    exception, 0), "<init>", Collections.<Type>emptyList(),
+                    VoidType.v(), 0);
+        }
+        RefType string = RefType.v("java.lang.String");
+        RefType mode = RefType.v("org.apache.zookeeper.CreateMode");
+        List<Type> created = Arrays.<Type>asList(string,
+                soot.ArrayType.v(soot.ByteType.v(), 1),
+                RefType.v("java.util.List"), mode);
+        SootClass zooKeeper = library("org.apache.zookeeper.ZooKeeper",
+                object, 0);
+        method(zooKeeper, "create", created, string, Modifier.NATIVE);
+        SootClass solrZooKeeper = library(
+                "org.apache.solr.common.cloud.SolrZooKeeper", zooKeeper, 0);
+        SootClass client = application(
+                "org.apache.solr.common.cloud.SolrZkClient", object);
+        SootMethod wrote = method(client, "causynthWrote",
+                Arrays.<Type>asList(string, IntType.v()), VoidType.v(),
+                Modifier.STATIC | Modifier.NATIVE);
+        List<Type> one = Collections.<Type>singletonList(string);
+        SootMethod hook = writer(client, "create", Arrays.<Type>asList(string,
+                soot.ArrayType.v(soot.ByteType.v(), 1), mode,
+                BooleanType.v()), string, solrZooKeeper, created, wrote, 1,
+                true);
+        SootMethod retried = writer(client, "lambda$create$1", one,
+                VoidType.v(), solrZooKeeper, created, wrote, 1, false);
+        SootMethod makePath = writer(client, "makePath", one, VoidType.v(),
+                solrZooKeeper, created, wrote, 1, true);
+        SootMethod lambda = writer(client, "lambda$makePath$0", one,
+                VoidType.v(), solrZooKeeper, created, wrote, 1, true);
+        SootMethod twice = writer(client, "createTwo", one, VoidType.v(),
+                solrZooKeeper, created, wrote, 2, true);
+        SootMethod hookOnly = writer(client, "delete", one, VoidType.v(),
+                solrZooKeeper, created, wrote, 0, true);
+        SootMethod outside = writer(application("org.apache.solr.cloud.Other",
+                object), "write", one, VoidType.v(), solrZooKeeper, created,
+                wrote, 1, true);
+        List<LibraryCatalog.Hook> hooks;
+        try (java.io.BufferedReader reader = java.nio.file.Files
+                .newBufferedReader(java.nio.file.Paths.get("experiments",
+                        "solr", "doors.jsonl"))) {
+            hooks = LibraryCatalog.hooks(LibraryCatalog.rows(reader,
+                    "doors.jsonl"));
+        }
+        LibraryCatalog.Door door = null;
+        for (LibraryCatalog.Door each : LibraryCatalog.placed(
+                LibraryCatalog.doors(), hooks)) {
+            if (hook.getSignature().equals(each.method)) door = each;
+        }
+        List<SootClass> analysed = new ArrayList<>(
+                Scene.v().getApplicationClasses());
+        analysed.sort((a, b) -> a.getName().compareTo(b.getName()));
+        int named = DoorWeave.unplaced().size();
+        java.util.Map<SootMethod, java.util.Set<soot.jimple.Stmt>> calls =
+                DoorWeave.moved(door, analysed);
+        List<String> unplaced = new ArrayList<>();
+        for (java.util.Map<String, Object> row : DoorWeave.unplaced()
+                .subList(named, DoorWeave.unplaced().size())) {
+            unplaced.add(String.valueOf(row.get(
+                    CommunicationCatalogContract.GAP_METHOD)));
+        }
+        Unit hooked = hookCall(makePath, wrote, 0);
+        DoorWeave.weaveMoved(door, analysed);
+        List<String> after = new ArrayList<>();
+        for (Unit unit : makePath.getActiveBody().getUnits()) {
+            DoorWeave.Fault fault = DoorWeave.woven(
+                    makePath.getActiveBody(), unit);
+            if (fault != null) after.add(fault.name);
+        }
+        Object[][] rows = {
+            {"the create door was moved to the hook method",
+                "<org.apache.zookeeper.ZooKeeper: java.lang.String create("
+                        + "java.lang.String,byte[],java.util.List,"
+                        + "org.apache.zookeeper.CreateMode)>",
+                door.relocated},
+            {"every other method of the family a create reaches a hook in",
+                Arrays.asList(twice, lambda, makePath).toString(),
+                new ArrayList<>(calls.keySet()).toString()},
+            {"makePath's hook call", "[" + hooked + "]",
+                calls.get(makePath).toString()},
+            {"each of two creates its own",
+                "[" + hookCall(twice, wrote, 0) + ", "
+                        + hookCall(twice, wrote, 1) + "]",
+                calls.get(twice).toString()},
+            {"a hook call no door call precedes, none", false,
+                calls.containsKey(hookOnly)},
+            {"a create no hook call follows, or outside the family: named",
+                Arrays.asList(outside.getSignature(),
+                        retried.getSignature()).toString(),
+                unplaced.toString()},
+            {"the woven markers, the catalog's kinds in order",
+                "[FAULT:ZOOKEEPER:WRITE:KeeperException$ConnectionLoss"
+                        + "Exception, FAULT:ZOOKEEPER:WRITE:KeeperException$"
+                        + "SessionExpiredException, FAULT:ZOOKEEPER:WRITE:"
+                        + "KeeperException$OperationTimeoutException]",
+                after.toString()},
+            {"right after the hook call", true, DoorWeave.isWoven(
+                makePath.getActiveBody().getUnits().getSuccOf(hooked))}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
+    /** A method making {@code creates} creates through {@code keeper}'s
+     *  class, each followed by its store hook when {@code hooked}; with
+     *  none, the hook alone. */
+    private static SootMethod writer(SootClass owner, String name,
+                                     List<Type> parameters, Type returned,
+                                     SootClass keeper, List<Type> created,
+                                     SootMethod wrote, int creates,
+                                     boolean hooked) {
+        SootMethod method = method(owner, name, parameters, returned,
+                Modifier.STATIC);
+        Local path = local(method, "r0", RefType.v("java.lang.String"));
+        Local held = local(method, "r1", keeper.getType());
+        List<Unit> units = new ArrayList<>();
+        units.add(J.newIdentityStmt(path, J.newParameterRef(
+                RefType.v("java.lang.String"), 0)));
+        units.add(J.newAssignStmt(held, soot.jimple.NullConstant.v()));
+        soot.SootMethodRef create = Scene.v().makeMethodRef(keeper, "create",
+                created, RefType.v("java.lang.String"), false);
+        for (int write = 0; write < Math.max(1, creates); write++) {
+            if (creates > 0) {
+                units.add(J.newInvokeStmt(J.newVirtualInvokeExpr(held, create,
+                        Arrays.<soot.Value>asList(path,
+                                soot.jimple.NullConstant.v(),
+                                soot.jimple.NullConstant.v(),
+                                soot.jimple.NullConstant.v()))));
+            }
+            if (hooked) {
+                units.add(J.newInvokeStmt(J.newStaticInvokeExpr(
+                        wrote.makeRef(), path, IntConstant.v(0))));
+            }
+        }
+        units.add(returned instanceof VoidType ? J.newReturnVoidStmt()
+                : J.newReturnStmt(soot.jimple.NullConstant.v()));
+        body(method, units.toArray(new Unit[0]));
+        return method;
+    }
+
+    /** The {@code ordinal}-th call of {@code hook} in {@code method}. */
+    private static Unit hookCall(SootMethod method, SootMethod hook,
+                                 int ordinal) {
+        return DoorWeave.call(method.getActiveBody(), hook.getSignature(),
+                ordinal);
     }
 
     /**

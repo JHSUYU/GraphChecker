@@ -40,9 +40,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * THE schedule of one run, and the one rule that holds a replay to another
  * run's.
  *
- * <p>RECORDER.  Every START, CLAIM, SEND, RECV, WAKE, END and INTERRUPT in
- * the recording window is appended in run order, in BOTH passes, changing
- * nothing the run does.</p>
+ * <p>RECORDER.  Every START, CLAIM, SEND, WRITE, RECV, WAKE, END and
+ * INTERRUPT in the recording window is appended in run order, in BOTH
+ * passes, changing nothing the run does.</p>
  *
  * <p>ONE ORDER, ONE RULE.  A replay gets the discovering run's order as one
  * list of SLOTS: prefix to the cut ({@link #PREFIX_ENV}), rest after
@@ -54,7 +54,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * While the prefix stands a WAKE with no slot is held too: at the
  * cut when the recording never made it, and past its recorded count -- a
  * loop polling longer than recorded -- once per move of the order, unless
- * its loop reads a CLOCK root ({@link #waitsAtLocked}).  An order cut at its
+ * its loop reads a CLOCK root ({@link #waitsAtLocked}).  A WRITE never
+ * passes an earlier held write to its location: one the order lacks, or
+ * one whose slot holds nothing (past the cut), waits for it until it is
+ * taken or given up.  An order cut at its
  * witness ({@link ScheduleEvent#WITNESS}) holds such a WAKE to its END, not
  * its cut: that run made nothing it does not list before its witness.</p>
  *
@@ -156,6 +159,13 @@ public final class ScheduleLog {
     /** Per event context, the slots its events were. */
     private static final Map<String, List<Integer>> BY_CONTEXT =
             new HashMap<String, List<Integer>>();
+    /**
+     * Per location a WRITE writes (its site, {@link ScheduleEvent#written}),
+     * the slots of the writes there, in order: a write there does not pass
+     * an earlier one the order holds ({@link #conflictLocked}).
+     */
+    private static final Map<String, List<Integer>> BY_LOCATION =
+            new HashMap<String, List<Integer>>();
     /** Per WAKE key, the slot it took: where its turn began. */
     private static final Map<String, Integer> TAKEN_WAKES =
             new HashMap<String, Integer>();
@@ -176,6 +186,14 @@ public final class ScheduleLog {
             new HashMap<Thread, Pending>();
     /** Held threads the watchdog let go, until the wait ends. */
     private static final Set<Thread> LET_GO = new HashSet<Thread>();
+    /**
+     * The waiters whose WRITE waits for an earlier held write to its
+     * location ({@link #conflictLocked}), at the slot after it, so the give-up
+     * that settles it lets them go.  A subset of {@link #WAITERS}; never let
+     * go, and never passing their own context's slots there: where they
+     * wait is the other write's place, not theirs.
+     */
+    private static final Set<Thread> CONFLICTED = new HashSet<Thread>();
     /** How many times a slot was settled: the order's moves. */
     private static long moves;
     /**
@@ -562,6 +580,10 @@ public final class ScheduleLog {
         /** Whether this wait's loop reads a CLOCK root; asked once, under
          *  the lock, only of a poll past its recorded count. */
         private Boolean clockLoop;
+        /** A WRITE the order lacks: the held write to its location it waits
+         *  for, fixed at its first ask ({@link #conflictLocked}); -1 none,
+         *  -2 not asked yet. */
+        private int conflict = -2;
 
         private Pending(ScheduleEvent.Kind kind, String context, String site,
                         String occurrence, String endpoint) {
@@ -899,6 +921,7 @@ public final class ScheduleLog {
             doneWaitingLocked(self);
             HELD.remove(self);
             LET_GO.remove(self);
+            CONFLICTED.remove(self);
         }
     }
 
@@ -920,7 +943,10 @@ public final class ScheduleLog {
                 return true;
             }
             waitLocked(self, at);
-            if (!passedLocked(event, at) && !watchdogLocked()) return false;
+            if ((CONFLICTED.contains(self) || !passedLocked(event, at))
+                    && !watchdogLocked()) {
+                return false;
+            }
         }
     }
 
@@ -1045,15 +1071,26 @@ public final class ScheduleLog {
      *       context left, it waits at the line.</li>
      * </ul>
      *
+     * A WRITE never passes an earlier held write to its location: a slot
+     * that holds is due only past it, and one that holds nothing (past the
+     * cut) or no slot at all waits for it ({@link #conflictLocked}).
+     *
      * The watchdog lets a held wait go when the run idles.  Released, a
      * timed wait still waits out its own deadline ({@link TimedWaits}).
      */
     private static int waitsAtLocked(Pending event, int slot) {
         Thread self = Thread.currentThread();
         HELD.remove(self);
-        if (slot >= 0) {
-            return !heldKind(slot) || dueLocked(slot) ? GO : slot;
+        CONFLICTED.remove(self);
+        if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) return slot;
+        if (event.kind == ScheduleEvent.Kind.WRITE) {
+            int conflict = conflictLocked(event, slot);
+            if (conflict >= 0) {
+                CONFLICTED.add(self);
+                return conflict + 1;
+            }
         }
+        if (slot >= 0) return GO;
         if (event.kind != ScheduleEvent.Kind.WAKE || !lineStandsLocked()) {
             return GO;
         }
@@ -1061,7 +1098,11 @@ public final class ScheduleLog {
                 ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
         if (next >= 0) {
             if (!dueLocked(next)) return next;
-            if (movedSincePollLocked(event) || clockLoopLocked(event)) {
+            // The frontier its own context's: the loop owes it, and holding
+            // the poll holds the frontier until the watchdog (solr-adhoc-19
+            // SG1: ZkController#waitForCoreNodeName, 66 stalls, 991 s).
+            if (movedSincePollLocked(event) || clockLoopLocked(event)
+                    || next == firstBlocking) {
                 return GO;
             }
         }
@@ -1096,6 +1137,39 @@ public final class ScheduleLog {
             if (slot >= firstOpen && state[slot] == OPEN) return slot;
         }
         return -1;
+    }
+
+    /**
+     * The held write to {@code event}'s location it waits for, or -1: the
+     * first open slot that holds of a WRITE there before its own {@code
+     * slot}; with no slot -- a write the recording did not make there (a
+     * create-if-absent another node's write found made, a retry, an extra
+     * sequential create) -- the one that was next there when it first
+     * asked, fixed then, never every later write there.  It waits until
+     * that slot is settled: taken, or given up by the watchdog like any
+     * slot (a write that never comes costs a stall, never the run: on
+     * solr-bug-reindex a given-up write still conflicted, and a core-admin
+     * CREATE's queue write waited for ever behind the Overseer's, which the
+     * Overseer makes only once its poll sees that CREATE complete).
+     */
+    private static int conflictLocked(Pending event, int slot) {
+        if (slot < 0 && event.conflict != -2) {
+            return event.conflict >= 0 && state[event.conflict] == OPEN
+                    ? event.conflict : -1;
+        }
+        int conflict = -1;
+        List<Integer> writes = BY_LOCATION.get(event.site);
+        if (writes != null) {
+            for (int write : writes) {
+                if (slot >= 0 && write >= slot) break;
+                if (state[write] == OPEN && heldKind(write)) {
+                    conflict = write;
+                    break;
+                }
+            }
+        }
+        if (slot < 0) event.conflict = conflict;
+        return conflict;
     }
 
     /**
@@ -1375,8 +1449,9 @@ public final class ScheduleLog {
      * #stallSinceLocked}, which neither a let-go nor a slot taken past the
      * frontier moves, and the stall's CPU is looked at from its start.  Its
      * first answer lets the waits held without a slot go; a grace later, the
-     * slots before the earliest waiter are given up.  With only polls past
-     * their recorded count waiting, it lets them go again, a grace apart.
+     * slots before the earliest waiter a slot holds are given up.  With only
+     * waits held without a slot waiting (polls past their recorded count,
+     * waits at the line), it lets them go again, a grace apart.
      */
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
@@ -1391,19 +1466,28 @@ public final class ScheduleLog {
             if (now - cpuSampledAt >= CPU_SAMPLE_MS) lookLocked(now, false);
         }
         long stood = now - since;
-        if (stood < timeout || now - letGoAt < LET_GO_GRACE_MS) return false;
+        if (now - letGoAt < LET_GO_GRACE_MS) return false;
+        // A wait held without a slot is let go a grace into a stall nothing
+        // computes toward, not a timeout: the frontier may be behind it, and
+        // its event runs free anyway once let go (SG1: 92 such stalls across
+        // six study checks, 15 s each).
+        if (!HELD.isEmpty() && !letGoSinceProgress && stood < timeout
+                && stood >= LET_GO_GRACE_MS && !computingLocked(now)) {
+            letGoHeldLocked(stood, now);
+            return true;
+        }
+        if (stood < timeout) return false;
         if (stood < CEILING * timeout && computingLocked(now)) return false;
-        // A poll held past its recorded count stands at its context's due
-        // slot and waits for no slot's event, so it bounds no give-up (it
-        // would shadow the stalled slot); a wait AT_THE_LINE bounds one at
-        // the line.
+        // A wait held without a slot -- a poll past its recorded count at
+        // its context's due slot, or at the line -- waits for no slot's
+        // event, so it bounds no give-up: at a slot it would shadow the
+        // stalled one, at the line it would give up every slot before it
+        // (solr-adhoc-13 MB6: a replica poll held at the cut, 4560 slots at
+        // once).  It is let go instead, a grace apart.
         int earliest = Integer.MAX_VALUE;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            int slot = waiter.getValue();
-            if (slot == AT_THE_LINE) {
-                earliest = Math.min(earliest, line);
-            } else if (!HELD.containsKey(waiter.getKey())) {
-                earliest = Math.min(earliest, slot);
+            if (!HELD.containsKey(waiter.getKey())) {
+                earliest = Math.min(earliest, waiter.getValue());
             }
         }
         if (!HELD.isEmpty() && (!letGoSinceProgress
@@ -1412,10 +1496,29 @@ public final class ScheduleLog {
             return true;
         }
         if (earliest == Integer.MAX_VALUE) return false;
-        boolean atTheLine = WAITERS.containsValue(AT_THE_LINE)
-                && earliest == line;
+        if (onlyConflictedAtLocked(earliest)) {
+            // A write the order lacks there, or one whose slot holds nothing,
+            // waits at the slot after the one write to its location it
+            // follows: that write alone is given up, never the run of other
+            // nodes' events before it, and it is no stall past the cut.  One
+            // already settled is the waiter's to see at its next ask, and
+            // nothing to do (another waiter asking first spun on it:
+            // solr-18413 MB3, 628 stalls at one slot).
+            int write = earliest - 1;
+            if (state[write] != OPEN) return false;
+            stalls++;
+            giveUpLocked(write);
+            stateLocked("schedule-write#" + write, "the write at slot "
+                    + write + " (" + order.get(write).render() + ") did not"
+                    + " happen in the " + stood + " ms the frontier stood at"
+                    + " slot " + firstBlocking + ", while a write to its"
+                    + " location waited for it: it alone is given up, and"
+                    + " still takes its slot if it comes");
+            settleLocked();
+            return true;
+        }
         stalls++;
-        if (!atTheLine && earliest >= cut && restStalls >= REST_STALLS) {
+        if (earliest >= cut && restStalls >= REST_STALLS) {
             int open = 0;
             for (int index = firstOpen; index < state.length; index++) {
                 if (state[index] == OPEN) {
@@ -1440,14 +1543,14 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
-        if (!atTheLine && earliest >= cut) restStalls++;
+        if (earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
                         + " first " + order.get(first).render() + ") did not"
                         + " happen in the " + stood + " ms the frontier"
                         + " stood at slot " + firstBlocking + ", while "
-                        + waitingAtLocked(earliest)
-                        + ": they are given up, and each still takes its"
+                        + order.get(earliest).render() + " waited at slot "
+                        + earliest + ": they are given up, and each still takes its"
                         + " slot if it comes");
         settleLocked();
         return true;
@@ -1479,15 +1582,16 @@ public final class ScheduleLog {
         LOCK.notifyAll();
     }
 
-    /** What waits at {@code earliest}, as it names itself. */
-    private static String waitingAtLocked(int earliest) {
+    /** Whether every waiter at {@code slot} is a write waiting behind the
+     *  write to its location ({@link #CONFLICTED}). */
+    private static boolean onlyConflictedAtLocked(int slot) {
+        boolean any = false;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            if (earliest == line && waiter.getValue() == AT_THE_LINE) {
-                return heldLocked(waiter.getKey()) + " waited at the "
-                        + (line == cut ? "cut" : "order's end");
-            }
+            if (waiter.getValue() != slot) continue;
+            if (!CONFLICTED.contains(waiter.getKey())) return false;
+            any = true;
         }
-        return order.get(earliest).render() + " waited at slot " + earliest;
+        return any;
     }
 
     /** A held wait, as it names itself. */
@@ -1668,6 +1772,8 @@ public final class ScheduleLog {
         ARRIVED.clear();
         HELD.clear();
         LET_GO.clear();
+        CONFLICTED.clear();
+        BY_LOCATION.clear();
         POLLED.clear();
         PASSED_BY_CONTEXT.clear();
         PASSED_SLOTS.clear();
@@ -1698,6 +1804,10 @@ public final class ScheduleLog {
                 BY_CONTEXT.put(event.context(), own);
             }
             own.add(index);
+            if (event.kind() == ScheduleEvent.Kind.WRITE) {
+                BY_LOCATION.computeIfAbsent(event.site(),
+                        written -> new ArrayList<Integer>()).add(index);
+            }
             if (heldKind(index)) openHeld++;
         }
         firstOpen = 0;
@@ -1818,11 +1928,14 @@ public final class ScheduleLog {
             ARRIVED.clear();
             HELD.clear();
             LET_GO.clear();
+            CONFLICTED.clear();
+            BY_LOCATION.clear();
             POLLED.clear();
             PASSED_BY_CONTEXT.clear();
             PASSED_SLOTS.clear();
             MADE.clear();
             ClockLoops.resetForTests();
+            RunNames.resetForTests();
             moves = 0L;
             letGoSinceProgress = false;
             letGoAt = 0L;

@@ -130,3 +130,5 @@
 {"schemaVersion": 1, "kind": "CONFIG_SOURCE", "method": "<org.apache.solr.core.XmlConfigFile: boolean getBool(java.lang.String,boolean)>", "keyArg": 0, "defaultArg": 1}
 {"schemaVersion": 1, "kind": "CONFIG_FIELD_OWNER", "class": "org.apache.solr.core.NodeConfig"}
 {"schemaVersion": 1, "kind": "CONFIG_FIELD_OWNER", "class": "org.apache.solr.core.CloudConfig"}
+{"schemaVersion": 1, "kind": "CODEC", "codec": "PROTOBUF", "classes": ["*.protobuf.*"]}
+{"schemaVersion": 1, "kind": "CODEC", "codec": "JAVABIN", "classes": ["org.apache.solr.common.util.JavaBinCodec", "org.apache.solr.common.util.JavaBinCodec$*"]}

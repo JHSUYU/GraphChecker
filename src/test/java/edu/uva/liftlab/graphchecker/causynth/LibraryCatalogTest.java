@@ -147,7 +147,8 @@ public class LibraryCatalogTest {
     public void aMalformedRowIsRefusedByName() {
         String[][] refused = {
             {DOOR + ", \"schemaVersion\": 2}", "states schemaVersion 2"},
-            {"{\"schemaVersion\": 1, \"kind\": \"CODEC\"}", "kind CODEC"},
+            {"{\"schemaVersion\": 1, \"kind\": \"WIRE_FLOW\"}", "kind WIRE_FLOW"},
+            {"{\"schemaVersion\": 1, \"kind\": \"CODEC\", \"codec\": \"X\", \"classes\": []}", "classes lists"},
             {DOOR + ", \"library\": \"a.B\"}", "DOOR has no member library"},
             {DOOR + ", \"after\": \"<a.C: void flush()>\"}",
                     "one of before and after"},
