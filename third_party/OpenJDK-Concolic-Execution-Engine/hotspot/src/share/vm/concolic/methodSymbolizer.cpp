@@ -10,6 +10,7 @@
 #include "concolic/reference/symbolicStringUtils.hpp"
 #include "concolic/reference/symbolicMap.hpp"
 #include "concolic/reference/symbolicStream.hpp"
+#include "concolic/reference/symbolicEnum.hpp"
 #include "concolic/reference/symbolicSet.hpp"
 #include "concolic/reference/symbolicList.hpp"
 #include "concolic/reference/symbolicBigDecimal.hpp"
@@ -35,6 +36,7 @@ void MethodSymbolizer::init_helper_methods() {
   SymStrUtils::init_register_class(this);
   SymMap::init_register_class(this);
   SymStream::init_register_class(this);
+  SymEnum::init_register_class(this);
   SymSet::init_register_class(this);
   SymList::init_register_class(this);
   SymBigDecimal::init_register_class(this);

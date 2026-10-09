@@ -501,6 +501,8 @@ public final class ConcolicRegionRuntime {
             active.d3Address = RowRuntime.beginActivation(active.token,
                     RuntimeTraceContext.activationSource(receiver).key(),
                     admitted.regionId, admitted.taskId);
+            // A FORCE run's declared occurrence forces its way to the throw.
+            ForcedArms.arm(active);
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
             javaRegionPushed = true;
@@ -604,6 +606,7 @@ public final class ConcolicRegionRuntime {
 
     /** The exceptional edge of {@link #enterMethodFrame}. */
     public static void throwMethodFrame(long token, Throwable thrown) {
+        ForcedArms.unwinding(thrown);
         Identity.exitFrame(token);
     }
 
@@ -1480,6 +1483,13 @@ public final class ConcolicRegionRuntime {
         }
         beginSelectedResultPublication();
         boolean publicationDeferred = false;
+        // A FORCE run whose declared occurrence closed before its forced
+        // target is decided there (ForcedArms): it ends at once.
+        String diverged = ForcedArms.finished(active, exitKind,
+                exceptionType);
+        if (!diverged.isEmpty() && FocusedReplay.decideForced(diverged)) {
+            ConcolicResultPublisher.concludeAtRefusal();
+        }
         // Judgement and publication are bookkeeping: muted until VM close.
         pauseObservation();
         try {

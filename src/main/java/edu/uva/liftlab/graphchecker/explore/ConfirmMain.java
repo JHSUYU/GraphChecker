@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -39,7 +38,6 @@ import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -221,8 +219,10 @@ public final class ConfirmMain {
                 ExploreCodec.readObject(manifestFile));
         // The run as recorded is no counterfactual (owner 2026-10-04: a
         // claim moving no root is never a finding), whatever a replay of it
-        // observes: refused by name, so the campaign excludes it.
-        if (witness.sessionId.equals(witness.seedSessionId)
+        // observes: refused by name, so the campaign excludes it.  A forced
+        // path's world is the recording's (PIPELINE §7.10).
+        if ((witness.sessionId.equals(witness.seedSessionId)
+                || witness.session.forced())
                 && object(witness.decided, "movedRoots").size() == 0
                 && ownDeliveries(witness.sessionId, witness.arms)
                 && witness.sawChosen) {
@@ -254,9 +254,12 @@ public final class ConfirmMain {
 
         // The schedule half: the recorded order is not held (only a WAKE
         // still waits for what it followed); the model's order is held by
-        // the ORDER rows of the edges.
+        // the ORDER rows of the edges.  A forced path's session ran a forced
+        // world to its forced target: its schedule is the recording's, not
+        // that one's (PIPELINE §7.10).
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
-                witness.sessionId,
+                witness.session.forced() ? witness.seedSessionId
+                        : witness.sessionId,
                 Collections.singletonList(witness.anchor.id()), false, out);
         if (cut == null) {
             throw new Refused("the selected session " + witness.sessionId
@@ -274,10 +277,8 @@ public final class ConfirmMain {
                         Collections.<String>emptyList()),
                 Collections.<Corpus.Flip>emptyList(), world.clockDeltas,
                 world.mints, Collections.<String, String>emptyMap(), cut);
-        // {@code flip: null} is the statement: serialize nulls.
-        Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
-                (new GsonBuilder().serializeNulls().create().toJson(focus)
-                        + "\n").getBytes(StandardCharsets.UTF_8));
+        ExploreCodec.writeFocusFile(out.resolve(ObligationDir.FOCUSED_TASK),
+                focus);
 
         JsonObject summary = witness.summary();
         summary.addProperty("rootAssignments", world.assignments.size());

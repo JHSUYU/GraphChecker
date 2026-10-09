@@ -49,7 +49,7 @@ bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
       return false;
     }
     if (recording) {
-      handle.general_prepare_param();
+      handle.general_prepare_param(100, true);
       // Before the body runs: state what the container already holds, while
       // the receiver is still untouched by this operation.  A KeySetView is
       // its map (canonicalize), so the base is the map's.

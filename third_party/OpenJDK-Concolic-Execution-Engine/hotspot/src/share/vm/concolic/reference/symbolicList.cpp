@@ -88,7 +88,7 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
       return false;
     }
     if (recording) {
-      handle.general_prepare_param();
+      handle.general_prepare_param(100, true);
       // Before the body runs: state what the container already holds, while
       // the receiver is still untouched by this operation.  An iterator is
       // not a location, so the container whose base this is is the list it

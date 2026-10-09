@@ -27,8 +27,11 @@ import java.util.TreeSet;
  * is refused.
  */
 public final class SessionManifest {
-    /** What a session ran as: the recording, or one counterfactual of it. */
-    public enum Role { SEED, FOCUSED }
+    /** What a session ran as: the recording, one counterfactual of it, or
+     *  the recording's world with the declared occurrence's branches
+     *  forced to the throw (PIPELINE §7.10), whose rows are read only as
+     *  its forced path. */
+    public enum Role { SEED, FOCUSED, FORCED }
 
     public static final String KIND = "SESSION_MANIFEST";
     /** The schema this contract reads and writes. */
@@ -116,6 +119,11 @@ public final class SessionManifest {
     /** Whether this session states it is the recording. */
     public boolean seed() {
         return role == Role.SEED;
+    }
+
+    /** Whether this session states it ran forced (PIPELINE §7.10). */
+    public boolean forced() {
+        return role == Role.FORCED;
     }
 
     /** The obligations this replay was handed, in the focus row's order. */

@@ -83,7 +83,9 @@ cd "$JDK_ROOT"
   test/causynth/RegionContainerObservationSmoke.java \
   test/causynth/RegionContainerAdmissionSmoke.java \
   test/causynth/RegionReadRecordSmoke.java \
-  test/causynth/RegionRedefineOnStackSmoke.java
+  test/causynth/RegionRedefineOnStackSmoke.java \
+  test/causynth/RegionForcedBranchSmoke.java \
+  test/causynth/RegionEnumSmoke.java
 
 for smoke in \
   RegionApiSmoke \
@@ -155,7 +157,9 @@ for smoke in \
   RegionContainerObservationSmoke \
   RegionContainerAdmissionSmoke \
   RegionReadRecordSmoke \
-  RegionRedefineOnStackSmoke; do
+  RegionRedefineOnStackSmoke \
+  RegionForcedBranchSmoke \
+  RegionEnumSmoke; do
   "$JDK_HOME/bin/java" -Xint -cp "$OUT" "$smoke"
 done
 

@@ -3,6 +3,7 @@
 #include "concolic/concolicMngr.hpp"
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/reference/symbolicEnum.hpp"
 #include "concolic/sharedFieldVersions.hpp"
 #include "classfile/javaClasses.hpp"
 #include "classfile/systemDictionary.hpp"
@@ -108,7 +109,8 @@ Expression *MethodSymbolizerHandle::get_reference_exp(int offset, oop obj) {
 }
 
 
-void MethodSymbolizerHandle::general_prepare_param(int max_param_num) {
+void MethodSymbolizerHandle::general_prepare_param(int max_param_num,
+                                                   bool members) {
   Method *callee_method = this->get_callee_method();
   int offset = this->get_callee_local_begin_offset();
 
@@ -121,14 +123,16 @@ void MethodSymbolizerHandle::general_prepare_param(int max_param_num) {
   ResourceMark rm;
   SignatureStream ss(callee_method->signature());
   while (!ss.at_return_type() && offset < max_param_num) {
-    offset = this->general_prepare_param_helper(ss.type(), offset, false);
+    offset = this->general_prepare_param_helper(ss.type(), offset, false,
+                                                members);
     ss.next();
     ++offset;
   }
 }
 
 int __attribute__((optimize("O0"))) MethodSymbolizerHandle::general_prepare_param_helper(BasicType type,
-                                                         int locals_offset, bool is_this) {
+                                                         int locals_offset, bool is_this,
+                                                         bool members) {
   Expression *exp = NULL;
   if (is_java_primitive(type)) {
     exp = this->get_primitive_exp(locals_offset, type);
@@ -141,6 +145,8 @@ int __attribute__((optimize("O0"))) MethodSymbolizerHandle::general_prepare_para
         // Prefer the alias-specific expression propagated by getfield.  This
         // is essential when the concrete receiver is an interned String that
         // intentionally cannot carry a symbolic id in its shared oop header.
+      } else if (members && (exp = SymEnum::constant_name(obj)) != NULL) {
+        // A container's member: an enum constant by its name.
       } else if (obj->is_array()) {
         // An array names itself.  It has no SymInstance to ask -- asking
         // read a SymArr through SymInstance's layout and dispatched off the
