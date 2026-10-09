@@ -1180,13 +1180,16 @@ public class ConfirmMainTest {
         site.add("guardOutcomes", arms);
         Files.write(scopeMap, Collections.singletonList(site.toString()),
                 StandardCharsets.UTF_8);
-        // The world, then the claim's moved root; null: refused.
+        // The world, the claim's moved root and its value, then the plant's
+        // first ROOT row; null: refused; "": no ROOT row.
         Object[][] worlds = {
-                {"{}", "HDFS.SERIAL", "ROOT HOOK HDFS.SERIAL " + mint.id()
-                        + " 119981"},
-                {"{\"CLOCK.gone\":\"7000\"}", "HDFS.SERIAL", null},
+                {"{}", "HDFS.SERIAL", "119981", "ROOT HOOK HDFS.SERIAL "
+                        + mint.id() + " 119981"},
+                {"{\"CLOCK.gone\":\"7000\"}", "HDFS.SERIAL", "119981", null},
                 // A marker no plan input calls: no site to answer at.
-                {"{}", "M_Z_fault", null},
+                {"{}", "M_Z_fault", "119981", null},
+                // A marker at false is the run as recorded: never planted.
+                {"{}", "M_Z_fault", "false", ""},
         };
         for (Object[] row : worlds) {
             JsonObject planted = world.deepCopy();
@@ -1195,21 +1198,28 @@ public class ConfirmMainTest {
             planted.add("clockDeltas", JsonParser.parseString(
                     (String) row[0]).getAsJsonObject());
             RowCodec.writeJsonl(focus, Collections.singletonList(planted));
-            Path claim = claim((String) row[1], "119981");
+            Path claim = claim((String) row[1], (String) row[2]);
             Path plant = folder.newFile().toPath();
             try {
                 ConfirmMain.writePlant(iteration, claim, manifest(), scopeMap,
                         plant);
-                if (row[2] == null) fail("planted " + Arrays.toString(row));
+                if (row[3] == null) fail("planted " + Arrays.toString(row));
             } catch (ConfirmMain.Refused refused) {
                 assertTrue(refused.getMessage(), refused.getMessage()
                         .startsWith("NATIVE_PLANT_UNSUPPORTED"));
-                assertEquals(refused.getMessage(), null, row[2]);
+                assertEquals(refused.getMessage(), null, row[3]);
                 continue;
             }
             List<JsonObject> rows = RowCodec.readJsonl(plant);
+            if ("".equals(row[3])) {
+                for (JsonObject planted2 : rows) {
+                    assertFalse(Arrays.toString(row) + ": " + planted2,
+                            "ROOT".equals(planted2.get("kind").getAsString()));
+                }
+                continue;
+            }
             JsonObject root = rows.get(0);
-            assertEquals(row[2], root.get("kind").getAsString() + " "
+            assertEquals(row[3], root.get("kind").getAsString() + " "
                     + root.get("category").getAsString() + " "
                     + root.get("rootId").getAsString() + " "
                     + root.get("occurrence").getAsString() + " "
