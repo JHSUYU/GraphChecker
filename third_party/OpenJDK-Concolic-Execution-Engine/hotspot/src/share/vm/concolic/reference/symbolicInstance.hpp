@@ -59,8 +59,14 @@ public:
     _demand_symbolic_fields = true;
   }
 
+  // Whether this shadow keeps an expression per field.  A String or a
+  // StringBuilder is one value, its reference expression; its fields are the
+  // JDK's representation, never projections of it, so no field symbol is
+  // demand-minted on it (VM.md §3, getfield).
+  virtual bool keeps_field_shadows() const { return true; }
+
   inline bool demand_symbolic_fields_enabled() const {
-    return _demand_symbolic_fields;
+    return _demand_symbolic_fields && keeps_field_shadows();
   }
 
   // An allocated shadow only gives the VM a place to store identity and
@@ -123,8 +129,10 @@ public:
 
   virtual void set_ref_exp(Expression *) { ShouldNotCallThis(); }
 
+  // What the shadow's kind keeps of a minted field expression is its
+  // set_sym_exp's to decide: a String's or builder's keeps none.
   virtual void init_sym_exp(int field_offset, Expression *exp) {
-    ShouldNotCallThis();
+    set_sym_exp(field_offset, exp);
   }
   virtual void set_sym_exp(int field_offset, Expression *exp) = 0;
   // True when this shadow already carries an expression for the field.  The
