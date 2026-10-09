@@ -1144,8 +1144,11 @@ public final class RuntimeSelectedRegionFinalizer {
      * DemandWalk#crossMessage}), and seeds the cells on its way.</p>
      *
      * <p>{@link #CONTROL_PRODUCER_ADMISSION}: the occurrence read a fault
-     * marker and holds a door of the message that started an admitted
-     * occurrence; it contributes no value.</p>
+     * marker and holds a door of the message that started an occurrence
+     * admitted on another rule; it contributes no value, so the doors of
+     * the message that started it are not asked in turn (solr-18413 round
+     * Z7: six hops of request and queue-item doors behind the store
+     * writers' items, the plan 86 -> 214 tasks).</p>
      *
      * <p>A root read nothing demanded is left out, its occurrence unplanned
      * unless another rule admits it.</p>
@@ -1224,7 +1227,13 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
-                if (!served.add(occurrence)) continue;
+                // A control producer contributes no value: its own
+                // message's doors are no question of the target's.
+                if (CONTROL_PRODUCER_ADMISSION.equals(text(program.activations
+                        .get(occurrence).get(ADMISSION_BASIS)))
+                        || !served.add(occurrence)) {
+                    continue;
+                }
                 stateDoorsOutside(program, walk, messages.sentOutsideRegion(
                         OccurrenceAddress.parse(occurrence)), occurrence,
                         reading);
@@ -1527,13 +1536,21 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /** Reaches one occurrence by a demand of the walk: the shortest
-         *  chain is kept, the basis stated once. */
+         *  chain is kept, the basis stated once -- a door reached first as
+         *  a control producer is a value's occurrence once a value reaches
+         *  it. */
         private void reach(String occurrence, int depth, String basis)
                 throws IOException {
             recordDepth(occurrence, depth);
-            if (!reached.add(occurrence)) return;
             Map<String, Object> activation = program.activations.get(
                     occurrence);
+            if (!reached.add(occurrence)) {
+                if (CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
+                        ADMISSION_BASIS)))) {
+                    activation.put(ADMISSION_BASIS, basis);
+                }
+                return;
+            }
             String held = text(activation.get(ADMISSION_BASIS));
             if (!held.isEmpty()) {
                 throw new IOException("conflicting runtime activation "

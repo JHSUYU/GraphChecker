@@ -5736,8 +5736,10 @@ public class ExploreTest {
      * consumer (the task's Runner, which wrote what the anchor read) names
      * it as a control producer, and its door is asked
      * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write);
-     * the Runner's own turn is what the item started, no door of it.  A
-     * turn that sent it so names no sender (DOOR_SEND_OUTSIDE_REGION).
+     * the Runner's own turn is what the item started, no door of it, and a
+     * control producer contributes no value, so the doors of its own item
+     * are not asked.  A turn that sent it so names no sender
+     * (DOOR_SEND_OUTSIDE_REGION).
      */
     @Test
     public void aTurnThatTookAnItemInAtItsRootHoldsItsDoors()
@@ -5813,10 +5815,10 @@ public class ExploreTest {
                             && kind == ScheduleEvent.Kind.RECV,
                     named(obligations(wave), "Mark#u3") != null);
             // The Runner's own turn is no door of the item for the Runner,
-            // one for the queue turn's occurrence, another consumer of it.
-            assertEquals("case " + at + ": the Runner's own turn", rooted
-                            && kind == ScheduleEvent.Kind.RECV,
-                    named(obligations(wave), "Sib#u5") != null);
+            // and the queue turn's occurrence, a control producer, asks no
+            // doors in turn.
+            assertEquals("case " + at + ": the Runner's own turn", null,
+                    named(obligations(wave), "Sib#u5"));
         }
     }
 

@@ -577,7 +577,9 @@ are counted, never dropped silently: `concreteAnchors` states how many
   `CONTROL_PRODUCER`, contributing no value. Any other door -- run under no planned task, a role,
   or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client
   door, HG3: it waited as "only the seed replay ran this occurrence" and blocked the fixed point) --
-  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for.
+  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for. A control producer contributes no
+  value, so the doors of the message that started it are not asked in turn (solr-18413 round Z7:
+  six hops of request and queue-item doors behind the store writers' items doubled the plan).
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;

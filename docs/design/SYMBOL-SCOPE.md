@@ -732,7 +732,8 @@ reaches, to a fixed point:
   message its turn took in, a DataNode's DataTransfer op; the recorded schedule's `SEND` names the
   sender, a `RECV` of the message a receiver, and one a turn made at its root, no occurrence open,
   every occurrence of that turn: `#doorStancesOf`) is admitted
-  (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
+  (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists; it contributes no value,
+  so the doors of the message that started it are not admitted in turn. These are the control
   producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
   `MARKER_FLIPPED` witnesses move such an IPC door. A message sent in no region occurrence has no
   sender, so no door of it is admitted: a fault-reading occurrence not reached in the context it was

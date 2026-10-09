@@ -809,7 +809,13 @@ public final class ClosurePlanner {
             }
         }
         statedReads(walk, demand, next);
-        controlProducer(walk, demand, next);
+        // A control producer contributes no value: whether its own message
+        // exists is no question of the anchor's (solr-18413 round Z7: the
+        // doors of every request and queue item behind the store writers'
+        // items, six hops deep, doubled the plan).
+        if (!CONTROL_PRODUCER.equals(demand.why)) {
+            controlProducer(walk, demand, next);
+        }
         return next;
     }
 
@@ -827,11 +833,12 @@ public final class ClosurePlanner {
      *  session recorded a fault decision of it: it contributes no value,
      *  but that fault point decides whether the message exists (IDENTITY
      *  §7.3), the door PLAN's CONTROL_PRODUCER rule admits (it read a
-     *  fault marker).  Any other
-     *  door -- run under no planned task (hdfs-adhoc-28's heartbeat tick, in
-     *  a scope with no IPC client door: it reads no marker), a role, or a
-     *  captured one that decided no fault -- has nothing that decides the
-     *  message: one DIAGNOSTIC row, never a member, never waited for. */
+     *  fault marker).  Any other door -- run under no planned task
+     *  (hdfs-adhoc-28's heartbeat tick, in a scope with no IPC client door:
+     *  it reads no marker), a role, or a captured one that decided no
+     *  fault -- has nothing that decides the message: one DIAGNOSTIC row,
+     *  never a member, never waited for.  Only a value's occurrence asks:
+     *  a control producer's own message is not followed. */
     private static void controlProducer(Walk walk, Demand demand,
                                         List<Demand> next) {
         Corpus corpus = walk.corpus;
