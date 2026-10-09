@@ -5506,16 +5506,15 @@ public class ExploreTest {
 
     /**
      * IDENTITY §7.2: a turn that takes a queue item in at its root, before
-     * any of its regions opened (the Overseer queue loop's turn), or sends
-     * it so (a Solr request starts at its client's invoke point), holds a
+     * any of its regions opened (the Overseer queue loop's turn), holds a
      * door of that item in every occurrence it runs: the item's other
      * consumer (the task's Runner, which wrote what the anchor read) names
      * it as a control producer, and its door is asked
-     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write;
-     * solr-bugs-migrate-buffer-leak: the HTTP door of the request).
+     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write).
+     * A turn that sent it so names no sender (DOOR_SEND_OUTSIDE_REGION).
      */
     @Test
-    public void aTurnThatSentOrTookAnItemInAtItsRootHoldsItsDoors()
+    public void aTurnThatTookAnItemInAtItsRootHoldsItsDoors()
             throws Exception {
         LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
                 "/collections/c/state.json");
@@ -5531,12 +5530,12 @@ public class ExploreTest {
         OccurrenceAddress marking = occurrence("solr-case/node0",
                 "REGION.mark", queueTurn, "Queue#mark#1");
         // Per row: the queue turn's row of the item, at its root (no
-        // occurrence) or not, and whether the turn's door is asked.
+        // occurrence) or not; a RECV at its root has the turn's door asked,
+        // a SEND there names no sender.
         Object[][] cases = {
             {ScheduleEvent.Kind.RECV, true},
             {ScheduleEvent.Kind.RECV, false},
             {ScheduleEvent.Kind.SEND, true},
-            {ScheduleEvent.Kind.SEND, false},
         };
         for (int at = 0; at < cases.length; at++) {
             ScheduleEvent.Kind kind = (ScheduleEvent.Kind) cases[at][0];
@@ -5577,7 +5576,8 @@ public class ExploreTest {
             Path wave = out.resolve("obligations-0000");
             plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1",
                     null, results, wave, 0);
-            assertEquals("case " + at, rooted,
+            assertEquals("case " + at, rooted
+                            && kind == ScheduleEvent.Kind.RECV,
                     named(obligations(wave), "Mark#u3") != null);
         }
     }

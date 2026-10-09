@@ -728,7 +728,7 @@ reaches, to a fixed point:
 - **Doors of a demanded message** (`RecordedMessages#doorsOf`): an occurrence that read a fault marker
   and sent, or took in, the message that started an admitted occurrence (its `Anchor`, else the
   message its turn took in, a DataNode's DataTransfer op; the recorded schedule's `SEND` names the
-  sender, a `RECV` of the message a receiver, and one made at a turn's root, no occurrence open,
+  sender, a `RECV` of the message a receiver, and one a turn made at its root, no occurrence open,
   every occurrence of that turn: `#doorStancesOf`) is admitted
   (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists. These are the control
   producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS

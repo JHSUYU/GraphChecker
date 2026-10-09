@@ -802,30 +802,21 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * Every door of a message (IDENTITY §7.3): the occurrence that sent it
-     * ({@link #senderOf}), else, sent at its turn's root before any region
-     * of the turn opened, every occurrence of that turn (a Solr request
-     * starts at its client's invoke point, and its HTTP door runs in a
-     * region of the turn after it); and every occurrence that took it in
-     * ({@link #receiverOf}) and every occurrence of a turn that took it in
-     * at its root (an Overseer queue loop's turn and the task item it
-     * consumed, whose ZooKeeper door then runs in a region of the turn).
+     * ({@link #senderOf}), the occurrence that took it in ({@link
+     * #receiverOf}), and every occurrence of a turn that took it in at its
+     * root, before any of its regions opened (an Overseer queue loop's turn
+     * and the task item it consumed, whose ZooKeeper door then runs in a
+     * region of the turn).
      */
     public List<OccurrenceAddress> doorsOf(String producerEndpointId) {
         List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
-        Set<String> stances = new HashSet<String>(receivingStances
-                .getOrDefault(producerEndpointId,
-                        Collections.<String>emptySet()));
-        OccurrenceAddress sender = senderOf(producerEndpointId);
-        ContextShape.Stance sentAt =
-                senderStanceByEndpoint.get(producerEndpointId);
-        if (sender != null) {
-            doors.add(sender);
-        } else if (sentAt != null) {
-            stances.add(sentAt.render());
+        for (OccurrenceAddress door : new OccurrenceAddress[] {
+                senderOf(producerEndpointId),
+                receiverOf(producerEndpointId)}) {
+            if (door != null && !doors.contains(door)) doors.add(door);
         }
-        OccurrenceAddress receiver = receiverOf(producerEndpointId);
-        if (receiver != null && !doors.contains(receiver)) doors.add(receiver);
-        if (stances.isEmpty()) return doors;
+        Set<String> stances = receivingStances.get(producerEndpointId);
+        if (stances == null) return doors;
         for (OccurrenceAddress occurrence : occurrenceById.values()) {
             if (stances.contains(ContextShape.Stance.of(occurrence).render())
                     && !doors.contains(occurrence)) {

@@ -556,11 +556,6 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   runs is then a receiver, a door of the item (`Corpus#doorsOf`,
   `RecordedMessages#doorStancesOf`) -- the Overseer queue loop's turn, whose ZooKeeper door
   (`markTaskAsRunning`) runs in a region of it, for the task's Runner, which took the same item in.
-  A SEND so made names no occurrence either, and every occurrence of the sending turn is then a
-  sender: a Solr request starts at its client's invoke point (`HttpShardHandler#submit` on the
-  Overseer's thread), and its HTTP door runs in a region of the turn after it (the shard handler's
-  `HttpSolrClient#executeMethod`), with the doors of the turn's earlier requests, whose failure
-  stops this one (solr-bugs-migrate-buffer-leak: the buffer request's lost response).
 
 A STORE read rests on the write that made its version and on every earlier version of its location:
 a store keeps one document per location, and each write modifies the one before it (Solr's state

@@ -46,11 +46,12 @@ public class RecordedMessagesTest {
         }
     }
 
-    /** IDENTITY §7.2: a message sent or taken in at a turn's root, no
-     *  occurrence open, has a door in every occurrence of that turn -- not
-     *  a turn standing on it, which it started. */
+    /** IDENTITY §7.2: a message taken in at a turn's root, no occurrence
+     *  open, has a door in every occurrence of that turn -- not of a turn
+     *  standing on it, which it started; one sent so names none (PLAN
+     *  states DOOR_SEND_OUTSIDE_REGION). */
     @Test
-    public void aMessageSentOrTakenInAtATurnsRootHasThatTurnsDoors() {
+    public void aMessageTakenInAtATurnsRootHasThatTurnsDoors() {
         RecordedMessages messages = new RecordedMessages(Arrays.asList(
                 SCHEDULE.get(0), SCHEDULE.get(1), SCHEDULE.get(2),
                 ScheduleEvent.of(3, ScheduleEvent.Kind.RECV,
@@ -63,8 +64,7 @@ public class RecordedMessagesTest {
         Object[][] rows = {
             {"sent in an occurrence, taken in at a root",
                 "Anchor:e1@HADOOP_IPC/hb", set("s/n2#epoch0|Root:QUEUE#4")},
-            {"sent at a root", "Anchor:e2@HADOOP_IPC/hb",
-                set("s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb")},
+            {"sent at a root", "Anchor:e2@HADOOP_IPC/hb", set()},
             {"started by no message", "Root:CLIENT/hb#1", set()},
         };
         for (Object[] row : rows) {
