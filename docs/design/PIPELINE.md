@@ -409,7 +409,7 @@ schedule) and:
    answered pairing fills such a slot.
 5. Builds the ledger (§7.3), takes the arms in flight (`--in-flight`: the obligation rows the
    campaign has queued or running), builds the candidates (§7.4) -- the FORCE run first while it is owed, the
-   forced flips next, the seed path's flips at forced sites deferred behind them (§7.10) -- and opens the round:
+   forced flips next, then every other flip, none of which waits for them (§7.10) -- and opens the round:
    `obligations.jsonl`, nothing settled and nothing in flight.
 6. Names the WITNESSES: every admitted focused session whose target row at the anchor observed the
    fatal (`ExploreMain#witnesses`), and states the anchor as a target row spells its occurrence
@@ -1223,8 +1223,9 @@ then ended (the target's throw, or a handler that caught it); an occurrence that
 target's healthy arm (a branch no marker of its frame let the VM force), decides the run there
 (`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame): the session is withdrawn,
 the verdict NOT_ADMITTED, and the exploration goes on as it would without one. `result.json` `force` states
-the last round's view (state, verdict detail, forced flip, `deferredSeedFlips`,
-`seedFlipsAfterForcedFlip`).
+the last round's view (state, verdict detail, the forced flip and its verdict, read by the flip it asks --
+`ExploreMain#answersByFlip`: its id moves as sessions land -- and `seedFlipsAfterForcedFlip`, the seed
+path's flips at a site of the forcing table asked after it was answered).
 
 The session lands with role `FORCED` and is held apart (`explore.Corpus#forcedPaths`): every row of it is
 indexed under its session, so its forced path composes and is asked in its own scope, and none in a
@@ -1239,10 +1240,10 @@ writer arm (`Arms#eligible`), nor an arrival whose producer the closure plans. I
   one forced against its concrete arm as run, and its forced path condition as the demanded conjunct (clock
   margins too), every symbol rule a flip's; the ledger's flip is that decision at its forced arm, keyed apart
   from the seed path's flip of it (another question). Its replay is unforced and cut from `P_F`'s session;
-  ADMITTED when that decision takes the arm, a witness when the fatal follows. While the FORCE run or the
-  forced flip is unanswered, the seed path's flips at a site of the forcing table are deferred, never dropped
-  (a DIAGNOSTIC gap each): the whole condition is asked first, the nested flips only where it brought no
-  witness.
+  ADMITTED when that decision takes the arm, a witness when the fatal follows. It is queued ahead of the
+  round's other flips, and no flip waits for it or for the FORCE run: the seed path's flips at a site of the
+  forcing table go out beside them (solr-18413, round FA4: held behind the FORCE run and the forced flip, two
+  replays in a row, its expiry flip's witness came 590 s after round 0, not 251 s).
 - one more of COMPOSE's admitted paths (`RestsOn#admitted`, §8): pi its decisions before the forced world,
   phi the forced path condition, composed in its own session's scope -- roots by their corpus-wide names, clock
   cells on the recording's timeline, `v_H` by message families over the corpus's other sessions' exports,

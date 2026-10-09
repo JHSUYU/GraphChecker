@@ -267,12 +267,11 @@ owner: "事实上我觉得这里我们就可以直接针对这个region强制反
 symbolic propagation联立的。请你把它设为todo"; "这样绝对是doable的。我们完全可以做到强制反转，你可以通过soot,vm等结合实现。然后在那个
 target region里记录下path conditon即可。就可以之后直接用了". Built on branch `solr-force-arm` (PIPELINE §7.10; design
 `/bigtemp/vnr3ne/analysis/solr-2026-10-08/design-force-fatal-arm.md`, the lead's rulings: always run the FORCE replay, no
-transplant onto other paths, nested flips deferred not dropped): SEED's forcing table, the VM's forcing native (image
+transplant onto other paths, nested flips kept, no flip waiting for the forced ones): SEED's forcing table, the VM's forcing native (image
 `vm-force1`), the FORCE run first in every campaign, its forced session held apart, its forced flip asking the whole way to
-the throw, its path one more COMPOSE disjunct, CONFIRM unforced. Left: validate live on solr-18413 and solr-18406 and
-count, per case, the obligations and replays answered before the first witness and the seed flips at forced decisions
-asked after the forced flip was answered (`result.json` `force`), which decides whether the seed path's anchor flips and
-open-arm asks can then be deleted.
+the throw, its path one more COMPOSE disjunct, CONFIRM unforced; solr-18413 and solr-18406 PASS with it (FA4). Left:
+count, per case, the seed flips at forced decisions asked after the forced flip was answered (`result.json` `force`
+`seedFlipsAfterForcedFlip`), which decides whether the seed path's anchor flips and open-arm asks can then be deleted.
 
 **WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** Resume only when a system's chain needs a
 codec hole (a value carried inside an opaque payload); then rebase it onto the body, which deleted its runtime.

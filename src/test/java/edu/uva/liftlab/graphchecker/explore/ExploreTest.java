@@ -158,11 +158,11 @@ public class ExploreTest {
 
     /**
      * PIPELINE §7.10: {@code if (a) { if (b) throw }}, the recording took
-     * not-a.  The first round asks ONE FORCE run of the anchor, first, and
-     * holds the seed's flip at a forced site back; once the forced session
-     * lands -- held apart, no path of the corpus-wide views -- its forced
-     * flip asks a and b at once, and only once that is answered does the
-     * seed's flip of a go out.
+     * not-a.  The first round asks ONE FORCE run of the anchor, first, the
+     * seed's flip of a beside it; once the forced session lands -- held
+     * apart, no path of the corpus-wide views -- its forced flip asks a and
+     * b at once.  Its verdict is read by the flip it asks, whatever id it
+     * was answered under (an id moves as sessions land).
      */
     @Test
     public void theForcedRunIsAskedFirstAndItsPathAsksTheWholeWay()
@@ -190,18 +190,20 @@ public class ExploreTest {
         Path results = out.resolve("obligation_results.jsonl");
         Files.write(results, new byte[0]);
 
-        // Round 0: the FORCE run first; the seed's flip of a waits.
+        // Round 0: the FORCE run first, the seed's flip of a beside it.
         Path wave0 = out.resolve("obligations-0000");
         JsonObject first = plan(iteration, TARGET_SELECTOR, null, results,
                 wave0, 0);
         List<Obligation> proposed = obligations(wave0);
-        assertEquals("the FORCE run alone: " + proposed, 1, proposed.size());
+        assertEquals("the FORCE run, then the seed's flip: " + proposed, 2,
+                proposed.size());
         Obligation force = proposed.get(0);
         assertTrue(force.force() && !force.flips());
         assertEquals(Corpus.pathId("s-seed", TARGET), force.pathId());
-        JsonObject held = first.getAsJsonObject("force");
-        assertEquals("PROPOSED", held.get("state").getAsString());
-        assertEquals(1, held.get("deferredSeedFlips").getAsInt());
+        Obligation seedFlip = proposed.get(1);
+        assertEquals("Guard#u8", seedFlip.siteId());
+        assertEquals("PROPOSED",
+                first.getAsJsonObject("force").get("state").getAsString());
         // Its worker asks no solver: the seed's world, the anchor forced.
         Worker forcing = solve(iteration, wave0, force, out, "force");
         assertEquals(Verdict.SAT_MODEL_READY, forcing.verdict);
@@ -211,9 +213,9 @@ public class ExploreTest {
         assertTrue(focus.get("flip").isJsonNull());
         assertEquals(TARGET.render(),
                 focus.get("declaredTarget").getAsString());
-        // In flight, it is not asked again, and the seed's flip still waits.
+        // In flight, neither is asked again.
         Path flying = out.resolve("in_flight.jsonl");
-        RowCodec.writeAll(flying, Collections.singletonList(force),
+        RowCodec.writeAll(flying, Arrays.asList(force, seedFlip),
                 ExploreCodec::writeObligation);
         Path again = out.resolve("obligations-0000b");
         JsonObject waiting = ExploreMain.plan(iteration, TARGET_SELECTOR,
@@ -249,15 +251,22 @@ public class ExploreTest {
         assertEquals(1, corpus.forcedPaths(TARGET).size());
         assertEquals(3L, corpus.forcedFrom("s-forced"));
 
-        // Round 1: the forced flip, at a's forced arm; the seed's still waits.
+        // Round 1: the forced flip, at a's forced arm; the seed's flies.
+        RowCodec.writeAll(flying, Collections.singletonList(seedFlip),
+                ExploreCodec::writeObligation);
         Path wave1 = out.resolve("obligations-0001");
-        plan(iteration, TARGET_SELECTOR, null, results, wave1, 1);
+        JsonObject asking = ExploreMain.plan(iteration, TARGET_SELECTOR,
+                null, results, flying, iteration.resolve(StaticScopeMap.FILE),
+                wave1, 1, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                DEFAULT_BOUNDS);
         List<Obligation> next = obligations(wave1);
         assertEquals("the forced flip alone: " + next, 1, next.size());
         Obligation whole = next.get(0);
         assertEquals("Guard#u8", whole.siteId());
         assertTrue(whole.flippedOutcome());
         assertEquals(Corpus.pathId("s-forced", TARGET), whole.pathId());
+        assertEquals("OPEN", asking.getAsJsonObject("force")
+                .get("forcedFlipVerdict").getAsString());
         Worker asked = solve(iteration, wave1, whole, out, "forced-flip");
         assertEquals(Verdict.SAT_MODEL_READY, asked.verdict);
         assertEquals("a holds", "true",
@@ -266,17 +275,19 @@ public class ExploreTest {
                 Integer.parseInt(asked.obligation.rootAssignments()
                         .get("CASE.B")) > 5);
 
-        // Answered: the seed's flip of a goes out, counted.
-        record(results, ObligationResult.of(whole.obligationId(),
-                Verdict.UNSAT, "", "no world"));
+        // Answered under an id the flip has since left: read by its flip,
+        // and the seed's flip of a, asked again, counts after it.
+        land(iteration, "obligations-0001", whole, ObligationResult.of(
+                "drifted00000000", Verdict.UNSAT, "", "no world"));
+        Files.delete(flying);
         Path wave2 = out.resolve("obligations-0002");
         JsonObject after = plan(iteration, TARGET_SELECTOR, null, results,
                 wave2, 2);
-        List<Obligation> last = obligations(wave2);
-        assertEquals(1, last.size());
-        assertEquals(Corpus.pathId("s-seed", TARGET), last.get(0).pathId());
-        assertEquals(1, after.getAsJsonObject("force")
-                .get("seedFlipsAfterForcedFlip").getAsInt());
+        JsonObject view = after.getAsJsonObject("force");
+        assertEquals("UNSAT", view.get("forcedFlipVerdict").getAsString());
+        assertEquals(1, view.get("seedFlipsAfterForcedFlip").getAsInt());
+        assertTrue(obligations(wave2).stream().anyMatch(o ->
+                o.pathId().equals(Corpus.pathId("s-seed", TARGET))));
     }
 
     // ---- (1) depth: one decision per wave -----------------------------

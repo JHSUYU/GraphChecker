@@ -217,9 +217,10 @@ public final class ExploreMain {
                     gaps));
         }
         // The forced replay of the anchor first (PIPELINE §7.10).
+        Map<String, List<ObligationResult>> byFlip = answersByFlip(iteration);
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
-                anchorTask(tasks, roots), scope, frontier, answers,
-                candidates, gaps);
+                anchorTask(tasks, roots), scope, frontier, answers, byFlip,
+                candidates);
         Frontier.Round open = frontier.open(round, forced.force,
                 forced.candidates);
 
@@ -275,7 +276,7 @@ public final class ExploreMain {
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
                 witnesses, wave(iteration, corpus), branches, concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
-                open, answersByFlip(iteration)));
+                open, byFlip));
         manifest.add("force", forced.manifest);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
