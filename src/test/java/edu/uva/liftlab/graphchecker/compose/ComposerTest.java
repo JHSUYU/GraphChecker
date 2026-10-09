@@ -7034,31 +7034,65 @@ public class ComposerTest {
 
     /**
      * A constant {@code Enum.valueOf} chose by a name (VM SymEnum) lowers to
-     * that name, defined where it is one of the enum's constants: a compare
-     * of it is a compare of names, and its ordinal where the name stands
-     * among them.  {asked, sat?}.
+     * that name, defined where it is one of the enum's constants -- a name
+     * built by {@code toUpperCase} (Solr's {@code Replica.State.getState})
+     * matched letter by letter: a compare of it is a compare of names, its
+     * {@code toLowerCase} ({@code State.toString}) the chosen constant's,
+     * its ordinal where the name stands among them, and a switch map's read
+     * at that ordinal the case.  {asked, sat?}.
      */
     @Test
     public void anEnumConstantIsItsName() {
         Z3 solver = solver();
-        JsonObject named = enumCall("valueOf", symbol("s",
-                "Ljava/lang/String;"), "pkg/State", "ACTIVE", "DOWN",
-                "RECOVERING");
-        JsonObject active = vmString("equals", named, vmLeaf(
-                "ConStringSymbolExp", "Y_L'String'_ACTIVE",
-                "java/lang/String"));
+        JsonObject named = enumCall("valueOf", vmString("toUpperCase",
+                symbol("s", "Ljava/lang/String;")), "pkg/State", "ACTIVE",
+                "DOWN", "RECOVERING");
+        JsonObject active = vmString("equals", vmLeaf("ConStringSymbolExp",
+                "Y_L'String'_ACTIVE", "java/lang/String"), named);
         active.addProperty("_java_type", "Z");
+        JsonObject text = vmString("equals", vmLeaf("ConStringSymbolExp",
+                "Y_L'String'_active", "java/lang/String"),
+                vmString("toLowerCase", named));
+        text.addProperty("_java_type", "Z");
         JsonObject ordinal = enumCall("ordinal", named, null, "ACTIVE",
                 "DOWN", "RECOVERING");
+        // javac's switch map: ACTIVE -> 1, DOWN -> 2, RECOVERING -> 0.
+        JsonObject map = relation("INDEXED", "SNAPSHOT_BASE", null);
+        for (long entry : new long[] {1L, 2L, 0L}) {
+            map = relation("INDEXED", "APPEND", map, integer("I", entry));
+        }
+        // A map the program filled with plain constants, keyed by name.
+        JsonObject weights = relation("ASSOCIATIVE", "SNAPSHOT_BASE",
+                relation("ASSOCIATIVE", "STATE", symbol(
+                        "M_L'java/util/HashMap'_8", "java/util/HashMap")));
+        weights = relation("ASSOCIATIVE", "PUT", weights, vmLeaf(
+                "ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                "java/lang/String"), integer("I", 1L));
+        weights = relation("ASSOCIATIVE", "PUT", weights, vmLeaf(
+                "ConStringSymbolExp", "Y_L'String'_DOWN",
+                "java/lang/String"), integer("I", 2L));
         String enums = query(Collections.singletonMap("s",
                 VmTermLowering.Sort.STRING), SmtLowering.NO_JOIN, true,
-                new String[] {"isActive", "ord"}, active, ordinal);
+                new String[] {"isActive", "isActiveText", "ord", "caseKey",
+                        "weight"},
+                active, text, ordinal, relation("INDEXED", "READ", "I", map,
+                        ordinal), relation("ASSOCIATIVE", "READ", "I",
+                        weights, named));
         String[][] cases = {
-            {"(and isActive (= s \"ACTIVE\"))", "sat"},
-            {"(and isActive (= s \"DOWN\"))", "unsat"},
-            {"(and (= s \"DOWN\") (= ord 1))", "sat"},
-            {"(and (= s \"DOWN\") (not (= ord 1)))", "unsat"},
-            {"(= s \"BOGUS\")", "unsat"},
+            {"(and isActive (= s \"active\"))", "sat"},
+            {"(and isActive (= s \"AcTiVe\"))", "sat"},
+            {"(and isActive (= s \"down\"))", "unsat"},
+            {"(= s \"bogus\")", "unsat"},
+            {"(= s \"activ\")", "unsat"},
+            {"(and (= s \"down\") (= ord 1))", "sat"},
+            {"(and (= s \"down\") (not (= ord 1)))", "unsat"},
+            {"(and (= s \"Down\") (= caseKey 2))", "sat"},
+            {"(and (= s \"down\") (not (= caseKey 2)))", "unsat"},
+            {"(and isActiveText (= s \"ACTIVE\"))", "sat"},
+            {"(and isActiveText (= s \"down\"))", "unsat"},
+            {"(and (= s \"Down\") (= weight 2))", "sat"},
+            {"(and (= s \"down\") (not (= weight 2)))", "unsat"},
+            {"(and (= s \"active\") (= weight 1))", "sat"},
         };
         for (String[] asked : cases) {
             Z3.Answer answer = solver.ask(enums + "\n(assert " + asked[0]

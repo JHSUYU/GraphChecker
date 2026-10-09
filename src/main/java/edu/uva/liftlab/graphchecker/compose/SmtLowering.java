@@ -1605,23 +1605,10 @@ public final class SmtLowering {
      * names, as the VM states it ({@code equals}).
      */
     private Term enumName(JsonArray arguments, String origin) {
-        if (arguments.size() < 3) {
-            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
-                    ENUM_VALUE_OF + ":ARITY", Sort.STRING);
-        }
-        Term name = dispatch(arguments.get(1), null, origin + ":name");
-        List<Term> constants = enumConstants(arguments, 2, origin);
-        if (name.sort != Sort.STRING || constants == null
-                || nullnessUnknown(Collections.singletonList(name))) {
-            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
-                    ENUM_VALUE_OF + ":NAME_UNSTATED", Sort.STRING);
-        }
-        List<String> member = new ArrayList<String>();
-        for (Term constant : constants) {
-            member.add("(= " + name.text + " " + constant.text + ")");
-        }
-        return definedResult(name.text, Sort.STRING, IntegralWidth.NONE,
-                and(Arrays.asList(stringNonNull(name), or(member))), name);
+        EnumChoice choice = enumChoice(arguments, origin);
+        return choice == null ? refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                ENUM_VALUE_OF + ":NAME_UNSTATED", Sort.STRING)
+                : choice.constant(choice.names);
     }
 
     /** A named constant's ordinal: where its name stands among the enum's
@@ -1629,33 +1616,162 @@ public final class SmtLowering {
     private Term enumOrdinal(JsonArray arguments, String origin) {
         Term name = arguments.size() < 2 ? null
                 : dispatch(arguments.get(0), null, origin + ":constant");
-        List<Term> constants = enumConstants(arguments, 1, origin);
-        if (name == null || name.sort != Sort.STRING || constants == null) {
+        List<String> names = enumNames(arguments, 1);
+        if (name == null || name.sort != Sort.STRING || names == null) {
             return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
                     ENUM_ORDINAL + ":CONSTANT_UNSTATED", Sort.INT);
         }
         // Outside the constants the name is undefined (its valueOf threw).
         String ordinal = "(- 1)";
-        for (int index = constants.size() - 1; index >= 0; index--) {
-            ordinal = "(ite (= " + name.text + " " + constants.get(index).text
+        for (int index = names.size() - 1; index >= 0; index--) {
+            ordinal = "(ite (= " + name.text + " "
+                    + VmExpressionIr.quote(names.get(index))
                     + ") " + index + " " + ordinal + ")";
         }
         return definedResult(ordinal, Sort.INT, IntegralWidth.JAVA_INT,
                 "true", name);
     }
 
-    /** The constant names from {@code from} on, or null where one lowers
-     *  to no String. */
-    private List<Term> enumConstants(JsonArray arguments, int from,
-                                     String origin) {
-        List<Term> constants = new ArrayList<Term>();
-        for (int index = from; index < arguments.size(); index++) {
-            Term constant = dispatch(arguments.get(index), null,
-                    origin + ":constant" + (index - from));
-            if (constant.sort != Sort.STRING) return null;
-            constants.add(constant);
+    /** Which of an enum's constants one {@code valueOf} chose: the name
+     *  each is chosen where, over the operand, and the operand's
+     *  definedness. */
+    private final class EnumChoice {
+        final List<String> names;
+        final List<String> chosen;
+        final Term operand;
+
+        EnumChoice(List<String> names, List<String> chosen, Term operand) {
+            this.names = names;
+            this.chosen = chosen;
+            this.operand = operand;
         }
-        return constants;
+
+        /** The constant chosen, spelled {@code spelled} (the names, or
+         *  their case conversion): defined where one is chosen. */
+        Term constant(List<String> spelled) {
+            String value = VmExpressionIr.quote(
+                    spelled.get(spelled.size() - 1));
+            for (int index = spelled.size() - 2; index >= 0; index--) {
+                value = "(ite " + chosen.get(index) + " "
+                        + VmExpressionIr.quote(spelled.get(index)) + " "
+                        + value + ")";
+            }
+            return definedResult(value, Sort.STRING, IntegralWidth.NONE,
+                    and(Arrays.asList(stringNonNull(operand), or(chosen))),
+                    operand);
+        }
+    }
+
+    /**
+     * {@code valueOf}'s choice ({@code [class, n, c0, ..., ck]}): each
+     * constant where {@code n} is its name.  An {@code n} that is a case
+     * conversion of a String ({@code getState(v)}: {@code
+     * valueOf(v.toUpperCase())}) matches letter by letter: the same length,
+     * each position a letter the conversion takes to the constant's (ASCII;
+     * a letter the conversion never yields matches nothing).  Null where
+     * the name or a constant states no String.
+     */
+    private EnumChoice enumChoice(JsonArray arguments, String origin) {
+        List<String> names = arguments.size() < 3 ? null
+                : enumNames(arguments, 2);
+        if (names == null) return null;
+        JsonElement name = arguments.get(1);
+        Boolean upper = caseConversion(name);
+        Term operand = dispatch(upper == null ? name
+                : name.getAsJsonObject().getAsJsonArray("_param_list").get(0),
+                null, origin + ":name");
+        if (operand.sort != Sort.STRING
+                || nullnessUnknown(Collections.singletonList(operand))) {
+            return null;
+        }
+        List<String> chosen = new ArrayList<String>();
+        for (String constant : names) {
+            chosen.add(upper == null ? "(= " + operand.text + " "
+                    + VmExpressionIr.quote(constant) + ")"
+                    : converts(operand.text, constant, upper));
+        }
+        return new EnumChoice(names, chosen, operand);
+    }
+
+    /** Whether {@code name} is a String's {@code toUpperCase} (true) or
+     *  {@code toLowerCase} (false), or null for neither. */
+    private static Boolean caseConversion(JsonElement name) {
+        if (name == null || !name.isJsonObject()
+                || !VmExpressionIr.STRING_OPERATION_TYPE.equals(
+                        VmExpressionIr.typeOf(name))) {
+            return null;
+        }
+        String operation = optionalString(name.getAsJsonObject(), "_name");
+        return "toUpperCase".equals(operation) ? Boolean.TRUE
+                : "toLowerCase".equals(operation) ? Boolean.FALSE : null;
+    }
+
+    /** {@code (= (toUpperCase x) target)}, or toLowerCase, letter by
+     *  letter. */
+    private static String converts(String operand, String target,
+                                   boolean upper) {
+        List<String> letters = new ArrayList<String>();
+        letters.add("(= (str.len " + operand + ") " + target.length() + ")");
+        for (int index = 0; index < target.length(); index++) {
+            char wanted = target.charAt(index);
+            boolean cased = upper ? Character.isLowerCase(wanted)
+                    : Character.isUpperCase(wanted);
+            if (wanted > 127 || cased) return "false";
+            List<String> any = new ArrayList<String>();
+            for (char from : new LinkedHashSet<Character>(Arrays.asList(
+                    wanted, Character.toLowerCase(wanted),
+                    Character.toUpperCase(wanted)))) {
+                if ((upper ? Character.toUpperCase(from)
+                        : Character.toLowerCase(from)) == wanted) {
+                    any.add("(= (str.at " + operand + " " + index + ") "
+                            + VmExpressionIr.quote(String.valueOf(from)) + ")");
+                }
+            }
+            letters.add(or(any));
+        }
+        return and(letters);
+    }
+
+    /**
+     * A case conversion of a constant {@code valueOf} chose (a node, or
+     * its boundary): the chosen constant's converted name, Java's ({@code
+     * Locale.ROOT}) -- {@code State.toString()}'s {@code
+     * name().toLowerCase(ROOT)}.  Null for any other receiver.
+     */
+    private Term convertedConstant(JsonArray params, boolean upper,
+                                   String origin) {
+        JsonElement receiver = params.size() == 0 ? null : params.get(0);
+        while (receiver != null && VmExpressionIr.consumerBoundary(receiver)) {
+            receiver = receiver.getAsJsonObject().get(
+                    VmExpressionIr.EXPRESSION);
+        }
+        if (receiver == null || !receiver.isJsonObject()
+                || !"MethodExpression".equals(VmExpressionIr.typeOf(receiver))
+                || !ENUM_VALUE_OF.equals(optionalString(
+                        receiver.getAsJsonObject(), "_name"))) {
+            return null;
+        }
+        EnumChoice choice = enumChoice(array(receiver.getAsJsonObject(),
+                "_param_list"), origin + ":constant");
+        if (choice == null) return null;
+        List<String> spelled = new ArrayList<String>();
+        for (String name : choice.names) {
+            spelled.add(upper ? name.toUpperCase(java.util.Locale.ROOT)
+                    : name.toLowerCase(java.util.Locale.ROOT));
+        }
+        return choice.constant(spelled);
+    }
+
+    /** The constant names from {@code from} on, as literals; null where
+     *  one is none. */
+    private static List<String> enumNames(JsonArray arguments, int from) {
+        List<String> names = new ArrayList<String>();
+        for (int index = from; index < arguments.size(); index++) {
+            String name = stringLiteral(arguments.get(index));
+            if (name == null) return null;
+            names.add(name);
+        }
+        return names.isEmpty() ? null : names;
     }
 
     /** The callees that render an integral as its decimal String. */
@@ -4507,6 +4623,12 @@ public final class SmtLowering {
         }
         if ("substring".equals(operation)) {
             return substring(params, origin);
+        }
+        if ("toUpperCase".equals(operation)
+                || "toLowerCase".equals(operation)) {
+            Term converted = convertedConstant(params,
+                    "toUpperCase".equals(operation), origin);
+            if (converted != null) return converted;
         }
         if ("trim".equals(operation)) {
             return trim(params, origin);
