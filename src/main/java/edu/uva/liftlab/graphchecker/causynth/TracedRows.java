@@ -129,14 +129,17 @@ public final class TracedRows {
     }
 
     /**
-     * Which rows this class traces, by name: a recording made under another
-     * rule over the same artifacts lacks rows the aggregation reads (one
-     * before the storing calls' argument rows has no holder edge into a
-     * container's elements, and the recorded heap would call them held by
-     * nothing), so the rule is part of {@link #inputsDigest}.  Renamed with
-     * every change to which rows are traced.
+     * Which rows this class traces and what the aggregation reads in them,
+     * by name: a recording made under another rule over the same artifacts
+     * lacks what the aggregation reads (one before the storing calls'
+     * argument rows has no holder edge into a container's elements, and the
+     * recorded heap would call them held by nothing; one before the method
+     * entries' window names every window's request #1 one causal context),
+     * so the rule is part of {@link #inputsDigest}.  Renamed with every such
+     * change.
      */
-    static final String RULE = "storing calls' receivers and arguments";
+    static final String RULE = "storing calls' receivers and arguments;"
+            + " method entries' windows";
 
     /**
      * The digest of the rows' rule ({@link #RULE}) and the three static

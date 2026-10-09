@@ -718,8 +718,10 @@ reaches, to a fixed point:
     how an object is handed on: `RecordedHeap#confinement`), was mentioned -- as a receiver, an
     argument, a return, a field's holder or value -- under ONE causal context that is not the
     reader's (**confined**): the `c` of an occurrence's `(r,c,i)`, one tick, one served request,
-    one client root, its calls' `requestKey`, which the work it starts carries on any thread, so a
-    pooled thread serving two requests serves two contexts. solr-adhoc-10: a response the unwoven
+    one client root -- its calls' `requestKey` in the recording window it ran in, whose ordinal
+    restarts with each window (`RuntimeRegionPlanner#causalContext`; a turn begun in an older window,
+    which every window counts `#0`, names none) --, which the work it starts carries on any thread,
+    so a pooled thread serving two requests serves two contexts. solr-adhoc-10: a response the unwoven
     javabin codec decodes inside one Overseer task, each of its `NamedList.add` calls an occurrence
     of its own (the trace's call tree breaks at every untraced frame: the calls' `parentCallId` is
     0), stays in that task's context. Any sign of a hand-off keeps the writer (**escaped**): a

@@ -259,7 +259,7 @@ public final class CausynthTraceRecorder {
                         context.remoteParentSpanId, context.source,
                         receiverAttributed,
                         context.requestKey, context.requestApi, address,
-                        folded);
+                        folded, RecordingWindow.index());
         synchronized (LOCK) {
             writeTraceLine(event);
         }
@@ -344,7 +344,8 @@ public final class CausynthTraceRecorder {
                             && context.source.equals(RuntimeTraceContext
                             .sourceFor(call.receiver)), context.requestKey,
                             context.requestApi, opens ? address : "",
-                            call.regionFrame && !opens);
+                            call.regionFrame && !opens,
+                            RecordingWindow.index());
             synchronized (LOCK) {
                 writeTraceLine(event);
             }
@@ -2100,7 +2101,8 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
                     row.stringValue("occurrenceAddress"),
-                    row.longValue("regionFolded", 0L) != 0L));
+                    row.longValue("regionFolded", 0L) != 0L,
+                    row.intValue("window", 0)));
         } else if (("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(
@@ -2219,7 +2221,9 @@ public final class CausynthTraceRecorder {
                 "occurrenceAddress", event.occurrenceAddress.isEmpty()
                         ? null : event.occurrenceAddress,
                 // IDENTITY §1: folded entry, no activation.
-                "regionFolded", event.regionFolded ? 1 : null);
+                "regionFolded", event.regionFolded ? 1 : null,
+                // The window a request key's ordinal counts in.
+                "window", event.window);
     }
 
     private static void writeFieldTraceLine(

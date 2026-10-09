@@ -645,6 +645,6 @@ public class RegionFoldPlanTest {
         return new RuntimeRegionPlanner.MethodEvent(callId, "test", "main",
                 1L, method, 1, "o.a.h.BlockTokenSecretManager", callId,
                 parentCallId, 0L, 1L, 1L, 0L, stamp, receiverAttributed, "",
-                "", address, folded);
+                "", address, folded, 1);
     }
 }

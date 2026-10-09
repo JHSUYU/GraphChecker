@@ -364,8 +364,8 @@ public final class RuntimeRegionPlanner {
      * was handed, and that of a call at a site that returns a field ({@code
      * fieldCalls}) held what it returned.  And the causal context each
      * object was mentioned under: every object a method entry, a field
-     * access or a call row names, under its call's context (the entry's
-     * {@code requestKey}); and each activation's, its root call's.
+     * access or a call row names, under its call's context ({@link
+     * #causalContext}); and each activation's, its root call's.
      */
     static RecordedHeap recordedHeap(Collection<MethodEvent> methods,
                                      Collection<FieldAccessEvent> fields,
@@ -377,8 +377,9 @@ public final class RuntimeRegionPlanner {
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
         Map<Long, String> contexts = new HashMap<>();
         for (MethodEvent event : methods) {
-            contexts.put(event.callId, event.requestKey);
-            heap.mention(event.objectId, event.requestKey);
+            String context = causalContext(event);
+            contexts.put(event.callId, context);
+            heap.mention(event.objectId, context);
         }
         for (Map<String, Object> activation : activations) {
             long root = longNumber(activation.get("rootCallId"), -1L);
@@ -420,6 +421,21 @@ public final class RuntimeRegionPlanner {
             }
         }
         return heap.build();
+    }
+
+    /**
+     * The causal context one entry ran under, for the recorded heap: its
+     * request key ({@code source/request|tick|wake/api#k}) in its recording
+     * window, whose counters the key's {@code k} restarts with
+     * ({@code Lineage}); none ({@code ""}) for an entry under no key, or
+     * under a turn begun in an older window, which every window counts as
+     * {@code #0} ({@code Lineage#rootWindowIndex}) and so names no one
+     * context.
+     */
+    static String causalContext(MethodEvent event) {
+        String key = event.requestKey;
+        if (key.isEmpty() || key.endsWith("#0")) return "";
+        return event.window + "|" + key;
     }
 
     /** One recorded entry that opens an occurrence of one region. */
@@ -2180,15 +2196,21 @@ public final class RuntimeRegionPlanner {
          * entered by unnamed work, which has no owner; not the same as an
          * empty {@link #occurrenceAddress}, which is a refused hole. */
         final boolean regionFolded;
+        /** The recording window the entry ran in ({@code
+         *  RecordingWindow#index}): a request key's ordinal restarts in
+         *  each, so a causal context is the pair. */
+        final int window;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
                     long laneId, long spanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
-                    String occurrenceAddress, boolean regionFolded) {
+                    String occurrenceAddress, boolean regionFolded,
+                    int window) {
             this.occurrenceAddress = nonNull(occurrenceAddress);
             this.regionFolded = regionFolded;
+            this.window = window;
             this.seq = seq;
             this.test = nonNull(test);
             this.threadName = nonNull(threadName);
@@ -2216,7 +2238,7 @@ public final class RuntimeRegionPlanner {
                     objectId, receiverType, callId, parentCallId,
                     parentSiteId, laneId, spanId, remoteParentSpanId,
                     source, receiverAttributed, requestKey, requestApi,
-                    occurrenceAddress, false);
+                    occurrenceAddress, false, window);
         }
     }
 
