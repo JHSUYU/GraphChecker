@@ -196,8 +196,9 @@ read (`MessageDoors#callStarting`, solr-adhoc-13), and every jetty started in th
 - `solr-bug-reindex`'s state roots at writers and non-accessors, only if PLAN still overflows after those two;
 - Seed-replay stalls of the study checks (round SG1, classified by `/bigtemp/vnr3ne/gc-out/solr-body/scripts/
   stall_summary.py`): a poll owing its own context's frontier now polls with no move, and a held wait is let go a grace
-  into an idle stall (IDENTITY §8); the writes keyed by a queue item's own path went with `storingChild`. Still to
-  measure before/after on solr-adhoc-19 and -07; `solr-bug-reindex`'s other rules (`ScheduleReach`, `ScheduleWait`, the
+  into an idle stall, and a held wait bounds no give-up at the line (IDENTITY §8: SG1's 13, 39, 40, 05 and 07 each gave
+  up every slot before the cut once, 11,245 slots); the writes keyed by a queue item's own path went with
+  `storingChild`. Still to measure before/after on solr-adhoc-19 and -07; `solr-bug-reindex`'s other rules (`ScheduleReach`, `ScheduleWait`, the
   lock owner's early slot, the draw scope over the test's own classes, the queue order, `AT_QUESTION_CLOSED`) come in
   only when a Solr seed replay on this body shows the stall each answers.
 Merge the parked `hdfs1-confirm-first` if a confirmation is seen waiting behind witness attempts.
