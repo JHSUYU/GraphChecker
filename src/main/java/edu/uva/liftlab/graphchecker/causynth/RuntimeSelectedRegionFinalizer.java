@@ -133,6 +133,12 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String UNREACHABLE_WRITERS = "unreachableWriters";
     /**
+     * The same, of the writers not crossed to because an object they wrote
+     * the field on, held by nothing recorded, was mentioned by their own
+     * occurrence alone ({@link RecordedHeap#confinedTo}).
+     */
+    public static final String CONFINED_WRITERS = "confinedWriters";
+    /**
      * Activation and plan-row member of an occurrence planned for a class of
      * equivalent deciders ({@link DemandWalk#classDeciders}): {@code
      * members}, the class's size, and its {@code first} (this occurrence)
@@ -1337,8 +1343,11 @@ public final class RuntimeSelectedRegionFinalizer {
         private final RecordedHeap heap;
         /** Reader -> what it could reach ({@link #holdsOthersOnly}). */
         private final Map<String, Set<Integer>> reachable = new HashMap<>();
-        /** Reader -> per field, the writers not crossed to as unreachable. */
+        /** Reader -> per field, the writers not crossed to as unreachable,
+         *  and of those confined ones apart. */
         private final Map<String, Map<String, Set<String>>> unreachable =
+                new LinkedHashMap<>();
+        private final Map<String, Map<String, Set<String>>> confined =
                 new LinkedHashMap<>();
 
         private DemandWalk(StaticProgram program, RegionDemandIndex demands,
@@ -1591,12 +1600,15 @@ public final class RuntimeSelectedRegionFinalizer {
          * reach there: one its own events name ({@link #NAMED_OBJECTS}), one
          * a static field held, or one those held, over the recorded heap
          * ({@link RecordedHeap#reachable}).  Its writer is not crossed to
-         * only when every object it wrote the field on was seen held by
-         * something ({@link RecordedHeap#held}) and none is reachable so; one
-         * the recording saw nothing hold may sit where no recorded edge
-         * leads (a container filled inside unwoven code), and a static
-         * field's ({@code 0}) is one location every reader reads.  Counted
-         * per reader and field ({@link #UNREACHABLE_WRITERS}).  solr-adhoc-10
+         * only when no object it wrote the field on is reachable so, and each
+         * was seen held by something ({@link RecordedHeap#held}) or, held by
+         * nothing recorded, was mentioned by the writer's own occurrence
+         * alone ({@link RecordedHeap#confinedTo}: a response a codec decoded
+         * into a local).  An object nothing recorded held that another
+         * occurrence mentioned escaped where no recorded edge leads, and its
+         * writer stays; so does a static field's ({@code 0}), one location
+         * every reader reads.  Counted per reader and field ({@link
+         * #UNREACHABLE_WRITERS}, {@link #CONFINED_WRITERS}).  solr-adhoc-10
          * SG1: the target reads NamedList.nvPairs only on an arm it did not
          * take, and 3,815 request handlers' writes of their own responses
          * were each a writer of it.</p>
@@ -1623,13 +1635,15 @@ public final class RuntimeSelectedRegionFinalizer {
                 Set<Integer> reach = reachable.computeIfAbsent(
                         readerOccurrence, ignored -> heap.reachable(
                                 namedObjects(reader)));
-                if (!unreachable(wroteOn, reach)
-                        || !unreachable(wroteHeld, reach)) {
-                    return false;
-                }
-                unreachable.computeIfAbsent(readerOccurrence,
-                        ignored -> new TreeMap<>()).computeIfAbsent(cell,
-                        ignored -> new HashSet<>()).add(writerOccurrence);
+                long root = longNumber(writer.get("rootCallId"), -1L);
+                int wrote = unreachable(wroteOn, reach, root);
+                int alsoWrote = unreachable(wroteHeld, reach, root);
+                if (wrote < 0 || alsoWrote < 0) return false;
+                (wrote + alsoWrote > 0 ? confined : unreachable)
+                        .computeIfAbsent(readerOccurrence,
+                                ignored -> new TreeMap<>())
+                        .computeIfAbsent(cell, ignored -> new HashSet<>())
+                        .add(writerOccurrence);
                 return true;
             }
             // objectsOf's unions, compared without building them: asked
@@ -1640,31 +1654,40 @@ public final class RuntimeSelectedRegionFinalizer {
                     && Collections.disjoint(wroteHeld, readHeld);
         }
 
-        /** Whether every one of {@code objects} was seen held, none of them
-         *  a static field's location, and none is in {@code reach}. */
-        private boolean unreachable(Set<Integer> objects,
-                                    Set<Integer> reach) {
+        /** -1 when one of {@code objects} is a static field's location, in
+         *  {@code reach}, or held by nothing recorded and mentioned outside
+         *  the occurrence rooted at {@code root}; else how many of them were
+         *  held by nothing recorded (each confined to that occurrence). */
+        private int unreachable(Set<Integer> objects, Set<Integer> reach,
+                                long root) {
+            int confinedObjects = 0;
             for (int object : objects) {
-                if (object == 0 || !heap.held(object)
-                        || reach.contains(object)) {
-                    return false;
-                }
+                if (object == 0 || reach.contains(object)) return -1;
+                if (heap.held(object)) continue;
+                if (root < 0L || heap.confinedTo(object) != root) return -1;
+                confinedObjects++;
             }
-            return true;
+            return confinedObjects;
         }
 
         /** States on each reader the writers it did not cross to as
-         *  unreachable, per field ({@link #UNREACHABLE_WRITERS}). */
+         *  unreachable, per field ({@link #UNREACHABLE_WRITERS}, {@link
+         *  #CONFINED_WRITERS}). */
         private void stateUnreachableWriters() {
+            state(unreachable, UNREACHABLE_WRITERS);
+            state(confined, CONFINED_WRITERS);
+        }
+
+        private void state(Map<String, Map<String, Set<String>>> byReader,
+                           String member) {
             for (Map.Entry<String, Map<String, Set<String>>> reader
-                    : unreachable.entrySet()) {
+                    : byReader.entrySet()) {
                 Map<String, Integer> counts = new TreeMap<>();
                 for (Map.Entry<String, Set<String>> field
                         : reader.getValue().entrySet()) {
                     counts.put(field.getKey(), field.getValue().size());
                 }
-                program.activations.get(reader.getKey())
-                        .put(UNREACHABLE_WRITERS, counts);
+                program.activations.get(reader.getKey()).put(member, counts);
             }
         }
 

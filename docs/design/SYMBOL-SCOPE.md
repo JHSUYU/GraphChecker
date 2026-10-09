@@ -702,12 +702,20 @@ reaches, to a fixed point:
     `RuntimeRegionPlanner#recordedHeap`: a field access's receiver holds its value; the receiver of
     a call at a store site that mutates through the call holds each object it was handed --
     `TracedRows` traces the call and argument rows at those sites, `#storingCalls` --; an accessor
-    call's receiver holds what it returned). Its writer is not crossed to only when every object it
-    wrote the field on was seen held by something and none is reachable; an object nothing recorded
-    held (filled into a container inside unwoven code) may sit where no recorded edge leads, so its
-    writers stay, and so do a static field's. The reader's plan row states how many writers it did not
-    cross to, per field (`unreachableWriters`), and PLAN their sum per field, in its log and in
-    `runtime_workflow_schedule_index.json`. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,
+    call's receiver holds what it returned). Its writer is not crossed to only when no object it
+    wrote the field on is reachable, and each was seen held by something or, held by nothing
+    recorded, was **confined**: mentioned -- as a receiver, an argument, a return, a field's holder
+    or value -- by the writer's own occurrence alone (`RecordedHeap#confinedTo`, the activation whose
+    root call encloses the event nearest; solr-adhoc-10 PE1: 3,576 of the 3,711 response NamedLists
+    nothing recorded held, decoded by the unwoven javabin codec into a local, never left their
+    thread). An object nothing recorded held that any other occurrence mentioned, on any thread,
+    escaped where no recorded edge leads, and its writers stay; so do a static field's. Known limit
+    (STATUS open defect 65): an object that would escape only through unwoven code in a
+    counterfactual world is not followed. The reader's plan row states how many writers it did not
+    cross to, per field (`unreachableWriters`; of those confined, `confinedWriters`), and PLAN their
+    sums per field, in its log and in `runtime_workflow_schedule_index.json`. This filter is PLAN's
+    only: EXPLORE's writers of a location a reader's recorded reads named (§5.5) are not filtered by
+    reachability or confinement. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,
     `ModifiableSolrParams.vals` and `ClusterState.liveNodes` only on arms it did not take, and every
     request handler's write of its own response (4,597 writers) was its writer.
   - **A message is one exchange leg**: at a cell the capture of a declared IN port names (an IN call
@@ -1060,7 +1068,8 @@ For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows fo
 and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
 reader's node only, held by an occurrence that may hold the read's object: one whose recorded
 accesses in that session name owners, none of them the location's, holds other objects only and is
-no candidate (Writers_W(ℓ) is per object: every state watcher's parse builds its own `Slice`s). A
+no candidate (Writers_W(ℓ) is per object: every state watcher's parse builds its own `Slice`s);
+PLAN's reachability and confinement filter (§4.4) is not applied here. A
 recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
 reference row (a stored null) (`StaticScopeMap#sameType`). A reference row states its object's

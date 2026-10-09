@@ -288,13 +288,24 @@ public final class ConcolicScheduler {
                         arguments.targetOccurrence);
         RuntimeWorkflowDiscovery.Workflow workflow =
                 closure.nearest(arguments.maxJobs);
-        Map<String, Integer> unreachable =
-                unreachableWriters(loaded.regionPlans);
+        Map<String, Integer> unreachable = writersNotCrossed(
+                loaded.regionPlans,
+                RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS);
+        Map<String, Integer> confined = writersNotCrossed(
+                loaded.regionPlans,
+                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS);
         if (!unreachable.isEmpty()) {
             System.err.println("writers not crossed to, every object they"
                     + " wrote the field on held and none reachable from a"
                     + " reader that never touched it, per field: "
                     + unreachable);
+        }
+        if (!confined.isEmpty()) {
+            System.err.println("writers not crossed to, an object they"
+                    + " wrote the field on held by nothing recorded and"
+                    + " mentioned by their own occurrence alone, the rest"
+                    + " held and none reachable from a reader that never"
+                    + " touched it, per field: " + confined);
         }
         if (workflow == null) {
             throw overMaxJobs(closure.scheduledTaskCount(),
@@ -343,14 +354,11 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result,
                 loaded.regionPlanIdentity, taskPlanIdentity);
-        if (!unreachable.isEmpty()) {
-            JsonObject fields = new JsonObject();
-            for (Map.Entry<String, Integer> field : unreachable.entrySet()) {
-                fields.addProperty(field.getKey(), field.getValue());
-            }
-            index.add(RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
-                    fields);
-        }
+        stateWritersNotCrossed(index,
+                RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
+                unreachable);
+        stateWritersNotCrossed(index,
+                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS, confined);
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -1031,15 +1039,28 @@ public final class ConcolicScheduler {
         return summary.append(']').append(deciderClasses(rows)).toString();
     }
 
-    /** Per field, the writers the plan rows' readers did not cross to as
-     *  unreachable ({@link RuntimeSelectedRegionFinalizer
-     *  #UNREACHABLE_WRITERS}), summed; empty for none. */
-    private static Map<String, Integer> unreachableWriters(
-            List<RegionInstancePlan> rows) {
+    /** The index's {@code member}: per field, the count; none for none. */
+    private static void stateWritersNotCrossed(JsonObject index,
+                                               String member,
+                                               Map<String, Integer> counts) {
+        if (counts.isEmpty()) return;
+        JsonObject fields = new JsonObject();
+        for (Map.Entry<String, Integer> field : counts.entrySet()) {
+            fields.addProperty(field.getKey(), field.getValue());
+        }
+        index.add(member, fields);
+    }
+
+    /** Per field, the writers the plan rows' readers did not cross to,
+     *  as their {@code member} states them ({@link
+     *  RuntimeSelectedRegionFinalizer#UNREACHABLE_WRITERS}, {@link
+     *  RuntimeSelectedRegionFinalizer#CONFINED_WRITERS}), summed; empty for
+     *  none. */
+    private static Map<String, Integer> writersNotCrossed(
+            List<RegionInstancePlan> rows, String member) {
         Map<String, Integer> fields = new TreeMap<>();
         for (RegionInstancePlan plan : rows) {
-            JsonElement held = plan.json().get(
-                    RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS);
+            JsonElement held = plan.json().get(member);
             if (held == null || !held.isJsonObject()) continue;
             for (Map.Entry<String, JsonElement> field
                     : held.getAsJsonObject().entrySet()) {

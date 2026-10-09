@@ -4,7 +4,9 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -20,9 +22,14 @@ import java.util.Set;
  * ({@code RuntimeSelectedRegionFinalizer}'s {@code DemandWalk
  * #holdsOthersOnly}).
  *
+ * <p>And where each object was mentioned: the one occurrence whose events
+ * alone name it -- as a receiver, an argument, a return, a field's holder
+ * or value -- or none ({@link #confinedTo}).</p>
+ *
  * <p>An object named by content ({@code CausynthTraceRecorder
  * #nameObservedObjectsFromContent}) may stand for several: their edges are
- * one object's, which only widens what is reachable.</p>
+ * one object's, which only widens what is reachable, and their mentions one
+ * object's, which only narrows what is confined.</p>
  */
 public final class RecordedHeap {
     /** Holders, ascending; {@link #start} and {@link #held} their edges. */
@@ -33,14 +40,29 @@ public final class RecordedHeap {
     private final int[] heldAtAll;
     /** Every object a static field held, ascending. */
     private final int[] roots;
+    /** Object -> the root call of the one occurrence whose events alone
+     *  mention it, or {@link #NOWHERE}. */
+    private final Map<Integer, Long> mentioned;
+
+    /** Mentioned by more than one occurrence, or outside every one. */
+    public static final long NOWHERE = Long.MIN_VALUE;
 
     private RecordedHeap(int[] holders, int[] start, int[] held,
-                         int[] heldAtAll, int[] roots) {
+                         int[] heldAtAll, int[] roots,
+                         Map<Integer, Long> mentioned) {
         this.holders = holders;
         this.start = start;
         this.held = held;
         this.heldAtAll = heldAtAll;
         this.roots = roots;
+        this.mentioned = mentioned;
+    }
+
+    /** The root call of the one occurrence whose events alone mention
+     *  {@code object}, or {@link #NOWHERE}. */
+    public long confinedTo(int object) {
+        Long owner = mentioned.get(object);
+        return owner == null ? NOWHERE : owner;
     }
 
     /** Whether the recording saw anything hold {@code object}. */
@@ -76,6 +98,17 @@ public final class RecordedHeap {
         private long[] edges = new long[1024];
         private int size;
         private final Set<Integer> roots = new HashSet<>();
+        private final Map<Integer, Long> mentioned = new HashMap<>();
+
+        /** An event of the occurrence rooted at {@code owner} ({@link
+         *  #NOWHERE}: of none) mentioned {@code object}; 0 is no object. */
+        public void mention(int object, long owner) {
+            if (object == 0) return;
+            Long before = mentioned.putIfAbsent(object, owner);
+            if (before != null && before != owner) {
+                mentioned.put(object, NOWHERE);
+            }
+        }
 
         /** {@code holder} held {@code object}; 0 is no object. */
         public void edge(int holder, int object) {
@@ -133,7 +166,7 @@ public final class RecordedHeap {
             for (int root : roots) rootIds[next++] = root;
             Arrays.sort(rootIds);
             return new RecordedHeap(holders, start, held,
-                    Arrays.copyOf(heldAtAll, distinct), rootIds);
+                    Arrays.copyOf(heldAtAll, distinct), rootIds, mentioned);
         }
     }
 }

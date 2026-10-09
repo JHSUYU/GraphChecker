@@ -307,10 +307,12 @@ public class RegionGraphOccurrenceKeyTest {
      * the target reads NamedList.nvPairs only so, and 3,815 request
      * handlers' writes of their own responses were each its writer): one
      * its events name, one a static field held, or one those held over the
-     * recorded heap.  A writer is not crossed to only when every object it
-     * wrote the field on was seen held and none is reachable; one never seen
-     * held, or a static field's location, is.  The reader states how many
-     * it did not cross to, per field.
+     * recorded heap.  A writer is not crossed to only when no object it
+     * wrote the field on is reachable, and each was seen held or, held by
+     * nothing recorded, was mentioned by its own occurrence alone; one held
+     * by nothing and mentioned elsewhere, or a static field's location, is
+     * crossed to.  The reader states how many it did not cross to, per
+     * field, and how many of those by an object confined so.
      */
     @Test
     public void aReaderThatNeverTouchedTheFieldReachesWhatItNames()
@@ -323,12 +325,19 @@ public class RegionGraphOccurrenceKeyTest {
                 {"never-held", "REGION.bump", 9},
                 {"under-a-static", "REGION.bump", 11},
                 {"static", "REGION.bump", 0},
+                {"confined", "REGION.bump", 12},
+                {"escaped", "REGION.bump", 13},
         };
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
         heap.edge(1, 7);
         heap.edge(50, 8);
         heap.root(10);
         heap.edge(10, 11);
+        // Held by nothing recorded: 12 mentioned by its writer (root call 7)
+        // alone, 13 by its writer (8) and by another occurrence too.
+        heap.mention(12, 7L);
+        heap.mention(13, 8L);
+        heap.mention(13, 99L);
         List<Map<String, Object>> instances = new ArrayList<>();
         Map<String, String> addresses = new LinkedHashMap<>();
         for (int index = 0; index < activations.length; index++) {
@@ -383,10 +392,12 @@ public class RegionGraphOccurrenceKeyTest {
             }
         }
         Collections.sort(planned);
-        assertEquals(Arrays.asList("never-held", "reachable", "static",
-                "target", "under-a-static"), planned);
+        assertEquals(Arrays.asList("escaped", "never-held", "reachable",
+                "static", "target", "under-a-static"), planned);
         assertEquals(Collections.singletonMap(EPOCH, 1), instances.get(0)
                 .get(RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS));
+        assertEquals(Collections.singletonMap(EPOCH, 1), instances.get(0)
+                .get(RuntimeSelectedRegionFinalizer.CONFINED_WRITERS));
     }
 
     /**

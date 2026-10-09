@@ -1602,8 +1602,10 @@ public final class CausynthTraceRecorder {
                         scopeMap, declaredOccurrence, trace.schedule,
                         RuntimeRegionPlanner.recordedAccesses(trace.fields,
                                 trace.execution, storingCalls, fieldCalls),
-                        RuntimeRegionPlanner.recordedHeap(trace.fields,
-                                trace.execution, storingCalls, fieldCalls));
+                        RuntimeRegionPlanner.recordedHeap(trace.methods,
+                                trace.fields, trace.execution,
+                                activationGraph.runtimeInstances,
+                                storingCalls, fieldCalls));
         // Plan gaps = this pass's plus those the recording stated.
         List<Map<String, Object>> planGaps = new ArrayList<>(closure.gaps);
         planGaps.addAll(trace.lineageGaps);

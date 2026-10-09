@@ -362,14 +362,29 @@ public final class RuntimeRegionPlanner {
      * field's value is a root); the receiver of a call at a store site that
      * mutates through the call ({@code storingCalls}) held each object it
      * was handed, and that of a call at a site that returns a field ({@code
-     * fieldCalls}) held what it returned.
+     * fieldCalls}) held what it returned.  And which occurrence mentioned
+     * each object: every object a method entry, a field access or a call
+     * row names, under the activation whose root call encloses it nearest
+     * ({@code activations}; none encloses an ambient call).
      */
-    static RecordedHeap recordedHeap(Collection<FieldAccessEvent> fields,
+    static RecordedHeap recordedHeap(Collection<MethodEvent> methods,
+                                     Collection<FieldAccessEvent> fields,
                                      Collection<RuntimeEvent> runtime,
+                                     Collection<Map<String, Object>>
+                                             activations,
                                      Map<String, String> storingCalls,
                                      Map<String, String> fieldCalls) {
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
+        Map<Long, Long> owners = occurrenceRoots(methods, activations);
+        for (MethodEvent event : methods) {
+            heap.mention(event.objectId, owners.getOrDefault(event.callId,
+                    RecordedHeap.NOWHERE));
+        }
         for (FieldAccessEvent event : fields) {
+            long owner = owners.getOrDefault(event.callId,
+                    RecordedHeap.NOWHERE);
+            heap.mention(event.receiverObjectId, owner);
+            heap.mention(event.valueObjectId, owner);
             if (event.receiverObjectId == 0) {
                 heap.root(event.valueObjectId);
             } else {
@@ -381,6 +396,8 @@ public final class RuntimeRegionPlanner {
         Map<Long, Integer> storing = new HashMap<>();
         Map<Long, Integer> returning = new HashMap<>();
         for (RuntimeEvent event : sorted(runtime, value -> value.seq)) {
+            heap.mention(event.objectId, owners.getOrDefault(event.callId,
+                    RecordedHeap.NOWHERE));
             if ("CALL_SITE_ENTER".equals(event.kind)) {
                 if (storingCalls.containsKey(event.siteId)) {
                     storing.put(event.invocationId, event.objectId);
@@ -400,6 +417,37 @@ public final class RuntimeRegionPlanner {
             }
         }
         return heap.build();
+    }
+
+    /** Call -> the root call of the activation enclosing it nearest; a
+     *  call no activation encloses has none. */
+    private static Map<Long, Long> occurrenceRoots(
+            Collection<MethodEvent> methods,
+            Collection<Map<String, Object>> activations) {
+        Map<Long, Long> parents = new HashMap<>();
+        for (MethodEvent event : methods) {
+            parents.put(event.callId, event.parentCallId);
+        }
+        Map<Long, Long> owners = new HashMap<>();
+        for (Map<String, Object> activation : activations) {
+            long root = longNumber(activation.get("rootCallId"), -1L);
+            if (root > 0L) owners.put(root, root);
+        }
+        for (Long call : parents.keySet()) {
+            List<Long> path = new ArrayList<>();
+            Long at = call;
+            Long owner = null;
+            while (at != null && at > 0L) {
+                owner = owners.get(at);
+                if (owner != null) break;
+                path.add(at);
+                at = parents.get(at);
+            }
+            long found = owner == null ? RecordedHeap.NOWHERE : owner;
+            for (Long passed : path) owners.put(passed, found);
+        }
+        owners.values().removeIf(owner -> owner == RecordedHeap.NOWHERE);
+        return owners;
     }
 
     /** One recorded entry that opens an occurrence of one region. */
@@ -1381,7 +1429,8 @@ public final class RuntimeRegionPlanner {
             // the writers it did not cross to as unreachable.
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
-                    RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS}) {
+                    RuntimeSelectedRegionFinalizer.UNREACHABLE_WRITERS,
+                    RuntimeSelectedRegionFinalizer.CONFINED_WRITERS}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
                 }
