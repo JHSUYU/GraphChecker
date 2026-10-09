@@ -813,6 +813,22 @@ public class ContractTest {
                 RootMintRow.CLOCK_SKEW));
         assertEquals(target, RowCodec.readTarget(
                 reline(RowCodec.writeTarget(target))));
+        // A FORCED run's rows (PIPELINE §7.10): a decision states the arm
+        // its operands decided, a target its forcing, which observed no
+        // fatal; a row of any other run states neither.
+        DecisionRow forcedDecision = decision.forced(true);
+        TargetRow forcedTarget = target.forced();
+        assertEquals(forcedDecision, RowCodec.readDecision(
+                reline(RowCodec.writeDecision(forcedDecision)),
+                new RowPool()));
+        assertEquals(forcedTarget, RowCodec.readTarget(
+                reline(RowCodec.writeTarget(forcedTarget))));
+        assertTrue(forcedDecision.isForced()
+                && forcedDecision.concreteOutcome()
+                && !forcedDecision.outcome());
+        assertTrue(forcedTarget.isForced() && !forcedTarget.observedFatal());
+        assertFalse(RowCodec.writeDecision(decision).has("forced")
+                || RowCodec.writeTarget(target).has("forced"));
         assertEquals(gap, RowCodec.readGap(reline(RowCodec.writeGap(gap))));
         // The parts a reader joins on survive the line form: the context, the
         // index, the site index, the session order and the declared sorts.

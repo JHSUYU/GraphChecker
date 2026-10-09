@@ -2,6 +2,7 @@
 
 #include "concolic/concolicMngr.hpp"
 #include "concolic/exp/containerExpression.hpp"
+#include "concolic/exp/symbolExpression.hpp"
 #include "concolic/exp/typeCastExpression.hpp"
 #include "concolic/methodSymbolizer.hpp"
 #include "concolic/reference/containerSupport.hpp"
@@ -24,13 +25,16 @@ const char *const COLLECTORS = "java/util/stream/Collectors";
 const char *const UNMODIFIABLE_ENTRY_SET =
     "java/util/Collections$UnmodifiableMap$UnmodifiableEntrySet";
 
-enum StageKind { FILTER, MAP, LIMIT, SORTED, DISTINCT, TEST, ACTION };
+enum StageKind {
+  FILTER, MAP, LIMIT, SORTED, DISTINCT, TEST, ACTION, KEY, VALUE
+};
 
 // The terminal a pipeline ends in.  TEST is a match's predicate, ACTION
-// forEach's action: the last stage of their pipelines.
+// forEach's action, KEY and VALUE toMap's key and value mappers: the last
+// stages of their pipelines.
 enum Terminal {
-  NO_TERMINAL, TO_LIST, TO_SET, TO_ARRAY, COUNT, ANY_MATCH, ALL_MATCH,
-  NONE_MATCH, FIND, FOR_EACH
+  NO_TERMINAL, TO_LIST, TO_SET, TO_MAP, TO_ARRAY, COUNT, ANY_MATCH,
+  ALL_MATCH, NONE_MATCH, FIND, FOR_EACH
 };
 
 enum CollectorKind { COLLECTOR_TO_LIST = 1, COLLECTOR_TO_SET = 2 };
@@ -109,6 +113,60 @@ Expression *counted(int count) {
   return chain;
 }
 
+// A collector's accumulator.  Collectors.toList()/toSet() make a new
+// collector per call around the one accumulator their non-capturing method
+// reference (List::add, Set::add) always yields, so the accumulator names
+// the kind: one entry per kind, and a collector kept in a field is known
+// at every use.
+oop accumulator_of(oop collector) {
+  return collector == NULL ? (oop) NULL
+      : OopUtils::obj_field_by_name(collector, "accumulator",
+                                    "Ljava/util/function/BiConsumer;");
+}
+
+// What a toMap collector calls back: its key and value mappers and its
+// merge function, which its accumulator `(map, element) -> map.merge(
+// keyMapper.apply(element), valueMapper.apply(element), mergeFunction)` --
+// a Collectors lambda, one per call, known by its shape, never named in a
+// table -- captured in that order (the lambda's fields arg$1..arg$3), and
+// the map supplier.  False for any other collector.
+struct MapCollector {
+  oop key;
+  oop value;
+  oop merge;
+  oop supplier;
+};
+
+const char *const COLLECTORS_LAMBDA = "java/util/stream/Collectors$$Lambda$";
+
+bool map_collector(oop collector, MapCollector *parts) {
+  oop accumulator = accumulator_of(collector);
+  if (accumulator == NULL || !accumulator->klass()->name()->starts_with(
+          COLLECTORS_LAMBDA, (int) strlen(COLLECTORS_LAMBDA))) {
+    return false;
+  }
+  parts->key = OopUtils::obj_field_by_name(accumulator, "arg$1",
+                                           "Ljava/util/function/Function;");
+  parts->value = OopUtils::obj_field_by_name(accumulator, "arg$2",
+                                             "Ljava/util/function/Function;");
+  parts->merge = OopUtils::obj_field_by_name(accumulator, "arg$3",
+      "Ljava/util/function/BinaryOperator;");
+  parts->supplier = OopUtils::obj_field_by_name(collector, "supplier",
+      "Ljava/util/function/Supplier;");
+  return parts->key != NULL && parts->value != NULL && parts->merge != NULL
+      && parts->supplier != NULL;
+}
+
+// Whether `map` is one the map model states (SymMap): the empty base a
+// toMap's chain starts at is its state.
+bool modeled_map(oop map) {
+  const ContainerSupport::Capability capability =
+      ContainerSupport::capability(map);
+  return capability == ContainerSupport::CAPABILITY_HASH_MAP
+      || capability == ContainerSupport::CAPABILITY_CONCURRENT_MAP
+      || capability == ContainerSupport::CAPABILITY_HASHTABLE;
+}
+
 struct Stage {
   StageKind kind;
   // The functional object called back (FILTER, MAP, TEST, ACTION, SORTED
@@ -127,8 +185,10 @@ struct Stage {
       : kind(stage_kind), function(NULL_SYM_RID), bound(NULL),
         concrete_bound(0), passed(0), arrivals(NULL) {}
   bool calls_back() const {
-    return kind == FILTER || kind == MAP || kind == TEST || kind == ACTION;
+    return kind == FILTER || maps() || kind == TEST || kind == ACTION;
   }
+  // A callback whose answer is a value, not a decision.
+  bool maps() const { return kind == MAP || kind == KEY || kind == VALUE; }
   bool barrier() const { return kind == SORTED || kind == DISTINCT; }
   Expression *bound_expression() const {
     return bound != NULL ? bound
@@ -154,26 +214,46 @@ struct Element {
   Expression *existence;
   Expression *guard;
   bool in_run;
+  // toMap's: what its mappers answered for it, and whether the key is
+  // symbolic.
+  Expression *key;
+  bool symbolic_key;
+  Expression *mapped;
   Element()
       : stage(0), value(NULL), symbolic_value(false), existence(NULL),
-        guard(NULL), in_run(true) {}
+        guard(NULL), in_run(true), key(NULL), symbolic_key(false),
+        mapped(NULL) {}
   // Where it is there at all: its existence and its decisions.
   Expression *whole() const { return conjunction(existence, guard); }
 };
 
 // One member of the stated result: its value and the condition it is
-// there under.
+// there under; a map's under its key, and what the merge function answered
+// when the run found the key already there (`merged`; a null answer
+// `removes` it).
 struct Output {
   Expression *value;
   Expression *guard;
   bool in_run;
-  Output(Expression *output_value, Expression *output_guard, bool run)
-      : value(output_value), guard(output_guard), in_run(run) {}
+  Expression *key;
+  bool symbolic_key;
+  bool merged;
+  bool removes;
+  Expression *merge;
+  Output(Expression *output_value, Expression *output_guard, bool run,
+         Expression *output_key = NULL, bool symbolic = false)
+      : value(output_value), guard(output_guard), in_run(run),
+        key(output_key), symbolic_key(symbolic), merged(false),
+        removes(false), merge(NULL) {}
 };
 
 const size_t NO_PENDING = (size_t) -1;
 // A callback no stage makes (toArray's array generator).
 const size_t IGNORED = (size_t) -2;
+// toMap's merge function, called for the member that arrived last.
+const size_t MERGING = (size_t) -3;
+// toMap's supplier, making the map the members go into.
+const size_t SUPPLYING = (size_t) -4;
 
 }  // namespace
 
@@ -187,7 +267,9 @@ public:
         _terminal(NO_TERMINAL), _pending(NO_PENDING), _pending_argument(0),
         _live(false), _pulled(0), _symbolic(false), _pinned(NULL),
         _barrier_met(false), _seen_callback(false), _stopped(false),
-        _over_bound(false), _deciding(NULL), _guarded_action(false) {}
+        _over_bound(false), _deciding(NULL), _guarded_action(false),
+        _merge(NULL_SYM_RID), _supplier(NULL_SYM_RID),
+        _nullable_value(false) {}
 
   ~StreamPipeline() {
     if (_source != NULL) JNIHandles::destroy_weak_global(_source);
@@ -230,6 +312,23 @@ public:
           handle.get_param<oop>(1));
       _stages.push_back(last);
     }
+    MapCollector parts;
+    if (terminal == TO_MAP && map_collector(handle.get_param<oop>(1), &parts)) {
+      // Per element: the key mapper, the value mapper, and -- where the map
+      // already holds the key -- the merge function.  The supplier is
+      // called back too, so an application's runs hooked, and the map it
+      // makes is checked to be the empty base the chain starts at.
+      Stage key(KEY);
+      key.function = ConcolicMngr::ctx->name_reference(parts.key);
+      _stages.push_back(key);
+      Stage value(VALUE);
+      value.function = ConcolicMngr::ctx->name_reference(parts.value);
+      _stages.push_back(value);
+      _merge = ConcolicMngr::ctx->name_reference(parts.merge);
+      handle.add_functional(_merge);
+      _supplier = ConcolicMngr::ctx->name_reference(parts.supplier);
+      handle.add_functional(_supplier);
+    }
     for (size_t index = 0; index < _stages.size(); ++index) {
       if (_stages[index].function != NULL_SYM_RID) {
         handle.add_functional(_stages[index].function);
@@ -240,10 +339,43 @@ public:
   }
 
   /**
-   * A callback of `receiver` is entering with `argument`: places it, and
-   * answers the seed of its parameter.
+   * A callback of `receiver` is entering with `arguments`: places it, and
+   * answers the seeds of its parameters.
    */
-  Expression *enter(sym_rid_t receiver, oop argument) {
+  void enter(sym_rid_t receiver, const std::vector<oop> &arguments,
+             exp_list_t *seeds) {
+    if (_terminal == TO_MAP && receiver == _merge) {
+      merging(arguments, seeds);
+      return;
+    }
+    if (_terminal == TO_MAP && receiver == _supplier) {
+      _pending = SUPPLYING;
+      return;
+    }
+    seeds->push_back(place(receiver,
+                           arguments.empty() ? (oop) NULL : arguments[0]));
+  }
+
+  /**
+   * The callback placed last returns `result` (an object result is
+   * `returned`); `argument` is the object its frame holds as its first
+   * argument now, the one it entered with when it is still that object.
+   */
+  void leave(const CallbackResult &result, oop returned, oop argument) {
+    if (result.threw) return;
+    fold(result, returned,
+         (uintptr_t) argument == _pending_argument ? argument : (oop) NULL);
+  }
+
+  Expression *finish(MethodSymbolizerHandle &handle);
+
+  // Whether a terminal unwinding now leaves something symbolic unstated.
+  bool unwinds() const { return _symbolic; }
+
+private:
+  // Places the callback of `receiver` entering with `argument`, and
+  // answers its parameter's seed.
+  Expression *place(sym_rid_t receiver, oop argument) {
     _pending = IGNORED;
     _pending_argument = (uintptr_t) argument;
     if (_pinned != NULL) return NULL;
@@ -269,23 +401,27 @@ public:
     return seed(argument);
   }
 
-  /**
-   * The callback placed last returns `result` (an object result is
-   * `returned`); `argument` is the object its frame holds as its first
-   * argument now, the one it entered with when it is still that object.
-   */
-  void leave(const CallbackResult &result, oop returned, oop argument) {
-    if (result.threw) return;
-    fold(result, returned,
-         (uintptr_t) argument == _pending_argument ? argument : (oop) NULL);
+  // toMap's merge function, called for the member that arrived last, whose
+  // key the map already held: seeded with the value there, a READ of the
+  // members before it (on a base no object holds: the chain is stated on
+  // the result when the terminal returns), and the member's own value.
+  void merging(const std::vector<oop> &arguments, exp_list_t *seeds) {
+    _pending = IGNORED;
+    if (_pinned != NULL || _over_bound || _outputs.empty()) return;
+    _pending = MERGING;
+    const Output &last = _outputs.back();
+    bool unknown = false;
+    exp_list_t at;
+    at.push_back(last.key);
+    oop old = arguments.empty() ? (oop) NULL : arguments[0];
+    seeds->push_back(relation("ASSOCIATIVE", "READ",
+        map_chain(empty_base("ASSOCIATIVE", NULL), _outputs.size() - 1,
+                  &unknown),
+        at, ContainerSupport::result_type(old, T_OBJECT), NULL, NULL,
+        ContainerSupport::java_type(old, T_OBJECT)));
+    seeds->push_back(last.value);
   }
 
-  Expression *finish(MethodSymbolizerHandle &handle);
-
-  // Whether a terminal unwinding now leaves something symbolic unstated.
-  bool unwinds() const { return _symbolic; }
-
-private:
   // The first stage that calls `receiver` back, or NO_PENDING.
   size_t stage_of(sym_rid_t receiver) const {
     if (receiver == NULL_SYM_RID) return NO_PENDING;
@@ -414,10 +550,51 @@ private:
     }
   }
 
+  // What a callback that answers a value answered, when that is an
+  // expression: its own, or one the object it returned carries.
+  Expression *mapped(const CallbackResult &result, oop returned) {
+    Expression *own = result.symbolic ? result.result
+        : ContainerSupport::semantic_value(returned);
+    if (own != NULL) _symbolic = true;
+    return own;
+  }
+
   void fold(const CallbackResult &result, oop returned, oop argument) {
     const size_t at = _pending;
     _pending = NO_PENDING;
     if (at == NO_PENDING || at == IGNORED || _pinned != NULL) return;
+    if (at == SUPPLYING) {
+      // The chain starts at an exact empty map the map model states: a
+      // supplier's map of another class, one holding members (or none the
+      // walk can read), or one whose state is tracked, is no such base.
+      std::vector<oop> keys;
+      std::vector<oop> values;
+      const char *unreadable = NULL;
+      bool over_bound = false;
+      if (returned != NULL
+          && (!modeled_map(returned)
+              || !ContainerSupport::read_concrete_members(returned, &keys,
+                  &values, &unreadable, &over_bound)
+              || !keys.empty()
+              || ConcolicMngr::ctx->find_container_state(returned) != NULL
+              || SharedFieldVersions::is_tracked(
+                     ContainerSupport::state_location(returned)))) {
+        pin_all("SUPPLIED_MAP");
+      }
+      return;
+    }
+    if (at == MERGING) {
+      // What the run stored where the map held the key: the merge
+      // function's answer, a null one removing it.
+      Output &last = _outputs.back();
+      Expression *own = mapped(result, returned);
+      last.merged = true;
+      last.removes = result.returned_null;
+      last.merge = own != NULL ? own
+          : ContainerSupport::concrete_value(returned);
+      if (result.path != NULL) _pin_reasons.push_back("MAP_PATH");
+      return;
+    }
     const Stage &called = _stages[at];
     if (called.kind == SORTED) {
       // A comparator's answer orders what a barrier holds, which no
@@ -438,19 +615,41 @@ private:
     // expression holds on its path.  Named, not pinned: the path holds the
     // models' concrete-answer conditions too, and pinning those would hold
     // every read inside the callback to the run's answer.
-    if (result.path != NULL && (called.kind == MAP || result.symbolic)) {
-      _pin_reasons.push_back(called.kind == MAP ? "MAP_PATH"
-                                                : "CALLBACK_PATH");
+    if (result.path != NULL && (called.maps() || result.symbolic)) {
+      _pin_reasons.push_back(called.maps() ? "MAP_PATH" : "CALLBACK_PATH");
     }
     if (called.kind == MAP) {
-      Expression *own = result.symbolic ? result.result
-          : ContainerSupport::semantic_value(returned);
+      Expression *own = mapped(result, returned);
       _current.value = own;
       _current.symbolic_value = own != NULL;
-      if (own != NULL) _symbolic = true;
       // A list's members are named from the list it collected
       // (fill_values); a set's have no position to be read back by.
       if (_terminal == TO_SET) name_value(returned);
+      ++_current.stage;
+      advance();
+      return;
+    }
+    if (called.kind == KEY || called.kind == VALUE) {
+      // toMap's mappers, both called with the element: its key and its
+      // value, named as they are (a map's member has no position to be
+      // read back by either).
+      Expression *own = mapped(result, returned);
+      Expression *named = own != NULL ? own
+          : ContainerSupport::concrete_value(returned);
+      std::string text;
+      jint number;
+      // A value some world may spell otherwise: not a constant.
+      const bool varies = own != NULL && !own->concrete_string_value(&text)
+          && !own->concrete_int_value(&number);
+      if (called.kind == KEY) {
+        _current.key = named;
+        _current.symbolic_key = varies;
+      } else {
+        _current.mapped = named;
+        // HashMap.merge throws on a null value, which the chain states as a
+        // PUT: a world where this one is null is named, not stated.
+        _nullable_value = _nullable_value || varies;
+      }
       ++_current.stage;
       advance();
       return;
@@ -568,7 +767,10 @@ private:
   }
 
   void arrive() {
-    output(Output(_current.value, _current.whole(), _current.in_run));
+    output(_terminal == TO_MAP
+        ? Output(_current.mapped, _current.whole(), _current.in_run,
+                 _current.key, _current.symbolic_key)
+        : Output(_current.value, _current.whole(), _current.in_run));
     if (_terminal == FIND && _current.in_run) _stopped = true;
   }
 
@@ -634,6 +836,8 @@ private:
     }
     return chain;
   }
+  Expression *map_chain(Expression *base, size_t members,
+                        bool *unknown) const;
   // The outputs as an INDEXED chain on `base`: their values, or -- a
   // count's, a match's -- one mark each.
   Expression *indexed_chain(Expression *base, bool values) const {
@@ -685,7 +889,58 @@ private:
   std::vector<std::string> _pin_reasons;
   // The application method the body ran unhooked, or empty.
   std::string _muted;
+  // toMap's merge function and supplier, by session id, and whether a
+  // value it collected may be null in another world.
+  sym_rid_t _merge;
+  sym_rid_t _supplier;
+  bool _nullable_value;
 };
+
+// The first `members` outputs as a map's chain on `base`, each as HashMap.
+// merge stores it: its value where get(key) is null, and where it is not
+// what the merge function answered -- removed for null, an UNKNOWN cell
+// where the run never called it (`*unknown`).  Only where an earlier key
+// may equal this one -- the run merged it, or a key so far is symbolic --
+// is the test stated; otherwise the key is new in every world.
+Expression *StreamPipeline::map_chain(Expression *base, size_t members,
+                                      bool *unknown) const {
+  Expression *chain = base;
+  bool colliding = false;
+  for (size_t index = 0; index < members; ++index) {
+    const Output &member = _outputs[index];
+    colliding = colliding || member.symbolic_key;
+    exp_list_t put;
+    put.push_back(member.key);
+    put.push_back(member.value);
+    if (!member.merged && (index == 0 || !colliding)) {
+      chain = relation("ASSOCIATIVE", member.guard == NULL ? "PUT" : "PUT_IF",
+                       chain, put, T_OBJECT, member.guard);
+      continue;
+    }
+    exp_list_t test;
+    test.push_back(member.key);
+    test.push_back(SymbolExpression::get(Sym_NULL));
+    Expression *absent = relation("ASSOCIATIVE", "MATCHES", chain, test,
+                                  T_BOOLEAN);
+    ContainerSupport::state_answer(absent, !member.merged);
+    Expression *present = conjunction(member.guard, negation(absent));
+    chain = relation("ASSOCIATIVE", "PUT_IF", chain, put, T_OBJECT,
+                     conjunction(member.guard, absent));
+    exp_list_t merged;
+    merged.push_back(member.key);
+    if (member.merged && member.removes) {
+      chain = relation("ASSOCIATIVE", "REMOVE_IF", chain, merged, T_OBJECT,
+                       present);
+      continue;
+    }
+    if (!member.merged) *unknown = true;
+    merged.push_back(member.merged ? member.merge
+                                   : ContainerSupport::unknown_cell());
+    chain = relation("ASSOCIATIVE", "PUT_IF", chain, merged, T_OBJECT,
+                     present);
+  }
+  return chain;
+}
 
 // A pipeline no stage of which calls back: its elements are the result's
 // members, in the order the source gave them (a list, an array), or are
@@ -922,6 +1177,22 @@ Expression *StreamPipeline::finish(MethodSymbolizerHandle &handle) {
                                        "COLLECT");
       return NULL;
     }
+    case TO_MAP: {
+      // The supplier's map, an empty modeled one (fold, SUPPLYING).
+      if (result == NULL) return NULL;
+      ContainerExpression *base = empty_base("ASSOCIATIVE",
+          ConcolicMngr::ctx->container_state(result, "ASSOCIATIVE"));
+      base->state_members(ContainerSupport::iteration_order(result), 0);
+      bool unknown = false;
+      Expression *chain = map_chain(base, _outputs.size(), &unknown);
+      // A cell no run stated, as the map model's merge names its own.
+      if (unknown) name("MERGE");
+      if (_nullable_value) name("NULL_VALUE");
+      ContainerSupport::publish_filled(result, base,
+                                       with_pins("ASSOCIATIVE", chain),
+                                       "COLLECT");
+      return NULL;
+    }
     case COUNT:
       return new TypeCastExpression(query("INDEXED", "SIZE",
           indexed_chain(empty_base("INDEXED", NULL), false), T_INT),
@@ -1008,17 +1279,6 @@ void stop_recording(oop stream, const char *prefix,
   delete pipeline;
 }
 
-// A collector's accumulator.  Collectors.toList()/toSet() make a new
-// collector per call around the one accumulator their non-capturing method
-// reference (List::add, Set::add) always yields, so the accumulator names
-// the kind: one entry per kind, and a collector kept in a field is known
-// at every use.
-oop accumulator_of(oop collector) {
-  return collector == NULL ? (oop) NULL
-      : OopUtils::obj_field_by_name(collector, "accumulator",
-                                    "Ljava/util/function/BiConsumer;");
-}
-
 Terminal terminal_of(MethodSymbolizerHandle &handle) {
   const std::string &method = handle.get_callee_name();
   if (method == "count") return COUNT;
@@ -1036,6 +1296,8 @@ Terminal terminal_of(MethodSymbolizerHandle &handle) {
               accumulator->get_sym_rid());
     if (kind == COLLECTOR_TO_LIST) return TO_LIST;
     if (kind == COLLECTOR_TO_SET) return TO_SET;
+    MapCollector parts;
+    if (map_collector(handle.get_param<oop>(1), &parts)) return TO_MAP;
   }
   return NO_TERMINAL;
 }
@@ -1157,8 +1419,7 @@ void SymStream::seed_callback(MethodSymbolizerHandle &call,
                               exp_list_t *seeds, Expression **) {
   StreamPipeline *pipeline = recorded(call.get_param<oop>(0));
   if (pipeline == NULL) return;
-  seeds->push_back(pipeline->enter(receiver, arguments.empty() ? (oop) NULL
-                                                               : arguments[0]));
+  pipeline->enter(receiver, arguments, seeds);
 }
 
 void SymStream::unwound(MethodSymbolizerHandle &call) {

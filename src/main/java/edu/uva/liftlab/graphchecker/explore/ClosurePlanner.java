@@ -756,7 +756,9 @@ public final class ClosurePlanner {
         for (Map.Entry<String, Set<String>> session : kept.entrySet()) {
             for (String symbol : session.getValue()) {
                 AttachRow attach = corpus.attach(session.getKey(), symbol);
-                if (attach != null
+                // A forced world's arrival came from no run's world.
+                if (attach != null && attach.seq()
+                        < corpus.forcedFrom(session.getKey())
                         && paired.add(session.getKey() + "|" + symbol)) {
                     producers(walk, attach, next);
                 }

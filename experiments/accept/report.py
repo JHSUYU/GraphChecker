@@ -71,6 +71,14 @@ import glob, json, os, re, sys
 # configured Boolean.
 RPC_FAILURE = {"kinds": ("MARKER_FLIPPED",),
                "fault": ("org.apache.hadoop.ipc.Client",), "clocks": False}
+# A Solr transport fault: an HTTP exchange or a ZooKeeper call.
+SOLR_TRANSPORT_FAULT = {
+    "kinds": ("MARKER_FLIPPED",),
+    "fault": ("org.apache.solr.client.solrj.impl.HttpSolrClient",
+              "org.apache.solr.client.solrj.impl.Http2SolrClient",
+              "org.apache.solr.common.cloud.SolrZkClient",
+              "org.apache.zookeeper.ZooKeeper"),
+    "clocks": False}
 EXPECTED_MECHANISM = {
     "hdfs-17960":      {"kinds": ("MARKER_FLIPPED",),
                         "root": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
@@ -99,13 +107,26 @@ EXPECTED_MECHANISM = {
     # (DeleteCollectionCmd.checkAliasReference), so the source stays
     # read-only.  What fails it is a transport fault after that step: an
     # HTTP exchange (an operator's request) or a ZooKeeper write.
-    "solr-bugs-reindex-cleanup": {
+    "solr-bugs-reindex-cleanup": SOLR_TRANSPORT_FAULT,
+    # The other Solr bug checks (docs/handover/TODO.md "Solr"): each fails
+    # by a transport fault, or by a node's cluster-state view re-paired with
+    # an older version.  migrate-buffer-leak: a fault at a door after the
+    # first MIGRATE's buffer step leaves the target BUFFERING, so the retried
+    # MIGRATE is refused.  overseer-lock-leak: ZooKeeper's OperationTimeout at
+    # markTaskAsRunning's runningMap.put leaks the collection lock.
+    # restore-construction: a failed first RESTORE leaves the shards in
+    # CONSTRUCTION.  snapshot-no-active and tra-start-overwrite: the
+    # Overseer's view of a replica, the routing node's aliases, at a version
+    # before the write that changed them.
+    "solr-bugs-migrate-buffer-leak": SOLR_TRANSPORT_FAULT,
+    "solr-bugs-overseer-lock-leak": {
         "kinds": ("MARKER_FLIPPED",),
-        "fault": ("org.apache.solr.client.solrj.impl.HttpSolrClient",
-                  "org.apache.solr.client.solrj.impl.Http2SolrClient",
-                  "org.apache.solr.common.cloud.SolrZkClient",
+        "fault": ("org.apache.solr.common.cloud.SolrZkClient",
                   "org.apache.zookeeper.ZooKeeper"),
         "clocks": False},
+    "solr-bugs-restore-construction": SOLR_TRANSPORT_FAULT,
+    "solr-bugs-snapshot-no-active": {"kinds": ("STATE_PAIRING_FLIPPED",)},
+    "solr-bugs-tra-start-overwrite": {"kinds": ("STATE_PAIRING_FLIPPED",)},
     # ZooKeeper 3.9.  zk-bugs-quota-init: createQuota's limit node is
     # written and its client sees the request fail (a ZooKeeper write door's
     # fault), so the stat node is never created and the retried call's

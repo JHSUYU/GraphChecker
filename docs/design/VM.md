@@ -66,6 +66,14 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Branches.** The weave marks decision sites with `markConcolicBranch(siteId, ...)`; a marked
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
+  **Forcing** (`System.forceNextConcolicBranch(jump)`, a forced replay's, PIPELINE §7.10): asked
+  just before a marker, it binds to that marker's branch alone (`ThreadContext::mark_branch`; a refused
+  marker drops it): the marked `if*` jumps or falls through as asked in place of what its operands decide
+  (`BI` `CONCOLIC_FORCE_BRANCH`), only for a pending marker of the current frame, once, and only where the
+  branch's event is recorded (`ThreadContext::recording_branches` and `can_do_concolic`: a branch recording
+  is paused or aborted at is not forced, and the forcing goes); the condition recorded is the forced arm's,
+  and the event states `forced` and `concrete`, the outcome it overrode (1/0).  A switch is never forced.
+  Answers 0, or -1 with no thread context.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
   engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
   program thread (an inheritable thread-local's `childValue` in `Thread.init`,
@@ -80,10 +88,10 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 | constants, `new` | push no expression |
 | loads, stores, `iinc`, stack ops | move the shadow |
 | int/long/float/double arithmetic, `neg`, shifts; the 15 conversions (`TypeCastExpression`) | build the expression; `iand`/`ior`/`ixor` over booleans become `&&`, `\|\|`, `!=` |
-| `lcmp`, `fcmp*`, `dcmp*`, `if*`, `if_icmp*`, `if_acmp*`, `ifnull`/`ifnonnull` | branch conditions |
+| `lcmp`, `fcmp*`, `dcmp*`, `if*`, `if_icmp*`, `if_acmp*`, `ifnull`/`ifnonnull` | branch conditions; an `if_acmp*` with a constant `Enum.valueOf` named (§4) on one side (`SymEnum::compare`): with a constant of its class, the String `equals` of that constant's name (the receiver) and the named one (the argument: a read of it may be null), an expression the constant's operand carried replaced by its name and named `ENUM_OPERAND_PINNED`; with another named one of its class, `equals` of the two; with null, the reference test; with anything of another class, `false` (the class decides) |
 | `tableswitch`, `lookupswitch` | the taken case; the default arm is the conjunction of `sel != k` over every key |
-| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log |
-| `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed; a box's `value` read from a box that carries no expression is the box slot's expression (the unboxing of a slot-carried value) |
+| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log; a switch map -- an `int[]` loaded from a static field javac names `$SwitchMap$...` or ecj `$SWITCH_TABLE$...` (`getstatic`, `SymEnum::loaded_static`), no recorded write touching it -- loaded at an enum's `ordinal` (§4), is a READ of its elements as a stated snapshot (`SymEnum::table_read`), at most 64 (past it the opaque READ, named `ENUM_SWITCH_MAP_OVER_BOUND`) |
+| `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed and keeps field shadows (a `String` or `StringBuilder` keeps none: its fields are the JDK's representation, `keeps_field_shadows`); a box's `value` read from a box that carries no expression is the box slot's expression (the unboxing of a slot-carried value) |
 | `putfield`/`putstatic` | set the field shadow; publish a version (§5); a reference is symbolic only by what it carries (§5.1) |
 | `invoke*` | argument and return transfer; model dispatch (§4) |
 | `Method.invoke`, `Constructor.newInstance` | boxed arguments and result carried (`VM/runtime/reflection.cpp`) |
@@ -157,7 +165,7 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 
 | class | modeled | not modeled |
 |---|---|---|
-| `String` (entered only with a symbolic operand) | `charAt compareTo concat contains endsWith equals equalsIgnoreCase hashCode indexOf isEmpty lastIndexOf length matches regionMatches replace* split startsWith substring toLowerCase toUpperCase trim valueOf ...`; results are string operations | `toCharArray`, `getBytes`, `getChars`, `new String(bytes/chars)` return no expression |
+| `String` (entered only with a symbolic operand) | `charAt compareTo concat contains endsWith equals equalsIgnoreCase hashCode indexOf isEmpty lastIndexOf length matches regionMatches replace* split startsWith substring toLowerCase toUpperCase trim valueOf ...`; results are string operations | `toCharArray`, `getBytes`, `getChars`, `new String(bytes/chars)` return no expression; any other method runs on the concrete representation, its field reads named `STRING_REPRESENTATION_READ:<class>` |
 | `StringBuilder` (and its `AbstractStringBuilder` methods) | `append` (as concat; `append(CharSequence, start, end)` of a String or builder as a concat with its `substring` of `[start, end)`, of a `char[]` or another `CharSequence` with no expression of its own as a concat with the text it appended, of one with an expression as a concat with a named `unsupportedCharArrayRange`/`unsupportedCharSequenceRange` over it), `toString`, `length`; `insert delete deleteCharAt replace setCharAt setLength` as a concat of substrings of the content (an operand's slot shadow first) | `reverse`, `appendCodePoint` and a padding `setLength` drop the expression (the next use states the concrete content); `StringBuffer` |
 | boxing `valueOf`, `new X(v)` for `Boolean Byte Character Short Integer Long` | the value on the result slot, and on the returned object unless it is JVM-wide | `Float`/`Double.valueOf`. This JDK's `Integer/Long/Short/Byte/Boolean.valueOf` box afresh; `Character.valueOf` caches 0..127 |
 | decimal and boolean renderings: `Byte/Short/Integer/Long/Boolean.toString` (static of the class's own primitive, and the instance form), `String.valueOf` of an `int`, `long` or `boolean` or of such a box | one `toString` op of the value (`StringBuilder.append` wraps every primitive in the same op) | radix and hexadecimal conversions and char or floating renderings become a named `unsupportedPrimitiveStringConversion:` operation; `String.valueOf` of a char, float, double or other object stays a `valueOf` op |
@@ -167,8 +175,9 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | maps by the Map contract: `HashMap`, `LinkedHashMap` (insertion order), `ConcurrentHashMap`, `Hashtable` (views, iterators, entries, a map view's `Collection.removeIf`) | `put get getOrDefault remove containsKey isEmpty clear size mappingCount entrySet keySet values iterator hasNext next getKey getValue`, conditional removal; `putAll` (a tracked source as `PUT_ALL` of its state read, else one `PUT` per entry); `putIfAbsent`, `replace`, `remove(k, v)`: `PUT_IF`/`REMOVE_IF` under the test the body made (§6); `computeIfAbsent computeIfPresent merge`: the callback's result stored under the test that ran it, what a callback that did not run would have stored an unknown cell; `compute`: the callback's result stored (`PUT`, or `REMOVE` for null); `replaceAll`, `forEach`; key and entry views' `removeIf` (`REMOVE_IF` under the predicate) | `Entry.setValue` abandons the entry; `values().removeIf` (`ASSOCIATIVE_VALUES_REMOVE_IF_UNMODELED`); `ConcurrentHashMap`'s bulk parallel operations |
 | `ArrayList`, `ArrayDeque`, `AbstractList` iterators | list and deque operations; `peek`/`poll` as `PEEK`/`POLL` (§6) | `removeIf` abandons |
 | `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
-| `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet())`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
+| `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet()/toMap(...))`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
 | commons-lang 2 and Spring `StringUtils` | `isNotBlank`, `isEmpty` | commons-lang3 |
+| `Enum` (`symbolicEnum`, entered only with a symbolic name, or a constant it named) | an enum constant is its name.  `valueOf(Class, String)`: the run's constant, its result **slot** (never the JVM-wide constant) carrying `MethodExpression("java/lang/Enum valueOf", [class, n, c0..ck])`, `n` the name and `c0..ck` the constant names in ordinal order (the class's `ACC_ENUM` fields, whatever other static arrays of its type it has), a String-valued node COMPOSE lowers to the constant chosen, defined where `n` is one of them -- an `n` built by `toUpperCase`/`toLowerCase` matched letter by letter (`SmtLowering#enumChoice`); `name()` and `Enum.toString()` of it the node (a case conversion of it, `State.toString()`'s, the chosen constant's converted name); `ordinal()` `MethodExpression("java/lang/Enum ordinal", [node, c0..ck])`, COMPOSE's `ite` over the names; the node answers `enum_constant_class` through a boundary or a read of it.  A constant a container holds is its name too (`ContainerSupport::concrete_value`; a container model's enum argument, `general_prepare_param(.., true)`), so a key `valueOf` named and one the program put agree.  JDK 8's `EnumMap`/`RegularEnumSet` call `ordinal()`: a set's bit test is over the ordinal node, a map's slot load at it the opaque READ | `valueOf`'s throwing world (a name no constant has) is outside the formula: the node is defined only over the constants; a case conversion matches ASCII only; `compareTo` reads the `ordinal` field; a constant chosen by anything but `valueOf` (a static lookup map's `get`) carries no node; `String.equals` of a node compares it as a String |
 
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
 `PriorityQueue`, blocking queues, `IdentityHashMap`, `WeakHashMap`, `EnumMap`) is interpreted as
@@ -236,9 +245,28 @@ path holds models' concrete-answer conditions too), application code the body ra
 the recording and the rest runs as bytecode, named `STREAM_OPERATION_UNMODELED:<operation>` when the
 source's state or a symbolic bound was in it; and a terminal past the callback window stack runs as
 bytecode, `STREAM_PINNED:CALLBACK_DEPTH`. A pipeline nothing symbolic reached returns the run's
-result and names nothing. `Collectors.toList`/`toSet` are muted to name the kind of collector by its
-accumulator, the one non-capturing method reference every such collector holds, so a collector kept
-in a field is known at every use.
+result and names nothing. `Collectors.toList`/`toSet` are muted to name the kind of collector by
+its accumulator, the one non-capturing method reference every such collector holds, so a collector
+kept in a field is known at every use; a `toMap` collector is known by its accumulator's shape.
+
+**`toMap`** (every overload: `toMap(k, v)` is `toMap(k, v, throwingMerger(), HashMap::new)`; a
+`toConcurrentMap`'s is the same). Its accumulator, a `Collectors` lambda `(map, e) ->
+map.merge(keyMapper.apply(e), valueMapper.apply(e), mergeFunction)`, captured the three functions
+(the lambda's fields `arg$1..arg$3`; the collector's `supplier` field): the key and value mappers are
+two more stages, both seeded with the element, and the merge function and the supplier are callbacks
+of the terminal too (the supplier runs hooked). The result is the supplier's map, which must be an
+empty map the map model states, untracked when the supplier returns it (else the result is the run's
+own, `STREAM_PINNED:SUPPLIED_MAP`: a `TreeMap`, one already holding members): from its stated empty
+base, each element as `HashMap.merge` stores
+it, `PUT [k, v]` under the element's guard -- and, where an earlier key may equal this one (the run
+called the merge function for it, or a key so far is no constant), `PUT_IF [k, v]` under `MATCHES
+(chain, k, null)` and, under its negation, what the merge function answered (seeded with a `READ`
+of the members before it and the element's value; a null answer a `REMOVE_IF`) or, where the run
+never called it, an `UNKNOWN` cell, named `STREAM_PINNED:MERGE` (a throwing merger's world throws:
+over-approximated, CONFIRM decides). A merge function that throws unwinds the terminal
+(`STREAM_PINNED:UNWOUND`). A value that is no constant may be null in another world, where
+`HashMap.merge` throws and the chain states a `PUT`: named `STREAM_PINNED:NULL_VALUE`. A filter's
+symbolic drop before the mappers is pinned (`DROPPED`), as before any stage that calls back.
 
 ## 5. Shared-state versioning
 
@@ -462,7 +490,8 @@ stated on the nodes it builds, and COMPOSE decides what holds (PIPELINE §8).
   result of the native it ran in (`UnsafeAccess::take_result`, read at that native's finish), which
   a branch on it decides; a field mint is its version and its shadow.
 
-**Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` carry the `guard` they hold under;
+**Stream results** (§4). `APPEND_IF [v]` and `PUT_IF [k, v]` (a set's, a `toMap`'s; `REMOVE_IF
+[k]` a merge function's null) carry the `guard` they hold under;
 `PIN` (no arguments, either shape) is its receiver's state where its `guard` holds. A version a
 stream published is `STATE_COLLECT`; a map's guarded mutation is `STATE_PUT_IF`, a queue's poll
 `STATE_POLL`. Of the VM's own chain readers, `ContainerSupport::position_answer` looks through a
@@ -545,14 +574,14 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 
 ## 8. What the VM publishes
 
-`jdk/src/share/classes/java/lang/System.java` declares 35 concolic natives (registered in
+`jdk/src/share/classes/java/lang/System.java` declares 36 concolic natives (registered in
 `jdk/src/share/native/java/lang/System.c`, implemented in `VM/prims/jvm.cpp`).
-`runtime/ConcolicVmBroker` looks 24 of them up by reflection, so it loads on a stock JDK, and
+`runtime/ConcolicVmBroker` looks 25 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
 `observeField`, `observeContainer`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
-`getTrackedLocationVersions`, `installGuardedStoreSites`. `markConcolicBranch` and the pause
+`getTrackedLocationVersions`, `installGuardedStoreSites`, `forceNextConcolicBranch`. `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
 statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATION_FAILED -1001`,
 `MALFORMED_RESULT -1002`, and names every status in the gap a refused export or attach files
@@ -622,6 +651,7 @@ that does not hold.
 | `Integer.parseInt`, `Long.parseLong` | detected and pinned (return symbol with its concrete value) |
 | decimal and boolean renderings (`toString`, `String.valueOf`, `append`) | modeled: one `toString` op |
 | radix, hexadecimal, char and floating renderings | detected (a named operation, not pinned) |
+| an unmodeled `String`/`StringBuilder` method reading the representation of a symbolic one (`codePointAt`, ...) | detected (`STRING_REPRESENTATION_READ:<class>`, a model gap of the region), not pinned |
 | a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | a tracked container mutated through an iterator or view built before its log began | modeled (§4: `ContainerSupport::admits`) |
 | a tracked container mutated by a thread outside every region, at a mutation site the scope map names | detected (`UNHOOKED_CONTAINER_MUTATION`, §5.4) |
@@ -679,7 +709,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 71
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 73
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -694,8 +724,9 @@ and element); the engine's paused bookkeeping in `Thread.init` has `RegionInheri
 collections by interface have `RegionConcurrentHashMapSmoke` (the Map contract, callbacks, a
 tree bin), `RegionMapIterationOrderSmoke` (a snapshot's members in their class's iteration order),
 `RegionWrapperViewSmoke` (a view or wrapper is its container), `RegionStreamSmoke` (stream
-pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, the pins and
-the model gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
+pipelines: filter, limit, map, an unmodifiable map's entries, count, anyMatch, a set, a `toMap`
+over constant and symbolic keys, with a merge function the run called (and one answering null),
+after a filter, and from a supplier's map that is no empty base, the pins and the model gaps), `RegionIndexedSizeSmoke` (an INDEXED size over its size source, §6: an array of no constant
 length past its element writes, a list's size past `set()` and at its `APPEND`/`REMOVE`),
 `RegionModelGuardSmoke` (the pin/guard discipline, §6: each guarded choice, the
 named unknown cells, no version for a call that changed nothing, an `equals()` match, answers
@@ -704,5 +735,10 @@ stated on query and array-element nodes, nothing added to the path) and
 `RegionLeafBrokerSmoke` (every slot kind with and without a region, peeks that record nothing,
 templates, `SHARED`, a region-less mint reaching a later region's path through `parseLong`, and
 the one `toString` op); `RegionRedefineOnStackSmoke` attaches an agent to its own JVM and
-retransforms `Object` while a thread waits in it, then collects (§1). No smoke test covers the
+retransforms `Object` while a thread waits in it, then collects (§1); `RegionForcedBranchSmoke` forces
+nested `if`s off their concrete arms to a throw, one marker at a time (a refused marker's forcing dropped, a
+callee's branch, a branch recording is paused at and a switch unforced, §2); `RegionEnumSmoke` compares, names
+and switches on a constant `valueOf` chose by a symbolic name, tests it in an `EnumSet`, keys a map and a set
+that hold plain constants with it, compares it with another enum class, with null and through a tracked read,
+and reads an enum with a static array of its own type in ordinal order (§3, §4). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.

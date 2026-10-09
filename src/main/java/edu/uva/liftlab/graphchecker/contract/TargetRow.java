@@ -89,11 +89,14 @@ public final class TargetRow extends Value {
     private final boolean reachedAnchor;
     /** Null unless phi left an open decider arm out ({@link OpenArm}). */
     private final OpenArm openArm;
+    /** Whether a forced replay reached the anchor by forcing a branch
+     *  against its concrete arm ({@link #forced}). */
+    private final boolean forced;
 
     private TargetRow(String sessionId, long seq, OccurrenceAddress occurrence,
                       String anchorSiteId, String phiTerm,
                       boolean observedFatal, boolean reachedAnchor,
-                      OpenArm openArm) {
+                      OpenArm openArm, boolean forced) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -102,6 +105,7 @@ public final class TargetRow extends Value {
         this.observedFatal = observedFatal;
         this.reachedAnchor = reachedAnchor;
         this.openArm = openArm;
+        this.forced = forced;
     }
 
     public static TargetRow of(String sessionId, long seq,
@@ -122,7 +126,18 @@ public final class TargetRow extends Value {
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(anchorSiteId, "anchorSiteId"),
                 Fields.required(phiTerm, "phiTerm"), observedFatal,
-                reachedAnchor, openArm);
+                reachedAnchor, openArm, false);
+    }
+
+    /**
+     * This row, reached by a FORCED replay (PIPELINE §7.10): the run forced
+     * a branch on the way against its concrete arm, so it observed no fatal
+     * ({@code observedFatal} false) and {@code phiTerm} is the forced path
+     * condition from the first such decision on, which the row stands at.
+     */
+    public TargetRow forced() {
+        return new TargetRow(sessionId, seq, occurrence, anchorSiteId,
+                phiTerm, false, reachedAnchor, openArm, true);
     }
 
     public String sessionId() {
@@ -162,15 +177,21 @@ public final class TargetRow extends Value {
         return openArm;
     }
 
+    /** Whether a forced replay reached the anchor so ({@link #forced()}). */
+    public boolean isForced() {
+        return forced;
+    }
+
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, anchorSiteId, phiTerm,
-                observedFatal, reachedAnchor, openArm};
+                observedFatal, reachedAnchor, openArm, forced};
     }
 
     @Override
     public String toString() {
         return "TargetRow{" + sessionId + "#" + seq + " " + occurrence + " "
-                + anchorSiteId + (observedFatal ? " fatal}" : "}");
+                + anchorSiteId + (observedFatal ? " fatal" : "")
+                + (forced ? " forced}" : "}");
     }
 }

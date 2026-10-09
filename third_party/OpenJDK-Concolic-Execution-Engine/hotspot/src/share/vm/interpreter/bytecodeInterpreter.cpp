@@ -28,6 +28,7 @@
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/fieldAccessExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/reference/symbolicEnum.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/sharedFieldVersions.hpp"
 #include "gc_interface/collectedHeap.hpp"
@@ -476,6 +477,7 @@ static SharedFieldVersions::ConcreteBits concolic_top_word(
     default:   return Word();
   }
 }
+
 #endif
 
 /*
@@ -1976,6 +1978,9 @@ run:
         stack_offset + (l_off));                                              \
     Expression *right = ConcolicMngr::ctx->get_stack_slot(                   \
         stack_offset + (r_off));                                              \
+    /* A constant Enum.valueOf named compares by its name (SymEnum). */       \
+    Expression *enum_condition = SymEnum::compare(left, left_obj, right,      \
+        right_obj, op, outcome);                                              \
     if (left == NULL && left_obj != NULL) {                                  \
       SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(left_obj);     \
       if (instance != NULL) {                                                 \
@@ -1995,7 +2000,9 @@ run:
       right = SymbolExpression::get(Sym_NULL);                                \
     }                                                                         \
     Expression *condition = NULL;                                             \
-    if (left != NULL && right != NULL) {                                      \
+    if (enum_condition != NULL) {                                             \
+      condition = enum_condition;                                             \
+    } else if (left != NULL && right != NULL) {                               \
       condition = new OpSymExpression(left, right, op, outcome);              \
     }                                                                         \
     ConcolicMngr::record_branch_condition(                                    \
@@ -2006,11 +2013,25 @@ run:
 #else
 #define CONCOLIC_OPC_REF_CMP(l_off, r_off, l_obj, r_obj, op, outcome)
 #endif
+#ifdef ENABLE_CONCOLIC
+/* A branch System.forceNextConcolicBranch forced takes the forced arm: its
+ * marker's frame is this one (ThreadContext::forced_outcome), and the arm is
+ * decided before the jump is computed, so the condition recorded is the
+ * forced arm's. */
+#define CONCOLIC_FORCE_BRANCH(cmp)                                             \
+  if (ConcolicMngr::ctx != NULL && ConcolicMngr::ctx->forcing()) {             \
+    cmp = ConcolicMngr::ctx->forced_outcome(cmp,                               \
+        ConcolicMngr::can_do_concolic());                                      \
+  }
+#else
+#define CONCOLIC_FORCE_BRANCH(cmp)
+#endif
       /* comparison operators */
 
 #define COMPARISON_OP(name, comparison)                                        \
   CASE(_if_icmp##name) : {                                                     \
-    const bool cmp = (STACK_INT(-2) comparison STACK_INT(-1));                 \
+    bool cmp = (STACK_INT(-2) comparison STACK_INT(-1));                       \
+    CONCOLIC_FORCE_BRANCH(cmp);                                                \
     int skip = cmp ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;                  \
     address branch_pc = pc;                                                    \
                                                                                \
@@ -2024,7 +2045,8 @@ run:
     CONTINUE;                                                                  \
   }                                                                            \
   CASE(_if##name) : {                                                          \
-    const bool cmp = (STACK_INT(-1) comparison 0);                             \
+    bool cmp = (STACK_INT(-1) comparison 0);                                   \
+    CONCOLIC_FORCE_BRANCH(cmp);                                                \
     int skip = cmp ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;                  \
     address branch_pc = pc;                                                    \
                                                                                \
@@ -2040,7 +2062,8 @@ run:
 #define COMPARISON_OP2(name, comparison)                                     \
       COMPARISON_OP(name, comparison)                                        \
       CASE(_if_acmp##name): {                                                \
-          const bool cmp = (STACK_OBJECT(-2) comparison STACK_OBJECT(-1));   \
+          bool cmp = (STACK_OBJECT(-2) comparison STACK_OBJECT(-1));         \
+          CONCOLIC_FORCE_BRANCH(cmp);                                        \
           int skip = cmp                                                     \
                        ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;            \
           address branch_pc = pc;                                            \
@@ -2082,7 +2105,8 @@ run:
 
 #define NULL_COMPARISON_NOT_OP(name)                                         \
       CASE(_if##name): {                                                     \
-          const bool cmp = (!(STACK_OBJECT(-1) == NULL));                    \
+          bool cmp = (!(STACK_OBJECT(-1) == NULL));                          \
+          CONCOLIC_FORCE_BRANCH(cmp);                                        \
           int skip = cmp                                                     \
                       ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;             \
           address branch_pc = pc;                                            \
@@ -2096,7 +2120,8 @@ run:
 
 #define NULL_COMPARISON_OP(name)                                             \
       CASE(_if##name): {                                                     \
-          const bool cmp = ((STACK_OBJECT(-1) == NULL));                     \
+          bool cmp = ((STACK_OBJECT(-1) == NULL));                           \
+          CONCOLIC_FORCE_BRANCH(cmp);                                        \
           int skip = cmp                                                     \
                       ? (int16_t)Bytes::get_Java_u2(pc + 1) : 3;             \
           address branch_pc = pc;                                            \
@@ -2434,8 +2459,9 @@ run:
     ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff, 1);          \
     ConcolicMngr::ctx->clear_stack_value(                                     \
         stack_offset + arrayOff + 1, 1);                                      \
-    Expression *value_exp = NULL;                                              \
-    if (index_exp != NULL || arrObj->is_symbolic()) {                          \
+    /* A switch map read at an enum's ordinal (SymEnum). */                   \
+    Expression *value_exp = SymEnum::table_read(arrObj, index_exp);           \
+    if (value_exp == NULL && (index_exp != NULL || arrObj->is_symbolic())) {   \
       SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(            \
           arrObj, NULL, true);                                                 \
       Expression *container_state =                                           \
@@ -3167,6 +3193,16 @@ run:
               sym_rid_t sym_rid = sym_inst->get_sym_rid();
               Expression* sym_exp = sym_inst->get(field_offset);
               if (sym_exp == NULL) sym_exp = box_value;
+              // An unmodeled method of a symbolic String or builder
+              // (codePointAt, ...) reads its representation: the read is
+              // concrete, its loss named (VM.md §9).
+              if (sym_exp == NULL && !sym_inst->keeps_field_shadows()
+                  && sym_inst->has_semantic_expression()) {
+                ResourceMark rm;
+                ConcolicMngr::ctx->note_model_gap(
+                    std::string("STRING_REPRESENTATION_READ:")
+                    + obj->klass()->name()->as_C_string());
+              }
               if (sym_exp == NULL
                   && sym_inst->demand_symbolic_fields_enabled()
                   && !sym_inst->field_written(field_offset)) {
@@ -3295,6 +3331,12 @@ run:
           }
 
 #ifdef ENABLE_CONCOLIC
+          // A switch map javac or ecj made, for SymEnum::table_read.
+          if ((Bytecodes::Code)opcode == Bytecodes::_getstatic
+              && tos_type == atos && ConcolicMngr::can_do_concolic()) {
+            SymEnum::loaded_static(cache->f1_as_klass(), field_offset,
+                                   STACK_OBJECT(-1));
+          }
           if (carrier_read) {
             // The word the load took, from the operand rather than the heap:
             // for a wrapper-typed carrier its box's value (or the null word),

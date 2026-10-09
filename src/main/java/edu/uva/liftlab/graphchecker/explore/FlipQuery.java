@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
@@ -212,6 +213,22 @@ final class FlipQuery {
         return new Builder(corpus, task, path).build(flipIndex);
     }
 
+    /**
+     * THE FORCED FLIP (PIPELINE §7.10): a forced path's decisions before
+     * {@code flipIndex} -- the first one forced against its concrete arm --
+     * as run, and its forced path condition (its target row's phi, every
+     * decision from there to the throw at the arm the forced run took) as
+     * the demanded conjunct, with its clock margins; every symbol rule as a
+     * flip's.  A model is a world in which the whole way to the throw holds.
+     */
+    static Built buildForced(Corpus corpus, Task task,
+                             Corpus.RecordedPath path, int flipIndex) {
+        TargetRow target = corpus.target(path.sessionId, path.occurrence);
+        Builder builder = new Builder(corpus, task, path);
+        builder.forcedFatal = target == null ? "" : target.phiTerm();
+        return builder.build(flipIndex);
+    }
+
     /** One symbol as one session named it. */
     private static final class Ref {
         private final String sessionId;
@@ -392,9 +409,14 @@ final class FlipQuery {
             return false;
         }
 
+        /** A forced flip's demanded conjunct ({@link #buildForced}), or
+         *  null for a flip. */
+        private String forcedFatal;
+
         private Built build(int flipIndex) {
             DecisionRow flipped = path.decisions.get(flipIndex);
             movableReads();
+            boolean forced = forcedFatal != null;
             for (int index = 0; index <= flipIndex; index++) {
                 DecisionRow decision = path.decisions.get(index);
                 Set<String> unknown = new LinkedHashSet<String>();
@@ -402,6 +424,11 @@ final class FlipQuery {
                 // with the composer); renaming follows: polarity is the
                 // recording's, names ours.
                 boolean last = index == flipIndex;
+                if (last && forced) {
+                    Built refused = forced(flipped);
+                    if (refused != null) return refused;
+                    continue;
+                }
                 if (!Arms.predicate(decision.term())) {
                     // Concrete: nothing to assert, never the flipped decision.
                     continue;
@@ -523,6 +550,31 @@ final class FlipQuery {
                     reached(clockVariables, reached),
                     new ArrayList<WriterChoice>(choicesByReader.values()),
                     sorts, gaps);
+        }
+
+        /** A forced flip's demanded conjunct, the forced path condition, in
+         *  the forced session's scope; the refusal, or null once asserted. */
+        private Built forced(DecisionRow flipped) {
+            Set<String> unknown = new LinkedHashSet<String>();
+            String held = rename(lower(forcedFatal, path.sessionId),
+                    path.sessionId, unknown);
+            String subject = flipped.siteId() + "#" + flipped.ordinal();
+            if (!unknown.isEmpty()) {
+                return refuse(GapKind.DECLARATION_MISSING, subject,
+                        "the forced path condition names "
+                                + unknown.iterator().next() + ", which no "
+                                + "mint, attach or read of " + path.sessionId
+                                + " declares", flipped);
+            }
+            if (malformed(held)) {
+                return refuse(GapKind.DECLARATION_MISSING, subject,
+                        "the forced path condition lowers to a term this "
+                                + "query cannot state (\"" + held + "\")",
+                        flipped);
+            }
+            flippedText = held;
+            assertions.add(demanded(held, flipped));
+            return null;
         }
 
         /**
@@ -883,7 +935,7 @@ final class FlipQuery {
                 Interaction slot = Interaction.of(InteractionKind.WIRE,
                         attach.producer(), attach.endpoint());
                 for (Arms.Arm arm : corpus.arms().wireArms(slot,
-                        attach.symbol())) {
+                        attach.symbol(), attach.sessionId())) {
                     if (!control
                             && !arm.sessionId().equals(attach.sessionId())) {
                         continue;

@@ -18,6 +18,7 @@
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicString.hpp"
+#include "concolic/reference/symbolicEnum.hpp"
 #include "oops/fieldStreams.hpp"
 #include "runtime/safepoint.hpp"
 
@@ -865,7 +866,12 @@ int ContainerSupport::receiver_snapshot(
   }
 
   const bool associative = strcmp(shape, "ASSOCIATIVE") == 0;
-  if (!over_bound && associative && keys.size() != values.size()) return -1;
+  // A hash set's walk yields its members alone, each mapping to true (as
+  // SymSet's add states it).
+  const bool set = capability(container) == CAPABILITY_HASH_SET;
+  if (!over_bound && associative && !set && keys.size() != values.size()) {
+    return -1;
+  }
   const int entries = (int) values.size();
 
   // The same bound the Java-driven offer obeyed.  Past it the container keeps
@@ -890,7 +896,10 @@ int ContainerSupport::receiver_snapshot(
   Expression *state = base;
   for (int index = 0; index < entries; ++index) {
     exp_list_t arguments;
-    if (associative) {
+    if (set) {
+      arguments.push_back(concrete_value(values[index]));
+      arguments.push_back(new ConExpression((jboolean) true));
+    } else if (associative) {
       arguments.push_back(concrete_value(keys[index]));
       arguments.push_back(concrete_value(values[index]));
     } else {
@@ -1408,6 +1417,10 @@ Expression *ContainerSupport::concrete_value(oop value) {
     return SymPrimitive<jdouble>::get_exp_of(value);
   if (type == vmSymbols::java_lang_String())
     return SymString::get_exp_of(value);
+  // An enum constant is its name (SymEnum): a key or member Enum.valueOf
+  // named and one the program held agree, whichever reached the container.
+  Expression *name = SymEnum::constant_name(value);
+  if (name != NULL) return name;
   SymInstance *identity = heap->find_sym_inst(value);
   if (identity != NULL) return identity->get_or_create_ref_exp(value);
   // Named, not shadowed.  InstanceSymbolExp reads the identity straight out

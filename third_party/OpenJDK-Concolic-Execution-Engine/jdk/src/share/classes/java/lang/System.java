@@ -541,6 +541,20 @@ public final class System {
     public static native long markConcolicBranch(String siteId,
                                                   int occurrence);
 
+    /**
+     * Forces the {@code if} the next {@link #markConcolicBranch} of this
+     * thread marks: the marked conditional bytecode jumps ({@code jump}) or
+     * falls through instead of what its operands decide, and its branch
+     * event states {@code forced} and the concrete outcome it overrode
+     * ({@code concrete}, 1 or 0).  The condition it records is the forced
+     * arm's, as a run that took it would state it.  The next marker consumes
+     * it whether or not a branch follows; a branch no marker of the current
+     * frame owns, one whose event is not recorded (recording paused or
+     * aborted), and a switch are never forced.  Answers 0, or -1 when the
+     * thread has no concolic context.
+     */
+    public static native int forceNextConcolicBranch(boolean jump);
+
     /** Returns the branch events owned by the current concolic thread. */
     public static native String getConcolicBranchEvents();
 
