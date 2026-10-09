@@ -994,13 +994,15 @@ final class SeedBackwardStaticAnalyzer {
     private void processFieldWrites(String method, List<Fact> facts, Fact fact,
                                     Set<String> relevant) {
         Set<String> affectedRelevantHeapCells = new LinkedHashSet<>();
+        boolean ownObject = storesOwnObject(method, facts, fact);
         for (String field : fact.fieldDefs) {
             String fieldNode = canonical(method, field);
             if (relevant.contains(fieldNode)) {
                 affectedRelevantHeapCells.add(fieldNode);
             }
             processFieldWrite(method, fact, relevant, field,
-                    fieldWriteSources(method, fact, field), "field_write");
+                    fieldWriteSources(method, fact, field), "field_write",
+                    ownObject);
         }
         for (String mutatedField : fieldsMutatedByInvoke(facts, fact.unitIndex)) {
             String mutatedFieldNode = canonical(method, mutatedField);
@@ -1008,7 +1010,7 @@ final class SeedBackwardStaticAnalyzer {
                     relevant.contains(mutatedFieldNode);
             processFieldWrite(method, fact, relevant, mutatedField,
                     fieldMutationSources(method, fact, mutatedField),
-                    "field_mutation");
+                    "field_mutation", false);
             if (mutationAffectsRelevantState) {
                 affectedRelevantHeapCells.add(mutatedFieldNode);
             }
@@ -1108,9 +1110,25 @@ final class SeedBackwardStaticAnalyzer {
         return canonicalBase + "#array-element";
     }
 
+    /**
+     * One store or mutation of a demanded field: its value's edges, and its
+     * method's place among those whose calls the store runs only under
+     * ({@link #expandActivationGuards}).  A store into the object its
+     * constructor builds ({@code ownObject}, {@link #storesOwnObject}) says
+     * so on its edges: the calls into a constructor decide whether that
+     * object exists, not what an existing object's field holds, and whether
+     * the new object reaches a reader goes through the location that hands
+     * it on, a store of its own; its scope-map row carries no guards of the
+     * calls into its method ({@code StaticScopeMap#rows}).
+     * solr-bugs-reindex-cleanup SG1: {@code wrapWatcher}'s {@code instanceof
+     * ProcessWatchWithExecutor} guarded {@code new
+     * ProcessWatchWithExecutor(watcher)}, whose constructor stores {@code
+     * this.watcher}: 5,964 proposals, all refused.
+     */
     private void processFieldWrite(String method, Fact fact,
                                    Set<String> relevant, String field,
-                                   List<String> sources, String kind) {
+                                   List<String> sources, String kind,
+                                   boolean ownObject) {
         String fieldNode = canonical(method, field);
         if (ignoreNode(fieldNode)) {
             return;
@@ -1128,9 +1146,29 @@ final class SeedBackwardStaticAnalyzer {
             if (ignoreNode(source)) {
                 continue;
             }
-            addEdge(kind, source, fieldNode, method, fact);
+            Map<String, Object> edge = addEdge(kind, source, fieldNode,
+                    method, fact);
+            if (edge != null && ownObject) edge.put("ownObject", true);
             relevant.add(source);
         }
+    }
+
+    /** Whether {@code fact} stores into a field of the object its method,
+     *  a constructor, builds: its {@code this}. */
+    private static boolean storesOwnObject(String method, List<Fact> facts,
+                                           Fact fact) {
+        if (facts == null || !method.contains(" <init>(")) return false;
+        String self = null;
+        for (Fact identity : facts) {
+            int at = identity.unitText.indexOf(" := @this");
+            if (at > 0) {
+                self = identity.unitText.substring(0, at);
+                break;
+            }
+        }
+        int field = fact.unitText.indexOf(".<");
+        return self != null && field > 0
+                && fact.unitText.substring(0, field).equals(self);
     }
 
     private void expandFieldWriters(String method) {
@@ -1160,7 +1198,10 @@ final class SeedBackwardStaticAnalyzer {
                 writerRelevant.add(writer.field);
                 selectedMethods.add(writer.method);
                 processFieldWrite(writer.method, writerFact, writerRelevant,
-                        writer.field, writer.sources, writer.kind);
+                        writer.field, writer.sources, writer.kind,
+                        "field_write".equals(writer.kind) && storesOwnObject(
+                                writer.method, factsByMethod.get(
+                                        writer.method), writerFact));
             }
         }
     }

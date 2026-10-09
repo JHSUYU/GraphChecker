@@ -32,6 +32,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
@@ -303,6 +304,13 @@ public final class StaticScopeMap {
          * SYMBOL-SCOPE §4.6), where it found one; -1 elsewhere.
          */
         public final int demandDistance;
+        /**
+         * WRITE_SITE: a store into the object its constructor builds ({@code
+         * this.f} in an {@code <init>}): the calls into the constructor
+         * decide whether the object exists, not what an existing one's field
+         * holds, so their guards are not the store's ({@link #rows}).
+         */
+        public final boolean ownObject;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
@@ -313,7 +321,7 @@ public final class StaticScopeMap {
                     Collections.<String, List<Guard>>emptyMap(),
                     Collections.<Guard>emptyList(),
                     Collections.<String>emptyList(), "", false, false, "",
-                    -1);
+                    -1, false);
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
@@ -323,7 +331,7 @@ public final class StaticScopeMap {
              Map<String, List<Guard>> guardDeciders, List<Guard> chain,
              List<String> callers, String trackedKind, boolean staticField,
              boolean constructionOnly, String publishedFrom,
-             int demandDistance) {
+             int demandDistance, boolean ownObject) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -349,6 +357,7 @@ public final class StaticScopeMap {
             this.constructionOnly = constructionOnly;
             this.publishedFrom = publishedFrom == null ? "" : publishedFrom;
             this.demandDistance = demandDistance;
+            this.ownObject = ownObject;
         }
 
         Site withGuards(List<Guard> found) {
@@ -397,7 +406,8 @@ public final class StaticScopeMap {
             return new Site(role, held, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, stated, sites, outcomes,
                     deciders, chained, calling, trackedKind, staticField,
-                    constructionOnly, publishedFrom, demandDistance);
+                    constructionOnly, publishedFrom, demandDistance,
+                    ownObject);
         }
 
         /**
@@ -647,7 +657,7 @@ public final class StaticScopeMap {
                             null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
                             NO_CHAIN, NO_CALLERS, tracked.name(),
                             staticField.test(field), false, "",
-                            distance(mark)));
+                            distance(mark), false));
                 }
                 continue;
             }
@@ -660,7 +670,8 @@ public final class StaticScopeMap {
                     null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS, NO_CHAIN,
                     NO_CALLERS, "", leaf.isEmpty() && staticField.test(field),
                     invoke.isEmpty() && constructionOnly.test(field),
-                    text(edge.get("publishedFrom")), -1));
+                    text(edge.get("publishedFrom")), -1,
+                    Boolean.TRUE.equals(edge.get("ownObject"))));
         }
         markReads(found, unwoven, demand);
         keepTrackedReads(found);
@@ -876,11 +887,13 @@ public final class StaticScopeMap {
                     : guards.of(site.siteId);
             List<Guard> all = new ArrayList<Guard>(found == null
                     ? Collections.<Guard>emptyList() : found);
-            if (WRITE_SITE.equals(site.role) && guards != null) {
+            if (WRITE_SITE.equals(site.role) && guards != null
+                    && !site.ownObject) {
                 // A store is control-dependent on the calls into its
                 // method too: a commit point's `deleted` is set by its own
                 // delete(), which the deletion policy calls only when the
-                // commit's reservation (a clock) has run out.
+                // commit's reservation (a clock) has run out.  Not a store
+                // into the object its constructor builds (ownObject).
                 Set<String> named = new LinkedHashSet<String>();
                 for (Guard guard : all) named.add(guard.siteId());
                 for (Guard guard : guards.callsInto(
@@ -927,6 +940,9 @@ public final class StaticScopeMap {
         }
         if (site.constructionOnly) {
             row.addProperty("constructionOnly", true);
+        }
+        if (site.ownObject) {
+            row.addProperty("ownObject", true);
         }
         if (!site.publishedFrom.isEmpty()) {
             row.addProperty("publishedFrom", site.publishedFrom);
@@ -1139,7 +1155,7 @@ public final class StaticScopeMap {
                             inputKind, clock, config,
                             text(edge.get("symbolicName"))), NO_GUARDS,
                     NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "", false,
-                    false, "", distance(demand.at(siteId, cell))));
+                    false, "", distance(demand.at(siteId, cell)), false));
         }
     }
 
@@ -1344,7 +1360,8 @@ public final class StaticScopeMap {
                     row.has("static") && row.get("static").getAsBoolean(),
                     constructionOnly(row),
                     optionalString(row, "publishedFrom"),
-                    (int) optionalLongInteger(row, "demandDistance", -1L)));
+                    (int) optionalLongInteger(row, "demandDistance", -1L),
+                    optionalBool(row, "ownObject", false)));
         }
         return new StaticScopeMap(sites, readRegions(file), concreteReads);
     }

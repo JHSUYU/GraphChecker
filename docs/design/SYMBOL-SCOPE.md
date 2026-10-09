@@ -286,7 +286,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `marker` (a fault marker's name, §4.2), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1) |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2), `static` (a store into a static field), `constructionOnly` (a store into the field itself that only its class's construction stores, §5.1), `ownObject` (a store into the object its constructor builds, below) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -299,7 +299,14 @@ branch that is a fault branch carries its arm toward the handler. A fault branch
 adds to a site's guards and never takes a branch's place, so a recorded branch is never hidden
 behind a call. A `WRITE_SITE` also carries the
 guards of the calls into its method, up to three calls up (`Guards#callsInto`, `CALL_DEPTH`), and
-those callers (`Guards#callersOf`). A guard `v ==/!= c` (`c` an int, null or an enum constant --
+those callers (`Guards#callersOf`) -- unless it stores into the object its constructor builds
+(`this.f` in an `<init>`, `ownObject`, `SeedBackwardStaticAnalyzer#storesOwnObject`): the calls
+into a constructor decide whether that object exists, not what an existing object's field holds,
+and whether the new object reaches a reader goes through the location that hands it on, a store of
+its own (solr-bugs-reindex-cleanup SG1: `wrapWatcher`'s `instanceof ProcessWatchWithExecutor`
+guarded `new ProcessWatchWithExecutor(watcher)`, whose constructor stores `this.watcher`: 5,964
+proposals, all refused). A constructor's store into another object's field, a static field, a
+mutation through a field and a store in a method the constructor calls keep them. A guard `v ==/!= c` (`c` an int, null or an enum constant --
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,
