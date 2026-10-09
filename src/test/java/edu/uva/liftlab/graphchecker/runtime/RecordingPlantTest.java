@@ -49,6 +49,11 @@ public class RecordingPlantTest {
                 + "\",\"value\":\"false\",\"row\":1}\n";
         String order = "{\"kind\":\"ORDER\",\"before\":\"b|\","
                 + "\"after\":\"a|\",\"row\":2}\n";
+        String event = "{\"kind\":\"WAKE\",\"context\":\"c\","
+                + "\"site\":\"s\",\"k\":0}";
+        String realized = "{\"kind\":\"ORDER\",\"scope\":\"EVENT\","
+                + "\"before\":" + event + ",\"after\":" + event
+                + ",\"row\":5}\n";
         String target = target(ID, "false", 3);
         Map<String, Map<String, RecordingPlant.Root>> markers =
                 Collections.singletonMap(SITE, Collections.singletonMap(ID,
@@ -59,9 +64,13 @@ public class RecordingPlantTest {
                 {marker + hook + order + target, markers, hooks},
                 {order + target, Collections.emptyMap(),
                         Collections.emptyMap()},
+                // The confirmed world's realized order, between events.
+                {realized + target, Collections.emptyMap(),
+                        Collections.emptyMap()},
                 // A root of a category no native run plants, a marker
                 // without its call site or with no boolean, a row without
-                // its number, an order naming no activation.
+                // its number, an order naming no activation, one naming
+                // no event.
                 {marker.replace("FAULT", "CONFIG") + target, null, null},
                 {marker.replace(SITE, "") + target, null, null},
                 {marker.replace("\"true\"", "\"1\"") + target, null, null},
@@ -70,6 +79,9 @@ public class RecordingPlantTest {
                 {hook + hook.replace("\"row\":1", "\"row\":4") + target,
                         null, null},
                 {order.replace("\"b|\"", "\"\"") + target, null, null},
+                // An event without its k.
+                {realized.replaceFirst(",\"k\":0", "") + target, null,
+                        null},
                 {"{\"kind\":\"CLOCK\",\"row\":0}\n" + target, null, null},
                 // A clock root without its skew, a configuration without
                 // its getters, one site named with two callees.
