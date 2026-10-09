@@ -138,8 +138,9 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    `causynth.BooleanReturns`) and the `chain` of guards before them; `StaticScopeMap.Site.pathSites`
    = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
    the one decision each target row's open decider arm names (`TargetRow.OpenArm`); and `force`,
-   the forcing table (each of those branches with the arm that leads to the throw,
-   `plan.ForcingTable`), which PLAN copies onto the declared task's `targetBranch.force` for the
+   the forcing table (each of those ifs with the arm that leads to the throw, a switch never,
+   `plan.ForcingTable`), one per TARGET_SITE row, which PLAN copies -- the task's own target's
+   (`ConcolicScheduler#ownTarget`) -- onto the declared task's `targetBranch.force` for the
    forced replay (§7.10), less a caller's chain guard where the recording's occurrence entered the
    throw's method (`ForcingTable#forOccurrence`: it reaches the method by some call, and forcing another
    call's guard would only divert it). Loop-bound
@@ -1212,7 +1213,9 @@ branch of its table (`BranchObservation#prepare`) the runtime asks the VM to for
 marks (`System.forceNextConcolicBranch`, VM.md §2), every evaluation of it (a loop's turns, a recursion's
 calls: each forced arm reaches the throw by post-dominance), a decider only inside a call of its helper from
 the table row's `via` method (`Identity#callerFrame`); a nested planned region, another occurrence or thread is
-never forced. The VM's event states the concrete answer it overrode; the decision row states it
+never forced, nor a switch (the forced world takes its selector's case). A forcing the VM refuses (a negative
+status, the call failing) leaves the branch to its operands and decides the run FORCE_DIVERGED at once. The
+VM's event states the concrete answer it overrode; the decision row states it
 (`DecisionRow#forced`, `concreteOutcome`), and the first decision forced against its concrete arm opens the
 forced world. The target row, reached there on its fatal arm, stands at that decision and states as phi the
 forced path condition: every decision of the occurrence from it up to the target's, as taken (forced or not;
@@ -1221,8 +1224,11 @@ marked `forced` and observed no fatal (`TargetRow#forced`), so it is never a wit
 row is published (`AT_FORCED_TARGET`, §5) and its verdict is ADMITTED, `FORCED_TARGET` and how the occurrence
 then ended (the target's throw, or a handler that caught it); an occurrence that closes first, or takes its
 target's healthy arm (a branch no marker of its frame let the VM force), decides the run there
-(`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame): the session is withdrawn,
-the verdict NOT_ADMITTED, and the exploration goes on as it would without one. `result.json` `force` states
+(`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame); one that never closed
+(blocked, its activation stranded at the run's end) is decided at the session's close
+(`RowRuntime#closeSession`, `ForcedArms#unreached`). Each way the session is withdrawn, the verdict
+NOT_ADMITTED, and the exploration goes on as it would without one: a FORCED session publishes only at its
+forced target, and the corpus reads one without a forced target row as no session. `result.json` `force` states
 the last round's view (state, verdict detail, the forced flip and its verdict, read by the flip it asks --
 `ExploreMain#answersByFlip`: its id moves as sessions land -- and `seedFlipsAfterForcedFlip`, the seed
 path's flips at a site of the forcing table asked after it was answered).
@@ -1231,11 +1237,13 @@ The session lands with role `FORCED` and is held apart (`explore.Corpus#forcedPa
 indexed under its session, so its forced path composes and is asked in its own scope, and none in a
 corpus-wide view (sessions, rows of an occurrence across sessions, a location's writers and sites, the
 schedule's senders), so no other path, arm, slot, closure member, witness or settled arm reads a forced world;
-its messages from before the forced world are the recording's world's and are a message's senders like any
-session's, so its own path's handoffs move with their producers (FlipQuery binds a handoff by its own run's
-arms: solr-18413 FA2's expiry, a wire value of the Overseer's clock, was otherwise pinned and the forced flip
-UNSAT); `SessionReader#admitted` is false for it, and no write from its forced world on is an alternative
-writer arm (`Arms#eligible`), nor an arrival whose producer the closure plans. Its path, `P_F`, is:
+its messages from before the forced world are its own path's arms alone (`Corpus#ownAttachesOf`,
+`#ownExportsOf`, `Arms#armsAt`'s scope, the asking path's session), so its handoffs move with their producers
+(FlipQuery binds a handoff by its own run's arms: solr-18413 FA2's expiry, a wire value of the Overseer's clock,
+was otherwise pinned and the forced flip UNSAT) and no other path pairs with them; `SessionReader#admitted` is
+false for it, no write from its forced world on is an alternative writer arm (`Arms#eligible`), nor an
+arrival whose producer the closure plans, nor its forced world's mints a root reading (`Corpus#roots`, which
+places clocks). Its path, `P_F`, is:
 - EXPLORE's forced flip (`ObligationFactory#forced`, `FlipQuery#buildForced`): its decisions before the first
   one forced against its concrete arm as run, and its forced path condition as the demanded conjunct (clock
   margins too), every symbol rule a flip's; the ledger's flip is that decision at its forced arm, keyed apart
@@ -1248,7 +1256,8 @@ writer arm (`Arms#eligible`), nor an arrival whose producer the closure plans. I
   phi the forced path condition, composed in its own session's scope -- roots by their corpus-wide names, clock
   cells on the recording's timeline, `v_H` by message families over the corpus's other sessions' exports,
   reads by its own writes. A claim on it is the run as recorded when it moves nothing (§10), never Realized
-  (its target observed no fatal), and accepted only once CONFIRM, unforced, confirms it.
+  (its target observed no fatal), and accepted only once CONFIRM, unforced and on the recording's schedule (not
+  the forced run's, `ConfirmMain#write`), confirms it.
 
 ## 8. COMPOSE: `compose.ComposeMain` → `compose.Composer`
 

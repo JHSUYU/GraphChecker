@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
-import edu.uva.liftlab.graphchecker.plan.ForcingTable;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
@@ -74,7 +73,7 @@ final class ForcedFlip {
                       Map<String, List<ObligationResult>> answers,
                       List<ObligationFactory.Candidate> candidates) {
         JsonObject manifest = new JsonObject();
-        Set<String> sites = ForcingTable.read(scope.forcing()).keySet();
+        Set<String> sites = scope.forcedSites();
         if (anchor == null || sites.isEmpty()) {
             // No table, nothing to force: the seed's way stands alone.
             manifest.addProperty("state", "NO_FORCING_TABLE");

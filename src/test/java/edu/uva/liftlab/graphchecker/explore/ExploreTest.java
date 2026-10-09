@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -19,6 +20,8 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -288,6 +291,92 @@ public class ExploreTest {
         assertEquals(1, view.get("seedFlipsAfterForcedFlip").getAsInt());
         assertTrue(obligations(wave2).stream().anyMatch(o ->
                 o.pathId().equals(Corpus.pathId("s-seed", TARGET))));
+    }
+
+    /**
+     * The fence (PIPELINE §7.10): a FORCED session with no forced target --
+     * a FORCE run that diverged or never closed, published anyway -- is no
+     * session: none of its messages is a sender, its interaction none, its
+     * write no writer.  One at its forced target keeps its messages from
+     * before its forced world for its own path alone.
+     */
+    @Test
+    public void aForcedSessionReachesNoOtherPath() throws Exception {
+        Path iteration = tree.newFolder("fence").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.constant("e.seed", "1");
+        seed.export(ROTATED, "e.seed", 11L, "1");
+        seed.attach(DELIVERED, "M_HOFF_KEY", "1", ROTATED);
+        seed.flush();
+        Session stray = new Session(iteration, "s-stray");
+        stray.activation(WRITER, false);
+        stray.activation(PRODUCER, false);
+        stray.constant("e.stray", "2");
+        stray.export(ROTATED, "e.stray", 12L, "2");
+        stray.attach(DELIVERED, "M_HOFF_KEY", "2", ROTATED);
+        stray.write(STORED, ALL_KEYS, 5L, "e.stray");
+        stray.forcedDecision(TARGET, "Guard#u8", 1, true, "M_A");
+        stray.flush();
+        Session forced = new Session(iteration, "s-forced");
+        forced.activation(WRITER, false);
+        forced.activation(PRODUCER, false);
+        forced.constant("e.before", "3");
+        forced.constant("e.after", "4");
+        forced.export(ROTATED, "e.before", 13L, "3");
+        forced.attach(DELIVERED, "M_HOFF_KEY", "3", ROTATED);
+        forced.forcedDecision(TARGET, "Guard#u8", 1, true, "M_A");
+        forced.forcedTarget(TARGET, "Guard#u8", forced.seq, "M_A");
+        forced.export(ROTATED, "e.after", 14L, "4");
+        forced.answered(ObligationResult.of("force", Verdict.ADMITTED,
+                "s-forced", "FORCED_TARGET: reached"));
+        forced.flush();
+
+        Corpus corpus = Corpus.read(iteration, null);
+        Interaction slot = Interaction.of(InteractionKind.WIRE, ROTATED,
+                DELIVERED);
+        assertNull("no forced target: no session", corpus.session("s-stray"));
+        assertTrue(corpus.writesOf("s-stray",
+                SmtLowering.locationKey(ALL_KEYS)).isEmpty());
+        Object[][] views = {
+                {"senders", sessionsOf(corpus.exportsOf(ROTATED))},
+                {"deliveries", sessionsOf(corpus.attachesOf(slot))},
+                {"interactions", corpus.interactions().containsKey(slot.id())
+                        ? Collections.singleton("s-seed")
+                        : Collections.<String>emptySet()}};
+        for (Object[] view : views) {
+            assertEquals((String) view[0], Collections.singleton("s-seed"),
+                    view[1]);
+        }
+        List<ExportRow> own = corpus.ownExportsOf("s-forced", ROTATED);
+        assertEquals("its own sender, from before its forced world", 1,
+                own.size());
+        assertTrue(own.get(0).seq() < corpus.forcedFrom("s-forced"));
+        assertTrue(corpus.ownExportsOf("s-seed", ROTATED).isEmpty());
+        Object[][] scopes = {
+                {"the seed's path", "s-seed",
+                        Collections.singleton("s-seed")},
+                {"the forced path", "s-forced", new LinkedHashSet<String>(
+                        Arrays.asList("s-seed", "s-forced"))}};
+        for (Object[] scope : scopes) {
+            Set<String> sessions = new LinkedHashSet<String>();
+            for (Arms.Arm arm : corpus.arms().armsAt(slot, "M_HOFF_KEY",
+                    (String) scope[1])) {
+                sessions.add(arm.sessionId());
+            }
+            assertEquals((String) scope[0], scope[2], sessions);
+        }
+    }
+
+    private static Set<String> sessionsOf(List<? extends Object> rows) {
+        Set<String> sessions = new LinkedHashSet<String>();
+        for (Object row : rows) {
+            sessions.add(row instanceof ExportRow
+                    ? ((ExportRow) row).sessionId()
+                    : ((AttachRow) row).sessionId());
+        }
+        return sessions;
     }
 
     // ---- (1) depth: one decision per wave -----------------------------

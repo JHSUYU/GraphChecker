@@ -1209,6 +1209,12 @@ public final class RowRuntime {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC,
                     mismatch.substring(0, mismatch.indexOf(':')), mismatch);
         }
+        // A FORCE run publishes its session at its forced target only: one
+        // that never reached it (diverged, or never closed) states a forced
+        // world no stage may read, and is withdrawn as a refused one is.
+        String unreached = FocusedReplay.forcing() ? ForcedArms.unreached()
+                : "";
+        if (!unreached.isEmpty()) FocusedReplay.decideForced(unreached);
         List<ObligationResult> results =
                 FocusedReplay.results(sessionId());
         for (ObligationResult result : results) {

@@ -208,6 +208,14 @@ public final class Corpus implements Arms.Rows {
     /** interaction id -> the interaction itself, for every pairing stated. */
     private final Map<String, Interaction> interactions =
             new LinkedHashMap<String, Interaction>();
+    /** {@code session|interaction id} -> a forced session's attaches from
+     *  before its forced world: its own path's messages alone. */
+    private final Map<String, List<AttachRow>> ownAttaches =
+            new LinkedHashMap<String, List<AttachRow>>();
+    /** {@code session|producer id} -> a forced session's exports from
+     *  before its forced world, as {@link #ownAttaches}. */
+    private final Map<String, List<ExportRow>> ownExports =
+            new LinkedHashMap<String, List<ExportRow>>();
     /** Every symbol the runtime declared, at the sort it minted it at. */
     private final Map<String, Sort> declaredSymbols =
             new LinkedHashMap<String, Sort>();
@@ -306,9 +314,10 @@ public final class Corpus implements Arms.Rows {
      * views -- {@link #sessions}, the rows of an occurrence across sessions,
      * a location's writers and sites, the schedule's senders -- so no other
      * path, arm, slot, closure, witness or verdict reads a forced world.  Its
-     * messages from before its forced world are the recording's world's
-     * and are a message's senders as any session's are: its own path's
-     * handoffs move with their producers there.
+     * messages from before its forced world are its own path's alone
+     * ({@link #ownAttachesOf}, {@link #ownExportsOf}): its handoffs move with
+     * their producers there, and no other path pairs with them.  One with no
+     * forced target is no session at all.
      */
     private final List<SessionReader> forcedSessions;
     /** Each forced session's forced world's first event: its forced target
@@ -320,13 +329,28 @@ public final class Corpus implements Arms.Rows {
         List<SessionReader> real = new ArrayList<SessionReader>();
         List<SessionReader> forced = new ArrayList<SessionReader>();
         for (SessionReader session : read) {
-            (session.forced() ? forced : real).add(session);
+            // A forced session lands at its forced target only (its run
+            // withdraws it otherwise, RowRuntime#closeSession): one without
+            // states a forced world nothing fences, and is read as none.
+            if (!session.forced()) {
+                real.add(session);
+            } else if (forcedTarget(session)) {
+                forced.add(session);
+            }
         }
         this.sessions = Collections.unmodifiableList(real);
         this.forcedSessions = Collections.unmodifiableList(forced);
         for (SessionReader session : real) index(session, false);
         for (SessionReader session : forced) index(session, true);
         this.arms = new Arms(this);
+    }
+
+    /** Whether a session states a forced target row. */
+    private static boolean forcedTarget(SessionReader session) {
+        for (TargetRow row : session.targets()) {
+            if (row.isForced()) return true;
+        }
+        return false;
     }
 
     /** Reads an iteration and its case-declared root domains. */
@@ -745,9 +769,8 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** One session's rows; {@code apart}: a forced one's, under its
-     *  session only ({@link #forcedSessions}) -- but its messages from
-     *  before its forced world, the recording's world's, which its own
-     *  path's handoffs are bound by ({@code FlipQuery}'s own run). */
+     *  session only ({@link #forcedSessions}), its messages from before its
+     *  forced world its own path's ({@code FlipQuery}'s own run). */
     private void index(SessionReader session, boolean apart) {
         long world = Long.MAX_VALUE;
         if (apart) {
@@ -785,10 +808,15 @@ public final class Corpus implements Arms.Rows {
             }
         }
         for (ExportRow row : session.exports()) {
-            // A forced world's export is no message any arm delivers.
+            // A forced world's export is no message any arm delivers; one
+            // before it is its own path's alone (Arms#armsAt's scope).
             if (row.seq() >= world) continue;
+            if (apart) {
+                add(ownExports, session.sessionId() + "|"
+                        + row.endpoint().id(), row);
+                continue;
+            }
             add(exports, row.endpoint().id(), row);
-            if (apart) continue;
             remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
         }
@@ -802,7 +830,10 @@ public final class Corpus implements Arms.Rows {
             declaredSymbols.put(row.symbol(),
                     JavaSmtSorts.sortOfJava(row.javaType()));
             Interaction interaction = row.interaction();
-            if (interaction != null && row.seq() < world) {
+            if (interaction != null && apart && row.seq() < world) {
+                add(ownAttaches, session.sessionId() + "|"
+                        + interaction.id(), row);
+            } else if (interaction != null && !apart) {
                 interactions.put(interaction.id(), interaction);
                 add(attachesByInteraction, interaction.id(), row);
             }
@@ -1508,6 +1539,20 @@ public final class Corpus implements Arms.Rows {
     }
 
     @Override
+    public List<AttachRow> ownAttachesOf(String sessionId,
+                                         Interaction interaction) {
+        return ownAttaches.getOrDefault(sessionId + "|" + interaction.id(),
+                Collections.<AttachRow>emptyList());
+    }
+
+    @Override
+    public List<ExportRow> ownExportsOf(String sessionId, Endpoint producer) {
+        if (producer == null) return Collections.emptyList();
+        return ownExports.getOrDefault(sessionId + "|" + producer.id(),
+                Collections.<ExportRow>emptyList());
+    }
+
+    @Override
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
         return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
                 Collections.<WriteRow>emptyList());
@@ -1626,8 +1671,16 @@ public final class Corpus implements Arms.Rows {
                     new LinkedHashMap<String, List<RootMintRow>>();
             for (Map.Entry<String, Map<String, RootMintRow>> entry
                     : rootsById.entrySet()) {
-                byRoot.put(entry.getKey(), Collections.unmodifiableList(
-                        new ArrayList<RootMintRow>(entry.getValue().values())));
+                // A forced world's mint is no reading of a world any run
+                // takes (Composer places clocks from these).
+                List<RootMintRow> rows = new ArrayList<RootMintRow>();
+                for (RootMintRow row : entry.getValue().values()) {
+                    if (row.seq() < forcedFrom(row.sessionId())) rows.add(row);
+                }
+                if (!rows.isEmpty()) {
+                    byRoot.put(entry.getKey(),
+                            Collections.unmodifiableList(rows));
+                }
             }
             roots = Collections.unmodifiableMap(byRoot);
         }

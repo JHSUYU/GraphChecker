@@ -935,7 +935,7 @@ final class FlipQuery {
                 Interaction slot = Interaction.of(InteractionKind.WIRE,
                         attach.producer(), attach.endpoint());
                 for (Arms.Arm arm : corpus.arms().wireArms(slot,
-                        attach.symbol())) {
+                        attach.symbol(), attach.sessionId())) {
                     if (!control
                             && !arm.sessionId().equals(attach.sessionId())) {
                         continue;

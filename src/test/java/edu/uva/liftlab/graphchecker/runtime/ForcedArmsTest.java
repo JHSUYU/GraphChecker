@@ -137,11 +137,11 @@ public class ForcedArmsTest {
         ActiveRegion active = declared(4L, FOCUS);
         ForcedArms.arm(active);
         JsonObject along = mapping(GUARD, 10L, true);
-        ForcedArms.mark(active, along, forcedEvent(1L), null);
+        ForcedArms.mark(active, along, forcedEvent(1L));
         JsonObject off = mapping(GUARD, 12L, true);
-        ForcedArms.mark(active, off, forcedEvent(0L), null);
+        ForcedArms.mark(active, off, forcedEvent(0L));
         JsonObject unforced = mapping(GUARD, 14L, false);
-        ForcedArms.mark(active, unforced, new JsonObject(), null);
+        ForcedArms.mark(active, unforced, new JsonObject());
         Object[][] rows = {
                 {"forced along its concrete arm", along, true, true, false},
                 {"forced off it", off, true, false, true},
@@ -160,6 +160,8 @@ public class ForcedArmsTest {
                 ForcedArms.forcedFrom(active));
         ForcedArms.reachedTarget(active, TARGET, 1, true);
         assertEquals(12L, ForcedArms.forcedFrom(active));
+        assertEquals("reached: nothing withdraws its session", "",
+                ForcedArms.unreached());
         assertEquals("", ForcedArms.finished(active, "THROW",
                 "java.lang.IllegalStateException"));
         ObligationResult verdict = FocusedReplay.results("s").get(0);
@@ -183,7 +185,7 @@ public class ForcedArmsTest {
             ActiveRegion active = declared(5L, FOCUS);
             ForcedArms.arm(active);
             ForcedArms.mark(active, mapping(GUARD, 20L, true),
-                    forcedEvent(0L), null);
+                    forcedEvent(0L));
             if ("healthy".equals(row[0])) {
                 ForcedArms.reachedTarget(active, TARGET, 1, false);
             }
@@ -199,6 +201,44 @@ public class ForcedArmsTest {
                             + " arm's null at "));
             assertEquals(Verdict.NOT_ADMITTED,
                     FocusedReplay.results("s").get(0).verdict());
+            assertEquals(row[0] + ": its session is withdrawn", reason,
+                    ForcedArms.unreached());
+        }
+        reset();
+        forcing();
+        ForcedArms.arm(declared(6L, FOCUS));
+        assertTrue("one that never closed is withdrawn too",
+                ForcedArms.unreached().contains("never closed"));
+    }
+
+    /** A decider is forced only in a call of its helper from {@code via}:
+     *  the frame one level out, as the weave enters it -- a lambda's
+     *  run-minted class name compared by its stable spelling. */
+    @Test
+    public void aDeciderIsForcedOnlyInACallFromItsVia() {
+        String caller = "<a.Caller$$Lambda$12/1830908236: void run()>";
+        String helper = "<a.Helper: boolean ok()>";
+        Object[][] rows = {
+                // {frames, outermost first; via; called from it}
+                {new String[] {caller, helper},
+                        "<a.Caller$$Lambda$40/99: void run()>", true},
+                {new String[] {caller, "<a.Other: void go()>", helper},
+                        caller, false},
+                {new String[] {helper}, caller, false}};
+        for (Object[] row : rows) {
+            String[] frames = (String[]) row[0];
+            long[] tokens = new long[frames.length];
+            for (int index = 0; index < frames.length; index++) {
+                tokens[index] = Identity.enterFrame(frames[index], null);
+            }
+            try {
+                assertEquals(String.valueOf(row[1]), row[2],
+                        ForcedArms.calledFrom((String) row[1]));
+            } finally {
+                for (int index = frames.length - 1; index >= 0; index--) {
+                    Identity.exitFrame(tokens[index]);
+                }
+            }
         }
     }
 
@@ -230,6 +270,16 @@ public class ForcedArmsTest {
         assertEquals("nothing between: phi alone", "PHI",
                 RowPublication.forced(Collections.<JsonObject>emptyList(),
                         7L, 11L, "PHI"));
+        // A switch is never forced: its mapping states the case arm and no
+        // condition, its predicate rows no arm; between, it adds nothing.
+        JsonObject selector = mapping(GUARD, 9L, true);
+        JsonObject predicate = BranchObservation.decisionRow(METHOD, 2, 1,
+                9L, null, 0, 0);
+        predicate.add("witness", symbol("M_KEY"));
+        List<JsonObject> switched = new ArrayList<JsonObject>(Arrays.asList(
+                first, selector, predicate, target));
+        assertEquals("(and " + a + " PHI)",
+                RowPublication.forced(switched, 7L, 11L, "PHI"));
     }
 
     private static JsonObject symbol(String name) {

@@ -297,11 +297,11 @@ final class ConcolicVmBroker {
 
     /**
      * Forces the branch the next marker marks ({@code
-     * System.forceNextConcolicBranch}: a {@code ForcingTable} kind and its
-     * arm or key); zero, or a negative VM status.
+     * System.forceNextConcolicBranch}: jump, or fall through); zero, or a
+     * negative VM status.
      */
-    int forceNextBranch(int kind, int value) throws Exception {
-        Object status = forceNextBranch.invoke(null, kind, value);
+    int forceNextBranch(boolean jump) throws Exception {
+        Object status = forceNextBranch.invoke(null, jump);
         return status instanceof Number ? ((Number) status).intValue()
                 : MALFORMED_RESULT;
     }
@@ -425,7 +425,7 @@ final class ConcolicVmBroker {
         api.installGuardedStoreSites = method(system,
                 "installGuardedStoreSites", String.class);
         api.forceNextBranch = method(system, "forceNextConcolicBranch",
-                int.class, int.class);
+                boolean.class);
         return api;
     }
 
