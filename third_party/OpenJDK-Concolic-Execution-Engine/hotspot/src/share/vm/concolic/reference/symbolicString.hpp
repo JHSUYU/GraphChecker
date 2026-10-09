@@ -30,6 +30,7 @@ public:
   };
 
   bool need_recursive() { return false; }
+  bool keeps_field_shadows() const { return false; }
 
   virtual void set_sym_exp(int field_offset, Expression *exp);
   virtual bool has_sym_exp(int field_offset);
