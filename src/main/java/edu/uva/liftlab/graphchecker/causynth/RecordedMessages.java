@@ -90,26 +90,22 @@ final class RecordedMessages {
     }
 
     /**
-     * The stances of the turns that took in, at their root before any of
-     * their regions opened, the message that started {@code occurrence}:
-     * every occurrence of such a turn holds a door of it (an Overseer queue
-     * loop's turn, its task item, and the ZooKeeper door a region of the
-     * turn runs).
+     * The stances of the turns whose every occurrence holds a door of the
+     * message that started {@code occurrence}: the turn that sent it --
+     * whatever it ran before the send, on any of its threads, a fault of
+     * which can stop the turn short of it (RestoreCmd's RESTORECORE
+     * requests before its ACTIVE offer) -- and each turn that took it in at
+     * its root before any of its regions opened (an Overseer queue loop's
+     * turn, its task item, and the ZooKeeper door a region of the turn
+     * runs).
      */
     Set<String> doorStancesOf(OccurrenceAddress occurrence) {
-        Set<String> stances = receivingStances.get(startedBy(occurrence));
-        return stances == null ? Collections.<String>emptySet() : stances;
-    }
-
-    /**
-     * Where the message that started {@code occurrence} was sent from, when
-     * its SEND stood in no region occurrence -- so {@link #doorsOf} names no
-     * sender, and none of the sender's doors -- else null.
-     */
-    ContextShape.Stance sentOutsideRegion(OccurrenceAddress occurrence) {
         String endpoint = startedBy(occurrence);
-        if (endpoint.isEmpty() || senders.containsKey(endpoint)) return null;
-        return stances.get(endpoint);
+        Set<String> doors = new LinkedHashSet<>(receivingStances.getOrDefault(
+                endpoint, Collections.<String>emptySet()));
+        ContextShape.Stance sentFrom = stances.get(endpoint);
+        if (sentFrom != null) doors.add(sentFrom.render());
+        return doors;
     }
 
     /** The producer endpoint of the message that started {@code

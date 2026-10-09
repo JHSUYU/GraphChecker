@@ -890,12 +890,16 @@ public final class Corpus implements Arms.Rows {
     /**
      * Every door of the message that started {@code served} (IDENTITY
      * §7.3): the occurrence that sent it ({@link #senderOf}), the occurrence
-     * that took it in ({@link #receiverOf}), and every occurrence of
-     * another turn that took it in at its root, before any of its regions
-     * opened (an Overseer queue loop's turn and the task item it consumed,
-     * whose ZooKeeper door then runs in a region of the turn).  The served
-     * occurrence's own turn holds no door of it: its other occurrences are
-     * what the message started too (an Overseer state update's turn).
+     * that took it in ({@link #receiverOf}), every occurrence of the turn
+     * that sent it -- whatever it ran before the send, on any of its
+     * threads, a fault of which can stop the turn short of it (RestoreCmd's
+     * RESTORECORE requests before its ACTIVE offer) -- and every occurrence
+     * of another turn that took it in at its root, before any of its
+     * regions opened (an Overseer queue loop's turn and the task item it
+     * consumed, whose ZooKeeper door then runs in a region of the turn).
+     * The served occurrence's own turn holds no door of it: its other
+     * occurrences are what the message started too (an Overseer state
+     * update's turn).
      */
     public List<OccurrenceAddress> doorsOf(String producerEndpointId,
                                            OccurrenceAddress served) {
@@ -905,8 +909,13 @@ public final class Corpus implements Arms.Rows {
                 receiverOf(producerEndpointId)}) {
             if (door != null && !doors.contains(door)) doors.add(door);
         }
-        Set<String> stances = receivingStances.get(producerEndpointId);
-        if (stances == null) return doors;
+        Set<String> stances = new HashSet<String>(receivingStances
+                .getOrDefault(producerEndpointId,
+                        Collections.<String>emptySet()));
+        ContextShape.Stance sentFrom =
+                senderStanceByEndpoint.get(producerEndpointId);
+        if (sentFrom != null) stances.add(sentFrom.render());
+        if (stances.isEmpty()) return doors;
         String own = ContextShape.Stance.of(served).render();
         for (OccurrenceAddress occurrence : occurrenceById.values()) {
             String stance = ContextShape.Stance.of(occurrence).render();

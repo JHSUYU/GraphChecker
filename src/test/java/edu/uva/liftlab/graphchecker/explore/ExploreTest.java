@@ -5886,10 +5886,10 @@ public class ExploreTest {
      * consumer (the task's Runner, which wrote what the anchor read) names
      * it as a control producer, and its door is asked
      * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write);
-     * the Runner's own turn is what the item started, no door of it, and a
-     * control producer contributes no value, so the doors of its own item
-     * are not asked.  A turn that sent it so names no sender
-     * (DOOR_SEND_OUTSIDE_REGION).
+     * so does the turn that sent it (RestoreCmd's RESTORECORE requests
+     * before its offer); the Runner's own turn is what the item started, no
+     * door of it, and a control producer contributes no value, so the doors
+     * of its own item are not asked.
      */
     @Test
     public void aTurnThatTookAnItemInAtItsRootHoldsItsDoors()
@@ -5911,8 +5911,8 @@ public class ExploreTest {
         OccurrenceAddress sibling = occurrence("solr-case/node0",
                 "REGION.sib", runnerTurn, "Runner#sib#1");
         // Per row: the queue turn's row of the item, at its root (no
-        // occurrence) or not; a RECV at its root has the turn's door asked,
-        // a SEND there names no sender.
+        // occurrence) or not: a turn that took it in so or sent it holds a
+        // door of it.
         Object[][] cases = {
             {ScheduleEvent.Kind.RECV, true},
             {ScheduleEvent.Kind.RECV, false},
@@ -5961,8 +5961,7 @@ public class ExploreTest {
             Path wave = out.resolve("obligations-0000");
             plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1",
                     null, results, wave, 0);
-            assertEquals("case " + at, rooted
-                            && kind == ScheduleEvent.Kind.RECV,
+            assertEquals("case " + at, rooted,
                     named(obligations(wave), "Mark#u3") != null);
             // The Runner's own turn is no door of the item for the Runner,
             // and the queue turn's occurrence, a control producer, asks no

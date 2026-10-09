@@ -797,15 +797,17 @@ reaches, to a fixed point:
   and sent, or took in, the message that started an admitted occurrence (its `Anchor`, else the
   message its turn took in, a DataNode's DataTransfer op; the recorded schedule's `SEND` names the
   sender, a `RECV` of the message a receiver, and one a turn made at its root, no occurrence open,
-  every occurrence of that turn: `#doorStancesOf`) is admitted
-  (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists; it contributes no value,
-  so the doors of the message that started it are not admitted in turn. These are the control
-  producers EXPLORE proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS
-  `MARKER_FLIPPED` witnesses move such an IPC door. A message sent in no region occurrence has no
-  sender, so no door of it is admitted: a fault-reading occurrence not reached in the context it was
-  sent from is named, DIAGNOSTIC `DOOR_SEND_OUTSIDE_REGION` (`RecordedMessages#sentOutsideRegion`;
-  solr-bugs-migrate-buffer-leak, round SG2: a send hook moved out of `HttpSolrClient#executeMethod`,
-  the method holding the door's call, left its fault unplanned).
+  every occurrence of that turn: `#doorStancesOf`), and every occurrence of the turn that sent it,
+  whatever it ran before the send and on any of its threads, is admitted where it read a fault
+  marker (`CONTROL_PRODUCER_V1`): its fault decides whether the message exists -- a door's own, or
+  one of the turn's that stops it short of the send (solr-bugs-restore-construction: RestoreCmd's
+  RESTORECORE and REQUESTAPPLYUPDATES requests before its ACTIVE offer; the failure crosses the
+  shard handler's executor as an exception, a concrete object no term names). The turn is the
+  bound: no recorded order cuts it, its other threads' occurrences included wherever they ran (the
+  owner's rule: the recorded order is no fixed order). It contributes no value, so the doors of the
+  message that started it are not admitted in turn. These are the control producers EXPLORE
+  proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS `MARKER_FLIPPED` witnesses
+  move such an IPC door.
 
 - **Equivalent deciders are one class** (`DemandWalk#classDeciders`). Occurrences the walk reached
   only as writers of a demanded store that stored no demanded cell in the recording (each left the
