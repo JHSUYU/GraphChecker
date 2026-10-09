@@ -704,28 +704,30 @@ reaches, to a fixed point:
     `TracedRows` traces the call and argument rows at those sites, `#storingCalls` --; an accessor
     call's receiver holds what it returned). Its writer is not crossed to only when no object it
     wrote the field on is reachable, and each, with every recorded holder above it (a holder is
-    how an object is handed on: `RecordedHeap#confinement`), was never handed over: every mention
-    of them -- as a receiver, an argument, a return, a field's holder or value -- on one thread and
-    by the writer's own occurrence alone, the reader not inside it (**confined**; the occurrence
-    enclosing an event nearest), or on one thread that is not the reader's inside one occurrence
-    tree (**thread-confined**: an occurrence and those its root call encloses, `#within`). Any sign
-    of a hand-off keeps the writer (**escaped**): a mention in a second occurrence tree (several
-    unrelated occurrences: ZooKeeper watchers building `DocCollection`s on one event thread), on a
-    second thread or on the reader's, or under no occurrence; a holder mentioned so (an object a
-    shared map holds is as escaped as the map); a shared object the reader reaches; and a static
-    field's location. Known limit (STATUS open defect 65): the recorded heap is PARTIAL -- field
-    events of the trace methods only, container edges only at the scope map's store sites,
-    accessor edges only at `accessor_field_return` sites, mentions only where a row is traced --
-    so code the trace does not record (unwoven, or woven outside the trace methods, a lambda's body
-    included: `watchedCollectionStates.compute(lambda)` publishes a `DocCollection` with no edge;
-    a capture handed to an executor records no field event) hands objects over unseen, as does a
-    hand-off only a counterfactual world would make. So every drop is published: a DIAGNOSTIC
-    `CLOSURE_CONFINED` gap row per reader, field and scope with the count, the owner class and the
-    first writers, and result.json `confinedWriters` (CHECKING trap 22: an UNSAT reading looks at
-    the anchor's demanded fields among them). The reader's plan row states, per field, how many
-    writers it did not cross to by each rule (`confinedWriters`, `threadConfinedWriters`) and how
-    many it crossed to only for a mention (`escapedWriters`); PLAN prints each as `CONFINED`,
-    `THREAD_CONFINED`, `ESCAPED` by owner class and field,
+    how an object is handed on: `RecordedHeap#confinement`), was mentioned -- as a receiver, an
+    argument, a return, a field's holder or value -- under ONE causal context that is not the
+    reader's (**confined**): the `c` of an occurrence's `(r,c,i)`, one tick, one served request,
+    one client root, its calls' `requestKey`, which the work it starts carries on any thread, so a
+    pooled thread serving two requests serves two contexts. solr-adhoc-10: a response the unwoven
+    javabin codec decodes inside one Overseer task, each of its `NamedList.add` calls an occurrence
+    of its own (the trace's call tree breaks at every untraced frame: the calls' `parentCallId` is
+    0), stays in that task's context. Any sign of a hand-off keeps the writer (**escaped**): a
+    mention under a second context (ZooKeeper watchers building `DocCollection`s across events,
+    `ClusterState`s the Overseer carries from one tick to the next), under the reader's context
+    whatever the thread, or under none known; a holder mentioned so, a capture into work started
+    under another context among them; a shared object the reader reaches; and a static field's
+    location. Known limit (STATUS open defect 65): the recorded heap is PARTIAL -- field events of
+    the trace methods only, container edges only at the scope map's store sites, accessor edges
+    only at `accessor_field_return` sites, mentions only where a row is traced -- so a hand-off
+    through untraced code between two contexts (an unwoven cache two requests share; code woven
+    outside the trace methods, a lambda's body included: `watchedCollectionStates.compute(lambda)`
+    publishes a `DocCollection` with no edge) is not seen, nor is one only a counterfactual world
+    would make. So every drop is published: a DIAGNOSTIC `CLOSURE_CONFINED` gap row per reader and
+    field (`scope` `CONTEXT`) with the count, the owner class and the first writers, and result.json
+    `confinedWriters` (CHECKING trap 22: an UNSAT reading looks at the anchor's demanded fields
+    among them). The reader's plan row states, per field, how many writers it did not cross to
+    (`confinedWriters`) and how many it crossed to only for a mention (`escapedWriters`); PLAN
+    prints each as `CONFINED` and `ESCAPED` by owner class and field,
     and states them in `runtime_workflow_schedule_index.json`. This filter is PLAN's
     only: EXPLORE's writers of a location a reader's recorded reads named (§5.5) are not filtered by
     reachability or confinement. solr-adhoc-10 SG1: the target reads `NamedList.nvPairs`,

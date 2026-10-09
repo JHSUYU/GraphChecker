@@ -362,12 +362,10 @@ public final class RuntimeRegionPlanner {
      * field's value is a root); the receiver of a call at a store site that
      * mutates through the call ({@code storingCalls}) held each object it
      * was handed, and that of a call at a site that returns a field ({@code
-     * fieldCalls}) held what it returned.  And where each object was
-     * mentioned: every object a method entry, a field access or a call row
-     * names, under the activation whose root call encloses it nearest
-     * ({@code activations}; none encloses an ambient call), on its call's
-     * thread; and each activation's thread and the activation enclosing it
-     * nearest.
+     * fieldCalls}) held what it returned.  And the causal context each
+     * object was mentioned under: every object a method entry, a field
+     * access or a call row names, under its call's context (the entry's
+     * {@code requestKey}); and each activation's, its root call's.
      */
     static RecordedHeap recordedHeap(Collection<MethodEvent> methods,
                                      Collection<FieldAccessEvent> fields,
@@ -377,32 +375,19 @@ public final class RuntimeRegionPlanner {
                                      Map<String, String> storingCalls,
                                      Map<String, String> fieldCalls) {
         RecordedHeap.Builder heap = new RecordedHeap.Builder();
-        Map<Long, Long> threads = new HashMap<>();
-        Map<Long, Long> parents = new HashMap<>();
+        Map<Long, String> contexts = new HashMap<>();
         for (MethodEvent event : methods) {
-            threads.put(event.callId, event.tid);
-            parents.put(event.callId, event.parentCallId);
+            contexts.put(event.callId, event.requestKey);
+            heap.mention(event.objectId, event.requestKey);
         }
-        Map<Long, Long> owners = occurrenceRoots(parents, activations);
         for (Map<String, Object> activation : activations) {
             long root = longNumber(activation.get("rootCallId"), -1L);
-            Long parent = parents.get(root);
-            heap.occurrence(root, threads.getOrDefault(root,
-                    RecordedHeap.NOWHERE), parent == null
-                    ? RecordedHeap.NOWHERE : owners.getOrDefault(parent,
-                    RecordedHeap.NOWHERE));
-        }
-        for (MethodEvent event : methods) {
-            heap.mention(event.objectId, owners.getOrDefault(event.callId,
-                    RecordedHeap.NOWHERE), event.tid);
+            heap.occurrence(root, contexts.getOrDefault(root, ""));
         }
         for (FieldAccessEvent event : fields) {
-            long owner = owners.getOrDefault(event.callId,
-                    RecordedHeap.NOWHERE);
-            long thread = threads.getOrDefault(event.callId,
-                    RecordedHeap.NOWHERE);
-            heap.mention(event.receiverObjectId, owner, thread);
-            heap.mention(event.valueObjectId, owner, thread);
+            String context = contexts.getOrDefault(event.callId, "");
+            heap.mention(event.receiverObjectId, context);
+            heap.mention(event.valueObjectId, context);
             if (event.receiverObjectId == 0) {
                 heap.root(event.valueObjectId);
             } else {
@@ -414,9 +399,8 @@ public final class RuntimeRegionPlanner {
         Map<Long, Integer> storing = new HashMap<>();
         Map<Long, Integer> returning = new HashMap<>();
         for (RuntimeEvent event : sorted(runtime, value -> value.seq)) {
-            heap.mention(event.objectId, owners.getOrDefault(event.callId,
-                    RecordedHeap.NOWHERE), threads.getOrDefault(event.callId,
-                    RecordedHeap.NOWHERE));
+            heap.mention(event.objectId,
+                    contexts.getOrDefault(event.callId, ""));
             if ("CALL_SITE_ENTER".equals(event.kind)) {
                 if (storingCalls.containsKey(event.siteId)) {
                     storing.put(event.invocationId, event.objectId);
@@ -436,33 +420,6 @@ public final class RuntimeRegionPlanner {
             }
         }
         return heap.build();
-    }
-
-    /** Call -> the root call of the activation enclosing it nearest; a
-     *  call no activation encloses has none. */
-    private static Map<Long, Long> occurrenceRoots(
-            Map<Long, Long> parents,
-            Collection<Map<String, Object>> activations) {
-        Map<Long, Long> owners = new HashMap<>();
-        for (Map<String, Object> activation : activations) {
-            long root = longNumber(activation.get("rootCallId"), -1L);
-            if (root > 0L) owners.put(root, root);
-        }
-        for (Long call : parents.keySet()) {
-            List<Long> path = new ArrayList<>();
-            Long at = call;
-            Long owner = null;
-            while (at != null && at > 0L) {
-                owner = owners.get(at);
-                if (owner != null) break;
-                path.add(at);
-                at = parents.get(at);
-            }
-            long found = owner == null ? RecordedHeap.NOWHERE : owner;
-            for (Long passed : path) owners.put(passed, found);
-        }
-        owners.values().removeIf(owner -> owner == RecordedHeap.NOWHERE);
-        return owners;
     }
 
     /** One recorded entry that opens an occurrence of one region. */
@@ -1445,7 +1402,6 @@ public final class RuntimeRegionPlanner {
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
                     RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
-                    RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS,
                     RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));

@@ -164,7 +164,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |
 | `CONFIRM_MISMATCH` | the confirmation replay took an edge the model did not choose, could not hold its order, or could not read the edges it was handed (`EDGES:`) |
 | `CLAIM_REFUTED` | a model CONFIRM refuted (`<iteration>/refuted_claims.jsonl`), which the composition excludes (DIAGNOSTIC; BLOCKING when the file cannot be read), [PIPELINE.md §10](PIPELINE.md) |
-| `CLOSURE_CONFINED` | writers of a demanded field PLAN did not cross to for a reader that never touched it, every object they wrote it on confined where the reader is not as far as the recorded heap shows; one row per reader, field and scope with the count and first few (DIAGNOSTIC; result.json `confinedWriters`), [SYMBOL-SCOPE.md §4.4](SYMBOL-SCOPE.md) |
+| `CLOSURE_CONFINED` | writers of a demanded field PLAN did not cross to for a reader that never touched it, every object they wrote it on confined where the reader is not as far as the recorded heap shows; one row per reader and field with the count and first few (DIAGNOSTIC; result.json `confinedWriters`), [SYMBOL-SCOPE.md §4.4](SYMBOL-SCOPE.md) |
 
 ### 2.6 The row invariants (`RowInvariants`, run by `ImportGateMain`)
 

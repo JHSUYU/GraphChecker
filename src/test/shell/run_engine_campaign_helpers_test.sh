@@ -209,9 +209,40 @@ run_emit
 jq -e '.evidence.symbolicPropagationComplete == false
   and .gapCount == 0
   and .telemetryCount >= 2
-  and .bounded == null' \
+  and .bounded == null
+  and .confinedWriters == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+
+# CONFINED-1: the writers PLAN dropped as confined are DIAGNOSTIC rows of the
+# region plan's gaps, which EMIT carries into gaps.json, and result.json
+# counts them by owner class with the first rows (CHECKING trap 22).
+emit_fixture
+jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
+  edges: [], regions: [],
+  gaps: [{schemaVersion: 1, kind: "CLOSURE_CONFINED", cls: "DIAGNOSTIC",
+          subject: "CONTEXT <a.B: int x> @ r1", detail: "3 writer(s)",
+          scope: "CONTEXT", ownerClass: "a.B", field: "<a.B: int x>",
+          reader: "r1", writers: 3, first: ["w1", "w2", "w3"]},
+         {schemaVersion: 1, kind: "CLOSURE_CONFINED", cls: "DIAGNOSTIC",
+          subject: "CONTEXT <a.C: int y> @ r1", detail: "2 writer(s)",
+          scope: "CONTEXT", ownerClass: "a.C", field: "<a.C: int y>",
+          reader: "r1", writers: 2, first: ["w4", "w5"]}]}' \
+  >"${runtime_region_plan}"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a confined drop withheld the candidate: $(<"${emit_root}/emit.log")"
+jq -e '.confinedWriters.writers == 5 and .confinedWriters.rows == 2
+  and .confinedWriters.byOwnerClass == {"a.B": 3, "a.C": 2}
+  and (.confinedWriters.first | length) == 2
+  and .confinedWriters.first[0].first == ["w1", "w2", "w3"]
+  and .gapCount == 0' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the confined drops were not published: \
+$(jq -c '.confinedWriters' "${campaign_final}/result.json" 2>&1)"
+jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the confined drops are not DIAGNOSTIC rows of gaps.json"
 
 # BOUND-1: every declared bound that cut the search is named in result.json
 # by its configuration key (campaign_bounds), whatever the claim; a round's

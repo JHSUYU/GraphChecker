@@ -136,8 +136,10 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     call-return answers are planted natively (11741 EX1 10/10, solr-18406/18413 SC1 and SC2 10/10 each). A reproduced
     run may leave ORDER rows `NOT_REACHED`: their after-activation runs past the anchor, where the run ends.
 22. **An UNSAT over writers PLAN dropped as confined** (solr-explore review, 2026-10-09): PLAN does not cross to a
-    writer whose every object, with its recorded holders, the recorded heap shows confined where a reader that never
-    touched the field is not (SYMBOL-SCOPE §4.4). The heap is partial: untraced code (unwoven, or woven outside the
-    trace methods, lambda bodies included) hands objects over unseen. Every drop is a DIAGNOSTIC `CLOSURE_CONFINED`
-    row and result.json `confinedWriters`; an UNSAT reading looks at the anchor's demanded fields among them and, for
-    each one the fatal arm rests on, reads the code for a hand-off the trace could not see before accepting.
+    writer whose every object, with its recorded holders, the recorded heap shows mentioned under one causal context
+    (one tick, one served request, one client root) that is not the reader's (SYMBOL-SCOPE §4.4). The heap is
+    partial: a hand-off through untraced code between two contexts -- an unwoven cache two requests share, code
+    woven outside the trace methods, lambda bodies included -- is not seen. Every drop is a DIAGNOSTIC
+    `CLOSURE_CONFINED` row (`scope` `CONTEXT`) and result.json `confinedWriters`; an UNSAT reading looks at the
+    anchor's demanded fields among them and, for each one the fatal arm rests on, reads the code for such a
+    hand-off before accepting.

@@ -22,23 +22,24 @@ import java.util.Set;
  * ({@code RuntimeSelectedRegionFinalizer}'s {@code DemandWalk
  * #holdsOthersOnly}).
  *
- * <p>And where each object was mentioned -- as a receiver, an argument, a
- * return, a field's holder or value: the one occurrence whose events alone
- * name it, the one occurrence tree (an occurrence and those it encloses)
- * and the one thread, or none; with the occurrences' own nesting and
- * threads.  {@link #confinement} reads them over an object and every
- * recorded holder above it.</p>
+ * <p>And the CAUSAL CONTEXT each object was mentioned under -- as a
+ * receiver, an argument, a return, a field's holder or value: the {@code c}
+ * of an occurrence's {@code (r,c,i)} (IDENTITY.md), one tick, one served
+ * request, one client root, which work it starts carries on whatever thread
+ * runs it; and each occurrence's.  {@link #confinement} reads them over an
+ * object and every recorded holder above it.</p>
  *
  * <p>PARTIAL: only what the trace records is here -- field events of the
  * trace methods, call rows at the sites {@link TracedRows} names, method
  * entries.  Untraced code (unwoven, or woven outside the trace methods, a
- * lambda's body included) holds, hands over and mentions objects unseen,
- * so an object confined here may have escaped there: every writer the walk
- * drops on it is published ({@code CLOSURE_CONFINED}).  An object named by
- * content ({@code CausynthTraceRecorder#nameObservedObjectsFromContent})
- * may stand for several: their edges are one object's, which only widens
- * what is reachable, and their mentions one object's, which only narrows
- * what is confined.</p>
+ * lambda's body included) holds, hands over and mentions objects unseen --
+ * an unwoven cache shared by two requests among them --, so an object
+ * confined here may have escaped there: every writer the walk drops on it
+ * is published ({@code CLOSURE_CONFINED}).  An object named by content
+ * ({@code CausynthTraceRecorder#nameObservedObjectsFromContent}) may stand
+ * for several: their edges are one object's, which only widens what is
+ * reachable, and their mentions one object's, which only narrows what is
+ * confined.</p>
  */
 public final class RecordedHeap {
     /** Holders, ascending; {@link #start} and {@link #held} their edges. */
@@ -52,50 +53,20 @@ public final class RecordedHeap {
     private final int[] holdersOf;
     /** Every object a static field held, ascending. */
     private final int[] roots;
-    /** Object -> the root call of the one occurrence whose events alone
-     *  mention it, or {@link #NOWHERE}. */
-    private final Map<Integer, Long> occurrences;
-    /** Object -> the root call of the outermost occurrence of the one tree
-     *  every event mentioning it ran in, or {@link #NOWHERE}. */
-    private final Map<Integer, Long> trees;
-    /** Object -> the one thread every event mentioning it ran on, or
-     *  {@link #NOWHERE}. */
-    private final Map<Integer, Long> threads;
-    /** An occurrence's root call -> the thread it ran on. */
-    private final Map<Long, Long> rootThreads;
-    /** An occurrence's root call -> that of the occurrence enclosing it
-     *  nearest; none for an outermost one. */
-    private final Map<Long, Long> enclosing;
+    /** Object -> the one causal context every event mentioning it ran
+     *  under, or {@link #NOWHERE}. */
+    private final Map<Integer, Long> contexts;
+    /** An occurrence's root call -> its causal context. */
+    private final Map<Long, Long> rootContexts;
     /** {@link #confinement}, once asked. */
-    private final Map<Integer, Confinement> confinements = new HashMap<>();
+    private final Map<Integer, Long> confinements = new HashMap<>();
 
-    /** Mentioned in more than one scope, or in none. */
+    /** Mentioned under more than one context, or under none. */
     public static final long NOWHERE = Long.MIN_VALUE;
 
-    /**
-     * Where an object and every recorded holder above it were mentioned:
-     * the one occurrence, the one occurrence tree (its outermost root call)
-     * and the one thread all of them were, each {@link #NOWHERE} when they
-     * were in more than one or in none.
-     */
-    public static final class Confinement {
-        public final long occurrence;
-        public final long tree;
-        public final long thread;
-
-        Confinement(long occurrence, long tree, long thread) {
-            this.occurrence = occurrence;
-            this.tree = tree;
-            this.thread = thread;
-        }
-    }
-
     private RecordedHeap(int[][] forward, int[][] backward, int[] roots,
-                         Map<Integer, Long> occurrences,
-                         Map<Integer, Long> trees,
-                         Map<Integer, Long> threads,
-                         Map<Long, Long> rootThreads,
-                         Map<Long, Long> enclosing) {
+                         Map<Integer, Long> contexts,
+                         Map<Long, Long> rootContexts) {
         this.holders = forward[0];
         this.start = forward[1];
         this.held = forward[2];
@@ -103,62 +74,36 @@ public final class RecordedHeap {
         this.heldStart = backward[1];
         this.holdersOf = backward[2];
         this.roots = roots;
-        this.occurrences = occurrences;
-        this.trees = trees;
-        this.threads = threads;
-        this.rootThreads = rootThreads;
-        this.enclosing = enclosing;
+        this.contexts = contexts;
+        this.rootContexts = rootContexts;
     }
 
-    /** The thread the occurrence rooted at {@code rootCall} ran on, or
+    /** The causal context of the occurrence rooted at {@code rootCall}, or
      *  {@link #NOWHERE}. */
-    public long threadOfRoot(long rootCall) {
-        Long thread = rootThreads.get(rootCall);
-        return thread == null ? NOWHERE : thread;
-    }
-
-    /** Whether the occurrence rooted at {@code rootCall} is the one rooted
-     *  at {@code outer} or ran inside it. */
-    public boolean within(long rootCall, long outer) {
-        Set<Long> seen = new HashSet<>();
-        for (Long at = rootCall; at != null && seen.add(at);
-             at = enclosing.get(at)) {
-            if (at == outer) return true;
-        }
-        return false;
+    public long contextOfRoot(long rootCall) {
+        Long context = rootContexts.get(rootCall);
+        return context == null ? NOWHERE : context;
     }
 
     /**
-     * Where {@code object} and every object the recording saw hold it, and
-     * hold those, were mentioned ({@link Confinement}): a holder is how an
-     * object is handed on, so it is confined only as far as its holders
-     * are.  An object no event mentions is confined nowhere.
+     * The one causal context every event mentioning {@code object}, or any
+     * object the recording saw hold it or hold those, ran under; {@link
+     * #NOWHERE} when they ran under two or under none.  A holder is how an
+     * object is handed on, so it is confined only as far as its holders are;
+     * an object no event mentions is confined nowhere.
      */
-    public Confinement confinement(int object) {
-        Confinement known = confinements.get(object);
+    public long confinement(int object) {
+        Long known = confinements.get(object);
         if (known != null) return known;
-        long occurrence = NOWHERE;
-        long tree = NOWHERE;
-        long thread = NOWHERE;
-        boolean first = true;
+        long context = scope(object);
         Set<Integer> seen = new HashSet<>();
         Deque<Integer> work = new ArrayDeque<>();
         seen.add(object);
         work.add(object);
-        while (!work.isEmpty()) {
+        while (!work.isEmpty() && context != NOWHERE) {
             int at = work.removeFirst();
-            long atOccurrence = scope(occurrences, at);
-            long atTree = scope(trees, at);
-            long atThread = scope(threads, at);
-            occurrence = first || occurrence == atOccurrence
-                    ? atOccurrence : NOWHERE;
-            tree = first || tree == atTree ? atTree : NOWHERE;
-            thread = first || thread == atThread ? atThread : NOWHERE;
-            first = false;
-            if (thread == NOWHERE) {
-                // On two threads, or none known: confined nowhere.
-                occurrence = NOWHERE;
-                tree = NOWHERE;
+            if (scope(at) != context) {
+                context = NOWHERE;
                 break;
             }
             int index = Arrays.binarySearch(heldObjects, at);
@@ -168,14 +113,13 @@ public final class RecordedHeap {
                 if (seen.add(holdersOf[edge])) work.add(holdersOf[edge]);
             }
         }
-        Confinement found = new Confinement(occurrence, tree, thread);
-        confinements.put(object, found);
-        return found;
+        confinements.put(object, context);
+        return context;
     }
 
-    private static long scope(Map<Integer, Long> scopes, int object) {
-        Long scope = scopes.get(object);
-        return scope == null ? NOWHERE : scope;
+    private long scope(int object) {
+        Long context = contexts.get(object);
+        return context == null ? NOWHERE : context;
     }
 
     /**
@@ -201,61 +145,36 @@ public final class RecordedHeap {
         return seen.isEmpty() ? Collections.<Integer>emptySet() : seen;
     }
 
-    /** Collects the occurrences, then the mentions and edges; sorts the
-     *  edges once. */
+    /** Collects the occurrences, mentions and edges; sorts the edges
+     *  once. */
     public static final class Builder {
         private long[] edges = new long[1024];
         private int size;
         private final Set<Integer> roots = new HashSet<>();
-        private final Map<Integer, Long> occurrences = new HashMap<>();
-        private final Map<Integer, Long> trees = new HashMap<>();
-        private final Map<Integer, Long> threads = new HashMap<>();
-        private final Map<Long, Long> rootThreads = new HashMap<>();
-        private final Map<Long, Long> enclosing = new HashMap<>();
-        /** Root call -> its outermost enclosing root call, once asked. */
-        private final Map<Long, Long> outermost = new HashMap<>();
+        private final Map<String, Long> ids = new HashMap<>();
+        private final Map<Integer, Long> contexts = new HashMap<>();
+        private final Map<Long, Long> rootContexts = new HashMap<>();
 
-        /** The occurrence rooted at {@code rootCall} ran on {@code thread},
-         *  inside the one rooted at {@code enclosingRoot} ({@link #NOWHERE}:
-         *  inside none).  Every occurrence is stated before any mention. */
-        public void occurrence(long rootCall, long thread,
-                               long enclosingRoot) {
-            if (thread != NOWHERE) rootThreads.put(rootCall, thread);
-            if (enclosingRoot != NOWHERE) {
-                enclosing.put(rootCall, enclosingRoot);
-            }
+        /** The id of one causal context ({@code ""}: none). */
+        private long context(String key) {
+            if (key == null || key.isEmpty()) return NOWHERE;
+            return ids.computeIfAbsent(key, ignored -> (long) ids.size());
         }
 
-        /** An event of the occurrence rooted at {@code owner}, on {@code
-         *  thread} ({@link #NOWHERE}: of none, on none known), mentioned
-         *  {@code object}; 0 is no object. */
-        public void mention(int object, long owner, long thread) {
+        /** The occurrence rooted at {@code rootCall} ran under {@code
+         *  context}. */
+        public void occurrence(long rootCall, String context) {
+            long id = context(context);
+            if (id != NOWHERE) rootContexts.put(rootCall, id);
+        }
+
+        /** An event under {@code context} ({@code ""}: none known)
+         *  mentioned {@code object}; 0 is no object. */
+        public void mention(int object, String context) {
             if (object == 0) return;
-            once(occurrences, object, owner);
-            once(trees, object, owner == NOWHERE ? NOWHERE
-                    : outermost(owner));
-            once(threads, object, thread);
-        }
-
-        private long outermost(long rootCall) {
-            Long known = outermost.get(rootCall);
-            if (known != null) return known;
-            long at = rootCall;
-            Set<Long> seen = new HashSet<>();
-            for (Long outer = enclosing.get(at); outer != null
-                    && seen.add(outer); outer = enclosing.get(at)) {
-                at = outer;
-            }
-            outermost.put(rootCall, at);
-            return at;
-        }
-
-        private static void once(Map<Integer, Long> scopes, int object,
-                                 long scope) {
-            Long before = scopes.putIfAbsent(object, scope);
-            if (before != null && before != scope) {
-                scopes.put(object, NOWHERE);
-            }
+            long id = context(context);
+            Long before = contexts.putIfAbsent(object, id);
+            if (before != null && before != id) contexts.put(object, NOWHERE);
         }
 
         /** {@code holder} held {@code object}; 0 is no object. */
@@ -284,8 +203,7 @@ public final class RecordedHeap {
             for (int root : roots) rootIds[next++] = root;
             Arrays.sort(rootIds);
             return new RecordedHeap(adjacency(forward), adjacency(backward),
-                    rootIds, occurrences, trees, threads, rootThreads,
-                    enclosing);
+                    rootIds, contexts, rootContexts);
         }
 
         /** {from, start, to}: the distinct edges {@code from << 32 | to}

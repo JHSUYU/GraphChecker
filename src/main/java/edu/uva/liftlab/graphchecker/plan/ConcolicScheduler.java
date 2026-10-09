@@ -1040,18 +1040,13 @@ public final class ConcolicScheduler {
     private static final String[][] WRITERS_NOT_CROSSED = {
         {"CONFINED", RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
             "writers not crossed to, every object they wrote the field on,"
-                + " with its recorded holders, mentioned by their own"
-                + " occurrence alone, the reader not inside it"},
-        {"THREAD_CONFINED",
-            RuntimeSelectedRegionFinalizer.THREAD_CONFINED_WRITERS,
-            "writers not crossed to, every object they wrote the field on,"
-                + " with its recorded holders, mentioned inside one"
-                + " occurrence tree on one thread, not the reader's"},
+                + " with its recorded holders, mentioned under one causal"
+                + " context, not the reader's"},
         {"ESCAPED", RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
             "writers crossed to only because an object they wrote the field"
                 + " on, reachable from nothing the reader names, or a holder"
-                + " of it, was mentioned in a second occurrence tree, on a"
-                + " second thread or the reader's, or under no occurrence"}};
+                + " of it, was mentioned under a second causal context, the"
+                + " reader's, or none known"}};
 
     /** Per field's owner class, the sum. */
     private static Map<String, Integer> byOwnerClass(

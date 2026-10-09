@@ -197,12 +197,11 @@ uses the address PLAN's index states for every later stage, whatever form the de
 (SYMBOL-SCOPE.md §4.4, `deciderClass` on its row: `members`, `first`, `last`), and PLAN's log line
 and cut summary name the classes (`ConcolicScheduler#deciderClasses`). The writers a reader that never
 touched a field did not cross to, every object they wrote it on unreachable from it over the
-recorded heap and, with its recorded holders, mentioned on one thread by their own occurrence alone
-(the reader not inside it) or inside one occurrence tree on a thread not the reader's
+recorded heap and, with its recorded holders, mentioned under one causal context not the reader's
 (SYMBOL-SCOPE.md §4.4), and those crossed to only for a mention, are counted on the reader's row
-(`confinedWriters`, `threadConfinedWriters`, `escapedWriters`); PLAN prints them as `CONFINED`,
-`THREAD_CONFINED` and `ESCAPED`, by owner class and field, and states them in the index. Each drop
-is a DIAGNOSTIC `CLOSURE_CONFINED` row of the region plan's gaps, one per reader, field and scope
+(`confinedWriters`, `escapedWriters`); PLAN prints them as `CONFINED` and `ESCAPED`, by owner class
+and field, and states them in the index. Each drop
+is a DIAGNOSTIC `CLOSURE_CONFINED` row of the region plan's gaps, one per reader and field
 (count, owner class, first writers), which EMIT carries into the campaign's gaps and result.json
 `confinedWriters` (the recorded heap is partial: CHECKING trap 22). When the closure still holds
 more occurrences than
