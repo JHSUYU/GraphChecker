@@ -396,8 +396,9 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * Whether a location's owner NAMES one storage cell: a STATIC field, or a
-     * heap owner spelled as the VM's symbolic rid
+     * Whether a location's owner NAMES one storage cell: a STATIC field, a
+     * node's VIEW of a store location, or a heap owner spelled as the VM's
+     * symbolic rid
      * ({@code RowPublication.locationKey}).  A rid is per-run, which suffices
      * because alternatives are asked inside one session.  A CLASS owner on a
      * heap location ({@code runtime.SharedStateCapture}) aliases every
@@ -405,7 +406,11 @@ public final class Arms {
      */
     public static boolean namedOwner(LocationId location) {
         if (location == null) return false;
-        if (location.kind() == LocationKind.STATIC) return true;
+        // A view names one node's view of one store location.
+        if (location.kind() == LocationKind.STATIC
+                || location.kind() == LocationKind.VIEW) {
+            return true;
+        }
         return objectRid(location.owner());
     }
 

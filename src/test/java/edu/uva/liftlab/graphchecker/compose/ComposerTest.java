@@ -3712,6 +3712,113 @@ public class ComposerTest {
      * never put, a value stored null), so {@code get(k) != null} is a
      * condition over the state, never refused for an unknown nullness.
      */
+    /**
+     * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4): a
+     * guard over the leaf h5 the view's decode of version 5 minted is,
+     * where a read of the view stands that a family may re-pair, the leaf of
+     * whichever decode of the node the view holds -- h3 at version 3 --,
+     * defined only where the view is one of them; with no such read it is
+     * h5 alone.
+     */
+    @Test
+    public void aContentLeafReadsThroughItsNodesView() {
+        LocationId view = LocationId.of(
+                edu.uva.liftlab.graphchecker.contract.LocationKind.VIEW,
+                "SOLR_ZK@case/dn0", "/collections/c/state.json");
+        final String key = SmtLowering.locationKey(view);
+        final String port = "SOLR_ZK#CONTENT:|collections|c|state.json#|c"
+                + "|state";
+        Endpoint at = Endpoint.of(ANCHOR, "guard#VIEW", at("guard#1", 0), 0);
+        final ReadRow read = ReadRow.of("t", 9L, at, view, 5L, "V_r", "J",
+                "5");
+        final List<WriteRow> decodes = Arrays.asList(
+                WriteRow.of("t", 2L, at, view, 3L, "", "J"),
+                WriteRow.of("t", 6L, at, view, 5L, "", "J"));
+        for (final boolean movable : new boolean[] {true, false}) {
+            final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+            SmtLowering.SessionJoin join = new SmtLowering.SessionJoin() {
+                @Override
+                public com.google.gson.JsonElement writeExpression(
+                        String location, long version) {
+                    return null;
+                }
+
+                @Override
+                public List<WriteRow> writes(String location) {
+                    return key.equals(location) ? decodes
+                            : none.writes(location);
+                }
+
+                @Override
+                public List<ReadRow> reads(String location) {
+                    return key.equals(location)
+                            ? Collections.singletonList(read)
+                            : none.reads(location);
+                }
+
+                @Override
+                public Set<String> mintedReadSymbols(long version) {
+                    return none.mintedReadSymbols(version);
+                }
+
+                @Override
+                public Set<String> readSymbols(String location,
+                                               long version) {
+                    return none.readSymbols(location, version);
+                }
+
+                @Override
+                public boolean moves(String named) {
+                    return true;
+                }
+
+                @Override
+                public boolean repaired(String location, long readEvent) {
+                    return movable && key.equals(location)
+                            && readEvent == 9L;
+                }
+
+                @Override
+                public boolean concurrent(OccurrenceAddress reader,
+                                          OccurrenceAddress writer) {
+                    return true;
+                }
+
+                @Override
+                public SmtLowering.ViewLeaf viewLeaf(String symbol) {
+                    return "h5".equals(symbol)
+                            ? new SmtLowering.ViewLeaf(key, 5L, port)
+                            : "h3".equals(symbol)
+                            ? new SmtLowering.ViewLeaf(key, 3L, port)
+                            : null;
+                }
+
+                @Override
+                public String viewLeafAt(String viewKey, long version,
+                                         String leafPort) {
+                    return key.equals(viewKey) && port.equals(leafPort)
+                            ? version == 3L ? "h3" : version == 5L ? "h5"
+                            : null : null;
+                }
+            };
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("h5", VmTermLowering.Sort.STRING);
+            declared.put("h3", VmTermLowering.Sort.STRING);
+            declared.put("V_r", VmTermLowering.Sort.INT);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", join, ExpressionTable.empty());
+            String text = lowering.dispatch(vmString("equals",
+                    vmLeaf("SymbolExpression", "h5", "Ljava/lang/String;"),
+                    vmLeaf("ConStringSymbolExp", "Y_L'String'_down",
+                            "java/lang/String")),
+                    VmTermLowering.Sort.BOOL, "test").text;
+            lowering.end();
+            assertEquals(text, movable, text.contains("(ite (= V_r 5) h5 h3)"));
+            assertTrue(text, text.contains("h5"));
+        }
+    }
+
     @Test
     public void aStringAMapAnswersIsNullWhereItsCellIs() {
         Map<String, VmTermLowering.Sort> declared =

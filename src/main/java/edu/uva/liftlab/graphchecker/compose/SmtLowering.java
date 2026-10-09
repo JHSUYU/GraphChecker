@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Reason;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -167,6 +168,19 @@ public final class SmtLowering {
             return null;
         }
 
+        /** The view a store content's leaf was minted through ({@link
+         *  ViewLeaf}), by its attach symbol, or null. */
+        default ViewLeaf viewLeaf(String symbol) {
+            return null;
+        }
+
+        /** The attach symbol of {@code port} in the decode of {@code
+         *  version} its node's view {@code viewKey} took in, or null. */
+        default String viewLeafAt(String viewKey, long version,
+                                  String port) {
+            return null;
+        }
+
         /** The frame whose occurrence wrote this version of this location
          *  (no INITIAL), or null: indexed once per session. */
         default RefusalFrame frameOfWrite(String locationKey, long version) {
@@ -223,6 +237,23 @@ public final class SmtLowering {
             Pattern.compile("refused the attach of handle ([0-9]+)");
 
     /** The join of no session: it states nothing. */
+    /**
+     * One leaf of a store's content as a decode took it in (SYMBOL-SCOPE
+     * §6.4): the view its node decoded into (the location key of its
+     * LocationKind.VIEW), the version decoded and the leaf's port.
+     */
+    public static final class ViewLeaf {
+        public final String viewKey;
+        public final long version;
+        public final String port;
+
+        public ViewLeaf(String viewKey, long version, String port) {
+            this.viewKey = viewKey;
+            this.version = version;
+            this.port = port;
+        }
+    }
+
     public static final SessionJoin NO_JOIN = new SessionJoin() {
         @Override
         public JsonElement writeExpression(String locationKey, long version) {
@@ -332,6 +363,17 @@ public final class SmtLowering {
             public RefusalFrame frameOfWrite(String locationKey,
                                              long version) {
                 return join.frameOfWrite(locationKey, version);
+            }
+
+            @Override
+            public ViewLeaf viewLeaf(String symbol) {
+                return join.viewLeaf(symbol);
+            }
+
+            @Override
+            public String viewLeafAt(String viewKey, long version,
+                                     String port) {
+                return join.viewLeafAt(viewKey, version, port);
             }
         };
     }
@@ -597,6 +639,17 @@ public final class SmtLowering {
                         + read.observedVersion(), read.symbol());
             }
         }
+        // A content leaf's attach -> the view it came through, and back.
+        final Map<String, ViewLeaf> viewLeaves =
+                new HashMap<String, ViewLeaf>();
+        final Map<String, String> leafAt = new HashMap<String, String>();
+        for (AttachRow attach : session.attaches()) {
+            ViewLeaf leaf = viewLeafOf(attach);
+            if (leaf == null) continue;
+            viewLeaves.put(attach.symbol(), leaf);
+            leafAt.putIfAbsent(leaf.viewKey + "#" + leaf.version + "#"
+                    + leaf.port, attach.symbol());
+        }
         final Map<String, RefusalFrame> frames = frames(session);
         // Location#version -> the frame whose occurrence wrote it.
         final Map<String, RefusalFrame> framedWrites =
@@ -674,7 +727,42 @@ public final class SmtLowering {
                                              long version) {
                 return framedWrites.get(locationKey + "#" + version);
             }
+
+            @Override
+            public ViewLeaf viewLeaf(String symbol) {
+                return viewLeaves.get(symbol);
+            }
+
+            @Override
+            public String viewLeafAt(String viewKey, long version,
+                                     String port) {
+                return leafAt.get(viewKey + "#" + version + "#" + port);
+            }
         };
+    }
+
+    /**
+     * The view a content leaf's attach came through (SYMBOL-SCOPE §6.4):
+     * its port names the location, its consumer occurrence the node whose
+     * view the decode re-pointed, its message the version; null for any
+     * other attach.
+     */
+    static ViewLeaf viewLeafOf(AttachRow attach) {
+        ContentPort.Parsed port = ContentPort.parse(
+                attach.endpoint().site());
+        String correlation = attach.correlationId();
+        int at = correlation == null ? -1 : correlation.lastIndexOf('@');
+        if (port == null || at < 0) return null;
+        long version;
+        try {
+            version = Long.parseLong(correlation.substring(at + 1));
+        } catch (NumberFormatException unversioned) {
+            return null;
+        }
+        String node = attach.endpoint().occurrence().node().render();
+        return new ViewLeaf(locationKey(LocationId.of(LocationKind.VIEW,
+                port.transport + "@" + node, port.location)), version,
+                attach.endpoint().site());
     }
 
     /**
@@ -1345,6 +1433,8 @@ public final class SmtLowering {
             return Term.of("true", Sort.BOOL);
         }
         String javaType = primitiveString(expression, "_java_type");
+        Term viewed = throughView(raw, javaType, expected);
+        if (viewed != null) return viewed;
         // An object the VM named, asked as a reference, is its identity
         // whatever its class ({@link #whole}).
         Sort sort = expected == Sort.REF
@@ -1379,6 +1469,66 @@ public final class SmtLowering {
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, clock reading, attach or read row of this "
                         + "corpus states this symbol", sort, javaType);
+    }
+
+    /** The content leaves being lowered through their view, so each of a
+     *  view's cases is its own leaf. */
+    private final Set<String> viewing = new HashSet<String>();
+
+    /**
+     * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4,
+     * PIPELINE §8): where a read of the view the leaf's decode re-pointed
+     * stands in this path and a family may re-pair it ({@link #movable},
+     * {@link SessionJoin#repaired}), the leaf is the one of whichever decode
+     * of that node the view holds -- {@code (ite (= view v_1) leaf_1 ...
+     * leaf)} over the view's writes that took the leaf in, defined only
+     * where the view is one of them ({@link #perCandidate}).  The guard read
+     * the run's decode's leaf (Replica.state, four containers below the
+     * reader's ClusterState, as the VM states it by value: no projection
+     * through an owner reaches it), so the view's read is what moves it.
+     * Null where no such read stands: the leaf is its own.
+     */
+    private Term throughView(String raw, String javaType, Sort expected) {
+        ViewLeaf leaf = join.viewLeaf(raw);
+        if (leaf == null || !viewing.add(raw)) return null;
+        try {
+            ReadRow view = null;
+            for (ReadRow read : join.reads(leaf.viewKey)) {
+                if (read.observedVersion() == leaf.version
+                        && (movable.contains(scope + SEPARATOR
+                        + readKey(leaf.viewKey, read.seq()))
+                        || join.repaired(leaf.viewKey, read.seq()))) {
+                    view = read;
+                    break;
+                }
+            }
+            if (view == null) return null;
+            Term own = symbolTerm(symbolNode(raw, javaType), expected);
+            Map<String, Term> answers = new LinkedHashMap<String, Term>();
+            answers.put(Long.toString(leaf.version), own);
+            for (WriteRow write : join.writes(leaf.viewKey)) {
+                String version = Long.toString(write.version());
+                String other = answers.containsKey(version) ? null
+                        : join.viewLeafAt(leaf.viewKey, write.version(),
+                        leaf.port);
+                if (other == null) continue;
+                Term answer = symbolTerm(symbolNode(other, javaType),
+                        expected);
+                if (answer.sort == own.sort) answers.put(version, answer);
+            }
+            if (answers.size() < 2) return own;
+            Term owner = symbolTerm(symbolNode(view.symbol(), "J"),
+                    Sort.INT);
+            String value = perCandidate(owner.text, answers);
+            String nullness = "false";
+            for (Term answer : answers.values()) {
+                if (!"false".equals(answer.stringNullness)) nullness = "";
+            }
+            return Term.of(value, own.sort, own.integralWidth, nullness,
+                    "", "true");
+        } finally {
+            viewing.remove(raw);
+        }
     }
 
     /** A MethodReturnSymbolExp's name (methodSymbolizer.cpp). */

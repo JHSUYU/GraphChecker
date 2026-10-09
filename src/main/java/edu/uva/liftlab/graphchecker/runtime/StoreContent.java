@@ -11,9 +11,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.compose.StringIdentities;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
@@ -273,6 +275,16 @@ final class StoreContent {
                     && active.d3Address != null ? active.d3Address
                     : occurrenceHere(transport);
             if (consumer == null) return;
+            // The decode re-points its node's view of the location.
+            long version = MessageDoors.version(key);
+            LocationId view = MessageDoors.viewLocation(transport, consumer,
+                    location);
+            if (view != null && version >= 0L) {
+                RowRuntime.viewWrite(consumer, RowRuntime.currentEvent(),
+                        Endpoint.messageSite(trimmed(transport), "VIEW",
+                                view.slot().replace('/', '.')
+                                        .replace('@', '.')), view, version);
+            }
             for (Leaf leaf : leaves(transport, location, tree)) {
                 attach(active, consumer, transport, key, location, leaf,
                         exports == null ? null : exports.get(leaf.pointer));
@@ -466,23 +478,10 @@ final class StoreContent {
 
     // ---- the documents ---------------------------------------------------
 
-    /**
-     * The port one leaf of a location crosses, a site as every run spells
-     * it: {@code <transport>#CONTENT:<location>#<pointer>}, the location as
-     * the store's turn keys it and the leaf's JSON pointer, each {@code /}
-     * spelled {@code |} since a site spells no {@code /} or {@code @}
-     * ({@code contract.Frame}; {@code %}, {@code |} and {@code @} are
-     * escaped first).
-     */
+    /** The port one leaf of a location crosses ({@link ContentPort}). */
     static String port(String transport, String location, String pointer) {
-        return trimmed(transport) + "#CONTENT:" + site(MessageDoors
-                .storeLocation(transport, location).slot()) + "#"
-                + site(pointer);
-    }
-
-    private static String site(String path) {
-        return path.replace("%", "%25").replace("|", "%7C")
-                .replace("@", "%40").replace('/', '|');
+        return ContentPort.of(trimmed(transport), MessageDoors.storeLocation(
+                transport, location).slot(), pointer);
     }
 
     /** One leaf of a document: its holder, its slot and its pointer. */

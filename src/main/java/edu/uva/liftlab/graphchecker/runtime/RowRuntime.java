@@ -597,6 +597,48 @@ public final class RowRuntime {
         Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
     }
 
+    /**
+     * A node's decode of a store version re-pointed its view of the location
+     * (LocationKind.VIEW, SYMBOL-SCOPE §6.4): a write row of the view at the
+     * decoding occurrence, its value the version decoded (a {@code long}
+     * constant), under the site {@code <transport>#VIEW:<location>}.
+     */
+    public static void viewWrite(OccurrenceAddress occurrence, long seq,
+                                 String site, LocationId view,
+                                 long version) {
+        SessionPublisher session = publisher;
+        if (session == null || occurrence == null || view == null) return;
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "ConstExpr");
+        value.addProperty("_exp", "Y_J_" + version);
+        value.addProperty("_java_type", "J");
+        WRITTEN.add(Confirmation.key(view, version));
+        session.write(WriteRow.of(sessionId(), sequence(seq), at, view,
+                version, expressionRef(value), "J"));
+        Confirmation.wrote(view, version, at, false);
+    }
+
+    /**
+     * A guard read an object of the decode its node's view holds ({@link
+     * Provenance}): a read row of the view at the reading occurrence, the
+     * version observed its value, its symbol the read's own ({@code V_} and
+     * the endpoint), which a family re-pairs to another decode of the node.
+     */
+    public static void viewRead(OccurrenceAddress occurrence, long seq,
+                                String site, LocationId view, long version) {
+        SessionPublisher session = publisher;
+        if (session == null || occurrence == null || view == null) return;
+        if (!STORE_READS.add(seq + "|" + view)) return;
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        session.read(ReadRow.of(sessionId(), sequence(seq), at, view,
+                version, "V_" + ArtifactIO.digest(at.id(), 16), "J",
+                Long.toString(version)));
+        Confirmation.read(at, view, version, ReadRow.UNKNOWN_VERSION);
+    }
+
     /** seq|location of every store read stated: one per event. */
     private static final Set<String> STORE_READS =
             ConcurrentHashMap.newKeySet();

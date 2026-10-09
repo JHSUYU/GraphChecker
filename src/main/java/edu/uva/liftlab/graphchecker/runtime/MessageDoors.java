@@ -624,6 +624,27 @@ public final class MessageDoors {
         StoreContent.parsed(bytes, tree);
     }
 
+    /**
+     * One node's view of a store location (LocationKind.VIEW): the
+     * transport at the node, the location as every run spells it; null for
+     * no registered node, whose view is no node's.
+     */
+    static LocationId viewLocation(String transport, OccurrenceAddress at,
+                                   String path) {
+        return viewOf(storeLocation(transport, path), at);
+    }
+
+    /** {@link #viewLocation} of a store location already spelled. */
+    static LocationId viewOf(LocationId store, OccurrenceAddress at) {
+        String node = at == null ? "" : at.node().render();
+        if (store == null || node.isEmpty() || node.startsWith(
+                OccurrenceBinding.UNREGISTERED_SOURCE_KEY)) {
+            return null;
+        }
+        return LocationId.of(LocationKind.VIEW, store.owner() + "@" + node,
+                store.slot());
+    }
+
     /** A store location as every run spells it. */
     static LocationId storeLocation(String transport, String path) {
         return LocationId.of(LocationKind.STORE, trimmed(transport),
@@ -631,7 +652,7 @@ public final class MessageDoors {
     }
 
     /** A stored version's version: its key after the last {@code @}, or -1. */
-    private static long version(String key) {
+    static long version(String key) {
         String held = trimmed(key);
         int at = held.lastIndexOf('@');
         if (at < 0) return -1L;

@@ -1370,6 +1370,16 @@ field derived from it goes through the VM's models (`Replica.State.getState` -> 
 `Long.parseLong`, `String.equals`); a construction-only field logs the derived value (VM.md §5.1).
 Which version a node's objects hold is the PROVENANCE read (§5.7).
 
+A node decides on its VIEW of a location: each decode re-points it, and a guard reads the objects of
+whichever decode the view held. The view is a location of its own (`LocationKind.VIEW`, CONTRACT-SPEC
+§1: the transport at the node, the store's path), its value the version decoded: every parse of a
+fetched version writes it at the decoding occurrence, and every PROVENANCE read reads it too, at the
+same site (`#VIEW`), with a symbol of its own. A STATE family may re-pair that read with another
+decode of the node (PIPELINE §8), and the leaves the guard read follow it: a content leaf's attach
+symbol, where a re-pairable read of its view stands in the path, lowers as the leaf of whichever
+decode the view holds (`SmtLowering#throughView`; CONFIRM holds the pairing by its ORDER rows, the
+node's later decodes after the reader's occurrence).
+
 ## 7. Current limits
 
 - Roots are clocks recognized by the call-return rule, the library catalog's door faults (no door

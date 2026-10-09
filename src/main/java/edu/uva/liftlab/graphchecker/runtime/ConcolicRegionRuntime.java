@@ -9,6 +9,7 @@ import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -871,8 +872,17 @@ public final class ConcolicRegionRuntime {
         if (version == null || active == null || active.d3Address == null) {
             return;
         }
-        RowRuntime.storeRead(active.d3Address, RowRuntime.currentEvent(),
-                nonNull(siteId), version.location, version.version);
+        long seq = RowRuntime.currentEvent();
+        RowRuntime.storeRead(active.d3Address, seq, nonNull(siteId),
+                version.location, version.version);
+        // The same read is a read of the node's view (SYMBOL-SCOPE §6.4):
+        // the version the reading node's decodes left there.
+        LocationId view = MessageDoors.viewOf(version.location,
+                active.d3Address);
+        if (view != null) {
+            RowRuntime.viewRead(active.d3Address, seq, nonNull(siteId)
+                    + "#VIEW", view, version.version);
+        }
     }
 
     /**

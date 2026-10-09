@@ -1596,6 +1596,19 @@ decides it (STATE_PAIRING_FLIPPED); a location where no arm is that pairing (the
 reads saw has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the
 formula.
 
+**A store content's leaf through a node's view** (`SmtLowering#throughView`, SYMBOL-SCOPE §6.4). A
+guard that decides on a node's view of a store location -- Solr's `ZkStateReader.clusterState`,
+re-pointed by each decode -- reads the leaf of the decode the view held. The field read of the view
+reference cannot carry that leaf: the VM states the leaf's value where the decode's construction
+stored it (a `Replica`'s state, four containers below the `ClusterState`, by value), so no
+projection through an owner (below, one level from the movable read) reaches it, and the field is
+re-pointed by every collection's decode, mixing locations. The family is over the PROVENANCE read's
+VIEW instead (`LocationKind.VIEW`, the reading node and the store path), whose writers are that
+node's decodes: where a read of it a family may re-pair stands in the path, a content leaf's attach
+symbol of that view lowers as `(ite (= view v_1) leaf_1 ... leaf)`, the leaf of each decode of the
+node that took it in, defined only where the view is one of them (`#perCandidate`); with no such read
+it is its own.
+
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
 lowers to the run's cell, except through an owner that is a read `stateJoins` joined at the anchor

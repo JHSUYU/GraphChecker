@@ -6,6 +6,7 @@ import static org.junit.Assert.assertNull;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -46,13 +47,20 @@ public class StoreContentTest {
                 "/c/shards/shard1/range/1=7:NUM"), pointers);
     }
 
-    /** A leaf's port is a site: no '/' or '@' (contract.Frame). */
+    /** A leaf's port is a site: no '/' or '@' (contract.Frame); COMPOSE
+     *  reads its location and pointer back. */
     @Test
     public void aLeafsPortIsASite() {
+        String port = StoreContent.port("SOLR_ZK", "/aliases.json",
+                "/collection_metadata/t/router.start@x|y%");
         assertEquals("SOLR_ZK#CONTENT:|aliases.json#|collection_metadata"
-                        + "|t|router.start%40x%7Cy",
-                StoreContent.port("SOLR_ZK", "/aliases.json",
-                        "/collection_metadata/t/router.start@x|y"));
+                + "|t|router.start%40x%7Cy%25", port);
+        ContentPort.Parsed parsed = ContentPort.parse(port);
+        assertEquals("SOLR_ZK", parsed.transport);
+        assertEquals("/aliases.json", parsed.location);
+        assertEquals("/collection_metadata/t/router.start@x|y%",
+                parsed.pointer);
+        assertNull(ContentPort.parse("SOLR_ZK#WRITE:.aliases.json"));
     }
 
     @Test
