@@ -1068,9 +1068,10 @@ public final class ConcolicRegionRuntime {
     static JsonObject decodeVmRecords(String page, String records,
                                       ActiveRegion active,
                                       Predicate<JsonObject> admit,
+                                      VmExpressionTable.Trim trim,
                                       Consumer<JsonElement> each) {
         return expressionStore(active).importRecords(page, records, admit,
-                each);
+                trim, each);
     }
 
     /** The store an activation's expressions import into. */

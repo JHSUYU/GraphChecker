@@ -597,7 +597,8 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   share. The engine hands each page to its publication thread as it is read, once fewer than four
   pages' text wait there undecoded, and decodes it there one location at a time
   (`contract/VmExpressionTable.Store#importRecords`), asking for `READ_OUT_PAGE_BYTES` pages
-  (`runtime/SharedStateCapture`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
+  (`runtime/SharedStateCapture`); a version an earlier read-out published keeps its members but
+  not its value and path guard, dropped before its record expands (`#trimPublished`, a `Trim`); a branch's path-condition window (`CONCOLIC_PATH_CONDITION_RANGE`,
   its conditions then the closure's table) is read the same way (`runtime/PathConditionWindow`).
   The table is the envelope's last member, compact, spelled `,"vmExpressionTable":{<schema,
   session, definitionCount>,"definitions":[<rows>]}}`, each row `{"_type":"VmExpressionDefinition",
