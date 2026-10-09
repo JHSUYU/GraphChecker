@@ -1077,6 +1077,7 @@ public final class ScheduleLog {
         HELD.remove(self);
         CONFLICTED.remove(self);
         if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) return slot;
+        if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
             if (conflict >= 0) {
@@ -1228,8 +1229,40 @@ public final class ScheduleLog {
         if (state[slot] == OPEN && heldKind(slot)) openHeld--;
         state[slot] = next;
         if (next == GIVEN_UP) return;
-        ArrayDeque<Integer> keyed = SLOTS.get(order.get(slot).key());
+        String key = order.get(slot).key();
+        ArrayDeque<Integer> keyed = SLOTS.get(key);
         if (keyed != null) keyed.remove(Integer.valueOf(slot));
+        if (next == DEAD) DEAD_BY_KEY.merge(key, 1, Integer::sum);
+    }
+
+    /**
+     * Per key, the slots settled dead ({@link #closed}) that no event of
+     * the key took since.  Such an event runs free: the order no longer
+     * holds its place, so it is neither a write the recording never made
+     * there, which waits behind the next write to its location, nor a poll
+     * past its recorded count.  An occurrence's id can name other work in
+     * the replay than in the recording -- a daemon's loop region left and
+     * entered again between two turns -- and its close then kills slots
+     * whose events still come (solr-adhoc-19, round MB8s: the Overseer's
+     * state.json write, its slot dead with the region its turns shared in
+     * the recording, waited behind its own write 110 slots on, and the
+     * three nodes polling for the replica names it wrote stalled the order
+     * thirty times, then failed their registrations).
+     */
+    private static final Map<String, Integer> DEAD_BY_KEY =
+            new HashMap<String, Integer>();
+
+    /** Whether {@code event}'s key has a dead slot left: then it takes it
+     *  (the event runs free). */
+    private static boolean deadLocked(Pending event) {
+        Integer dead = DEAD_BY_KEY.get(event.key);
+        if (dead == null) return false;
+        if (dead == 1) {
+            DEAD_BY_KEY.remove(event.key);
+        } else {
+            DEAD_BY_KEY.put(event.key, dead - 1);
+        }
+        return true;
     }
 
     /** An open slot is given up: its event may still come and take it. */
@@ -1755,6 +1788,7 @@ public final class ScheduleLog {
         LET_GO.clear();
         CONFLICTED.clear();
         BY_LOCATION.clear();
+        DEAD_BY_KEY.clear();
         POLLED.clear();
         PASSED_BY_CONTEXT.clear();
         PASSED_SLOTS.clear();
@@ -1910,6 +1944,7 @@ public final class ScheduleLog {
             LET_GO.clear();
             CONFLICTED.clear();
             BY_LOCATION.clear();
+            DEAD_BY_KEY.clear();
             POLLED.clear();
             PASSED_BY_CONTEXT.clear();
             PASSED_SLOTS.clear();

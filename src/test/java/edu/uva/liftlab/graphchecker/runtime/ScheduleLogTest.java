@@ -2288,6 +2288,41 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A write whose slot its occurrence's close settled runs free: it is no
+     * write the recording never made there, which would wait behind the
+     * next write to its location (another context's, that may never come),
+     * and a poll whose slot died is no poll past its count (solr-adhoc-19
+     * MB8s: the Overseer's state.json write waited behind its own write 110
+     * slots on).
+     */
+    @Test(timeout = 30000L)
+    public void anEventWhoseSlotDiedRunsFree() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        String p = ScheduleEvent.written("STORE", "/p");
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, here, p, 0, "o1"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE, here, "tick.w", 0,
+                        "o1"),
+                event(ScheduleEvent.Kind.SEND, "x"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
+                        p, 0, ""),
+                event(ScheduleEvent.Kind.SEND, "y")));
+        ScheduleLog.closed("o1");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long before = System.nanoTime();
+        written("/p");
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.w");
+        assertTrue("no wait behind the other context's write, no hold",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 2000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 settled by their"
+                + " occurrence's close"));
+        assertTrue(progress, progress.contains("2 event(s) ran free"));
+    }
+
+    /**
      * A waiter gives up at once what its own occurrence passed: only its
      * thread could make it, and that thread waits beyond it.
      */
