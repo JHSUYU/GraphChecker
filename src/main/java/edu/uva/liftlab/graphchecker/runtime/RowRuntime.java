@@ -1174,9 +1174,10 @@ public final class RowRuntime {
      * (evidence) and the worker's {@code replay_verdict.jsonl}, which the
      * worker, the one writer of the obligation's answer, makes that answer
      * once the replay's process group is gone ({@code run_engine.sh}
-     * {@code campaign_obligation_replay}).  A replay a refusal decided
-     * withdraws its own session first, to {@code <worker>/refused-sessions/},
-     * so no stage can read the prefix of a run it wrote.</p>
+     * {@code campaign_obligation_replay}).  A decided replay (a refusal or a
+     * stall, {@code FocusedReplay#refusedAt}) withdraws its own session
+     * first, to {@code <worker>/refused-sessions/}, so no stage can read the
+     * prefix of a run it wrote.</p>
      */
     public static void closeSession() {
         SessionPublisher session = publisher;
@@ -1237,9 +1238,9 @@ public final class RowRuntime {
             writeWorkerVerdicts(worker, results);
             return;
         }
-        // A replay a refusal decided publishes no session
-        // (FocusedReplay#refusedAt): it withdraws the directory it opened,
-        // and its verdict rows name none.
+        // A decided replay publishes no session (FocusedReplay#refusedAt):
+        // it withdraws the directory it opened, and its verdict rows name
+        // none.
         String unmoved = session.withdrawTo(
                 Paths.get(worker, REFUSED_SESSIONS));
         if (!unmoved.isEmpty()) {

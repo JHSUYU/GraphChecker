@@ -158,13 +158,16 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    time in seconds is kept as `campaign_recorded_workload_s`, the base of the seed replay's
    bound, §5; the recording itself runs under no wall-clock bound). The weave writes only the rows
    the aggregation reads (`causynth/TracedRows`): call rows at a declared site, a field-accessing
-   call, a configured-source hook site or a port's capture, argument and normal-exit rows only
-   where a port captures them; every hook is still called, so each row keeps its number. The weave
-   leaves the digest of the three static artifacts it decided the rows on (scope map, candidate
-   graph, candidate skeletons: `TracedRows#inputsDigest`) beside the woven classes; the recorder
-   states it in the trace's manifest (schema 2, `tracedRows`), and the aggregation refuses a pruned
-   trace over other artifacts by name (`TRACED_ROWS_MISMATCH`: a site or port they add would find
-   no rows); a schema-1 trace wrote every row. A frame
+   call, a configured-source hook site, a store site that mutates through a call or a port's
+   capture, argument rows at such a store site and where a port captures them, normal-exit rows
+   only where a port captures them; every hook is still called, so each row keeps its number. The
+   weave leaves the digest of the rule it traced by (`TracedRows#RULE`) and the three static
+   artifacts it decided the rows on (scope map, candidate graph, candidate skeletons:
+   `TracedRows#inputsDigest`) beside the woven classes; the recorder states it in the trace's
+   manifest (schema 2, `tracedRows`), and the aggregation refuses a pruned trace over other
+   artifacts, or traced by another rule, by name (`TRACED_ROWS_MISMATCH`: a site or port they add
+   would find no rows; a recording made before the storing calls' argument rows lacks the holder
+   edges the recorded heap reads -- record again); a schema-1 trace wrote every row. A frame
    writes one decision at one site at most twice (`CausynthTraceRecorder#emitDecision`: readers
    take a frame's decisions as a set, its first, or "more than once" for a loop). A method or
    field row is written only while its thread stands in an opened occurrence
@@ -207,7 +210,15 @@ the marked row as the target (no row or two: `DECLARED_TARGET_OCCURRENCE_UNPINNE
 uses the address PLAN's index states for every later stage, whatever form the declaration had
 (`campaign_plan`). The seed's closure already plans one occurrence per class of equivalent deciders
 (SYMBOL-SCOPE.md §4.4, `deciderClass` on its row: `members`, `first`, `last`), and PLAN's log line
-and cut summary name the classes (`ConcolicScheduler#deciderClasses`). When the closure still holds
+and cut summary name the classes (`ConcolicScheduler#deciderClasses`). The writers a reader that never
+touched a field did not cross to, every object they wrote it on unreachable from it over the
+recorded heap and, with its recorded holders, mentioned under one causal context not the reader's
+(SYMBOL-SCOPE.md §4.4), and those crossed to only for a mention, are counted on the reader's row
+(`confinedWriters`, `escapedWriters`); PLAN prints them as `CONFINED` and `ESCAPED`, by owner class
+and field, and states them in the index. Each drop
+is a DIAGNOSTIC `CLOSURE_CONFINED` row of the region plan's gaps, one per reader and field
+(count, owner class, first writers), which EMIT carries into the campaign's gaps and result.json
+`confinedWriters` (the recorded heap is partial: CHECKING trap 22). When the closure still holds
 more occurrences than
 `schedule_max_jobs`, PLAN keeps the target and the nearest demand depths that fit whole (the
 seed's `demandDepth`, SYMBOL-SCOPE.md §4.4; never part of a depth, whose occurrences are equally
@@ -320,7 +331,7 @@ shutdown hook) returns only once they are published, so no exit halts the close 
 outlive the test, and a region started after the close would open a fresh VM session in which
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
-A focused replay ends early, once, for one of three reasons (`ConcolicResultPublisher#conclude`):
+A focused replay ends early, once, for one of five reasons (`ConcolicResultPublisher#conclude`):
 
 - `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
   (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
@@ -329,13 +340,19 @@ A focused replay ends early, once, for one of three reasons (`ConcolicResultPubl
   `FocusedReplay#refusedAt`, §7.6), a FORCE run's divergence among them (§7.10).
 - `AT_FORCED_TARGET`: a FORCE run's declared occurrence published its forced target row
   (`#concludeAtForcedTarget`, §7.10), read whole up to there as a witness's session is.
+- `AT_NO_PROGRESS`: nothing moved for 600 s in a replay asked a flip, before any flip it carries
+  was taken, which decided every obligation (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
+- `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
+  it up to there, read whole as a witness's session is, the flips taken keep their verdicts, the
+  questions still open are `NOT_ADMITTED` (§7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
 publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
 with the reason; after the workload's own end, one live while nothing progressed for the grace is
 `TERMINAL_NEVER_REACHED`), and a publication
-not yet started is withheld (the reason again): at the witness, one submitted after it (the
-session is read whole up to the witness); at a refusal, every one (the session is withdrawn, and
+not yet started is withheld (the reason again): at the witness, a forced target or a stall after a
+flip, one submitted after it (the session is read whole up to there, and its schedule states the run
+cut there); at a refusal or a stall before any flip, every one (the session is withdrawn, and
 draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
@@ -447,7 +464,13 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
    occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
    the session is admitted, else DIAGNOSTIC); another
-   world's pairing is a new slot. A slot stands on the session that opened it: the slots of a
+   world's pairing is a new slot. A closure member's code point (node, region, index) that a
+   session ran only under contexts of another shape (`Corpus#contextShape`, the rule of §7.4 and
+   IDENTITY §9: per anchor hop the RPC site and sending node, then the root's role and api, without
+   the per-site counts) is a `TOPOLOGY_DIVERGENCE` as well, BLOCKING when the session is admitted
+   and in a world where the member ran, else DIAGNOSTIC (a new occurrence); under the member's shape
+   it ran the member, whatever it counted (a poll's k-th wake is another k in every run), and under
+   that shape and another too it grew. A slot stands on the session that opened it: the slots of a
    session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
    where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
    replay answered by its shape (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the planned
@@ -566,7 +589,8 @@ are counted, never dropped silently: `concreteAnchors` states how many
   (`STATIC_CANDIDATE_WRITER`; a heap location is one object's, and a store reaches only an object its
   occurrence holds: an occurrence whose recorded reads and writes name owners, none of them the
   location's, is no candidate; a static field, an owner that names no one object, or an occurrence
-  with no recorded access is, `ClosurePlanner.Walk#holdsOthersOnly`; `StaticScopeMap#carriersAt`: a
+  with no recorded access is, `ClosurePlanner.Walk#holdsOthersOnly`; PLAN's reachability and
+  confinement filter, §3, is not applied here; `StaticScopeMap#carriersAt`: a
   recorded write joins a carrier in its method whose site stores its location's kind, `#stores` — a
   field store or an atomic's value a field, another mutator call a container's state, a read its
   field or a container field's state, no site an array element — and whose declared type may hold
@@ -617,12 +641,20 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
 outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
 share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
-(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and, for
-each factor member that writes state it reads and that this session ran, the same and its write
-counts at the locations the guard reads — never delivered values, and a function of the session
-alone: the members and each one's producers as sets (replies to one call arrive in any order), and none the session never ran (the corpus finds feeders as sessions
-land, and such a member's line, the same in every session that did not run it, re-keyed every arm of
-the session). Never the session. An arm is
+(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and each
+factor member that writes state it reads by what it delivered in this session: its handoff sites and
+producers, its write counts at the locations the guard reads, and whether it wrote any state the
+occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
+holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
+`StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm
+reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
+the lease map share its answer with one where it did not run; how often varies run to run) — never
+delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies
+to one call arrive in any order), and none that delivered nothing, never run or run to no such
+handoff or write (the corpus finds feeders as sessions land, and such a member's line, the same in
+every session that did not run it, re-keyed every arm of the session; solr-bugs-reindex-cleanup SG1:
+most of its 8,802 re-keyed ids were members that ran and delivered nothing). Known limit (STATUS open
+defect 64): a member's write the recording states at no write site re-keys no arm. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
@@ -919,7 +951,8 @@ the recorded arm, or the occurrence closed without reaching it), which holds eve
 obligation of the replay `NOT_ADMITTED` too, or a flip the replay inherited took the other arm. It
 ends there (`AT_REFUSAL`, §5). A flipped obligation is never decided before its replay ends: its
 session is a corpus session, cut from by later rounds and read whole by the closure and COMPOSE (the
-anchor, the fatal and writers after the anchor among them), so only the witness ends it early. A
+anchor, the fatal and writers after the anchor among them), so only the witness, or a stall
+(below), ends it early. A
 decided replay **publishes no session**: its verdict rows state the refusal and that the replay
 ended there, the worker's row names no session, and the replay withdraws the directory it opened
 to `<worker>/refused-sessions/` at its close, in one rename (`RowRuntime#closeSession`,
@@ -930,6 +963,34 @@ stay EMIT's (§11). A worker's replay stages its session in `<worker>/sessions/`
 head lands it (§7.9); the head, reading a peer's row, waits until its own listing of that directory
 holds the session the row names, or none naming the obligation when it names none
 (`campaign_await_remote_result`), so it never lands one a cached listing kept.
+
+**The early end at a stall** (`ConcolicResultPublisher#watchProgress`). A replay asked a flip --
+never the seed's (no obligation) nor a confirmation's (its verdict rules stand; a stuck one ends at
+its bound) -- is watched every 10 s inside its recording window (before it the cluster starts; after
+it the test is over, and its teardown, which answers nothing asked, may wait: solr-18413 FA5, an
+admitted replay's 275 s): once nothing has moved there for 600 s (no
+schedule step, `ScheduleLog#steps`: an event but a `WAKE` or a tick's `END`, which a poll that wakes
+and finds nothing makes; nothing the settle counts, `#movedLocked`: no activation began
+or settled, no loop body charged, no publication finished or read-out decoded; no thread computing,
+`#Computing`: one thread with the collectors at half a look's span, the schedule's measure, not a
+sum, since a hung cluster test's threads still ping its ZooKeeper), every question still open is
+`NOT_ADMITTED` by name, which says whether a schedule hold was live then (`FocusedReplay#noProgress`:
+`REPLAY_NO_PROGRESS: nothing moved for N s (...); no schedule hold was live` or `; a schedule hold
+was live: <ScheduleLog#holding: the threads held for a turn, the longest's slot and wait, how many
+with no slot or behind a held write>`), so a stall the engine's own hold made reads apart from one
+the workload made, and its threads are dumped on the replay log. Before any flip it carries was
+taken the stall decides the replay (`...; the replay ended there and published no session (until
+then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROGRESS`, §5): no
+session, its question settled. After one was taken the flips taken keep their verdicts, never
+rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
+to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
+it. A workload that ended settles on the settle's own bound instead. 600 s is the recording's stall bound too (`campaign_unbounded_stall_s`):
+of 1,596 Solr replays that ended by themselves (SG1, FA1-5, MB, Z) an admitted one went at most 122 s
+without a log line in its window (a schedule stall's ceiling, 8 timeouts of 15 s), one 300 s (an
+HTTP call waiting out its socket timeout, NOT_ADMITTED); each of the 172 killed at
+`replay_timeout_s` (solr-bugs-reindex-cleanup: an Overseer command waiting for a response node
+already deleted, in a tree whose waits never time out) worked about 80 s and then stood still for
+2,320 s.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound. A question no solver could answer (§7.5), and a replay

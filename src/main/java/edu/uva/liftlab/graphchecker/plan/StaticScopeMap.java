@@ -32,6 +32,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
@@ -162,10 +163,18 @@ public final class StaticScopeMap {
             return Collections.<String>emptyList();
         }
 
+        /** Those of {@link #callsInto} of which both arms run a call into
+         *  {@code method} (or which state no arm: a switch, a fault): they
+         *  choose WHICH call runs it, not whether one does. */
+        default List<Guard> choosingCallsInto(String method) {
+            return Collections.<Guard>emptyList();
+        }
+
         /** Of the branches {@link #targetChain} names for {@code siteId},
-         *  those each of whose arms reaches the site (or the call into its
-         *  method), so neither arm leaves the way to it: an {@code
-         *  assert}'s {@code $assertionsDisabled} test.  None with no CFG. */
+         *  those each of whose arms reaches the site (or a call into its
+         *  method: {@link #choosingCallsInto} among them), so neither arm
+         *  leaves the way to it: an {@code assert}'s {@code
+         *  $assertionsDisabled} test.  None with no CFG. */
         default Set<String> passable(String siteId,
                                      Predicate<String> entry) {
             return Collections.<String>emptySet();
@@ -312,6 +321,13 @@ public final class StaticScopeMap {
          * SYMBOL-SCOPE §4.6), where it found one; -1 elsewhere.
          */
         public final int demandDistance;
+        /**
+         * WRITE_SITE: a store into the object its constructor builds ({@code
+         * this.f} in an {@code <init>}): the calls into the constructor
+         * decide whether the object exists, not what an existing one's field
+         * holds, so their guards are not the store's ({@link #rows}).
+         */
+        public final boolean ownObject;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
@@ -322,7 +338,7 @@ public final class StaticScopeMap {
                     Collections.<String, List<Guard>>emptyMap(),
                     Collections.<Guard>emptyList(),
                     Collections.<String>emptyList(), "", false, false, "",
-                    -1);
+                    -1, false);
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
@@ -332,7 +348,7 @@ public final class StaticScopeMap {
              Map<String, List<Guard>> guardDeciders, List<Guard> chain,
              List<String> callers, String trackedKind, boolean staticField,
              boolean constructionOnly, String publishedFrom,
-             int demandDistance) {
+             int demandDistance, boolean ownObject) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -358,6 +374,7 @@ public final class StaticScopeMap {
             this.constructionOnly = constructionOnly;
             this.publishedFrom = publishedFrom == null ? "" : publishedFrom;
             this.demandDistance = demandDistance;
+            this.ownObject = ownObject;
         }
 
         Site withGuards(List<Guard> found) {
@@ -406,7 +423,8 @@ public final class StaticScopeMap {
             return new Site(role, held, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, stated, sites, outcomes,
                     deciders, chained, calling, trackedKind, staticField,
-                    constructionOnly, publishedFrom, demandDistance);
+                    constructionOnly, publishedFrom, demandDistance,
+                    ownObject);
         }
 
         /**
@@ -519,6 +537,19 @@ public final class StaticScopeMap {
 
     /** Each configuration root's reads no plant stands at, by source id. */
     private final Map<String, List<String>> concreteConfigurationReads;
+    /** {@link #carriersAt}, once asked: every caller asks it again for
+     *  every row of a site, and each answer scans every site. */
+    private final Map<String, Set<String>> carriers =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+    /** {@link #readLocations}, once asked. */
+    private final Map<String, Set<String>> readLocations =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+    /** {@link #storedAt}, once asked. */
+    private final Map<String, Set<String>> stored =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+    /** Region -> the regions an occurrence of it folded in the epoch's
+     *  plan ({@link #withFolds}); empty for a map read alone. */
+    private final Map<String, Set<String>> folds;
 
     /** Each TARGET_SITE row's forcing table ({@link ForcingTable}), by
      *  its site id. */
@@ -528,11 +559,54 @@ public final class StaticScopeMap {
                            Map<String, Set<String>> regionMethods,
                            Map<String, List<String>> concreteReads,
                            Map<String, JsonArray> forcing) {
+        this(sites, regionMethods, concreteReads, forcing,
+                Collections.<String, Set<String>>emptyMap());
+    }
+
+    private StaticScopeMap(List<Site> sites,
+                           Map<String, Set<String>> regionMethods,
+                           Map<String, List<String>> concreteReads,
+                           Map<String, JsonArray> forcing,
+                           Map<String, Set<String>> folds) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
                 Collections.unmodifiableMap(concreteReads);
         this.forcing = forcing;
+        this.folds = Collections.unmodifiableMap(folds);
+    }
+
+    /**
+     * This map with the epoch's fold relation: per region, the regions its
+     * occurrences folded in the plan PLAN froze for the iteration (each
+     * region row's {@code foldedRegionIds}, {@code
+     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}).  A folded region's
+     * text ran inside the enclosing occurrence, whose skeleton does not name
+     * it (the weave stops at a nested root), so what that occurrence may
+     * read is its region's and theirs ({@link #readLocations}).  An
+     * unreadable plan is refused by name.
+     */
+    public StaticScopeMap withFolds(Path regionPlan) {
+        Map<String, Set<String>> found =
+                new LinkedHashMap<String, Set<String>>();
+        if (regionPlan != null && Files.isRegularFile(regionPlan)) {
+            try {
+                for (JsonObject row : ArtifactIO.readJsonl(regionPlan)) {
+                    String regionId = optionalString(row, "regionId");
+                    List<String> folded = strings(row,
+                            RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS);
+                    if (regionId.isEmpty() || folded.isEmpty()) continue;
+                    found.computeIfAbsent(regionId,
+                            key -> new LinkedHashSet<String>())
+                            .addAll(folded);
+                }
+            } catch (IOException | RuntimeException unreadable) {
+                throw new IllegalStateException("REGION_PLAN_UNREADABLE: "
+                        + regionPlan, unreadable);
+            }
+        }
+        return new StaticScopeMap(sites, regionMethods,
+                concreteConfigurationReads, forcing, found);
     }
 
     /** The forcing table of the TARGET_SITE at {@code targetSiteId}
@@ -680,7 +754,7 @@ public final class StaticScopeMap {
                             null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
                             NO_CHAIN, NO_CALLERS, tracked.name(),
                             staticField.test(field), false, "",
-                            distance(mark)));
+                            distance(mark), false));
                 }
                 continue;
             }
@@ -693,7 +767,8 @@ public final class StaticScopeMap {
                     null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS, NO_CHAIN,
                     NO_CALLERS, "", leaf.isEmpty() && staticField.test(field),
                     invoke.isEmpty() && constructionOnly.test(field),
-                    text(edge.get("publishedFrom")), -1));
+                    text(edge.get("publishedFrom")), -1,
+                    Boolean.TRUE.equals(edge.get("ownObject"))));
         }
         markReads(found, unwoven, demand);
         keepTrackedReads(found);
@@ -913,11 +988,20 @@ public final class StaticScopeMap {
                 // A store is control-dependent on the calls into its
                 // method too: a commit point's `deleted` is set by its own
                 // delete(), which the deletion policy calls only when the
-                // commit's reservation (a clock) has run out.
+                // commit's reservation (a clock) has run out.  A store into
+                // the object its constructor builds (ownObject) only on the
+                // guards that choose which call builds it, and with it the
+                // arguments it stores (`if (isLeader) submit(new
+                // Task(LEADER)) else submit(new Task(REPLICA))`): a guard
+                // only one arm of which builds one decides whether the
+                // object exists, which reaches a reader through the store
+                // that hands it on.
+                String method = SiteId.methodOf(site.siteId);
                 Set<String> named = new LinkedHashSet<String>();
                 for (Guard guard : all) named.add(guard.siteId());
-                for (Guard guard : guards.callsInto(
-                        SiteId.methodOf(site.siteId), method -> true)) {
+                for (Guard guard : site.ownObject
+                        ? guards.choosingCallsInto(method)
+                        : guards.callsInto(method, callee -> true)) {
                     if (named.add(guard.siteId())) all.add(guard);
                 }
             }
@@ -970,6 +1054,9 @@ public final class StaticScopeMap {
         }
         if (site.constructionOnly) {
             row.addProperty("constructionOnly", true);
+        }
+        if (site.ownObject) {
+            row.addProperty("ownObject", true);
         }
         if (!site.publishedFrom.isEmpty()) {
             row.addProperty("publishedFrom", site.publishedFrom);
@@ -1182,7 +1269,7 @@ public final class StaticScopeMap {
                             inputKind, clock, config,
                             text(edge.get("symbolicName"))), NO_GUARDS,
                     NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "", false,
-                    false, "", distance(demand.at(siteId, cell))));
+                    false, "", distance(demand.at(siteId, cell)), false));
         }
     }
 
@@ -1393,7 +1480,8 @@ public final class StaticScopeMap {
                     row.has("static") && row.get("static").getAsBoolean(),
                     constructionOnly(row),
                     optionalString(row, "publishedFrom"),
-                    (int) optionalLongInteger(row, "demandDistance", -1L)));
+                    (int) optionalLongInteger(row, "demandDistance", -1L),
+                    optionalBool(row, "ownObject", false)));
         }
         return new StaticScopeMap(sites, readRegions(file), concreteReads,
                 Collections.unmodifiableMap(forcing));
@@ -1473,8 +1561,16 @@ public final class StaticScopeMap {
      */
     public Set<String> carriersAt(String recordedSite, String javaType,
                                   LocationKind kind) {
-        Set<String> carriers = new LinkedHashSet<String>();
         String site = recordedSite == null ? "" : recordedSite;
+        return carriers.computeIfAbsent(site + "|" + javaType + "|" + kind,
+                key -> Collections.unmodifiableSet(
+                        joinCarriers(site, javaType, kind)));
+    }
+
+    /** {@link #carriersAt}, computed. */
+    private Set<String> joinCarriers(String site, String javaType,
+                                     LocationKind kind) {
+        Set<String> carriers = new LinkedHashSet<String>();
         // A version recorded at a read site is the INITIAL a read's
         // observation started the location's log with: its carrier is the
         // field read.
@@ -1485,6 +1581,74 @@ public final class StaticScopeMap {
             carriersInMethod(named, site, javaType, kind, carriers);
         }
         return carriers;
+    }
+
+    /**
+     * The locations one region's code reads where a replay versions the
+     * read, on any arm, by cell and carrier: its READ_SITEs ({@link
+     * #READ_SITE}) and its accessor reads the slice made inputs ({@link
+     * #READ_INPUT}: an atomic's {@code get()} another region's {@code
+     * incrementAndGet} writes), in the methods it holds ({@link
+     * #methodsOf}; by its id when the map knows none), and those of the
+     * regions its occurrences folded ({@link #withFolds}).  A recorded write
+     * whose stored locations ({@link #storedAt}) meet them may feed what an
+     * occurrence of the region reads, whether or not the arm a session took
+     * read it.
+     */
+    public Set<String> readLocations(String regionId) {
+        String region = regionId == null ? "" : regionId;
+        return readLocations.computeIfAbsent(region, key -> {
+            Set<String> found = new LinkedHashSet<String>();
+            Set<String> regions = new LinkedHashSet<String>();
+            regions.add(region);
+            regions.addAll(folds.getOrDefault(region,
+                    Collections.<String>emptySet()));
+            for (String held : regions) {
+                Set<String> methods = methodsOf(held);
+                for (Site read : sites) {
+                    boolean reads = READ_SITE.equals(read.role)
+                            || DECLARED_SITE.equals(read.role)
+                            && read.declared != null
+                            && READ_INPUT.equals(read.declared.inputKind);
+                    if (!reads || !(methods.isEmpty()
+                            ? held.equals(read.regionId)
+                            : methods.contains(SiteId.methodOf(read.siteId)))) {
+                        continue;
+                    }
+                    if (!read.cell.isEmpty()) found.add(read.cell);
+                    if (!read.carrier.isEmpty()) found.add(read.carrier);
+                }
+            }
+            return Collections.unmodifiableSet(found);
+        });
+    }
+
+    /**
+     * The locations one RECORDED write stores, by cell and carrier: those
+     * of the WRITE_SITEs in its method that store a location of its kind
+     * and may hold its type, joined as {@link #carriersAt} joins.
+     */
+    public Set<String> storedAt(String recordedSite, String javaType,
+                                LocationKind kind) {
+        String site = recordedSite == null ? "" : recordedSite;
+        return stored.computeIfAbsent(site + "|" + javaType + "|" + kind,
+                key -> {
+                    Set<String> found = new LinkedHashSet<String>();
+                    for (Site named : ofRole(WRITE_SITE, row -> true)) {
+                        if (named.vmSite.isEmpty()
+                                || !site.startsWith(named.vmSite + "#")
+                                || !stores(named, kind)
+                                || !sameType(descriptorOfCellType(
+                                named.cell), javaType)) {
+                            continue;
+                        }
+                        if (!named.cell.isEmpty()) found.add(named.cell);
+                        if (!named.carrier.isEmpty()) {
+                            found.add(named.carrier);
+                        }
+                    }
+                    return Collections.unmodifiableSet(found);
+                });
     }
 
     /**

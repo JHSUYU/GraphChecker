@@ -280,7 +280,11 @@ public final class FocusedReplay {
      * replay inherited contradicted, which {@link #inherited} holds against
      * every one.  A flipped obligation is never decided before its replay
      * ends: its session is a corpus session, and later waves and COMPOSE read
-     * every row of it (the anchor, the fatal, writers after the anchor).</p>
+     * every row of it (the anchor, the fatal, writers after the anchor) --
+     * but at a stall before any flip it was asked was taken: a replay in
+     * which nothing moved for {@code ConcolicResultPublisher
+     * #NO_PROGRESS_MILLIS} ({@link #noProgress}) is decided there, every
+     * obligation NOT_ADMITTED by {@link #REPLAY_NO_PROGRESS}.</p>
      *
      * <p>A replay decided here ends at once
      * ({@code ConcolicResultPublisher#concludeAtRefusal}) and publishes no
@@ -298,6 +302,60 @@ public final class FocusedReplay {
         if (!refusedAt.isEmpty() || OBLIGATIONS.isEmpty()) return false;
         refusedAt = refusal;
         return true;
+    }
+
+    /** The name a stalled replay's verdicts open with ({@link
+     *  #noProgress}). */
+    static final String REPLAY_NO_PROGRESS = "REPLAY_NO_PROGRESS";
+
+    /**
+     * The stall this replay ended at after a flip it was asked was taken
+     * ({@link #noProgress}), or {@code ""}: the obligations still open are
+     * NOT_ADMITTED by it, and those whose flip was taken keep what they
+     * settled ({@link #results}).
+     */
+    private static String stalledAt = "";
+
+    /**
+     * Ends this replay at a stall ({@code
+     * ConcolicResultPublisher#watchProgress}): {@code what} says what stood
+     * still and for how long, and {@code held} the schedule's holds then
+     * ({@code ScheduleLog#holding}; "" for none), so a stall the engine's
+     * own hold made reads apart from one the workload made.  A stall is
+     * NOT_ADMITTED for the questions still open (the owner's
+     * simplification): before any flip was taken it decides the replay
+     * ({@link #decide}, the session withdrawn); after one, the flips taken
+     * keep their verdicts, never rewritten, and the session stands as the
+     * run made it up to the stall ({@link #stalledAt}).  Only a replay
+     * asked a flip -- never the seed's (no obligation), a confirmation's
+     * ({@link #confirming}: its verdict rules stand, and its timeout
+     * already refuses a stuck one), or one whose workload ended (it
+     * settles, on the settle's own bound).
+     *
+     * @return whether the replay ends here
+     */
+    static boolean noProgress(String what, String held) {
+        if (confirming()) return false;
+        synchronized (LOCK) {
+            if (workloadEnded || !refusedAt.isEmpty()
+                    || !stalledAt.isEmpty()) {
+                return false;
+            }
+            String stall = REPLAY_NO_PROGRESS + ": " + trimmed(what) + "; "
+                    + (held.isEmpty() ? "no schedule hold was live"
+                    : "a schedule hold was live: " + held);
+            if (FLIPPED.isEmpty()) return decide(stall);
+            stalledAt = stall;
+            return true;
+        }
+    }
+
+    /** Whether a stall ended this replay after a flip was taken ({@link
+     *  #stalledAt}): its session stands. */
+    static boolean stalledAfterFlip() {
+        synchronized (LOCK) {
+            return !stalledAt.isEmpty();
+        }
     }
 
     /** The refusal that decided every obligation of this replay, or "". */
@@ -479,8 +537,10 @@ public final class FocusedReplay {
      * flip alone does not admit -- an abandoned prefix, a missing mint row,
      * a broken inherited flip or a pairing its world plants and the run did
      * not take ({@link Confirmation#close}) is NOT_ADMITTED naming the gap.
-     * A replay a refusal decided ({@link #refusedAt}) says in each detail
-     * that it ended there.</p>
+     * A decided replay ({@link #refusedAt}) admits nothing, and says in each
+     * detail that it ended there; one that stalled after a flip was taken
+     * ({@link #stalledAt}) keeps the verdicts of the flips taken, and every
+     * other obligation is NOT_ADMITTED by the stall.</p>
      */
     public static List<ObligationResult> results(String sessionId) {
         load();
@@ -494,19 +554,35 @@ public final class FocusedReplay {
         synchronized (LOCK) {
             for (ObligationResult result : settled(sessionId, untaken,
                     held)) {
-                results.add(refusedAt.isEmpty() ? result
-                        : ObligationResult.of(result.obligationId(),
-                                result.verdict(), result.sessionId(),
-                                endedAtRefusal(result.detail()),
-                                result.refutation()));
+                if (!refusedAt.isEmpty()) {
+                    results.add(ObligationResult.of(result.obligationId(),
+                            Verdict.NOT_ADMITTED, result.sessionId(),
+                            endedAtRefusal(result.detail()),
+                            result.refutation()));
+                } else if (!stalledAt.isEmpty()
+                        && !FLIPPED.contains(result.obligationId())) {
+                    results.add(ObligationResult.of(result.obligationId(),
+                            Verdict.NOT_ADMITTED, result.sessionId(),
+                            stalledAt + "; the replay ended there, after"
+                                    + " another flip it was asked was"
+                                    + " taken (until then: "
+                                    + result.detail() + ")"));
+                } else {
+                    results.add(result);
+                }
             }
         }
         return results;
     }
 
     /** One verdict's detail, and where the replay decided by
-     *  {@link #refusedAt} ended.  Called under {@link #LOCK}. */
+     *  {@link #refusedAt} ended; a stall's name first.  Called under
+     *  {@link #LOCK}. */
     private static String endedAtRefusal(String detail) {
+        if (refusedAt.startsWith(REPLAY_NO_PROGRESS)) {
+            return refusedAt + "; the replay ended there and published no"
+                    + " session (until then: " + detail + ")";
+        }
         return detail + (refusedAt.contains(detail)
                 ? "; the replay ended at this refusal and published no session"
                 : "; the replay ended at the refusal that decided every"
@@ -1206,6 +1282,7 @@ public final class FocusedReplay {
             unmatchedPrefix = "";
             unsettledPublication = "";
             refusedAt = "";
+            stalledAt = "";
             ROOT_MINTS.clear();
             task = null;
             OBLIGATIONS.clear();

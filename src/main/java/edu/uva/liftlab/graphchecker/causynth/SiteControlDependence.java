@@ -91,21 +91,7 @@ public final class SiteControlDependence {
                         new ArrayList<StaticScopeMap.Guard>();
                 Set<String> named = new LinkedHashSet<String>();
                 for (String call : callSitesInto(method, walked)) {
-                    String caller = SiteId.methodOf(call);
-                    MethodGuards guards = callers.get(caller);
-                    if (guards == null) {
-                        guards = MethodGuards.of(caller);
-                        callers.put(caller, guards);
-                    }
-                    // The call's guards and theirs: in `if (a || b) return;
-                    // call();` the call is control-dependent on b alone, and
-                    // b on a.
-                    int unit = SiteId.unitIndexOf(call);
-                    List<StaticScopeMap.Guard> deciding =
-                            new ArrayList<StaticScopeMap.Guard>(
-                                    guards.at(unit));
-                    deciding.addAll(guards.chain(unit));
-                    for (StaticScopeMap.Guard guard : deciding) {
+                    for (StaticScopeMap.Guard guard : deciding(call)) {
                         if (named.add(guard.siteId())) found.add(guard);
                     }
                 }
@@ -122,15 +108,63 @@ public final class SiteControlDependence {
                 }
                 for (String call : callSitesInto(SiteId.methodOf(siteId),
                         entry.negate())) {
-                    String caller = SiteId.methodOf(call);
-                    MethodGuards guards = callers.get(caller);
-                    if (guards == null) {
-                        guards = MethodGuards.of(caller);
-                        callers.put(caller, guards);
-                    }
-                    found.addAll(guards.passable(SiteId.unitIndexOf(call)));
+                    found.addAll(guardsOf(SiteId.methodOf(call)).passable(
+                            SiteId.unitIndexOf(call)));
+                }
+                for (StaticScopeMap.Guard choosing
+                        : choosingCallsInto(SiteId.methodOf(siteId))) {
+                    found.add(choosing.siteId());
                 }
                 return found;
+            }
+
+            @Override
+            public List<StaticScopeMap.Guard> choosingCallsInto(
+                    String method) {
+                Map<String, StaticScopeMap.Guard> first =
+                        new LinkedHashMap<String, StaticScopeMap.Guard>();
+                Map<String, Set<Boolean>> arms =
+                        new LinkedHashMap<String, Set<Boolean>>();
+                for (String call : callSitesInto(method, callee -> true)) {
+                    for (StaticScopeMap.Guard guard : deciding(call)) {
+                        first.putIfAbsent(guard.siteId(), guard);
+                        arms.computeIfAbsent(guard.siteId(),
+                                key -> new java.util.HashSet<Boolean>())
+                                .add(guard.outcome());
+                    }
+                }
+                List<StaticScopeMap.Guard> found =
+                        new ArrayList<StaticScopeMap.Guard>();
+                for (Map.Entry<String, StaticScopeMap.Guard> guard
+                        : first.entrySet()) {
+                    Set<Boolean> taken = arms.get(guard.getKey());
+                    if (taken.contains(null) || taken.size() > 1) {
+                        found.add(guard.getValue());
+                    }
+                }
+                return found;
+            }
+
+            /** A call's guards and theirs: in `if (a || b) return;
+             *  call();` the call is control-dependent on b alone, and b on
+             *  a. */
+            private List<StaticScopeMap.Guard> deciding(String call) {
+                MethodGuards guards = guardsOf(SiteId.methodOf(call));
+                int unit = SiteId.unitIndexOf(call);
+                List<StaticScopeMap.Guard> deciding =
+                        new ArrayList<StaticScopeMap.Guard>(guards.at(unit));
+                deciding.addAll(guards.chain(unit));
+                return deciding;
+            }
+
+            /** A caller's relation, built once. */
+            private MethodGuards guardsOf(String caller) {
+                MethodGuards guards = callers.get(caller);
+                if (guards == null) {
+                    guards = MethodGuards.of(caller);
+                    callers.put(caller, guards);
+                }
+                return guards;
             }
 
             @Override
