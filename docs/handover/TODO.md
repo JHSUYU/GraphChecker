@@ -189,11 +189,17 @@ Solr request start (`CausynthHttp#requestStarting`, `outboundRequest` of the req
 call a hook's class makes of a moved door method (`SolrZkClient#makePath`, by control flow, every doorless call named),
 scope growth stopping at a codec (the catalog's `CODEC` rows: JavaBin) and trace rows only inside an opened occurrence
 (round MB2: 1.78 of reindex-cleanup's 2.0 GB trace was outside every occurrence, JavaBin's encode and decode most of
-it; the aggregation thrashed at 2 GB). Still open there:
+it; the aggregation thrashed at 2 GB), a workload's request that stands past the traced activation it began in
+(solr-adhoc-31's test request, begun in `createServers`), a cloud client's attempt free of the last response its thread
+read (`MessageDoors#callStarting`, solr-adhoc-13), and every jetty started in the window a node from its first moment
+(STATUS "Per-system surface"). Still open there:
 - `solr-bug-reindex`'s state roots at writers and non-accessors, only if PLAN still overflows after those two;
-- `solr-bug-reindex`'s other seed-replay rules (`ScheduleReach`, `ScheduleWait`, the lock owner's early slot, the draw
-  scope over the test's own classes, the queue order, `AT_QUESTION_CLOSED`) come in only when a Solr seed replay on this
-  body shows the stall each answers.
+- Seed-replay stalls of the study checks (round SG1, classified by `/bigtemp/vnr3ne/gc-out/solr-body/scripts/
+  stall_summary.py`): a poll owing its own context's frontier now polls with no move, and a held wait is let go a grace
+  into an idle stall (IDENTITY §8); the writes keyed by a queue item's own path went with `storingChild`. Still to
+  measure before/after on solr-adhoc-19 and -07; `solr-bug-reindex`'s other rules (`ScheduleReach`, `ScheduleWait`, the
+  lock owner's early slot, the draw scope over the test's own classes, the queue order, `AT_QUESTION_CLOSED`) come in
+  only when a Solr seed replay on this body shows the stall each answers.
 Merge the parked `hdfs1-confirm-first` if a confirmation is seen waiting behind witness attempts.
 
 **2. One tree, on the fork.** Done on the cluster (2026-10-08): `gc/solr-checks` (`/bigtemp/vnr3ne/wt/lucene-solr-checks`,

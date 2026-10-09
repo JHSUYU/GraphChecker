@@ -430,7 +430,9 @@ public class RowRuntimeTest {
      * is its original's k at a site naming its attempt, and one whose
      * original this level did not count is counted there.  Starting, it
      * ends a RESPONSE its thread received, so it stands in the thread's own
-     * context; a REQUEST the thread serves stands.
+     * context, as a client's call does whose requests start below it ({@code
+     * MessageDoors#callStarting}, a cloud client's attempt); a REQUEST the
+     * thread serves stands.
      */
     @Test
     public void aRequestIsItsVerbsKthInItsThreadsOwnContext()
@@ -492,6 +494,13 @@ public class RowRuntimeTest {
             Identity.exitFrame(after);
             assertEquals("a frame after the requests is plain", call + "@0",
                     later.get(later.size() - 1).render());
+            String last = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                    "corr-last", "0", "RESPONSE", owner, null, "");
+            MessageDoors.inbound(last, "", "HADOOP_IPC", "corr-last", "0",
+                    "RESPONSE", owner, false);
+            MessageDoors.callStarting();
+            assertEquals("a client's call is the thread's own", own,
+                    Identity.contextHere().render());
             RuntimeTraceContext.endRequest(test);
             RecordingWindow.reset();
         }

@@ -108,7 +108,7 @@ Hops are opened by (all in `runtime/RuntimeTraceContext`):
 
 | opener | hop |
 |---|---|
-| `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call |
+| `beginRequest` (the workload, `MessageDoors.beginRequest`/`beginWorkloadCall`) | role `CLIENT`, api = the request's name; a root where none stands, or always (`pushCallRoot`) for a workload call. It stands until its end, past the traced activation it began in (`RuntimeTraceContext#exitRoot`: the thread's request flow stays its, where an exchange received in the activation ends with it) |
 | `beginTick` (`MessageDoors.beginTick`) | a root of the given role, whatever the thread stands in (`pushRoot`), once the exchange the thread served has ended (§7.1) |
 | `beginWake` (at the return of a timed wait, `runtime/WakeScopes`) | a root of role `WAKE`, api = `Class.method` of the wait; only on a thread attributed to a node and only when every open scope is itself a turn (a request, a served message, a node startup are not: a wait inside them is a pause) |
 | `enterInbound` (a received message) | role = the transport, api = the request's `<source>/<api>`; the anchor is `Interactions.sender(transport, correlation, half)`, rpcSite `<TRANSPORT>[.<VIA>]/<api>` |
@@ -708,13 +708,17 @@ order:
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
   (a settled slot) since its previous `WAKE`; the slot its last recorded `WAKE` took counts, so
-  the first poll past the count goes at once. A loop that reads a CLOCK root goes as soon as its
+  the first poll past the count goes at once. A poll whose context's next slot is the frontier itself
+  owes it and goes with no move: held, it held the frontier until the watchdog (solr-adhoc-19, round
+  SG1: `ZkController#waitForCoreNodeName`, 66 stalls of 15 s). A loop that reads a CLOCK root goes as soon as its
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
   wait is missed; the methods are installed from the rows the session reads when it opens,
   `GuardedStoreSites#install`, never at a wait, where reading the map held a thread's first wait
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
-  still waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an
+  still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
+  waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
+  give-up of the 4560 slots before it). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
@@ -756,7 +760,9 @@ order:
   unseen owner is one thread, so one such thread's CPU plus the collectors' time over half the
   look's span defers the give-up, not a sum: the traffic a free-running loop drives through threads
   that make no event (an IPC reader, a connection's receiver) is no one computing. The watchdog
-  first lets the waits held without a slot go; a grace (`LET_GO_GRACE_MS`, 2 s) later it gives up
+  first lets the waits held without a slot go -- a grace into a stall nothing computes toward, before
+  the timeout (round SG1: 92 stalls across six Solr study checks each waited a timeout to let a held
+  wait go) --; a grace (`LET_GO_GRACE_MS`, 2 s) after the timeout it gives up
   every open slot before the earliest waiter that waits for a slot. That is one let-go per
   frontier: a slot taken past it earns the held waits no second one, which would hold the give-up
   off for as long as anything ran elsewhere. A poll held past its count stands at a due slot and

@@ -1092,7 +1092,11 @@ public final class ScheduleLog {
                 ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
         if (next >= 0) {
             if (!dueLocked(next)) return next;
-            if (movedSincePollLocked(event) || clockLoopLocked(event)) {
+            // The frontier its own context's: the loop owes it, and holding
+            // the poll holds the frontier until the watchdog (solr-adhoc-19
+            // SG1: ZkController#waitForCoreNodeName, 66 stalls, 991 s).
+            if (movedSincePollLocked(event) || clockLoopLocked(event)
+                    || next == firstBlocking) {
                 return GO;
             }
         }
@@ -1439,8 +1443,9 @@ public final class ScheduleLog {
      * #stallSinceLocked}, which neither a let-go nor a slot taken past the
      * frontier moves, and the stall's CPU is looked at from its start.  Its
      * first answer lets the waits held without a slot go; a grace later, the
-     * slots before the earliest waiter are given up.  With only polls past
-     * their recorded count waiting, it lets them go again, a grace apart.
+     * slots before the earliest waiter a slot holds are given up.  With only
+     * waits held without a slot waiting (polls past their recorded count,
+     * waits at the line), it lets them go again, a grace apart.
      */
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
@@ -1455,19 +1460,28 @@ public final class ScheduleLog {
             if (now - cpuSampledAt >= CPU_SAMPLE_MS) lookLocked(now, false);
         }
         long stood = now - since;
-        if (stood < timeout || now - letGoAt < LET_GO_GRACE_MS) return false;
+        if (now - letGoAt < LET_GO_GRACE_MS) return false;
+        // A wait held without a slot is let go a grace into a stall nothing
+        // computes toward, not a timeout: the frontier may be behind it, and
+        // its event runs free anyway once let go (SG1: 92 such stalls across
+        // six study checks, 15 s each).
+        if (!HELD.isEmpty() && !letGoSinceProgress && stood < timeout
+                && stood >= LET_GO_GRACE_MS && !computingLocked(now)) {
+            letGoHeldLocked(stood, now);
+            return true;
+        }
+        if (stood < timeout) return false;
         if (stood < CEILING * timeout && computingLocked(now)) return false;
-        // A poll held past its recorded count stands at its context's due
-        // slot and waits for no slot's event, so it bounds no give-up (it
-        // would shadow the stalled slot); a wait AT_THE_LINE bounds one at
-        // the line.
+        // A wait held without a slot -- a poll past its recorded count at
+        // its context's due slot, or at the line -- waits for no slot's
+        // event, so it bounds no give-up: at a slot it would shadow the
+        // stalled one, at the line it would give up every slot before it
+        // (solr-adhoc-13 MB6: a replica poll held at the cut, 4560 slots at
+        // once).  It is let go instead, a grace apart.
         int earliest = Integer.MAX_VALUE;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            int slot = waiter.getValue();
-            if (slot == AT_THE_LINE) {
-                earliest = Math.min(earliest, line);
-            } else if (!HELD.containsKey(waiter.getKey())) {
-                earliest = Math.min(earliest, slot);
+            if (!HELD.containsKey(waiter.getKey())) {
+                earliest = Math.min(earliest, waiter.getValue());
             }
         }
         if (!HELD.isEmpty() && (!letGoSinceProgress
@@ -1497,10 +1511,8 @@ public final class ScheduleLog {
             settleLocked();
             return true;
         }
-        boolean atTheLine = WAITERS.containsValue(AT_THE_LINE)
-                && earliest == line;
         stalls++;
-        if (!atTheLine && earliest >= cut && restStalls >= REST_STALLS) {
+        if (earliest >= cut && restStalls >= REST_STALLS) {
             int open = 0;
             for (int index = firstOpen; index < state.length; index++) {
                 if (state[index] == OPEN) {
@@ -1525,14 +1537,14 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
-        if (!atTheLine && earliest >= cut) restStalls++;
+        if (earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
                         + " first " + order.get(first).render() + ") did not"
                         + " happen in the " + stood + " ms the frontier"
                         + " stood at slot " + firstBlocking + ", while "
-                        + waitingAtLocked(earliest)
-                        + ": they are given up, and each still takes its"
+                        + order.get(earliest).render() + " waited at slot "
+                        + earliest + ": they are given up, and each still takes its"
                         + " slot if it comes");
         settleLocked();
         return true;
@@ -1574,17 +1586,6 @@ public final class ScheduleLog {
             any = true;
         }
         return any;
-    }
-
-    /** What waits at {@code earliest}, as it names itself. */
-    private static String waitingAtLocked(int earliest) {
-        for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
-            if (earliest == line && waiter.getValue() == AT_THE_LINE) {
-                return heldLocked(waiter.getKey()) + " waited at the "
-                        + (line == cut ? "cut" : "order's end");
-            }
-        }
-        return order.get(earliest).render() + " waited at slot " + earliest;
     }
 
     /** A held wait, as it names itself. */

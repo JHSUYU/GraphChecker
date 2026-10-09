@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 
 import java.util.concurrent.ArrayBlockingQueue;
@@ -42,6 +43,31 @@ public class AttributionTest {
         // The scope is a frame: closed, it names nothing any more.
         assertEquals(NN.key(), Attribution.resolve(null).key());
         Identity.exitFrame(frame);
+    }
+
+    /**
+     * A request the workload began in a traced call that returned stands
+     * until its end, the calls it began under nested or not: the thread
+     * stays in it and sends in it, and its end puts back what stood before
+     * the outermost of them (round SG1, solr-adhoc-31: a test's request
+     * begun in its traced createServers).
+     */
+    @Test
+    public void aRequestOutlivesTheCallsItBeganIn() {
+        Object client = new Object();
+        RuntimeTraceContext.registerSource(client,
+                new SourceRef("EXTERNAL_APP", "SOLR_CLIENT", "t/client0", 0L));
+        RuntimeTraceContext.View outer = RuntimeTraceContext.enterRoot(null);
+        RuntimeTraceContext.View inner = RuntimeTraceContext.enterRoot(null);
+        long request = RuntimeTraceContext.beginRequest(client, "test");
+        String test = RuntimeTraceContext.current().requestKey;
+        RuntimeTraceContext.exitRoot(inner.spanId);
+        assertEquals(test, RuntimeTraceContext.current().requestKey);
+        RuntimeTraceContext.exitRoot(outer.spanId);
+        assertEquals(test, RuntimeTraceContext.current().requestKey);
+        assertFalse(RuntimeTraceContext.outboundHeader(null, null).isEmpty());
+        RuntimeTraceContext.endRequest(request);
+        assertEquals("", RuntimeTraceContext.current().requestKey);
     }
 
     @Test
