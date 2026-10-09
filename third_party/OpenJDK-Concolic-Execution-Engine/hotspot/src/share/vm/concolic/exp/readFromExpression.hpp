@@ -54,6 +54,11 @@ public:
     return _location_kind == "MAP_STATE"
         && _observed_value->derived_container_value(owner);
   }
+  // A reference cell whose observed writer stored a constant Enum.valueOf
+  // named: the read is of the names its writers stored.
+  virtual bool names_enum_constant() {
+    return _observed_value->names_enum_constant();
+  }
   virtual std::string get_name();
 
 protected:

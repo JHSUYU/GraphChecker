@@ -88,6 +88,14 @@ public:
   // whether a recorded key is the key it looks for with this.
   virtual bool concrete_string_value(std::string *value) { return false; }
 
+  // Whether this value is an enum constant Enum.valueOf chose by a symbolic
+  // name (SymEnum): it denotes that name, a String, so a reference compare
+  // of it is a compare of names.  Answered through a boundary or a read of
+  // it.
+  virtual bool names_enum_constant() { return false; }
+  // Whether this value is such a constant's ordinal (SymEnum).
+  virtual bool is_enum_ordinal() { return false; }
+
   // Consumer-boundary nodes are semantic identities.  Pointer identity is
   // still authoritative for every ordinary expression, but a field/version
   // check that already accepted `value` must also accept any chain of

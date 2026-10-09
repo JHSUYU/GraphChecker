@@ -28,6 +28,7 @@
 #include "concolic/exp/containerExpression.hpp"
 #include "concolic/exp/fieldAccessExpression.hpp"
 #include "concolic/reference/containerSupport.hpp"
+#include "concolic/reference/symbolicEnum.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "concolic/sharedFieldVersions.hpp"
 #include "gc_interface/collectedHeap.hpp"
@@ -1977,6 +1978,9 @@ run:
         stack_offset + (l_off));                                              \
     Expression *right = ConcolicMngr::ctx->get_stack_slot(                   \
         stack_offset + (r_off));                                              \
+    /* A constant Enum.valueOf named compares by its name (SymEnum). */       \
+    Expression *enum_equal =                                                  \
+        SymEnum::compare(left, left_obj, right, right_obj);                   \
     if (left == NULL && left_obj != NULL) {                                  \
       SymInstance *instance = ConcolicMngr::ctx->find_sym_inst(left_obj);     \
       if (instance != NULL) {                                                 \
@@ -1996,7 +2000,10 @@ run:
       right = SymbolExpression::get(Sym_NULL);                                \
     }                                                                         \
     Expression *condition = NULL;                                             \
-    if (left != NULL && right != NULL) {                                      \
+    if (enum_equal != NULL) {                                                 \
+      condition = new OpSymExpression(enum_equal,                             \
+          new ConExpression((jboolean) true), op, outcome);                   \
+    } else if (left != NULL && right != NULL) {                               \
       condition = new OpSymExpression(left, right, op, outcome);              \
     }                                                                         \
     ConcolicMngr::record_branch_condition(                                    \
@@ -2453,8 +2460,9 @@ run:
     ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff, 1);          \
     ConcolicMngr::ctx->clear_stack_value(                                     \
         stack_offset + arrayOff + 1, 1);                                      \
-    Expression *value_exp = NULL;                                              \
-    if (index_exp != NULL || arrObj->is_symbolic()) {                          \
+    /* A switch map read at an enum's ordinal (SymEnum). */                   \
+    Expression *value_exp = SymEnum::table_read(arrObj, index_exp);           \
+    if (value_exp == NULL && (index_exp != NULL || arrObj->is_symbolic())) {   \
       SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(            \
           arrObj, NULL, true);                                                 \
       Expression *container_state =                                           \

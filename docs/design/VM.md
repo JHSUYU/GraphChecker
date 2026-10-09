@@ -88,9 +88,9 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 | constants, `new` | push no expression |
 | loads, stores, `iinc`, stack ops | move the shadow |
 | int/long/float/double arithmetic, `neg`, shifts; the 15 conversions (`TypeCastExpression`) | build the expression; `iand`/`ior`/`ixor` over booleans become `&&`, `\|\|`, `!=` |
-| `lcmp`, `fcmp*`, `dcmp*`, `if*`, `if_icmp*`, `if_acmp*`, `ifnull`/`ifnonnull` | branch conditions |
+| `lcmp`, `fcmp*`, `dcmp*`, `if*`, `if_icmp*`, `if_acmp*`, `ifnull`/`ifnonnull` | branch conditions; an `if_acmp*` of a constant `Enum.valueOf` named (§4) is the String `equals` of the two names (`SymEnum::compare`) |
 | `tableswitch`, `lookupswitch` | the taken case; the default arm is the conjunction of `sel != k` over every key |
-| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log |
+| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6); the first symbolic store into an array starts its element's log; an `int[]` no recorded write touched (javac's switch map), loaded at an enum's `ordinal` (§4), is a READ of its elements as a stated snapshot, at most 64 (`SymEnum::table_read`) |
 | `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed; a box's `value` read from a box that carries no expression is the box slot's expression (the unboxing of a slot-carried value) |
 | `putfield`/`putstatic` | set the field shadow; publish a version (§5); a reference is symbolic only by what it carries (§5.1) |
 | `invoke*` | argument and return transfer; model dispatch (§4) |
@@ -177,6 +177,7 @@ Jackson's `UTF8JsonGenerator` and `BeanPropertyWriter` (`VM/concolic/reference/s
 | `HashSet`, `LinkedHashSet`, `ConcurrentHashMap`'s `KeySetView` (its map's location) | set operations | a hash set's reads are not bound to versions |
 | `java.util.stream` sequential pipelines from `Collection.stream()` of a modeled container (a list, a deque, a hash set, a key/entry/values view, an unmodifiable map's entry set) | `filter map limit sorted distinct unordered`; `collect(Collectors.toList()/toSet()/toMap(...))`, `toArray`, `count`, `anyMatch allMatch noneMatch` stated as relations; `findFirst findAny forEach forEachOrdered` run on the run's values (below) | `skip peek flatMap* mapTo* reduce min max iterator spliterator parallel`, `collect` with any other collector, `parallelStream()`, and every pipeline over another source (`Arrays.stream`, `Stream.of`, `IntStream`) run as bytecode |
 | commons-lang 2 and Spring `StringUtils` | `isNotBlank`, `isEmpty` | commons-lang3 |
+| `Enum` (`symbolicEnum`, entered only with a symbolic name, or a constant it named) | `valueOf(Class, String)`: the run's constant, its result **slot** (never the JVM-wide constant) carrying `MethodExpression("java/lang/Enum valueOf", [class, n, c0..ck])`, `n` the name and `c0..ck` the constant names in ordinal order (the class's static array of its own type), a String-valued node COMPOSE lowers to `n`, defined where it is one of them (`SmtLowering#knownCall`); `name()` and `Enum.toString()` of it the node; `ordinal()` `MethodExpression("java/lang/Enum ordinal", [node, c0..ck])`, COMPOSE's `ite` over the names; the node answers `names_enum_constant` through a boundary or a read of it | `compareTo`, `EnumMap`/`EnumSet` (they read the `ordinal` field), a constant chosen by anything but `valueOf` (a static lookup map's `get`) |
 
 Every other collection (`TreeMap`, `TreeSet`, `ConcurrentSkipList*`, `LinkedList`, `CopyOnWrite*`,
 `PriorityQueue`, blocking queues, `IdentityHashMap`, `WeakHashMap`, `EnumMap`) is interpreted as
@@ -707,7 +708,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 72
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 73
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -735,5 +736,6 @@ templates, `SHARED`, a region-less mint reaching a later region's path through `
 the one `toString` op); `RegionRedefineOnStackSmoke` attaches an agent to its own JVM and
 retransforms `Object` while a thread waits in it, then collects (§1); `RegionForcedBranchSmoke` forces
 nested `if`s off their concrete arms to a throw, one marker at a time (a refused marker's forcing dropped, a
-callee's branch unforced), and a table and a lookup switch to a case and to their default (§2). No smoke test covers the
+callee's branch, a branch recording is paused at and a switch unforced, §2); `RegionEnumSmoke` compares, names
+and switches on a constant `valueOf` chose by a symbolic name, each condition over the name (§4). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.
