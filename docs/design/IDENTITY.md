@@ -726,9 +726,11 @@ order:
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
   still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
   waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
-  give-up of the 4560 slots before it). A frontier whose context missed its event in a stall before stands a grace,
-  not a timeout: that context diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63
-  of 19's 70, stood on a context that had failed one). Past the cut a `WAKE` with no slot runs free, except in an
+  give-up of the 4560 slots before it). A frontier whose context family -- its node and causal context, a root's turn
+  number, an anchor's endpoint and the start frames left out -- missed its event in a stall before stands a grace,
+  not a timeout: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63
+  of 19's 70, stood on a context that had failed one; MB21s/MB22s: 34 of 10's 58 and 26 of 31's 69 on another turn
+  or anchor of a family that had). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
