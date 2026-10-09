@@ -2054,7 +2054,8 @@ reading of the claim both make: the selected session's world under the model's m
 the edges the model chose), each row numbered (`row`); where a value is the return of a call it
 names the call as the task plan does (`explore.PlantSites`: the input action's `siteId`,
 `<method>#u<unit>`, and its `declaredCallee`, or an unwoven accessor's call):
-- a `ROOT` per root the world assigns or skews, naming the occurrence id it is minted at: a FAULT
+- a `ROOT` per root the world assigns or skews (a fault marker at `false`, the run as recorded, is no row: a native
+  run answers every marker `false` without a plant), naming the occurrence id it is minted at: a FAULT
   marker `{category FAULT, rootId, occurrence, siteId: <the call site its plan input action names>,
   value: true|false}`; a tree hook's root `{category HOOK, rootId, occurrence, value}`; a
   configuration `{category CONFIG, rootId, occurrence, sites: [{siteId, callee}], javaType, value}`

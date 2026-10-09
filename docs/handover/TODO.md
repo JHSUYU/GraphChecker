@@ -180,6 +180,8 @@ The 12 study checks (existing tests; rows with guard and site in [../checks/READ
 | solr-adhoc-39 | `RoutedAliasUpdateProcessor:247` | `TimeRoutedAliasUpdateProcessorTest#test` |
 | solr-adhoc-40 | `RoutedAliasUpdateProcessor:133` | `TimeRoutedAliasUpdateProcessorTest#test` |
 
+**Open from the hand readings** (STATUS "Solr checks"): solr-18406's leader `filelist(G)` request runs in no region (its `setReserveDuration` at `ReplicationHandler.java:764` is not in the formula; the indexversion reservation stands for it); Lucene's `IndexFileDeleter$CommitPoint.deleted` has no writer family.
+
 **1. The body.** `system/solr` is `system/hdfs1` (fast-forwarded 2026-10-08); round SC1 (2026-10-08, the storing
 tree as is) passed solr-18406 and solr-18413 on it. Branch `solr-body` (agent M) brings what the Solr cases need of
 `solr-bug-reindex` by intent and closes the body's Solr gaps; its Solr side is `gc/solr-body`: `RECORDING_STALLED`, the
