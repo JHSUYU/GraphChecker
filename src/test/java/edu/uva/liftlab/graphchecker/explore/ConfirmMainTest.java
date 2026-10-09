@@ -1231,7 +1231,7 @@ public class ConfirmMainTest {
             Path plant = folder.newFile().toPath();
             try {
                 ConfirmMain.writePlant(iteration, claim, manifest(), scopeMap,
-                        plant);
+                        iteration.resolve("sessions").resolve("sel"), plant);
                 if (row[3] == null) fail("planted " + Arrays.toString(row));
             } catch (ConfirmMain.Refused refused) {
                 assertTrue(refused.getMessage(), refused.getMessage()
@@ -1357,7 +1357,8 @@ public class ConfirmMainTest {
             Path plant = folder.newFile().toPath();
             try {
                 ConfirmMain.writePlant(iteration, claim("HDFS.SERIAL",
-                        "119981"), manifest(), scopeMap, plant);
+                        "119981"), manifest(), scopeMap,
+                        iteration.resolve("sessions").resolve("sel"), plant);
                 assertEquals("planted", "", codecField);
             } catch (ConfirmMain.Refused refused) {
                 assertTrue(refused.getMessage(), refused.getMessage()

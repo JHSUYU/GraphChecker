@@ -89,6 +89,99 @@ public class ScheduleLogTest {
         if (request != 0L) RuntimeTraceContext.endRequest(request);
     }
 
+    /**
+     * A NATIVE REPRODUCTION HOLDS THE CONFIRMED WORLD'S ORDER at admission
+     * (explore.RealizedOrder): an event waits until the event its row orders
+     * before it was made in another context; one whose before-event does not
+     * come within the order's timeout goes on, and every hold of the run
+     * gives way after it -- a run that broke the confirmed order reproduces
+     * nothing.
+     */
+    @Test
+    public void aPlantedRunHoldsTheRealizedOrder() throws Exception {
+        Object other = new Object();
+        RuntimeTraceContext.registerSource(other, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
+        // Unplanted, ours runs first: the two contexts as both runs name them.
+        runBoth(other, 0L);
+        List<ScheduleEvent> free = events();
+        assertEquals("SEND", free.get(0).kind().name());
+        String ours = free.get(0).context();
+        String theirs = free.get(1).context();
+        restart();
+        // Ours waits for theirs; a second of ours for an event never made.
+        Path plant = Files.createTempFile("plant", ".jsonl");
+        Files.write(plant, Arrays.asList(
+                order(0, theirs, "WRITE", "ZK:/a", ours, "SEND", "x"),
+                order(1, theirs, "WRITE", "ZK:/never", ours, "SEND", "y")),
+                StandardCharsets.UTF_8);
+        ScheduleLog.realizedForTests(plant);
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "400");
+        try {
+            runBoth(other, 300L);
+            List<ScheduleEvent> events = events();
+            assertEquals("held until theirs: " + events, "WRITE",
+                    events.get(0).kind().name());
+            assertEquals("SEND", events.get(1).kind().name());
+            assertFalse(RecordingPlant.orderGaveWay());
+            long started = System.nanoTime();
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+            assertTrue("an order never met goes on at its timeout",
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
+                            - started) >= 300L);
+            assertTrue(RecordingPlant.orderGaveWay());
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+            RecordingPlant.resetForTests();
+            Files.delete(plant);
+        }
+    }
+
+    /** Ours SENDs x while another context WRITEs ZK:/a {@code late} ms
+     *  after both started. */
+    private static void runBoth(Object other, long late) throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        Thread theirs = new Thread(() -> {
+            long own = RuntimeTraceContext.beginRequest(other, "theirs");
+            try {
+                started.await();
+                Thread.sleep(late + 50L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            ScheduleLog.observe(ScheduleEvent.Kind.WRITE, "ZK:/a");
+            RuntimeTraceContext.endRequest(own);
+        });
+        theirs.start();
+        started.countDown();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        theirs.join();
+    }
+
+    /** One realized ORDER row of the plant. */
+    private static String order(int row, String beforeContext,
+                                String beforeKind, String beforeSite,
+                                String afterContext, String afterKind,
+                                String afterSite) {
+        JsonObject order = new JsonObject();
+        order.addProperty(RecordingPlant.KIND, RecordingPlant.ORDER);
+        order.addProperty(RecordingPlant.SCOPE, "EVENT");
+        order.add("before", event(beforeKind, beforeContext, beforeSite));
+        order.add("after", event(afterKind, afterContext, afterSite));
+        order.addProperty(RecordingPlant.ROW, row);
+        return order.toString();
+    }
+
+    private static JsonObject event(String kind, String context,
+                                    String site) {
+        JsonObject event = new JsonObject();
+        event.addProperty("kind", kind);
+        event.addProperty("context", context);
+        event.addProperty("site", site);
+        event.addProperty("k", 0);
+        return event;
+    }
+
     @Test
     public void anEventWithNoIdentityHoldsNoPlace() {
         RuntimeTraceContext.endRequest(request);

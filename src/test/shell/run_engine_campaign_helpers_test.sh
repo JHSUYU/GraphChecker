@@ -1256,17 +1256,22 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 # reproduce_min_s, and answering for
 # itself, per row of the plant, off its trace's plant rows; reproduce.json
 # counts the answers (whole plant applied, fatal, at the anchor, reproduced:
-# at the anchor with every root planted, an order unheld, an order still
-# holding) and names the runs that stated none.  A plant CONFIRM refuses, or a
-# recording that measured no peak memory, is no run and the reason.  Per row:
-# ConfirmMain's exit, the recording's peak MB, and the reproduction.
+# at the anchor with every root planted and every order held, an order
+# unheld -- what it waited for came late, or never came --, an order still
+# holding) and names the runs that stated none.  The plant holds the order
+# of the session CONFIRM saw (final/confirm.json's sessionId).  A plant
+# CONFIRM refuses, or a recording that measured no peak memory, is no run
+# and the reason.  Per row: ConfirmMain's exit, the recording's peak MB, and
+# the reproduction.
 repro_dir="${test_tmp}/reproduce"
 while IFS='|' read -r repro_plant repro_rss repro_expected; do
   rm -rf -- "${repro_dir}"
   mkdir -p "${repro_dir}/final"
   jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE"}}}' \
     >"${repro_dir}/manifest.json"
-  jq -n '{confirmed: true, reason: ""}' >"${repro_dir}/final/confirm.json"
+  jq -n '{confirmed: true, reason: "", sessionId: "sel"}' \
+    >"${repro_dir}/final/confirm.json"
+  mkdir -p "${repro_dir}/iteration/sessions/sel"
   (
     campaign_final="${repro_dir}/final"
     composition_manifest="${repro_dir}/manifest.json"
@@ -1279,53 +1284,74 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
     campaign_host_max_used_pct=70
     campaign_host_poll_s=0
     campaign_head_charging=1
-    reproduce_runs=4
+    reproduce_runs=5
     reproduce_time_factor=3
     reproduce_min_s=75
     campaign_recorded_workload_s=20
     campaign_recorded_workload_rss_mb=${repro_rss}
-    # ConfirmMain --plant: a root, an order, an answer, a clock reading (a
-    # context row, applied by nobody) and the target's arm, else refused.
+    # ConfirmMain --plant, holding the confirmed session's order: a root,
+    # the model's order, an answer, a clock reading (a context row, applied
+    # by nobody), the target's arm and the realized order's one edge, else
+    # refused.
     run_java_main() {
       (( repro_plant == 0 )) || {
         echo "CONFIRM refused: NATIVE_PLANT_UNSUPPORTED: a clock"
         return "${repro_plant}"
       }
-      local plant="" prev="" arg
+      local plant="" confirmed="" prev="" arg
       for arg; do
         [[ "${prev}" != --plant ]] || plant=${arg}
+        [[ "${prev}" != --confirmed-session ]] || confirmed=${arg}
         prev=${arg}
       done
+      [[ "${confirmed}" == "${repro_dir}/iteration/sessions/sel" ]] \
+        || { echo "CONFIRM refused: not the session CONFIRM saw: \
+${confirmed}"; return 1; }
       {
         echo '{"kind":"ROOT","category":"HOOK","rootId":"R","row":0}'
         echo '{"kind":"ORDER","before":"b|","after":"a|","row":1}'
         echo '{"kind":"ANSWER","endpoint":"e","row":2}'
         echo '{"kind":"CLOCK_SITE","row":3}'
         echo '{"kind":"TARGET","row":4}'
+        jq -n -c '{kind: "ORDER", scope: "EVENT",
+          before: {kind: "WAKE", context: "c", site: "s", k: 0},
+          after: {kind: "RECV", context: "d", site: "r", k: 1}, row: 5}'
       } >"${plant}"
     }
-    # Run n: 1 every row applied and the fatal at the anchor; 2 its order
-    # unheld and the fatal elsewhere; 3 its root unwritten, its order still
-    # holding, its answer not reached, and the fatal at the anchor all the
-    # same -- the program's own race, no reproduction; 4 no trace.  Each states its bound, its order
-    # timeout and its charge, and the ledger's row for it.
+    # Run n: 1 every row applied and the fatal at the anchor; 2 the model's
+    # order unheld, what it waited for never came, and the fatal elsewhere;
+    # 3 its root unwritten, its order still holding, its answer and the
+    # realized order not reached, and the fatal at the anchor all the same
+    # -- the program's own race, no reproduction; 4 every root planted and
+    # the fatal at the anchor, but the realized order unheld, what it waited
+    # for came late: another world than CONFIRM's, no reproduction; 5 no
+    # trace.  Each states its bound, its order timeout and its charge, and
+    # the ledger's row for it.
     run_configured_workload() {
       local run=$1 n=${1##*-}
       echo "$2 $4 $6 $(ls "${campaign_host_gate_root}/gate-head/charges" \
         | grep -c "^$4\\.")" >>"${repro_dir}/bounds"
-      (( n < 4 )) || return 1
+      (( n < 5 )) || return 1
       {
         echo '{"event":"BRANCH"}'
         case ${n} in
           1) echo '{"event":"PLANT_APPLIED","row":0}'
              echo '{"event":"PLANT_APPLIED","row":1}'
-             echo '{"event":"PLANT_APPLIED","row":2}' ;;
+             echo '{"event":"PLANT_APPLIED","row":2}'
+             echo '{"event":"PLANT_APPLIED","row":5}' ;;
           2) echo '{"event":"PLANT_APPLIED","row":0}'
              echo '{"event":"PLANT_APPLIED","row":2}'
+             echo '{"event":"PLANT_APPLIED","row":5}'
              echo '{"event":"PLANT_HOLDING","row":1}'
              echo '{"event":"PLANT_UNHELD","row":1}' ;;
           3) echo '{"event":"PLANT_UNWRITTEN","row":0}'
              echo '{"event":"PLANT_HOLDING","row":1}' ;;
+          4) echo '{"event":"PLANT_APPLIED","row":0}'
+             echo '{"event":"PLANT_APPLIED","row":1}'
+             echo '{"event":"PLANT_APPLIED","row":2}'
+             echo '{"event":"PLANT_HOLDING","row":5}'
+             echo '{"event":"PLANT_UNHELD","row":5}'
+             echo '{"event":"PLANT_LATE","row":5}' ;;
         esac
         jq -n -c --argjson at "$(( n != 2 ))" \
           '{event: "PLANT_FATAL", atAnchor: ($at == 1)}'
@@ -1338,22 +1364,29 @@ while IFS='|' read -r repro_plant repro_rss repro_expected; do
       "${repro_dir}/final/reproduce.json")" == "${repro_expected}" ]] \
     || fail "a reproduction (plant ${repro_plant}, ${repro_rss} MB) is \
 $(cat "${repro_dir}/final/reproduce.json"): $(cat "${repro_dir}/log")"
-  [[ "${repro_expected}" != *'"runs":4'* \
+  [[ "${repro_expected}" != *'"runs":5'* \
       || "$(cut -d' ' -f1-3 "${repro_dir}/bounds" | sort -u)" \
         == "75 ${repro_rss} 37500" ]] \
     || fail "a native run was not bounded by reproduce_min_s=75 over 3 x the \
 recording's 20 s, its orders held at most half of it, and held to its \
 ${repro_rss} MB charge: $(cat "${repro_dir}/bounds")"
-  [[ "${repro_expected}" != *'"runs":4'* \
+  [[ "${repro_expected}" != *'"runs":5'* \
       || "$(jq -c '[.unapplied[].why]' \
         "${repro_dir}/final/reproduce/run-3/answer.json")" \
-        == '["UNWRITTEN","HOLDING","NOT_REACHED"]' ]] \
+        == '["UNWRITTEN","HOLDING","NOT_REACHED","NOT_REACHED"]' ]] \
     || fail "a run does not say why it did not apply a row: \
 $(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
-  [[ "${repro_expected}" != *'"runs":4'* \
+  [[ "${repro_expected}" != *'"runs":5'* \
+      || "$(jq -c '[.unapplied[] | [.planted, .why]] + [.ordersHeld,
+          .rootsPlanted, .reproduced]' \
+        "${repro_dir}/final/reproduce/run-4/answer.json")" \
+        == '[["WAKE s @ c #0 -> RECV r @ d #1","LATE"],false,true,false]' ]] \
+    || fail "a run that broke the confirmed order reproduced, or does not \
+name the order: $(cat "${repro_dir}/final/reproduce/run-4/answer.json")"
+  [[ "${repro_expected}" != *'"runs":5'* \
       || "$(awk '$4 < 1' "${repro_dir}/bounds")" == "" ]] \
     || fail "a native run ran uncharged: $(cat "${repro_dir}/bounds")"
-  [[ "${repro_expected}" != *'"runs":4'* \
+  [[ "${repro_expected}" != *'"runs":5'* \
       || "$(cat "${repro_dir}"/final/reproduce/run-*/host.txt | sort -u)" \
         == gate-head ]] \
     || fail "a native run does not name the host it ran on"
@@ -1361,9 +1394,9 @@ $(cat "${repro_dir}/final/reproduce/run-3/answer.json")"
     || fail "a native run's charge outlived it: \
 $(live_charges "${repro_dir}/hosts")"
 done <<'EOF'
-0|2048|{"runs":4,"planted":1,"fatal":3,"atAnchor":2,"reproduced":1,"unheld":1,"holding":1,"reason":""}
-1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
-0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
+0|2048|{"runs":5,"planted":1,"fatal":4,"atAnchor":3,"reproduced":1,"unheld":2,"unheldLate":1,"unheldMissing":1,"holding":1,"reason":""}
+1|2048|{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: NATIVE_PLANT_UNSUPPORTED: a clock"}
+0||{"runs":0,"planted":0,"fatal":0,"atAnchor":0,"reproduced":0,"unheld":0,"unheldLate":0,"unheldMissing":0,"holding":0,"reason":"no native run: the recording measured no peak resident memory (workload_rss_mb) to charge one with"}
 EOF
 
 # REACHED-1: a replay reached its target when a session published a target

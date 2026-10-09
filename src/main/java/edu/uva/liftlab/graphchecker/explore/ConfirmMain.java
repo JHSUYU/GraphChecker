@@ -71,6 +71,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *                        and the target's fatal arms at the claim's anchor
  *   --static-scope-map &lt;file&gt;   the campaign's, whose TARGET_SITE guards
  *                        state those arms
+ *   --confirmed-session &lt;dir&gt;   the session CONFIRM saw (the selected one
+ *                        when it realized the claim, else its replay's),
+ *                        whose realized order the plant holds
  *
  *   once the replay has published, the decision ({@link #decide}), printed
  *   as final/confirm.json:
@@ -150,6 +153,7 @@ public final class ConfirmMain {
         Path sessions = options.path("sessions");
         Path plant = options.path("plant");
         Path scopeMap = options.path("static-scope-map");
+        Path confirmed = options.path("confirmed-session");
         if (sessions != null && claim != null && out != null) {
             System.out.println(ExploreMain.pretty(
                     decide(claim, out, sessions)));
@@ -157,15 +161,18 @@ public final class ConfirmMain {
         }
         if (iteration == null || claim == null || manifest == null
                 || (plant == null && out == null)
-                || (plant != null && scopeMap == null)) {
+                || (plant != null && (scopeMap == null
+                || confirmed == null))) {
             throw new IllegalArgumentException("--iteration, --claim, "
                     + "--manifest, and --output or --plant with "
-                    + "--static-scope-map are required");
+                    + "--static-scope-map and --confirmed-session are "
+                    + "required");
         }
         JsonObject summary;
         try {
             summary = plant != null
-                    ? writePlant(iteration, claim, manifest, scopeMap, plant)
+                    ? writePlant(iteration, claim, manifest, scopeMap,
+                    confirmed, plant)
                     : write(iteration, claim, manifest, out);
         } catch (Refused refused) {
             // The driver reads which: "refutes" excludes the model, "refused"
@@ -498,7 +505,11 @@ public final class ConfirmMain {
      *   world skews a clock: every such reading runs on its node's clock;</li>
      *   <li>an ANSWER per attach the world answers, at its port's call-return
      *   capture: the endpoint, the call and the regions declaring it;</li>
-     *   <li>the world's ORDER rows as CONFIRM holds them, each pair once;</li>
+     *   <li>the world's ORDER rows as CONFIRM holds them, each pair once;
+     *   and the order the session CONFIRM saw ran in from the roots' mint
+     *   occurrences on, ORDER rows of events ({@link RealizedOrder}), which
+     *   a native run holds as CONFIRM holds its own: a run on the
+     *   recording's timing plants the roots and runs another order;</li>
      *   <li>one TARGET per guard of the scope map's TARGET_SITE rows, its
      *   fatal arm at the claim's anchor: the one question a native run
      *   answers.</li>
@@ -515,7 +526,8 @@ public final class ConfirmMain {
      * recording, and a scope map that states no fatal arm.
      */
     static JsonObject writePlant(Path iteration, Path claimFile,
-                                 Path manifestFile, Path scopeMap, Path out)
+                                 Path manifestFile, Path scopeMap,
+                                 Path confirmedSession, Path out)
             throws IOException {
         JsonObject claim = ExploreCodec.readObject(claimFile);
         Witness witness = Witness.of(iteration, claim,
@@ -564,6 +576,24 @@ public final class ConfirmMain {
                 rows.add(edge);
             }
         }
+        if (!Files.isDirectory(confirmedSession)) {
+            throw new Refused("the session CONFIRM saw (" + confirmedSession
+                    + ") is not there, so its order cannot be held");
+        }
+        SessionReader confirmed = SessionReader.read(SessionDir.of(
+                confirmedSession.getParent().getParent(),
+                confirmedSession.getFileName().toString()));
+        // The order from the roots on: the occurrences their ROOT rows are
+        // minted at.
+        Set<String> mints = new LinkedHashSet<String>();
+        for (JsonObject row : rows) {
+            if (RecordingPlant.ROOT.equals(optionalString(row,
+                    RecordingPlant.KIND))) {
+                mints.add(optionalString(row, RecordingPlant.OCCURRENCE));
+            }
+        }
+        List<JsonObject> realized = RealizedOrder.rows(confirmed, mints);
+        rows.addAll(realized);
         if (rows.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "
                     + "root and holds no order, so a native run would "
@@ -608,6 +638,7 @@ public final class ConfirmMain {
         summary.addProperty("clocks", world.clockDeltas.size());
         summary.addProperty("answers", world.answers.size());
         summary.addProperty("orders", orders.size());
+        summary.addProperty("realizedOrders", realized.size());
         summary.addProperty("clockReadings", context - planted);
         summary.addProperty("fatalArms", rows.size() - context);
         summary.addProperty("placeholderPairings", placeholders);

@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -365,7 +366,7 @@ public final class Confirmation {
         Set<String> missing;
         synchronized (LOCK) {
             Set<String> before = BEFORE.get(activation);
-            if (before == null) return;
+            if (before == null || RecordingPlant.orderGaveWay()) return;
             Set<String> waiting = new LinkedHashSet<String>(before);
             waiting.removeAll(EXITED);
             planted(RecordingPlant.HOLDING, activation, waiting);
@@ -381,6 +382,8 @@ public final class Confirmation {
             long deadline = System.currentTimeMillis() + timeout;
             try {
                 while (!EXITED.containsAll(before)) {
+                    // Another hold of a native run gave way: this one too.
+                    if (RecordingPlant.orderGaveWay()) return;
                     long left = deadline - System.currentTimeMillis();
                     if (left <= 0L) {
                         missing = new LinkedHashSet<String>(before);
@@ -394,6 +397,12 @@ public final class Confirmation {
                         held.removeAll(missing);
                         planted(RecordingPlant.APPLIED, activation, held);
                         planted(RecordingPlant.UNHELD, activation, missing);
+                        if (RecordingPlant.planting()) {
+                            for (String late : missing) {
+                                OVERDUE.add(activation + "\n" + late);
+                            }
+                            RecordingPlant.gaveWay();
+                        }
                         return;
                     }
                     try {
@@ -541,9 +550,25 @@ public final class Confirmation {
 
     static void exited(String activation) {
         synchronized (LOCK) {
-            if (EXITED.add(activation)) LOCK.notifyAll();
+            if (!EXITED.add(activation)) return;
+            LOCK.notifyAll();
+            // A native run's row whose hold gave way before this exit: what
+            // it waited for came, late.
+            for (java.util.Iterator<String> overdue = OVERDUE.iterator();
+                 overdue.hasNext();) {
+                String pair = overdue.next();
+                if (!pair.endsWith("\n" + activation)) continue;
+                overdue.remove();
+                planted(RecordingPlant.LATE, pair.substring(0,
+                        pair.length() - activation.length() - 1),
+                        Collections.singleton(activation));
+            }
         }
     }
+
+    /** A native run's ORDER rows whose hold gave way, as "after\nbefore":
+     *  each stated {@link RecordingPlant#LATE} if its before exits. */
+    private static final Set<String> OVERDUE = new LinkedHashSet<String>();
 
     /** Every STATE and WIRE edge the run did not take, at the close. */
     static List<String> close() {
@@ -698,7 +723,10 @@ public final class Confirmation {
                             TURNS.put(optionalString(row, "reader"), turns);
                             TURNED.add(turns);
                         }
-                    } else if (RecordingPlant.ORDER.equals(kind)) {
+                    } else if (RecordingPlant.ORDER.equals(kind)
+                            && optionalString(row, RecordingPlant.SCOPE)
+                            .isEmpty()) {
+                        // An event-scope row is ScheduleLog's to hold.
                         BEFORE.computeIfAbsent(optionalString(row, "after"),
                                 key -> new LinkedHashSet<String>())
                                 .add(optionalString(row, "before"));
@@ -737,6 +765,7 @@ public final class Confirmation {
             BEFORE.clear();
             PLANTED.clear();
             EXITED.clear();
+            OVERDUE.clear();
             UNREALIZED.clear();
             WAITING.clear();
             ENDED_WAITING.clear();

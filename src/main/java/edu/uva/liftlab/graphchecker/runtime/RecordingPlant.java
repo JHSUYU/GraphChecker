@@ -82,9 +82,14 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  *   </ul></li>
  *   <li>{@code ORDER {before, after}}: CONFIRM's own row, held as a CONFIRM
  *   run holds it ({@link Confirmation}, which reads this file in a planted
- *   run).  Held, the row is applied; an activation that waits is a
- *   {@link #HOLDING} row, and one whose wait times out an {@link #UNHELD}
- *   row: what the run states, never a refutation.</li>
+ *   run); and {@code ORDER {scope: EVENT, before, after}}, an edge of the
+ *   order the session CONFIRM saw ran in from the moved roots on, two schedule
+ *   events by kind, context, site and k, held at the event's admission
+ *   ({@code ScheduleLog#holdRealizedLocked}).  Held, the row is applied; one
+ *   that waits is a {@link #HOLDING} row, and one whose wait times out an
+ *   {@link #UNHELD} row, after which every hold gives way ({@link #gaveWay})
+ *   and the run reproduces nothing; what it waited for, coming later, is a
+ *   {@link #LATE} row.</li>
  *   <li>{@code TARGET {occurrence: <the anchor's id>, siteId: <a TARGET_SITE
  *   guard>, value: <its fatal arm>}} per guard of the target.  A decision
  *   there that takes the fatal arm inside the window is a {@link #FATAL}
@@ -102,16 +107,26 @@ public final class RecordingPlant {
     static final String APPLIED = "PLANT_APPLIED";
     /** An ORDER's activation waits for what the model orders before it. */
     static final String HOLDING = "PLANT_HOLDING";
-    /** An ORDER the run did not hold within the order's timeout. */
+    /** An ORDER the run did not hold within the order's timeout: what it
+     *  waited for had not come.  The first gives every hold of the run way
+     *  ({@link #gaveWay}): the run no longer runs the confirmed world. */
     static final String UNHELD = "PLANT_UNHELD";
+    /** What an {@link #UNHELD} ORDER waited for came after all, past the
+     *  timeout; an UNHELD row with none never came in this run. */
+    static final String LATE = "PLANT_LATE";
     /** A row reached whose value could not be planted. */
     static final String UNWRITTEN = "PLANT_UNWRITTEN";
     /** The trace event of one decision of the planted world's fatal arm. */
     static final String FATAL = "PLANT_FATAL";
     /** A root the world assigns, planted where it is minted. */
     public static final String ROOT = "ROOT";
-    /** CONFIRM's ORDER row ({@link Confirmation}). */
+    /** An ORDER row: CONFIRM's ({@link Confirmation}), or, of scope
+     *  {@code EVENT}, the confirmed session's realized order
+     *  ({@code ScheduleLog#holdRealizedLocked}). */
     public static final String ORDER = "ORDER";
+    /** An ORDER row's scope: none for CONFIRM's activations, {@code EVENT}
+     *  for schedule events. */
+    public static final String SCOPE = "scope";
     /** A guard of the target and its fatal arm. */
     public static final String TARGET = "TARGET";
     /** A declared clock reading: runs on its node's clock. */
@@ -148,6 +163,9 @@ public final class RecordingPlant {
     private static final Set<String> CLOCKED = ConcurrentHashMap.newKeySet();
     /** The rows stated applied or unwritten: each once. */
     private static final Set<Integer> STATED = ConcurrentHashMap.newKeySet();
+    /** Whether an ORDER of either scope was not held in time: from then
+     *  on no hold of the run holds ({@link #gaveWay}). */
+    private static volatile boolean gaveWay;
 
     private RecordingPlant() {
     }
@@ -157,6 +175,25 @@ public final class RecordingPlant {
         CLOCKED.clear();
         STATED.clear();
         NodeClocks.reset();
+        gaveWay = false;
+    }
+
+    /**
+     * An ORDER was not held in time ({@link #UNHELD}): the run no longer runs
+     * the world CONFIRM saw, so it reproduces nothing, and every hold of
+     * either scope gives way at once -- a run held on to an order it already
+     * broke only waits out its bound.  It goes on, so each row whose wait
+     * gave way states whether what it waited for came later ({@link #LATE})
+     * or never: a k-indexed event this run never reaches is an identity
+     * that drifted natively, not a slow one.
+     */
+    static void gaveWay() {
+        gaveWay = true;
+    }
+
+    /** Whether an ORDER gave way in this run ({@link #gaveWay}). */
+    static boolean orderGaveWay() {
+        return gaveWay;
     }
 
     /** Whether this run plants a world: a native reproduction, where the
@@ -500,9 +537,9 @@ public final class RecordingPlant {
         }
     }
 
-    /** What one ORDER row of the plant came to ({@link Confirmation}):
-     *  {@code event} one of {@link #APPLIED}, {@link #HOLDING},
-     *  {@link #UNHELD}. */
+    /** What one ORDER row of the plant came to ({@link Confirmation},
+     *  {@code ScheduleLog#holdRealizedLocked}): {@code event} one of {@link
+     *  #APPLIED}, {@link #HOLDING}, {@link #UNHELD}, {@link #LATE}. */
     static void ordered(String event, int row, String after,
                         String waitingFor) {
         CausynthTraceRecorder.plantOrdered(event, row, after, waitingFor);
@@ -611,15 +648,39 @@ public final class RecordingPlant {
         }
     }
 
+    /** Whether an ORDER row names its two ends: activations, or, of scope
+     *  EVENT, two events. */
+    private static boolean ordered(JsonObject row) {
+        if (optionalString(row, SCOPE).isEmpty()) {
+            return row.has("before") && row.get("before").isJsonPrimitive()
+                    && row.has("after") && row.get("after").isJsonPrimitive()
+                    && !optionalString(row, "before").isEmpty()
+                    && !optionalString(row, "after").isEmpty();
+        }
+        for (String end : new String[] {"before", "after"}) {
+            JsonObject event = row.has(end) && row.get(end).isJsonObject()
+                    ? row.getAsJsonObject(end) : null;
+            if (event == null || optionalString(event, "kind").isEmpty()
+                    || optionalString(event, "site").isEmpty()
+                    || !event.has("k") || !event.get("k").isJsonPrimitive()
+                    || !event.getAsJsonPrimitive("k").isNumber()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * A plant file's rows.  A row of another kind, without its number, a
      * ROOT of no plantable category or missing what its category needs (a
      * FAULT its call site and a boolean, a CONFIG its getter calls, a READ
      * or CLOCK its call, a CLOCK its clock and an integral skew), a call
      * site named with two callees, a TARGET naming no guard or a boolean
-     * arm, and an ORDER naming no activation are refused; so is a plant
-     * whose target rows name no anchor or two, since the run would answer
-     * nothing.  ORDER rows are {@link Confirmation}'s.
+     * arm, and an ORDER naming no activation, or of scope EVENT no event
+     * (kind, context, site and k), are refused; so is a plant whose target
+     * rows name no anchor or two, since the run would answer nothing.  ORDER
+     * rows are {@link Confirmation}'s, and those of scope EVENT {@code
+     * ScheduleLog}'s.
      */
     static Plant read(Path file) throws IOException {
         Map<String, Map<String, Root>> markers =
@@ -670,9 +731,7 @@ public final class RecordingPlant {
                 anchor = occurrence;
                 fatalArms.put(optionalString(row, SITE),
                         row.get(VALUE).getAsBoolean());
-            } else if (!ORDER.equals(kind)
-                    || optionalString(row, "before").isEmpty()
-                    || optionalString(row, "after").isEmpty()) {
+            } else if (!ORDER.equals(kind) || !ordered(row)) {
                 throw new IOException("not a plant row: " + row);
             }
         }

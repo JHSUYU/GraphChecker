@@ -6763,7 +6763,9 @@ has no room for another claim"
 # natively -- the recording weave on the stock JDK, planting what the
 # confirmation's world plants and holds (its fault markers, its trees' hook
 # roots, its clock jumps, configurations, accessor reads and answers at the
-# calls the plant-run agent hands it, its ORDER rows) and watching the
+# calls the plant-run agent hands it, its ORDER rows, and the order the
+# session CONFIRM saw ran in from the moved roots on: campaign_confirmed_
+# session, explore.RealizedOrder) and watching the
 # target's guards for their fatal arm at the claim's anchor
 # (explore.ConfirmMain --plant, the code that wrote CONFIRM's world;
 # runtime.RecordingPlant, runtime.PlantAgent).  reproduce_runs runs, all at
@@ -6775,12 +6777,14 @@ has no room for another claim"
 # (campaign_reproduce_run); final/reproduce.json counts them -- runs, how
 # many applied every row of the plant, took the target's fatal arm, took it
 # at the claim's own anchor, reproduced (at the anchor with every ROOT and
-# ANSWER row applied: what tools/adhoc/findings.py rates), could not hold an
-# ORDER in time, and still held one when the run ended -- and names the runs
-# that stated none.  A native run holds no recorded order,
-# only the model's, so the planted occurrence may not recur: the rate ranks
-# a finding (tools/adhoc/findings.py) and never refutes it, and nothing here
-# moves the claim, CONFIRM's decision or what EMIT published.  A world a
+# ANSWER row applied and every ORDER held: what tools/adhoc/findings.py
+# rates), could not hold an ORDER in time (unheld; unheldLate: what it
+# waited for came after all, unheldMissing: it never came), and still held
+# one when the run ended -- and names the runs that stated none.  The
+# realized order makes REPRODUCE run the world CONFIRM saw; it never touches
+# CONFIRM: the rate ranks a finding (tools/adhoc/findings.py) and never
+# refutes it, and nothing here moves the claim, CONFIRM's decision or what
+# EMIT published.  A world a
 # native run cannot plant (NATIVE_PLANT_UNSUPPORTED: a root minted other
 # than at a call's return, an answer at no call-return capture, a world that
 # plants nothing), or a recording that measured no peak memory, is a
@@ -6789,6 +6793,7 @@ has no room for another claim"
 campaign_reproduce() {
   local iteration_dir=$1
   local dir="${campaign_final}/reproduce" status=0 bound run reason="" pid
+  local confirmed
   local -a pids=()
   if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
       != SAT_CANDIDATE || "$(jq -r '.confirmed' \
@@ -6799,11 +6804,13 @@ campaign_reproduce() {
   [[ ! -e "${dir}" ]] \
     || die "the reproduction directory already exists: ${dir}"
   mkdir -p "${dir}"
+  confirmed=$(campaign_confirmed_session "${iteration_dir}")
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.explore.ConfirmMain \
     --iteration "${iteration_dir}" --claim "${campaign_final}/claim.json" \
     --manifest "${composition_manifest}" \
     --static-scope-map "${causynth_static_scope_map}" \
+    --confirmed-session "${confirmed}" \
     --plant "${dir}/plant.jsonl" >"${dir}/plant.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
     reason="no native run: $(sed -n -E 's/^CONFIRM (refused|refutes): //p' \
@@ -6815,7 +6822,7 @@ campaign_reproduce() {
   if [[ -n "${reason}" ]]; then
     jq -n --arg reason "${reason}" '{schemaVersion: 1, kind: "REPRODUCTION",
       runs: 0, planted: 0, fatal: 0, atAnchor: 0, reproduced: 0, unheld: 0,
-      holding: 0, reason: $reason}' \
+      unheldLate: 0, unheldMissing: 0, holding: 0, reason: $reason}' \
       >"${campaign_final}/reproduce.json"
     campaign_log "reproduce: ${reason}"
     return 0
@@ -6841,13 +6848,34 @@ ${campaign_recorded_workload_s}s, at least reproduce_min_s=${reproduce_min_s})"
        fatal: map(select(.fatal)) | length,
        atAnchor: map(select(.atAnchor)) | length,
        reproduced: map(select(.reproduced)) | length,
-       unheld: map(select(any(.unapplied[]; .why == "UNHELD"))) | length,
+       unheld: map(select(any(.unapplied[];
+         .why == "LATE" or .why == "MISSING"))) | length,
+       unheldLate: map(select(any(.unapplied[]; .why == "LATE"))) | length,
+       unheldMissing: map(select(any(.unapplied[]; .why == "MISSING")))
+         | length,
        holding: map(select(any(.unapplied[]; .why == "HOLDING"))) | length,
        reason: (if length < $runs
          then "\($runs - length) of \($runs) run(s) stated no answer"
          else "" end)}' >"${campaign_final}/reproduce.json"
-  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld, \(.holding) an order still holding)"' \
+  jq -r '"  reproduced in \(.reproduced) of \(.runs) native run(s): the fatal at the anchor with every root planted and every order held (\(.planted) applied the whole plant, \(.fatal) fatal, \(.atAnchor) at the anchor, \(.unheld) an order unheld -- \(.unheldLate) one that came late, \(.unheldMissing) one that never came --, \(.holding) an order still holding)"' \
     "${campaign_final}/reproduce.json"
+}
+
+# The session CONFIRM saw (final/confirm.json's sessionId): the selected
+# session itself where it realized the claim, else its replay's own, in the
+# final stages' confirm/ or an exploration attempt's witness-confirm/NNNN/.
+campaign_confirmed_session() {
+  local iteration_dir=$1 id dir
+  id=$(jq -r '.sessionId // empty' "${campaign_final}/confirm.json")
+  for dir in "${iteration_dir}/sessions/${id}" \
+      "${campaign_final}/confirm/sessions/${id}" \
+      "$(dirname "${iteration_dir}")"/witness-confirm/*/sessions/"${id}"; do
+    if [[ -n "${id}" && -d "${dir}" ]]; then
+      printf '%s\n' "${dir}"
+      return 0
+    fi
+  done
+  printf '%s\n' "${campaign_final}/confirm/sessions/${id:-none}"
 }
 
 # One native run of REPRODUCE into <run>: a head step charged the
@@ -6874,20 +6902,24 @@ logs are in ${run}"
 # the workload's exit -- a planted fault may well fail the test, and a run
 # that answered ends early -- its answer is <run>/answer.json, read off its
 # trace's plant rows (a run killed mid-row loses only that row): {exit,
-# rows, applied, unapplied, planted, rootsPlanted, fatal, atAnchor,
-# reproduced} -- the plant's rows to apply (ROOT, ANSWER and ORDER: a
-# CLOCK_SITE or TARGET row is context), how many the run applied, each one
-# it did not with why (UNHELD: an ORDER's wait timed out; HOLDING: still
+# rows, applied, unapplied, planted, rootsPlanted, ordersHeld, fatal,
+# atAnchor, reproduced} -- the plant's rows to apply (ROOT, ANSWER and ORDER
+# of either scope: a CLOCK_SITE or TARGET row is context), how many the run
+# applied, each one it did not with why (an ORDER whose wait timed out:
+# LATE when what it waited for came after all, MISSING when it never came
+# in this run -- its event's identity is not this run's; HOLDING: still
 # waiting when the run ended; UNWRITTEN: a value it could not plant -- a
 # HOOK row's field write, a value the call's type cannot hold; NOT_REACHED),
-# whether it applied every row and every ROOT and ANSWER row (clock jumps,
-# configurations and answers included), whether it took the target's fatal
-# arm and at the anchor, and whether it reproduced: the fatal arm at the
-# anchor with every ROOT and ANSWER row applied -- a run that did not plant
-# the model's world and reaches the fatal anyway is the program's own race,
-# no reproduction.  An ORDER is held
-# at most half the run's bound (causynth.confirm.order.timeout.ms), so an
-# unrealizable order is stated UNHELD before the bound ends the run.
+# whether it applied every row, every ROOT and ANSWER row (clock jumps,
+# configurations and answers included) and held every ORDER, whether it
+# took the target's fatal arm and at the anchor, and whether it reproduced:
+# the fatal arm at the anchor with every ROOT and ANSWER row applied and no
+# ORDER timed out -- a run that did not plant the model's world, or ran
+# another order than the world CONFIRM saw, and reaches the fatal anyway is
+# the program's own race, no reproduction.  An ORDER is held at most half
+# the run's bound (causynth.confirm.order.timeout.ms), so an unrealizable
+# order is stated before the bound ends the run; the first one timed out
+# releases every hold of the run (PIPELINE §10b).
 campaign_reproduce_run() {
   local analysis_classes_dir=$1 run=$2 bound=$3 plant=$4 charged=$5 status=0
   local trace="${run}/runtime_trace.jsonl"
@@ -6902,23 +6934,30 @@ campaign_reproduce_run() {
         or .kind == "ORDER")] as $planted
     | def stated($event): [$rows[] | select(.event == $event) | .row];
       def why($row):
-        if any(stated("PLANT_UNHELD")[]; . == $row) then "UNHELD"
+        if any(stated("PLANT_LATE")[]; . == $row) then "LATE"
+        elif any(stated("PLANT_UNHELD")[]; . == $row) then "MISSING"
         elif any(stated("PLANT_UNWRITTEN")[]; . == $row) then "UNWRITTEN"
         elif any(stated("PLANT_HOLDING")[]; . == $row) then "HOLDING"
         else "NOT_REACHED" end;
+      def event($e): "\($e.kind) \($e.site) @ \($e.context) #\($e.k)";
+      def ends: if (.before | type) == "object"
+        then "\(event(.before)) -> \(event(.after))"
+        else "\(.before) -> \(.after)" end;
       stated("PLANT_APPLIED") as $applied
     | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
-        | {row, kind, planted: (.rootId // .endpoint
-             // "\(.before) -> \(.after)"), why: why($p.row)}] as $unapplied
+        | {row, kind, planted: (.rootId // .endpoint // ends),
+           why: why($p.row)}] as $unapplied
     | ($planted | length) as $count
     | any($rows[]; .event == "PLANT_FATAL" and .atAnchor) as $atAnchor
     | (all($unapplied[]; .kind == "ORDER")) as $roots
+    | (any($unapplied[]; .why == "LATE" or .why == "MISSING") | not)
+      as $held
     | {exit: $exit, rows: $count, applied: ($count - ($unapplied | length)),
        unapplied: $unapplied,
        planted: ($count > 0 and ($unapplied | length) == 0),
-       rootsPlanted: $roots,
+       rootsPlanted: $roots, ordersHeld: $held,
        fatal: any($rows[]; .event == "PLANT_FATAL"),
-       atAnchor: $atAnchor, reproduced: ($atAnchor and $roots)}' \
+       atAnchor: $atAnchor, reproduced: ($atAnchor and $roots and $held)}' \
     "${trace}" >"${run}/answer.json.part"
   mv -f -- "${run}/answer.json.part" "${run}/answer.json"
 }
