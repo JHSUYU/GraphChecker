@@ -98,6 +98,9 @@ public final class ExploreMain {
     /** What the last round read, kept for the next. */
     private Corpus corpus;
     private StaticScopeMap scope;
+    /** The region plan PLAN froze in the iteration ({@code campaign_plan}):
+     *  its rows name the regions each one's occurrences folded. */
+    static final String REGION_PLAN = "concolic_region_plan.jsonl";
     private String scopeDigest;
     /** The slot table as the last round left it, and that round. */
     private SlotTable slots;
@@ -208,7 +211,11 @@ public final class ExploreMain {
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
         if (scope == null || !digest.equals(scopeDigest)) {
-            scope = StaticScopeMap.read(scopeMap);
+            // With the folds of the plan PLAN froze for this iteration: what
+            // an occurrence may read is its folded regions' too (an arm's
+            // key, Corpus#inputShape).
+            scope = StaticScopeMap.read(scopeMap).withFolds(
+                    iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
         }
         List<GapRow> gaps = new ArrayList<GapRow>();

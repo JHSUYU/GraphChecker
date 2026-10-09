@@ -654,8 +654,9 @@ public final class Corpus implements Arms.Rows {
      * ({@link #feeders}: they write state it reads) by what it delivered
      * it: the same handoffs, per-site counts of its writes to {@code
      * locations}, the state the flipped guard reads, and whether it wrote
-     * any state the occurrence's region reads on ANY arm -- a carrier of a
-     * READ_SITE its code holds ({@link StaticScopeMap#readCarriers}), not
+     * any state the occurrence's region reads on ANY arm -- a location its
+     * code, folded regions' included, reads where a replay versions it
+     * ({@link StaticScopeMap#readLocations}), not
      * only what the arm this session took read, since the flipped arm reads
      * what the taken one never did (a renewer's write of the lease map the
      * expiry scan iterates only once a lease has expired) --, not how often,
@@ -687,7 +688,7 @@ public final class Corpus implements Arms.Rows {
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
                              Set<String> locations, StaticScopeMap scope) {
-        Set<String> readable = scope.readCarriers(occurrence.regionId());
+        Set<String> readable = scope.readLocations(occurrence.regionId());
         List<String> members = new ArrayList<String>();
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
@@ -709,15 +710,15 @@ public final class Corpus implements Arms.Rows {
         return ArtifactIO.digest(text.toString(), 16);
     }
 
-    /** Whether one member's writes in one session store a carrier of
-     *  {@code readable} ({@link StaticScopeMap#carriersAt}); an INITIAL row
+    /** Whether one member's writes in one session store a location of
+     *  {@code readable} ({@link StaticScopeMap#storedAt}); an INITIAL row
      *  is no write. */
     private boolean feeds(String sessionId, OccurrenceAddress member,
                           Set<String> readable, StaticScopeMap scope) {
         if (readable.isEmpty()) return false;
         for (WriteRow write : writesOn.of(member.id(), sessionId)) {
             if (!write.initial() && !Collections.disjoint(readable,
-                    scope.carriersAt(write.endpoint().site(),
+                    scope.storedAt(write.endpoint().site(),
                             write.javaType(), write.location().kind()))) {
                 return true;
             }

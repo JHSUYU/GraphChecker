@@ -531,9 +531,15 @@ public final class StaticScopeMap {
      *  every row of a site, and each answer scans every site. */
     private final Map<String, Set<String>> carriers =
             new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
-    /** {@link #readCarriers}, once asked. */
-    private final Map<String, Set<String>> readCarriers =
+    /** {@link #readLocations}, once asked. */
+    private final Map<String, Set<String>> readLocations =
             new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+    /** {@link #storedAt}, once asked. */
+    private final Map<String, Set<String>> stored =
+            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
+    /** Region -> the regions an occurrence of it folded in the epoch's
+     *  plan ({@link #withFolds}); empty for a map read alone. */
+    private final Map<String, Set<String>> folds;
 
     /** Each TARGET_SITE row's forcing table ({@link ForcingTable}), by
      *  its site id. */
@@ -543,11 +549,54 @@ public final class StaticScopeMap {
                            Map<String, Set<String>> regionMethods,
                            Map<String, List<String>> concreteReads,
                            Map<String, JsonArray> forcing) {
+        this(sites, regionMethods, concreteReads, forcing,
+                Collections.<String, Set<String>>emptyMap());
+    }
+
+    private StaticScopeMap(List<Site> sites,
+                           Map<String, Set<String>> regionMethods,
+                           Map<String, List<String>> concreteReads,
+                           Map<String, JsonArray> forcing,
+                           Map<String, Set<String>> folds) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
                 Collections.unmodifiableMap(concreteReads);
         this.forcing = forcing;
+        this.folds = Collections.unmodifiableMap(folds);
+    }
+
+    /**
+     * This map with the epoch's fold relation: per region, the regions its
+     * occurrences folded in the plan PLAN froze for the iteration (each
+     * region row's {@code foldedRegionIds}, {@code
+     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}).  A folded region's
+     * text ran inside the enclosing occurrence, whose skeleton does not name
+     * it (the weave stops at a nested root), so what that occurrence may
+     * read is its region's and theirs ({@link #readLocations}).  An
+     * unreadable plan is refused by name.
+     */
+    public StaticScopeMap withFolds(Path regionPlan) {
+        Map<String, Set<String>> found =
+                new LinkedHashMap<String, Set<String>>();
+        if (regionPlan != null && Files.isRegularFile(regionPlan)) {
+            try {
+                for (JsonObject row : ArtifactIO.readJsonl(regionPlan)) {
+                    String regionId = optionalString(row, "regionId");
+                    List<String> folded = strings(row,
+                            RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS);
+                    if (regionId.isEmpty() || folded.isEmpty()) continue;
+                    found.computeIfAbsent(regionId,
+                            key -> new LinkedHashSet<String>())
+                            .addAll(folded);
+                }
+            } catch (IOException | RuntimeException unreadable) {
+                throw new IllegalStateException("REGION_PLAN_UNREADABLE: "
+                        + regionPlan, unreadable);
+            }
+        }
+        return new StaticScopeMap(sites, regionMethods,
+                concreteConfigurationReads, forcing, found);
     }
 
     /** The forcing table of the TARGET_SITE at {@code targetSiteId}
@@ -1521,25 +1570,71 @@ public final class StaticScopeMap {
     }
 
     /**
-     * The carriers one region's code reads where a replay versions the
-     * read ({@link #READ_SITE}), on any arm: the READ_SITEs in the methods
-     * it holds ({@link #methodsOf}; by its id when the map knows none).
-     * A recorded write whose carriers ({@link #carriersAt}) meet them may
-     * feed what an occurrence of the region reads, whether or not the arm a
-     * session took read it.
+     * The locations one region's code reads where a replay versions the
+     * read, on any arm, by cell and carrier: its READ_SITEs ({@link
+     * #READ_SITE}) and its accessor reads the slice made inputs ({@link
+     * #READ_INPUT}: an atomic's {@code get()} another region's {@code
+     * incrementAndGet} writes), in the methods it holds ({@link
+     * #methodsOf}; by its id when the map knows none), and those of the
+     * regions its occurrences folded ({@link #withFolds}).  A recorded write
+     * whose stored locations ({@link #storedAt}) meet them may feed what an
+     * occurrence of the region reads, whether or not the arm a session took
+     * read it.
      */
-    public Set<String> readCarriers(String regionId) {
+    public Set<String> readLocations(String regionId) {
         String region = regionId == null ? "" : regionId;
-        return readCarriers.computeIfAbsent(region, key -> {
-            Set<String> methods = methodsOf(region);
+        return readLocations.computeIfAbsent(region, key -> {
             Set<String> found = new LinkedHashSet<String>();
-            for (Site read : ofRole(READ_SITE, row -> methods.isEmpty()
-                    ? region.equals(row.regionId)
-                    : methods.contains(SiteId.methodOf(row.siteId)))) {
-                found.add(read.carrier.isEmpty() ? read.cell : read.carrier);
+            Set<String> regions = new LinkedHashSet<String>();
+            regions.add(region);
+            regions.addAll(folds.getOrDefault(region,
+                    Collections.<String>emptySet()));
+            for (String held : regions) {
+                Set<String> methods = methodsOf(held);
+                for (Site read : sites) {
+                    boolean reads = READ_SITE.equals(read.role)
+                            || DECLARED_SITE.equals(read.role)
+                            && read.declared != null
+                            && READ_INPUT.equals(read.declared.inputKind);
+                    if (!reads || !(methods.isEmpty()
+                            ? held.equals(read.regionId)
+                            : methods.contains(SiteId.methodOf(read.siteId)))) {
+                        continue;
+                    }
+                    if (!read.cell.isEmpty()) found.add(read.cell);
+                    if (!read.carrier.isEmpty()) found.add(read.carrier);
+                }
             }
             return Collections.unmodifiableSet(found);
         });
+    }
+
+    /**
+     * The locations one RECORDED write stores, by cell and carrier: those
+     * of the WRITE_SITEs in its method that store a location of its kind
+     * and may hold its type, joined as {@link #carriersAt} joins.
+     */
+    public Set<String> storedAt(String recordedSite, String javaType,
+                                LocationKind kind) {
+        String site = recordedSite == null ? "" : recordedSite;
+        return stored.computeIfAbsent(site + "|" + javaType + "|" + kind,
+                key -> {
+                    Set<String> found = new LinkedHashSet<String>();
+                    for (Site named : ofRole(WRITE_SITE, row -> true)) {
+                        if (named.vmSite.isEmpty()
+                                || !site.startsWith(named.vmSite + "#")
+                                || !stores(named, kind)
+                                || !sameType(descriptorOfCellType(
+                                named.cell), javaType)) {
+                            continue;
+                        }
+                        if (!named.cell.isEmpty()) found.add(named.cell);
+                        if (!named.carrier.isEmpty()) {
+                            found.add(named.carrier);
+                        }
+                    }
+                    return Collections.unmodifiableSet(found);
+                });
     }
 
     /**

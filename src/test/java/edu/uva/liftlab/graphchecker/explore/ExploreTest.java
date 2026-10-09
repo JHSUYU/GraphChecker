@@ -1847,9 +1847,9 @@ public class ExploreTest {
      * Corpus#inputShape}): a renewer that wrote the lease map in one session
      * and did not run in another delivered different worlds, though the
      * arm each session took never read the map -- the flipped arm (the
-     * expiry scan) does.  Judged by the region's static reads (a READ_SITE's
-     * carrier), never by what one session's arm read: two such sessions
-     * share no answer.
+     * expiry scan) does.  Judged by the region's static reads (a READ_SITE,
+     * a READ input, a folded region's), never by what one session's arm
+     * read: two such sessions share no answer.
      */
     @Test
     public void aMemberFeedsWhatTheRegionReadsOnAnyArm() throws Exception {
@@ -1887,6 +1887,47 @@ public class ExploreTest {
                         StaticScopeMap.empty()),
                 corpus.inputShape("s-quiet", TARGET, factor, none,
                         StaticScopeMap.empty()));
+        // The same read as an accessor input (an atomic's get(), a READ
+        // input) of the target's region, and as a READ_SITE of a region the
+        // target's occurrences folded in the iteration's plan.
+        String write = put(scopeSite(StaticScopeMap.WRITE_SITE,
+                "REGION.addkeys", "BlockTokenSecretManager#u12",
+                "BlockTokenSecretManager#addKeys",
+                "<example.Keys: int value>",
+                "<example.Manager: example.Keys allKeys>", ""));
+        JsonObject input = com.google.gson.JsonParser.parseString(scopeSite(
+                StaticScopeMap.DECLARED_SITE, "REGION.target",
+                "BlockTokenSecretManager#u8",
+                "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                "<example.Keys: int value>", "", "")).getAsJsonObject();
+        input.addProperty("declaredKind", StaticScopeMap.ACCESSOR_RETURN);
+        input.addProperty("inputKind", StaticScopeMap.READ_INPUT);
+        String folded = scopeSite(StaticScopeMap.READ_SITE, "REGION.expiry",
+                "Expiry#u3", "Expiry#scan",
+                "<example.Manager: example.Keys allKeys>",
+                "<example.Manager: example.Keys allKeys>", "");
+        Path plan = iteration.resolve(ExploreMain.REGION_PLAN);
+        Files.write(plan, ("{\"kind\":\"CONCOLIC_REGION_PLAN\","
+                + "\"regionId\":\"REGION.target\",\"foldedRegionIds\":"
+                + "[\"REGION.expiry\"]}\n").getBytes("UTF-8"));
+        for (StaticScopeMap map : Arrays.asList(
+                StaticScopeMap.read(scopeMap(iteration, write,
+                        input.toString())),
+                StaticScopeMap.read(scopeMap(iteration, write, folded))
+                        .withFolds(plan))) {
+            assertFalse("an accessor input and a folded region's read feed"
+                            + " it too",
+                    corpus.inputShape("s-renewed", TARGET, factor, none, map)
+                            .equals(corpus.inputShape("s-quiet", TARGET,
+                                    factor, none, map)));
+        }
+        assertEquals("the folded region's read without the plan's folds",
+                corpus.inputShape("s-renewed", TARGET, factor, none,
+                        StaticScopeMap.read(scopeMap(iteration, write,
+                                folded))),
+                corpus.inputShape("s-quiet", TARGET, factor, none,
+                        StaticScopeMap.read(scopeMap(iteration, write,
+                                folded))));
     }
 
     /** What the guard at {@code siteId} depends on in one session's path of
