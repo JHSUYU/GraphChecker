@@ -501,7 +501,7 @@ public final class MessageDoors {
     }
 
     /** A stored version's location: its key without the version. */
-    private static String location(String key) {
+    static String location(String key) {
         int at = key.lastIndexOf('@');
         return at < 0 ? key : key.substring(0, at);
     }
@@ -530,9 +530,14 @@ public final class MessageDoors {
      * version is filed ({@link #storing}), from wherever its adapter opened
      * the bracket: before the store's call, or here.
      *
+     * <p>{@code data} is what the write wrote: when a system's codec
+     * serialized it ({@link #jsonWritten}), each leaf of that document is
+     * exported on this version ({@link StoreContent}).</p>
+     *
      * @param key the location and the version this write made
      */
-    public static void stored(String transport, String key, Object owner) {
+    public static void stored(String transport, String key, Object owner,
+                              byte[] data) {
         // In flight until filed, whatever bracket the adapter opened: the
         // SEND and the producer it mints take the concolic VM milliseconds.
         long store = inFlight(transport, location(key));
@@ -541,6 +546,7 @@ public final class MessageDoors {
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
             written(transport, key, owner);
+            StoreContent.stored(transport, key, data);
         } finally {
             storeEnded(transport, store);
         }
@@ -586,6 +592,37 @@ public final class MessageDoors {
                 storeLocation(transport, path), path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered);
+    }
+
+    /**
+     * Whether a system's JSON codec hands this thread's documents over
+     * ({@link #jsonWritten}, {@link #jsonRead}): inside an opened occurrence
+     * of a replay, as a trace row is written only there.  The codec builds
+     * the writer's document only then.
+     */
+    public static boolean capturingContent() {
+        return StoreContent.capturing();
+    }
+
+    /**
+     * A system's JSON codec serialized {@code document} -- a tree of maps,
+     * lists and leaves as its serializer walked the object it was handed,
+     * each leaf the object the writer holds -- into {@code bytes}: a store
+     * write of these bytes ({@link #stored}) exports its leaves.  Kept
+     * weakly by the array, so bytes no store takes drop it.
+     */
+    public static void jsonWritten(byte[] bytes, Object document) {
+        StoreContent.written(bytes, document);
+    }
+
+    /**
+     * A system's JSON codec parsed {@code bytes} into {@code tree}: when a
+     * store fetch returned these bytes ({@link #fetched}), each leaf of the
+     * tree is minted on its entry, paired with that version's export of it
+     * ({@link StoreContent}).
+     */
+    public static void jsonRead(byte[] bytes, Object tree) {
+        StoreContent.parsed(bytes, tree);
     }
 
     /** A store location as every run spells it. */
@@ -638,8 +675,12 @@ public final class MessageDoors {
      * timing lets it.  A read that takes what its write carried -- the
      * writer's context in a notification -- first waits for the version to
      * be filed, if a write in flight may file it ({@link #filed}).
+     * {@code data} is what the fetch returned: a parse of it by a system's
+     * codec ({@link #jsonRead}) takes in this version's content.
      */
-    public static void fetched(String transport, String key, Object owner) {
+    public static void fetched(String transport, String key, Object owner,
+                               byte[] data) {
+        StoreContent.fetched(transport, key, data);
         String kind = NOTIFIED.get();
         if (kind == null) return;
         Outbound message = filed(transport, key);

@@ -943,7 +943,7 @@ public class RowRuntimeTest {
                 ExecutionIndex.parse("W.offer()#u1@0")), 1L, "XCH.item", 0L,
                 0, null, "J", "3");
         assertTrue(SymbolicMessageEnvelope.stage("XCH.item", 0L, writer));
-        MessageDoors.stored("STORE", "/q/qn-1@0", owner);
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner, null);
         RuntimeTraceContext.endRequest(request);
         MessageDoors.consumed("STORE", "/q/qn-1@0");
         MessageDoors.Inbound item = MessageDoors.current();

@@ -969,7 +969,7 @@ public class ScheduleLogTest {
     public void aStoreNotificationsWorkIsNoPartOfTheOrder() throws Exception {
         final Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NODE);
-        MessageDoors.stored("STORE", "/k@1", owner);
+        MessageDoors.stored("STORE", "/k@1", owner, null);
         written.clear();
         Thread callback = new Thread(new Runnable() {
             @Override
@@ -977,7 +977,7 @@ public class ScheduleLogTest {
                 MessageDoors.notified("Watcher", new Runnable() {
                     @Override
                     public void run() {
-                        MessageDoors.fetched("STORE", "/k@1", owner);
+                        MessageDoors.fetched("STORE", "/k@1", owner, null);
                         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
                     }
                 });
@@ -1009,7 +1009,7 @@ public class ScheduleLogTest {
         Thread callback = reading(owner, "/k@2", named);
         Thread.sleep(300L);
         assertTrue("it waits for the write in flight", callback.isAlive());
-        MessageDoors.stored("STORE", "/k@2", owner);
+        MessageDoors.stored("STORE", "/k@2", owner, null);
         MessageDoors.storeEnded("STORE", store);
         callback.join(5000L);
         assertEquals("and the write names its work", Arrays.asList(true),
@@ -1018,7 +1018,7 @@ public class ScheduleLogTest {
         MessageDoors.notified("Watcher", new Runnable() {
             @Override
             public void run() {
-                MessageDoors.fetched("STORE", "/k@3", owner);
+                MessageDoors.fetched("STORE", "/k@3", owner, null);
                 named.add(MessageDoors.current() != null);
             }
         });
@@ -1356,8 +1356,8 @@ public class ScheduleLogTest {
     public void aConsumedItemIsTheMessageItsConsumerServes() {
         Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NODE);
-        MessageDoors.stored("STORE", "/q/qn-1@0", owner);
-        MessageDoors.stored("STORE", "/q/qn-2@0", owner);
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner, null);
+        MessageDoors.stored("STORE", "/q/qn-2@0", owner, null);
         String[][] rows = {
             {"/q/qn-1@0", "/q/qn-1@0"},
             {"/q/qn-2@0", "/q/qn-2@0"},
@@ -1384,7 +1384,7 @@ public class ScheduleLogTest {
                 MessageDoors.notified("Watcher", new Runnable() {
                     @Override
                     public void run() {
-                        MessageDoors.fetched("STORE", key, owner);
+                        MessageDoors.fetched("STORE", key, owner, null);
                         named.add(MessageDoors.current() != null);
                     }
                 });

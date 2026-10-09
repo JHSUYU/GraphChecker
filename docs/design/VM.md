@@ -558,8 +558,10 @@ with a `reason`.
   `Integer/Long/Short/Byte.valueOf` box afresh, so a JVM-wide box is only a `Character` cache entry
   or `Boolean.TRUE/FALSE`; an enum constant is never a leaf (`UNSUPPORTED`) and, as a holder,
   `SHARED`.
-- No engine code calls them: the WIRE-CODEC runtime that did lives on branch `wire-codec-p1`. A
-  `WIRE_FLOW` row crosses through the expression broker.
+- `runtime/StoreContent` calls them for a store's JSON content (SYMBOL-SCOPE §6.4): `exportLeaf` of
+  each leaf of the document a write serialized, `mintLeaf` of each leaf of the tree a fetch's bytes
+  were parsed into (`DEC_LONG`, `BOOL`, `STR` or `NUM`, one hole). A `WIRE_FLOW` row crosses through
+  the expression broker.
 
 **Expression broker** (`VM/concolic/expressionBroker.{hpp,cpp}`): `exportExpression` publishes the
 live expression of an instance field and returns an opaque handle `(epoch << 32) | serial`;

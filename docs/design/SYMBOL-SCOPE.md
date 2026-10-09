@@ -1220,7 +1220,7 @@ Capture kinds: `METHOD_PARAMETER` (`index`), `METHOD_RETURN` (no selector), `CAL
 (`callee`, `occurrence`). Both captures' types must equal `javaType`. Any other schema or kind is
 refused, never skipped. A declared row is for a value no protobuf message field carries (HDFS: the
 key id inside the SASL user name; Solr: the routing rule's expiry); a protobuf field is derived
-(§6.2).
+(§6.2), and a store's JSON content crosses leaf by leaf (§6.4).
 
 SEED demands every capture and joins each producer to each consumer (`wire_handoff`,
 `wire_capture_argument` edges), so the slice continues on the sending side.
@@ -1323,6 +1323,48 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
 A refusal is its frame's: the paths and arms whose closure reaches an occurrence its session filed an
 `UNSTATED_VALUE` row on compose with the constants its rows state, and name the frame
 (`compose/Composer#frames`, a `Composer.Concrete` FRAME).
+
+### 6.4 A store's content
+
+A shared store's version (IDENTITY §7.2) carries a document: Solr's `state.json`, an Overseer queue
+item, `aliases.json`, `clusterprops.json`, a snapshot's metadata, each JSON. Its leaves cross like a
+message's fields, through the system's JSON codec rather than a door's message (`runtime/
+StoreContent`, MessageCodec's analogue). The codec hands the engine what it serialized and what it
+parsed (Solr: `Utils.toJSON` -> `MessageDoors.jsonWritten(bytes, document)`, `Utils.fromJSON(bytes)`
+-> `MessageDoors.jsonRead(bytes, tree)`); the document is the object the writer was handed as its
+serializer walks it, a tree of maps, lists and leaves built from the walk's events (Solr:
+`Utils.CausynthView`, a noggit `JSONWriter` that writes nothing), each leaf the very object the
+writer holds, so its expression comes with it. The store's doors pass the same arrays (`stored`'s
+and `fetched`'s `data`), and the engine pairs them by identity: a write of bytes the codec wrote
+exports each leaf on the version it made, at the writer's occurrence; a fetch names the version its
+bytes are, and a parse of those bytes mints each leaf of the tree on its entry (the VM's leaf
+natives, VM.md §7: `exportLeaf`, `mintLeaf` ENTRY or POSITION) in the parsing occurrence. Each leaf
+is a port of its own, `<transport>:<location>#<JSON pointer>` (RFC 6901), and its attach pairs with
+the export of the version it was fetched at, by that version (the message) and the port
+(CORRELATION_PORT). Both tables are weak by the array: a document no store write or fetch takes (an
+HTTP response, a log line) is dropped with its bytes. Only a thread inside an opened occurrence of a
+replay captures (`MessageDoors#capturingContent`, the rule trace rows follow), and the codec builds
+the writer's document only then.
+
+A leaf is a String, a number or a boolean. A String whose text is Java's decimal rendering of a long,
+or a boolean's, crosses as that value: its export is the value a lone rendering of the writer's
+expression renders (`compose/StringIdentities#renderedValue`), the text read where the writer held a
+constant, else the parse of what it held; the parse mints the leaf as the rendering of a fresh
+number (`DEC_LONG`, `BOOL`), so a reader's `Long.parseLong` of it is that number and no String
+theory is asked (solr-18413's routing-rule expiry, a clock's rendering through the Overseer's
+queue item and `state.json`). A boolean the writer computed otherwise crosses as its text (`STR`),
+as does any other String; a number or a boolean leaf crosses as its box's value (`NUM`). The writer's
+crossing decides the reader's, so a leaf's two ends are declared alike; a reader leaf that cannot
+cross as its writer's (a writer's `int` parses as a `long`) mints by its own text, unpaired. At most
+1024 leaves and 16 levels of one document are walked; past them a DIAGNOSTIC `UNSTATED_VALUE` names
+`CONTENT_BOUND:<port>` and the rest crosses as constants. A wave's answer for a leaf's attach is
+written into the parsed tree before the mint, as the parser would hold it.
+
+What reads a leaf reads the objects the system builds from the tree: Solr's `ZkNodeProps` keeps the
+parsed map, `Slice` and `DocCollection` copy it (each copy carries the entry's expression), and a
+field derived from it goes through the VM's models (`Replica.State.getState` -> `Enum.valueOf`,
+`Long.parseLong`, `String.equals`); a construction-only field logs the derived value (VM.md §5.1).
+Which version a node's objects hold is the PROVENANCE read (§5.7).
 
 ## 7. Current limits
 
