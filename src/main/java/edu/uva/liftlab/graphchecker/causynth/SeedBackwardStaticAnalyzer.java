@@ -109,6 +109,19 @@ final class SeedBackwardStaticAnalyzer {
             "put", "putAll", "remove", "clear", "add", "addAll", "set",
             "replace", "compute", "computeIfAbsent", "computeIfPresent",
             "merge", "offer", "poll");
+    /** JDK static factories whose result is a view backed by their first
+     *  argument (and {@code Collections}' unmodifiable, synchronized and
+     *  checked views, {@link #aliasedOperand}). */
+    private static final Set<String> ARGUMENT_BACKED_VIEWS = names(
+            "java.util.Arrays.asList", "java.util.Collections.newSetFromMap",
+            "java.util.Collections.asLifoQueue");
+    /** JDK value classes no call mutates ({@link #immutableValue}). */
+    private static final Set<String> IMMUTABLE_VALUES = names(
+            "java.lang.String", "java.lang.Boolean", "java.lang.Byte",
+            "java.lang.Character", "java.lang.Short", "java.lang.Integer",
+            "java.lang.Long", "java.lang.Float", "java.lang.Double",
+            "java.math.BigInteger", "java.math.BigDecimal",
+            "java.util.UUID");
     private static final Set<String> COLLECTION_CONTRACT_OWNERS = names(
             "java.util.Collection", "java.util.List", "java.util.Set",
             "java.util.SortedSet", "java.util.NavigableSet",
@@ -1674,6 +1687,16 @@ final class SeedBackwardStaticAnalyzer {
         return mutatedFields;
     }
 
+    /**
+     * The fields {@code local} may be the state of before {@code
+     * beforeIndex}: those its definitions read or wrote, back through
+     * copies and casts, and through a call only to the operand its result
+     * may be ({@link #aliasedOperand}).  Never a call's other arguments:
+     * {@code toStringHelper(this).add("autoDeleteAgeMath",
+     * autoDeleteAgeMath)} made the next {@code add} a mutation of a String
+     * field (solr-adhoc-10 SG1: 518 deciders of TimeRoutedAlias's), and a
+     * copy constructor's argument is a copy.
+     */
     private Set<String> fieldsAliasedByLocal(List<Fact> facts, int beforeIndex,
                                              String local) {
         Set<String> fields = new LinkedHashSet<>();
@@ -1687,16 +1710,52 @@ final class SeedBackwardStaticAnalyzer {
             }
             fields.addAll(fact.fieldUses);
             fields.addAll(fact.fieldDefs);
-            work.addAll(localNames(localValueUses(fact)));
-            work.addAll(localNames(actualInvokeArgs(fact.unitText)));
-            if (returnsBackedCollectionView(fact)) {
-                String invokeBase = invokeBaseLocal(fact.unitText);
-                if (invokeBase != null) {
-                    work.add(invokeBase);
-                }
+            if (fact.invoke == null) {
+                work.addAll(localNames(localValueUses(fact)));
+                continue;
             }
+            String operand = aliasedOperand(fact);
+            if (operand != null) work.add(operand);
         }
         return fields;
+    }
+
+    /**
+     * The operand a call's result may be: its receiver when the call may
+     * return it or a view backed by it -- a fluent call, whose declared
+     * return type is its own class or one above it (a builder returning
+     * {@code this}, {@code StringBuilder.append}, {@code List.subList}), or
+     * a {@code java.util} view or iterator -- or the argument a JDK view
+     * factory wraps ({@link #ARGUMENT_BACKED_VIEWS}); null for any other
+     * call, whose result is none of its operands.
+     */
+    private String aliasedOperand(Fact fact) {
+        MethodSig invoked = parseMethodSig(fact.invoke);
+        if (invoked == null || fact.defs.isEmpty()) return null;
+        String base = invokeBaseLocal(fact.unitText);
+        if (base != null) {
+            return returnsBackedCollectionView(fact) || fluent(invoked)
+                    ? base : null;
+        }
+        if (ARGUMENT_BACKED_VIEWS.contains(invoked.owner + "."
+                + invoked.name) || "java.util.Collections".equals(
+                invoked.owner) && (invoked.name.startsWith("unmodifiable")
+                || invoked.name.startsWith("synchronized")
+                || invoked.name.startsWith("checked"))) {
+            List<String> arguments = actualInvokeArgs(fact.unitText);
+            return arguments.isEmpty() ? null : arguments.get(0);
+        }
+        return null;
+    }
+
+    /** Whether a call's declared result may be its receiver: its own class,
+     *  or one above it but {@code Object}. */
+    private boolean fluent(MethodSig invoked) {
+        if (invoked.returnType.equals(invoked.owner)) return true;
+        if ("java.lang.Object".equals(invoked.returnType)) return false;
+        SootClass owner = sceneClass(invoked.owner);
+        return owner != null
+                && hierarchyNames(owner).contains(invoked.returnType);
     }
 
     /** Only java.util APIs specified to return a receiver-backed view. */
@@ -1716,13 +1775,27 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /** Whether a call writes its receiver: a container mutation, by name
-     *  or by its JDK contract, or a write of a JDK atomic's value. */
+     *  or by its JDK contract, or a write of a JDK atomic's value.  Never a
+     *  call on an immutable JDK value ({@link #immutableValue}). */
     private boolean isFieldMutator(Fact fact) {
         MethodSig sig = parseMethodSig(fact.invoke);
-        return sig != null && (CONTAINER_MUTATORS.contains(sig.name)
+        return sig != null && !immutableValue(sig.owner)
+                && (CONTAINER_MUTATORS.contains(sig.name)
                 || JavaContainerTypes.mutation(sig.raw,
                 this::libraryHierarchy)
                 || SharedFieldFlow.atomicWrite(sig.raw));
+    }
+
+    /** Whether {@code className} is a JDK value no call mutates: a String,
+     *  a box, a big number, a UUID, a java.time value, an enum. */
+    private boolean immutableValue(String className) {
+        if (IMMUTABLE_VALUES.contains(className)
+                || className.startsWith("java.time.")) {
+            return true;
+        }
+        SootClass type = sceneClass(className);
+        return type != null
+                && hierarchyNames(type).contains("java.lang.Enum");
     }
 
     /**

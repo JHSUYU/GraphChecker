@@ -104,6 +104,162 @@ public class ActivationGuardsTest {
         }
     }
 
+    /**
+     * What a call's result is: its receiver when the call may return it or
+     * a view of it -- a fluent call, a java.util iterator -- never another
+     * argument (solr-adhoc-10 SG1: {@code toStringHelper(this).add(..,
+     * autoDeleteAgeMath)} made the next {@code add} a mutation of the String
+     * field); and no call on an immutable JDK value mutates it.  {@code
+     * touch()} chains a helper over {@code name}, removes through {@code
+     * items}' iterator, and replaces in {@code name}.
+     */
+    @Test
+    public void aCallsResultIsItsReceiverOnlyAndAValueIsNeverMutated()
+            throws Exception {
+        System.setProperty(LibraryReceivers.ROOTS,
+                tree.newFolder("roots").getPath());
+        StaticProgram program = new SeedBackwardStaticAnalyzer(storeScene())
+                .analyze();
+        Object[][] rows = {
+                {"the helper's add is no mutation of name", names(),
+                        mutations(program, TOUCH, 4)},
+                {"the iterator's remove mutates items",
+                        names(field(STORE, "java.util.List items")),
+                        mutations(program, TOUCH, 7)},
+                {"a String's replace mutates nothing", names(),
+                        mutations(program, TOUCH, 9)}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
+    }
+
+    private static final String STORE = "a.S";
+    private static final String TOUCH = "<a.S: void touch()>";
+    private static final String STORE_CHECK = "<a.S: void check()>";
+
+    /** The fields the mutation rows of {@code method}'s unit write. */
+    private static Set<String> mutations(StaticProgram program, String method,
+                                         int unit) {
+        Set<String> found = new TreeSet<>();
+        for (Map<String, Object> edge : program.edges) {
+            if ("field_mutation".equals(edge.get("kind"))
+                    && method.equals(edge.get("method"))
+                    && Integer.valueOf(unit).equals(edge.get("unitIndex"))) {
+                found.add((String) edge.get("toCell"));
+            }
+        }
+        return found;
+    }
+
+    /**
+     * {@code check()} throws unless {@code inst.name.length() +
+     * inst.items.size()} is zero; {@code touch()} is
+     * {@code Helper.of(this).add("n", name).add("m", name);
+     * items.iterator().remove(); name.replace("a", "b");}.
+     */
+    private static CausynthTargetContext storeScene() {
+        G.reset();
+        Options.v().set_allow_phantom_refs(true);
+        IntType i = IntType.v();
+        SootClass object = library("java.lang.Object", null, 0);
+        library("java.lang.IllegalStateException", object, 0);
+        SootClass string = library("java.lang.String", object,
+                Modifier.FINAL);
+        SootMethod length = method(string, "length",
+                Collections.<Type>emptyList(), i, 0);
+        SootMethod replace = method(string, "replace", Arrays.<Type>asList(
+                string.getType(), string.getType()), string.getType(), 0);
+        SootClass iterator = library("java.util.Iterator", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        SootMethod remove = declared(iterator, "remove",
+                Collections.<Type>emptyList(), VoidType.v());
+        SootClass list = library("java.util.List", null,
+                Modifier.INTERFACE | Modifier.ABSTRACT);
+        SootMethod size = declared(list, "size",
+                Collections.<Type>emptyList(), i);
+        SootMethod iterate = declared(list, "iterator",
+                Collections.<Type>emptyList(), iterator.getType());
+
+        SootClass helper = application("a.Helper", object, 0);
+        SootMethod add = method(helper, "add", Arrays.<Type>asList(
+                string.getType(), object.getType()), helper.getType(), 0);
+        Local self = local(add, "r0", helper.getType());
+        body(add, J.newIdentityStmt(self, J.newThisRef(helper.getType())),
+                J.newReturnStmt(self));
+        SootMethod of = method(helper, "of", Collections.<Type>singletonList(
+                object.getType()), helper.getType(), Modifier.STATIC);
+        Local made = local(of, "$r0", helper.getType());
+        Local given = local(of, "r1", object.getType());
+        body(of, J.newIdentityStmt(given,
+                        J.newParameterRef(object.getType(), 0)),
+                J.newAssignStmt(made, J.newNewExpr(helper.getType())),
+                J.newReturnStmt(made));
+
+        SootClass type = application(STORE, object, 0);
+        SootField name = new SootField("name", string.getType(),
+                Modifier.PUBLIC);
+        SootField items = new SootField("items", list.getType(),
+                Modifier.PUBLIC);
+        SootField inst = new SootField("inst", type.getType(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        type.addField(name);
+        type.addField(items);
+        type.addField(inst);
+
+        SootMethod touch = method(type, "touch", Collections.<Type>emptyList(),
+                VoidType.v(), 0);
+        Local t0 = local(touch, "r0", type.getType());
+        Local n = local(touch, "$r1", string.getType());
+        Local h = local(touch, "$r2", helper.getType());
+        Local h2 = local(touch, "$r3", helper.getType());
+        Local l = local(touch, "$r4", list.getType());
+        Local it = local(touch, "$r5", iterator.getType());
+        Local s2 = local(touch, "$r6", string.getType());
+        Local s3 = local(touch, "$r7", string.getType());
+        body(touch, J.newIdentityStmt(t0, J.newThisRef(type.getType())),
+                J.newAssignStmt(n, J.newInstanceFieldRef(t0, name.makeRef())),
+                J.newAssignStmt(h, J.newStaticInvokeExpr(of.makeRef(), t0)),
+                J.newAssignStmt(h2, J.newVirtualInvokeExpr(h, add.makeRef(),
+                        soot.jimple.StringConstant.v("n"), n)),
+                J.newInvokeStmt(J.newVirtualInvokeExpr(h2, add.makeRef(),
+                        soot.jimple.StringConstant.v("m"), n)),
+                J.newAssignStmt(l, J.newInstanceFieldRef(t0, items.makeRef())),
+                J.newAssignStmt(it, J.newInterfaceInvokeExpr(l,
+                        iterate.makeRef())),
+                J.newInvokeStmt(J.newInterfaceInvokeExpr(it, remove.makeRef())),
+                J.newAssignStmt(s2, J.newInstanceFieldRef(t0, name.makeRef())),
+                J.newAssignStmt(s3, J.newVirtualInvokeExpr(s2,
+                        replace.makeRef(), soot.jimple.StringConstant.v("a"),
+                        soot.jimple.StringConstant.v("b"))),
+                J.newReturnVoidStmt());
+
+        SootMethod check = method(type, "check", Collections.<Type>emptyList(),
+                VoidType.v(), Modifier.STATIC);
+        Local c = local(check, "$r0", type.getType());
+        Local cn = local(check, "$r1", string.getType());
+        Local cl = local(check, "$r2", list.getType());
+        Local len = local(check, "$i0", i);
+        Local count = local(check, "$i1", i);
+        Local sum = local(check, "$i2", i);
+        RefType failure = RefType.v("java.lang.IllegalStateException");
+        Local thrown = local(check, "$r3", failure);
+        Unit done = J.newReturnVoidStmt();
+        body(check, J.newAssignStmt(c, J.newStaticFieldRef(inst.makeRef())),
+                J.newAssignStmt(cn, J.newInstanceFieldRef(c, name.makeRef())),
+                J.newAssignStmt(len, J.newVirtualInvokeExpr(cn,
+                        length.makeRef())),
+                J.newAssignStmt(cl, J.newInstanceFieldRef(c, items.makeRef())),
+                J.newAssignStmt(count, J.newInterfaceInvokeExpr(cl,
+                        size.makeRef())),
+                J.newAssignStmt(sum, J.newAddExpr(len, count)),
+                J.newIfStmt(J.newEqExpr(sum, IntConstant.v(0)), done),
+                J.newAssignStmt(thrown, J.newNewExpr(failure)),
+                J.newThrowStmt(thrown), done);
+        return new CausynthTargetContext(Paths.get("unused"),
+                new ExceptionTargetSite("t", STORE, "check", "()V",
+                        STORE_CHECK, "java.lang.IllegalStateException", 0));
+    }
+
     private static Set<String> sites(List<StaticScopeMap.Guard> chain) {
         Set<String> found = new TreeSet<>();
         for (StaticScopeMap.Guard guard : chain) found.add(guard.siteId());
@@ -313,6 +469,15 @@ public class ActivationGuardsTest {
                 Modifier.PUBLIC | modifiers);
         owner.addMethod(method);
         method.setActiveBody(J.newBody(method));
+        return method;
+    }
+
+    /** An abstract method: a library interface's, with no body. */
+    private static SootMethod declared(SootClass owner, String name,
+                                       List<Type> parameters, Type returned) {
+        SootMethod method = new SootMethod(name, parameters, returned,
+                Modifier.PUBLIC | Modifier.ABSTRACT);
+        owner.addMethod(method);
         return method;
     }
 
