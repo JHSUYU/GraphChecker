@@ -209,11 +209,12 @@ public final class ExploreCodec {
         return json;
     }
 
-    /** One slot of the epoch's skeleton. */
-    public static JsonObject writeSlot(SlotTable.Slot slot) {
+    /** One change of the epoch's skeleton: a slot opened, or dropped
+     *  ({@code kind}, {@link SlotTable}). */
+    public static JsonObject writeSlot(SlotTable.Slot slot, String kind) {
         JsonObject json = new JsonObject();
         json.addProperty("schemaVersion", 1);
-        json.addProperty("kind", "SLOT");
+        json.addProperty("kind", kind);
         json.addProperty("interactionId", slot.interactionId());
         json.addProperty("interactionKind", slot.kind.name());
         json.add("producer", RowCodec.writeEndpoint(slot.producer));

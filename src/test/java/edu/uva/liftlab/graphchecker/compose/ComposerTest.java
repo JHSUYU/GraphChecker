@@ -1130,7 +1130,8 @@ public class ComposerTest {
         SlotTable skeleton = SlotTable.read(unadmitted);
         skeleton.reconcile(Corpus.read(unadmitted, null),
                 Collections.singleton(ANCHOR.id()), 0);
-        skeleton.write(unadmitted);
+        skeleton.write(Files.createDirectories(
+                unadmitted.resolve("obligations-0000")));
 
         Session wrongWorld = new Session(unadmitted, "s1", true);
         wrongWorld.activation(PRODUCER);

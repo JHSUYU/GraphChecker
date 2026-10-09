@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -189,11 +190,25 @@ public final class MessageDoors {
      */
     public static long requestStarting(String transport, String verb,
                                        int attempt) {
-        Inbound served = CURRENT.get();
-        if (served != null && RESPONSE.equals(served.half)) endInbound();
+        callStarting();
         return Identity.requestStarting(Endpoint.messageSite(
                 trimmed(transport), REQUEST, trimmed(verb)), verb,
                 attempt);
+    }
+
+    /**
+     * A client's call starts on this thread whose requests start below it
+     * ({@link #requestStarting}): a cloud client's attempt at one call,
+     * which it routes over its nodes' clients and may hand to its pool.  A
+     * RESPONSE the thread received is over, as at a request's start, so
+     * neither the routing nor the work it hands off stands on the last
+     * response the thread read (round SG1, solr-adhoc-13: a cloud client's
+     * parallel updates stood on the response to its previous attempt, and
+     * the replay's timing had another response read last).
+     */
+    public static void callStarting() {
+        Inbound served = CURRENT.get();
+        if (served != null && RESPONSE.equals(served.half)) endInbound();
     }
 
     /** The request {@link #requestStarting} began is over, answered or
@@ -335,18 +350,77 @@ public final class MessageDoors {
 
     /**
      * A write to a store the nodes share is about to be made at {@code
-     * location} (a sequential create's: the prefix the store completes).
-     * The store applies a write, and notifies the version's watchers, before
-     * the write's call returns, so another thread can read the version
-     * before {@link #stored} files it (SOLR-18413 F2: node1's state watchers
-     * read the routing rule's version before the Overseer's turn filed it,
-     * and their work opened no occurrence).  Until {@link #storeEnded}, a
-     * read of a version this write may have made that finds it unfiled
-     * waits for it, at most {@link #FILED_WAIT_MS} ({@link #filed}).
+     * location}: a create of that path, or a write of its data.  It takes
+     * its turn first ({@link ScheduleEvent.Kind#WRITE}, keyed by the location
+     * as every run spells it, {@link RunNames}): writes to one location run
+     * in the recorded order while the prefix holds them, and the store
+     * decides each race they run -- whether a create finds its node made --
+     * as the recording's did (SB19, solr-bugs-reindex-cleanup: a node
+     * created the collection's terms node the recording had another replica
+     * create, and the shard's leader election went the other way).  Past the
+     * cut no slot holds, and writes at one location are ordered only behind
+     * the prefix's ({@code ScheduleLog#conflictLocked}).  A location that
+     * still spells a name only this run has, which no adapter stated
+     * ({@link #spelledAs}), keys alike in no two runs: that write takes no
+     * turn, and says so once per name.
+     *
+     * <p>The store applies a write, and notifies the version's watchers,
+     * before the write's call returns, so another thread can read the
+     * version before {@link #stored} files it (SOLR-18413 F2: node1's state
+     * watchers read the routing rule's version before the Overseer's turn
+     * filed it, and their work opened no occurrence).  Until {@link
+     * #storeEnded}, a read of a version this write may have made that finds
+     * it unfiled waits for it, at most {@link #FILED_WAIT_MS} ({@link
+     * #filed}).</p>
      *
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
+        turn(transport, location);
+        return inFlight(transport, location);
+    }
+
+    /**
+     * A write that takes or frees a number of its location's parent: a
+     * sequential create ({@code location}: the prefix the store completes)
+     * or a delete ({@code location}: the path deleted), each moving the
+     * parent's child counter, which numbers the next sequential create
+     * there.  Its turn is keyed by the parent, so every participant of one
+     * leader election, or every writer of one queue, takes its number in
+     * the recorded order, and no run-only name of the creating node (its
+     * store session, spelled in an election's prefix) is part of the key.
+     * In flight, as {@link #storing}, at {@code location}.
+     *
+     * @return the write's token, for {@link #storeEnded}
+     */
+    public static long storingChild(String transport, String location) {
+        String path = trimmed(location);
+        int slash = path.lastIndexOf('/');
+        turn(transport, slash <= 0 ? "/" : path.substring(0, slash));
+        return inFlight(transport, location);
+    }
+
+    /** A write's turn at {@code location}, keyed as every run spells it. */
+    private static void turn(String transport, String location) {
+        RunNames.Keyed keyed = RunNames.key(trimmed(location));
+        if (keyed.unnamed.isEmpty()) {
+            ScheduleLog.observe(ScheduleEvent.Kind.WRITE,
+                    ScheduleEvent.written(trimmed(transport), keyed.location));
+        } else if (RunNames.firstUnstated(keyed.unnamed)) {
+            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    transport + " " + keyed.unnamed, "a write's location"
+                            + " spells " + keyed.unnamed + ", a name only"
+                            + " this run has that no adapter stated as a"
+                            + " node's (MessageDoors#spelledAs): its writes"
+                            + " take no turn before the store's call, so the"
+                            + " store decides their races as this run's"
+                            + " timing has it, held only by the SEND after"
+                            + " each");
+        }
+    }
+
+    /** A write in flight at {@code location} until {@link #storeEnded}. */
+    private static long inFlight(String transport, String location) {
         long store = STORES.incrementAndGet();
         synchronized (STORING) {
             STORING.computeIfAbsent(transport,
@@ -458,7 +532,7 @@ public final class MessageDoors {
     public static void stored(String transport, String key, Object owner) {
         // In flight until filed, whatever bracket the adapter opened: the
         // SEND and the producer it mints take the concolic VM milliseconds.
-        long store = storing(transport, location(key));
+        long store = inFlight(transport, location(key));
         try {
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
@@ -530,18 +604,28 @@ public final class MessageDoors {
     /**
      * An item of a store's queue (ZooKeeper's sequential nodes: the Solr
      * Overseer's state-update queue) taken by the one consumer that
-     * processes it: what its writer staged on it -- the values a {@code
-     * WIRE_FLOW} carries -- arrives with it and stays until the next item.
-     * The consumer's context stays its own: which turn takes an item is the
-     * queue's batching, and each turn is ordered as a tick of its own.  An
-     * item its writer has not yet filed is waited for ({@link #filed}).
+     * processes it, as {@link #received} takes a request: it ends what the
+     * thread served, and is the message the thread serves until the next
+     * one -- named by its key, as its write sent it ({@link #stored}), so an
+     * attach of an element it carried pairs with that write's export by the
+     * item and its port ({@code Interactions#pairing}, CORRELATION_PORT) --
+     * with the values its writer staged on it.  The consumer's context stays
+     * its own: which turn takes an item is the queue's batching, and each
+     * turn is ordered as a tick of its own, and a consumer takes an item
+     * inside its turn ({@link #beginTick}), which ended whatever the thread
+     * served before: what an item ends is the item before it.  An item its
+     * writer has not yet filed is waited for ({@link #filed}); one no write
+     * of the window filed names nothing.
      */
     public static void consumed(String transport, String key) {
+        endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         Outbound message = filed(transport, key);
-        if (message != null && !message.symbolic.isEmpty()) {
+        if (message == null) return;
+        if (!message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }
+        CURRENT.set(new Inbound(0L, key, "1", REQUEST));
     }
 
     /** The exchange the thread serves, or {@code null}. */
@@ -627,8 +711,13 @@ public final class MessageDoors {
         CausynthTraceRecorder.startupDone(pass);
     }
 
-    /** Closes the tick {@link #beginTick} opened. */
+    /**
+     * Closes the tick {@link #beginTick} opened, and the exchange its thread
+     * served in it: the turn serves nothing past its end (the Solr
+     * Overseer's batch write after its last item's turn served that item).
+     */
     public static void endTick(long token) {
+        endInbound();
         CausynthTraceRecorder.endDaemonTick(token);
     }
 
@@ -704,6 +793,20 @@ public final class MessageDoors {
                                       String sourceId, long epoch) {
         CausynthTraceRecorder.registerSource(anchor, kind, role, sourceId,
                 epoch);
+    }
+
+    /**
+     * The names node {@code sourceId} has only in this run -- the id of its
+     * store session, its host and port -- each stated so: a store location
+     * that spells one keys its write by the node's name instead ({@link
+     * #storing}), alike in the recording and every replay (a ZooKeeper
+     * leader election's {@code <session>-<core>-n_} prefix).
+     */
+    public static void spelledAs(String sourceId, String... spellings) {
+        if (spellings == null) return;
+        for (String spelling : spellings) {
+            RunNames.spelled(trimmed(sourceId), trimmed(spelling));
+        }
     }
 
     public static void registerSourceAlias(Object alias, Object anchor) {

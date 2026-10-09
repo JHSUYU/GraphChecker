@@ -38,12 +38,23 @@ CHAINS = {"SEED": ["SEED.static", "SEED.trace", "PLAN", "EXPLORE.0",
           "COMPOSE": ["COMPOSE", "CONFIRM"],
           # SEED's static pass alone (offline-ab.sh AB_STAGES).
           "SEED.static": ["SEED.static"],
-          # The landing order replayed (offline-ab.sh ab_stage_drift).
-          "EXPLORE.drift": ["EXPLORE.drift"]}
+          # The landing order replayed (offline-ab.sh ab_stage_landings):
+          # each round a fresh planner, or one served planner.
+          "EXPLORE.drift": ["EXPLORE.drift"],
+          "EXPLORE.serve": ["EXPLORE.serve"]}
 STAGES = list(dict.fromkeys(stage for chain in CHAINS.values()
                             for stage in chain))
 SIDES = ("baseline", "candidate")
-NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log"}
+NOT_OUTPUT = {"stdout.log", "stderr.log", "time.txt", "prepare.log",
+              "walls.tsv", "planner.log"}
+# The slot table (explore.SlotTable): each round's changes in its directory,
+# after the table an iteration recorded before the rounds wrote theirs.  Its
+# EXPLORE stages are compared by the table they leave, folded; where both
+# sides are one jar (EXPLORE.serve) by each round's own file as well, while
+# two jars may write it differently.
+SLOTS = "slots.jsonl"
+FOLDED = "slots.folded"
+EXPLORE_STAGES = ("EXPLORE.0", "EXPLORE.N", "EXPLORE.drift", "EXPLORE.serve")
 # SEED.static's class output is the input scope copied in (classes/), the
 # door classes grown into it (scope-classes/, named by doors/stdout.txt) and
 # Soot's rewrite of it, not an artifact.
@@ -90,11 +101,47 @@ def outputs(stage_dir, tokens, stage=""):
                 found[rel] = ("exit=" + (status_of(root) or {}).get(
                     "exit", "?")).encode()
                 continue
+            if name == SLOTS and stage in EXPLORE_STAGES \
+                    and stage != "EXPLORE.serve":
+                continue
             data = read(path)
             for raw, token in tokens:
                 data = data.replace(raw, token)
             found[rel] = data
+    it = os.path.join(stage_dir, "iteration-0000")
+    if stage in EXPLORE_STAGES and os.path.isdir(it):
+        data = folded_slots(it)
+        for raw, token in tokens:
+            data = data.replace(raw, token)
+        found[os.path.join("iteration-0000", FOLDED)] = data
     return found
+
+
+def folded_slots(it):
+    """The slot table an iteration's rounds leave, as explore.SlotTable
+    reads it: the recorded table, then each round's changes in round order
+    (SLOT: the row a slot holds now; SLOT_DROPPED: no slot), its rows in
+    the table's order."""
+    files = [os.path.join(it, SLOTS)]
+    rounds = sorted((int(name[len("obligations-"):]), name)
+                    for name in os.listdir(it)
+                    if name.startswith("obligations-")
+                    and name[len("obligations-"):].isdigit())
+    files += [os.path.join(it, name, SLOTS) for _, name in rounds]
+    table = collections.OrderedDict()
+    for path in files:
+        if not os.path.isfile(path):
+            continue
+        for line in read(path).splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            key = row.get("interactionId", "") + "|" + row.get("world", "")
+            if row.get("kind") == "SLOT_DROPPED":
+                table.pop(key, None)
+            else:
+                table[key] = line
+    return b"".join(line + b"\n" for line in table.values())
 
 
 def describe(name, before, after):
@@ -213,15 +260,16 @@ def wave_dir(stage_dir):
 
 
 def drift(d):
-    """EXPLORE.drift: per flip (task, path, site, ordinal, outcome), the ids
-    the replayed rounds offered it under -- every id past a flip's first is
-    one re-ask on the path it was cut from; per arm (task, site, ordinal,
-    outcome), the ids over all its paths."""
+    """EXPLORE.drift, EXPLORE.serve: per flip (task, path, site, ordinal,
+    outcome), the ids the replayed rounds offered it under -- every id past
+    a flip's first is one re-ask on the path it was cut from; per arm (task,
+    site, ordinal, outcome), the ids over all its paths."""
     flips = collections.defaultdict(set)
     arms = collections.defaultdict(set)
     rounds = 0
-    for name in sorted(os.listdir(d)):
-        wave = os.path.join(d, name, "iteration-0000", name)
+    it = os.path.join(d, "iteration-0000")
+    for name in sorted(os.listdir(it)) if os.path.isdir(it) else []:
+        wave = os.path.join(it, name)
         if not name.startswith("obligations-") or not os.path.isdir(wave):
             continue
         rounds += 1
@@ -255,7 +303,7 @@ def headline(stage, d, status):
         return "tasks=%s target=%s" % (
             rows(j(d, "execution_task_plan.jsonl")),
             sha8(target.encode()) if target else "-")
-    if stage == "EXPLORE.drift":
+    if stage in ("EXPLORE.drift", "EXPLORE.serve"):
         return drift(d)
     if stage in ("EXPLORE.0", "EXPLORE.N"):
         w = wave_dir(d)
@@ -350,9 +398,9 @@ def accepted_pairs(stage, d, acc):
             pairs.append((os.path.join(w, name),
                           os.path.join(it, os.path.basename(w), name)))
         if stage == "EXPLORE.N":
-            # The closing wave rewrites the slot table last: the final one.
-            pairs.append((os.path.join(d, "iteration-0000", "slots.jsonl"),
-                          os.path.join(it, "slots.jsonl")))
+            # The table the closing round leaves: the final one.
+            pairs.append((FOLDED + ":" + os.path.join(d, "iteration-0000"),
+                          FOLDED + ":" + it))
     elif stage == "SOLVE.0":
         for name in sorted(os.listdir(d)):
             if not os.path.isdir(os.path.join(d, name)):
@@ -402,7 +450,8 @@ def against_accepted(stage, d, acc, status, case_root):
                (acc, "<OUT>")]
     tokens = [(a.encode(), b.encode()) for a, b in tokens]
     pairs = [(m, a) for m, a in accepted_pairs(stage, d, acc)
-             if os.path.exists(m) or os.path.exists(a)]
+             if os.path.exists(m.split(FOLDED + ":")[-1])
+             or os.path.exists(a.split(FOLDED + ":")[-1])]
     if stage == "SEED.static":
         manifest = load(os.path.join(acc, "schedule", "final",
                                      "run-manifest.json")) or {}
@@ -421,7 +470,9 @@ def against_accepted(stage, d, acc, status, case_root):
     drift = []
     for mine, theirs in pairs:
         try:
-            a, b = read(mine), read(theirs)
+            a, b = (folded_slots(path[len(FOLDED) + 1:])
+                    if path.startswith(FOLDED + ":") else read(path)
+                    for path in (mine, theirs))
         except OSError:
             drift.append("%s: missing on one side" % mine)
             continue
@@ -433,6 +484,26 @@ def against_accepted(stage, d, acc, status, case_root):
     if not drift:
         return "same", []
     return "drift:%d/%d" % (len(drift), len(pairs)), drift
+
+
+def walls(out, case, stage, dirs):
+    """<out>/walls-<case>.<stage>.tsv: each replayed round's wall, per
+    side (offline-ab.sh ab_landings' walls.tsv)."""
+    by_round = collections.OrderedDict()
+    for side in SIDES:
+        try:
+            lines = read(os.path.join(dirs[side], "walls.tsv")).decode()
+        except OSError:
+            continue
+        for line in lines.splitlines():
+            round_name, wall = line.split("\t")
+            by_round.setdefault(round_name, {})[side] = wall
+    with open(os.path.join(out, "walls-%s.%s.tsv" % (case, stage)),
+              "w") as handle:
+        handle.write("round\t" + "\t".join(SIDES) + "\n")
+        for round_name, wall in by_round.items():
+            handle.write(round_name + "\t" + "\t".join(
+                wall.get(side, "-") for side in SIDES) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +580,8 @@ def main(argv):
                         case, stage)), "w") as handle:
                     handle.write("baseline vs the accepted run:\n"
                                  + "\n".join(drift) + "\n")
+            if stage in ("EXPLORE.drift", "EXPLORE.serve"):
+                walls(out, case, stage, dirs)
             # A gating stage skipped on both sides was not checked either.
             worst = max(worst, {"DIFFERS": 2, "ERROR": 1}.get(result, 0),
                         int(result == "skipped"))

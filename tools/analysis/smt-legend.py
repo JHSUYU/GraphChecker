@@ -175,6 +175,14 @@ def main():
         moved = json.load(open(os.path.join(sched, 'final', 'claim.json'))).get('claim', {}).get('movedRoots', {}) or {}
     except Exception:
         pass
+    # The value the composition anchored each root at (the seed's reading): a selected session may have run a
+    # clock already skewed by its own world, so its row's value is not the recording's (solr-18406 SG1: 402 s off).
+    anchored = {}
+    try:
+        for root in json.load(open(os.path.join(sched, 'final', 'candidate_composition_manifest.json'))).get('roots', []):
+            anchored.setdefault(root.get('rootId'), root.get('recordedValue'))
+    except Exception:
+        pass
     print(f'# {a.out}\n# tree {repo}\n# {len(names)} declared, {len(leaves)} leaves shown, moved roots: {len(moved)}')
     groups = defaultdict(list)
     for n in leaves:
@@ -183,9 +191,12 @@ def main():
             ia = plan.get(r.get('rootId'), {})
             door = ia.get('marker') or ia.get('declaredCallee', '')
             site = ia.get('siteId', '')
-            mv = ' MOVED=' + str(moved[r['rootId']]) if r.get('rootId') in moved else ''
+            key = n if n in moved else r.get('rootId')
+            mv = ' MOVED=' + str(moved[key]) if key in moved else ''
+            recorded = anchored.get(r.get('rootId'), r.get('recordedValue'))
+            ran = '' if recorded == r.get('recordedValue') else f" (this session ran {r.get('recordedValue')})"
             groups['ROOT'].append(f"{r.get('category', '?')}/{r.get('kind', '?')} {door} at {site} | {occ(r.get('occurrence'))} | "
-                                  f"recorded={r.get('recordedValue')}{mv} | {n[:90]}")
+                                  f"recorded={recorded}{ran}{mv} | {n[:90]}")
         elif kind == 'reads':
             e = r.get('endpoint', {})
             loc = r.get('location', {})

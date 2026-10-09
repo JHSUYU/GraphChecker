@@ -146,6 +146,7 @@ final class RuntimeTraceContext {
         // to the root that carried the thread here (Identity.Hop.SCOPE_ROOT).
         scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         standIn(state, scope, source, requestKey, normalizedApi);
+        scope.request = state.flow;
         Identity.hopOpened(scope.lineageToken);
         publishCausalSource(state);
         return requestId;
@@ -417,6 +418,21 @@ final class RuntimeTraceContext {
         return state.view();
     }
 
+    /**
+     * Ends one root activation: the thread's source and flow go back to
+     * what stood at its entry, except for a request the workload began in
+     * it that still stands ({@link #beginRequest}; an exchange the thread
+     * received ends with it, as ever).  Such a request outlives the
+     * activation -- begun in one traced method, ended in another: an
+     * AbstractFullDistribZkTestBase test's, begun in its traced
+     * createServers -- as its lineage hop does: the thread stays in it, as
+     * if it had begun in the activation below, and its end puts back what
+     * stood before this one.  Round SG1, solr-adhoc-31: the test's request
+     * left the flow when createServers returned, while its occurrences still
+     * stood on it; every request the test then sent outside a workload call
+     * was refused its header, and the FORCELEADER it sent was served in no
+     * occurrence.
+     */
     static void exitRoot(long spanId) {
         State state = CURRENT.get();
         Frame frame = state.frames.peek();
@@ -424,6 +440,21 @@ final class RuntimeTraceContext {
         state.frames.pop();
         state.source = frame.previousSource;
         state.flow = frame.previousFlow;
+        Deque<ScopeFrame> outliving = new ArrayDeque<ScopeFrame>();
+        for (ScopeFrame scope : state.scopes) {
+            if (scope.request != null && scope.activeFrame == frame) {
+                outliving.push(scope);
+            }
+        }
+        if (outliving.isEmpty()) return;
+        outliving.peek().outlive(frame.previousSource, frame.previousFlow);
+        Frame parent = state.frames.peek();
+        for (ScopeFrame scope : outliving) {
+            scope.reframe(parent);
+            state.source = scope.opened;
+            state.flow = scope.request;
+            if (parent != null) parent.source = scope.opened;
+        }
     }
 
     static View current() {
@@ -1153,16 +1184,20 @@ final class RuntimeTraceContext {
         private SourceRef startup;
         /** Whether this scope is a service-loop turn ({@link #beginWake}). */
         private boolean turn;
+        /** The flow of the request the workload began as this scope, or null
+         *  ({@link #beginRequest}): it stands past the activation it began
+         *  in ({@link #exitRoot}). */
+        private Flow request;
         /** The tick's WAKE, written at its first event, or null outside
          *  the window ({@link ScheduleLog#turnBegun}). */
         private ScheduleLog.TurnWake tick;
-        private final SourceRef source;
-        private final Frame activeFrame;
-        private final SourceRef frameSource;
-        private final long frameRemoteParentSpanId;
+        private SourceRef source;
+        private Frame activeFrame;
+        private SourceRef frameSource;
+        private long frameRemoteParentSpanId;
         private final long remoteParentSpanId;
         /** The request flow this scope replaced, put back when it ends. */
-        private final Flow flow;
+        private Flow flow;
 
         /** Opens over {@code state} as it stands, active frame included. */
         private ScopeFrame(long token, State state) {
@@ -1175,6 +1210,22 @@ final class RuntimeTraceContext {
                     : activeFrame.remoteParentSpanId;
             this.remoteParentSpanId = state.pendingRemoteParentSpanId;
             this.flow = state.flow;
+        }
+
+        /** The activation it opened in ended: it stands in {@code parent}'s
+         *  (null for none), as if opened there. */
+        private void reframe(Frame parent) {
+            activeFrame = parent;
+            frameSource = parent == null ? null : parent.source;
+            frameRemoteParentSpanId = parent == null ? 0L
+                    : parent.remoteParentSpanId;
+        }
+
+        /** The outermost scope standing past its activation's end puts back
+         *  what stood before that activation. */
+        private void outlive(SourceRef before, Flow beforeFlow) {
+            source = before;
+            flow = beforeFlow;
         }
     }
 

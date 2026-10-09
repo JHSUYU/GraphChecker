@@ -527,8 +527,17 @@ public final class ConfirmMain {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<String, String> assigned
                 : world.assignments.entrySet()) {
-            rows.add(assignedRoot(assigned.getKey(), assigned.getValue()
-                    .trim(), categories.get(assigned.getKey()), world, sites));
+            String value = assigned.getValue().trim();
+            RootCategory category = categories.get(assigned.getKey());
+            // A fault marker at false is the run as recorded (a native run
+            // answers every marker false without a plant): no row, or a run
+            // that never reaches its door would count as not planted
+            // (solr-bugs-reindex-cleanup VC1: 39 of 40 rows such, 0/10).
+            if (category == RootCategory.FAULT && "false".equals(value)) {
+                continue;
+            }
+            rows.add(assignedRoot(assigned.getKey(), value, category, world,
+                    sites));
         }
         for (Map.Entry<String, String> skew : world.clockDeltas.entrySet()) {
             rows.add(clockRoot(skew.getKey(), skew.getValue().trim(), world,

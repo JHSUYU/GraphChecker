@@ -317,6 +317,13 @@ public final class ObligationFactory {
      */
     public static String dependence(Corpus corpus, Task task,
                                     Corpus.RecordedPath path, int index) {
+        return corpus.dependence(task, path.pathId + "#" + index,
+                () -> keyed(corpus, task, path, index));
+    }
+
+    /** {@link #dependence}, computed. */
+    private static String keyed(Corpus corpus, Task task,
+                                Corpus.RecordedPath path, int index) {
         DecisionRow flipped = path.decisions.get(index);
         List<DecisionRow> conditions =
                 new ArrayList<DecisionRow>(path.decisions.subList(0, index));
@@ -365,8 +372,7 @@ public final class ObligationFactory {
         }
         return ArtifactIO.digest(String.join("/", kept) + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
-                corpus.feeders(task.focused(), task.factor()),
-                rests.locations())
+                corpus.feeders(task), rests.locations())
                 + (domains.isEmpty() ? "" : "\n" + domains), 16);
     }
 

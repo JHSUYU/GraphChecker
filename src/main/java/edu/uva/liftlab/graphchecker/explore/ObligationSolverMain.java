@@ -50,7 +50,7 @@ import java.util.List;
  *                             pairings' expected_edges.jsonl, and
  *                             question.txt (a decided verdict of its own
  *                             settles its question) or question.asked (SAT)
- *   or a host's share of them ({@link SolverService}):
+ *   or a host's share of them ({@link Service}):
  *   --serve &lt;dir&gt;             answer the questions put there, each into its
  *                             own output directory, until none has come for
  *   --idle-seconds &lt;n&gt;
@@ -78,7 +78,7 @@ public final class ObligationSolverMain {
                 Z3.DEFAULT_TIMEOUT_MILLIS);
         Path serve = options.path("serve");
         if (serve != null) {
-            SolverService.serve(serve,
+            Service.serve(serve,
                     options.number("idle-seconds", 0L) * 1000L,
                     answerer(sessions, rootDomains, z3, timeoutMillis));
             return;
@@ -107,11 +107,11 @@ public final class ObligationSolverMain {
      * JVM of its own, reading the corpus then, would write, whatever was
      * asked before.
      */
-    private static SolverService.Answerer answerer(Path sessions,
+    private static Service.Answerer answerer(Path sessions,
                                                    Path rootDomains, Path z3,
                                                    long timeoutMillis) {
         Path iteration = sessions.getParent();
-        return new SolverService.Answerer() {
+        return new Service.Answerer() {
             private List<String> read;
             private Corpus corpus;
 

@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -54,6 +55,7 @@ public class ScheduleLogTest {
     private static final SourceRef NODE =
             new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
     private long request;
+    private Object node;
 
     @Before
     public void reset() {
@@ -68,7 +70,7 @@ public class ScheduleLogTest {
 
     /** The test's one request, on a freshly reset runtime. */
     private void openRequest() {
-        Object node = new Object();
+        node = new Object();
         RuntimeTraceContext.registerSource(node, NODE);
         request = RuntimeTraceContext.beginRequest(node, "schedule-test");
     }
@@ -779,6 +781,56 @@ public class ScheduleLogTest {
     }
 
     /**
+     * A loop polling past its recorded count in the context whose next slot
+     * is the frontier owes the frontier: it polls again with no move of the
+     * order, never held to the watchdog (solr-adhoc-19 SG1: a waitForCore
+     * NodeName loop, 66 stalls).
+     */
+    @Test(timeout = 20000L)
+    public void aPollOwingTheFrontierPollsWithoutAMove() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String site = "tick.poll";
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+        order.add(event(ScheduleEvent.Kind.WAKE, site));
+        order.addAll(prefix("x"));
+        enforce(order);
+        long before = System.nanoTime();
+        for (int poll = 0; poll < 4; poll++) {
+            ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        }
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("no stall: " + took, took < 2000L);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("2 taken, 0 given up"));
+    }
+
+    /**
+     * A wait the recording never made, held at the cut in another context
+     * while the frontier stands and nothing computes, is let go a grace into
+     * the stall, not a timeout: x, which no thread makes, is given up later.
+     */
+    @Test(timeout = 30000L)
+    public void anIdleStallLetsAHeldWaitGoAGraceIn() throws Exception {
+        noRequest();
+        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "10000");
+        enforce(recorded);
+        long before = System.nanoTime();
+        Thread b = new Thread(() -> request("b",
+                () -> ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.b")));
+        b.start();
+        b.join(20000L);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("a grace, not the timeout: " + took,
+                took >= ScheduleLog.LET_GO_GRACE_MS - 100L && took < 8000L);
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("1 of them let go"));
+    }
+
+    /**
      * The request that makes x first sleeps a wait the recording never
      * made: held at the cut, with the run idle, it is let go before x is
      * given up, and x is taken.  The turn it let go is vacant; x's is not.
@@ -888,6 +940,343 @@ public class ScheduleLogTest {
                         + "for ever: " + waited,
                 waited >= MessageDoors.FILED_WAIT_MS - 100L
                         && waited < MessageDoors.FILED_WAIT_MS + 3000L);
+    }
+
+    /**
+     * A WRITE takes its turn before the store's call, and never passes an
+     * earlier held write to its location -- until that write is taken or
+     * the watchdog gives it up, as any slot: no wait is unbounded.  Per row:
+     * the writes the recording made (request:location), the replay's (a
+     * request after a '<' writes only once the first request's write
+     * returned: the Overseer's poll for the core-admin CREATE it sent), the
+     * order they are written in, and whether a slot was given up.
+     *
+     * <ul>
+     * <li>SOLR-18413 on solr-bug-reindex: the Overseer task wrote its queue
+     *     item before the CREATE's in the recording, but makes it only once
+     *     its poll sees that CREATE complete -- a stall, then the CREATE goes
+     *     and the Overseer's write takes its given-up slot late;</li>
+     * <li>the same with the CREATE's write unrecorded there;</li>
+     * <li>a write the order lacks waits for the write that was next at its
+     *     location, and goes once it is made, with no stall;</li>
+     * <li>one whose write never comes goes after a stall;</li>
+     * <li>one elsewhere waits for nothing.</li>
+     * </ul>
+     */
+    @Test(timeout = 60000L)
+    public void aWriteNeverPassesAnEarlierWriteToItsLocationForLongerThanAStall()
+            throws Exception {
+        String q = "/overseer/queue/qn-";
+        String[][] rows = {
+            {"o:" + q + " c:" + q, "c:" + q + " o<c:" + q, "c o", "1"},
+            {"o:" + q, "c:" + q + " o<c:" + q, "c o", "1"},
+            {"o:/p", "c:/p o:/p", "o c", "0"},
+            {"o:/p", "c:/p", "c", "1"},
+            {"o:/p", "c:/q o:/p", "c o", "0"},
+        };
+        for (String[] row : rows) {
+            noRequest();
+            for (String write : row[0].split(" ")) {
+                String[] at = write.split(":", 2);
+                request(at[0], () -> written(at[1]));
+            }
+            List<ScheduleEvent> recorded = events();
+            noRequest();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+            enforce(recorded);
+            final CountDownLatch first = new CountDownLatch(1);
+            final Map<String, String> apis =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            List<Thread> writers = new ArrayList<Thread>();
+            long before = System.nanoTime();
+            for (String write : row[1].split(" ")) {
+                String[] at = write.split(":", 2);
+                final boolean after = at[0].endsWith("<c");
+                final String api = after ? at[0].substring(0, 1) : at[0];
+                Thread writer = new Thread(() -> request(api, () -> {
+                    apis.put(ScheduleLog.contextOf(Identity.contextHere()),
+                            api);
+                    try {
+                        if (after) first.await();
+                        written(at[1]);
+                        first.countDown();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }));
+                writer.start();
+                writers.add(writer);
+                Thread.sleep(300L);
+            }
+            for (Thread writer : writers) writer.join(20000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            String progress = ScheduleLog.progress();
+            List<String> made = new ArrayList<String>();
+            for (ScheduleEvent event : events()) {
+                made.add(apis.get(event.context()));
+            }
+            assertEquals(row[1], Arrays.asList(row[2].split(" ")), made);
+            assertTrue(row[1] + ": " + progress, progress.contains(
+                    " " + row[3] + " given up"));
+            assertTrue(row[1] + " a stall at most, never for ever: " + took,
+                    took < (row[3].equals("1") ? 12000L : 3000L));
+        }
+    }
+
+    /**
+     * A write waiting behind the write to its location gives that one write
+     * up when it stalls, never the run of other nodes' events before it: x
+     * and y stay open and are taken when their threads come, and only o's
+     * write, which never came, is given up.
+     */
+    @Test(timeout = 30000L)
+    public void aWriteWaitingBehindAnotherGivesUpThatWriteAlone()
+            throws Exception {
+        noRequest();
+        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        request("o", () -> written("/p"));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "500");
+        enforce(recorded);
+        Thread c = new Thread(() -> request("c", () -> written("/p")));
+        c.start();
+        c.join(10000L);
+        assertFalse("c's write goes once o's alone is given up", c.isAlive());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+        request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 1 given up"));
+    }
+
+    /**
+     * The one write a conflicted waiter needs is given up once: another
+     * waiter asking the watchdog before the conflicted one sees it settled
+     * -- the frontier, x, standing still -- finds nothing more to do there,
+     * and its own stall (x and y) comes a timeout later (solr-18413 MB3: 628
+     * stalls given at one settled slot, a spin).
+     */
+    @Test(timeout = 30000L)
+    public void aSettledConflictIsGivenUpOnceWhoeverAsks() throws Exception {
+        noRequest();
+        request("x", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        request("o", () -> written("/p"));
+        request("y", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+        String[] waiting = {"d", "e", "f", "g"};
+        for (String waiter : waiting) {
+            request(waiter, () -> ScheduleLog.observe(
+                    ScheduleEvent.Kind.SEND, "z"));
+        }
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "100");
+        enforce(recorded);
+        // x's context at work (its loop's events run free), so the stall
+        // stands to its ceiling, where nothing defers the watchdog.
+        final boolean[] stop = new boolean[1];
+        Thread busy = new Thread(() -> request("x", () -> {
+            while (!stop[0]) {
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x2");
+                spin(20L);
+            }
+        }));
+        busy.start();
+        // Other waiters, later in the order, ask the watchdog too: whichever
+        // asks after the write was given up must find nothing to do there.
+        List<Thread> others = new ArrayList<Thread>();
+        for (String waiter : waiting) {
+            Thread other = new Thread(() -> request(waiter,
+                    () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "z")));
+            other.start();
+            others.add(other);
+        }
+        Thread.sleep(200L);
+        Thread c = new Thread(() -> request("c", () -> written("/p")));
+        c.start();
+        c.join(10000L);
+        for (Thread other : others) other.join(10000L);
+        stop[0] = true;
+        busy.join(10000L);
+        assertFalse(c.isAlive());
+        for (Thread other : others) assertFalse(other.isAlive());
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("3 given up in 2 stall(s)"));
+    }
+
+    /**
+     * A write whose slot is past the cut holds nothing of its own, but waits
+     * behind the prefix's write to its location until it is made.
+     */
+    @Test(timeout = 30000L)
+    public void aWritePastTheCutWaitsBehindThePrefixsWriteThere()
+            throws Exception {
+        noRequest();
+        request("o", () -> written("/p"));
+        request("c", () -> written("/p"));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        enforce(recorded.subList(0, 1), recorded.subList(1, 2));
+        Thread c = new Thread(() -> request("c", () -> written("/p")));
+        c.start();
+        Thread.sleep(500L);
+        assertTrue("c's rest write waits for o's prefix write", c.isAlive());
+        request("o", () -> written("/p"));
+        c.join(10000L);
+        assertFalse(c.isAlive());
+        assertEquals(Arrays.asList(recorded.get(0).context(),
+                recorded.get(1).context()), Arrays.asList(
+                events().get(0).context(), events().get(1).context()));
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+    }
+
+    /**
+     * The 18413 cycle with its poll: the Overseer task's write stands first
+     * at the queue's location, and the Overseer makes it only once its poll
+     * sees the core-admin CREATE complete, whose write waits behind it.  The
+     * poll's requests are the frontier owner at work, so the stall is
+     * deferred to its ceiling, CEILING timeouts (120 s at the 15 s default),
+     * then the Overseer's write is given up and both go; never longer.
+     */
+    @Test(timeout = 60000L)
+    public void theCycleWithAPollCostsAtMostTheStallsCeiling()
+            throws Exception {
+        String q = "/overseer/queue/qn-";
+        noRequest();
+        request("o", () -> written(q));
+        request("c", () -> written(q));
+        List<ScheduleEvent> recorded = events();
+        noRequest();
+        long timeout = 300L;
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY,
+                String.valueOf(timeout));
+        enforce(recorded);
+        final CountDownLatch completed = new CountDownLatch(1);
+        long before = System.nanoTime();
+        Thread overseer = new Thread(() -> request("o", () -> {
+            try {
+                while (!completed.await(50L, TimeUnit.MILLISECONDS)) {
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                            "SOLR_HTTP#REQUEST:admin.cores:REQUESTSTATUS");
+                }
+                written(q);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }));
+        Thread create = new Thread(() -> request("c", () -> {
+            written(q);
+            completed.countDown();
+        }));
+        overseer.start();
+        create.start();
+        overseer.join(30000L);
+        create.join(30000L);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertFalse(overseer.isAlive() || create.isAlive());
+        assertTrue("the ceiling, not for ever: " + took,
+                took >= ScheduleLog.CEILING * timeout
+                        && took < ScheduleLog.CEILING * timeout + 5000L);
+    }
+
+    /**
+     * A leader election's node is created under its node's store session,
+     * whose id differs from run to run: stated by the adapter as the node's
+     * own spelling, the location keys by the node's name, so the replay's
+     * creates take their recorded slots in the recorded order.  A session
+     * no adapter stated keys alike in no two runs: its write takes no turn.
+     */
+    @Test(timeout = 20000L)
+    public void anElectionPrefixKeysByItsNodeAcrossRunsWithOtherSessions()
+            throws Exception {
+        noRequest();
+        MessageDoors.spelledAs("auto0/node0", "72088256043548677");
+        MessageDoors.spelledAs("auto0/node1", "72088256043548678");
+        request("a", () -> written("/elect/72088256043548677-core_node3-n_"));
+        request("b", () -> written("/elect/72088256043548678-core_node6-n_"));
+        List<ScheduleEvent> recorded = events();
+        assertEquals(Arrays.asList("STORE:/elect/{auto0/node0}-core_node3-n_",
+                "STORE:/elect/{auto0/node1}-core_node6-n_"), sites());
+        noRequest();
+        MessageDoors.spelledAs("auto0/node0", "72089999000000001");
+        MessageDoors.spelledAs("auto0/node1", "72089999000000002");
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        enforce(recorded);
+        Thread b = new Thread(() -> request("b", () -> written(
+                "/elect/72089999000000002-core_node6-n_")));
+        b.start();
+        Thread.sleep(500L);
+        assertTrue("node1's create waits for node0's", b.isAlive());
+        request("a", () -> written("/elect/72089999000000001-core_node3-n_"));
+        b.join(10000L);
+        assertEquals(recorded.get(0).context(), events().get(0).context());
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 0 given up"));
+        written.clear();
+        request("c", () -> written("/elect/72089999000000003-core_node9-n_"));
+        assertTrue("an unstated session takes no turn: " + sites(),
+                sites().isEmpty());
+    }
+
+    /**
+     * A fresh run on this thread, its schedule empty, with no request
+     * standing, so the next one roots its lineage.
+     */
+    private void noRequest() {
+        written.clear();
+        reset();
+        RuntimeTraceContext.endRequest(request);
+        request = 0L;
+    }
+
+    /** One workload request {@code api}, rooting its lineage, running
+     *  {@code inside}. */
+    private void request(String api, Runnable inside) {
+        long token = RuntimeTraceContext.beginRequest(node, api);
+        try {
+            inside.run();
+        } finally {
+            RuntimeTraceContext.endRequest(token);
+        }
+    }
+
+    /** One write to the shared store at {@code location}: its bracket. */
+    private static void written(String location) {
+        MessageDoors.storeEnded("STORE", MessageDoors.storing("STORE",
+                location));
+    }
+
+    /**
+     * A queue item its consumer takes is the message the thread serves, as
+     * its write sent it (its key, REQUEST), so an element it carried pairs
+     * by the item; the next item replaces it, and one no write of the window
+     * filed names nothing.
+     */
+    @Test(timeout = 20000L)
+    public void aConsumedItemIsTheMessageItsConsumerServes() {
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner);
+        MessageDoors.stored("STORE", "/q/qn-2@0", owner);
+        String[][] rows = {
+            {"/q/qn-1@0", "/q/qn-1@0"},
+            {"/q/qn-2@0", "/q/qn-2@0"},
+            {"/q/qn-9@0", null},
+        };
+        for (String[] row : rows) {
+            MessageDoors.consumed("STORE", row[0]);
+            MessageDoors.Inbound served = MessageDoors.current();
+            assertEquals(row[0], row[1],
+                    served == null ? null : served.correlationId);
+            if (served != null) {
+                assertEquals(MessageDoors.REQUEST, served.half);
+            }
+        }
     }
 
     /** A notification on a thread of its own reading {@code key}: whether a
@@ -2271,10 +2660,10 @@ public class ScheduleLogTest {
      * An event that never comes costs a timeout, then a grace after the
      * waits held without a slot are let go -- not {@link
      * ScheduleLog#CEILING} timeouts twice over while an engine thread
-     * computes.  A wait held at the cut is let go once; a poll held past its
-     * recorded count at its context's due slot -- the stalled one -- waits
-     * for no slot's event, so it does not hide that slot from the give-up
-     * y waits for, however long it keeps polling.
+     * computes.  A wait held at the cut is let go once; a poll past its
+     * recorded count whose context's next slot is the stalled frontier owes
+     * it and is not held at all, and it does not hide that slot from the
+     * give-up y waits for, however long it keeps polling: a timeout alone.
      */
     @Test(timeout = 60000L)
     public void aNeverComingEventCostsATimeoutAndAGrace() throws Exception {
@@ -2319,8 +2708,8 @@ public class ScheduleLogTest {
             y.join(5000L);
             assertFalse(row + ": y went while the loop still polled", waited);
             assertFalse(row, y.isAlive() || held.isAlive());
-            assertTrue(row + ", a timeout, then the let-go's grace: " + took,
-                    took >= 1000L + ScheduleLog.LET_GO_GRACE_MS);
+            assertTrue(row + ", a timeout, then any let-go's grace: " + took,
+                    took >= 1000L + (polls ? 0L : ScheduleLog.LET_GO_GRACE_MS));
             assertTrue(row + ", well inside the ceiling: " + took,
                     took < ScheduleLog.CEILING * 1000L - 500L);
             List<String> sites = sites();
@@ -2332,6 +2721,49 @@ public class ScheduleLogTest {
             assertTrue(row + ": " + progress, progress.contains(
                     polls ? " of them let go" : "1 of them let go"));
         }
+    }
+
+    /**
+     * A poll held at the cut -- an unrecorded WAKE, its context with no slot
+     * left -- bounds no give-up, as a poll held at its context's slot does
+     * not: with the frontier's event never coming and nothing else waiting,
+     * the watchdog lets it go again, a grace apart, and gives up nothing;
+     * once y waits behind the frontier, the frontier's slot alone is given
+     * up and y takes its own (solr-adhoc-13 MB6: a replica poll held at the
+     * cut bounded a give-up of 4560 slots at once).
+     */
+    @Test(timeout = 60000L)
+    public void aPollHeldAtTheCutBoundsNoGiveUp() throws Exception {
+        final String loop = "<P: java.lang.Boolean call()>#u33";
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+        ClockLoops.useForTests(Collections.<String>emptySet());
+        enforce(prefix("never", "y"));
+        final boolean[] stop = new boolean[1];
+        Thread poll = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    while (!stop[0]) TimedWaits.sleep(50L, loop);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        poll.start();
+        // Past a timeout and two let-go graces: the line's give-up was due.
+        Thread.sleep(1000L + 2 * ScheduleLog.LET_GO_GRACE_MS + 500L);
+        String before = ScheduleLog.progress();
+        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+        y.join(20000L);
+        boolean waited = y.isAlive();
+        stop[0] = true;
+        poll.join(5000L);
+        assertFalse("y went", waited);
+        assertFalse("the poll ended", poll.isAlive());
+        assertTrue(before, before.contains(" 0 given up"));
+        String after = ScheduleLog.progress();
+        assertTrue(after, after.contains(" 1 given up"));
+        assertTrue(sites().toString(), sites().contains("y"));
     }
 
     /** Burns this thread's CPU for {@code millis}. */

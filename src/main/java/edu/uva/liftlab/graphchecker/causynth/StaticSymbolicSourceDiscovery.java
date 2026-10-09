@@ -83,6 +83,7 @@ final class StaticSymbolicSourceDiscovery {
     static Set<String> discover(StaticProgram program, ConfigRoots config)
             throws IOException {
         program.communicationGaps.addAll(config.gaps());
+        program.communicationGaps.addAll(DoorWeave.unplaced());
         Set<String> planted = new LinkedHashSet<>();
         if (program.regions.isEmpty()) return planted;
         Set<String> regionRoots = new LinkedHashSet<>();

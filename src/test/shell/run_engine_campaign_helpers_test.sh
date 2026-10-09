@@ -1841,21 +1841,27 @@ done <<'EOF'
 28000|0|0|400,486|ran|0|
 EOF
 
-# RECORDING-BOUND: a recording whose trace passes recording_max_trace_mb is
-# ended by its watcher, which says so beside the trace (the reason SEED
-# fails by); one under it runs to its end and leaves no marker.  Per row:
-# the bound in MB, the MB the "recording" writes, ended or ran.
-while IFS='|' read -r bound_mb bound_writes bound_ended; do
+# RECORDING-END: a JVM with a trace directory (a recording; a native run,
+# bound 0) is ended by its watcher, which says why beside the trace, the
+# reason first (what SEED fails by): once its trace passes
+# recording_max_trace_mb (RECORDING_BOUND), or once it wrote nothing there
+# or on its output for campaign_unbounded_stall_s (RECORDING_STALLED); one
+# that stays under its bound and keeps writing runs to its end and leaves no
+# marker.  Per row: the bound in MB, the MB the "recording" writes, the
+# seconds it then stays alive writing nothing, the stall bound, and the
+# reason it is ended for (- for none).
+while IFS='|' read -r bound_mb bound_writes bound_quiet bound_stall bound_ended; do
   bound_dir="${test_tmp}/bound"
   rm -rf -- "${bound_dir}"
   mkdir -p "${bound_dir}/trace"
   (
     campaign_watch_interval_s=0.1
+    campaign_unbounded_stall_s=${bound_stall}
     ( for (( mb = 0; mb < bound_writes; mb++ )); do
         head -c 1048576 /dev/zero >>"${bound_dir}/trace/runtime_trace.jsonl"
         sleep 0.05
       done
-      sleep 1 ) &
+      sleep "${bound_quiet}" ) &
     bound_jvm=$!
     campaign_watch_workload "${bound_jvm}" 0 "${bound_dir}/trace" \
       "${bound_mb}" 2>"${bound_dir}/said" &
@@ -1864,23 +1870,29 @@ while IFS='|' read -r bound_mb bound_writes bound_ended; do
     wait "${bound_jvm}" 2>/dev/null || bound_exit=$?
     wait "${bound_watch}"
     echo "${bound_exit}" >"${bound_dir}/exit"
-  ) || fail "a bounded recording's watch failed"
-  if [[ "${bound_ended}" == ended ]]; then
+  ) || fail "a traced JVM's watch failed"
+  if [[ "${bound_ended}" != - ]]; then
     [[ "$(cat "${bound_dir}/exit")" == 137 ]] \
-      || fail "a recording past its ${bound_mb} MB bound was not ended"
-    grep -q "^RECORDING_BOUND: the recording's trace passed recording_max_trace_mb (${bound_mb} MB) at [0-9]* MB" \
-      "${bound_dir}/trace/${campaign_recording_bound_marker}" \
-      || fail "a bounded recording does not say why beside its trace"
+      || fail "a traced JVM to be ended ${bound_ended} was not ended"
+    grep -q "^${bound_ended}: " \
+      "${bound_dir}/trace/${campaign_recording_end_marker}" \
+      || fail "a traced JVM ended ${bound_ended} does not say so beside its \
+trace: $(cat "${bound_dir}/trace/${campaign_recording_end_marker}" 2>&1)"
+    grep -q "^causynth: ${bound_ended}: " "${bound_dir}/said" \
+      || fail "a traced JVM ended ${bound_ended} does not say so on stderr"
   else
     [[ "$(cat "${bound_dir}/exit")" == 0 \
-        && ! -e "${bound_dir}/trace/${campaign_recording_bound_marker}" ]] \
-      || fail "a recording under its ${bound_mb} MB bound was ended or marked"
+        && ! -e "${bound_dir}/trace/${campaign_recording_end_marker}" ]] \
+      || fail "a traced JVM under its ${bound_mb} MB bound, quiet for \
+${bound_quiet}s, was ended or marked"
   fi
-done <<'EOF'
-2|40|ended
-50|3|ran
-0|5|ran
-EOF
+done <<'EOF2'
+2|40|1|600|RECORDING_BOUND
+50|3|1|600|-
+0|5|1|600|-
+50|0|5|1|RECORDING_STALLED
+0|1|5|1|RECORDING_STALLED
+EOF2
 
 # SOLVER-SERVICE: an obligation's question goes to ONE solver JVM of its host
 # and corpus (ObligationSolverMain --serve), started by the first question
@@ -2418,9 +2430,10 @@ chmod 000 "${checkout_repo}/locked.txt"
 rm -f -- "${checkout_repo}/locked.txt"
 # STREAM: EXPLORE is one streaming loop (PIPELINE §7.7, §7.9).  The planner,
 # the worker, the gate and COMPOSE are stubbed -- each stands where its JVM
-# stands -- and everything between them is the production loop: the queue,
-# the ledger's admission, landing, the head's steps, rounds and their
-# in-flight rows, the stops.
+# stands (the planner's: its service's loop, stream_planner_serve) -- and
+# everything between them is the production loop: the queue, the ledger's
+# admission, landing, the head's steps, the planner service's start, its
+# questions and its ends, rounds and their in-flight rows, the stops.
 #
 # stream_fixture <name>: an iteration and a configuration of its own; a case
 # then says what each round proposes (stream_round_plan <round> <out>: rows
@@ -2442,7 +2455,49 @@ stream_fixture() {
   declared_target_occurrence=""
   campaign_host_poll_s=1
   campaign_adapter_kill_grace_s=1
+  # Where the planner's questions wait (campaign_planner_dir).
+  TMPDIR=${test_tmp}
 }
+# Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
+# <id> <peak> <log> <args...>): it names itself where its rounds are asked
+# and answers each with stream_planner, until it is ended -- or until
+# stream_planner_dies <round> <heap> says it ends there with that status
+# (3: out of heap, its JVM's last words in its log).
+stream_planner_serve() {
+  local heap=$1 id=$2 log=$4 sessions="" dir request name round status
+  shift 4
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" != --sessions ]] || sessions=$2
+    shift
+  done
+  dir=$(campaign_planner_dir "${sessions}" "${id}")
+  mkdir -p "${dir}/requests" "${dir}/answers"
+  printf '%s\n' "${heap}" >>"${stream_dir}/planner-heaps.txt"
+  printf '%s\n' "${BASHPID}" >"${dir}/server"
+  while true; do
+    for request in "${dir}"/requests/*.json; do
+      [[ -e "${request}" ]] || continue
+      name=$(basename "${request}" .json)
+      mv -- "${request}" "${dir}/requests/${name}.taken"
+      round=$(jq -r '.round' "${dir}/requests/${name}.taken")
+      status=$(stream_planner_dies "${round}" "${heap}")
+      if [[ -n "${status}" ]]; then
+        echo "Terminating due to java.lang.OutOfMemoryError: Java heap \
+space" >>"${log}"
+        rm -rf -- "${dir}/requests" "${dir}/answers"
+        return "${status}"
+      fi
+      stream_planner --round "${round}" --output-dir "$(jq -r '.outputDir' \
+        "${dir}/requests/${name}.taken")" --in-flight "$(jq -r '.inFlight' \
+        "${dir}/requests/${name}.taken")"
+      printf '{"exit":0,"error":""}\n' >"${dir}/answers/${name}.part"
+      mv -- "${dir}/answers/${name}.part" "${dir}/answers/${name}.json"
+      rm -f -- "${dir}/requests/${name}.taken"
+    done
+    sleep 0.1
+  done
+}
+stream_planner_dies() { :; }
 # Where explore.ExploreMain stands: the files it states every round.
 stream_planner() {
   local round="" out="" flying=""
@@ -2516,7 +2571,7 @@ stream_answer() {
 stream_stubs() {
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
-  run_java_main() { stream_planner "$@"; }
+  campaign_planner_serve() { stream_planner_serve "$@"; }
   # Where CONFIRM stands.  Its task planned: a verdict now where
   # stream_realize names the attempt (its selected session is the run),
   # else the replay owed.  The replay, a job of the pool: what it was handed,
@@ -2933,7 +2988,9 @@ it left unasked"
 stream_fixture stream-3c
 (
   stream_stubs
-  campaign_budget_s=3
+  # Room for round 0 (its planner's start among it) and SLOW's start, and
+  # none past the planner round's wall the reserve stands COMPOSE for.
+  campaign_budget_s=10
   campaign_reserve_s=1
   reproduce_min_s=1
   campaign_started_s=${SECONDS}
@@ -2999,13 +3056,7 @@ done
 stream_fixture stream-3b
 (
   stream_stubs
-  run_java_main() {
-    if [[ " $* " == *" --round 1 "* ]]; then
-      echo "Terminating due to java.lang.OutOfMemoryError: Java heap space" >&2
-      return 3
-    fi
-    stream_planner "$@"
-  }
+  stream_planner_dies() { [[ "$1" != 1 ]] || echo 3; }
   stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A SLOW; }
   campaign_obligation_worker() {
     local id=$1 worker=$4
@@ -3036,12 +3087,71 @@ jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
   || fail "a planner out of heap did not end the exploration by name: \
 $(cat "${stream_dir}/campaign_gaps.jsonl" "${stream_dir}/exploration.json")"
 
+# STREAM-SERVE: ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1, §7.9).  It is
+# started once, at what the planner starts at, every round asked of it, and
+# it is ended with the exploration, its charge given back.  One that runs out
+# of a heap below the engine heap is started again at twice it and the round
+# asked again; any other end fails EXPLORE with its deepest throwable, never
+# a silent start of another.
+stream_fixture stream-serve
+(
+  stream_stubs
+  engine_memory_mb=16384
+  stream_planner_dies() {
+    [[ "$1" != 1 || "$2" != 8192 ]] || echo 3
+  }
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A ;;
+      1) stream_propose "$2" B ;;
+    esac
+  }
+  campaign_obligation_worker() {
+    case "$1" in
+      A) stream_answer "$4" A ADMITTED SESSION.A ;;
+      B) stream_answer "$4" B UNSAT ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "STREAM-SERVE: the served exploration failed: \
+$(cat "${stream_dir}/explore.log")"
+[[ "$(paste -sd ' ' - <"${stream_dir}/planner-heaps.txt")" == "8192 16384" ]] \
+  && grep -q 'ExploreMain ran out of its 8192 MB heap; run again at 16384 MB' \
+    "${stream_dir}/obligations-0001/stderr.log" \
+  && jq -e '.stop == "FIXED_POINT" and .rounds == 3' \
+    "${stream_dir}/exploration.json" >/dev/null \
+  || fail "STREAM-SERVE: one planner did not serve the rounds, again at twice \
+its heap once out of it: $(cat "${stream_dir}/planner-heaps.txt" \
+"${stream_dir}/exploration.json")"
+[[ ! -e "${stream_dir}/planner/pid" \
+   && -z "$(ls "${campaign_host_gate_root}"/*/charges 2>/dev/null)" ]] \
+  || fail "STREAM-SERVE: the planner outlived its exploration, or its charge"
+stream_fixture stream-serve-dies
+(
+  stream_stubs
+  engine_memory_mb=16384
+  stream_planner_dies() { [[ "$1" != 1 ]] || echo 1; }
+  stream_round_plan() { [[ "$1" != 0 ]] || stream_propose "$2" A; }
+  campaign_obligation_worker() { stream_answer "$4" A ADMITTED SESSION.A; }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  && fail "STREAM-SERVE: a planner that died was started again"
+grep -q 'the planner service on localhost ended with exit 1' \
+    "${stream_dir}/obligations-0001/stderr.log" \
+  && grep -q 'reason=the planner of obligations-0001 failed with exit 1' \
+    "${stream_dir}/explore.log" \
+  && grep -q 'exit 1: java.lang.OutOfMemoryError' "${stream_dir}/explore.log" \
+  && [[ "$(grep -c . "${stream_dir}/planner-heaps.txt")" == 1 ]] \
+  || fail "STREAM-SERVE: a planner's other end did not fail EXPLORE by name: \
+$(cat "${stream_dir}/explore.log")"
+
 # STREAM-4: a planner that states no growth file did not run to completion:
 # refused by name, never read as "nothing exposed".
 stream_fixture stream-4
 (
   stream_stubs
-  run_java_main() { :; }
+  stream_planner() { :; }
   campaign_explore "${stream_dir}" iteration-0000
 ) >/dev/null 2>"${stream_dir}/explore.err" \
   && fail "a round with no growth.jsonl was read as nothing exposed"
@@ -3080,8 +3190,10 @@ stream_fixture stream-5
 (
   campaign_host_available_mb() { echo 30000; }
   campaign_host_total_mb() { echo 30000; }
+  campaign_planner_serve() { stream_planner_serve "$@"; }
   run_java_main() {
-    [[ "$1" == *.ImportGateMain ]] || { stream_planner "$@"; return; }
+    [[ "$1" == *.ImportGateMain ]] \
+      || fail "the step ran an engine main past the gate: $1"
     shift
     [[ "$*" == "--sessions ${stream_dir}/sessions --gate SESSION.A \
 --gated ${stream_dir}/import_gated.txt "* ]] \
@@ -4106,7 +4218,7 @@ the round's growth rows: $*"
         >"${output}"
       return 0
     fi
-    stream_planner "$@"
+    fail "the step ran an engine main GROW does not: $1"
   }
   campaign_instrument() {
     [[ "$1" == "${stream_dir}" \
