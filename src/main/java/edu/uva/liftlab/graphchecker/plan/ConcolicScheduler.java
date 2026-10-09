@@ -141,11 +141,14 @@ public final class ConcolicScheduler {
                     target.add("guards", guards);
                 }
                 // The arms a forced replay forces on the way to the throw
-                // (ForcingTable), for this occurrence: the replay plan
-                // carries them.
-                JsonArray force = ForcingTable.forOccurrence(
-                        loaded.staticScopeMap.forcing(),
-                        throwMethods(loaded.staticScopeMap),
+                // (ForcingTable): its own TARGET_SITE's, for this
+                // occurrence; the replay plan carries them.
+                StaticScopeMap.Site own = ownTarget(loaded.staticScopeMap,
+                        candidate.targetSiteId);
+                JsonArray force = own == null ? new JsonArray()
+                        : ForcingTable.forOccurrence(
+                        loaded.staticScopeMap.forcing(own.siteId),
+                        Collections.singleton(SiteId.methodOf(own.siteId)),
                         observedSites(candidate.branches));
                 if (force.size() > 0) target.add("force", force);
                 executionTask.add("targetBranch", target);
@@ -276,13 +279,18 @@ public final class ConcolicScheduler {
         return guards;
     }
 
-    /** The methods of the declared throws. */
-    private static Set<String> throwMethods(StaticScopeMap map) {
-        Set<String> methods = new LinkedHashSet<>();
+    /** The TARGET_SITE a task's target branch guards: one whose guards,
+     *  else whose chain, name it; null for none. */
+    static StaticScopeMap.Site ownTarget(StaticScopeMap map, String site) {
         for (StaticScopeMap.Site target : map.targetSites()) {
-            methods.add(SiteId.methodOf(target.siteId));
+            if (target.guards.contains(site)) return target;
         }
-        return methods;
+        for (StaticScopeMap.Site target : map.targetSites()) {
+            for (StaticScopeMap.Guard guard : target.chain) {
+                if (guard.siteId().equals(site)) return target;
+            }
+        }
+        return null;
     }
 
     /** The branch sites the recording's occurrence decided. */

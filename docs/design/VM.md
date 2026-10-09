@@ -66,13 +66,14 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Branches.** The weave marks decision sites with `markConcolicBranch(siteId, ...)`; a marked
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
-  **Forcing** (`System.forceNextConcolicBranch(kind, value)`, a forced replay's, PIPELINE §7.10): asked
+  **Forcing** (`System.forceNextConcolicBranch(jump)`, a forced replay's, PIPELINE §7.10): asked
   just before a marker, it binds to that marker's branch alone (`ThreadContext::mark_branch`; a refused
-  marker drops it): the marked `if*` takes the forced arm (`kind` 1, `value` 1 jumps, 0 falls through), a
-  `tableswitch`/`lookupswitch` the case of key `value` (`kind` 2) or its default (`kind` 3, a selector no
-  case has), in place of what its operands decide (`BI` `CONCOLIC_FORCE_BRANCH`, `CONCOLIC_FORCE_SWITCH`),
-  only for a pending marker of the current frame and once; the condition recorded is the forced arm's, and
-  the event states `forced` and `concrete`, the answer it overrode (an if's 1/0, a switch's selector).
+  marker drops it): the marked `if*` jumps or falls through as asked in place of what its operands decide
+  (`BI` `CONCOLIC_FORCE_BRANCH`), only for a pending marker of the current frame, once, and only where the
+  branch's event is recorded (`ThreadContext::recording_branches` and `can_do_concolic`: a branch recording
+  is paused or aborted at is not forced, and the forcing goes); the condition recorded is the forced arm's,
+  and the event states `forced` and `concrete`, the outcome it overrode (1/0).  A switch is never forced.
+  Answers 0, or -1 with no thread context.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
   engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
   program thread (an inheritable thread-local's `childValue` in `Thread.init`,

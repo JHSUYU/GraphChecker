@@ -71,7 +71,7 @@ static JNINativeMethod methods[] = {
                                                         (void *)&JVM_CurrentSymbolicEventId},
     {"markConcolicBranch", "(Ljava/lang/String;I)J",
                                                         (void *)&JVM_MarkConcolicBranch},
-    {"forceNextConcolicBranch", "(II)I",
+    {"forceNextConcolicBranch", "(Z)I",
                                                         (void *)&JVM_ForceNextConcolicBranch},
     {"getConcolicBranchEvents", "()Ljava/lang/String;",
                                                         (void *)&JVM_GetConcolicBranchEvents},

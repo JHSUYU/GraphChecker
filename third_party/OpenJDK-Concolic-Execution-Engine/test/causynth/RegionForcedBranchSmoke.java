@@ -2,18 +2,15 @@
  * System.forceNextConcolicBranch: the marked conditional takes the forced
  * arm whatever its operands decide, its event states {@code forced} and the
  * concrete answer it overrode, and the condition it records is the forced
- * arm's.  Only the marked branch of the marker's own frame is forced, once;
- * a refused marker drops the directive.
+ * arm's.  Only the marked branch of the marker's own frame is forced, once,
+ * and only where its event is recorded; a refused marker drops the
+ * directive; a switch is never forced.
  */
 public final class RegionForcedBranchSmoke {
     private static final class Input {
         int value = 1;
         int other = 10;
     }
-
-    private static final int ARM = 1;
-    private static final int CASE = 2;
-    private static final int DEFAULT = 3;
 
     private static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
@@ -45,7 +42,7 @@ public final class RegionForcedBranchSmoke {
 
         // javac jumps over the then-block when value <= 100: the jump arm
         // is the healthy one here, so falling through (0) is forced.
-        check(System.forceNextConcolicBranch(ARM, 0) == 0,
+        check(System.forceNextConcolicBranch(false) == 0,
                 "the forcing was refused");
         // The marked branch is the next one of this frame: nothing that
         // branches stands between a marker and it.
@@ -54,7 +51,7 @@ public final class RegionForcedBranchSmoke {
         boolean thrown = false;
         try {
             if (input.value > 100) {
-                System.forceNextConcolicBranch(ARM, 0);
+                System.forceNextConcolicBranch(false);
                 inner = System.markConcolicBranch("FORCED.INNER", 1);
                 if (input.value < -5) {
                     throw new IllegalStateException("forced throw");
@@ -72,7 +69,7 @@ public final class RegionForcedBranchSmoke {
         check(plain > 0L && !plainOutcome, "an unforced branch was forced");
 
         // A refused marker drops the directive it was asked of.
-        check(System.forceNextConcolicBranch(ARM, 0) == 0, "refused");
+        check(System.forceNextConcolicBranch(false) == 0, "refused");
         System.pauseConcolicPathCondition();
         check(System.markConcolicBranch("REFUSED", 1) == 0L,
                 "a paused marker was taken");
@@ -84,7 +81,7 @@ public final class RegionForcedBranchSmoke {
 
         // A callee's branch is not the marker's: the helper decides as its
         // operands do, the marked branch after it is forced.
-        check(System.forceNextConcolicBranch(ARM, 0) == 0, "refused");
+        check(System.forceNextConcolicBranch(false) == 0, "refused");
         long framed = System.markConcolicBranch("FRAMED", 1);
         boolean helped = helper(input.value);
         boolean framedOutcome = false;
@@ -94,47 +91,29 @@ public final class RegionForcedBranchSmoke {
         check(framed > 0L && !helped && framedOutcome,
                 "the forcing reached another frame's branch");
 
-        // A tableswitch to a case, then to its default.
-        check(System.forceNextConcolicBranch(CASE, 3) == 0, "refused");
-        System.markConcolicBranch("TABLE.CASE", 1);
+        // A branch recording is paused at is not forced, and the forcing
+        // goes with it: the next marked branch states none.
+        check(System.forceNextConcolicBranch(false) == 0, "refused");
+        long paused = System.markConcolicBranch("PAUSED.AT.BRANCH", 1);
+        System.pauseConcolicPathCondition();
+        boolean pausedOutcome = input.value > 100;
+        System.resumeConcolicPathCondition();
+        long afterPause = System.markConcolicBranch("AFTER.PAUSE", 1);
+        boolean afterPauseOutcome = input.value > 100;
+        check(paused > 0L && afterPause > paused && !pausedOutcome
+                        && !afterPauseOutcome,
+                "a branch whose event is not recorded was forced");
+
+        // A switch is never forced: it takes its selector's case.
+        check(System.forceNextConcolicBranch(true) == 0, "refused");
+        System.markConcolicBranch("TABLE", 1);
         String table;
         switch (input.value) {
             case 1: table = "one"; break;
             case 2: table = "two"; break;
-            case 3: table = "three"; break;
             default: table = "other";
         }
-        check("three".equals(table), "tableswitch not forced: " + table);
-        check(System.forceNextConcolicBranch(DEFAULT, 0) == 0, "refused");
-        System.markConcolicBranch("TABLE.DEFAULT", 1);
-        switch (input.value) {
-            case 1: table = "one"; break;
-            case 2: table = "two"; break;
-            case 3: table = "three"; break;
-            default: table = "other";
-        }
-        check("other".equals(table), "tableswitch default: " + table);
-
-        // A lookupswitch to a case, then to its default.
-        check(System.forceNextConcolicBranch(CASE, 1000) == 0, "refused");
-        System.markConcolicBranch("LOOKUP.CASE", 1);
-        String lookup;
-        switch (input.value) {
-            case 10: lookup = "ten"; break;
-            case 1000: lookup = "thousand"; break;
-            default: lookup = "other";
-        }
-        check("thousand".equals(lookup), "lookupswitch: " + lookup);
-        check(System.forceNextConcolicBranch(DEFAULT, 0) == 0, "refused");
-        System.markConcolicBranch("LOOKUP.DEFAULT", 1);
-        switch (input.other) {
-            case 10: lookup = "ten"; break;
-            case 1000: lookup = "thousand"; break;
-            default: lookup = "other";
-        }
-        check("other".equals(lookup), "lookupswitch default: " + lookup);
-        check(System.forceNextConcolicBranch(9, 0) == -2,
-                "an unknown kind was taken");
+        check("one".equals(table), "a switch was forced: " + table);
 
         String events = System.getConcolicBranchEvents();
         String outerEvent = event(events, "FORCED.OUTER");
@@ -153,22 +132,12 @@ public final class RegionForcedBranchSmoke {
         check(event(events, "FRAMED").contains("\"forced\":true")
                         && event(events, "FRAMED").contains("\"concrete\":1"),
                 "the framed event: " + events);
-        check(event(events, "TABLE.CASE").contains("\"forced\":true")
-                        && event(events, "TABLE.CASE")
-                        .contains("\"concrete\":1"),
-                "the table case event: " + events);
-        check(event(events, "TABLE.DEFAULT").contains("\"forced\":true")
-                        && event(events, "TABLE.DEFAULT")
-                        .contains("\"outcome\":false"),
-                "the table default event: " + events);
-        check(event(events, "LOOKUP.CASE").contains("\"forced\":true")
-                        && event(events, "LOOKUP.CASE")
-                        .contains("\"outcome\":true"),
-                "the lookup case event: " + events);
-        check(event(events, "LOOKUP.DEFAULT").contains("\"forced\":true")
-                        && event(events, "LOOKUP.DEFAULT")
-                        .contains("\"concrete\":10"),
-                "the lookup default event: " + events);
+        check(!event(events, "AFTER.PAUSE").contains("forced"),
+                "a forcing outlived its unrecorded branch: " + events);
+        check(!events.contains("PAUSED.AT.BRANCH"),
+                "a paused branch left an event: " + events);
+        check(!event(events, "TABLE").contains("forced"),
+                "the switch states a forcing: " + events);
 
         // The forced arm's condition is the one recorded: value > 100 held
         // on the outer branch's path, though the run's value is 1.

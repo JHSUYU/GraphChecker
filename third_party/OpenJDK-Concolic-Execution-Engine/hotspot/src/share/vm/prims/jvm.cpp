@@ -615,10 +615,10 @@ JVM_ENTRY(jlong, JVM_MarkConcolicBranch(JNIEnv *env, jclass ignored,
 JVM_END
 
 JVM_ENTRY(jint, JVM_ForceNextConcolicBranch(JNIEnv *env, jclass ignored,
-                                            jint kind, jint value))
+                                            jboolean jump))
   JVMWrapper("JVM_ForceNextConcolicBranch");
 #ifdef ENABLE_CONCOLIC
-  return ConcolicMngr::forceNextBranch(kind, value);
+  return ConcolicMngr::forceNextBranch(jump != JNI_FALSE);
 #else
   return -1;
 #endif

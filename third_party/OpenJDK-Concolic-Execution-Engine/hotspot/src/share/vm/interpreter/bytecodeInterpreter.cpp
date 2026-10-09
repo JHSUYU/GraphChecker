@@ -477,21 +477,6 @@ static SharedFieldVersions::ConcreteBits concolic_top_word(
   }
 }
 
-// A selector no case of a lookupswitch has (its default arm's): the least
-// int none of its `npairs` keys is.  `lpc` is the aligned operand table.
-static jint lookupswitch_absent_key(jint *lpc, int32_t npairs) {
-  jint candidate = min_jint;
-  for (int32_t tries = 0; tries <= npairs; tries++) {
-    bool taken = false;
-    for (int32_t pair = 0; pair < npairs && !taken; pair++) {
-      taken = (jint) Bytes::get_Java_u4((address) &lpc[2 + 2 * pair])
-          == candidate;
-    }
-    if (!taken) return candidate;
-    candidate++;
-  }
-  return candidate;
-}
 #endif
 
 /*
@@ -2029,19 +2014,11 @@ run:
  * forced arm's. */
 #define CONCOLIC_FORCE_BRANCH(cmp)                                             \
   if (ConcolicMngr::ctx != NULL && ConcolicMngr::ctx->forcing()) {             \
-    cmp = ConcolicMngr::ctx->forced_outcome(cmp);                              \
-  }
-/* A forced switch's selector: the forced case's key, or one no case has. */
-#define CONCOLIC_FORCE_SWITCH(key, outside)                                    \
-  if (ConcolicMngr::ctx != NULL && ConcolicMngr::ctx->forcing()) {             \
-    jint forced_key = key;                                                     \
-    int forced_kind = ConcolicMngr::ctx->forced_switch(key, &forced_key);      \
-    if (forced_kind == ThreadContext::FORCE_CASE) key = forced_key;            \
-    else if (forced_kind == ThreadContext::FORCE_DEFAULT) key = (outside);     \
+    cmp = ConcolicMngr::ctx->forced_outcome(cmp,                               \
+        ConcolicMngr::can_do_concolic());                                      \
   }
 #else
 #define CONCOLIC_FORCE_BRANCH(cmp)
-#define CONCOLIC_FORCE_SWITCH(key, outside)
 #endif
       /* comparison operators */
 
@@ -2182,8 +2159,6 @@ run:
           int32_t  low  = Bytes::get_Java_u4((address)&lpc[1]);
           int32_t  high = Bytes::get_Java_u4((address)&lpc[2]);
           int32_t  skip;
-          CONCOLIC_FORCE_SWITCH(key, low > min_jint ? low - 1
-                                : high < max_jint ? high + 1 : key);
           int32_t  raw_key = key;
 #ifdef ENABLE_CONCOLIC
           exp_list_t switch_conditions;
@@ -2244,7 +2219,6 @@ run:
           int      index = -1;
           int      newindex = 0;
           int32_t  npairs = Bytes::get_Java_u4((address) &lpc[1]);
-          CONCOLIC_FORCE_SWITCH(key, lookupswitch_absent_key(lpc, npairs));
           int32_t  remaining = npairs;
           while (--remaining >= 0) {
             lpc += 2;

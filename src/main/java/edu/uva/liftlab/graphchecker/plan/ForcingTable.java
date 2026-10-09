@@ -28,65 +28,53 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * arm, else the OPEN arm (it runs on to a value no constant states, where
  * the fatal may lie), nested deciders alike, each with {@code via}, the
  * method that calls its helper (a decider is forced only in a call from
- * there).  A switch guard of the throw's method is forced to the one case
- * from which the throw is reachable ({@code Guards#switchCase}); a fault
- * call, which no branch decides, is not forced.</p>
+ * there).  A switch guard is not forced (the VM forces an if's arm only),
+ * nor a fault call, which no branch decides: a forced world they take
+ * elsewhere closes before its target, FORCE_DIVERGED.  Each TARGET_SITE row
+ * has its own table, and a task carries its own target's.</p>
  */
 public final class ForcingTable {
-    /** An if's arm: {@link Arm#value} 1 jumps, 0 falls through. */
-    public static final int ARM = 1;
-    /** A switch's case: {@link Arm#value} is its key. */
-    public static final int CASE = 2;
-    /** A switch's default. */
-    public static final int DEFAULT = 3;
-
     private ForcingTable() {
     }
 
-    /** One branch to force, as the VM is asked it
-     *  ({@code System.forceNextConcolicBranch(kind, value)}). */
+    /** One if to force, as the VM is asked it
+     *  ({@code System.forceNextConcolicBranch(jump)}). */
     public static final class Arm {
         public final String siteId;
-        public final int kind;
-        public final int value;
+        /** Whether it jumps (true) or falls through. */
+        public final boolean arm;
         /** The method a decider's helper must be called from, or "". */
         public final String via;
 
-        Arm(String siteId, int kind, int value, String via) {
+        Arm(String siteId, boolean arm, String via) {
             this.siteId = siteId;
-            this.kind = kind;
-            this.value = value;
+            this.arm = arm;
             this.via = via == null ? "" : via;
         }
 
         JsonObject toJson() {
             JsonObject json = new JsonObject();
             json.addProperty("siteId", siteId);
-            if (kind == ARM) json.addProperty("arm", value != 0);
-            if (kind == CASE) json.addProperty("case", value);
-            if (kind == DEFAULT) json.addProperty("default", true);
+            json.addProperty("arm", arm);
             if (!via.isEmpty()) json.addProperty("via", via);
             return json;
         }
 
         @Override
         public String toString() {
-            return siteId + (kind == ARM ? "=" + (value != 0)
-                    : kind == CASE ? " case " + value : " default")
-                    + (via.isEmpty() ? "" : " via " + via);
+            return siteId + "=" + arm + (via.isEmpty() ? "" : " via " + via);
         }
     }
 
     /** SEED: the table of one TARGET_SITE, from its guards, chain and
      *  deciders; a site named twice keeps its first arm. */
-    public static JsonArray of(StaticScopeMap.Site target,
-                               StaticScopeMap.Guards guards) {
+    public static JsonArray of(StaticScopeMap.Site target) {
         Map<String, Arm> table = new LinkedHashMap<String, Arm>();
         for (int index = 0; index < target.guards.size(); index++) {
             String site = target.guards.get(index);
             Boolean arm = target.guardOutcomes.size() > index
                     ? target.guardOutcomes.get(index) : null;
-            branch(table, site, arm, target.siteId, guards);
+            branch(table, site, arm);
             List<StaticScopeMap.Guard> deciders =
                     target.guardDeciders.get(site);
             if (arm != null && deciders != null) {
@@ -94,8 +82,7 @@ public final class ForcingTable {
             }
         }
         for (StaticScopeMap.Guard guard : target.chain) {
-            branch(table, guard.siteId(), guard.outcome(), target.siteId,
-                    guards);
+            branch(table, guard.siteId(), guard.outcome());
             if (guard.outcome() != null) {
                 deciders(table, guard.deciders(), guard.outcome(),
                         SiteId.methodOf(guard.siteId()));
@@ -106,22 +93,12 @@ public final class ForcingTable {
         return json;
     }
 
-    /** One guard: an if at its arm; a switch at the case the throw is
-     *  reachable from. */
+    /** One guard, an if at its arm (a switch states none: not forced). */
     private static void branch(Map<String, Arm> table, String site,
-                               Boolean arm, String throwSite,
-                               StaticScopeMap.Guards guards) {
-        if (table.containsKey(site)) return;
-        if (arm != null) {
-            table.put(site, new Arm(site, ARM, arm ? 1 : 0, ""));
-            return;
+                               Boolean arm) {
+        if (arm != null && !table.containsKey(site)) {
+            table.put(site, new Arm(site, arm, ""));
         }
-        String reaching = guards == null ? null
-                : guards.switchCase(site, throwSite);
-        if (reaching == null) return;
-        table.put(site, StaticScopeMap.Guards.DEFAULT_CASE.equals(reaching)
-                ? new Arm(site, DEFAULT, 0, "")
-                : new Arm(site, CASE, Integer.parseInt(reaching), ""));
     }
 
     /**
@@ -148,8 +125,8 @@ public final class ForcingTable {
         }
         for (StaticScopeMap.Guard decider : chosen.values()) {
             if (table.containsKey(decider.siteId())) continue;
-            table.put(decider.siteId(), new Arm(decider.siteId(), ARM,
-                    decider.outcome() ? 1 : 0, via));
+            table.put(decider.siteId(), new Arm(decider.siteId(),
+                    decider.outcome(), via));
             deciders(table, decider.deciders(), decider.outcome(),
                     SiteId.methodOf(decider.siteId()));
         }
@@ -164,17 +141,12 @@ public final class ForcingTable {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
             String site = optionalString(row, "siteId");
-            if (site.isEmpty() || table.containsKey(site)) continue;
-            String via = optionalString(row, "via");
-            if (row.has("arm")) {
-                table.put(site, new Arm(site, ARM,
-                        row.get("arm").getAsBoolean() ? 1 : 0, via));
-            } else if (row.has("case")) {
-                table.put(site, new Arm(site, CASE,
-                        row.get("case").getAsInt(), via));
-            } else if (row.has("default")) {
-                table.put(site, new Arm(site, DEFAULT, 0, via));
+            if (site.isEmpty() || table.containsKey(site)
+                    || !row.has("arm")) {
+                continue;
             }
+            table.put(site, new Arm(site, row.get("arm").getAsBoolean(),
+                    optionalString(row, "via")));
         }
         return Collections.unmodifiableMap(table);
     }
@@ -207,20 +179,5 @@ public final class ForcingTable {
             }
         }
         return kept;
-    }
-
-    /** Every row of several tables, a site named twice kept once. */
-    public static JsonArray union(List<JsonArray> tables) {
-        Map<String, JsonElement> rows = new LinkedHashMap<String, JsonElement>();
-        for (JsonArray table : tables) {
-            for (JsonElement row : table) {
-                if (!row.isJsonObject()) continue;
-                rows.putIfAbsent(optionalString(row.getAsJsonObject(),
-                        "siteId"), row);
-            }
-        }
-        JsonArray json = new JsonArray();
-        for (JsonElement row : rows.values()) json.add(row.deepCopy());
-        return json;
     }
 }

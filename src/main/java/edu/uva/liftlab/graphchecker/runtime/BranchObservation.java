@@ -46,8 +46,11 @@ final class BranchObservation {
                     expression);
             if (prepared == null) return 0L;
             // A FORCE run's armed occurrence forces this branch at its
-            // marker, which follows (ForcedArms).
-            ForcedArms.direct(active, method, unitIndex);
+            // marker, which follows (ForcedArms); a refusal ends the run.
+            String refused = ForcedArms.direct(active, method, unitIndex);
+            if (!refused.isEmpty() && FocusedReplay.decideForced(refused)) {
+                ConcolicResultPublisher.concludeAtRefusal();
+            }
             return prepared.handle;
         } catch (Throwable throwable) {
             return 0L;
@@ -271,7 +274,7 @@ final class BranchObservation {
         // is added below (CONTRACT-SPEC §2.2).
         JsonObject mapping = decisionRow(method, unitIndex, occurrence,
                 vmEventId, observedOutcome, mappingBaseline, mappingLimit);
-        ForcedArms.mark(active, mapping, read.event, null);
+        ForcedArms.mark(active, mapping, read.event);
         if (conditionIndex >= 0) {
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition =
@@ -314,10 +317,8 @@ final class BranchObservation {
         int mappingLimit = conditionIndices.isEmpty()
                 ? baseline : conditionIndices.get(
                 conditionIndices.size() - 1) + 1;
-        JsonObject mapping = decisionRow(method, unitIndex, occurrence,
-                vmEventId, expected.caseArm(), mappingBaseline, mappingLimit);
-        ForcedArms.mark(active, mapping, read.event, expected.caseKeys);
-        active.branchMappings.add(mapping);
+        active.branchMappings.add(decisionRow(method, unitIndex, occurrence,
+                vmEventId, expected.caseArm(), mappingBaseline, mappingLimit));
         for (Integer conditionIndex : conditionIndices) {
             JsonObject predicate = decisionRow(method, unitIndex, occurrence,
                     vmEventId, null, mappingBaseline, mappingLimit);

@@ -104,57 +104,6 @@ public class ActivationGuardsTest {
         }
     }
 
-    /**
-     * A switch guard of the throw is forced to the one case the throw is
-     * reachable from ({@code plan.ForcingTable}): {@code pick(k)} throws on
-     * {@code case 2} and returns on the others; {@code fallback(k)} throws on
-     * its default.  A switch whose every arm reaches the throw names none.
-     */
-    @Test
-    public void aSwitchGuardNamesTheOneCaseTheThrowIsReachableFrom() {
-        G.reset();
-        Options.v().set_allow_phantom_refs(true);
-        SootClass object = library("java.lang.Object", null, 0);
-        library("java.lang.IllegalStateException", object, 0);
-        SootClass type = application(T, object, 0);
-        Object[][] rows = {
-                {"case 2 throws", switching(type, "pick", false), "2"},
-                {"the default throws", switching(type, "fallback", true),
-                        StaticScopeMap.Guards.DEFAULT_CASE}};
-        for (Object[] row : rows) {
-            String method = (String) row[1];
-            StaticScopeMap.Guards guards = SiteControlDependence.over(
-                    Collections.singleton(method + "#u4"));
-            assertEquals((String) row[0], row[2],
-                    guards.switchCase(method + "#u1", method + "#u4"));
-            assertEquals("no switch at a plain unit", null,
-                    guards.switchCase(method + "#u0", method + "#u4"));
-        }
-    }
-
-    /** {@code name(int k)}: {@code switch (k) {case 1: case 2:} ...}, the
-     *  throw at unit 4 reached from case 2, or from the default. */
-    private static String switching(SootClass type, String name,
-                                    boolean throwsOnDefault) {
-        IntType i = IntType.v();
-        SootMethod method = method(type, name,
-                Collections.<Type>singletonList(i), VoidType.v(),
-                Modifier.STATIC);
-        Local k = local(method, "i0", i);
-        RefType failure = RefType.v("java.lang.IllegalStateException");
-        Local thrown = local(method, "r0", failure);
-        Unit leave = J.newReturnVoidStmt();
-        Unit raise = J.newAssignStmt(thrown, J.newNewExpr(failure));
-        Unit doThrow = J.newThrowStmt(thrown);
-        Unit dispatch = J.newTableSwitchStmt(k, 1, 2,
-                throwsOnDefault ? Arrays.asList(leave, leave)
-                        : Arrays.asList(leave, raise),
-                throwsOnDefault ? raise : leave);
-        body(method, J.newIdentityStmt(k, J.newParameterRef(i, 0)),
-                dispatch, leave, raise, doThrow);
-        return method.getSignature();
-    }
-
     private static Set<String> sites(List<StaticScopeMap.Guard> chain) {
         Set<String> found = new TreeSet<>();
         for (StaticScopeMap.Guard guard : chain) found.add(guard.siteId());

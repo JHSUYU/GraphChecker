@@ -51,8 +51,7 @@ private:
     std::string code_position;
     std::vector<int> condition_indices;
     // System.forceNextConcolicBranch forced this branch: it took `outcome`
-    // (a switch: the case of `outcome`'s conditions) in place of what its
-    // operands decide, `concrete` (an if's outcome 1/0, a switch's selector).
+    // in place of what its operands decide, `concrete` (1 or 0).
     bool forced;
     jlong concrete;
   };
@@ -123,13 +122,11 @@ private:
   std::string _pending_branch_site_id;
   int _pending_branch_occurrence;
   // What System.forceNextConcolicBranch asked of the next marker
-  // (_next_force_*), and what that marker binds to its branch
-  // (_pending_force_*): a FORCE_* kind and its arm or key; and, once the
-  // branch took it, the concrete answer it overrode.
-  int _next_force_kind;
-  jint _next_force_value;
-  int _pending_force_kind;
-  jint _pending_force_value;
+  // (_next_force), and what that marker binds to its branch
+  // (_pending_force): FORCE_NONE, or the arm, 1 jumping and 0 falling
+  // through; and, once the branch took it, the concrete answer it overrode.
+  int _next_force;
+  int _pending_force;
   bool _pending_forced;
   jlong _pending_concrete;
 //  std::set<oop> _allocated_objs;
@@ -255,22 +252,21 @@ public:
   jlong mark_branch(const char *site_id, int occurrence);
 
   // Forcing (System.forceNextConcolicBranch): the runtime asks it of the
-  // next marker; the marked conditional bytecode then asks forced_outcome or
-  // forced_key, which answer the forced arm instead of the concrete one only
-  // for a pending marker of the current frame, and remember the concrete
-  // answer for the branch's event.  NONE answers the concrete one.
-  enum { FORCE_NONE = 0, FORCE_ARM = 1, FORCE_CASE = 2, FORCE_DEFAULT = 3 };
-  bool force_next_branch(int kind, jint value);
+  // next marker; the marked conditional bytecode then asks forced_outcome,
+  // which answers the forced arm instead of the concrete one only for a
+  // pending marker of the current frame whose branch is recorded (`recorded`:
+  // the interpreter records it, ConcolicMngr::can_do_concolic), and
+  // remembers the concrete answer for the branch's event.  A switch is never
+  // forced.
+  enum { FORCE_NONE = -1 };
+  void force_next_branch(bool jump);
   // A forcing never outlives the marker it was asked of, nor one refused.
   void drop_next_force();
-  inline bool forcing() const {
-    return _pending_force_kind != FORCE_NONE;
-  }
-  bool forced_outcome(bool concrete);
-  // A switch's: FORCE_CASE with `key` set to the forced case's key,
-  // FORCE_DEFAULT (the interpreter picks a selector no case has), or
-  // FORCE_NONE.
-  int forced_switch(jint concrete, jint *key);
+  inline bool forcing() const { return _pending_force != FORCE_NONE; }
+  bool forced_outcome(bool concrete, bool recorded);
+  // Whether a marked branch executing now records its event and
+  // conditions: recording live, admitted, unpaused, in a region.
+  bool recording_branches() const;
   void record_branch_condition(Expression *expression, bool outcome,
                                int opcode);
   void record_branch_conditions(const exp_list_t &expressions, bool outcome,

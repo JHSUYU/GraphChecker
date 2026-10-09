@@ -71,9 +71,8 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
           ? 0 : (jlong) jt->osthread()->thread_id()),
       _pending_branch_active(false),
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
-      _pending_branch_occurrence(0), _next_force_kind(FORCE_NONE),
-      _next_force_value(0), _pending_force_kind(FORCE_NONE),
-      _pending_force_value(0), _pending_forced(false),
+      _pending_branch_occurrence(0), _next_force(FORCE_NONE),
+      _pending_force(FORCE_NONE), _pending_forced(false),
       _pending_concrete(0) {
   _pending_view_removal_argument = NULL;
   _streams = NULL;
@@ -221,53 +220,41 @@ jlong ThreadContext::mark_branch(const char *site_id, int occurrence) {
   _pending_branch_owner_frame = owner_frame;
   _pending_branch_active = true;
   // The forcing asked of this marker, if any, is this branch's alone.
-  _pending_force_kind = _next_force_kind;
-  _pending_force_value = _next_force_value;
-  _next_force_kind = FORCE_NONE;
-  _next_force_value = 0;
+  _pending_force = _next_force;
+  _next_force = FORCE_NONE;
+  _pending_forced = false;
+  _pending_concrete = 0;
   return _pending_branch_event_id;
 }
 
 void ThreadContext::drop_next_force() {
-  _next_force_kind = FORCE_NONE;
-  _next_force_value = 0;
+  _next_force = FORCE_NONE;
 }
 
-bool ThreadContext::force_next_branch(int kind, jint value) {
-  if (kind != FORCE_ARM && kind != FORCE_CASE && kind != FORCE_DEFAULT) {
-    return false;
-  }
-  _next_force_kind = kind;
-  _next_force_value = value;
-  return true;
+void ThreadContext::force_next_branch(bool jump) {
+  _next_force = jump ? 1 : 0;
 }
 
-bool ThreadContext::forced_outcome(bool concrete) {
-  // Only the branch the marker of the current frame marked, and only an
-  // if's arm: a nested accessor's own branch is not the marked site.
-  if (_pending_force_kind != FORCE_ARM || !_pending_branch_active
+bool ThreadContext::recording_branches() const {
+  return !_aborted && _path_condition_enabled && _path_condition_admitted
+      && _path_condition_pause_depth == 0 && !_region_stack.empty();
+}
+
+bool ThreadContext::forced_outcome(bool concrete, bool recorded) {
+  // Only the branch the marker of the current frame marked: a nested
+  // accessor's own branch is not the marked site.
+  if (_pending_force == FORCE_NONE || !_pending_branch_active
       || !_s_stack.is_current_frame(_pending_branch_owner_frame)) {
     return concrete;
   }
-  // One branch takes it: the marked one.
-  _pending_force_kind = FORCE_NONE;
+  const int forced = _pending_force;
+  _pending_force = FORCE_NONE;
+  // A branch whose event is not recorded (recording paused or aborted at
+  // it) is not forced: no row would say the run left its arm.
+  if (!recorded || !recording_branches()) return concrete;
   _pending_forced = true;
   _pending_concrete = concrete ? 1 : 0;
-  return _pending_force_value != 0;
-}
-
-int ThreadContext::forced_switch(jint concrete, jint *key) {
-  if ((_pending_force_kind != FORCE_CASE
-       && _pending_force_kind != FORCE_DEFAULT) || !_pending_branch_active
-      || !_s_stack.is_current_frame(_pending_branch_owner_frame)) {
-    return FORCE_NONE;
-  }
-  int kind = _pending_force_kind;
-  _pending_force_kind = FORCE_NONE;
-  _pending_forced = true;
-  _pending_concrete = concrete;
-  if (kind == FORCE_CASE) *key = _pending_force_value;
-  return kind;
+  return forced != 0;
 }
 
 void ThreadContext::cancel_pending_branch() {
@@ -276,8 +263,7 @@ void ThreadContext::cancel_pending_branch() {
   _pending_branch_owner_frame = NULL;
   _pending_branch_site_id.clear();
   _pending_branch_occurrence = 0;
-  _pending_force_kind = FORCE_NONE;
-  _pending_force_value = 0;
+  _pending_force = FORCE_NONE;
   _pending_forced = false;
   _pending_concrete = 0;
 }
@@ -301,8 +287,7 @@ void ThreadContext::record_branch_condition(Expression *expression,
 
 void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
                                               bool outcome, int opcode) {
-  if (_aborted || !_path_condition_enabled || !_path_condition_admitted
-      || _path_condition_pause_depth > 0 || _region_stack.empty()) {
+  if (!recording_branches()) {
     // A marker identifies one concrete branch execution, not the next branch
     // after recording happens to resume.
     cancel_pending_branch();

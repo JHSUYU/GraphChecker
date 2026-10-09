@@ -785,11 +785,12 @@ jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
   return ctx->mark_branch(site_id, occurrence);
 }
 
-jint ConcolicMngr::forceNextBranch(int kind, int value) {
+jint ConcolicMngr::forceNextBranch(bool jump) {
   // Called while the weave's prefix holds the path condition paused, before
   // its marker: only the thread's context matters, not can_do_concolic().
   if (!has_active_context()) return -1;
-  return ctx->force_next_branch(kind, value) ? 0 : -2;
+  ctx->force_next_branch(jump);
+  return 0;
 }
 
 std::string ConcolicMngr::getBranchEvents() {

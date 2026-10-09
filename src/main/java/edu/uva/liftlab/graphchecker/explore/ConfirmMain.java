@@ -254,9 +254,12 @@ public final class ConfirmMain {
 
         // The schedule half: the recorded order is not held (only a WAKE
         // still waits for what it followed); the model's order is held by
-        // the ORDER rows of the edges.
+        // the ORDER rows of the edges.  A forced path's session ran a forced
+        // world to its forced target: its schedule is the recording's, not
+        // that one's (PIPELINE §7.10).
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
-                witness.sessionId,
+                witness.session.forced() ? witness.seedSessionId
+                        : witness.sessionId,
                 Collections.singletonList(witness.anchor.id()), false, out);
         if (cut == null) {
             throw new Refused("the selected session " + witness.sessionId

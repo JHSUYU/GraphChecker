@@ -161,17 +161,6 @@ public final class StaticScopeMap {
         default List<String> callersOf(String method) {
             return Collections.<String>emptyList();
         }
-
-        /** {@link #switchCase}'s answer for a switch's default arm. */
-        String DEFAULT_CASE = "default";
-
-        /** The case of the switch at {@code switchSiteId} from which
-         *  {@code siteId}, in the same method, is reachable (the switch a
-         *  barrier): its key, {@link #DEFAULT_CASE}, or null where none or
-         *  several are ({@link ForcingTable}). */
-        default String switchCase(String switchSiteId, String siteId) {
-            return null;
-        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -522,13 +511,14 @@ public final class StaticScopeMap {
     /** Each configuration root's reads no plant stands at, by source id. */
     private final Map<String, List<String>> concreteConfigurationReads;
 
-    /** The TARGET_SITE rows' forcing tables, one ({@link ForcingTable}). */
-    private final JsonArray forcing;
+    /** Each TARGET_SITE row's forcing table ({@link ForcingTable}), by
+     *  its site id. */
+    private final Map<String, JsonArray> forcing;
 
     private StaticScopeMap(List<Site> sites,
                            Map<String, Set<String>> regionMethods,
                            Map<String, List<String>> concreteReads,
-                           JsonArray forcing) {
+                           Map<String, JsonArray> forcing) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
@@ -536,9 +526,20 @@ public final class StaticScopeMap {
         this.forcing = forcing;
     }
 
-    /** The declared throw's forcing table ({@link ForcingTable}), a copy. */
-    public JsonArray forcing() {
-        return forcing.deepCopy();
+    /** The forcing table of the TARGET_SITE at {@code targetSiteId}
+     *  ({@link ForcingTable}), a copy; empty where it has none. */
+    public JsonArray forcing(String targetSiteId) {
+        JsonArray table = forcing.get(targetSiteId);
+        return table == null ? new JsonArray() : table.deepCopy();
+    }
+
+    /** Every site some TARGET_SITE row's table forces. */
+    public Set<String> forcedSites() {
+        Set<String> sites = new LinkedHashSet<String>();
+        for (JsonArray table : forcing.values()) {
+            sites.addAll(ForcingTable.read(table).keySet());
+        }
+        return sites;
     }
 
     /** The kind of a configuration root's row. */
@@ -920,7 +921,7 @@ public final class StaticScopeMap {
             }
             JsonObject row = row(guarded);
             if (TARGET_SITE.equals(site.role)) {
-                JsonArray force = ForcingTable.of(guarded, guards);
+                JsonArray force = ForcingTable.of(guarded);
                 if (force.size() > 0) row.add(FORCE, force);
             }
             rows.add(row);
@@ -1324,7 +1325,8 @@ public final class StaticScopeMap {
         List<Site> sites = new ArrayList<Site>();
         Map<String, List<String>> concreteReads =
                 new LinkedHashMap<String, List<String>>();
-        List<JsonArray> forcing = new ArrayList<JsonArray>();
+        Map<String, JsonArray> forcing =
+                new LinkedHashMap<String, JsonArray>();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
             if (CONFIG_KEY.equals(optionalString(row, "kind"))) {
                 concreteReads.put(optionalString(row, "sourceId"),
@@ -1334,7 +1336,8 @@ public final class StaticScopeMap {
             }
             if (!SITE_KIND.equals(optionalString(row, "kind"))) continue;
             if (row.has(FORCE) && row.get(FORCE).isJsonArray()) {
-                forcing.add(row.getAsJsonArray(FORCE));
+                forcing.put(optionalString(row, "siteId"),
+                        row.getAsJsonArray(FORCE));
             }
             List<String> guards = strings(row, "guards");
             List<Boolean> outcomes = new ArrayList<Boolean>();
@@ -1380,7 +1383,7 @@ public final class StaticScopeMap {
                     (int) optionalLongInteger(row, "demandDistance", -1L)));
         }
         return new StaticScopeMap(sites, readRegions(file), concreteReads,
-                ForcingTable.union(forcing));
+                Collections.unmodifiableMap(forcing));
     }
 
     /** A row's {@code constructionOnly}. */
@@ -1441,7 +1444,7 @@ public final class StaticScopeMap {
         return new StaticScopeMap(new ArrayList<Site>(),
                 Collections.<String, Set<String>>emptyMap(),
                 Collections.<String, List<String>>emptyMap(),
-                new JsonArray());
+                Collections.<String, JsonArray>emptyMap());
     }
 
     public boolean stated() {

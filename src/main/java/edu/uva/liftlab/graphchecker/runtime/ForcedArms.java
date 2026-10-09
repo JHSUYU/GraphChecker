@@ -1,20 +1,16 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.GapClass;
-import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.plan.ForcingTable;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 
-import java.util.List;
 import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * THE FORCED REPLAY (PIPELINE §7.10): in a FORCE run, the declared
@@ -91,52 +87,61 @@ final class ForcedArms {
     /**
      * Asks the VM to force the branch the woven prefix marks next, when the
      * armed activation reaches a site of its table; called just before the
-     * marker ({@link BranchObservation#prepare}).
+     * marker ({@link BranchObservation#prepare}).  A refusal -- a negative
+     * status, or the call failing -- leaves the branch to its operands, so
+     * the run can force nothing: it is FORCE_DIVERGED at once.
+     *
+     * @return that reason, which decides the run
+     *         ({@link FocusedReplay#decideForced}), or ""
      */
-    static void direct(ActiveRegion active, String method, int unitIndex) {
-        if (armed == 0L || active.token != armed) return;
+    static String direct(ActiveRegion active, String method, int unitIndex) {
+        if (armed == 0L || active.token != armed) return "";
         Map<String, ForcingTable.Arm> table = active.activation.forcedArms;
         ForcingTable.Arm arm = table.get(SiteId.render(method, unitIndex));
-        if (arm == null || !arm.via.isEmpty() && !JvmNames.stable(arm.via)
-                .equals(Identity.callerFrame())) {
-            return;
+        if (arm == null || !arm.via.isEmpty() && !calledFrom(arm.via)) {
+            return "";
         }
+        String refused;
         try {
-            ConcolicVmBroker.engine().forceNextBranch(arm.kind, arm.value);
-        } catch (Throwable refused) {
-            RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
-                    arm.siteId, "the VM refused to force this branch ("
-                            + ConcolicRegionRuntime.rootCause(refused)
-                            + "), so it took the arm its operands decide");
+            int status = ConcolicVmBroker.engine().forceNextBranch(arm.arm);
+            refused = status == 0 ? "" : "status " + status;
+        } catch (Throwable thrown) {
+            refused = ConcolicRegionRuntime.rootCause(thrown);
+        }
+        if (refused.isEmpty()) return "";
+        synchronized (LOCK) {
+            if (active.token != armed) return "";
+            diverged = FORCE_DIVERGED + ": the VM refused to force "
+                    + arm.siteId + " (" + refused + "), so the branch took"
+                    + " the arm its operands decide";
+            disarmed = armed;
+            armed = 0L;
+            return diverged;
         }
     }
 
+    /** Whether the running helper was called from {@code via}: the frame
+     *  one level out, as {@code Identity} enters it. */
+    static boolean calledFrom(String via) {
+        return JvmNames.stable(via).equals(Identity.callerFrame());
+    }
+
     /**
-     * States on one decision's row what the VM forced ({@code forced}, and
-     * {@code concreteOutcome}: an if's arm its operands decided, a switch's
-     * whether its selector had a case) and, at the first decision forced
-     * against its concrete arm, opens the forced world.  {@code event} is
-     * the decision's VM branch event; {@code caseKeys}, a switch's, else
-     * null.
+     * States on one if's decision row what the VM forced ({@code forced},
+     * and {@code concreteOutcome}, the arm its operands decided) and, at the
+     * first decision forced against its concrete arm, opens the forced
+     * world.  {@code event} is the decision's VM branch event.
      */
     static void mark(ActiveRegion active, JsonObject mapping,
-                     JsonObject event, List<Integer> caseKeys) {
+                     JsonObject event) {
         if (event == null || !optionalBool(event, "forced", false)) return;
-        long concrete = optionalLongInteger(event, "concrete", 0L);
-        boolean outcome = optionalBool(mapping, "outcome", false);
-        boolean concreteOutcome = caseKeys == null ? concrete != 0L
-                : caseKeys.contains(Integer.valueOf((int) concrete));
-        ForcingTable.Arm arm = active.activation.forcedArms.get(
-                optionalString(mapping, "siteId"));
-        // A switch forced to a case other than its selector's, or to its
-        // default from a case, took another successor than its selector.
-        boolean against = caseKeys == null || arm == null
-                ? concreteOutcome != outcome
-                : arm.kind == ForcingTable.CASE ? concrete != arm.value
-                : concreteOutcome;
+        boolean concreteOutcome =
+                optionalLongInteger(event, "concrete", 0L) != 0L;
         mapping.addProperty("forced", true);
         mapping.addProperty("concreteOutcome", concreteOutcome);
-        if (!against) return;
+        if (concreteOutcome == optionalBool(mapping, "outcome", false)) {
+            return;
+        }
         mapping.addProperty(AGAINST, true);
         long seq = optionalLongInteger(mapping, "vmEventId", 0L);
         if (seq <= 0L || active.token != armed) return;
@@ -237,6 +242,21 @@ final class ForcedArms {
         return reason;
     }
 
+    /** Why the run never reached its forced target -- its FORCE_DIVERGED
+     *  verdict detail -- or "" once it did. */
+    static String unreached() {
+        synchronized (LOCK) {
+            return target.isEmpty() ? verdictDetail() : "";
+        }
+    }
+
+    /** A NOT_ADMITTED verdict's detail; called under {@link #LOCK}. */
+    private static String verdictDetail() {
+        return !diverged.isEmpty() ? diverged : FORCE_DIVERGED + ": "
+                + (entered ? "the declared occurrence never closed"
+                : "the declared occurrence never ran");
+    }
+
     /** The FORCE obligation's verdict at the run's end. */
     static ObligationResult verdict(String obligationId, String sessionId) {
         synchronized (LOCK) {
@@ -251,10 +271,7 @@ final class ForcedArms {
                                 + (ended.isEmpty() ? "unclosed" : ended));
             }
             return ObligationResult.of(obligationId, Verdict.NOT_ADMITTED,
-                    sessionId, !diverged.isEmpty() ? diverged
-                            : FORCE_DIVERGED + ": " + (entered
-                            ? "the declared occurrence never closed"
-                            : "the declared occurrence never ran"));
+                    sessionId, verdictDetail());
         }
     }
 
