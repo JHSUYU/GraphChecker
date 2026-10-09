@@ -828,9 +828,11 @@ public final class ScheduleLog {
     }
 
     /**
-     * Marks this run cut at its witness ({@link ScheduleEvent#WITNESS}):
-     * what it makes after the declared occurrence observed the fatal is not
-     * its question, and the run ends there.
+     * Marks this run cut where it ended with its session standing ({@link
+     * ScheduleEvent#WITNESS}): at its witness, at a FORCE run's forced
+     * target, or at a stall after a flip was taken ({@code
+     * ConcolicResultPublisher#conclude}).  What it would make after is not
+     * its question, and a replay held to its order waits for none of it.
      */
     static void witnessed() {
         if (!RecordingWindow.opened()) return;

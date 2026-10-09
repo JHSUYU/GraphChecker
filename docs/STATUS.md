@@ -110,10 +110,10 @@ final once its `.smt` was read against Solr 8.11.4 (CHECKING §2); "open" names 
 | solr-bugs-tra-start-overwrite | - | selector declared (6d8dfef8c), not run | open: needs Z2 (stale aliases view) |
 | solr-adhoc-05 | sg1, SG1 | RUN_DEFECT TOPOLOGY_DIVERGENCE (poll wake numbers; fixed on solr-explore e515eeddf) | rerun |
 | solr-adhoc-07 | sg1, SG1 | UNSAT_CLOSED, FIXED_POINT, z3 unsat, 4 leaves | open: hand reading |
-| solr-adhoc-09 | sg1, SG1 | UNSAT_CLOSED, FIXED_POINT, z3 unsat, 13 leaves | open: hand reading |
-| solr-adhoc-10 | sg1, SG1 | RUN_DEFECT: PLAN_CLOSURE_CUT (4339 occurrences > 1024; over-wide demand, solr-explore 1a/1b/3i) | rerun |
+| solr-adhoc-09 | solr-explore b37d67559, PE5 | UNSAT_CLOSED, FIXED_POINT: 9 tasks, 60 obligations, 1,411 s (SG2-5 on system/solr: 70 tasks, wave 4, > 7,000 obligations); `confinedWriters` 6, none the anchor's `DeleteReplicaCmd` state | open: hand reading |
+| solr-adhoc-10 | solr-explore b37d67559, PE5 | plans whole: 356 tasks (SG1: 4,339, cut at 1,024); its seed replay failed in the workload (a ZooKeeper session expired, `createConfigSet` 500) behind the client's routing divergence | rerun once the client's live-node order is fixed (M) |
 | solr-adhoc-13 | sg1, SG1 | seed missed its anchor (unregistered test client; fixed solr-body/gc/solr-body) | rerun |
-| solr-adhoc-14 | sg1, SG1 | closure growth (re-keyed arms, solr-explore 3iii) | rerun |
+| solr-adhoc-14 | solr-explore b37d67559, PE5 | plans 178 tasks (SG1: 232), stopped after PLAN | its closure is dominated by `SolrZkClient`'s `lambda_exists_2`/`_3` capture writers: 1,787 kept as `ESCAPED` (their captures mentioned under a second causal context), 2,652 dropped as `CONFINED`; rerun with the full budget (SG1 ran 10,660 s) |
 | solr-adhoc-19 | sg1, SG1 | stopped: seed replay 183 give-ups (Solr stall classes, solr-body) | rerun |
 | solr-adhoc-21 | sg1, SG1 | RUN_DEFECT TOPOLOGY_DIVERGENCE (as 05) | rerun |
 | solr-adhoc-31 | sg1, SG1 | FATAL_TARGET_NOT_IN_WINDOW (unregistered base client; fixed) | rerun |
@@ -432,21 +432,35 @@ Correctness:
     under the next. The open-arm judgment reads answers by flip; the proposal side is unchanged.
 64. An arm's key names a factor member only by what it delivered the task (`gc/explore/Corpus#inputShape`:
     its handoffs, its writes at the guard's locations, whether it wrote state the task's region reads
-    on any arm, `StaticScopeMap#readCarriers`), not by
+    on any arm, its folded regions' included, `StaticScopeMap#readLocations`), not by
     having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and delivered
     nothing). Known limit: a member's write the recording states at no write site (unwoven code, an
     unrecorded store) re-keys no arm, so an arm settled in one world may stand for another whose
     member wrote differently there.
 65. PLAN does not cross from a reader that never touched a demanded field to a writer whose objects
     are all unreachable from the reader over the recorded heap and, with every recorded holder
-    above them, mentioned under one causal context (one tick, one served request, one client root)
-    that is not the reader's (`gc/causynth/RecordedHeap#confinement`, `DemandWalk#holdsOthersOnly`;
+    above them, mentioned under one causal context (one tick, one served request, one client root:
+    a request key in its recording window, `RuntimeRegionPlanner#causalContext`; a turn begun in
+    an older window names none) that is not the reader's (`gc/causynth/RecordedHeap#confinement`,
+    `DemandWalk#holdsOthersOnly`;
     PLAN's log and index count `CONFINED` and the `ESCAPED` writers kept). Known limit: the recorded
     heap is partial, so a hand-off through untraced code between two contexts -- an unwoven cache
     two requests share, code woven outside the trace methods, lambda bodies included -- is not
     seen, nor one only a counterfactual world would make; every drop is a DIAGNOSTIC
     `CLOSURE_CONFINED` row and result.json `confinedWriters`, which an UNSAT reading checks
     (CHECKING trap 22).
+66. A call's result aliases what an application method's own body returns
+    (`SeedBackwardStaticAnalyzer#returnedOperands`), but an abstract or interface method's
+    implementations are not read: a helper reached only through an interface that returns its
+    argument loses the alias, and a mutation through its result is no field mutation.
+67. A constructor's store into its own object keeps a calls-into guard only where both of its arms
+    build the object (`Guards#choosingCallsInto`): one arm building a new object and the other
+    handing an existing one on (`if (c) submit(new Task(x)) else submit(existing)`) decides which
+    object the hand-off carries, and that guard is dropped from the constructor's store; it stays
+    a guard of the hand-off's own store.
+68. A stall settles the questions still open NOT_ADMITTED even when a schedule hold of the engine's
+    was live then (the owner's simplification): the verdict names the hold
+    (`ScheduleLog#holding`), so an engine-made stall is told apart, but it is not asked again.
 60. hdfs-adhoc-39's verdict varies run to run on one body: its open arm (`BlockInfo.getBlockUCState()`
     `#u2=true` at nn0's append) closes only when every path's flip is answered, and which paths
     the closure grows and which worlds they ask differ between runs (base: OA4 RUN_DEFECT, OA5
