@@ -7,14 +7,17 @@ import edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import org.junit.Test;
 
 /**
  * The realized order a native reproduction holds (PIPELINE §10b): the
- * confirmed schedule from a moved root's mint on, reduced to one edge per
- * context switch; the clock (WAKE, END) is never a before, an END never an
- * after.
+ * confirmed schedule from where a moved root's mint occurrence opened on,
+ * reduced to one edge per context switch; the clock (WAKE, END) is never a
+ * before, an END never an after.
  */
 public class RealizedOrderTest {
     private final List<ScheduleEvent> schedule = new ArrayList<ScheduleEvent>();
@@ -25,10 +28,13 @@ public class RealizedOrderTest {
                 0, occurrence, ""));
     }
 
+    private final Map<String, Long> marks = new HashMap<String, Long>();
+
     private List<String> edges(String... mints) {
         List<String> edges = new ArrayList<String>();
         for (ScheduleEvent[] edge : RealizedOrder.edges(schedule,
-                new java.util.HashSet<String>(Arrays.asList(mints)))) {
+                RealizedOrder.from(schedule, marks,
+                        new HashSet<String>(Arrays.asList(mints))))) {
             edges.add(edge[0].site() + "<" + edge[1].site());
         }
         return edges;
@@ -49,6 +55,19 @@ public class RealizedOrderTest {
         event(Kind.SEND, "b", "b2", "o2");         // b-wake already after a3
         assertEquals(Arrays.asList("a2<b1", "b1<c-wake", "c1<a3",
                 "a3<b-wake"), edges("root"));
+    }
+
+    /** An occurrence that makes no event of its own (a clock read's) starts
+     *  the order where it opened, its schedule mark. */
+    @Test
+    public void aMintWithoutEventsStartsWhereItOpened() {
+        event(Kind.SEND, "a", "early", "o0");
+        event(Kind.RECV, "b", "opened", "o1");     // the mint opened before
+        event(Kind.SEND, "a", "a1", "o0");
+        marks.put("root", 1L);
+        assertEquals(Arrays.asList("opened<a1"), edges("root"));
+        marks.put("root", 3L);
+        assertEquals(Collections.<String>emptyList(), edges("root"));
     }
 
     @Test

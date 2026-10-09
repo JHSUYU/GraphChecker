@@ -580,11 +580,8 @@ public final class ConfirmMain {
             throw new Refused("the session CONFIRM saw (" + confirmedSession
                     + ") is not there, so its order cannot be held");
         }
-        SessionReader confirmed = SessionReader.read(SessionDir.of(
-                confirmedSession.getParent().getParent(),
-                confirmedSession.getFileName().toString()));
-        // The order from the roots on: the occurrences their ROOT rows are
-        // minted at.
+        // The order from the roots on: from where the occurrences their ROOT
+        // rows are minted at opened.
         Set<String> mints = new LinkedHashSet<String>();
         for (JsonObject row : rows) {
             if (RecordingPlant.ROOT.equals(optionalString(row,
@@ -592,7 +589,9 @@ public final class ConfirmMain {
                 mints.add(optionalString(row, RecordingPlant.OCCURRENCE));
             }
         }
-        List<JsonObject> realized = RealizedOrder.rows(confirmed, mints);
+        List<JsonObject> realized = RealizedOrder.rows(SessionDir.of(
+                confirmedSession.getParent().getParent(),
+                confirmedSession.getFileName().toString()).schedule(), mints);
         rows.addAll(realized);
         if (rows.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "

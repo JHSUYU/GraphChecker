@@ -2212,9 +2212,10 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   saw is `final/confirm.json`'s `sessionId` (`campaign_confirmed_session`): the selected session
   itself when it realized the claim, else CONFIRM's replay, in `final/confirm/sessions/` or an
   exploration attempt's `witness-confirm/NNNN/sessions/`; a session not there refuses the plant.
-  Its schedule from the first event of a ROOT row's mint occurrence on is held: every later event
-  is after the moved roots in that world, and a root's effect reaches what the trace records no
-  edge of too (solr-bugs-restore-construction: a ZooKeeper session fault at the Overseer's
+  Its schedule from where a ROOT row's mint occurrence opened on is held (the occurrence's schedule
+  mark, or its first event: a clock read's occurrence makes no event of its own, solr-18406):
+  every later event is after the moved roots' occurrences began in that world, and a root's
+  effect reaches what the trace records no edge of too (solr-bugs-restore-construction: a ZooKeeper session fault at the Overseer's
   `writePendingUpdates` ends that Overseer, a new one is elected and runs the second RESTORE, and
   the old one's shutdown interrupts its first RESTORE task, which in the confirmed session waited
   until then; natively that task finished first, 0/10, with every root planted). Before the roots

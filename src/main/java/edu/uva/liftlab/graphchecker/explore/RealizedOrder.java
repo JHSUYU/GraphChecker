@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -25,9 +26,10 @@ import java.util.Set;
  * <p>The order is the confirmed session's schedule (ScheduleLog's total
  * order of the events that cross a thread or a node: SEND, RECV, a store's
  * WRITE, START, CLAIM, WAKE, END, each named by kind, context, site and k,
- * the one identity both passes compute) from the first event of a moved
- * root's mint occurrence on: every later event is after the root in the
- * world CONFIRM saw, and the root's effect reaches what the trace records
+ * the one identity both passes compute) from where a moved root's mint
+ * occurrence opened on (its schedule mark, or its first event: a clock
+ * read's occurrence makes no event of its own, solr-18406): every later
+ * event is after the root's occurrence began in the world CONFIRM saw, and the root's effect reaches what the trace records
  * no edge of as well (restore's fault ends the Overseer, a new one is
  * elected and the old one's shutdown interrupts its task: no row states
  * either).  Before the roots the run is the recording's.  It is reduced:
@@ -48,14 +50,17 @@ final class RealizedOrder {
     }
 
     /**
-     * The ORDER rows of the confirmed session's realized order from the
-     * first event of an occurrence in {@code mints} (by id) on, each pair
-     * once; none when no such occurrence made an event.
+     * The ORDER rows of the confirmed session's realized order, read off its
+     * {@code schedule} file, from where an occurrence in {@code mints} (by
+     * id) opened on, each pair once; none when no such occurrence opened.
      */
-    static List<JsonObject> rows(SessionReader confirmed, Set<String> mints)
+    static List<JsonObject> rows(Path schedule, Set<String> mints)
             throws IOException {
+        List<ScheduleEvent> events = SessionReader.readSchedule(schedule);
+        long from = from(events, SessionReader.readScheduleMarks(schedule),
+                mints);
         List<JsonObject> rows = new ArrayList<JsonObject>();
-        for (ScheduleEvent[] edge : edges(confirmed.schedule(), mints)) {
+        for (ScheduleEvent[] edge : edges(events, from)) {
             JsonObject row = new JsonObject();
             row.addProperty(RecordingPlant.KIND, RecordingPlant.ORDER);
             row.addProperty(RecordingPlant.SCOPE, SCOPE);
@@ -76,22 +81,37 @@ final class RealizedOrder {
     }
 
     /**
-     * The reduced realized order of {@code schedule} from the first event of
-     * an occurrence in {@code mints} on (class comment): {before, after}
-     * pairs in schedule order.
+     * The schedule position (an event's seq) where the first occurrence of
+     * {@code mints} opened: the earliest of their marks ({@code
+     * ScheduleLog#mark}: the seq of the event after the opening) and of
+     * their own events; past every event when none opened.
+     */
+    static long from(List<ScheduleEvent> schedule, Map<String, Long> marks,
+                     Set<String> mints) {
+        long from = Long.MAX_VALUE;
+        for (String mint : mints) {
+            Long mark = marks.get(mint);
+            if (mark != null) from = Math.min(from, mark);
+        }
+        for (ScheduleEvent event : schedule) {
+            if (event.seq() >= from) break;
+            if (mints.contains(event.occurrence())) return event.seq();
+        }
+        return from;
+    }
+
+    /**
+     * The reduced realized order of {@code schedule} from position {@code
+     * from} on (class comment): {before, after} pairs in schedule order.
      */
     static List<ScheduleEvent[]> edges(List<ScheduleEvent> schedule,
-                                       Set<String> mints) {
-        int from = 0;
-        while (from < schedule.size()
-                && !mints.contains(schedule.get(from).occurrence())) {
-            from++;
-        }
+                                       long from) {
         List<ScheduleEvent[]> edges = new ArrayList<ScheduleEvent[]>();
         Map<String, Integer> known = new HashMap<String, Integer>();
         int latest = -1;
-        for (int at = from; at < schedule.size(); at++) {
+        for (int at = 0; at < schedule.size(); at++) {
             ScheduleEvent event = schedule.get(at);
+            if (event.seq() < from) continue;
             if (event.kind() != ScheduleEvent.Kind.END && latest >= 0
                     && !schedule.get(latest).context().equals(
                     event.context())
