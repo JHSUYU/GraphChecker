@@ -109,12 +109,34 @@ final class SeedBackwardStaticAnalyzer {
             "put", "putAll", "remove", "clear", "add", "addAll", "set",
             "replace", "compute", "computeIfAbsent", "computeIfPresent",
             "merge", "offer", "poll");
-    /** JDK static factories whose result is a view backed by their first
-     *  argument (and {@code Collections}' unmodifiable, synchronized and
-     *  checked views, {@link #aliasedOperand}). */
-    private static final Set<String> ARGUMENT_BACKED_VIEWS = names(
-            "java.util.Arrays.asList", "java.util.Collections.newSetFromMap",
-            "java.util.Collections.asLifoQueue");
+    /** Library calls whose result may be an argument, by owner and name:
+     *  the checks that return what they checked, and the JDK and Guava
+     *  factories whose result is a view backed by their first argument
+     *  (and {@code Collections}' unmodifiable, synchronized and checked
+     *  views, {@link #aliasedOperands}). */
+    private static final Map<String, List<Integer>> RETURNED_ARGUMENTS =
+            returnedArguments(
+                    "java.util.Objects.requireNonNull", "0",
+                    "com.google.common.base.Preconditions.checkNotNull", "0",
+                    "com.google.common.base.MoreObjects.firstNonNull", "0 1",
+                    "com.google.common.base.Objects.firstNonNull", "0 1",
+                    "java.util.Arrays.asList", "0",
+                    "java.util.Collections.newSetFromMap", "0",
+                    "java.util.Collections.asLifoQueue", "0",
+                    "com.google.common.collect.Maps.filterKeys", "0",
+                    "com.google.common.collect.Maps.filterValues", "0",
+                    "com.google.common.collect.Maps.filterEntries", "0",
+                    "com.google.common.collect.Maps.transformValues", "0",
+                    "com.google.common.collect.Maps.transformEntries", "0",
+                    "com.google.common.collect.Sets.filter", "0",
+                    "com.google.common.collect.Lists.transform", "0",
+                    "com.google.common.collect.Collections2.filter", "0",
+                    "com.google.common.collect.Collections2.transform", "0",
+                    "com.google.common.collect.Iterables.filter", "0",
+                    "com.google.common.collect.Iterables.transform", "0");
+    /** A Guava multimap's views, which its own calls return backed by it. */
+    private static final Set<String> MULTIMAP_VIEWS = names(
+            "get", "asMap", "keySet", "keys", "values", "entries");
     /** JDK value classes no call mutates ({@link #immutableValue}). */
     private static final Set<String> IMMUTABLE_VALUES = names(
             "java.lang.String", "java.lang.Boolean", "java.lang.Byte",
@@ -187,6 +209,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, StructuralFieldAccessor>
             structuralFieldAccessors = new LinkedHashMap<>();
     private final Map<String, MethodSig> methodSignatureCache =
+            new LinkedHashMap<>();
+    /** {@link #returnedOperands}, once asked per callee. */
+    private final Map<String, Set<Integer>> returnedOperands =
             new LinkedHashMap<>();
     private final Set<String> invalidMethodSignatures =
             new LinkedHashSet<>();
@@ -1733,7 +1758,7 @@ final class SeedBackwardStaticAnalyzer {
      * The fields {@code local} may be the state of before {@code
      * beforeIndex}: those its definitions read or wrote, back through
      * copies and casts, and through a call only to the operand its result
-     * may be ({@link #aliasedOperand}).  Never a call's other arguments:
+     * may be ({@link #aliasedOperands}).  Never a call's other arguments:
      * {@code toStringHelper(this).add("autoDeleteAgeMath",
      * autoDeleteAgeMath)} made the next {@code add} a mutation of a String
      * field (solr-adhoc-10 SG1: 518 deciders of TimeRoutedAlias's), and a
@@ -1756,38 +1781,123 @@ final class SeedBackwardStaticAnalyzer {
                 work.addAll(localNames(localValueUses(fact)));
                 continue;
             }
-            String operand = aliasedOperand(fact);
-            if (operand != null) work.add(operand);
+            work.addAll(aliasedOperands(fact));
         }
         return fields;
     }
 
     /**
-     * The operand a call's result may be: its receiver when the call may
+     * The operands a call's result may be: its receiver when the call may
      * return it or a view backed by it -- a fluent call, whose declared
      * return type is its own class or one above it (a builder returning
-     * {@code this}, {@code StringBuilder.append}, {@code List.subList}), or
-     * a {@code java.util} view or iterator -- or the argument a JDK view
-     * factory wraps ({@link #ARGUMENT_BACKED_VIEWS}); null for any other
-     * call, whose result is none of its operands.
+     * {@code this}, {@code StringBuilder.append}, {@code List.subList}), a
+     * {@code java.util} view or iterator, a Guava multimap's view -- and
+     * an argument a library call returns ({@link #RETURNED_ARGUMENTS}:
+     * {@code Objects.requireNonNull}, {@code Maps.filterKeys}) or an
+     * application method's body does ({@link #returnedOperands}); none for
+     * any other call, whose result is none of its operands.
      */
-    private String aliasedOperand(Fact fact) {
+    private List<String> aliasedOperands(Fact fact) {
         MethodSig invoked = parseMethodSig(fact.invoke);
-        if (invoked == null || fact.defs.isEmpty()) return null;
-        String base = invokeBaseLocal(fact.unitText);
-        if (base != null) {
-            return returnsBackedCollectionView(fact) || fluent(invoked)
-                    ? base : null;
+        if (invoked == null || fact.defs.isEmpty()) {
+            return Collections.emptyList();
         }
-        if (ARGUMENT_BACKED_VIEWS.contains(invoked.owner + "."
-                + invoked.name) || "java.util.Collections".equals(
-                invoked.owner) && (invoked.name.startsWith("unmodifiable")
+        String base = invokeBaseLocal(fact.unitText);
+        Set<Integer> returned = new java.util.TreeSet<>();
+        if (base != null && (returnsBackedCollectionView(fact)
+                || fluent(invoked) || multimapView(invoked))) {
+            returned.add(-1);
+        }
+        returned.addAll(RETURNED_ARGUMENTS.getOrDefault(invoked.owner + "."
+                + invoked.name, Collections.<Integer>emptyList()));
+        if ("java.util.Collections".equals(invoked.owner)
+                && (invoked.name.startsWith("unmodifiable")
                 || invoked.name.startsWith("synchronized")
                 || invoked.name.startsWith("checked"))) {
-            List<String> arguments = actualInvokeArgs(fact.unitText);
-            return arguments.isEmpty() ? null : arguments.get(0);
+            returned.add(0);
         }
-        return null;
+        if (isApplicationClassName(invoked.owner)) {
+            returned.addAll(returnedOperands(invoked.raw));
+        }
+        List<String> arguments = actualInvokeArgs(fact.unitText);
+        List<String> operands = new ArrayList<>();
+        for (int operand : returned) {
+            if (operand < 0) {
+                if (base != null) operands.add(base);
+            } else if (operand < arguments.size()) {
+                operands.add(arguments.get(operand));
+            }
+        }
+        return operands;
+    }
+
+    /** Whether a call returns a view of the Guava multimap it is made on. */
+    private boolean multimapView(MethodSig invoked) {
+        if (!MULTIMAP_VIEWS.contains(invoked.name)
+                || !invoked.owner.startsWith("com.google.common.collect.")) {
+            return false;
+        }
+        return invoked.owner.endsWith("Multimap") || libraryHierarchy(
+                invoked.owner).contains("com.google.common.collect.Multimap");
+    }
+
+    /**
+     * Which operands a call into {@code signature} may return, by its body:
+     * -1 its receiver, k its k-th argument, through copies and casts
+     * (flow-insensitive, so what it may return); none for a body the scene
+     * lacks (an abstract or interface method: its overrides are not read).
+     * An application helper that returns what it was given ({@code
+     * checkArgument(x)}, a fluent setter declared to return {@code
+     * Object}) is its argument's alias.
+     */
+    private Set<Integer> returnedOperands(String signature) {
+        return returnedOperands.computeIfAbsent(signature, key -> {
+            Body body = jimpleBody(key);
+            if (body == null) return Collections.<Integer>emptySet();
+            Map<Local, Set<Object>> from = new LinkedHashMap<>();
+            Deque<Local> returned = new ArrayDeque<>();
+            for (Unit unit : body.getUnits()) {
+                if (unit instanceof DefinitionStmt
+                        && ((DefinitionStmt) unit).getLeftOp()
+                        instanceof Local) {
+                    Local left = (Local) ((DefinitionStmt) unit).getLeftOp();
+                    Value right = ((DefinitionStmt) unit).getRightOp();
+                    if (right instanceof CastExpr) {
+                        right = ((CastExpr) right).getOp();
+                    }
+                    Object source = null;
+                    if (right instanceof ParameterRef) {
+                        source = ((ParameterRef) right).getIndex();
+                    } else if (right instanceof soot.jimple.ThisRef) {
+                        source = -1;
+                    } else if (right instanceof Local) {
+                        source = right;
+                    }
+                    if (source != null) {
+                        from.computeIfAbsent(left,
+                                ignored -> new LinkedHashSet<>()).add(source);
+                    }
+                } else if (unit instanceof ReturnStmt && ((ReturnStmt) unit)
+                        .getOp() instanceof Local) {
+                    returned.add((Local) ((ReturnStmt) unit).getOp());
+                }
+            }
+            Set<Integer> found = new java.util.TreeSet<>();
+            Set<Local> seen = new java.util.HashSet<>();
+            while (!returned.isEmpty()) {
+                Local local = returned.pop();
+                if (!seen.add(local)) continue;
+                for (Object source : from.getOrDefault(local,
+                        Collections.<Object>emptySet())) {
+                    if (source instanceof Integer) {
+                        found.add((Integer) source);
+                    } else {
+                        returned.push((Local) source);
+                    }
+                }
+            }
+            return Collections.unmodifiableSet(found);
+        });
     }
 
     /** Whether a call's declared result may be its receiver: its own class,
@@ -3712,6 +3822,20 @@ final class SeedBackwardStaticAnalyzer {
     private static String stableSiteId(String method, int unitIndex, String kind) {
         return unitIndex >= 0 ? SiteId.of(method, unitIndex)
                 : method + "#synthetic:" + firstNonBlank(kind, "edge");
+    }
+
+    /** {@link #RETURNED_ARGUMENTS} from (owner.name, "k k ...") pairs. */
+    private static Map<String, List<Integer>> returnedArguments(
+            String... pairs) {
+        Map<String, List<Integer>> map = new LinkedHashMap<>();
+        for (int at = 0; at < pairs.length; at += 2) {
+            List<Integer> indices = new ArrayList<>();
+            for (String index : pairs[at + 1].split(" ")) {
+                indices.add(Integer.valueOf(index));
+            }
+            map.put(pairs[at], Collections.unmodifiableList(indices));
+        }
+        return Collections.unmodifiableMap(map);
     }
 
     private static Set<String> names(String... values) {

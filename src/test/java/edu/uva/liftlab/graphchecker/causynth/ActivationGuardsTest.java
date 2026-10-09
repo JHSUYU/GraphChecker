@@ -106,8 +106,10 @@ public class ActivationGuardsTest {
 
     /**
      * What a call's result is: its receiver when the call may return it or
-     * a view of it -- a fluent call, a java.util iterator -- never another
-     * argument (solr-adhoc-10 SG1: {@code toStringHelper(this).add(..,
+     * a view of it -- a fluent call, a java.util iterator --, an argument a
+     * library check returns ({@code Objects.requireNonNull}) or a helper's
+     * body does ({@code same}), never another argument (solr-adhoc-10 SG1:
+     * {@code toStringHelper(this).add(..,
      * autoDeleteAgeMath)} made the next {@code add} a mutation of the String
      * field); and no call on an immutable JDK value mutates it.  {@code
      * touch()} chains a helper over {@code name}, removes through {@code
@@ -179,7 +181,13 @@ public class ActivationGuardsTest {
                         names(field(STORE, "java.util.List items")),
                         mutations(program, TOUCH, 7)},
                 {"a String's replace mutates nothing", names(),
-                        mutations(program, TOUCH, 9)}};
+                        mutations(program, TOUCH, 9)},
+                {"a remove through requireNonNull's result mutates items",
+                        names(field(STORE, "java.util.List items")),
+                        mutations(program, THROUGH, 5)},
+                {"and through a helper's that returns its argument",
+                        names(field(STORE, "java.util.List items")),
+                        mutations(program, THROUGH, 10)}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }
@@ -189,6 +197,7 @@ public class ActivationGuardsTest {
     private static final String MAKE = "<a.S: void make(a.S,int)>";
     private static final String PICK = "<a.S: void pick(a.S,int)>";
     private static final String TOUCH = "<a.S: void touch()>";
+    private static final String THROUGH = "<a.S: void through()>";
     private static final String STORE_CHECK = "<a.S: void check()>";
 
     /** The fields the mutation rows of {@code method}'s unit write. */
@@ -213,7 +222,10 @@ public class ActivationGuardsTest {
      * k)} is {@code if (gate != 0) keep(new Box(t, k));}, {@code Box(owner,
      * p)} is {@code this.v = p; owner.w = p;}, {@code keep(b)} is {@code box
      * = b}; {@code pick(t, k)} is {@code if (gate != 0) keep(new Box(t, 1));
-     * else keep(new Box(t, 2));}.
+     * else keep(new Box(t, 2));}; {@code through()} is {@code
+     * ((List) Objects.requireNonNull(items)).iterator().remove(); ((List)
+     * same(items)).iterator().remove();}, {@code same(o)} returning {@code
+     * o}.
      */
     private static CausynthTargetContext storeScene() {
         G.reset();
@@ -356,6 +368,48 @@ public class ActivationGuardsTest {
                 J.newAssignStmt(s3, J.newVirtualInvokeExpr(s2,
                         replace.makeRef(), soot.jimple.StringConstant.v("a"),
                         soot.jimple.StringConstant.v("b"))),
+                J.newReturnVoidStmt());
+
+        SootClass objects = library("java.util.Objects", object, 0);
+        SootMethod requireNonNull = method(objects, "requireNonNull",
+                Collections.<Type>singletonList(object.getType()),
+                object.getType(), Modifier.STATIC);
+        SootMethod same = method(type, "same", Collections.<Type>singletonList(
+                object.getType()), object.getType(), Modifier.STATIC);
+        Local given2 = local(same, "r0", object.getType());
+        Local copied = local(same, "$r1", object.getType());
+        body(same, J.newIdentityStmt(given2,
+                        J.newParameterRef(object.getType(), 0)),
+                J.newAssignStmt(copied, given2), J.newReturnStmt(copied));
+        SootMethod through = method(type, "through",
+                Collections.<Type>emptyList(), VoidType.v(), 0);
+        Local u0 = local(through, "r0", type.getType());
+        Local[] at = new Local[8];
+        Type[] types = {list.getType(), object.getType(), list.getType(),
+                iterator.getType(), list.getType(), object.getType(),
+                list.getType(), iterator.getType()};
+        for (int k = 0; k < at.length; k++) {
+            at[k] = local(through, "$r" + (k + 1), types[k]);
+        }
+        body(through, J.newIdentityStmt(u0, J.newThisRef(type.getType())),
+                J.newAssignStmt(at[0], J.newInstanceFieldRef(u0,
+                        items.makeRef())),
+                J.newAssignStmt(at[1], J.newStaticInvokeExpr(
+                        requireNonNull.makeRef(), at[0])),
+                J.newAssignStmt(at[2], J.newCastExpr(at[1], list.getType())),
+                J.newAssignStmt(at[3], J.newInterfaceInvokeExpr(at[2],
+                        iterate.makeRef())),
+                J.newInvokeStmt(J.newInterfaceInvokeExpr(at[3],
+                        remove.makeRef())),
+                J.newAssignStmt(at[4], J.newInstanceFieldRef(u0,
+                        items.makeRef())),
+                J.newAssignStmt(at[5], J.newStaticInvokeExpr(same.makeRef(),
+                        at[4])),
+                J.newAssignStmt(at[6], J.newCastExpr(at[5], list.getType())),
+                J.newAssignStmt(at[7], J.newInterfaceInvokeExpr(at[6],
+                        iterate.makeRef())),
+                J.newInvokeStmt(J.newInterfaceInvokeExpr(at[7],
+                        remove.makeRef())),
                 J.newReturnVoidStmt());
 
         SootMethod check = method(type, "check", Collections.<Type>emptyList(),

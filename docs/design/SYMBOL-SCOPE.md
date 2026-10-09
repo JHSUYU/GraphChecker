@@ -161,12 +161,19 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   receiver; a *mutation* (`put`, `merge`, `putIfAbsent`, a view's `removeIf`, `push`, ...)
   demands its arguments into its receiver (`container_mutation_argument`) and, through a field
   alias, is a `field_mutation` of that field. A local is a field's alias back through copies,
-  casts and the field's read, and through a call only to the operand its result may be
-  (`SeedBackwardStaticAnalyzer#aliasedOperand`): the receiver of a fluent call (declared return
+  casts and the field's read, and through a call only to the operands its result may be
+  (`SeedBackwardStaticAnalyzer#aliasedOperands`): the receiver of a fluent call (declared return
   type its own class or one above it but `Object`: a builder returning `this`,
-  `StringBuilder.append`, `List.subList`) or of a `java.util` view or iterator, and the first
-  argument of a JDK argument-backed view (`Collections.unmodifiable*`, `synchronized*`, `checked*`,
-  `newSetFromMap`, `asLifoQueue`, `Arrays.asList`); never another argument (solr-adhoc-10 SG1:
+  `StringBuilder.append`, `List.subList`), of a `java.util` view or iterator, or of a Guava
+  multimap's view (`get`, `asMap`, `keySet`, `keys`, `values`, `entries`); an argument a library
+  call returns (`RETURNED_ARGUMENTS`: `Objects.requireNonNull`, `Preconditions.checkNotNull`,
+  `MoreObjects.firstNonNull`'s two, and the first of a JDK or Guava argument-backed view:
+  `Collections.unmodifiable*`, `synchronized*`, `checked*`, `newSetFromMap`, `asLifoQueue`,
+  `Arrays.asList`, `Maps.filterKeys`/`filterValues`/`filterEntries`/`transformValues`/
+  `transformEntries`, `Sets.filter`, `Lists.transform`, `Collections2`/`Iterables` `filter` and
+  `transform`); and the receiver or argument an application method's own body returns, through
+  copies and casts (`#returnedOperands`: a helper that returns what it checked; an abstract or
+  interface method's overrides are not read); never another argument (solr-adhoc-10 SG1:
   `toStringHelper(this).add("autoDeleteAgeMath", autoDeleteAgeMath)` made the next `add` a
   mutation of the String field, 518 deciders; a copy constructor's argument is a copy). A call on
   an immutable JDK value (`String`, a box, `BigInteger`, `BigDecimal`, `UUID`, `java.time`, an
