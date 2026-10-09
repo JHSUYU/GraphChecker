@@ -2205,10 +2205,11 @@ REFUTED, `report.py` lists them, `tools/analysis/timeline.py` times every CONFIR
 
 After EMIT -- the verdict is published first, and nothing REPRODUCE does moves it -- a confirmed
 `SAT_CANDIDATE` is run again on the stock JDK, in the recording weave, with nothing of the concolic
-VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map --plant
-<file>` writes the plant from what CONFIRM itself plants and holds (`ConfirmMain.Witness`, the one
-reading of the claim both make: the selected session's world under the model's moved roots, and
-the edges the model chose), each row numbered (`row`); where a value is the return of a call it
+VM (`campaign_reproduce`). `ConfirmMain --iteration --claim --manifest --static-scope-map
+--confirmed-session <dir> --plant <file>` writes the plant from what CONFIRM itself plants and
+holds (`ConfirmMain.Witness`, the one reading of the claim both make: the selected session's world
+under the model's moved roots, and the edges the model chose) and from the order the session
+CONFIRM saw ran in, each row numbered (`row`); where a value is the return of a call it
 names the call as the task plan does (`explore.PlantSites`: the input action's `siteId`,
 `<method>#u<unit>`, and its `declaredCallee`, or an unwoven accessor's call):
 - a `ROOT` per root the world assigns or skews (a fault marker at `false`, the run as recorded, is no row: a native
@@ -2225,11 +2226,40 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   nobody;
 - an `ANSWER {endpoint, port, siteId, callee, regions, value}` per attach the world answers, at its
   port's call-return capture and the regions declaring it IN;
-- CONFIRM's own `ORDER` rows (`{before, after}`, §10: the join closure's at the locations the fatal
-  rests on, and those holding the pairings the world plants -- an INITIAL pairing holds every
-  other writer of the location after the read), each pair once; a pairing at a placeholder (a mint
+- CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, §10: the join
+  closure's at the locations the fatal rests on, and those holding the pairings the world plants --
+  an INITIAL pairing holds every other writer of the location after the read), each pair once; a pairing at a placeholder (a mint
   read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
   plant's summary counts them (`placeholderPairings`);
+- the **realized order** (`explore.RealizedOrder`): `ORDER {scope EVENT, before: <event>, after:
+  <event>}` rows, an event named by the one identity both passes compute (`{kind, context, site,
+  k}`, IDENTITY), so the run is the world CONFIRM saw and not merely its roots. The session CONFIRM
+  saw is `final/confirm.json`'s `sessionId` (`campaign_confirmed_session`): the selected session
+  itself when it realized the claim, else CONFIRM's replay, in `final/confirm/sessions/` or an
+  exploration attempt's `witness-confirm/NNNN/sessions/`; a session not there refuses the plant.
+  Its schedule is read from where a ROOT row's mint occurrence opened on (the occurrence's schedule
+  mark, or its first event: a clock read's occurrence makes no event of its own, solr-18406); a
+  step is an event but a WAKE or an END, which are the clock. Each WAKE is held after the step just
+  before it, once per step and context, where the WAKE is in a context running before the start,
+  and the step is in another context and the first of its kind and site there (`k` 0):
+  - the roots' effect races the contexts it found running, and the trace states no edge of how it
+    reaches them; a context begun later is that effect or the workload's next step and runs as the
+    run makes it, its turns deciding on reads no event names;
+  - a running context goes on by itself only where a wait ends, on the wall clock or a signal, and
+    natively a wait ends before the world it waited on has got where the confirmed one had;
+  - a later count is a loop's (a poll's, a retry's, one send per item), which natively runs
+    another number of times.
+
+  solr-bugs-restore-construction: a ZooKeeper session fault ends the Overseer, a new one runs the
+  second RESTORE, and the client's next update routes on the restored collection while the old
+  Overseer's first RESTORE task still waits for its replicas -- in the confirmed session that wait
+  woke only after the second RESTORE had answered the client; natively the task finished first and
+  the update found the collection active (0/10 with every root planted). Its plant holds that wake
+  after the client's receipt of the answer. The whole order, one edge per context switch (restore
+  42 rows, solr-18406 366, solr-18413 497), reproduced 0/10 on each: every run's first unheld row
+  waited for an event the run never made (a new Overseer's state-updater turn that found its queue
+  empty natively, a request handler's sixth SEND, a select whose poll count differed). The plant's
+  summary counts the rows (`realizedOrders`);
 - one `TARGET` per guard of the scope map's TARGET_SITE rows, `{occurrence: <the claim's anchor
   id>, siteId: <guard>, value: <its fatal arm>}`.
 
@@ -2289,11 +2319,19 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
   (`HandoffMint#answerNatively`: `Identity#endpointAt`, one per leaf, so the k-th attach is the
   replay's k-th where the run attaches as the replay did), writing the answer at the endpoint the row
   names; a value the call's type cannot hold is a `PLANT_UNWRITTEN` row;
-- `runtime.Confirmation` holds the ORDER rows at `Identity`'s frame hooks as in a CONFIRM run (it
-  reads the plant in a planted run), each at most half the run's bound
-  (`causynth.confirm.order.timeout.ms`, `CAUSYNTH_ORDER_TIMEOUT_MS`), each row stating what it came
-  to: held, waited for (`PLANT_HOLDING`, for a before-activation that had not exited), or not held
-  in time (`PLANT_UNHELD`) -- what the run states, never a refutation;
+- `runtime.Confirmation` holds CONFIRM's own ORDER rows at `Identity`'s frame hooks as in a CONFIRM
+  run (it reads the plant in a planted run), and `runtime.ScheduleLog` the realized order at an
+  event's admission, before its k is taken: the event waits until every event its rows order before
+  it was made (a timed wait's WAKE asks without blocking, `ScheduleLog#timedOut`, so what the wait
+  released stays released; an interrupt meanwhile is kept pending, the event still after what the
+  confirmed world made before it). Each row is held at most half the run's bound
+  (`causynth.confirm.order.timeout.ms`, `CAUSYNTH_ORDER_TIMEOUT_MS`) and states what it came to:
+  held (`PLANT_APPLIED`), waited for (`PLANT_HOLDING`), or not held in time (`PLANT_UNHELD`). The
+  first row not held releases every hold of both scopes (`RecordingPlant#gaveWay`): the run no
+  longer runs the confirmed world, so it reproduces nothing whatever it reaches, and holding the
+  rest would only stall it. What an UNHELD row waited for that comes after all is a `PLANT_LATE`
+  row; one that never comes was not this run's (its identity missing natively: a context, site or
+  count the run did not make) -- what the run states, never a refutation;
 - every row applied is a `PLANT_APPLIED` trace row naming its number; a recorded branch at a TARGET
   row's guard that takes its fatal arm is a `PLANT_FATAL` row stating whether an enclosing
   occurrence is the anchor's -- at the anchor the run ends (`JUnitMethodRunner.exit`, as a focused
@@ -2302,23 +2340,28 @@ mapped to a bytecode offset; an invoke no context wraps matches no row. Inside t
 A planted run is not the recording's world, so the workload's checks of that world are off in it
 as in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`). Each run states
 its answer, whatever the workload's exit, as `run-<n>/answer.json` `{exit, rows, applied, unapplied,
-planted, rootsPlanted, fatal, atAnchor, reproduced}`, read off its trace's plant rows against the
-plant: the rows to apply (ROOT, ANSWER and ORDER; CLOCK_SITE and TARGET rows are context), how many
-it applied, each it did not with why (`UNHELD`, `UNWRITTEN`, `HOLDING` at the run's end,
-`NOT_REACHED`), whether it applied every row and every ROOT and ANSWER row, whether it took the
-fatal arm and at the anchor, and whether it **reproduced**: the fatal arm at the claim's anchor
-with every ROOT and ANSWER row applied (clock jumps, configurations and answers included). A run that did not plant the
-model's roots and reaches the fatal all the same is the program's own race, never a reproduction.
-`final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,
-reproduced, unheld, holding, reason}` -- runs that applied the whole plant, took the fatal arm,
-took it at the anchor (planted or not), reproduced, could not hold an ORDER in time, still held one
-when they ended, and the runs that stated no answer as `reason`. A native run holds the model's
-order, not the recording's, so the planted occurrence may not recur: the share of runs that
-reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside
+planted, rootsPlanted, ordersHeld, fatal, atAnchor, reproduced}`, read off its trace's plant rows
+against the plant: the rows to apply (ROOT, ANSWER and ORDER of either scope; CLOCK_SITE and TARGET
+rows are context), how many it applied, each it did not with why (an ORDER not held in time: `LATE`
+when what it waited for came after all, `MISSING` when it never came; `UNWRITTEN`, `HOLDING` at the
+run's end, `NOT_REACHED`), whether it applied every row, every ROOT and ANSWER row and held every
+ORDER, whether it took the fatal arm and at the anchor, and whether it **reproduced**: the fatal
+arm at the claim's anchor with every ROOT and ANSWER row applied (clock jumps, configurations and
+answers included) and no ORDER timed out. A run that did not plant the model's roots, or ran
+another order than the world CONFIRM saw, and reaches the fatal all the same is the program's own
+race, never a reproduction. `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs,
+planted, fatal, atAnchor, reproduced, unheld, unheldLate, unheldMissing, holding, reason}` -- runs
+that applied the whole plant, took the fatal arm, took it at the anchor (planted or not),
+reproduced, could not hold an ORDER in time (of them, one whose before-event came late, one whose
+before-event never came), still held one when they ended, and the runs that stated no answer as
+`reason`. REPRODUCE never touches CONFIRM: a CONFIRM that fails is a false positive as ever (§10),
+and the realized order only makes a native run faithful to the world CONFIRM saw. The share of runs
+that reproduced ranks a finding (`tools/adhoc/findings.py`, which reads `reproduce.json` beside
 `result.json`) and never refutes it. Then the campaign exits by its verdict
 (`campaign_exit_verdict`). The stage also runs alone, again, over a finished campaign
 (`run_engine.sh ... reproduce`, `do_reproduce`; `tools/rounds/reproduce-again.sh <run> <case> <copy>`
-copies the case's output directory -- linking what REPRODUCE reads, writing `final/` afresh -- so
+copies the case's output directory -- linking what REPRODUCE reads, the replays CONFIRM ran
+included, writing `final/` afresh -- so
 the finished run is never written): its bound is a factor of SEED's whole time there, since the
 recording's own is not kept apart.
 

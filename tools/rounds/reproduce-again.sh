@@ -3,7 +3,9 @@
 # alone, again, over a finished campaign (PIPELINE §10b): the case's output
 # directory of <finished run dir> (accept-<round>-<n>, out/<case-id>) copied
 # into <copy dir> -- what REPRODUCE reads linked (the woven classes, the
-# scope map, the recording's directory, the iteration), what it writes
+# scope map, the recording's directory, the iteration, and the replays
+# CONFIRM ran, one of which is the session it saw: run_engine.sh
+# campaign_confirmed_session), what it writes
 # beside made fresh (final/ with the claim, manifest and confirmation EMIT
 # published) -- then `run.sh <case> reproduce` from this checkout with the
 # copy as its output directory, so the finished run is never written.
@@ -28,6 +30,12 @@ for name in instrumented-classes static_scope_map.jsonl runtime; do
   ln -s "${source_dir}/${name}" "${out}/${name}"
 done
 ln -s "${source_dir}/schedule/iteration-0000" "${out}/schedule/iteration-0000"
+[[ ! -d "${source_dir}/schedule/witness-confirm" ]] \
+  || ln -s "${source_dir}/schedule/witness-confirm" \
+    "${out}/schedule/witness-confirm"
+[[ ! -d "${source_dir}/schedule/final/confirm" ]] \
+  || ln -s "${source_dir}/schedule/final/confirm" \
+    "${out}/schedule/final/confirm"
 cp "${source_dir}/schedule/stage_metrics.tsv" "${out}/schedule/"
 for name in claim.json candidate_composition_manifest.json confirm.json; do
   cp "${source_dir}/schedule/final/${name}" "${out}/schedule/final/"
