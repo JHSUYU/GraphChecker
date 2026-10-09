@@ -774,6 +774,8 @@ public class ScheduleLogTest {
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         assertEquals(Arrays.asList(site, site, "x"), sites());
+        assertEquals("a WAKE is the clock's, the SEND a step", 1L,
+                ScheduleLog.steps());
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains("2 taken, 0 given up"));
     }

@@ -283,20 +283,22 @@ shutdown hook) returns only once they are published, so no exit halts the close 
 outlive the test, and a region started after the close would open a fresh VM session in which
 every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
 
-A focused replay ends early, once, for one of two reasons (`ConcolicResultPublisher#conclude`):
+A focused replay ends early, once, for one of three reasons (`ConcolicResultPublisher#conclude`):
 
 - `AT_WITNESS`: the focus row's declared occurrence publishes a target row that observed the fatal
   (`#concludeAtWitness`); its schedule states the run cut there (`ScheduleLog#witnessed`: a replay
   held to it holds a `WAKE` it never made to the order's end, IDENTITY.md §8).
 - `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
   `FocusedReplay#refusedAt`, §7.6).
+- `AT_NO_PROGRESS`: nothing moved for 600 s in a replay asked a flip, which decided every
+  obligation it carries (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
 publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
 with the reason; after the workload's own end, one live while nothing progressed for the grace is
 `TERMINAL_NEVER_REACHED`), and a publication
 not yet started is withheld (the reason again): at the witness, one submitted after it (the
-session is read whole up to the witness); at a refusal, every one (the session is withdrawn, and
+session is read whole up to the witness); at a refusal or a stall, every one (the session is withdrawn, and
 draining the queue into it cost a Solr replay two to five minutes past the test's end). A stranded or late activation's path
 is withheld and its mints are published, as an abandoned one's are: other activations' rows already
 name its symbols (IMPORT invariant 11). The run then ends through `JUnitMethodRunner#exit`, whose
@@ -885,7 +887,8 @@ the recorded arm, or the occurrence closed without reaching it), which holds eve
 obligation of the replay `NOT_ADMITTED` too, or a flip the replay inherited took the other arm. It
 ends there (`AT_REFUSAL`, §5). A flipped obligation is never decided before its replay ends: its
 session is a corpus session, cut from by later rounds and read whole by the closure and COMPOSE (the
-anchor, the fatal and writers after the anchor among them), so only the witness ends it early. A
+anchor, the fatal and writers after the anchor among them), so only the witness, or a stall
+(below), ends it early. A
 decided replay **publishes no session**: its verdict rows state the refusal and that the replay
 ended there, the worker's row names no session, and the replay withdraws the directory it opened
 to `<worker>/refused-sessions/` at its close, in one rename (`RowRuntime#closeSession`,
@@ -896,6 +899,28 @@ stay EMIT's (§11). A worker's replay stages its session in `<worker>/sessions/`
 head lands it (§7.9); the head, reading a peer's row, waits until its own listing of that directory
 holds the session the row names, or none naming the obligation when it names none
 (`campaign_await_remote_result`), so it never lands one a cached listing kept.
+
+**The early end at a stall** (`ConcolicResultPublisher#watchProgress`). A replay asked a flip --
+never the seed's (no obligation) nor a confirmation's (its verdict rules stand; a stuck one ends at
+its bound) -- is watched every 10 s inside its recording window (before it the cluster starts; after
+it the test is over, and its teardown, which answers nothing asked, may wait: solr-18413 FA5, an
+admitted replay's 275 s): once nothing has moved there for 600 s (no
+schedule step, `ScheduleLog#steps`: an event but a `WAKE` or a tick's `END`, which a poll that wakes
+and finds nothing makes; nothing the settle counts, `#movedLocked`: no activation began
+or settled, no loop body charged, no publication finished or read-out decoded; no thread computing,
+`#Computing`: one thread with the collectors at half a look's span, the schedule's measure, not a
+sum, since a hung cluster test's threads still ping its ZooKeeper), every obligation is decided
+`NOT_ADMITTED` by name, flipped or not (`FocusedReplay#noProgress`: `REPLAY_NO_PROGRESS: nothing
+moved for N s (...); the replay ended there and published no session (until then: <what it had
+settled>)`), its threads are dumped on the replay log, and it ends (`AT_NO_PROGRESS`, §5) as a
+refused replay does: no session, its question settled. A workload that ended settles on the
+settle's own bound instead. 600 s is the recording's stall bound too (`campaign_unbounded_stall_s`):
+of 1,596 Solr replays that ended by themselves (SG1, FA1-5, MB, Z) an admitted one went at most 122 s
+without a log line in its window (a schedule stall's ceiling, 8 timeouts of 15 s), one 300 s (an
+HTTP call waiting out its socket timeout, NOT_ADMITTED); each of the 172 killed at
+`replay_timeout_s` (solr-bugs-reindex-cleanup: an Overseer command waiting for a response node
+already deleted, in a tree whose waits never time out) worked about 80 s and then stood still for
+2,320 s.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound. A question no solver could answer (§7.5), and a replay

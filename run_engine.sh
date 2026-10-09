@@ -3377,15 +3377,17 @@ session"
         "the replay of ${obligation_id} stated no verdict for it \
 (\"${outcome}\")" ;;
   esac
-  # A verdict that names no session published none: a refusal decided every
-  # obligation the replay carried, and it ended there (FocusedReplay
-  # #refusedAt).  What it wrote before is a prefix of a run, which the replay
-  # withdrew itself at its close (RowRuntime#closeSession); one its move left
-  # listed is withdrawn here, on the host that ran the replay.
+  # A verdict that names no session published none: a refusal, or nothing
+  # moving for a while (REPLAY_NO_PROGRESS), decided every obligation the
+  # replay carried, and it ended there (FocusedReplay#refusedAt).  What it
+  # wrote before is a prefix of a run, which the replay withdrew itself at
+  # its close (RowRuntime#closeSession); one its move left listed is
+  # withdrawn here, on the host that ran the replay.
   [[ -n "$(jq -r '.sessionId // ""' "${statement}")" ]] \
     || campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
-      "${worker}/refused-sessions" "a refusal decided every obligation its \
-replay carried and the replay ended there, so its rows are a prefix of a run"
+      "${worker}/refused-sessions" "a refusal or a stall decided every \
+obligation its replay carried and the replay ended there, so its rows are a \
+prefix of a run"
   # A new inode over the solver's row (campaign_write_whole); a head reading
   # it over NFS opens the new one.
   campaign_write_whole "${result_row}" <"${statement}"

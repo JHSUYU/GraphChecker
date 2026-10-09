@@ -97,6 +97,50 @@ public class FocusedReplayDecidedTest {
                 + " published no session", result.detail());
     }
 
+    /**
+     * A stall decides a replay asked a flip, flipped or not: every
+     * obligation NOT_ADMITTED by REPLAY_NO_PROGRESS, once; never a replay
+     * handed no obligation (the seed's), a confirmation's, or one whose
+     * workload ended (it settles).
+     */
+    @Test
+    public void aStallDecidesAReplayAskedAFlipAndNoOther() throws Exception {
+        String still = "nothing moved for 300 s";
+        assertFalse("the seed's replay carries no obligation",
+                FocusedReplay.noProgress(still));
+        reset();
+        Path worker = folder.newFolder().toPath();
+        Files.write(worker.resolve("focused_task.jsonl"), ("{\"taskId\":"
+                + "\"CONFIRM\",\"obligationId\":\"C\",\"pathId\":\"p\","
+                + "\"focused\":\"" + FOCUS + "\",\"seedSessionId\":\"seed\","
+                + "\"flip\":null}\n").getBytes(StandardCharsets.UTF_8));
+        Path plan = worker.resolve("execution_task_plan.jsonl");
+        Files.write(plan, new byte[0]);
+        System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
+        assertFalse("a confirmation's own rules stand",
+                FocusedReplay.noProgress(still));
+        reset();
+        handed();
+        FocusedReplay.workloadEnded(null, "");
+        assertFalse("an ended workload settles", FocusedReplay.noProgress(
+                still));
+        reset();
+        handed();
+        FocusedReplay.observeDecision(OccurrenceAddress.parse(FOCUS), SITE,
+                1, true);
+        FocusedReplay.observeDecision(OccurrenceAddress.parse(PARENT),
+                PARENT_SITE, 1, true);
+        assertEquals(Verdict.ADMITTED, only("s").verdict());
+        assertTrue(FocusedReplay.noProgress(still));
+        assertFalse("decided once", FocusedReplay.noProgress(still));
+        ObligationResult result = only("");
+        assertEquals(Verdict.NOT_ADMITTED, result.verdict());
+        assertEquals(FocusedReplay.REPLAY_NO_PROGRESS + ": " + still
+                + "; the replay ended there and published no session (until"
+                + " then: the focused prefix reproduced and " + SITE
+                + "#1 took true)", result.detail());
+    }
+
     @Test
     public void aPublicationTheRunEndedWithoutAdmitsNothing() throws Exception {
         handed();

@@ -123,6 +123,8 @@ public final class ScheduleLog {
     private static final Map<String, Integer> COUNTS =
             new HashMap<String, Integer>();
     private static long seq;
+    /** {@link #steps}; guarded by {@link #LOCK}. */
+    private static long steps;
 
     // ---- the order, guarded by LOCK ---------------------------------------
     private static final byte OPEN = 0;
@@ -711,6 +713,10 @@ public final class ScheduleLog {
                     SENDERS.put(pending.endpoint, stance);
                 }
             }
+        }
+        if (pending.kind != ScheduleEvent.Kind.WAKE
+                && pending.kind != ScheduleEvent.Kind.END) {
+            steps++;
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
@@ -1557,7 +1563,7 @@ public final class ScheduleLog {
     }
 
     /** The collectors' summed time so far, in ms. */
-    private static long collectedMillis() {
+    static long collectedMillis() {
         long millis = 0L;
         for (GarbageCollectorMXBean collector
                 : ManagementFactory.getGarbageCollectorMXBeans()) {
@@ -1574,6 +1580,19 @@ public final class ScheduleLog {
         } catch (Throwable unpublished) {
         }
         EngineConsole.println("Causynth schedule: " + detail);
+    }
+
+    /**
+     * How many steps this run has made so far: its events but the clock's,
+     * a WAKE (a timed wait's timeout) and a tick's END -- a poll that wakes
+     * and finds nothing makes only those (solr-bugs-reindex-cleanup: a hung
+     * replay's request handler woke once a minute).  What a replay's watch
+     * sees move ({@code ConcolicResultPublisher#watchProgress}).
+     */
+    static long steps() {
+        synchronized (LOCK) {
+            return steps;
+        }
     }
 
     /** Whether the replay is held right now: in the window, a slot holds. */
@@ -1784,6 +1803,7 @@ public final class ScheduleLog {
                 UNKNOWN_SENDERS.clear();
             }
             seq = 0L;
+            steps = 0L;
             loaded = false;
             holds = false;
             order = Collections.emptyList();
