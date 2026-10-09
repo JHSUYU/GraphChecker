@@ -5080,12 +5080,15 @@ not yet woven"
     campaign_stream_chain_round "${round_dir}" "${ids[@]}"
     return 0
   fi
-  # A round that exposes regions grows the corpus first: what it proposes is
-  # asked again over the grown one, once GROW's re-runs have swapped in.
-  if (( exposed > 0 )); then
-    campaign_stream_grow "${round_dir}"
-    return 0
-  fi
+  # A round that exposes regions grows the corpus first; what it proposes
+  # is queued behind GROW's re-runs, as what was queued before it is, and
+  # starts once they have swapped in (no solve starts before): in flight
+  # from now on, so no later round proposes it again.  Dropped and re-asked
+  # round after round, a backlog of consecutive growing rounds waited for
+  # the first round that grew nothing (solr-bugs-reindex-cleanup Z10: four
+  # growths in a row, 951 of round 5's 980 proposals asked before, Z9's
+  # witness flip asked in round 1 and queued in round 5, never answered).
+  (( exposed == 0 )) || campaign_stream_grow "${round_dir}"
   for ((index = 0; index < proposed; index++)); do
     mkdir -p "${round_dir}/${ids[${index}]}"
     stream_flying[${ids[${index}]}]=${rows[${index}]}
