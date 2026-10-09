@@ -1246,9 +1246,11 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * The occurrence ids at the doors of the message that started {@code
      * occurrence} ({@link RecordedMessages#doorsOf}), and every activation
-     * of a turn that took it in at its root before any of its regions
-     * opened ({@link RecordedMessages#doorStancesOf}: the Overseer queue
-     * loop's turn, whose ZooKeeper door runs in a region of it).
+     * of a turn that sent it or took it in at its root before any of its
+     * regions opened ({@link RecordedMessages#doorStancesOf}: a Solr
+     * client's turn, whose HTTP door runs in a region of it after the
+     * request started; the Overseer queue loop's turn, whose ZooKeeper door
+     * runs in a region of it).
      */
     private static Set<String> doorsOf(RecordedMessages messages,
                                        StaticProgram program,

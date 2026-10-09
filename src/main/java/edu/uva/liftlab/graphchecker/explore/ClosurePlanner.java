@@ -819,12 +819,13 @@ public final class ClosurePlanner {
     }
 
     /** A door of the message a demanded occurrence served -- its sender or
-     *  its receiver, paired via the message that started the served
-     *  occurrence ({@link Corpus#startedBy}: its ANCHOR, or what its turn
-     *  took in) -- joins as a control producer where a session recorded a
-     *  fault decision of it: it contributes no value, but that fault point
-     *  decides whether the message exists (IDENTITY §7.3), the door PLAN's
-     *  CONTROL_PRODUCER rule admits (it read a fault marker).  Any other
+     *  its receiver ({@link Corpus#doorsOf}), paired via the message that
+     *  started the served occurrence ({@link Corpus#startedBy}: its ANCHOR,
+     *  or what its turn took in) -- joins as a control producer where a
+     *  session recorded a fault decision of it: it contributes no value,
+     *  but that fault point decides whether the message exists (IDENTITY
+     *  §7.3), the door PLAN's CONTROL_PRODUCER rule admits (it read a
+     *  fault marker).  Any other
      *  door -- run under no planned task (hdfs-adhoc-28's heartbeat tick, in
      *  a scope with no IPC client door: it reads no marker), a role, or a
      *  captured one that decided no fault -- has nothing that decides the
@@ -834,11 +835,8 @@ public final class ClosurePlanner {
         Corpus corpus = walk.corpus;
         String endpoint = corpus.startedBy(demand.occurrence);
         if (endpoint.isEmpty()) return;
-        List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
-        doors.add(corpus.senderOf(endpoint));
-        doors.addAll(corpus.receiversOf(endpoint));
-        for (OccurrenceAddress door : doors) {
-            if (door == null || door.equals(demand.occurrence)) continue;
+        for (OccurrenceAddress door : corpus.doorsOf(endpoint)) {
+            if (door.equals(demand.occurrence)) continue;
             if (walk.faulted(door)) {
                 next.add(new Demand(door, CONTROL_PRODUCER, false));
             } else if (walk.faultless.add(door.id())) {

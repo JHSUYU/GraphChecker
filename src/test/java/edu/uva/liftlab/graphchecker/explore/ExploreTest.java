@@ -5506,14 +5506,16 @@ public class ExploreTest {
 
     /**
      * IDENTITY §7.2: a turn that takes a queue item in at its root, before
-     * any of its regions opened (the Overseer queue loop's turn), holds a
+     * any of its regions opened (the Overseer queue loop's turn), or sends
+     * it so (a Solr request starts at its client's invoke point), holds a
      * door of that item in every occurrence it runs: the item's other
      * consumer (the task's Runner, which wrote what the anchor read) names
      * it as a control producer, and its door is asked
-     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write).
+     * (solr-bugs-overseer-lock-leak: markTaskAsRunning's ZooKeeper write;
+     * solr-bugs-migrate-buffer-leak: the HTTP door of the request).
      */
     @Test
-    public void aTurnThatTookAnItemInAtItsRootHoldsItsDoors()
+    public void aTurnThatSentOrTookAnItemInAtItsRootHoldsItsDoors()
             throws Exception {
         LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
                 "/collections/c/state.json");
@@ -5528,8 +5530,18 @@ public class ExploreTest {
                 Role.of("OVERSEER_TASK_QUEUE"), "", 1);
         OccurrenceAddress marking = occurrence("solr-case/node0",
                 "REGION.mark", queueTurn, "Queue#mark#1");
-        for (boolean rooted : new boolean[] {true, false}) {
-            Path iteration = tree.newFolder("turn-" + rooted).toPath();
+        // Per row: the queue turn's row of the item, at its root (no
+        // occurrence) or not, and whether the turn's door is asked.
+        Object[][] cases = {
+            {ScheduleEvent.Kind.RECV, true},
+            {ScheduleEvent.Kind.RECV, false},
+            {ScheduleEvent.Kind.SEND, true},
+            {ScheduleEvent.Kind.SEND, false},
+        };
+        for (int at = 0; at < cases.length; at++) {
+            ScheduleEvent.Kind kind = (ScheduleEvent.Kind) cases[at][0];
+            boolean rooted = (Boolean) cases[at][1];
+            Path iteration = tree.newFolder("turn-" + at).toPath();
             Session seed = new Session(iteration, "s-seed");
             seed.activation(client, false);
             seed.activation(runner, false, true, "runner");
@@ -5544,27 +5556,28 @@ public class ExploreTest {
             seed.target(client, "Guard#u8#1", "false");
             seed.flush();
             List<JsonObject> schedule = new ArrayList<JsonObject>();
-            // Each turn takes the task item in at its root: no occurrence.
+            // The queue turn's row first: its SEND, else a RECV of its own.
             schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(1L,
+                    kind, ContextShape.Stance.of(marking).render(),
+                    "SOLR_ZK#REQUEST", 0, rooted ? "" : runner.id(),
+                    "e-task")));
+            // The Runner's turn takes the item in at its root.
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(2L,
                     ScheduleEvent.Kind.RECV, ContextShape.Stance.of(runner)
                             .render(), "SOLR_ZK#REQUEST", 0, "", "e-task")));
-            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(2L,
-                    ScheduleEvent.Kind.RECV, ContextShape.Stance.of(marking)
-                            .render(), "SOLR_ZK#REQUEST", 0,
-                    rooted ? "" : runner.id(), "e-task")));
             RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
                     schedule);
             scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
                     "Guard#u8"), scopeSite(StaticScopeMap.PROVENANCE_SITE, "",
                     "Processor#ro#u1", "Processor#ro",
                     "<P: boolean readOnly>", "<P: boolean readOnly>", ""));
-            Path out = tree.newFolder("turn-" + rooted + "-out").toPath();
+            Path out = tree.newFolder("turn-" + at + "-out").toPath();
             Path results = out.resolve("obligation_results.jsonl");
             Files.write(results, new byte[0]);
             Path wave = out.resolve("obligations-0000");
             plan(iteration, "solr-case/node1#epoch0/region/REGION.target#1",
                     null, results, wave, 0);
-            assertEquals("rooted=" + rooted, rooted,
+            assertEquals("case " + at, rooted,
                     named(obligations(wave), "Mark#u3") != null);
         }
     }

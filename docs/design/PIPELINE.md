@@ -560,8 +560,10 @@ are counted, never dropped silently: `concreteAnchors` states how many
   writer then names the doors of the queue item it took in (below); no static candidate;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
-- the two doors of the message a demanded occurrence served (sender and receiver of its causal
-  anchor's producer endpoint), each where a session recorded a fault decision of it (its fault
+- the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
+  producer endpoint; a message sent or taken in at a turn's root, no occurrence open, has a door in
+  every occurrence of that turn, `Corpus#doorsOf`, IDENTITY §7.2), each where a session recorded a
+  fault decision of it (its fault
   point decides whether the message exists; the doors PLAN's `CONTROL_PRODUCER_V1` admits):
   `CONTROL_PRODUCER`, contributing no value. Any other door -- run under no planned task, a role,
   or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client

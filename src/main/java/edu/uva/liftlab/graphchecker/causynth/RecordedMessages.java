@@ -91,11 +91,13 @@ final class RecordedMessages {
     }
 
     /**
-     * The stances of the turns that took in, at their root before any of
-     * their regions opened, the message that started {@code occurrence}:
-     * every occurrence of such a turn holds a door of it (an Overseer queue
-     * loop's turn, its task item, and the ZooKeeper door a region of the
-     * turn runs).
+     * The stances of the turns whose every occurrence holds a door of the
+     * message that started {@code occurrence}: the turn that sent it at its
+     * root before any of its regions opened (a Solr request starts at its
+     * client's invoke point, and its HTTP door runs in a region of the turn
+     * after it), and each turn that took it in so (an Overseer queue loop's
+     * turn, its task item, and the ZooKeeper door a region of the turn
+     * runs).
      */
     Set<String> doorStancesOf(OccurrenceAddress occurrence) {
         String endpoint = occurrence.context() instanceof CausalContext.Anchor
@@ -103,8 +105,13 @@ final class RecordedMessages {
                         .producerEndpointId()
                 : takenIn.getOrDefault(
                         ContextShape.Stance.of(occurrence).render(), "");
-        Set<String> stances = receivingStances.get(endpoint);
-        return stances == null ? Collections.<String>emptySet() : stances;
+        Set<String> doors = new LinkedHashSet<>(receivingStances.getOrDefault(
+                endpoint, Collections.<String>emptySet()));
+        ContextShape.Stance sentAt = stances.get(endpoint);
+        if (!senders.containsKey(endpoint) && sentAt != null) {
+            doors.add(sentAt.render());
+        }
+        return doors;
     }
 
     /** The shape of {@code context} over the recording's senders. */

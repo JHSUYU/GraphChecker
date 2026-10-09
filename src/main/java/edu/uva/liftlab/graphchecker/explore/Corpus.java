@@ -288,12 +288,12 @@ public final class Corpus implements Arms.Rows {
     /** Producer endpoint id of a RECV -> the occurrence that took it in. */
     private final Map<String, String> receiverByEndpoint =
             new LinkedHashMap<String, String>();
-    /** Where a context anchored on nothing stands -> the message it took
-     *  into itself (a DataNode's turn and its DataTransfer op). */
     /** Producer endpoint id -> the stances of the turns that took it in
-     *  at their root, no occurrence open ({@link #receiversOf}). */
+     *  at their root, no occurrence open ({@link #doorsOf}). */
     private final Map<String, Set<String>> receivingStances =
             new LinkedHashMap<String, Set<String>>();
+    /** Where a context anchored on nothing stands -> the message it took
+     *  into itself (a DataNode's turn and its DataTransfer op). */
     private final Map<String, String> takenInByStance =
             new HashMap<String, String>();
 
@@ -801,25 +801,38 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * Every occurrence that took the message in: its RECV's occurrence
-     * ({@link #receiverOf}), and every occurrence of a turn that took it in
-     * at its root, before any of its regions opened (an Overseer queue
-     * loop's turn and the task item it consumed, whose ZooKeeper door then
-     * runs in a region of the turn).
+     * Every door of a message (IDENTITY §7.3): the occurrence that sent it
+     * ({@link #senderOf}), else, sent at its turn's root before any region
+     * of the turn opened, every occurrence of that turn (a Solr request
+     * starts at its client's invoke point, and its HTTP door runs in a
+     * region of the turn after it); and every occurrence that took it in
+     * ({@link #receiverOf}) and every occurrence of a turn that took it in
+     * at its root (an Overseer queue loop's turn and the task item it
+     * consumed, whose ZooKeeper door then runs in a region of the turn).
      */
-    public List<OccurrenceAddress> receiversOf(String producerEndpointId) {
-        List<OccurrenceAddress> receivers = new ArrayList<OccurrenceAddress>();
+    public List<OccurrenceAddress> doorsOf(String producerEndpointId) {
+        List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
+        Set<String> stances = new HashSet<String>(receivingStances
+                .getOrDefault(producerEndpointId,
+                        Collections.<String>emptySet()));
+        OccurrenceAddress sender = senderOf(producerEndpointId);
+        ContextShape.Stance sentAt =
+                senderStanceByEndpoint.get(producerEndpointId);
+        if (sender != null) {
+            doors.add(sender);
+        } else if (sentAt != null) {
+            stances.add(sentAt.render());
+        }
         OccurrenceAddress receiver = receiverOf(producerEndpointId);
-        if (receiver != null) receivers.add(receiver);
-        Set<String> stances = receivingStances.get(producerEndpointId);
-        if (stances == null) return receivers;
+        if (receiver != null && !doors.contains(receiver)) doors.add(receiver);
+        if (stances.isEmpty()) return doors;
         for (OccurrenceAddress occurrence : occurrenceById.values()) {
             if (stances.contains(ContextShape.Stance.of(occurrence).render())
-                    && !receivers.contains(occurrence)) {
-                receivers.add(occurrence);
+                    && !doors.contains(occurrence)) {
+                doors.add(occurrence);
             }
         }
-        return receivers;
+        return doors;
     }
 
     /** One session's schedule as the corpus indexes it, read once. */
