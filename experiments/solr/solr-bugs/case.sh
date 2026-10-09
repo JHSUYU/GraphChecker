@@ -111,12 +111,13 @@ case "${1:?usage: case.sh <bug>}" in
   # alias back, over a newer alias.  The workload creates the plain alias B
   # before the routed alias's first document and requests via B after the
   # start is rewritten.  The witness: the routing node's view captured before
-  # B.  The target: the client's lookup of B (selector from the first
-  # recording).
+  # B.  The target: the client's lookup of B, the request via B: the sixth
+  # occurrence of the client's request region in round SG1's recording
+  # (CREATE, two CREATEALIASes, two updates, then the query, .select#1).
   tra-start-overwrite)
     test_class=org.apache.solr.cloud.TestCausynthTraStartAlias
     test_method=requestViaAnAliasCreatedBeforeTheFirstDocument
-    target_occurrence=
+    target_occurrence='auto0/client0#epoch0/region/REGION.d05f0711-30a1-3795-816a-5d70c9e38216#6'
     scope=(
       core:org/apache/solr/cloud/api/collections/TimeRoutedAlias
       solrj:org/apache/solr/common/cloud/ZkStateReader
