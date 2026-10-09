@@ -263,11 +263,15 @@ final class ConcolicResultPublisher {
      * {@link #NO_PROGRESS_MILLIS} -- no schedule step ({@link
      * ScheduleLog#steps}: a WAKE or a tick's END is the clock, not a step),
      * nothing the settle counts ({@link #movedLocked})
-     * and no thread computing ({@link Computing}) -- the replay is decided
-     * there ({@code FocusedReplay#noProgress}: every obligation NOT_ADMITTED
-     * by REPLAY_NO_PROGRESS, its session withdrawn), its threads are dumped
-     * on its log, and it ends ({@link Conclusion#AT_NO_PROGRESS}), long
-     * before {@code replay_timeout_s} would kill it.  Only inside the
+     * and no thread computing ({@link Computing}) -- every question still
+     * open is NOT_ADMITTED by REPLAY_NO_PROGRESS, which names the
+     * schedule's holds then ({@code FocusedReplay#noProgress}, {@code
+     * ScheduleLog#holding}), its threads are dumped on its log, and it ends,
+     * long before {@code replay_timeout_s} would kill it: decided, its
+     * session withdrawn, when no flip it was asked was taken yet ({@link
+     * Conclusion#AT_NO_PROGRESS}); its session standing as the run made it,
+     * the flips taken keeping their verdicts, when one was ({@link
+     * Conclusion#STALLED_AFTER_FLIP}).  Only inside the
      * recording window ({@link RecordingWindow#opened}): before it the
      * cluster starts, and after it the test is over -- its teardown answers
      * nothing the question asked, and may wait (solr-18413 FA5: an admitted
@@ -318,9 +322,11 @@ final class ConcolicResultPublisher {
                             NO_PROGRESS_MILLIS) - remaining) + " s (no"
                     + " schedule step, no activation began or settled, no"
                     + " loop body, no publication, no thread computing)";
-            if (FocusedReplay.noProgress(still)) {
+            if (FocusedReplay.noProgress(still, ScheduleLog.holding())) {
                 dumpThreads(still);
-                conclude(Conclusion.AT_NO_PROGRESS);
+                conclude(FocusedReplay.stalledAfterFlip()
+                        ? Conclusion.STALLED_AFTER_FLIP
+                        : Conclusion.AT_NO_PROGRESS);
             }
             return;
         }
@@ -426,7 +432,14 @@ final class ConcolicResultPublisher {
         /** Nothing moved for {@link #NO_PROGRESS_MILLIS} ({@link
          *  #watchProgress}), which decided every obligation it carries. */
         AT_NO_PROGRESS("nothing moved for " + NO_PROGRESS_MILLIS / 1000L
-                + " s, which decided every obligation this replay carries");
+                + " s, which decided every obligation this replay carries"),
+        /** Nothing moved for {@link #NO_PROGRESS_MILLIS} after a flip the
+         *  replay was asked was taken: the session stands as the run made
+         *  it, the obligations still open NOT_ADMITTED. */
+        STALLED_AFTER_FLIP("nothing moved for " + NO_PROGRESS_MILLIS / 1000L
+                + " s after a flip this replay was asked was taken: its"
+                + " session stands, the questions still open are not"
+                + " admitted");
 
         private final String when;
 
@@ -465,9 +478,10 @@ final class ConcolicResultPublisher {
      * whose settle, the end standing, waits only for the publications and
      * strands every activation still live.
      *
-     * <p>What still publishes differs.  At the witness, every occurrence
-     * completed before it (the witness's own among them): its session is a
-     * corpus session, read whole up to there.  At a refusal or a stall, no
+     * <p>What still publishes differs.  At the witness, or at a stall
+     * after a flip was taken, every occurrence completed before it (the
+     * witness's own among them): its session is a corpus session, read
+     * whole up to there.  At a refusal or a stall before any flip, no
      * publication that has not started: the session is withdrawn, and
      * draining the queue
      * into it cost a Solr replay two to five minutes past the test's end
@@ -477,7 +491,8 @@ final class ConcolicResultPublisher {
         synchronized (PUBLICATION_LOCK) {
             if (concluded != null) return;
             concluded = end;
-            submittedAtEnd = end == Conclusion.AT_WITNESS ? submitted : 0L;
+            submittedAtEnd = end == Conclusion.AT_WITNESS
+                    || end == Conclusion.STALLED_AFTER_FLIP ? submitted : 0L;
             // A settle already waiting for the live stops waiting for them.
             PUBLICATION_LOCK.notifyAll();
         }

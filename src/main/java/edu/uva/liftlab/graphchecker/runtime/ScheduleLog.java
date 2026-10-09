@@ -1699,6 +1699,35 @@ public final class ScheduleLog {
         }
     }
 
+    /**
+     * The schedule's holds at this moment, for a stall's verdict ({@code
+     * FocusedReplay#noProgress}): how many threads wait for a turn, where
+     * the one waiting longest waits and since when, and how many of them
+     * the order holds with no slot or behind a held write to their
+     * location; {@code ""} when no thread waits, so a stall the engine's
+     * own hold made is told from one the workload made.
+     */
+    static String holding() {
+        synchronized (LOCK) {
+            if (WAITERS.isEmpty()) return "";
+            Thread longest = null;
+            long since = Long.MAX_VALUE;
+            for (Map.Entry<Thread, Long> arrived : ARRIVED.entrySet()) {
+                if (arrived.getValue() < since) {
+                    since = arrived.getValue();
+                    longest = arrived.getKey();
+                }
+            }
+            return WAITERS.size() + " thread(s) held for a turn"
+                    + (longest == null ? "" : ", the longest (\""
+                    + longest.getName() + "\") at slot "
+                    + WAITERS.get(longest) + " for "
+                    + (System.currentTimeMillis() - since) / 1000L + " s")
+                    + "; " + HELD.size() + " held with no slot, "
+                    + CONFLICTED.size() + " behind a held write";
+        }
+    }
+
     /** Whether the replay is held right now: in the window, a slot holds. */
     public static boolean enforcing() {
         if (!RecordingWindow.opened()) return false;

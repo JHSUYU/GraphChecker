@@ -98,16 +98,20 @@ public class FocusedReplayDecidedTest {
     }
 
     /**
-     * A stall decides a replay asked a flip, flipped or not: every
-     * obligation NOT_ADMITTED by REPLAY_NO_PROGRESS, once; never a replay
-     * handed no obligation (the seed's), a confirmation's, or one whose
-     * workload ended (it settles).
+     * A stall is NOT_ADMITTED for the questions still open, once, naming
+     * whether a schedule hold was live: before any flip was taken it decides
+     * the replay (its session withdrawn); after one, the flips taken keep
+     * their verdicts and the session stands.  Never a replay handed no
+     * obligation (the seed's), a confirmation's, or one whose workload
+     * ended (it settles).
      */
     @Test
-    public void aStallDecidesAReplayAskedAFlipAndNoOther() throws Exception {
+    public void aStallLeavesTheFlipsTakenAndRefusesTheQuestionsOpen()
+            throws Exception {
         String still = "nothing moved for 300 s";
+        String held = "2 thread(s) held for a turn";
         assertFalse("the seed's replay carries no obligation",
-                FocusedReplay.noProgress(still));
+                FocusedReplay.noProgress(still, ""));
         reset();
         Path worker = folder.newFolder().toPath();
         Files.write(worker.resolve("focused_task.jsonl"), ("{\"taskId\":"
@@ -118,27 +122,88 @@ public class FocusedReplayDecidedTest {
         Files.write(plan, new byte[0]);
         System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
         assertFalse("a confirmation's own rules stand",
-                FocusedReplay.noProgress(still));
+                FocusedReplay.noProgress(still, ""));
         reset();
         handed();
         FocusedReplay.workloadEnded(null, "");
         assertFalse("an ended workload settles", FocusedReplay.noProgress(
-                still));
+                still, ""));
+
+        reset();
+        handed();
+        assertTrue("before any flip, a stall decides the replay",
+                FocusedReplay.noProgress(still, ""));
+        assertFalse("once", FocusedReplay.noProgress(still, held));
+        assertFalse(FocusedReplay.stalledAfterFlip());
+        ObligationResult refused = only("");
+        assertEquals(Verdict.NOT_ADMITTED, refused.verdict());
+        assertEquals(FocusedReplay.REPLAY_NO_PROGRESS + ": " + still
+                + "; no schedule hold was live; the replay ended there and"
+                + " published no session (until then: occurrence "
+                + OccurrenceAddress.parse(FOCUS).id() + " never reached "
+                + SITE + "#1 in this replay)", refused.detail());
+
         reset();
         handed();
         FocusedReplay.observeDecision(OccurrenceAddress.parse(FOCUS), SITE,
                 1, true);
         FocusedReplay.observeDecision(OccurrenceAddress.parse(PARENT),
                 PARENT_SITE, 1, true);
-        assertEquals(Verdict.ADMITTED, only("s").verdict());
-        assertTrue(FocusedReplay.noProgress(still));
-        assertFalse("decided once", FocusedReplay.noProgress(still));
-        ObligationResult result = only("");
-        assertEquals(Verdict.NOT_ADMITTED, result.verdict());
-        assertEquals(FocusedReplay.REPLAY_NO_PROGRESS + ": " + still
-                + "; the replay ended there and published no session (until"
-                + " then: the focused prefix reproduced and " + SITE
-                + "#1 took true)", result.detail());
+        assertTrue("after the flip, a stall ends the replay",
+                FocusedReplay.noProgress(still, held));
+        assertTrue(FocusedReplay.stalledAfterFlip());
+        assertFalse("once", FocusedReplay.noProgress(still, held));
+        assertEquals("and decides nothing", "", FocusedReplay.refusedAt());
+        assertEquals("the flip taken keeps its verdict", Verdict.ADMITTED,
+                only("s").verdict());
+    }
+
+    /** One replay asked two flips at the focus, {@link #SITE}#1 and #2. */
+    private void handedTwo() throws Exception {
+        Path worker = folder.newFolder().toPath();
+        StringBuilder rows = new StringBuilder();
+        for (int ordinal = 1; ordinal <= 2; ordinal++) {
+            rows.append("{\"taskId\":\"T\",\"obligationId\":\"OB")
+                    .append(ordinal).append("\",\"pathId\":\"p\",")
+                    .append("\"focused\":\"").append(FOCUS)
+                    .append("\",\"focusedOccurrenceId\":\"")
+                    .append(OccurrenceAddress.parse(FOCUS).id())
+                    .append("\",\"seedSessionId\":\"seed\",\"flip\":")
+                    .append("{\"siteId\":\"").append(SITE)
+                    .append("\",\"ordinal\":").append(ordinal)
+                    .append(",\"outcome\":true},\"inheritedFlips\":[],")
+                    .append("\"rootAssignments\":{},\"clockDeltas\":{},")
+                    .append("\"answers\":{},\"rootMints\":{}}\n");
+        }
+        Files.write(worker.resolve("focused_task.jsonl"),
+                rows.toString().getBytes(StandardCharsets.UTF_8));
+        Path plan = worker.resolve("execution_task_plan.jsonl");
+        Files.write(plan, new byte[0]);
+        System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
+    }
+
+    @Test
+    public void aStallAfterOneFlipRefusesOnlyTheOtherQuestion()
+            throws Exception {
+        handedTwo();
+        FocusedReplay.observeDecision(OccurrenceAddress.parse(FOCUS), SITE,
+                1, true);
+        assertTrue(FocusedReplay.noProgress("nothing moved for 600 s",
+                "1 thread(s) held for a turn"));
+        java.util.Map<String, ObligationResult> byId =
+                new java.util.HashMap<String, ObligationResult>();
+        for (ObligationResult result : FocusedReplay.results("s")) {
+            byId.put(result.obligationId(), result);
+        }
+        assertEquals(Verdict.ADMITTED, byId.get("OB1").verdict());
+        ObligationResult open = byId.get("OB2");
+        assertEquals(Verdict.NOT_ADMITTED, open.verdict());
+        assertEquals("s", open.sessionId());
+        assertTrue(open.detail(), open.detail().startsWith(
+                FocusedReplay.REPLAY_NO_PROGRESS + ": nothing moved for 600"
+                        + " s; a schedule hold was live: 1 thread(s) held for"
+                        + " a turn; the replay ended there, after another"
+                        + " flip it was asked was taken"));
     }
 
     @Test

@@ -310,8 +310,11 @@ A focused replay ends early, once, for one of three reasons (`ConcolicResultPubl
   held to it holds a `WAKE` it never made to the order's end, IDENTITY.md §8).
 - `AT_REFUSAL`: a refusal decided every obligation the replay carries (`#concludeAtRefusal`,
   `FocusedReplay#refusedAt`, §7.6).
-- `AT_NO_PROGRESS`: nothing moved for 600 s in a replay asked a flip, which decided every
-  obligation it carries (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
+- `AT_NO_PROGRESS`: nothing moved for 600 s in a replay asked a flip, before any flip it carries
+  was taken, which decided every obligation (`#watchProgress`, `FocusedReplay#noProgress`, §7.6).
+- `STALLED_AFTER_FLIP`: the same stall after a flip was taken: the session stands as the run made
+  it up to there, the flips taken keep their verdicts, the questions still open are
+  `NOT_ADMITTED` (§7.6).
 
 Either way admission ends, `Causynth <UTC instant>: the replay ends <reason>` goes to the replay log, the
 publications running settle, every activation still live is stranded at once (`TASK_UNANSWERED`
@@ -937,12 +940,18 @@ schedule step, `ScheduleLog#steps`: an event but a `WAKE` or a tick's `END`, whi
 and finds nothing makes; nothing the settle counts, `#movedLocked`: no activation began
 or settled, no loop body charged, no publication finished or read-out decoded; no thread computing,
 `#Computing`: one thread with the collectors at half a look's span, the schedule's measure, not a
-sum, since a hung cluster test's threads still ping its ZooKeeper), every obligation is decided
-`NOT_ADMITTED` by name, flipped or not (`FocusedReplay#noProgress`: `REPLAY_NO_PROGRESS: nothing
-moved for N s (...); the replay ended there and published no session (until then: <what it had
-settled>)`), its threads are dumped on the replay log, and it ends (`AT_NO_PROGRESS`, §5) as a
-refused replay does: no session, its question settled. A workload that ended settles on the
-settle's own bound instead. 600 s is the recording's stall bound too (`campaign_unbounded_stall_s`):
+sum, since a hung cluster test's threads still ping its ZooKeeper), every question still open is
+`NOT_ADMITTED` by name, which says whether a schedule hold was live then (`FocusedReplay#noProgress`:
+`REPLAY_NO_PROGRESS: nothing moved for N s (...); no schedule hold was live` or `; a schedule hold
+was live: <ScheduleLog#holding: the threads held for a turn, the longest's slot and wait, how many
+with no slot or behind a held write>`), so a stall the engine's own hold made reads apart from one
+the workload made, and its threads are dumped on the replay log. Before any flip it carries was
+taken the stall decides the replay (`...; the replay ended there and published no session (until
+then: <what it had settled>)`) and it ends as a refused replay does (`AT_NO_PROGRESS`, §5): no
+session, its question settled. After one was taken the flips taken keep their verdicts, never
+rewritten, the others are `NOT_ADMITTED` by the stall, and the session stands as the run made it up
+to there (`STALLED_AFTER_FLIP`, §5): published as at a witness, every occurrence completed before
+it. A workload that ended settles on the settle's own bound instead. 600 s is the recording's stall bound too (`campaign_unbounded_stall_s`):
 of 1,596 Solr replays that ended by themselves (SG1, FA1-5, MB, Z) an admitted one went at most 122 s
 without a log line in its window (a schedule stall's ceiling, 8 timeouts of 15 s), one 300 s (an
 HTTP call waiting out its socket timeout, NOT_ADMITTED); each of the 172 killed at
