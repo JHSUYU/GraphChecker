@@ -139,14 +139,20 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
    the one decision each target row's open decider arm names (`TargetRow.OpenArm`); and `force`,
    the forcing table (each of those ifs with the arm that leads to the throw, a switch never,
-   `plan.ForcingTable`), one per TARGET_SITE row, which PLAN copies -- the task's own target's
+   `plan.ForcingTable`; an if each of whose arms reaches the throw within one occurrence -- an
+   `assert`'s `$assertionsDisabled` test, a guard on its skip arm while its other arm reaches the
+   throw through the assert's own test -- stated `passable` and never forced,
+   `SiteControlDependence.MethodGuards#passable`), one per TARGET_SITE row, which PLAN copies -- the task's own target's
    (`ConcolicScheduler#ownTarget`) -- onto the declared task's `targetBranch.force` for the
    forced replay (§7.10), less a caller's chain guard where the recording's occurrence entered the
    throw's method (`ForcingTable#forOccurrence`: it reaches the method by some call, and forcing another
-   call's guard would only divert it). Loop-bound
+   call's guard would only divert it). The same table is COMPOSE's one statement of the arm toward
+   the throw (§8, `RestsOn#wayGuard`). Loop-bound
    rows are keyed by Jimple unit id (`<method signature>#uNN`, field `loopSiteId`); the ids the
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
+   A loop's `K_L` (its row, else `causynth_loop_default_bound`) bounds the path space it offers:
+   the iterations of one call that decided on a symbol (§5).
 2. `do_workload`: one weave in trace mode `region-state` (lineage classes from `plan.LineageScan`
    included), then the workload itself (`workload_command`; a nonzero exit fails SEED; its wall
    time in seconds is kept as `campaign_recorded_workload_s`, the base of the seed replay's
@@ -270,6 +276,19 @@ exception -- goes to the standard error the JVM started with (`runtime.EngineCon
 the `System.err` a test may have captured and asserts on (a40h2 FSImage-851: its seed replay failed
 `TestDFSAdminWithHA#verifyUpgradeQueryOutput` on the schedule's own lines, before the declared
 occurrence ran).
+
+Loop bounds (`runtime.LoopAccounting`, per loop per method activation). A backedge traversal counts
+toward the loop's `K_L` only when the iteration it closes recorded a decision with a term (the
+first counts; `ActiveRegion#termedDecisions`): `K_L` bounds the flips a loop offers, and an
+iteration that decided only on concrete values offers none. Every traversal, and every body of a
+fixed-count loop, is charged to the work cap `LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES` (32, or a
+declared `K_L` above it); before, only fixed-count (array-indexed) loops had it, and a
+condition-bounded loop -- an iterator, a `while` -- was cut at `K_L` bodies whatever it decided on
+(solr-adhoc-05/07/19/21: `CloudDescriptor.<init>`'s loop over a core's properties, every decision
+concrete, cut the CREATE at its 9th body before its throw, in the seed and every replay). Either cut
+ends the activation `CUT`, publishes its prefix and files a `BOUND_INSUFFICIENT` row naming the loop
+(`LoopAccounting#endAtCut`); a path at the anchor that stopped on the way to the throw there is
+counted as the case's `loop_body_bound` (§8, result.json `bounded`).
 
 A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put
 first by `JUnitMethodRunner`; four pairs of exponent 65537 per size of 1024-4096 bits, in the jar's
@@ -1262,7 +1281,9 @@ branch of its table (`BranchObservation#prepare`) the runtime asks the VM to for
 marks (`System.forceNextConcolicBranch`, VM.md §2), every evaluation of it (a loop's turns, a recursion's
 calls: each forced arm reaches the throw by post-dominance), a decider only inside a call of its helper from
 the table row's `via` method (`Identity#callerFrame`); a nested planned region, another occurrence or thread is
-never forced, nor a switch (the forced world takes its selector's case). A forcing the VM refuses (a negative
+never forced, nor a switch (the forced world takes its selector's case), nor a `passable` branch (§2: either
+arm leads on to the forced guards, and forcing it against its concrete arm would state `false`:
+solr-adhoc-07's two `assert`s in `ZkController.register`). A forcing the VM refuses (a negative
 status, the call failing) leaves the branch to its operands and decides the run FORCE_DIVERGED at once. The
 VM's event states the concrete answer it overrode; the decision row states it
 (`DecisionRow#forced`, `concreteOutcome`), and the first decision forced against its concrete arm opens the
@@ -1273,7 +1294,8 @@ marked `forced` and observed no fatal (`TargetRow#forced`), so it is never a wit
 row is published (`AT_FORCED_TARGET`, §5) and its verdict is ADMITTED, `FORCED_TARGET` and how the occurrence
 then ended (the target's throw, or a handler that caught it); an occurrence that closes first, or takes its
 target's healthy arm (a branch no marker of its frame let the VM force), decides the run there
-(`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame); one that never closed
+(`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame, or the loop
+bound that cut it, §5); one that never closed
 (blocked, its activation stranded at the run's end) is decided at the session's close
 (`RowRuntime#closeSession`, `ForcedArms#unreached`). Each way the session is withdrawn, the verdict
 NOT_ADMITTED, and the exploration goes on as it would without one: a FORCED session publishes only at its
@@ -1329,10 +1351,20 @@ replace a slot (§7.1) give no arms.
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
 (beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
 session that ran the occurrence and left the way to the throw at a guard (`RestsOn#wayGuard`, the
-last decision at a target site's path site), its prefix the decisions before that guard: at a
+last decision at a target site's path site, when it took an arm off the way: not the arm the target
+sites' forcing tables name toward the throw, nor at a `passable` branch, §2; a site no table names,
+a switch or a fault call, is taken as left), its prefix the decisions before that guard: at a
 SYMBOLIC guard its fatal arm is the guard's other arm, the way to the throw (a witness turns it,
 CONFIRM judges the rest), at a concrete one the constant healthy decision (`false`), the guard named
-in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48); the seed always, a focused session only when all its own verdicts are
+in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48). A session whose last way
+decision kept the way, or that decided none, stopped on the way (a loop bound's cut, an exception, a
+return): no arm toward the throw is stated, its fatal is `false`, its WAY row names the anchor and how
+it stopped, and where a loop bound cut the occurrence (its `BOUND_INSUFFICIENT` row, §5) a
+DIAGNOSTIC row `<anchor> loop-body-bound=<N>` makes the case `bounded` (`loop_body_bound`), so its
+UNSAT is not done (CHECKING §1). Before, such a path's last way decision was composed at its other
+arm: solr-adhoc-19 SG2b's u9 (`!inFlightCreations.add`, taken toward the throw before the cut) became
+the CONFLICT throw "Already creating", and 19's and 21's UNSATs rested on that wrong arm. The seed
+always, a focused session only when all its own verdicts are
 `ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
 the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
 `ADMISSION_GAP` naming the first refusal. Beside them, each forced path (§7.10) is admitted, in its own scope;

@@ -282,7 +282,11 @@ target region里记录下path conditon即可。就可以之后直接用了". Bui
 `/bigtemp/vnr3ne/analysis/solr-2026-10-08/design-force-fatal-arm.md`, the lead's rulings: always run the FORCE replay, no
 transplant onto other paths, nested flips kept, no flip waiting for the forced ones): SEED's forcing table, the VM's forcing native (image
 `vm-force1`), the FORCE run first in every campaign, its forced session held apart, its forced flip asking the whole way to
-the throw, its path one more COMPOSE disjunct, CONFIRM unforced; solr-18413 and solr-18406 PASS with it (FA4). Left:
+the throw, its path one more COMPOSE disjunct, CONFIRM unforced; solr-18413 and solr-18406 PASS with it (FA4). A loop
+bound counts only iterations that decided on a symbol (the CREATE-a-core checks' FORCE runs were cut by a concrete loop),
+a branch both of whose arms reach the throw is never forced, and a path stopped on the way is BOUNDED (branch
+`solr-force2`, PIPELINE §5, §8). Waiting on Z2: solr-adhoc-19's forced flip (its phi reads `clusterProperties`, parsed
+from ZooKeeper JSON). Left:
 count, per case, the seed flips at forced decisions asked after the forced flip was answered (`result.json` `force`
 `seedFlipsAfterForcedFlip`), which decides whether the seed path's anchor flips and open-arm asks can then be deleted.
 

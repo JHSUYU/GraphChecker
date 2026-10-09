@@ -1413,21 +1413,37 @@ public final class Composer {
         //     SYMBOLIC one, its fatal arm is that guard's other arm, the way
         //     to the throw (a witness turns it, CONFIRM judges the rest);
         //     at a concrete one, the constant false; the guard named in
-        //     concrete[] (WAY) with what its term rests on.  None stated is
-        //     no phi.
+        //     concrete[] (WAY) with what its term rests on.  One that left
+        //     it at no guard stopped on the way (RestsOn#decided): the
+        //     constant false, named WAY with how it stopped, and where a
+        //     loop bound cut its occurrence a gap the case's `bounded`
+        //     counts (run_engine.sh campaign_bounds: loop_body_bound), so
+        //     its UNSAT rests on that bound.  None stated is no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
         if (!target.reachedAnchor()) {
-            pathConcrete.put("way:" + session, new Concrete("WAY",
-                    way == null ? anchor.render() : way.siteId() + "#"
-                            + way.ordinal(), way == null ? ""
-                    : way.outcome() + (way.term().isEmpty() ? ""
-                    : " " + way.term()), "the guard the path left the way "
-                    + "to the throw at", way == null
-                    ? Collections.<String>emptyList()
-                    : new ArrayList<String>(corpus.termSymbols(session,
-                    way.term()))));
+            pathConcrete.put("way:" + session, way != null
+                    ? new Concrete("WAY", way.siteId() + "#" + way.ordinal(),
+                    way.outcome() + (way.term().isEmpty() ? ""
+                            : " " + way.term()), "the guard the path left the"
+                    + " way to the throw at", new ArrayList<String>(
+                    corpus.termSymbols(session, way.term())))
+                    : new Concrete("WAY", anchor.render(), "",
+                    decided.cut.isEmpty() ? "the path stopped on the way to"
+                            + " the throw: it left it at no guard"
+                            : "the path stopped on the way to the throw: a"
+                            + " loop bound cut its occurrence ("
+                            + decided.cut + ")",
+                    Collections.<String>emptyList()));
+            if (way == null && !decided.cut.isEmpty()) {
+                gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                        anchor.render() + " " + LOOP_BODY_BOUND + "="
+                                + RestsOn.boundOf(decided.cut),
+                        "session " + session + " reached no point of the"
+                                + " anchor and left the way to the throw at"
+                                + " no guard: " + decided.cut);
+            }
             String fatal = symbolicWay ? lowering.statedTerm(fatalTerm,
                     "way:" + subject) : fatalTerm;
             if (!fatal.isEmpty() && !unknown(fatal, refusals, subject)) {
@@ -3451,6 +3467,10 @@ public final class Composer {
                 "this term names symbols nothing declares: " + free));
         return true;
     }
+
+    /** The bound a path stopped on the way to the throw rests on (its
+     *  gap's subject suffix, run_engine.sh campaign_bounds). */
+    static final String LOOP_BODY_BOUND = "loop-body-bound";
 
     /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";

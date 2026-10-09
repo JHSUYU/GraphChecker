@@ -2,14 +2,33 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.SiteControlDependence;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import soot.Body;
+import soot.BooleanType;
+import soot.G;
+import soot.IntType;
+import soot.Local;
+import soot.Modifier;
+import soot.RefType;
+import soot.Scene;
+import soot.SootClass;
+import soot.SootField;
+import soot.SootMethod;
+import soot.Type;
+import soot.Unit;
+import soot.VoidType;
+import soot.jimple.IntConstant;
+import soot.jimple.Jimple;
+import soot.options.Options;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
@@ -57,7 +76,7 @@ public class ForcingTableTest {
                 + "{\"siteId\":\"" + CALLER + "#u4\",\"outcome\":true}]}";
         StaticScopeMap.Site target = read(row).targetSites().get(0);
         Map<String, ForcingTable.Arm> table = ForcingTable.read(
-                ForcingTable.of(target));
+                ForcingTable.of(target, Collections.<String>emptySet()));
         Object[][] rows = {
                 {"the guard, at its fatal arm", M + "#u8", "=false"},
                 {"the helper's decider at the arm whose verdict the guard "
@@ -77,7 +96,8 @@ public class ForcingTableTest {
         assertEquals("one arm per site", 4, table.size());
 
         // Stated on the row, read back by the map whole, under its site.
-        JsonArray force = ForcingTable.of(target);
+        JsonArray force = ForcingTable.of(target,
+                Collections.<String>emptySet());
         assertEquals(force, read(row.substring(0, row.length() - 1)
                 + ",\"force\":" + force + "}").forcing(M + "#u9"));
         assertEquals("no target, no table", new JsonArray(),
@@ -149,6 +169,96 @@ public class ForcingTableTest {
             assertEquals((String) row[0], (Integer) row[2] == 3,
                     kept.containsKey(CALLER + "#u4"));
         }
+    }
+
+    /**
+     * An {@code assert} before the throw: its {@code $assertionsDisabled}
+     * test (u2) is a chain guard on its skip arm, yet its other arm reaches
+     * the throw too, through the assert's own test (u3): it is passable,
+     * never forced, so a forced world with assertions on states no {@code
+     * false} for it (solr-adhoc-07 F2P2: ZkController.register's two
+     * asserts).  The assert's test and the throw's own guard (u5) are
+     * forced at their arms.  check(int x): u1 z0 = $assertionsDisabled;
+     * u2 if z0 goto u5; u3 if x != 0 goto u5; u4 return; u5 if x > 5 goto
+     * u8; u6 r1 = new X (the throw); u7 throw r1; u8 return.
+     */
+    @Test
+    public void aBranchBothOfWhoseArmsReachTheThrowIsNeverForced()
+            throws IOException {
+        String check = "<a.A: void check(int)>";
+        String thrown = check + "#u6";
+        try {
+            assertBody();
+            StaticScopeMap.Site target = read("{\"schemaVersion\":1,"
+                    + "\"kind\":\"STATIC_SCOPE_SITE\","
+                    + "\"role\":\"TARGET_SITE\",\"regionId\":\"R\","
+                    + "\"siteId\":\"" + thrown + "\",\"vmSite\":\"\","
+                    + "\"cell\":\"\",\"carrier\":\"\",\"portId\":\"\"}")
+                    .targetSites().get(0);
+            JsonArray force = StaticScopeMap.rows(
+                    Collections.singletonList(target),
+                    SiteControlDependence.over(Collections.singleton(thrown)),
+                    method -> false).get(0).getAsJsonArray("force");
+            Map<String, ForcingTable.Arm> table = ForcingTable.read(force);
+            Object[][] rows = {
+                    {"$assertionsDisabled: both arms reach the throw",
+                            check + "#u2", "=true passable"},
+                    {"the assert's own test: its other arm returns",
+                            check + "#u3", "=true"},
+                    {"the throw's guard, at its fatal arm", check + "#u5",
+                            "=false"}};
+            for (Object[] expected : rows) {
+                ForcingTable.Arm arm = table.get((String) expected[1]);
+                assertEquals((String) expected[0], expected[2], arm == null
+                        ? null : arm.toString().substring(
+                        ((String) expected[1]).length()));
+            }
+            assertEquals("a passable branch is no forced site",
+                    new java.util.LinkedHashSet<String>(Arrays.asList(
+                            check + "#u5", check + "#u3")),
+                    read("{\"schemaVersion\":1,\"kind\":\"STATIC_SCOPE_SITE\","
+                            + "\"role\":\"TARGET_SITE\",\"regionId\":\"R\","
+                            + "\"siteId\":\"" + thrown + "\",\"vmSite\":\"\","
+                            + "\"cell\":\"\",\"carrier\":\"\",\"portId\":\"\","
+                            + "\"force\":" + force + "}").forcedSites());
+        } finally {
+            G.reset();
+        }
+    }
+
+    /** {@link #aBranchBothOfWhoseArmsReachTheThrowIsNeverForced}'s body. */
+    private static void assertBody() {
+        Options.v().set_allow_phantom_refs(true);
+        SootClass owner = new SootClass("a.A", Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootField disabled = new SootField("$assertionsDisabled",
+                BooleanType.v(), Modifier.STATIC | Modifier.FINAL);
+        owner.addField(disabled);
+        SootMethod check = new SootMethod("check",
+                Collections.<Type>singletonList(IntType.v()), VoidType.v(),
+                Modifier.PUBLIC);
+        owner.addMethod(check);
+        Jimple j = Jimple.v();
+        Body body = j.newBody(check);
+        check.setActiveBody(body);
+        Local x = j.newLocal("i0", IntType.v());
+        Local z = j.newLocal("z0", BooleanType.v());
+        RefType thrown = RefType.v("a.X");
+        Local r = j.newLocal("r1", thrown);
+        body.getLocals().addAll(Arrays.asList(x, z, r));
+        Unit end = j.newReturnVoidStmt();
+        Unit afterAssert = j.newIfStmt(j.newGtExpr(x, IntConstant.v(5)), end);
+        body.getUnits().addAll(Arrays.asList(
+                j.newIdentityStmt(x, j.newParameterRef(IntType.v(), 0)),
+                j.newAssignStmt(z, j.newStaticFieldRef(disabled.makeRef())),
+                j.newIfStmt(j.newNeExpr(z, IntConstant.v(0)), afterAssert),
+                j.newIfStmt(j.newNeExpr(x, IntConstant.v(0)), afterAssert),
+                j.newReturnVoidStmt(),
+                afterAssert,
+                j.newAssignStmt(r, j.newNewExpr(thrown)),
+                j.newThrowStmt(r),
+                end));
     }
 
     @Test

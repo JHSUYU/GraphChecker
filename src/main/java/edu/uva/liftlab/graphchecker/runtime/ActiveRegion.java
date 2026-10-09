@@ -58,6 +58,13 @@ final class ActiveRegion {
     private boolean closed;
     /** Loop bodies this activation has charged. */
     volatile long chargedLoopBodies;
+    /** Decisions this activation recorded with a term, on its thread
+     *  ({@code BranchObservation}): what a loop iteration's {@code K_L}
+     *  count asks ({@link #traverseBackedge}). */
+    int termedDecisions;
+    /** Why a loop bound cut this activation's local path, or null
+     *  ({@code LoopAccounting#endAtCut}). */
+    volatile String cut;
     /** Logical sources and request scopes observed while this ran. */
     final Set<String> observedSourceKeys = new LinkedHashSet<>();
     /** Every source the observed context or the receiver's registration
@@ -116,7 +123,7 @@ final class ActiveRegion {
         this.receiver = receiver;
         this.thread = thread;
         this.expressionStore = ConcolicRegionRuntime.workloadExpressionStore;
-        this.loopBackedges = new LoopBackedgeBudget(activation.loopBound);
+        this.loopBackedges = new LoopBackedgeBudget();
     }
 
     /** Counts this activation against its address's set (bounds loop-body
@@ -153,9 +160,13 @@ final class ActiveRegion {
                 ReplayLoopResourceCut.REASON);
     }
 
-    /** Counts one traversal of this loop's backedge; returns the attempt. */
-    synchronized long traverseBackedge(String loopId) {
-        return loopBackedges.recordTraversal(inThisCall(loopId));
+    /** Counts one traversal of this loop's backedge, {@code bound} its
+     *  {@code K_L}; returns the cut it takes, or null
+     *  ({@link LoopBackedgeBudget#traverse}). */
+    synchronized Error traverseBackedge(String loopId, int bound) {
+        chargedLoopBodies++;
+        return loopBackedges.traverse(loopId, inThisCall(loopId),
+                termedDecisions, bound);
     }
 
     /**

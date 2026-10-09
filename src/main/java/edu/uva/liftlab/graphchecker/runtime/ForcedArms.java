@@ -98,7 +98,8 @@ final class ForcedArms {
         if (armed == 0L || active.token != armed) return "";
         Map<String, ForcingTable.Arm> table = active.activation.forcedArms;
         ForcingTable.Arm arm = table.get(SiteId.render(method, unitIndex));
-        if (arm == null || !arm.via.isEmpty() && !calledFrom(arm.via)) {
+        if (arm == null || arm.passable
+                || !arm.via.isEmpty() && !calledFrom(arm.via)) {
             return "";
         }
         String refused;
@@ -230,6 +231,7 @@ final class ForcedArms {
                 diverged = FORCE_DIVERGED + ": the declared occurrence closed"
                         + " (" + exitKind + (exceptionType == null
                         || exceptionType.isEmpty() ? "" : " " + exceptionType)
+                        + (active.cut == null ? "" : ": " + active.cut)
                         + ") before its target decision was forced"
                         + (forcedFrom == 0L ? ", no branch forced against"
                         + " its concrete arm" : "; forced from event "

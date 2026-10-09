@@ -276,6 +276,7 @@ final class BranchObservation {
                 vmEventId, observedOutcome, mappingBaseline, mappingLimit);
         ForcedArms.mark(active, mapping, read.event);
         if (conditionIndex >= 0) {
+            active.termedDecisions++;
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition =
                     VmBranchAttestation.semanticCondition(
@@ -319,6 +320,7 @@ final class BranchObservation {
                 conditionIndices.size() - 1) + 1;
         active.branchMappings.add(decisionRow(method, unitIndex, occurrence,
                 vmEventId, expected.caseArm(), mappingBaseline, mappingLimit));
+        if (!conditionIndices.isEmpty()) active.termedDecisions++;
         for (Integer conditionIndex : conditionIndices) {
             JsonObject predicate = decisionRow(method, unitIndex, occurrence,
                     vmEventId, null, mappingBaseline, mappingLimit);

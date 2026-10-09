@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.plan.ForcingTable;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
@@ -30,6 +31,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * WHAT A DELIVERY RESTS ON in one session (PIPELINE §8 P3, §7.2): the
@@ -166,22 +169,30 @@ public final class RestsOn {
          *  whole path. */
         final long cutoff;
         /** Its fatal arm: phi; a symbolic way guard's other arm, the way to
-         *  the throw; else (a concrete one) the constant false. */
+         *  the throw; else (a concrete one, or none) the constant false. */
         final String fatalTerm;
+        /** Where it reached the anchor at no point and left the way at no
+         *  guard: why a loop bound cut its occurrence there, or "". */
+        final String cut;
 
         private Decided(DecisionRow way, boolean symbolicWay, long cutoff,
-                        String fatalTerm) {
+                        String fatalTerm, String cut) {
             this.way = way;
             this.symbolicWay = symbolicWay;
             this.cutoff = cutoff;
             this.fatalTerm = fatalTerm;
+            this.cut = cut;
         }
     }
 
     /**
      * Where a path decided: at its target row, or, where it never reached
      * the anchor, at the guard it left the way to the throw at (a row that
-     * did not reach the anchor stands at no point of it).
+     * did not reach the anchor stands at no point of it).  One that left it
+     * at none stopped on the way -- a loop bound cut its occurrence
+     * ({@link #cutOf}), an exception or a return no table branch decided --
+     * and states no arm toward the throw: its fatal is the constant false,
+     * named with how it stopped (Composer: the WAY row, and a cut's bound).
      */
     Decided decided(String session, TargetRow target,
                     List<DecisionRow> decisions) {
@@ -193,11 +204,23 @@ public final class RestsOn {
         String fatalTerm = target.reachedAnchor() ? target.phiTerm()
                 : symbolicWay ? Arms.conjunct(way.term(), !way.outcome())
                 : "false";
-        return new Decided(way, symbolicWay, cutoff, fatalTerm);
+        String cut = target.reachedAnchor() || way != null ? ""
+                : cutOf(session);
+        return new Decided(way, symbolicWay, cutoff, fatalTerm, cut);
     }
 
-    /** The last decision a path took at a site on the way to the throw
-     *  (the target sites' path sites), or null. */
+    /**
+     * The guard a path left the way to the throw at: its last decision at a
+     * site on the way (the target sites' path sites), when that decision
+     * took an arm off it -- not the arm the target sites' forcing tables
+     * name toward the throw ({@code plan.ForcingTable}), nor at a branch
+     * both of whose arms lead on ({@code passable}); a site no table names
+     * (a switch, a fault call) is taken as left.  A last decision that kept
+     * the way names no guard: its other arm leads off the way, never to the
+     * throw (solr-adhoc-19 SG2b: create's u9 `!inFlightCreations.add`,
+     * taken toward the throw before a loop bound cut the occurrence, was
+     * composed as the CONFLICT throw), so null.
+     */
     DecisionRow wayGuard(List<DecisionRow> decisions) {
         Set<String> way = new LinkedHashSet<String>();
         for (StaticScopeMap.Site target : scope.targetSites()) {
@@ -207,8 +230,66 @@ public final class RestsOn {
         for (DecisionRow decision : decisions) {
             if (way.contains(decision.siteId())) last = decision;
         }
-        return last;
+        if (last == null) return null;
+        ForcingTable.Arm toward = towardTheThrow().get(last.siteId());
+        return toward != null && (toward.passable
+                || toward.arm == last.outcome()) ? null : last;
     }
+
+    /** Every target site's table, by site; a site two tables give
+     *  different arms is in neither (no arm toward the throw is stated). */
+    private Map<String, ForcingTable.Arm> towardTheThrow() {
+        if (toward != null) return toward;
+        Map<String, ForcingTable.Arm> arms =
+                new LinkedHashMap<String, ForcingTable.Arm>();
+        Set<String> disagree = new LinkedHashSet<String>();
+        for (StaticScopeMap.Site target : scope.targetSites()) {
+            for (ForcingTable.Arm arm : ForcingTable.read(
+                    scope.forcing(target.siteId)).values()) {
+                ForcingTable.Arm held = arms.putIfAbsent(arm.siteId, arm);
+                if (held != null && (held.arm != arm.arm
+                        || held.passable != arm.passable)) {
+                    disagree.add(arm.siteId);
+                }
+            }
+        }
+        arms.keySet().removeAll(disagree);
+        toward = arms;
+        return toward;
+    }
+
+    private Map<String, ForcingTable.Arm> toward;
+
+    /** Why a loop bound cut the anchor's occurrence in {@code session}
+     *  (its {@code BOUND_INSUFFICIENT} row, runtime.LoopAccounting#endAtCut),
+     *  or "". */
+    String cutOf(String session) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null) return "";
+        for (GapRow gap : reader.gaps()) {
+            if (gap.kind() != GapKind.BOUND_INSUFFICIENT) continue;
+            try {
+                if (OccurrenceAddress.parse(gap.subject()).id()
+                        .equals(anchor.id())) {
+                    return gap.detail();
+                }
+            } catch (IllegalArgumentException noOccurrence) {
+                // A port's bound (HandoffMint): no occurrence's cut.
+            }
+        }
+        return "";
+    }
+
+    /** The number of bodies a cut's loop bound stood at (its message,
+     *  LoopAccounting's two cuts), or 0. */
+    static int boundOf(String cut) {
+        Matcher bound = CUT_BOUND.matcher(cut == null ? "" : cut);
+        return bound.find() ? Integer.parseInt(bound.group(1) != null
+                ? bound.group(1) : bound.group(2)) : 0;
+    }
+
+    private static final Pattern CUT_BOUND = Pattern.compile(
+            "after (\\d+) loop body iterations|exceeds (\\d+)");
 
     /**
      * WHAT EXPLORE DEMANDS of one delivery {@code start} made in this

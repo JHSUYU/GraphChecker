@@ -2031,6 +2031,69 @@ public class ComposerTest {
                     : Collections.emptyList())), ways);
         }
 
+        // KEPT THE WAY, THEN STOPPED.  The guard's forcing-table arm toward
+        // the throw is false (the TARGET_SITE row's `force`).  A path whose
+        // last way decision took that arm, or a passable branch's (either
+        // arm leads on), never LEFT the way there: its other arm is no way
+        // to the throw, so no guard is named and its fatal is the constant
+        // false (solr-adhoc-19 SG2b: create's u9, taken toward the throw
+        // before a loop bound cut the occurrence, was composed as the
+        // CONFLICT throw).  Where a loop bound cut the occurrence, the
+        // composition names the bound (`loop-body-bound`, counted in the
+        // case's `bounded`).  A path that took the other arm left there.
+        Object[][] kept = {
+                // {why, the table row, the arm taken, cut, the WAY subject,
+                //  the claim's kind, a bounded row}
+                {"took the arm toward the throw, then a loop bound cut it",
+                        "{\"siteId\":\"way#u3\",\"arm\":false}", false, true,
+                        ANCHOR.render(), ClaimKind.NO_SUPPORTED_WITNESS, true},
+                {"a passable branch: neither arm leaves the way",
+                        "{\"siteId\":\"way#u3\",\"arm\":true,"
+                                + "\"passable\":true}", false, false,
+                        ANCHOR.render(), ClaimKind.NO_SUPPORTED_WITNESS, false},
+                {"took the arm off the way: it left there", "{\"siteId\":"
+                        + "\"way#u3\",\"arm\":true}", false, false,
+                        "way#u3#1", ClaimKind.MARKER_FLIPPED, false}};
+        for (Object[] row : kept) {
+            Path way = folder.newFolder().toPath();
+            Session at = new Session(way, "s0", false);
+            at.marker("false");
+            at.decision(ANCHOR, "way#u3", (Boolean) row[2], MARKER);
+            at.target("", false, false);
+            if ((Boolean) row[3]) {
+                at.cut(ANCHOR, "this activation's local path was cut:"
+                        + " MAX_LOOP_BODY_ITERATIONS_REACHED at L#loop:u44"
+                        + " after 8 loop body iterations");
+            }
+            at.write();
+            Path map = way.resolve(StaticScopeMap.FILE);
+            String site = "{\"schemaVersion\":1,\"kind\":\""
+                    + StaticScopeMap.SITE_KIND + "\",\"role\":\""
+                    + StaticScopeMap.TARGET_SITE + "\",\"regionId\":\""
+                    + ANCHOR.regionId() + "\",\"siteId\":\"Throw#u30\","
+                    + "\"guards\":[\"way#u3\"],\"guardOutcomes\":[false],"
+                    + "\"force\":[" + row[1] + "]}";
+            Files.write(map, Collections.singletonList(site),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            Composer.Composition composed = compose(way, ANCHOR, 4,
+                    StaticScopeMap.read(map));
+            ClaimPolicy.Decision decided = ClaimPolicy.decide(composed,
+                    solver());
+            List<String> ways = new ArrayList<String>();
+            for (Composer.Concrete concrete : composed.concrete()) {
+                if ("WAY".equals(concrete.kind)) ways.add(concrete.subject);
+            }
+            assertEquals((String) row[0], Collections.singletonList(row[4]),
+                    ways);
+            assertEquals((String) row[0], row[5], decided.claim().kind());
+            boolean bounded = false;
+            for (GapRow gap : composed.gaps()) {
+                bounded |= gap.subject().equals(ANCHOR.render() + " "
+                        + Composer.LOOP_BODY_BOUND + "=8");
+            }
+            assertEquals((String) row[0], row[6], bounded);
+        }
+
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its
         // path is not a disjunct -- and where the WAVE's aggregate copy
@@ -7993,6 +8056,13 @@ public class ComposerTest {
                       boolean reached) {
             targets.add(TargetRow.of(id, at, occurrence, ANCHOR_SITE, phi,
                     observedFatal, reached));
+        }
+
+        /** The row a loop bound's cut of {@code at} files
+         *  (runtime.LoopAccounting#endAtCut). */
+        void cut(OccurrenceAddress at, String detail) {
+            gaps.add(GapRow.of(id, GapKind.BOUND_INSUFFICIENT,
+                    GapClass.DIAGNOSTIC, at.render(), detail));
         }
 
         /** The row a VM-refused attach inside {@code at} files. */

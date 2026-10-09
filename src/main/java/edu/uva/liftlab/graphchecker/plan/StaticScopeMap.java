@@ -161,6 +161,15 @@ public final class StaticScopeMap {
         default List<String> callersOf(String method) {
             return Collections.<String>emptyList();
         }
+
+        /** Of the branches {@link #targetChain} names for {@code siteId},
+         *  those each of whose arms reaches the site (or the call into its
+         *  method), so neither arm leaves the way to it: an {@code
+         *  assert}'s {@code $assertionsDisabled} test.  None with no CFG. */
+        default Set<String> passable(String siteId,
+                                     Predicate<String> entry) {
+            return Collections.<String>emptySet();
+        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -537,7 +546,9 @@ public final class StaticScopeMap {
     public Set<String> forcedSites() {
         Set<String> sites = new LinkedHashSet<String>();
         for (JsonArray table : forcing.values()) {
-            sites.addAll(ForcingTable.read(table).keySet());
+            for (ForcingTable.Arm arm : ForcingTable.read(table).values()) {
+                if (!arm.passable) sites.add(arm.siteId);
+            }
         }
         return sites;
     }
@@ -921,7 +932,9 @@ public final class StaticScopeMap {
             }
             JsonObject row = row(guarded);
             if (TARGET_SITE.equals(site.role)) {
-                JsonArray force = ForcingTable.of(guarded);
+                JsonArray force = ForcingTable.of(guarded, guards == null
+                        ? Collections.<String>emptySet()
+                        : guards.passable(site.siteId, entry));
                 if (force.size() > 0) row.add(FORCE, force);
             }
             rows.add(row);

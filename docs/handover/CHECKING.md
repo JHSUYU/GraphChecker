@@ -132,3 +132,11 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     validation; say so in its STATUS row instead of reporting a k/N. Clocks, configurations, accessor reads and
     call-return answers are planted natively (11741 EX1 10/10, solr-18406/18413 SC1 and SC2 10/10 each). A reproduced
     run may leave ORDER rows `NOT_REACHED`: their after-activation runs past the anchor, where the run ends.
+22. **An UNSAT whose fatal arm was composed from a way guard** (solr-adhoc-19/21 SG2b, 2026-10-08): no session
+    reached the anchor, and COMPOSE took each path's last decision on the way to the throw and composed its other
+    arm -- but that decision had taken the arm TOWARD the throw and a loop bound then cut the occurrence, so the
+    "fatal" was another throw (19: create's u9, `!inFlightCreations.add`, the CONFLICT "Already creating"). Fixed
+    (`RestsOn#wayGuard`: only a decision that took an arm off the way is a way guard; a path stopped on the way by a
+    loop bound makes the case `BOUNDED:loop_body_bound`). Still, for every UNSAT with a `concrete[]` WAY row, the
+    reading names the guard (site, file:line), the arm the path took, and the throw its other arm leads to, read in
+    the code; a WAY row on the anchor itself means the path stopped on the way and says how.

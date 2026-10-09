@@ -113,6 +113,27 @@ public final class SiteControlDependence {
             }
 
             @Override
+            public Set<String> passable(String siteId,
+                                        Predicate<String> entry) {
+                Set<String> found = new LinkedHashSet<String>();
+                MethodGuards own = bySite.get(siteId);
+                if (own != null) {
+                    found.addAll(own.passable(SiteId.unitIndexOf(siteId)));
+                }
+                for (String call : callSitesInto(SiteId.methodOf(siteId),
+                        entry.negate())) {
+                    String caller = SiteId.methodOf(call);
+                    MethodGuards guards = callers.get(caller);
+                    if (guards == null) {
+                        guards = MethodGuards.of(caller);
+                        callers.put(caller, guards);
+                    }
+                    found.addAll(guards.passable(SiteId.unitIndexOf(call)));
+                }
+                return found;
+            }
+
+            @Override
             public List<String> callersOf(String method) {
                 Set<String> found = new LinkedHashSet<String>();
                 for (String call : callSitesInto(method, caller -> true)) {
@@ -456,6 +477,34 @@ public final class SiteControlDependence {
                 }
             }
             return Collections.unmodifiableList(chain);
+        }
+
+        /**
+         * Of the unit's guards and their chain, those each of whose arms
+         * reaches it within one occurrence (the branch a barrier): an
+         * {@code assert}'s {@code $assertionsDisabled} test is a guard on its
+         * skip arm, the arm that alone makes the unit unavoidable, while its
+         * other arm reaches the unit too, through the assert's own test.
+         */
+        public Set<String> passable(int unitIndex) {
+            Set<String> found = new LinkedHashSet<String>();
+            Unit site = byIndex.get(Integer.valueOf(unitIndex));
+            if (site == null || plain == null) return found;
+            Set<String> named = new LinkedHashSet<String>();
+            for (StaticScopeMap.Guard guard : at(unitIndex)) {
+                named.add(guard.siteId());
+            }
+            for (StaticScopeMap.Guard guard : chain(unitIndex)) {
+                named.add(guard.siteId());
+            }
+            List<Unit> controlling = plain.reaching(site, true);
+            for (Unit branch : plain.reaching(site, false)) {
+                if (!controlling.contains(branch)
+                        && named.contains(siteOf(branch))) {
+                    found.add(siteOf(branch));
+                }
+            }
+            return found;
         }
 
         /**

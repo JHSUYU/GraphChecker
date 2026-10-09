@@ -83,9 +83,11 @@ public final class LoopBoundPolicy {
     public static final String PLAN_FIELD = "retainedLoops";
     public static final String LOOP_BODY_BOUND_DISAGREES =
             "BOUNDED_LOOP_BODY_BOUND_DISAGREES";
-    /** Body entries one replay-path loop may run per activation (stops endless
-     *  service loops). Caps replay work; {@link #declaredDefault()} caps the
-     *  path space. */
+    /** Bodies any loop may run per method activation (stops endless service
+     *  loops): the work cap of every loop, a fixed-count one's only bound,
+     *  raised to a declared {@code K_L} above it.  {@code K_L} caps the path
+     *  space: it counts only the iterations that decided on a symbol
+     *  ({@code runtime.LoopAccounting.LoopBackedgeBudget#traverse}). */
     public static final int MAX_REPLAY_PATH_LOOP_BODIES = 32;
     private static final int SCHEMA_VERSION = 1;
     private static final String DECLARED_FIELD = "loopBodyBounds";

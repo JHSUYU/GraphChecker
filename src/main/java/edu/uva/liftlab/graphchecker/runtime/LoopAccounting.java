@@ -23,9 +23,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
  * Loop bounds (PIPELINE §2): what a replay may run, and the terminal it
  * takes after.
  *
- * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge})
- * and the resource ceiling of a fixed-count loop ({@link #checkReplayBody}),
- * both per loop per method activation, and
+ * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge}:
+ * {@code K_L} over the iterations that decided on a symbol, the resource
+ * ceiling over all) and the resource ceiling of a fixed-count loop ({@link
+ * #checkReplayBody}), both per loop per method activation, and
  * the enclosing call a LOOP_BODY_ROOT occurrence's k counts against
  * ({@link #enterLoopRoot}).  The policy lives in {@code plan/LoopBoundPolicy};
  * this class only accounts and cuts.  Woven hook names stay in
@@ -45,7 +46,8 @@ final class LoopAccounting {
                 }
             };
 
-    /** Accounts for one attempted traversal of an instrumented backedge. */
+    /** Accounts for one attempted traversal of an instrumented backedge
+     *  ({@link LoopBackedgeBudget#traverse}). */
     static void checkBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
@@ -57,10 +59,7 @@ final class LoopAccounting {
                 return new LoopBoundCut(edge, instrumentedMaxTraversals,
                         "INSTRUMENTATION_POLICY_MISMATCH");
             }
-            long attempted = active.traverseBackedge(edge);
-            return attempted < instrumentedMaxTraversals ? null
-                    : new LoopBoundCut(edge, instrumentedMaxTraversals,
-                            "MAX_LOOP_BODY_ITERATIONS_REACHED");
+            return active.traverseBackedge(edge, instrumentedMaxTraversals);
         }, reason -> new LoopBoundCut(edge, instrumentedMaxTraversals,
                 "BOUND_HOOK_" + reason));
     }
@@ -126,6 +125,7 @@ final class LoopAccounting {
      */
     private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
+        active.cut = cut.getMessage();
         RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
                 firstNonBlank(active.address(), Long.toString(active.token)),
                 "this activation's local path was cut: " + cut.getMessage());
@@ -239,32 +239,51 @@ final class LoopAccounting {
         }
     }
 
-    /** Completed traversals and bodies, per budget key (a loop in one
-     *  method activation). */
+    /**
+     * Per budget key (a loop in one method activation): the traversals of
+     * its backedge, those that closed an iteration deciding on a symbol, the
+     * activation's termed decisions at its last traversal, and a fixed-count
+     * loop's bodies.
+     */
     static final class LoopBackedgeBudget {
         private static final String SCOPE_SEPARATOR = "\u0000frame:";
-        private final int maxTraversals;
-        private final Map<String, Integer> traversals =
-                new LinkedHashMap<>();
+        private final Map<String, Integer> traversals = new LinkedHashMap<>();
+        private final Map<String, Integer> symbolic = new LinkedHashMap<>();
+        private final Map<String, Integer> termedAt = new LinkedHashMap<>();
         private final Map<String, Integer> bodies = new LinkedHashMap<>();
 
-        LoopBackedgeBudget(LoopBoundPolicy policy) {
-            if (policy == null) {
-                throw new IllegalArgumentException(
-                        "loop bound policy is required");
+        /**
+         * One traversal of {@code key}'s backedge (loop {@code loopId}, its
+         * {@code K_L} {@code bound}), which would enter the loop's next body;
+         * {@code termed} is how many decisions stating a term the activation
+         * has recorded so far.  The cut it takes, or null:
+         * <ul>
+         *   <li>{@code K_L} counts the iterations that recorded a decision
+         *   with a term since the key's last traversal (the first counts,
+         *   with nothing to compare it to): {@code K_L} bounds the flips a
+         *   loop offers, and an iteration that decided only on concrete
+         *   values offers none.  At {@code bound} of them it is cut
+         *   (attempt {@code K} would enter body {@code K+1});</li>
+         *   <li>every traversal is one more body of work, cut past {@link
+         *   LoopBoundPolicy#MAX_REPLAY_PATH_LOOP_BODIES} (or a declared
+         *   {@code K_L} above it): a loop that never decides on a symbol
+         *   still ends.</li>
+         * </ul>
+         */
+        Error traverse(String loopId, String key, int termed, int bound) {
+            int attempted = traversals.merge(key, 1, Integer::sum);
+            Integer before = termedAt.put(key, termed);
+            boolean decided = before == null || before.intValue() != termed;
+            int counted = decided ? symbolic.merge(key, 1, Integer::sum)
+                    : symbolic.getOrDefault(key, 0);
+            if (decided && counted >= bound) {
+                return new LoopBoundCut(loopId, bound,
+                        "MAX_LOOP_BODY_ITERATIONS_REACHED");
             }
-            maxTraversals = policy.maxBackedgeTraversals();
-        }
-
-        long recordTraversal(String backedgeId) {
-            Integer previous = traversals.get(backedgeId);
-            int completed = previous == null ? 0 : previous;
-            long attempted = (long) completed + 1L;
-            // Attempt K would enter body K+1: only K-1 transfers complete.
-            if (attempted < maxTraversals) {
-                traversals.put(backedgeId, (int) attempted);
-            }
-            return attempted;
+            int cap = Math.max(LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES,
+                    bound);
+            return attempted < cap ? null : new ReplayLoopResourceCut(
+                    loopId, cap, attempted + 1L, ReplayLoopResourceCut.REASON);
         }
 
         static String scoped(String loopId, long frame) {
