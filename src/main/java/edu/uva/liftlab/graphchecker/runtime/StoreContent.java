@@ -251,6 +251,9 @@ final class StoreContent {
         int cut = version.indexOf('\n');
         String transport = version.substring(0, cut);
         String key = version.substring(cut + 1);
+        // A watcher can parse a version before its writer files it: the
+        // write in flight files its leaves first (MessageDoors#stored).
+        MessageDoors.filed(transport, key);
         Map<String, Exported> exports;
         synchronized (EXPORTS) {
             exports = EXPORTS.get(version);

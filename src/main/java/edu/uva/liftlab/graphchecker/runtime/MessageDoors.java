@@ -461,7 +461,7 @@ public final class MessageDoors {
      * behind this reader, say -- and a DIAGNOSTIC row names the version and
      * the writes still in flight.
      */
-    private static Outbound filed(String transport, String key) {
+    static Outbound filed(String transport, String key) {
         String filed = transport + "\n" + key;
         Outbound message = STORED.get(filed);
         if (message != null) return message;
@@ -542,11 +542,13 @@ public final class MessageDoors {
         // SEND and the producer it mints take the concolic VM milliseconds.
         long store = inFlight(transport, location(key));
         try {
+            // The content first: a reader that finds the version filed
+            // finds its leaves exported ({@link #filed}).
+            StoreContent.stored(transport, key, data);
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
             written(transport, key, owner);
-            StoreContent.stored(transport, key, data);
         } finally {
             storeEnded(transport, store);
         }

@@ -1341,8 +1341,12 @@ bytes are, and a parse of those bytes mints each leaf of the tree on its entry (
 natives, VM.md §7: `exportLeaf`, `mintLeaf` ENTRY or POSITION) in the parsing occurrence. Each leaf
 is a port of its own, `<transport>#CONTENT:<location>#<JSON pointer>` (RFC 6901; each `/` spelled
 `|`, as a site spells none), and its attach pairs with the export of the version it was fetched
-at, by that version (the message) and the port (CORRELATION_PORT). A door step that fails names
-itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload. Both tables are weak by the array: a document no store write or fetch takes (an
+at, by that version (the message) and the port (CORRELATION_PORT). A watcher can parse a version
+before its writer files it (the store notifies before the write returns): the write exports its
+leaves before it files the version, and a parse first waits for a write in flight at the location to
+file it (`MessageDoors#filed`, the bound a notification's read waits), so its attaches pair (solr-18413
+Z2C: node1's first parse of the routing rule raced the Overseer's export and minted unpaired). A
+door step that fails names itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload. Both tables are weak by the array: a document no store write or fetch takes (an
 HTTP response, a log line) is dropped with its bytes. Both sides capture wherever a replay runs them
 (`MessageDoors#capturingContent`), at the activation running there or, outside every one, at the
 thread's occurrence stated unselected (§6.3's entry rule): the Overseer's state writer and queue
