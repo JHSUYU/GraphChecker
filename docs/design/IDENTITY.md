@@ -725,7 +725,10 @@ order:
   order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
   unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
   follows a cause the order holds, and runs free;
-- settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
+- settling: a closed occurrence's untaken slots are dead, and an event of a key whose slot died runs free: the
+  order no longer holds its place, so it is neither a write the recording never made there nor a poll past its
+  count (an occurrence's id can name other work in the replay: solr-adhoc-19 MB8s, the Overseer's state.json
+  write, its slot dead with the region its turns shared in the recording, waited behind its own write 110 slots on); a turn's `END` gives up what the turn did
   not do; a waiter gives up what its own occurrence did not make before its slot. A waiter no
   occurrence names gives up the earlier slots of its own exact context, no occurrence naming them,
   at any kind and site it made since it last entered that context (`ScheduleLog.Made`), so the rest
