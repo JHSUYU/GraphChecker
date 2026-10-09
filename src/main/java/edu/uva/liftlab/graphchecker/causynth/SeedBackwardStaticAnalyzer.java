@@ -109,6 +109,41 @@ final class SeedBackwardStaticAnalyzer {
             "put", "putAll", "remove", "clear", "add", "addAll", "set",
             "replace", "compute", "computeIfAbsent", "computeIfPresent",
             "merge", "offer", "poll");
+    /** Library calls whose result may be an argument, by owner and name:
+     *  the checks that return what they checked, and the JDK and Guava
+     *  factories whose result is a view backed by their first argument
+     *  (and {@code Collections}' unmodifiable, synchronized and checked
+     *  views, {@link #aliasedOperands}). */
+    private static final Map<String, List<Integer>> RETURNED_ARGUMENTS =
+            returnedArguments(
+                    "java.util.Objects.requireNonNull", "0",
+                    "com.google.common.base.Preconditions.checkNotNull", "0",
+                    "com.google.common.base.MoreObjects.firstNonNull", "0 1",
+                    "com.google.common.base.Objects.firstNonNull", "0 1",
+                    "java.util.Arrays.asList", "0",
+                    "java.util.Collections.newSetFromMap", "0",
+                    "java.util.Collections.asLifoQueue", "0",
+                    "com.google.common.collect.Maps.filterKeys", "0",
+                    "com.google.common.collect.Maps.filterValues", "0",
+                    "com.google.common.collect.Maps.filterEntries", "0",
+                    "com.google.common.collect.Maps.transformValues", "0",
+                    "com.google.common.collect.Maps.transformEntries", "0",
+                    "com.google.common.collect.Sets.filter", "0",
+                    "com.google.common.collect.Lists.transform", "0",
+                    "com.google.common.collect.Collections2.filter", "0",
+                    "com.google.common.collect.Collections2.transform", "0",
+                    "com.google.common.collect.Iterables.filter", "0",
+                    "com.google.common.collect.Iterables.transform", "0");
+    /** A Guava multimap's views, which its own calls return backed by it. */
+    private static final Set<String> MULTIMAP_VIEWS = names(
+            "get", "asMap", "keySet", "keys", "values", "entries");
+    /** JDK value classes no call mutates ({@link #immutableValue}). */
+    private static final Set<String> IMMUTABLE_VALUES = names(
+            "java.lang.String", "java.lang.Boolean", "java.lang.Byte",
+            "java.lang.Character", "java.lang.Short", "java.lang.Integer",
+            "java.lang.Long", "java.lang.Float", "java.lang.Double",
+            "java.math.BigInteger", "java.math.BigDecimal",
+            "java.util.UUID");
     private static final Set<String> COLLECTION_CONTRACT_OWNERS = names(
             "java.util.Collection", "java.util.List", "java.util.Set",
             "java.util.SortedSet", "java.util.NavigableSet",
@@ -174,6 +209,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, StructuralFieldAccessor>
             structuralFieldAccessors = new LinkedHashMap<>();
     private final Map<String, MethodSig> methodSignatureCache =
+            new LinkedHashMap<>();
+    /** {@link #returnedOperands}, once asked per callee. */
+    private final Map<String, Set<Integer>> returnedOperands =
             new LinkedHashMap<>();
     private final Set<String> invalidMethodSignatures =
             new LinkedHashSet<>();
@@ -981,13 +1019,15 @@ final class SeedBackwardStaticAnalyzer {
     private void processFieldWrites(String method, List<Fact> facts, Fact fact,
                                     Set<String> relevant) {
         Set<String> affectedRelevantHeapCells = new LinkedHashSet<>();
+        boolean ownObject = storesOwnObject(method, facts, fact);
         for (String field : fact.fieldDefs) {
             String fieldNode = canonical(method, field);
             if (relevant.contains(fieldNode)) {
                 affectedRelevantHeapCells.add(fieldNode);
             }
             processFieldWrite(method, fact, relevant, field,
-                    fieldWriteSources(method, fact, field), "field_write");
+                    fieldWriteSources(method, fact, field), "field_write",
+                    ownObject);
         }
         for (String mutatedField : fieldsMutatedByInvoke(facts, fact.unitIndex)) {
             String mutatedFieldNode = canonical(method, mutatedField);
@@ -995,7 +1035,7 @@ final class SeedBackwardStaticAnalyzer {
                     relevant.contains(mutatedFieldNode);
             processFieldWrite(method, fact, relevant, mutatedField,
                     fieldMutationSources(method, fact, mutatedField),
-                    "field_mutation");
+                    "field_mutation", false);
             if (mutationAffectsRelevantState) {
                 affectedRelevantHeapCells.add(mutatedFieldNode);
             }
@@ -1095,9 +1135,26 @@ final class SeedBackwardStaticAnalyzer {
         return canonicalBase + "#array-element";
     }
 
+    /**
+     * One store or mutation of a demanded field: its value's edges, and its
+     * method's place among those whose calls the store runs only under
+     * ({@link #expandActivationGuards}).  A store into the object its
+     * constructor builds ({@code ownObject}, {@link #storesOwnObject}) says
+     * so on its edges: a call into a constructor decides whether that
+     * object exists, not what an existing object's field holds, and whether
+     * the new object reaches a reader goes through the location that hands
+     * it on, a store of its own; its scope-map row carries only the guards
+     * that choose which call builds it, both arms running one, and with it
+     * the arguments it stores ({@code StaticScopeMap#rows}).
+     * solr-bugs-reindex-cleanup SG1: {@code wrapWatcher}'s {@code instanceof
+     * ProcessWatchWithExecutor} guarded {@code new
+     * ProcessWatchWithExecutor(watcher)}, whose constructor stores {@code
+     * this.watcher}: 5,964 proposals, all refused.
+     */
     private void processFieldWrite(String method, Fact fact,
                                    Set<String> relevant, String field,
-                                   List<String> sources, String kind) {
+                                   List<String> sources, String kind,
+                                   boolean ownObject) {
         String fieldNode = canonical(method, field);
         if (ignoreNode(fieldNode)) {
             return;
@@ -1115,9 +1172,29 @@ final class SeedBackwardStaticAnalyzer {
             if (ignoreNode(source)) {
                 continue;
             }
-            addEdge(kind, source, fieldNode, method, fact);
+            Map<String, Object> edge = addEdge(kind, source, fieldNode,
+                    method, fact);
+            if (edge != null && ownObject) edge.put("ownObject", true);
             relevant.add(source);
         }
+    }
+
+    /** Whether {@code fact} stores into a field of the object its method,
+     *  a constructor, builds: its {@code this}. */
+    private static boolean storesOwnObject(String method, List<Fact> facts,
+                                           Fact fact) {
+        if (facts == null || !method.contains(" <init>(")) return false;
+        String self = null;
+        for (Fact identity : facts) {
+            int at = identity.unitText.indexOf(" := @this");
+            if (at > 0) {
+                self = identity.unitText.substring(0, at);
+                break;
+            }
+        }
+        int field = fact.unitText.indexOf(".<");
+        return self != null && field > 0
+                && fact.unitText.substring(0, field).equals(self);
     }
 
     private void expandFieldWriters(String method) {
@@ -1147,7 +1224,10 @@ final class SeedBackwardStaticAnalyzer {
                 writerRelevant.add(writer.field);
                 selectedMethods.add(writer.method);
                 processFieldWrite(writer.method, writerFact, writerRelevant,
-                        writer.field, writer.sources, writer.kind);
+                        writer.field, writer.sources, writer.kind,
+                        "field_write".equals(writer.kind) && storesOwnObject(
+                                writer.method, factsByMethod.get(
+                                        writer.method), writerFact));
             }
         }
     }
@@ -1674,6 +1754,16 @@ final class SeedBackwardStaticAnalyzer {
         return mutatedFields;
     }
 
+    /**
+     * The fields {@code local} may be the state of before {@code
+     * beforeIndex}: those its definitions read or wrote, back through
+     * copies and casts, and through a call only to the operand its result
+     * may be ({@link #aliasedOperands}).  Never a call's other arguments:
+     * {@code toStringHelper(this).add("autoDeleteAgeMath",
+     * autoDeleteAgeMath)} made the next {@code add} a mutation of a String
+     * field (solr-adhoc-10 SG1: 518 deciders of TimeRoutedAlias's), and a
+     * copy constructor's argument is a copy.
+     */
     private Set<String> fieldsAliasedByLocal(List<Fact> facts, int beforeIndex,
                                              String local) {
         Set<String> fields = new LinkedHashSet<>();
@@ -1687,16 +1777,137 @@ final class SeedBackwardStaticAnalyzer {
             }
             fields.addAll(fact.fieldUses);
             fields.addAll(fact.fieldDefs);
-            work.addAll(localNames(localValueUses(fact)));
-            work.addAll(localNames(actualInvokeArgs(fact.unitText)));
-            if (returnsBackedCollectionView(fact)) {
-                String invokeBase = invokeBaseLocal(fact.unitText);
-                if (invokeBase != null) {
-                    work.add(invokeBase);
-                }
+            if (fact.invoke == null) {
+                work.addAll(localNames(localValueUses(fact)));
+                continue;
             }
+            work.addAll(aliasedOperands(fact));
         }
         return fields;
+    }
+
+    /**
+     * The operands a call's result may be: its receiver when the call may
+     * return it or a view backed by it -- a fluent call, whose declared
+     * return type is its own class or one above it (a builder returning
+     * {@code this}, {@code StringBuilder.append}, {@code List.subList}), a
+     * {@code java.util} view or iterator, a Guava multimap's view -- and
+     * an argument a library call returns ({@link #RETURNED_ARGUMENTS}:
+     * {@code Objects.requireNonNull}, {@code Maps.filterKeys}) or an
+     * application method's body does ({@link #returnedOperands}); none for
+     * any other call, whose result is none of its operands.
+     */
+    private List<String> aliasedOperands(Fact fact) {
+        MethodSig invoked = parseMethodSig(fact.invoke);
+        if (invoked == null || fact.defs.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String base = invokeBaseLocal(fact.unitText);
+        Set<Integer> returned = new java.util.TreeSet<>();
+        if (base != null && (returnsBackedCollectionView(fact)
+                || fluent(invoked) || multimapView(invoked))) {
+            returned.add(-1);
+        }
+        returned.addAll(RETURNED_ARGUMENTS.getOrDefault(invoked.owner + "."
+                + invoked.name, Collections.<Integer>emptyList()));
+        if ("java.util.Collections".equals(invoked.owner)
+                && (invoked.name.startsWith("unmodifiable")
+                || invoked.name.startsWith("synchronized")
+                || invoked.name.startsWith("checked"))) {
+            returned.add(0);
+        }
+        if (isApplicationClassName(invoked.owner)) {
+            returned.addAll(returnedOperands(invoked.raw));
+        }
+        List<String> arguments = actualInvokeArgs(fact.unitText);
+        List<String> operands = new ArrayList<>();
+        for (int operand : returned) {
+            if (operand < 0) {
+                if (base != null) operands.add(base);
+            } else if (operand < arguments.size()) {
+                operands.add(arguments.get(operand));
+            }
+        }
+        return operands;
+    }
+
+    /** Whether a call returns a view of the Guava multimap it is made on. */
+    private boolean multimapView(MethodSig invoked) {
+        if (!MULTIMAP_VIEWS.contains(invoked.name)
+                || !invoked.owner.startsWith("com.google.common.collect.")) {
+            return false;
+        }
+        return invoked.owner.endsWith("Multimap") || libraryHierarchy(
+                invoked.owner).contains("com.google.common.collect.Multimap");
+    }
+
+    /**
+     * Which operands a call into {@code signature} may return, by its body:
+     * -1 its receiver, k its k-th argument, through copies and casts
+     * (flow-insensitive, so what it may return); none for a body the scene
+     * lacks (an abstract or interface method: its overrides are not read).
+     * An application helper that returns what it was given ({@code
+     * checkArgument(x)}, a fluent setter declared to return {@code
+     * Object}) is its argument's alias.
+     */
+    private Set<Integer> returnedOperands(String signature) {
+        return returnedOperands.computeIfAbsent(signature, key -> {
+            Body body = jimpleBody(key);
+            if (body == null) return Collections.<Integer>emptySet();
+            Map<Local, Set<Object>> from = new LinkedHashMap<>();
+            Deque<Local> returned = new ArrayDeque<>();
+            for (Unit unit : body.getUnits()) {
+                if (unit instanceof DefinitionStmt
+                        && ((DefinitionStmt) unit).getLeftOp()
+                        instanceof Local) {
+                    Local left = (Local) ((DefinitionStmt) unit).getLeftOp();
+                    Value right = ((DefinitionStmt) unit).getRightOp();
+                    if (right instanceof CastExpr) {
+                        right = ((CastExpr) right).getOp();
+                    }
+                    Object source = null;
+                    if (right instanceof ParameterRef) {
+                        source = ((ParameterRef) right).getIndex();
+                    } else if (right instanceof soot.jimple.ThisRef) {
+                        source = -1;
+                    } else if (right instanceof Local) {
+                        source = right;
+                    }
+                    if (source != null) {
+                        from.computeIfAbsent(left,
+                                ignored -> new LinkedHashSet<>()).add(source);
+                    }
+                } else if (unit instanceof ReturnStmt && ((ReturnStmt) unit)
+                        .getOp() instanceof Local) {
+                    returned.add((Local) ((ReturnStmt) unit).getOp());
+                }
+            }
+            Set<Integer> found = new java.util.TreeSet<>();
+            Set<Local> seen = new java.util.HashSet<>();
+            while (!returned.isEmpty()) {
+                Local local = returned.pop();
+                if (!seen.add(local)) continue;
+                for (Object source : from.getOrDefault(local,
+                        Collections.<Object>emptySet())) {
+                    if (source instanceof Integer) {
+                        found.add((Integer) source);
+                    } else {
+                        returned.push((Local) source);
+                    }
+                }
+            }
+            return Collections.unmodifiableSet(found);
+        });
+    }
+
+    /** Whether a call's declared result may be its receiver: its own class,
+     *  or one above it but {@code Object}. */
+    private boolean fluent(MethodSig invoked) {
+        if (invoked.returnType.equals(invoked.owner)) return true;
+        if ("java.lang.Object".equals(invoked.returnType)) return false;
+        SootClass owner = sceneClass(invoked.owner);
+        return owner != null
+                && hierarchyNames(owner).contains(invoked.returnType);
     }
 
     /** Only java.util APIs specified to return a receiver-backed view. */
@@ -1716,13 +1927,27 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /** Whether a call writes its receiver: a container mutation, by name
-     *  or by its JDK contract, or a write of a JDK atomic's value. */
+     *  or by its JDK contract, or a write of a JDK atomic's value.  Never a
+     *  call on an immutable JDK value ({@link #immutableValue}). */
     private boolean isFieldMutator(Fact fact) {
         MethodSig sig = parseMethodSig(fact.invoke);
-        return sig != null && (CONTAINER_MUTATORS.contains(sig.name)
+        return sig != null && !immutableValue(sig.owner)
+                && (CONTAINER_MUTATORS.contains(sig.name)
                 || JavaContainerTypes.mutation(sig.raw,
                 this::libraryHierarchy)
                 || SharedFieldFlow.atomicWrite(sig.raw));
+    }
+
+    /** Whether {@code className} is a JDK value no call mutates: a String,
+     *  a box, a big number, a UUID, a java.time value, an enum. */
+    private boolean immutableValue(String className) {
+        if (IMMUTABLE_VALUES.contains(className)
+                || className.startsWith("java.time.")) {
+            return true;
+        }
+        SootClass type = sceneClass(className);
+        return type != null
+                && hierarchyNames(type).contains("java.lang.Enum");
     }
 
     /**
@@ -3597,6 +3822,20 @@ final class SeedBackwardStaticAnalyzer {
     private static String stableSiteId(String method, int unitIndex, String kind) {
         return unitIndex >= 0 ? SiteId.of(method, unitIndex)
                 : method + "#synthetic:" + firstNonBlank(kind, "edge");
+    }
+
+    /** {@link #RETURNED_ARGUMENTS} from (owner.name, "k k ...") pairs. */
+    private static Map<String, List<Integer>> returnedArguments(
+            String... pairs) {
+        Map<String, List<Integer>> map = new LinkedHashMap<>();
+        for (int at = 0; at < pairs.length; at += 2) {
+            List<Integer> indices = new ArrayList<>();
+            for (String index : pairs[at + 1].split(" ")) {
+                indices.add(Integer.valueOf(index));
+            }
+            map.put(pairs[at], Collections.unmodifiableList(indices));
+        }
+        return Collections.unmodifiableMap(map);
     }
 
     private static Set<String> names(String... values) {

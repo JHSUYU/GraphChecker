@@ -273,7 +273,8 @@ public class RegionGraphOccurrenceKeyTest {
                                         "outcome", Boolean.FALSE)),
                         walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList(),
-                        new RecordedAccesses.Builder().build());
+                        new RecordedAccesses.Builder().build(),
+                new RecordedHeap.Builder().build());
         List<String> planned = new ArrayList<>();
         for (Map<String, Object> region : closure.regions) {
             for (Object occurrence
@@ -298,6 +299,134 @@ public class RegionGraphOccurrenceKeyTest {
             }
         }
         assertEquals(Collections.singletonList("REGION.loop 1"), fixed);
+    }
+
+    /**
+     * A READER THAT NEVER TOUCHED THE FIELD read it on an arm the recording
+     * did not take, on an object it could reach there (solr-adhoc-10 SG1:
+     * the target reads NamedList.nvPairs only so, and 3,815 request
+     * handlers' writes of their own responses were each its writer): one
+     * its events name, one a static field held, or one those held over the
+     * recorded heap.  A writer is not crossed to only when no object it
+     * wrote the field on is reachable, and each, with every recorded holder
+     * above it, was mentioned under one causal context, not the reader's.
+     * A holder mentioned under a second context, a second context, the
+     * reader's, none known, no mention at all, or a static field's
+     * location is crossed to.  The reader states, per field, how many it
+     * did not cross to and how many it crossed to for a mention; each drop
+     * is a CLOSURE_CONFINED gap row.
+     */
+    @Test
+    public void aReaderThatNeverTouchedTheFieldReachesWhatItNames()
+            throws Exception {
+        Object[][] activations = {
+                // name, region, owner of EPOCH (-1: none); root call index+1
+                {"target", "REGION.check", -1},
+                {"reachable", "REGION.bump", 7},
+                {"held-confined", "REGION.bump", 8},
+                {"held-escaped", "REGION.bump", 16},
+                {"never-mentioned", "REGION.bump", 9},
+                {"under-a-static", "REGION.bump", 11},
+                {"static", "REGION.bump", 0},
+                {"confined", "REGION.bump", 12},
+                {"two-contexts", "REGION.bump", 17},
+                {"readers-context", "REGION.bump", 15},
+                {"no-context", "REGION.bump", 14},
+        };
+        RecordedHeap.Builder heap = new RecordedHeap.Builder();
+        // The reader (root call 1) runs under context R.
+        heap.occurrence(1L, "R");
+        heap.edge(1, 7);
+        heap.root(10);
+        heap.edge(10, 11);
+        // 8 and its holder 60 under A alone; 16 under B, but its holder 61
+        // under C as well.
+        heap.edge(60, 8);
+        heap.mention(8, "A");
+        heap.mention(60, "A");
+        heap.edge(61, 16);
+        heap.mention(16, "B");
+        heap.mention(61, "B");
+        heap.mention(61, "C");
+        heap.mention(12, "D");
+        heap.mention(17, "E");
+        heap.mention(17, "F");
+        heap.mention(15, "R");
+        heap.mention(14, "");
+        List<Map<String, Object>> instances = new ArrayList<>();
+        Map<String, String> addresses = new LinkedHashMap<>();
+        for (int index = 0; index < activations.length; index++) {
+            Object[] row = activations[index];
+            String address = OccurrenceAddress.of(
+                    NodeId.parse("wl/nn0#epoch0"), (String) row[1],
+                    CausalContext.of(Role.of("CLIENT"), "", index + 1),
+                    ExecutionIndex.empty()).render();
+            addresses.put((String) row[0], address);
+            Map<String, Object> activation = row(
+                    "kind", "RUNTIME_REGION_ACTIVATION",
+                    "regionId", row[1],
+                    "rootCallId", (long) index + 1,
+                    "occurrenceAddress", address,
+                    "selection", "REGION.check".equals(row[1])
+                            ? "EXCEPTION_CONTEXT" : "STATE_CONTEXT",
+                    "callIds", Collections.singletonList((long) index + 1),
+                    "observedMethods", Collections.singletonList(
+                            "REGION.check".equals(row[1]) ? CHECK : BUMP),
+                    RuntimeSelectedRegionFinalizer.NAMED_OBJECTS,
+                    new int[] {index + 1});
+            if ((Integer) row[2] >= 0) {
+                activation.put(RuntimeSelectedRegionFinalizer.FIELD_OWNERS,
+                        Collections.singletonMap(EPOCH,
+                                Collections.singleton(row[2])));
+            }
+            activation.put(RuntimeSelectedRegionFinalizer
+                    .OBSERVED_COMMUNICATION_CAPTURES,
+                    Collections.emptyList());
+            instances.add(activation);
+        }
+        RuntimeSelectedRegionFinalizer.Result closure =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(walkGraph(),
+                        walkSkeletons(), "test", Arrays.asList(CHECK, BUMP),
+                        instances, Collections.singletonList(row(
+                                "kind", "BRANCH", "eventSeq", 5L,
+                                "method", CHECK, "callId", 1L,
+                                "siteId", CHECK + "#u5",
+                                "outcome", Boolean.TRUE)),
+                        walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
+                        Collections.<ScheduleEvent>emptyList(),
+                        new RecordedAccesses.Builder().build(), heap.build());
+        List<String> planned = new ArrayList<>();
+        for (Map<String, Object> region : closure.regions) {
+            for (Object occurrence
+                    : (List<?>) region.get("runtimeOccurrenceIds")) {
+                for (Map.Entry<String, String> named : addresses.entrySet()) {
+                    if (named.getValue().equals(occurrence)) {
+                        planned.add(named.getKey());
+                    }
+                }
+            }
+        }
+        Collections.sort(planned);
+        assertEquals(Arrays.asList("held-escaped", "never-mentioned",
+                "no-context", "reachable", "readers-context", "static",
+                "target", "two-contexts", "under-a-static"), planned);
+        Map<String, Object> reader = instances.get(0);
+        assertEquals(Collections.singletonMap(EPOCH, 2), reader.get(
+                RuntimeSelectedRegionFinalizer.CONFINED_WRITERS));
+        assertEquals(Collections.singletonMap(EPOCH, 5), reader.get(
+                RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS));
+        List<String> published = new ArrayList<>();
+        for (Map<String, Object> gap : closure.gaps) {
+            if ("CLOSURE_CONFINED".equals(gap.get("kind"))) {
+                assertEquals("DIAGNOSTIC", gap.get("cls"));
+                assertEquals(addresses.get("target"), gap.get("reader"));
+                published.add(gap.get("scope") + " " + gap.get("field")
+                        + " " + gap.get("writers") + " "
+                        + ((List<?>) gap.get("first")).size());
+            }
+        }
+        assertEquals(Collections.singletonList("CONTEXT " + EPOCH + " 2 2"),
+                published);
     }
 
     /**
@@ -405,7 +534,8 @@ public class RegionGraphOccurrenceKeyTest {
                                 LOOP), instances, branches, walkScopeMap(clock),
                         RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList(),
-                        accesses.build());
+                        accesses.build(),
+                        new RecordedHeap.Builder().build());
         List<String> planned = new ArrayList<>();
         for (Map<String, Object> region : closure.regions) {
             for (Object occurrence

@@ -32,6 +32,10 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * <li>a field's owners ({@code RuntimeRegionPlanner#stampFieldOwners}): the
  *     call rows at a call that accesses a field of its receiver ({@link
  *     RuntimeSelectedRegionFinalizer#fieldAccessingCalls});</li>
+ * <li>the recorded heap ({@link RecordedHeap}): the call rows and every
+ *     argument row at a store site that mutates through a call ({@link
+ *     RuntimeSelectedRegionFinalizer#storingCalls}): the container holds what
+ *     it was handed (a nested NamedList, a list's element);</li>
  * <li>a configured source's phases ({@code
  *     RuntimeRegionPlanner#configuredSourcePhases}): the call rows at a
  *     declared configured-source site;</li>
@@ -48,11 +52,12 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 public final class TracedRows {
     /**
      * What the recording weave leaves beside the classes it wove: the
-     * digest of the static artifacts it decided its rows on ({@link
-     * #inputsDigest}).  The recorder states it in the trace's manifest, and
-     * the aggregation refuses a trace whose digest is not its own artifacts'
-     * ({@code TRACED_ROWS_MISMATCH}): over other artifacts, a declared site
-     * or port they add would find no rows and say nothing.
+     * digest of the static artifacts it decided its rows on and of the
+     * rule it traced by ({@link #inputsDigest}).  The recorder states it in
+     * the trace's manifest, and the aggregation refuses a trace whose digest
+     * is not its own ({@code TRACED_ROWS_MISMATCH}): over other artifacts, a
+     * declared site or port they add would find no rows and say nothing,
+     * and a recording traced by an older rule lacks rows a reader reads.
      */
     public static final String DIGEST_RESOURCE = "causynth-traced-rows.digest";
 
@@ -62,6 +67,8 @@ public final class TracedRows {
     private final Set<String> anyCallee = new HashSet<>();
     /** {@code <siteId>\n<declaredCallee>\n<index>}. */
     private final Set<String> callArguments = new HashSet<>();
+    /** Sites whose every call's every argument is traced. */
+    private final Set<String> anyArgument = new HashSet<>();
     /** {@code <method>\n<index>}. */
     private final Set<String> methodArguments = new HashSet<>();
     private final Set<String> methodExits = new HashSet<>();
@@ -85,6 +92,10 @@ public final class TracedRows {
         }
         anyCallee.addAll(RuntimeSelectedRegionFinalizer.fieldAccessingCalls(
                 graph, scopeMap).keySet());
+        Set<String> storing =
+                RuntimeSelectedRegionFinalizer.storingCalls(scopeMap).keySet();
+        anyCallee.addAll(storing);
+        anyArgument.addAll(storing);
         for (StaticProgram.RegionRow skeleton : skeletons) {
             for (ConfiguredSourcePhaseContract.Declaration declaration
                     : skeleton.sourcePhasesBySite().values()) {
@@ -118,13 +129,28 @@ public final class TracedRows {
     }
 
     /**
-     * The digest of the three static artifacts the rows are decided on: the
-     * scope map, the candidate graph and the candidate skeletons, by their
-     * bytes.  The weave and the aggregation compute it alike.
+     * Which rows this class traces and what the aggregation reads in them,
+     * by name: a recording made under another rule over the same artifacts
+     * lacks what the aggregation reads (one before the storing calls'
+     * argument rows has no holder edge into a container's elements, and the
+     * recorded heap would call them held by nothing; one before the method
+     * entries' window names every window's request #1 one causal context),
+     * so the rule is part of {@link #inputsDigest}.  Renamed with every such
+     * change.
+     */
+    static final String RULE = "storing calls' receivers and arguments;"
+            + " method entries' windows";
+
+    /**
+     * The digest of the rows' rule ({@link #RULE}) and the three static
+     * artifacts the rows are decided on: the scope map, the candidate graph
+     * and the candidate skeletons, by their bytes.  The weave and the
+     * aggregation compute it alike.
      */
     public static String inputsDigest(File scopeMap, File graph,
                                       File skeletons) throws IOException {
-        return ArtifactIO.sha256(ArtifactIO.sha256(scopeMap.toPath()) + "\n"
+        return ArtifactIO.sha256(RULE + "\n"
+                + ArtifactIO.sha256(scopeMap.toPath()) + "\n"
                 + ArtifactIO.sha256(graph.toPath()) + "\n"
                 + ArtifactIO.sha256(skeletons.toPath()));
     }
@@ -163,8 +189,9 @@ public final class TracedRows {
 
     public boolean callArgument(String siteId, String declaredCallee,
                                 int index) {
-        return callArguments.contains(siteId + "\n" + declaredCallee + "\n"
-                + index);
+        return anyArgument.contains(siteId)
+                || callArguments.contains(siteId + "\n" + declaredCallee
+                + "\n" + index);
     }
 
     public boolean methodArgument(String method, int index) {

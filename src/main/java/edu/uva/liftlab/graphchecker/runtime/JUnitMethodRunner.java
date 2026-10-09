@@ -25,6 +25,8 @@ public final class JUnitMethodRunner {
             // Nothing has run yet, so throwing is enough.
             throw new IllegalStateException(refusedOpen);
         }
+        // A focused replay that stands still ends by name, not at its bound.
+        ConcolicResultPublisher.watchProgress();
         int status = 0;
         Throwable ended = null;
         try {

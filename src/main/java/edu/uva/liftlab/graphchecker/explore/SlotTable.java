@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.explore;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -581,10 +583,17 @@ public final class SlotTable {
     }
 
     /**
-     * A closure member that ran under a different causal context. The context
-     * is part of the occurrence id, so this is an absence beside a presence at
-     * one code point; a session running BOTH is growth (two requests). BLOCKING
-     * only in a world where the member ran; elsewhere a new occurrence.
+     * A closure member that ran under a different causal context: an
+     * absence beside a presence at one code point, BLOCKING only in a world
+     * where the member ran (elsewhere a new occurrence).  Contexts compare
+     * by their shape ({@link Corpus#contextShape}, the rule {@link Branches}
+     * and IDENTITY §9 ask the question by): per anchor hop the RPC site and
+     * the sending node, then the root's role and api, without the per-site
+     * counts.  A session that ran the code point under a member's shape ran
+     * that member, whatever it counted -- a poll's k-th wake is another k in
+     * every run (solr-adhoc-05, -21: SolrZkClient#getData under
+     * Root:WAKE/ZkDistributedQueue.peekElements#k) -- and
+     * one that ran it under that shape and another too is growth.
      */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {
@@ -596,32 +605,41 @@ public final class SlotTable {
             byCodePoint.computeIfAbsent(codePoint(member),
                     key -> new ArrayList<OccurrenceAddress>()).add(member);
         }
+        Map<CausalContext, List<String>> shapes =
+                new HashMap<CausalContext, List<String>>();
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {
             boolean authority = session.admitted();
             String world = ObligationFactory.worldDigest(
                     corpus.world(session.sessionId()));
-            Set<String> ran = new LinkedHashSet<String>();
+            // The member code points this session ran, and under what.
+            Map<String, List<OccurrenceAddress>> ran =
+                    new HashMap<String, List<OccurrenceAddress>>();
             for (ActivationRow activation : session.activations()) {
-                ran.add(activation.occurrence().id());
+                String at = codePoint(activation.occurrence());
+                if (byCodePoint.containsKey(at)) {
+                    ran.computeIfAbsent(at,
+                            key -> new ArrayList<OccurrenceAddress>())
+                            .add(activation.occurrence());
+                }
             }
+            Map<String, Boolean> memberRan = new HashMap<String, Boolean>();
             for (ActivationRow activation : session.activations()) {
                 OccurrenceAddress occurrence = activation.occurrence();
-                List<OccurrenceAddress> members =
-                        byCodePoint.get(codePoint(occurrence));
-                if (members == null || closure.contains(occurrence.id())) {
+                String at = codePoint(occurrence);
+                List<OccurrenceAddress> members = byCodePoint.get(at);
+                if (members == null || closure.contains(occurrence.id())
+                        || memberRan.computeIfAbsent(at, point -> ranMember(
+                                corpus, members, ran.get(point), shapes))) {
                     continue;
                 }
-                boolean memberRan = false;
                 boolean sameWorld = false;
                 StringBuilder held = new StringBuilder();
                 for (OccurrenceAddress member : members) {
-                    memberRan |= ran.contains(member.id());
                     sameWorld |= worldsRunning(corpus, member).contains(world);
                     if (held.length() > 0) held.append(", ");
                     held.append(member.context().render());
                 }
-                if (memberRan) continue;
                 boolean blocking = authority && sameWorld;
                 gaps.add(GapRow.of(session.sessionId(),
                         GapKind.TOPOLOGY_DIVERGENCE,
@@ -639,6 +657,25 @@ public final class SlotTable {
             }
         }
         return replaced;
+    }
+
+    /** Whether a session that ran these occurrences at one code point ran a
+     *  member there: one of a member's shape ({@link
+     *  ContextShape#sameQuestion}). */
+    private static boolean ranMember(Corpus corpus,
+                                     List<OccurrenceAddress> members,
+                                     List<OccurrenceAddress> ran,
+                                     Map<CausalContext, List<String>> shapes) {
+        for (OccurrenceAddress occurrence : ran) {
+            for (OccurrenceAddress member : members) {
+                if (ContextShape.sameQuestion(occurrence, member,
+                        context -> shapes.computeIfAbsent(context,
+                                corpus::contextShape))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static Set<String> worldsRunning(Corpus corpus,

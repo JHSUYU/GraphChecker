@@ -122,6 +122,9 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
 19. **A blocking divergence that is only read order** (07 CC7, 2026-10-06): 86 `TOPOLOGY_DIVERGENCE` rows, every one a
     client consumer of a quorum reply. QJM reads replies out of a `HashMap` keyed by identity hash, so the k-th read is
     another journal node in every JVM (STATUS open defect 57). Read the consumer sites before suspecting the data.
+    A member that ran under the same context shape with another count is not one (PIPELINE §7.1 step 4): in SG1,
+    solr-adhoc-05 rounds 5-9 had 22-44 BLOCKING rows and -21 round 4 one, at `SolrZkClient#getData` under
+    `Root:WAKE/...peekElements#k` (a poll's k-th wake); the shape rule leaves none (EXPLORE.drift, nothing else moved).
 20. **A residue that cannot move the verdict** (21, time family, 2026-10-06): RUN_DEFECT on 3 BLOCKING gaps from a
     stranded actor body, yet every one of the 5 fatal paths ends in the constant `false` (an untracked String
     compare), so no unexplored path can change UNSAT. Such a case is accepted only under the time-family license, with
@@ -132,3 +135,11 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     validation; say so in its STATUS row instead of reporting a k/N. Clocks, configurations, accessor reads and
     call-return answers are planted natively (11741 EX1 10/10, solr-18406/18413 SC1 and SC2 10/10 each). A reproduced
     run may leave ORDER rows `NOT_REACHED`: their after-activation runs past the anchor, where the run ends.
+22. **An UNSAT over writers PLAN dropped as confined** (solr-explore review, 2026-10-09): PLAN does not cross to a
+    writer whose every object, with its recorded holders, the recorded heap shows mentioned under one causal context
+    (one tick, one served request, one client root) that is not the reader's (SYMBOL-SCOPE §4.4). The heap is
+    partial: a hand-off through untraced code between two contexts -- an unwoven cache two requests share, code
+    woven outside the trace methods, lambda bodies included -- is not seen. Every drop is a DIAGNOSTIC
+    `CLOSURE_CONFINED` row (`scope` `CONTEXT`) and result.json `confinedWriters`; an UNSAT reading looks at the
+    anchor's demanded fields among them and, for each one the fatal arm rests on, reads the code for such a
+    hand-off before accepting.
