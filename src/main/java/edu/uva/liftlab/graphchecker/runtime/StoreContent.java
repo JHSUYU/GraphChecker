@@ -50,7 +50,8 @@ import java.util.WeakHashMap;
  * (DEC_LONG, BOOL: the parse mints the rendering of a fresh number), and its
  * export is the value rendered (a {@code toString} the writer's expression
  * is) or the text read; any other String crosses as a String (STR), a number
- * or a boolean leaf as its box's value (NUM).  The writer's kind decides the
+ * or a boolean leaf as its box's value (NUM), a number widened as the parser
+ * reads it back ({@link #wide}).  The writer's kind decides the
  * reader's, so the two ends of one leaf are declared alike; a leaf the
  * reader cannot mint so mints by its own text, unpaired.  At most
  * {@link #MAX_LEAVES} leaves and {@link #MAX_DEPTH} levels of one document
@@ -190,6 +191,9 @@ final class StoreContent {
                 crossing = value;
                 javaType = kind == Kind.DEC_LONG ? "J" : "Z";
             }
+        } else if (kind == Kind.NUM && !wide(javaType).equals(javaType)) {
+            crossing = widened(crossing, javaType);
+            javaType = wide(javaType);
         }
         long event = answer.has("exportEvent")
                 ? answer.get("exportEvent").getAsLong() : 0L;
@@ -227,6 +231,31 @@ final class StoreContent {
         parse.add("_param_list", params);
         parse.add("_res_exp", constant(type, text));
         return parse;
+    }
+
+    /**
+     * The type a number leaf crosses at: a JSON number has no width, and the
+     * parser makes a {@code long} of every integral one and a {@code double}
+     * of every other, so a writer's {@code int}, {@code short} or {@code
+     * byte} crosses as a long and its {@code float} as a double.
+     */
+    static String wide(String javaType) {
+        switch (javaType) {
+            case "I": case "S": case "B": return "J";
+            case "F": return "D";
+            default: return javaType;
+        }
+    }
+
+    /** {@code expression} of {@code javaType} widened to {@link #wide}. */
+    static JsonObject widened(JsonObject expression, String javaType) {
+        JsonObject cast = new JsonObject();
+        cast.addProperty("_type", "TypeCastExpression");
+        cast.add("_exp", expression);
+        cast.addProperty("sourceJavaType", javaType);
+        cast.addProperty("targetJavaType", wide(javaType));
+        cast.addProperty("_java_type", wide(javaType));
+        return cast;
     }
 
     /** A primitive constant as the VM spells one. */
@@ -351,7 +380,7 @@ final class StoreContent {
     /**
      * Whether a leaf the reader holds can cross as {@code export} says: a
      * String as a String, a rendering as the value rendered, a box as a
-     * value of its own type (a writer's int parses as a long: unpaired).
+     * value of its own type (the writer's number widened, {@link #wide}).
      */
     private static boolean fits(Exported export, Object value) {
         Kind own = kindOf(value);

@@ -1361,9 +1361,12 @@ constant, else the parse of what it held; the parse mints the leaf as the render
 number (`DEC_LONG`, `BOOL`), so a reader's `Long.parseLong` of it is that number and no String
 theory is asked (solr-18413's routing-rule expiry, a clock's rendering through the Overseer's
 queue item and `state.json`). A boolean the writer computed otherwise crosses as its text (`STR`),
-as does any other String; a number or a boolean leaf crosses as its box's value (`NUM`). The writer's
-crossing decides the reader's, so a leaf's two ends are declared alike; a reader leaf that cannot
-cross as its writer's (a writer's `int` parses as a `long`) mints by its own text, unpaired. At most
+as does any other String; a number or a boolean leaf crosses as its box's value (`NUM`), a number
+widened as the parser reads it back -- a JSON number has no width, and the parser makes a `long` of
+every integral one and a `double` of every other, so a writer's `int`, `short` or `byte` exports as a
+`long` and its `float` as a `double` (`StoreContent#wide`). The writer's crossing decides the
+reader's, so a leaf's two ends are declared alike; a reader leaf that cannot cross as its writer's
+mints by its own text, unpaired. At most
 1024 leaves and 16 levels of one document are walked; past them a DIAGNOSTIC `UNSTATED_VALUE` names
 `CONTENT_BOUND:<port>` and the rest crosses as constants. A wave's answer for a leaf's attach is
 written into the parsed tree before the mint, as the parser would hold it.

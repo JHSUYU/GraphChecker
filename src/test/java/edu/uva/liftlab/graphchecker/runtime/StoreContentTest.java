@@ -121,6 +121,21 @@ public class StoreContentTest {
                 "true"));
     }
 
+    /** A number leaf crosses at the width the parser reads it back at. */
+    @Test
+    public void aNumberCrossesWidened() {
+        String[][] rows = {{"I", "J"}, {"S", "J"}, {"B", "J"}, {"J", "J"},
+                {"F", "D"}, {"D", "D"}, {"Z", "Z"}};
+        for (String[] row : rows) {
+            assertEquals(row[0], row[1], StoreContent.wide(row[0]));
+        }
+        JsonObject count = symbol("M_I_count", "I");
+        JsonObject cast = StoreContent.widened(count, "I");
+        assertEquals("TypeCastExpression", cast.get("_type").getAsString());
+        assertEquals("J", cast.get("targetJavaType").getAsString());
+        assertEquals(count, cast.get("_exp"));
+    }
+
     @Test
     public void outsideAReplayNothingIsCaptured() {
         assertFalse(StoreContent.capturing());
