@@ -264,7 +264,17 @@ on 120, which a dispatch per label and successor took past the JVM's 64 KB metho
 sessions directory, worker directory and `CAUSYNTH_SCHEDULE_PREFIX`; the seed replay is held to the
 recording's schedule (`recorded_schedule.jsonl`); a timed wait held to it takes its `WAKE` slot when the
 slot is due and returns no sooner than its own deadline, since a `WAKE` is a timeout the recording's wait
-ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A replay publishes one session under
+ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A store's reads and writes take their turns at
+their location (`READ`, `WRITE`, IDENTITY.md §7.2), so what a store read finds is the recording's
+in the seed and in any replay's prefix. Where the model re-pairs a store read with another version
+(a world's planted pairings, §7.5; CONFIRM's `ORDER` rows, §10; a reproduction's plant) the model's
+order supersedes the recorded placement: the prefix ends before the first event the pairings
+reorder, and past the cut such a run's reads take no slot (`ScheduleLog#readsHeld`), so a `READ`
+yields to a planted `ORDER` -- a flipped world that reads before the newer write is never held
+back to the recorded place -- while the writes keep their turns behind one another. A `READ` slot
+never blocks the frontier, and both its waits are bounded by the stall rule's grace: the read behind
+the earlier write is let go a grace into a stall (the write keeps its slot), and the next write
+behind a read that does not come gives that read up a grace into one. A replay publishes one session under
 `iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
 focus row its `manifest.json` states role `SEED`. The seed replay runs under a wall clock of
 `seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than

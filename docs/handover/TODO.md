@@ -157,6 +157,9 @@ Merged since the HDFS state:
 - confirm-first;
 - the owner's FP rule (3ce1ddd08);
 - the Solr body: the HTTP send in `executeMethod`, the stall rules, `DOOR_SEND_OUTSIDE_REGION` (`solr-body` 3d0bd661b);
+- the store READ turn: a SolrZkClient read of a written location takes its turn at the location (key `MessageDoors#turn`),
+  never blocks the frontier, and yields to a model's order past the cut (`solr-body` 873fdaa20, Solr `gc/solr-body`
+  7e51565080; gated on `~/gc-run/sbm23`: 39 and 19 seeds match their anchors, 18406 native 10/10, 18413 and migrate PASS);
 - the closure's precision, reviewed twice:
   - confinement by causal context, `CLOSURE_CONFINED` rows, `result.json confinedWriters`;
   - an arm's key by the region's static reads;
@@ -174,7 +177,6 @@ migrate-buffer-leak PASS (confirmed, FORCED_TARGET).
 
 | # | branch (GraphChecker) | head | Solr tree branch | what it is | gated? / what is left before the merge |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `solr-body` | 873fdaa20 | `gc/solr-body` 7e51565080 | the store READ turn: a SolrZkClient read of a written location takes its turn at the location (key `MessageDoors#turn`), never blocks the frontier, and yields to a model's order past the cut | **gated** on `~/gc-run/sbm23` (vm-force5): 39 and 19 seeds match their anchors, and 18406 (native 10/10), 18413 and migrate PASS. Merge it. 31 missed once in 2 runs (§3 d) |
 | 2 | `solr-force2` | aefd699c2 | (`sg2b-trees`) | D1: K_L counts only loop iterations that record a symbolic decision, and every loop counts against the 32-body work cap. D2: a way guard is a decision that left the way; a cut on the way is BOUNDED, never a silent UNSAT. D3: force only guards whose other arm cannot reach the target (fix 7832e0f4d: a throw's own guards are never passable). Design: `analysis/solr-2026-10-08/design-force-study.md` | unit, shell and offline gates pass; canaries PASS (F2V3/F2V4). It has system/solr 34ea9d0c7 merged: merge system/solr's head into it, rerun the canaries, then merge. Its last commit is a WIP STATUS draft; check those rows against §2 |
 | 3 | `solr-zk-state` (Z1) | e97464d7d (WIP docs on d9700c84b) | `gc/solr-zk-next` 53d81b09b1 | ZooKeeper store versions as a location kind; dynamic provenance (decoded → (L, v)); the CAS chain; the queue-head tick; the consumed item's RECV; door families always placed; (i') every fault-reading occurrence of a message's sending turn is a control producer (f7080b2e0); read-out stats (a8c8e871b); the VM read-out window (c71ab25a3, image vm-force6) | NOT ready (§3 a, b). (1) Decide vm-force6: a ≥ 30 % saving on 18413's seed → option (1), a window that starts at the oldest unpublished activation (a new vm-force7, rows identical by construction); else option (2), revert c71ab25a3 (keep a8c8e871b). vm-force6 failed the row gate on 18406: 199 writes of an activation stranded at the end were lost. (2) 18413 must pass within its seed bound (197 planned tasks against MB7's 86; seed JVMs 4-7 GB, so one per host via `onlift -h`). (3) Rerun reindex on the merged head: a confirmed witness with native ≥ 1/10. (4) A review agent reads the whole Z1 batch. Then merge |
 | 4 | `solr-zk-doors` | 6cbc40a93 (WIP) | `gc/solr-zk-doors` eee0e1bd7a (worktree `/bigtemp/vnr3ne/wt/lucene-solr-zkdoors`, **not built**) | **ZooKeeper READ doors (owner priority)**, on Z1 d9700c84b + solr-body | §2 |

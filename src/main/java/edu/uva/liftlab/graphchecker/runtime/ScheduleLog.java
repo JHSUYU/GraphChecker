@@ -741,7 +741,8 @@ public final class ScheduleLog {
             }
         }
         if (pending.kind != ScheduleEvent.Kind.WAKE
-                && pending.kind != ScheduleEvent.Kind.END) {
+                && pending.kind != ScheduleEvent.Kind.END
+                && pending.kind != ScheduleEvent.Kind.READ) {
             steps++;
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
@@ -1270,6 +1271,27 @@ public final class ScheduleLog {
         Thread self = Thread.currentThread();
         HELD.remove(self);
         CONFLICTED.remove(self);
+        if (event.kind == ScheduleEvent.Kind.READ) {
+            // A read waits only behind the writes to its location before
+            // its slot, never for the frontier; one the order lacks, or of a
+            // location no write of the order wrote, runs free.  The wait is
+            // held: while the order moves the read waits for its write, and
+            // a grace into a stall it is let go with the write's slot kept,
+            // never given up for it.  A read's k-th slot is the recording's
+            // k-th read of its context there, and a context that read more
+            // often than recorded (a poll, a cache refresh) waits for a later
+            // write than its own -- the writer may wait on the reader then
+            // (solr-adhoc-39 MB29s: 37 such stalls, 447 s).
+            if (slot < 0) return GO;
+            int write = conflictLocked(event, slot);
+            if (write < 0 || owesBeforeLocked(event, write)
+                    || LET_GO.contains(self)) {
+                return GO;
+            }
+            CONFLICTED.add(self);
+            HELD.put(self, event);
+            return write + 1;
+        }
         if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) return slot;
         if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
@@ -1372,6 +1394,12 @@ public final class ScheduleLog {
         if (writes != null) {
             for (int write : writes) {
                 if (slot >= 0 && write >= slot) break;
+                // A write waits behind the reads before it too; a read
+                // behind writes alone.
+                if (event.kind == ScheduleEvent.Kind.READ && order.get(write)
+                        .kind() == ScheduleEvent.Kind.READ) {
+                    continue;
+                }
                 if (state[write] == OPEN && heldKind(write)) {
                     conflict = write;
                     break;
@@ -1405,7 +1433,8 @@ public final class ScheduleLog {
     private static boolean blocking(int slot) {
         ScheduleEvent.Kind kind = order.get(slot).kind();
         return kind != ScheduleEvent.Kind.WAKE
-                && kind != ScheduleEvent.Kind.INTERRUPT;
+                && kind != ScheduleEvent.Kind.INTERRUPT
+                && kind != ScheduleEvent.Kind.READ;
     }
 
     /** Whether every slot before {@code slot} is settled or an open WAKE. */
@@ -1747,36 +1776,46 @@ public final class ScheduleLog {
             letGoHeldLocked(stood, now);
             return true;
         }
-        // A frontier in a context family that missed its event in a stall
-        // before stands a grace, not a timeout: that family diverged from
-        // the recording, and each of its later slots cost a timeout of its
-        // own (SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63 of 19's 70,
-        // on a context that had failed one; MB21s/MB22s: 26 of 31's 69, 34 of
-        // 10's 58, on another turn or anchor of a family that had).
-        long bound = firstBlocking < order.size() && FAILED.contains(
-                familyOf(order.get(firstBlocking).context()))
-                ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
-        if (stood < bound) return false;
-        if (stood < CEILING * bound && computingLocked(now)) return false;
         // A wait held without a slot -- a poll past its recorded count at
         // its context's due slot, or at the line -- waits for no slot's
         // event, so it bounds no give-up: at a slot it would shadow the
         // stalled one, at the line it would give up every slot before it
         // (solr-adhoc-13 MB6: a replica poll held at the cut, 4560 slots at
-        // once).  It is let go instead, a grace apart.
+        // once).  It is let go instead, a grace apart; so is a read held
+        // behind a write.
         int earliest = Integer.MAX_VALUE;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
             if (!HELD.containsKey(waiter.getKey())) {
                 earliest = Math.min(earliest, waiter.getValue());
             }
         }
+        // What the stall gives up first: the one slot a conflicted write
+        // waits behind, else the frontier.  A read stands a grace, not a
+        // timeout: its slot holds no frontier.  So does a slot in a context
+        // family that missed its event in a stall before: that family
+        // diverged from the recording, and each of its later slots cost a
+        // timeout of its own (SG2: 69 of solr-adhoc-38's 138 give-up stalls,
+        // 63 of 19's 70, on a context that had failed one; MB21s/MB22s: 26
+        // of 31's 69, 34 of 10's 58, on another turn or anchor of a family
+        // that had; MB29s: 102 of 39's 145 conflicts stood the timeout, the
+        // family judged by the waiting write's context, not by the one it
+        // waited for).
+        boolean conflicted = earliest != Integer.MAX_VALUE
+                && onlyConflictedAtLocked(earliest);
+        int first = conflicted ? earliest - 1 : firstBlocking;
+        long bound = first < order.size()
+                && (order.get(first).kind() == ScheduleEvent.Kind.READ
+                || FAILED.contains(familyOf(order.get(first).context())))
+                ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
+        if (stood < bound) return false;
+        if (stood < CEILING * bound && computingLocked(now)) return false;
         if (!HELD.isEmpty() && (!letGoSinceProgress
                 || earliest == Integer.MAX_VALUE)) {
             letGoHeldLocked(stood, now);
             return true;
         }
         if (earliest == Integer.MAX_VALUE) return false;
-        if (onlyConflictedAtLocked(earliest)) {
+        if (conflicted) {
             // A write the order lacks there, or one whose slot holds nothing,
             // waits at the slot after the one write to its location it
             // follows: that write alone is given up, never the run of other
@@ -1789,7 +1828,9 @@ public final class ScheduleLog {
             stalls++;
             giveUpLocked(write);
             FAILED.add(familyOf(order.get(write).context()));
-            stateLocked("schedule-write#" + write, "the write at slot "
+            stateLocked("schedule-write#" + write, "the "
+                    + (order.get(write).kind() == ScheduleEvent.Kind.READ
+                            ? "read" : "write") + " at slot "
                     + write + " (" + order.get(write).render() + ") did not"
                     + " happen in the " + stood + " ms the frontier stood at"
                     + " slot " + firstBlocking + ", while a write to its"
@@ -1817,20 +1858,20 @@ public final class ScheduleLog {
         }
         String frontierContext = firstBlocking < order.size()
                 ? order.get(firstBlocking).context() : null;
-        int first = -1;
+        int from = -1;
         int count = 0;
         for (int index = firstOpen; index < earliest; index++) {
             if (state[index] != OPEN) continue;
-            if (first < 0) first = index;
+            if (from < 0) from = index;
             giveUpLocked(index);
             count++;
         }
         if (count == 0) return false;
         if (frontierContext != null) FAILED.add(familyOf(frontierContext));
         if (earliest >= cut) restStalls++;
-        stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
-                count + " slot(s) of the order from " + first + " on (the"
-                        + " first " + order.get(first).render() + ") did not"
+        stateLocked((from < cut ? "schedule#" : "schedule-rest#") + from,
+                count + " slot(s) of the order from " + from + " on (the"
+                        + " first " + order.get(from).render() + ") did not"
                         + " happen in the " + stood + " ms the frontier"
                         + " stood at slot " + firstBlocking + ", while "
                         + order.get(earliest).render() + " waited at slot "
@@ -1882,6 +1923,9 @@ public final class ScheduleLog {
     private static String heldLocked(Thread thread) {
         Pending held = HELD.get(thread);
         if (held == null) return "a wait the order does not name";
+        if (held.kind == ScheduleEvent.Kind.READ) {
+            return held.render() + " behind a write to its location";
+        }
         return SLOTS.containsKey(held.key)
                 ? held.render() + " past its recorded count"
                 : "the unrecorded " + held.render();
@@ -2049,7 +2093,8 @@ public final class ScheduleLog {
                             ? Collections.<ScheduleEvent>emptyList()
                             : SessionReader.readSchedule(restFile),
                     restFile != null && SessionReader.readScheduleMarks(
-                            restFile).containsKey(ScheduleEvent.WITNESS));
+                            restFile).containsKey(ScheduleEvent.WITNESS),
+                    readsHeld());
         } catch (IOException | RuntimeException unreadable) {
             // An order it cannot read, it left at its first event.
             stateLocked(String.valueOf(file == null ? restFile : file),
@@ -2066,11 +2111,30 @@ public final class ScheduleLog {
         }, "causynth-schedule-progress"));
     }
 
-    /** Holds the run to {@code events}, cut, then {@code after}, which a
-     *  run cut at its witness ends at. */
+    /**
+     * Holds the run to {@code events}, cut, then {@code after}, which a run
+     * cut at its witness ends at.  A READ takes a slot only at a location a
+     * WRITE of the order wrote.  Where {@code readsHeld} is false -- a run
+     * the model orders: a world's planted pairings, CONFIRM, a native
+     * reproduction's plant -- the reads past the cut take none: there the
+     * model's order puts each read (its pairings' ORDER rows), and a flipped
+     * world that reads before the newer write is not held back to the
+     * recorded place.  The prefix ends before the first event the model
+     * reorders ({@code SchedulePrefix}), so its reads keep their places.
+     */
     private static void installLocked(List<ScheduleEvent> events,
                                       List<ScheduleEvent> after,
-                                      boolean atWitness) {
+                                      boolean atWitness, boolean readsHeld) {
+        Set<String> written = new HashSet<String>();
+        for (List<ScheduleEvent> part : Arrays.asList(events, after)) {
+            for (ScheduleEvent event : part) {
+                if (event.kind() == ScheduleEvent.Kind.WRITE) {
+                    written.add(event.site());
+                }
+            }
+        }
+        events = heldReads(events, written, true);
+        after = heldReads(after, written, readsHeld);
         List<ScheduleEvent> all = new ArrayList<ScheduleEvent>(events);
         all.addAll(after);
         order = all;
@@ -2119,9 +2183,10 @@ public final class ScheduleLog {
                 BY_CONTEXT.put(event.context(), own);
             }
             own.add(index);
-            if (event.kind() == ScheduleEvent.Kind.WRITE) {
+            if (event.kind() == ScheduleEvent.Kind.WRITE
+                    || event.kind() == ScheduleEvent.Kind.READ) {
                 BY_LOCATION.computeIfAbsent(event.site(),
-                        written -> new ArrayList<Integer>()).add(index);
+                        location -> new ArrayList<Integer>()).add(index);
             }
             if (heldKind(index)) openHeld++;
         }
@@ -2130,6 +2195,28 @@ public final class ScheduleLog {
         restStalls = 0;
         frontierMovedLocked();
         settleLocked();
+    }
+
+    /** {@code events} with no READ but those {@code readsHeld} keeps at a
+     *  location {@code written}. */
+    private static List<ScheduleEvent> heldReads(List<ScheduleEvent> events,
+                                                 Set<String> written,
+                                                 boolean readsHeld) {
+        List<ScheduleEvent> kept = new ArrayList<ScheduleEvent>(events.size());
+        for (ScheduleEvent event : events) {
+            if (event.kind() != ScheduleEvent.Kind.READ
+                    || readsHeld && written.contains(event.site())) {
+                kept.add(event);
+            }
+        }
+        return kept;
+    }
+
+    /** Whether this replay holds its reads to the recorded order: not one
+     *  the model orders ({@link #installLocked}). */
+    private static boolean readsHeld() {
+        return !FocusedReplay.pairs() && !FocusedReplay.confirming()
+                && !RecordingPlant.planting();
     }
 
     /** Writes one mark row into this run's schedule, before the window as
@@ -2210,9 +2297,16 @@ public final class ScheduleLog {
     static void enforceForTests(List<ScheduleEvent> events,
                                 List<ScheduleEvent> after,
                                 boolean atWitness) {
+        enforceForTests(events, after, atWitness, true);
+    }
+
+    /** With {@code readsHeld} false, as a run the model orders. */
+    static void enforceForTests(List<ScheduleEvent> events,
+                                List<ScheduleEvent> after,
+                                boolean atWitness, boolean readsHeld) {
         synchronized (LOCK) {
             loaded = true;
-            installLocked(events, after, atWitness);
+            installLocked(events, after, atWitness, readsHeld);
         }
     }
 
