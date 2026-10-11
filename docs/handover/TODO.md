@@ -253,7 +253,8 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
   replayed as #1, 1 of 2 runs) is likely the same drift.
 - **e. Study checks after D1:** 07 (8490 in flight before the explore merge; 64 tasks plus 171 cut by the task bound
   after it), 21 (2023 in flight) and 14 must reach their fixed points; measure the growth on the merged body. 05:
-  FORCE diverges at K_L in `SolrCore.createInstances` (option D1b: exempt the FORCE run from K_L). 09: its forced
+  FORCE diverged at K_L in `SolrCore.createInstances`; D1b (the FORCE run's armed occurrence takes the work cap
+  alone) is coded on `solr-study`, a live 05 FORCE run pending. 09: its forced
   condition is `false`, a guard on a lambda's return through `Callable.call` (deciders through a lambda). 10: not yet
   run whole (it plans 356 tasks).
 - **f. SG2b's UNSATs of 19 and 21 are void** (D2: their fatal was composed from the wrong throw). SG2-era UNSATs of 07,

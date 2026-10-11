@@ -85,6 +85,14 @@ final class ForcedArms {
         active.pathRecordingStarted = true;
     }
 
+    /** Whether {@code active} is the armed activation of this FORCE run,
+     *  on its way to its target: its loops are bounded by the work cap
+     *  alone ({@code LoopAccounting.LoopBackedgeBudget#traverse}). */
+    static boolean armedOn(ActiveRegion active) {
+        long token = armed;
+        return token != 0L && active.token == token;
+    }
+
     /**
      * Asks the VM to force the branch the woven prefix marks next, when the
      * armed activation reaches a site of its table; called just before the

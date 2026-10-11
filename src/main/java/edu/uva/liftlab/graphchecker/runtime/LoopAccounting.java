@@ -264,14 +264,22 @@ final class LoopAccounting {
          *   loop offers, and an iteration that decided only on concrete
          *   values offers none.  At {@code bound} of them it is cut
          *   (attempt {@code K} would enter body {@code K+1});</li>
+         *   <li>in the armed activation of a FORCE run ({@code forced},
+         *   {@link ForcedArms#armedOn}) {@code K_L} does not apply: it bounds
+         *   the path space a loop offers to flips, and a forced run has one
+         *   path, the forced arms', which ends at its target (solr-adhoc-05
+         *   F2V4: FORCE_DIVERGED at K_L 8 in {@code
+         *   SolrCore.createInstances}'s symbolic loop);</li>
          *   <li>every traversal is one more body of work, cut past the work
          *   cap ({@link LoopBoundPolicy#workCap}, the rule a fixed-count
          *   loop's bodies take too, {@link #body}): a loop that never
          *   decides on a symbol still ends.</li>
          * </ul>
          */
-        Error traverse(String loopId, String key, int termed, int bound) {
+        Error traverse(String loopId, String key, int termed, int bound,
+                       boolean forced) {
             int attempted = traversals.merge(key, 1, Integer::sum);
+            if (forced) return overWorkCap(loopId, attempted + 1L, bound);
             Integer before = termedAt.put(key, termed);
             boolean decided = before == null || before.intValue() != termed;
             int counted = decided ? symbolic.merge(key, 1, Integer::sum)

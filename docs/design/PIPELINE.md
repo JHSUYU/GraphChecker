@@ -312,7 +312,10 @@ toward the loop's `K_L` only when the iteration it closes recorded a decision wi
 first counts; `ActiveRegion#termedDecisions`): `K_L` bounds the flips a loop offers, and an
 iteration that decided only on concrete values offers none; an iteration whose symbolic decisions a nested
 planned region records (another occurrence's activation) counts as concrete here, so only the work cap bounds
-it (accepted: its flips are that occurrence's). Every traversal, and every body of a fixed-count loop, is
+it (accepted: its flips are that occurrence's). In a FORCE run's armed occurrence (§7.10) `K_L` does not
+apply, only the work cap: `K_L` bounds the path space a loop offers to flips, and the forced run has one path,
+which ends at its target (`ForcedArms#armedOn`; solr-adhoc-05 F2V4 diverged at `K_L` 8 in
+`SolrCore.createInstances`'s symbolic loop). Every traversal, and every body of a fixed-count loop, is
 charged to one work cap, `LoopBoundPolicy#workCap` (`MAX_REPLAY_PATH_LOOP_BODIES` = 32, or the loop's
 declared `K_L` above it; body 33 is cut, for both kinds, `LoopBackedgeBudget#overWorkCap`); before, only
 fixed-count (array-indexed) loops had it, and a

@@ -20,8 +20,9 @@ public class LoopAccountingTest {
     public void kLCountsTheIterationsThatDecidedOnASymbol() {
         int cap = LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         Object[][] rows = {
-                // {why, K_L, termed decisions per iteration, traversal cut
-                //  at (0: none), its reason}
+                // {why, K_L (negative: in a FORCE run's armed activation),
+                //  termed decisions per iteration, traversal cut at (0:
+                //  none), its reason}
                 {"every iteration decides on a symbol: cut at K_L", 8,
                         ones(20), 8, "MAX_LOOP_BODY_ITERATIONS_REACHED"},
                 {"no iteration decides on one: only the work cap", 8,
@@ -32,6 +33,9 @@ public class LoopAccountingTest {
                         new int[]{0, 0, 1, 0, 0, 1, 0}, 6,
                         "MAX_LOOP_BODY_ITERATIONS_REACHED"},
                 {"a declared K_L above the cap raises it", 40, zeros(45), 40,
+                        "REPLAY_LOOP_RESOURCE_CAP"},
+                {"the armed FORCE activation: K_L does not apply, the work"
+                        + " cap does", -8, ones(40), cap,
                         "REPLAY_LOOP_RESOURCE_CAP"}};
         for (Object[] row : rows) {
             LoopAccounting.LoopBackedgeBudget budget =
@@ -42,8 +46,11 @@ public class LoopAccountingTest {
             String reason = "";
             for (int traversal = 1; traversal <= termed.length; traversal++) {
                 total += termed[traversal - 1];
+                // A negative K_L: the same bound, in a FORCE run's armed
+                // activation.
+                int bound = (Integer) row[1];
                 Error cut = budget.traverse(LOOP, "key", total,
-                        (Integer) row[1]);
+                        Math.abs(bound), bound < 0);
                 if (cut != null) {
                     cutAt = traversal;
                     reason = cut.getMessage().substring(0,
@@ -73,7 +80,7 @@ public class LoopAccountingTest {
             for (int traversal = 1; traversal <= 64 && traversalCut == 0;
                  traversal++) {
                 // Traversal k enters body k + 1.
-                if (budget.traverse(LOOP, "edge", 0, bound) != null) {
+                if (budget.traverse(LOOP, "edge", 0, bound, false) != null) {
                     traversalCut = traversal + 1;
                 }
             }

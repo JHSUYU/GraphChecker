@@ -158,11 +158,12 @@ final class ActiveRegion {
 
     /** Counts one traversal of this loop's backedge, {@code bound} its
      *  {@code K_L}; returns the cut it takes, or null
-     *  ({@link LoopBackedgeBudget#traverse}). */
+     *  ({@link LoopBackedgeBudget#traverse}: the armed FORCE activation's
+     *  loops take the work cap alone). */
     synchronized Error traverseBackedge(String loopId, int bound) {
         chargedLoopBodies++;
         return loopBackedges.traverse(loopId, inThisCall(loopId),
-                termedDecisions, bound);
+                termedDecisions, bound, ForcedArms.armedOn(this));
     }
 
     /**
