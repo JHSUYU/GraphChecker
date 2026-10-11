@@ -1541,77 +1541,30 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A later read-out of a version an earlier one published expands
-     * neither its value nor its guard: they are dropped unexpanded, the
-     * version marked and still listed, and checked by the read-out that
-     * published it.  A version a read of the record observed, a symbol leaf
-     * (a mint's store) and a version nobody published stay whole.
+     * VM.md, the read-out: a version before the read-out's window is listed
+     * without its value and guard, which its own window's read-out checked;
+     * one of the window must carry both.
      */
     @Test
-    public void aVersionPublishedBeforeIsNotExpandedAgain() throws Exception {
-        java.lang.reflect.Method trim = SharedStateCapture.class
-                .getDeclaredMethod("trimPublished",
-                        com.google.gson.JsonElement.class,
-                        java.util.function.UnaryOperator.class);
-        trim.setAccessible(true);
+    public void aVersionBeforeItsWindowCarriesNoValueAndNeedsNone()
+            throws Exception {
         java.lang.reflect.Method fault = SharedStateCapture.class
                 .getDeclaredMethod("versionFault", JsonObject.class,
                         boolean.class, java.util.Set.class);
         fault.setAccessible(true);
-        JsonObject location = new JsonObject();
-        location.addProperty("locationKind", "INSTANCE_FIELD");
-        location.addProperty("ownerSymRid", 1234L);
-        location.addProperty("slot", 3);
-        String key = "INSTANCE_FIELD/1234#3";
-        JsonObject envelope = new JsonObject();
-        envelope.add("location", location);
-        JsonArray versions = new JsonArray();
-        // id, published before, observed by a read, a symbol leaf -> trimmed
-        Object[][] cases = {
-            {51L, true, false, false, true},
-            {52L, true, true, false, false},
-            {53L, true, false, true, false},
-            {54L, false, false, false, false},
-        };
-        JsonArray reads = new JsonArray();
-        for (Object[] each : cases) {
-            long id = (Long) each[0];
+        for (boolean before : new boolean[] {true, false}) {
             JsonObject version = new JsonObject();
-            version.addProperty("fieldVersionId", id);
+            version.addProperty("fieldVersionId", 50L);
             version.addProperty("versionKind", "WRITE");
             version.addProperty("regionEnterEventId", 41L);
             version.addProperty("regionId", "REGION.a");
             version.addProperty("taskId", "TASK.a");
             version.addProperty("writerContextId", 7L);
-            JsonObject value = new JsonObject();
-            value.addProperty("_type", (Boolean) each[3]
-                    ? "SymbolExpression" : "BinaryExpression");
-            version.add("expression", value);
-            version.add("pathGuard", new JsonObject());
-            versions.add(version);
-            if ((Boolean) each[1]) {
-                assertTrue(RowRuntime.claimEvent("write", key + "#" + id));
-            }
-            if ((Boolean) each[2]) {
-                JsonObject read = new JsonObject();
-                JsonObject observed = new JsonObject();
-                observed.addProperty("fieldVersionId", id);
-                read.add(VmRows.OBSERVED_VERSION, observed);
-                reads.add(read);
-            }
-        }
-        envelope.add("versions", versions);
-        envelope.add("reads", reads);
-        trim.invoke(null, envelope,
-                java.util.function.UnaryOperator.<JsonObject>identity());
-        for (int at = 0; at < cases.length; at++) {
-            JsonObject version = versions.get(at).getAsJsonObject();
-            boolean trimmed = (Boolean) cases[at][4];
-            assertEquals("version " + cases[at][0], !trimmed,
-                    version.has("expression") && version.has("pathGuard"));
-            assertEquals("version " + cases[at][0], "",
-                    fault.invoke(null, version, false,
-                            new java.util.HashSet<Object>()));
+            if (before) version.addProperty("beforeWindow", true);
+            String said = (String) fault.invoke(null, version, false,
+                    new java.util.HashSet<Object>());
+            assertEquals("before=" + before + ": " + said, before,
+                    said.isEmpty());
         }
     }
 

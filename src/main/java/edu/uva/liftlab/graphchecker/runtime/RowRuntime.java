@@ -1266,12 +1266,6 @@ public final class RowRuntime {
                 + trimmed(identity), Boolean.TRUE) == null;
     }
 
-    /** Whether an event was published already ({@link #claimEvent}). */
-    static boolean claimed(String kind, String identity) {
-        return CLAIMED_EVENTS.containsKey(trimmed(kind) + "\n"
-                + trimmed(identity));
-    }
-
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt) {
         // Identity's, so a row's endpoint and a message's producer are one

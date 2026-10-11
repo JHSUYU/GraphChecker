@@ -345,6 +345,16 @@ flagged (`WriteRow#initial`): what the location held before every write its log 
 scalar's word, a container's members -- at the access that started the log, spelled as its own
 site kind there (`Endpoint#initialSite`). A read of it joins it like any version.
 
+Each region close reads out the VM's log since its own entry (VM.md, the read-out), from every
+thread, and the first read-out to state an event publishes it, addressed to the occurrence that
+performed it (`RowRuntime#claimEvent`). A version or read before the read-out's window comes
+without its value and guard (`beforeWindow`; a version a read of the window observed comes whole):
+it is listed for what names it -- the event index, a referent's row, a mint's earlier write -- and
+published by no row of this read-out (`RowPublication#writes`, `#loggedReads`). Every rowed version
+still reaches a first publisher: it lies in the window of the activation that wrote it, and of every
+activation enclosing that one, whose read-outs state it whole; a version whose writer and every
+encloser are stranded, published today by a later close whose window does not hold it, is no row.
+
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the

@@ -715,12 +715,15 @@ public:
   static const int STRIPES = 64;
 
 private:
+  // `window`: 0 for the whole log; else the first event of a read-out's
+  // window, before which a version is stated without its value and guard
+  // (unless a read of the window observed it) and a read is stated only.
   static bool write_versions_envelope(
       rapidjson::Writer<rapidjson::StringBuffer> &writer,
       const rapidjson::StringBuffer &buffer,
       VmExpressionArtifactScope &expression_artifact,
       const Location &location, const Slot &slot, bool selected,
-      size_t budget_bytes);
+      size_t budget_bytes, jlong window);
 
   typedef std::map<Location, Slot> SlotStore;
 

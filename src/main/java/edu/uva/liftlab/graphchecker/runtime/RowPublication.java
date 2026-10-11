@@ -186,6 +186,9 @@ final class RowPublication {
                     }
                     continue;
                 }
+                // An earlier window's: that window's read-out published it
+                // (VM.md, the read-out; PIPELINE §5).
+                if (SharedStateCapture.beforeWindow(version)) continue;
                 if (!RowRuntime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }
@@ -248,7 +251,10 @@ final class RowPublication {
         for (JsonElement element : array(envelope, "reads")) {
             if (!element.isJsonObject()) continue;
             JsonObject read = element.getAsJsonObject();
-            if (!methods.contains(LoggedEventSites.method(read))) continue;
+            if (!methods.contains(LoggedEventSites.method(read))
+                    || SharedStateCapture.beforeWindow(read)) {
+                continue;
+            }
             if (values == null) {
                 values = new java.util.HashMap<Long, JsonElement>();
                 for (JsonElement version : array(envelope, "versions")) {
