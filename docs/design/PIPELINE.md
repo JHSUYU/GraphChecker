@@ -274,7 +274,10 @@ recording's schedule (`recorded_schedule.jsonl`); a timed wait held to it takes 
 slot is due and returns no sooner than its own deadline, since a `WAKE` is a timeout the recording's wait
 ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A store's reads and writes take their turns at
 their location (`READ`, `WRITE`, IDENTITY.md §7.2), so what a store read finds is the recording's
-in the seed and in any replay's prefix. Where the model re-pairs a store read with another version
+in the seed and in any replay's prefix. An event of a timed-wait loop's turn (`Root:WAKE/<wait>#k`: k
+counts the loop's wakes, which the replay's timing moves) waits at a slot not yet due held, as a poll past its
+recorded count does, so it never bounds a give-up of the slots before it; let go, it takes that slot (IDENTITY.md §8).
+Where the model re-pairs a store read with another version
 (a world's planted pairings, §7.5; CONFIRM's `ORDER` rows, §10; a reproduction's plant) the model's
 order supersedes the recorded placement: the prefix ends before the first event the pairings
 reorder, and past the cut such a run's reads take no slot (`ScheduleLog#readsHeld`), so a `READ`

@@ -243,9 +243,11 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
   accepted as the bug's chain; the owner's DELETEALIAS request fault is not required.
 - **c. `RestsOn#admitted` counts "reached" over every session, admitted or not** (F2, F2V4 19: a non-admitted replay
   made COMPOSE drop 63 unreached paths). A soundness fix; design gate first.
-- **d. The Root:WAKE rule (approved, not started):** an event of a timed-wait root (a poll's timeouts counted by k)
-  never bounds a range give-up, and is held like a poll past its count (`ScheduleLog#watchdogLocked`, `#waitsAtLocked`;
-  PIPELINE §5; a ScheduleLogTest row). Gate: 39's seed matches 3 runs of 3, and the canaries PASS. Evidence:
+- **d. The Root:WAKE rule (coded on `solr-study`, gate running):** an event of a timed-wait loop's turn
+  (`Root:WAKE/<wait>#k`) at a slot not yet due is held like a poll past its count (`ScheduleLog#waitsAtLocked`,
+  `#timedWaitTurn`), so it never bounds a range give-up, and let go it takes that slot (PIPELINE §5, IDENTITY §8).
+  Gate: 39's seed matches 3 runs of 3, 31's 2 of 2, and the canaries PASS. In 31's runs no non-READ event of such a
+  turn ever found a recorded slot, so the rule cannot change 31. Evidence:
   `Root:WAKE/ZkDistributedQueue.peekElements#k` was recorded at #106 and replayed at #423-#499; MB29s/MB30s gave up
   666-4251 slots and node1 won the election node3 won in the recording. 31's MB32s miss (OVERSEER_STATE_UPDATE#24
   replayed as #1, 1 of 2 runs) is likely the same drift.
