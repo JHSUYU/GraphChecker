@@ -264,7 +264,17 @@ on 120, which a dispatch per label and successor took past the JVM's 64 KB metho
 sessions directory, worker directory and `CAUSYNTH_SCHEDULE_PREFIX`; the seed replay is held to the
 recording's schedule (`recorded_schedule.jsonl`); a timed wait held to it takes its `WAKE` slot when the
 slot is due and returns no sooner than its own deadline, since a `WAKE` is a timeout the recording's wait
-ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A replay publishes one session under
+ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A store's reads and writes take their turns at
+their location (`READ`, `WRITE`, IDENTITY.md §7.2), so what a store read finds is the recording's
+in the seed and in any replay's prefix. Where the model re-pairs a store read with another version
+(a world's planted pairings, §7.5; CONFIRM's `ORDER` rows, §10; a reproduction's plant) the model's
+order supersedes the recorded placement: the prefix ends before the first event the pairings
+reorder, and past the cut such a run's reads take no slot (`ScheduleLog#readsHeld`), so a `READ`
+yields to a planted `ORDER` -- a flipped world that reads before the newer write is never held
+back to the recorded place -- while the writes keep their turns behind one another. A `READ` slot
+never blocks the frontier, and both its waits are bounded by the stall rule's grace: the read behind
+the earlier write is let go a grace into a stall (the write keeps its slot), and the next write
+behind a read that does not come gives that read up a grace into one. A replay publishes one session under
 `iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
 focus row its `manifest.json` states role `SEED`. The seed replay runs under a wall clock of
 `seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than
@@ -1163,8 +1173,12 @@ ends everything it started first (an EXIT trap: each job's process tree, and eve
 ### 7.8 GROW
 
 When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
-and its obligation), the head grows instead of queueing the round's proposals, which a later round
-asks again over the grown corpus (`campaign_stream_grow`). One GROW is one GENERATION of the plan
+and its obligation), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
+GROW's re-runs, as what was queued before them stays queued: they start once the re-runs have
+swapped in, in flight from the round on, so no later round asks them again (solr-bugs-reindex-cleanup
+Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980
+obligations, and the witness flip a non-growing round 1 queued in Z9 waited from round 1 to round 5,
+unanswered when the exploration ended). One GROW is one GENERATION of the plan
 and the class tree, under `generations/g<k>/`: `plan.ExposedRegionPlanMain` synthesizes one task row
 per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
 `replayGroupId`), the generation's plan is the one before it plus those rows, written as a new file
@@ -1218,7 +1232,7 @@ head's EXIT trap. A step after which witnesses wait is followed by an
 attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew its need in a step
 (§7.7) is the head's from then on (`outgrown`).
 When the step returns the head takes its round (`campaign_stream_take_round`): the wave budget,
-GROW, else its proposals into the queue, where they start at once. The corpus and the ledger change
+GROW, and its proposals into the queue, where they start at once (behind GROW's re-runs). The corpus and the ledger change
 only between two steps, so a step reads them as a landed whole, and the round's in-flight rows
 (`in_flight.jsonl`, §7.3) are what is queued or running as the step starts; the busier the head,
 the more returns one step takes in. The exploration has five ends, each stated in

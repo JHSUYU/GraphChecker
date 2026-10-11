@@ -4273,7 +4273,8 @@ grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
 # runs, its session takes the exposing one's place in the corpus, its files
 # the worker's and its verdict the ledger's.  What was queued stays first:
 # Q2, queued through the growth, is in flight for the round after it, which
-# proposes Q3 behind it.  The planner, the exposed-region planner and the
+# proposes Q3 behind it; G1, which the growing round itself proposed, is
+# queued behind the re-run as well and answered once.  The planner, the exposed-region planner and the
 # weave are stubbed; the re-run is the production replay of a script that
 # publishes a session, so everything between is the production code.
 stream_fixture grow
@@ -4312,7 +4313,8 @@ workload_work_dir="${stream_dir}"
       0) stream_propose "$2" OB.x Q1 Q2 ;;
       1) printf '%s\n' \
 '{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
-           >>"$2/growth.jsonl" ;;
+           >>"$2/growth.jsonl"
+         stream_propose "$2" G1 ;;
       2) stream_propose "$2" Q3 ;;
     esac
   }
@@ -4382,10 +4384,13 @@ jq -e -s 'map(select(.obligationId == "OB.x")) | length == 1
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
   || fail "the re-run's verdict did not replace the exposing one, once: \
 $(cat "${stream_dir}/obligation_results.jsonl")"
-jq -e -s 'map(.obligationId) | sort == ["OB.x","Q1","Q2","Q3"]' \
+jq -e -s 'map(.obligationId) | sort == ["G1","OB.x","Q1","Q2","Q3"]' \
   "${stream_dir}/obligation_results.jsonl" >/dev/null \
-  || fail "an obligation queued through the growth was asked again or \
-dropped: $(cat "${stream_dir}/obligation_results.jsonl")"
+  || fail "an obligation queued through the growth, or one the growing \
+round proposed, was asked again or dropped: \
+$(cat "${stream_dir}/obligation_results.jsonl")"
+[[ -s "${stream_dir}/obligations-0001/G1/started-at" ]] \
+  || fail "the growing round's own proposal was not queued behind its growth"
 [[ "$(cat "${stream_dir}/obligations-0002/in-flight.txt")" == *Q2* \
     && -s "${stream_dir}/obligations-0000/Q2/started-at" \
     && ! -e "${stream_dir}/obligations-0002/Q2" ]] \

@@ -182,7 +182,10 @@ recommendation.
   the owner's current requirements are the reference. Verify a diagnosis in code before briefing an agent
   with it (this lead's wrong guesses cost hours: a VM image blamed for a hang that ran on stock HotSpot, a
   memory charge misread).
-- **Refactor bloat along the way** in the same commits as the goal work that touches it.
+- **Refactor only when truly necessary** (owner 2026-10-11, long-term: "重构代码不要太频繁，在你认为真的有必要时再动手重构";
+  this replaces the 2026-09-24 "refactor bloat along the way"): a refactor goes in only where the change cannot be made
+  cleanly without it or a real bug class hides in the duplication; never as a side job of every touch. Deleting the
+  code a change replaces or leaves unused stays mandatory.
 - **Big strides, then debug** (owner 2026-09-23): for a large redesign, write the whole main body first (compile and
   unit-test only), then run campaigns and debug; do not interleave many small live rounds with half a design.
 - **JVM-level relation preservation:** symbolic propagation is at the JVM level (shadows on slots,
@@ -252,7 +255,7 @@ recommendation.
   [OPERATIONS.md](OPERATIONS.md); how development keeps them full (levels, isolation and sharing, the loop):
   [PARALLEL.md](PARALLEL.md), part of every agent's long-term memory.
 
-**Code health: delete redundancy, refactor ugly code** (owner, goal of 2026-10-04 night: "代码可能现在有点臃肿。在你跑通hdfs
+**Code health: delete redundancy; refactor only where truly needed** (refactoring: owner 2026-10-11, above; the rest: owner, goal of 2026-10-04 night: "代码可能现在有点臃肿。在你跑通hdfs
 的同时，你也要删除冗余，不用的代码。并重构非常ugly的代码"; and "每次这些你就要把旧代码，不用的代码，都删掉。我们也不需要保留fallback",
 "对不用的旧代码，旧产物，文件都清理了"). This is part of every goal, not a separate phase:
 1. **Every change deletes what it replaces and what it leaves unused**, in the same commit: no fallback, no flag that
@@ -267,7 +270,7 @@ recommendation.
 3. **One mechanism per concept**: two implementations of one idea (a second "does this move" walk, two pairing rules,
    nine "property else environment" lookups, JSON helpers beside `smt/JsonFields`, a forwarding layer that only
    re-calls the next one) become one.
-4. **Very ugly code is refactored**: a method of more than ~150-200 lines or ~50 branches becomes named steps over one
+4. **Very ugly code is refactored when a change truly needs it** (owner 2026-10-11: not frequently): a method of more than ~150-200 lines or ~50 branches becomes named steps over one
    context object; parallel switch ladders become one table; a file that mixes responsibilities is split by them
    (`SmtLowering` -> `VmTermLowering` + `SmtSymbolTable`; `CausynthTraceRecorder`'s offline aggregation into its own
    class; `CausynthPipeline`'s weaves apart from the analysis orchestration). Comments state what the code does, at
