@@ -89,6 +89,99 @@ public class ScheduleLogTest {
         if (request != 0L) RuntimeTraceContext.endRequest(request);
     }
 
+    /**
+     * A NATIVE REPRODUCTION HOLDS THE CONFIRMED WORLD'S ORDER at admission
+     * (explore.RealizedOrder): an event waits until the event its row orders
+     * before it was made in another context; one whose before-event does not
+     * come within the order's timeout goes on, and every hold of the run
+     * gives way after it -- a run that broke the confirmed order reproduces
+     * nothing.
+     */
+    @Test
+    public void aPlantedRunHoldsTheRealizedOrder() throws Exception {
+        Object other = new Object();
+        RuntimeTraceContext.registerSource(other, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
+        // Unplanted, ours runs first: the two contexts as both runs name them.
+        runBoth(other, 0L);
+        List<ScheduleEvent> free = events();
+        assertEquals("SEND", free.get(0).kind().name());
+        String ours = free.get(0).context();
+        String theirs = free.get(1).context();
+        restart();
+        // Ours waits for theirs; a second of ours for an event never made.
+        Path plant = Files.createTempFile("plant", ".jsonl");
+        Files.write(plant, Arrays.asList(
+                order(0, theirs, "WRITE", "ZK:/a", ours, "SEND", "x"),
+                order(1, theirs, "WRITE", "ZK:/never", ours, "SEND", "y")),
+                StandardCharsets.UTF_8);
+        ScheduleLog.realizedForTests(plant);
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "400");
+        try {
+            runBoth(other, 300L);
+            List<ScheduleEvent> events = events();
+            assertEquals("held until theirs: " + events, "WRITE",
+                    events.get(0).kind().name());
+            assertEquals("SEND", events.get(1).kind().name());
+            assertFalse(RecordingPlant.orderGaveWay());
+            long started = System.nanoTime();
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+            assertTrue("an order never met goes on at its timeout",
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
+                            - started) >= 300L);
+            assertTrue(RecordingPlant.orderGaveWay());
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+            RecordingPlant.resetForTests();
+            Files.delete(plant);
+        }
+    }
+
+    /** Ours SENDs x while another context WRITEs ZK:/a {@code late} ms
+     *  after both started. */
+    private static void runBoth(Object other, long late) throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        Thread theirs = new Thread(() -> {
+            long own = RuntimeTraceContext.beginRequest(other, "theirs");
+            try {
+                started.await();
+                Thread.sleep(late + 50L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            ScheduleLog.observe(ScheduleEvent.Kind.WRITE, "ZK:/a");
+            RuntimeTraceContext.endRequest(own);
+        });
+        theirs.start();
+        started.countDown();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        theirs.join();
+    }
+
+    /** One realized ORDER row of the plant. */
+    private static String order(int row, String beforeContext,
+                                String beforeKind, String beforeSite,
+                                String afterContext, String afterKind,
+                                String afterSite) {
+        JsonObject order = new JsonObject();
+        order.addProperty(RecordingPlant.KIND, RecordingPlant.ORDER);
+        order.addProperty(RecordingPlant.SCOPE, "EVENT");
+        order.add("before", event(beforeKind, beforeContext, beforeSite));
+        order.add("after", event(afterKind, afterContext, afterSite));
+        order.addProperty(RecordingPlant.ROW, row);
+        return order.toString();
+    }
+
+    private static JsonObject event(String kind, String context,
+                                    String site) {
+        JsonObject event = new JsonObject();
+        event.addProperty("kind", kind);
+        event.addProperty("context", context);
+        event.addProperty("site", site);
+        event.addProperty("k", 0);
+        return event;
+    }
+
     @Test
     public void anEventWithNoIdentityHoldsNoPlace() {
         RuntimeTraceContext.endRequest(request);
@@ -1023,6 +1116,84 @@ public class ScheduleLogTest {
                     " " + row[3] + " given up"));
             assertTrue(row[1] + " a stall at most, never for ever: " + took,
                     took < (row[3].equals("1") ? 12000L : 3000L));
+        }
+    }
+
+    /**
+     * A store read takes its turn at its location as a write does (READ):
+     * it waits behind the write the recording made there before it, and the
+     * write the recording made after it waits behind it, so a
+     * create-if-absent's check, a compare-and-set's version or a client's
+     * view of an alias sees what the recording's read saw (solr-adhoc-39,
+     * MB23s).  Per row: the recording's turns (request:W or R); the
+     * replay's, in the order its threads come; the run (a seed, cut at its
+     * end; a run the model orders, cut after the write or at its end; a
+     * replay no model orders, cut after the write); the order the turns are
+     * made in; and the order's account.  Past the cut of a model's order (a
+     * world's planted pairings, CONFIRM) a read takes no slot: the model's
+     * ORDER rows place it.  A read of a location no write of the order
+     * wrote takes none either.
+     */
+    @Test(timeout = 60000L)
+    public void aReadTakesItsTurnAtItsLocation() throws Exception {
+        String[][] rows = {
+            {"w:W r:R", "r:R w:W", "seed", "w r", "2 taken, 0 given up"},
+            {"r:R w:W", "w:W r:R", "seed", "r w", "2 taken, 0 given up"},
+            {"w:W r:R", "r:R w:W", "model", "r w", "1 slot(s) (prefix 1)"},
+            {"w:W r:R", "r:R w:W", "suffix", "w r", "2 taken, 0 given up"},
+            {"w:W r:R", "r:R w:W", "model prefix", "w r", "2 taken, 0 given up"},
+            {"r:R", "r:R", "seed", "r", "no order"},
+            // The write never comes: the read is let go, the write's slot
+            // kept; the read never comes: the write gives it up, a grace in.
+            {"w:W r:R", "r:R", "seed", "r", "1 taken, 0 given up"},
+            {"r:R w:W", "w:W", "seed", "w", "1 taken, 1 given up"},
+        };
+        for (String[] row : rows) {
+            noRequest();
+            for (String turn : row[0].split(" ")) {
+                String[] at = turn.split(":", 2);
+                request(at[0], () -> turn(at[1], "/p"));
+            }
+            List<ScheduleEvent> recorded = events();
+            noRequest();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            int cut = row[2].equals("model") || row[2].equals("suffix")
+                    ? 1 : recorded.size();
+            ScheduleLog.enforceForTests(recorded.subList(0, cut),
+                    recorded.subList(cut, recorded.size()), false,
+                    !row[2].startsWith("model"));
+            final Map<String, String> apis =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            List<Thread> turns = new ArrayList<Thread>();
+            for (String turn : row[1].split(" ")) {
+                String[] at = turn.split(":", 2);
+                Thread thread = new Thread(() -> request(at[0], () -> {
+                    apis.put(ScheduleLog.contextOf(Identity.contextHere()),
+                            at[0]);
+                    turn(at[1], "/p");
+                }));
+                thread.start();
+                turns.add(thread);
+                Thread.sleep(300L);
+            }
+            for (Thread thread : turns) thread.join(10000L);
+            List<String> made = new ArrayList<String>();
+            for (ScheduleEvent event : events()) {
+                made.add(apis.get(event.context()));
+            }
+            assertEquals(Arrays.toString(row), Arrays.asList(row[3].split(" ")),
+                    made);
+            String progress = ScheduleLog.progress();
+            assertTrue(progress, progress.contains(row[4]));
+        }
+    }
+
+    /** A write ("W") or a read ("R") of {@code location} at its turn. */
+    private static void turn(String kind, String location) {
+        if (kind.equals("W")) {
+            written(location);
+        } else {
+            MessageDoors.reading("STORE", location);
         }
     }
 
@@ -2287,6 +2458,119 @@ public class ScheduleLogTest {
                         < 1000L);
         assertEquals(Arrays.asList("req", "a", "b"), sites());
         assertFalse(ScheduleLog.enforcing());
+    }
+
+    /**
+     * A context family whose frontier event a stall gave up has diverged:
+     * its next frontier -- another turn of the same daemon, another anchor of
+     * the same kind of message on the node -- stands a grace, not a timeout
+     * (SG2: 69 of solr-adhoc-38's 138 give-up stalls stood on a context that
+     * had failed one; MB21s: 34 of 10's 58 on another turn or anchor of a
+     * family that had).
+     */
+    @Test(timeout = 60000L)
+    public void aContextFamilyThatFailedAStallStandsAGraceNext()
+            throws Exception {
+        assertEquals("n|Root:WAKE/q.peek#*", ScheduleLog.familyOf(
+                "n|Root:WAKE/q.peek#12|<a.B: void c()>#u3@0"));
+        assertEquals("n|Anchor:*@SOLR_HTTP/test", ScheduleLog.familyOf(
+                "n|Anchor:813cbf610082e340@SOLR_HTTP/test"));
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "6000");
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#1",
+                        "n1", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "a"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND, "gone|Root:G#2",
+                        "n2", 0, ""),
+                event(ScheduleEvent.Kind.SEND, "b")));
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        long first = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "b");
+        long second = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("the first stall a timeout: " + first, first >= 6000L);
+        assertTrue("the failed family's next a grace: " + second,
+                second >= ScheduleLog.LET_GO_GRACE_MS && second < 5000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 taken, 2 given up in 2"));
+    }
+
+    /**
+     * A write the order lacks whose own context holds an open slot before
+     * the next write to its location owes that slot: it goes at once, never
+     * behind that later write (another context's), which held the order --
+     * and every later slot of its context -- until the watchdog
+     * (solr-adhoc-19 MB14s: a node's extra compare-and-set retry at its
+     * terms node).  Per row: whether its own slot is the frontier; one that
+     * owes nothing before the write still waits for it.
+     */
+    @Test(timeout = 60000L)
+    public void aWriteOwingASlotBeforeTheNextWriteThereGoes() throws Exception {
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        ScheduleEvent other = ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE,
+                "other|Root:X", ScheduleEvent.written("STORE", "/p"), 0, "");
+        ScheduleEvent far = ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                "far|Root:F", "f", 0, "");
+        Object[][] rows = {
+            {"its own slot the frontier",
+                Arrays.asList(event(ScheduleEvent.Kind.SEND, "x"), other), true},
+            {"its own slot behind another's",
+                Arrays.asList(far, event(ScheduleEvent.Kind.SEND, "x"), other),
+                true},
+            {"no own slot before the write",
+                Arrays.asList(far, other, event(ScheduleEvent.Kind.SEND, "x")),
+                false},
+        };
+        for (Object[] row : rows) {
+            restart();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+            @SuppressWarnings("unchecked")
+            List<ScheduleEvent> order = (List<ScheduleEvent>) row[1];
+            enforce(order);
+            Thread writer = new Thread(() -> written("/p"));
+            writer.start();
+            writer.join(2000L);
+            assertEquals(row[0] + ": " + here, !(Boolean) row[2],
+                    writer.isAlive());
+            writer.interrupt();
+            writer.join(5000L);
+        }
+    }
+
+    /**
+     * A write whose slot its occurrence's close settled runs free: it is no
+     * write the recording never made there, which would wait behind the
+     * next write to its location (another context's, that may never come),
+     * and a poll whose slot died is no poll past its count (solr-adhoc-19
+     * MB8s: the Overseer's state.json write waited behind its own write 110
+     * slots on).
+     */
+    @Test(timeout = 30000L)
+    public void anEventWhoseSlotDiedRunsFree() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        String here = ScheduleLog.contextOf(Identity.contextHere());
+        String p = ScheduleEvent.written("STORE", "/p");
+        enforce(Arrays.asList(
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, here, p, 0, "o1"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE, here, "tick.w", 0,
+                        "o1"),
+                event(ScheduleEvent.Kind.SEND, "x"),
+                ScheduleEvent.of(0L, ScheduleEvent.Kind.WRITE, "other|Root:X",
+                        p, 0, ""),
+                event(ScheduleEvent.Kind.SEND, "y")));
+        ScheduleLog.closed("o1");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long before = System.nanoTime();
+        written("/p");
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.w");
+        assertTrue("no wait behind the other context's write, no hold",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 2000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("2 settled by their"
+                + " occurrence's close"));
+        assertTrue(progress, progress.contains("2 event(s) ran free"));
     }
 
     /**

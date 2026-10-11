@@ -1,6 +1,6 @@
-# State at the end of the HDFS group (2026-10-08)
+# State: HDFS finished; Solr stopped for a handover (2026-10-09)
 
-The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
+Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
 8c446418b). Every case then ran alone on the ten lifts for its time breakdown (series EX1,
 `/bigtemp/vnr3ne/gc-out/hdfs-excl`; the 46 rows are [../design/PERFORMANCE.md](../design/PERFORMANCE.md) §6). The owner
@@ -10,6 +10,31 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [AGENTS.md](AGENTS.md), [OPERATIONS.md](OPERATIONS.md) and [PARALLEL.md](PARALLEL.md). The design is in
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
+
+## S. Solr at the owner's stop (2026-10-09) -- read this first if you take over Solr
+
+The owner stopped the Solr group on 2026-10-09 for a handover to another agent ("停下所有的任务，agent。把我们的todo清晰地
+更新所有文档"). Every agent and run is stopped, every branch committed (unfinished work as `WIP:` commits), nothing
+merged that was not gated and nothing pushed. The plan, in order, is [TODO.md](TODO.md) "Solr"; every case's latest
+evidence is [../STATUS.md](../STATUS.md) "Solr checks".
+
+- **`system/solr` `7abebd846`** (worktree `/bigtemp/vnr3ne/wt/gc-solr`, image `/bigtemp/vnr3ne/vm-force5/j2sdk-image`):
+  everything gated so far (TODO Solr §0). Canaries on it (SG2c): solr-18406, solr-18413, solr-bugs-migrate-buffer-leak
+  SAT, confirmed, native 10/10, FORCED_TARGET.
+- **Branches in flight, merge order** (TODO Solr §1; `solr-body` 873fdaa20, the store READ turn, merged 2026-10-11):
+  `solr-force2` aefd699c2 (loop bound, way guard, passable asserts; canaries PASS), `solr-zk-state` e97464d7d (Z1:
+  ZooKeeper store versions and provenance; not ready: the read-out cost on 18413), `solr-zk-doors` 6cbc40a93 (WIP: the
+  owner-priority ZooKeeper READ doors), `solr-zk2` 17aa4e7ee (Z2: stale cluster-state views; partial).
+- **Bug checks:** 3 done on `system/solr` (18406, 18413, migrate-buffer-leak); 3 SAT and confirmed on Z1 (overseer-lock-
+  leak and restore-construction native 10/10, reindex-cleanup native pending its rerun); 2 wait for Z2
+  (snapshot-no-active, tra-start-overwrite).
+- **Study checks:** none final; seeds of 10, 13, 19, 31, 39, 40 now reach their anchors on `solr-body`; SG2b's UNSATs of
+  07, 19 and 21 are void (cut before the anchor). New-bug candidates: 19's stale cluster property (F2V4), and the
+  external study's lost ZooKeeper watch (TODO Solr §2, the reason for the READ doors).
+- **Solr trees** (`~/lucene-solr-8_11`, now unshallowed): `gc/solr-body` 7e51565080, `gc/solr-zk-next` 53d81b09b1,
+  `gc/solr-zk-doors` eee0e1bd7a (unbuilt), `gc/solr-zk2` 914e56311a; `gc/solr-checks` 3bcca5029f is stale until the
+  final tree combines them (TODO Solr §4). Nothing is pushed to the fork yet.
+- **Agents' briefs and designs:** `/bigtemp/vnr3ne/analysis/solr-2026-10-08/`.
 
 ## 0. The end state: two branches (owner 2026-10-06)
 
@@ -103,6 +128,11 @@ any of them anew from the fork ([../REPRODUCE.md](../REPRODUCE.md) §3):
 | `/bigtemp/vnr3ne/wt/hadoop-hdfs-11741-r6` | `gc/hdfs-11741-r6` `6c86fca9a2b` | `graphchecker/hdfs-11741` | hdfs-11741: trunk 734dd8a67cd with HDFS-11741's fix reverted, its own hook generation. Maven repo `/bigtemp/vnr3ne/m2/hdfs-11741-r6` |
 | `/bigtemp/vnr3ne/wt/lucene-solr-storing` | `gc/solr-unified-storing` `04f8489` | none | solr-18406, solr-18413 (`main`) |
 | `/bigtemp/vnr3ne/wt/lucene-solr-checks` | `gc/solr-checks` `3bcca50` | to be `graphchecker/solr-checks` on the fork `JHSUYU/solr` (owner 2026-10-08; TODO Solr §2), never an apache remote | the Solr group's one tree, every `system/solr` case: `gc/solr-bugs` `f65aaf7` (`gc/solr-unified-storing2` + the reindex marker) + the 12 study markers, the five new bug markers, the six bug workloads, the full-distributed tests' hook, the routed-alias tests' configset, the reindex latch's bound (STATUS "Per-system surface") |
+| `/bigtemp/vnr3ne/wt/lucene-solr-body` | `gc/solr-body` `7e51565080` | (part of the final `graphchecker/solr-checks`) | the Solr body's tree hooks: the HTTP send in `executeMethod`, `CausynthRandom` (node order, seeded draws), `CausynthPorts`, `CausynthBounds` (SocketProxy, SolrConfigHandler), the store READ turn's SolrZkClient read hooks; agent M's rounds |
+| `/bigtemp/vnr3ne/wt/lucene-solr-zk2`, `-zk3` | `gc/solr-zk-next` `53d81b09b1` | (part of the final tree) | Z1's hooks (`gc/solr-zk`: `decoded`, the queue-head tick, consumed items, the compared version on `stored`) + `gc/solr-body` 3bcf5616c2 |
+| `/bigtemp/vnr3ne/wt/lucene-solr-zkdoors` | `gc/solr-zk-doors` `eee0e1bd7a` | (part of the final tree) | `gc/solr-zk-next` + `gc/solr-body` + the ZooKeeper READ doors' hooks (`causynthReading`); NOT built |
+| `/bigtemp/vnr3ne/wt/pno-trees/lucene-solr-checks` | `gc/solr-zk2` `914e56311a` | (part of the final tree) | Z2's codec capture (`Utils.toJSON`/`fromJSON`) on `gc/solr-zk-next`; built |
+| `/bigtemp/vnr3ne/wt/sg2b-trees/lucene-solr-checks` | detached `88425b0` | none | the tree of rounds SG2b/SG2c and agent F2's runs |
 | `/bigtemp/vnr3ne/wt/lucene-solr-bugs` | `gc/solr-bugs` `f65aaf7` | none | `gc/solr-checks`' base; `solr-bug-reindex`'s rounds |
 | `/bigtemp/vnr3ne/wt/zookeeper-unified`, `zookeeper-hb` | `gc/zk-unified` `8f18cf3a4`, `gc/zk-unified-hb` `47ddc8b36` | none (never push: apache remote) | the zk-bugs cases (`main`) |
 | `/bigtemp/vnr3ne/wt/hbase-unified` | `gc/hbase-unified` `1051825287` | none (never push: apache remote) | HBase cases; must drop `CausynthRpc.java:61-62`'s `, call.param` before any run on the new body |

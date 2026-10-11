@@ -537,10 +537,11 @@ public final class ScheduleLog {
     /**
      * Asks once, without blocking, whether the WAKE of a {@link Turn#FREE}
      * wait the wall clock ended may be written, and writes it when it may
-     * (true).  Not yet (false): the waiter waits a quantum on its own
-     * primitive and asks again, so the monitor or lock its wait released
-     * stays released until the WAKE is written, as the JVM returns from a
-     * wait only then.  Admitted holding it, the WAKE of an
+     * (true).  Not yet (false: the order holds it, or a native
+     * reproduction's realized order, {@link #realizedLocked}): the waiter
+     * waits a quantum on its own primitive and asks again, so the monitor
+     * or lock its wait released stays released until the WAKE is written,
+     * as the JVM returns from a wait only then.  Admitted holding it, the WAKE of an
      * {@code IncrementalBlockReportManager#waitTillNextIBR} past its recorded
      * count held the manager's monitor through its hold, and the DataXceiver
      * whose block notify the order waited for blocked on that monitor
@@ -554,6 +555,7 @@ public final class ScheduleLog {
             synchronized (LOCK) {
                 loadOrderLocked();
                 if (!holds) {
+                    if (!realizedLocked(wake.event)) return false;
                     appendLocked(wake.event);
                     return true;
                 }
@@ -723,9 +725,11 @@ public final class ScheduleLog {
     }
 
     private static void appendLocked(Pending pending) {
+        holdRealizedLocked(pending);
         Integer made = COUNTS.get(pending.key);
         int k = made == null ? 0 : made;
         COUNTS.put(pending.key, k + 1);
+        madeRealizedLocked(pending, k);
         if (pending.kind == ScheduleEvent.Kind.SEND
                 && !pending.endpoint.isEmpty()) {
             ContextShape.Stance stance =
@@ -737,13 +741,196 @@ public final class ScheduleLog {
             }
         }
         if (pending.kind != ScheduleEvent.Kind.WAKE
-                && pending.kind != ScheduleEvent.Kind.END) {
+                && pending.kind != ScheduleEvent.Kind.END
+                && pending.kind != ScheduleEvent.Kind.READ) {
             steps++;
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
                 pending.endpoint);
         writeLocked(RowCodec.writeScheduleEvent(event));
+    }
+
+    // ---- a native reproduction's realized order --------------------------
+
+    /**
+     * A planted run's ORDER rows of events ({@code explore.RealizedOrder}:
+     * the order the session CONFIRM saw ran in from the moved roots on),
+     * read at the first event: per event, by {@link #eventId}, the rows
+     * holding it after others; null until read.
+     */
+    private static Map<String, List<Ordered>> realized;
+    /** The events a realized row waits for. */
+    private static final Set<String> AWAITED = new HashSet<String>();
+    /** Those of {@link #AWAITED} this run made. */
+    private static final Set<String> MADE_AWAITED = new HashSet<String>();
+    /** Per awaited event, the rows whose wait for it gave way before it
+     *  came: each {@link RecordingPlant#LATE} when it comes. */
+    private static final Map<String, List<Ordered>> OVERDUE =
+            new HashMap<String, List<Ordered>>();
+    /** Per event held, when its hold gives way. */
+    private static final Map<String, Long> DUE = new HashMap<String, Long>();
+
+    /** One realized ORDER row: its number, and its two events. */
+    private static final class Ordered {
+        private final int row;
+        private final String before;
+        private final String after;
+
+        private Ordered(int row, String before, String after) {
+            this.row = row;
+            this.before = before;
+            this.after = after;
+        }
+    }
+
+    /** One event's identity across runs: kind, context, site and k. */
+    static String eventId(String kind, String context, String site, int k) {
+        return kind + " " + site + " @ " + context + " #" + k;
+    }
+
+    private static void loadRealizedLocked() {
+        if (realized != null) return;
+        realized = new HashMap<String, List<Ordered>>();
+        if (RecordingPlant.planting()) {
+            readRealizedLocked(Paths.get(RecordingPlant.file()));
+        }
+    }
+
+    /** Test seam: this run is held to {@code plant}'s realized order. */
+    static void realizedForTests(Path plant) {
+        synchronized (LOCK) {
+            realized = new HashMap<String, List<Ordered>>();
+            readRealizedLocked(plant);
+        }
+    }
+
+    private static void readRealizedLocked(Path plant) {
+        try {
+            for (JsonObject row : RowCodec.readJsonl(plant)) {
+                if (!RecordingPlant.ORDER.equals(JsonFields.optionalString(
+                        row, RecordingPlant.KIND))
+                        || JsonFields.optionalString(row,
+                        RecordingPlant.SCOPE).isEmpty()) {
+                    continue;
+                }
+                String before = eventId(row.getAsJsonObject("before"));
+                String after = eventId(row.getAsJsonObject("after"));
+                realized.computeIfAbsent(after,
+                        key -> new ArrayList<Ordered>()).add(new Ordered(
+                        row.get(RecordingPlant.ROW).getAsInt(), before,
+                        after));
+                AWAITED.add(before);
+            }
+        } catch (IOException | RuntimeException unreadable) {
+            // The plant's other readers name an unreadable plant; held to
+            // nothing, every row of it states nothing.
+            realized.clear();
+            AWAITED.clear();
+        }
+    }
+
+    private static String eventId(JsonObject event) {
+        return eventId(JsonFields.optionalString(event, "kind"),
+                JsonFields.optionalString(event, "context"),
+                JsonFields.optionalString(event, "site"),
+                event.get("k").getAsInt());
+    }
+
+    /**
+     * THE REALIZED ORDER, held at an event's admission in a native
+     * reproduction: the event waits until every event its rows order before
+     * it was made ({@link #realizedLocked}).  An interrupt meanwhile is kept
+     * pending, as a timed wait keeps one: the event still comes after what
+     * the confirmed world made before it, and the interrupt is the
+     * workload's (a shutdown interrupting the held thread is how
+     * solr-bugs-restore-construction's old RESTORE task ends).  Called under
+     * {@link #LOCK}, which the wait releases.
+     */
+    private static void holdRealizedLocked(Pending pending) {
+        boolean interrupted = false;
+        try {
+            while (!realizedLocked(pending)) {
+                try {
+                    LOCK.wait(200L);
+                } catch (InterruptedException interrupt) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Whether {@code pending} may be made now under the realized order,
+     * asked without blocking: when every event its rows order before it was
+     * made (each row APPLIED), or the run no longer holds an order.  A row
+     * first found waiting is HOLDING; one still waiting at the order's
+     * timeout ({@code Confirmation#ORDER_TIMEOUT_PROPERTY}) from then is
+     * UNHELD, and every hold of the run gives way ({@link
+     * RecordingPlant#gaveWay}): the run no longer runs the confirmed world.
+     * A timed wait's WAKE asks this way ({@link #timedOut}), so what its wait
+     * released stays released while it is held.
+     */
+    private static boolean realizedLocked(Pending pending) {
+        loadRealizedLocked();
+        if (realized.isEmpty() || RecordingPlant.orderGaveWay()) return true;
+        Integer made = COUNTS.get(pending.key);
+        String id = eventId(pending.kind.name(), pending.context,
+                pending.site, made == null ? 0 : made);
+        List<Ordered> rows = realized.get(id);
+        if (rows == null) return true;
+        List<Ordered> missing = new ArrayList<Ordered>();
+        for (Ordered row : rows) {
+            if (!MADE_AWAITED.contains(row.before)) missing.add(row);
+        }
+        long now = System.currentTimeMillis();
+        Long due = DUE.get(id);
+        if (!missing.isEmpty() && (due == null || now < due)) {
+            if (due == null) {
+                DUE.put(id, now + Long.getLong(
+                        Confirmation.ORDER_TIMEOUT_PROPERTY,
+                        Confirmation.ORDER_TIMEOUT_MS));
+                for (Ordered row : missing) {
+                    RecordingPlant.ordered(RecordingPlant.HOLDING, row.row,
+                            row.after, row.before);
+                }
+            }
+            return false;
+        }
+        realized.remove(id);
+        DUE.remove(id);
+        for (Ordered row : rows) {
+            boolean held = !missing.contains(row);
+            RecordingPlant.ordered(held ? RecordingPlant.APPLIED
+                    : RecordingPlant.UNHELD, row.row, row.after, row.before);
+            if (!held) {
+                OVERDUE.computeIfAbsent(row.before,
+                        key -> new ArrayList<Ordered>()).add(row);
+            }
+        }
+        if (!missing.isEmpty()) {
+            RecordingPlant.gaveWay();
+            LOCK.notifyAll();
+        }
+        return true;
+    }
+
+    /** An event made: what waits for it may go on, and a row whose wait
+     *  for it gave way states it came late. */
+    private static void madeRealizedLocked(Pending pending, int k) {
+        if (AWAITED.isEmpty()) return;
+        String id = eventId(pending.kind.name(), pending.context,
+                pending.site, k);
+        if (!AWAITED.contains(id) || !MADE_AWAITED.add(id)) return;
+        LOCK.notifyAll();
+        List<Ordered> late = OVERDUE.remove(id);
+        for (Ordered row : late == null
+                ? Collections.<Ordered>emptyList() : late) {
+            RecordingPlant.ordered(RecordingPlant.LATE, row.row, row.after,
+                    row.before);
+        }
     }
 
     /** One row to the sink, or held until one is installed. */
@@ -1084,10 +1271,39 @@ public final class ScheduleLog {
         Thread self = Thread.currentThread();
         HELD.remove(self);
         CONFLICTED.remove(self);
+        if (event.kind == ScheduleEvent.Kind.READ) {
+            // A read waits only behind the writes to its location before
+            // its slot, never for the frontier; one the order lacks, or of a
+            // location no write of the order wrote, runs free.  The wait is
+            // held: while the order moves the read waits for its write, and
+            // a grace into a stall it is let go with the write's slot kept,
+            // never given up for it.  A read's k-th slot is the recording's
+            // k-th read of its context there, and a context that read more
+            // often than recorded (a poll, a cache refresh) waits for a later
+            // write than its own -- the writer may wait on the reader then
+            // (solr-adhoc-39 MB29s: 37 such stalls, 447 s).
+            if (slot < 0) return GO;
+            int write = conflictLocked(event, slot);
+            if (write < 0 || owesBeforeLocked(event, write)
+                    || LET_GO.contains(self)) {
+                return GO;
+            }
+            CONFLICTED.add(self);
+            HELD.put(self, event);
+            return write + 1;
+        }
         if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) return slot;
+        if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
-            if (conflict >= 0) {
+            // A writer whose own context holds a slot before that write
+            // owes it: held behind the later write, it held the order there
+            // until the watchdog, and every later slot of its context with
+            // it (solr-adhoc-19 MB14s: a node's extra compare-and-set retry
+            // at its terms node, then its eight registration slots, a stall
+            // each; 39 MB18s: 45 such writes given up one by one, behind
+            // writes up to 970 slots past the frontier).
+            if (conflict >= 0 && !owesBeforeLocked(event, conflict)) {
                 CONFLICTED.add(self);
                 return conflict + 1;
             }
@@ -1111,6 +1327,20 @@ public final class ScheduleLog {
         if (LET_GO.contains(self)) return GO;
         HELD.put(self, event);
         return next >= 0 ? next : AT_THE_LINE;
+    }
+
+    /** Whether {@code event}'s own context holds an open slot that blocks
+     *  before {@code slot}: only its thread makes it. */
+    private static boolean owesBeforeLocked(Pending event, int slot) {
+        List<Integer> own = BY_CONTEXT.get(event.context);
+        if (own == null) return false;
+        for (int at : own) {
+            if (at >= slot) return false;
+            if (at >= firstOpen && state[at] == OPEN && blocking(at)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether the order moved since the last WAKE of {@code event}'s key. */
@@ -1164,6 +1394,12 @@ public final class ScheduleLog {
         if (writes != null) {
             for (int write : writes) {
                 if (slot >= 0 && write >= slot) break;
+                // A write waits behind the reads before it too; a read
+                // behind writes alone.
+                if (event.kind == ScheduleEvent.Kind.READ && order.get(write)
+                        .kind() == ScheduleEvent.Kind.READ) {
+                    continue;
+                }
                 if (state[write] == OPEN && heldKind(write)) {
                     conflict = write;
                     break;
@@ -1197,7 +1433,8 @@ public final class ScheduleLog {
     private static boolean blocking(int slot) {
         ScheduleEvent.Kind kind = order.get(slot).kind();
         return kind != ScheduleEvent.Kind.WAKE
-                && kind != ScheduleEvent.Kind.INTERRUPT;
+                && kind != ScheduleEvent.Kind.INTERRUPT
+                && kind != ScheduleEvent.Kind.READ;
     }
 
     /** Whether every slot before {@code slot} is settled or an open WAKE. */
@@ -1236,8 +1473,69 @@ public final class ScheduleLog {
         if (state[slot] == OPEN && heldKind(slot)) openHeld--;
         state[slot] = next;
         if (next == GIVEN_UP) return;
-        ArrayDeque<Integer> keyed = SLOTS.get(order.get(slot).key());
+        String key = order.get(slot).key();
+        ArrayDeque<Integer> keyed = SLOTS.get(key);
         if (keyed != null) keyed.remove(Integer.valueOf(slot));
+        if (next == DEAD) DEAD_BY_KEY.merge(key, 1, Integer::sum);
+    }
+
+    /**
+     * Per key, the slots settled dead ({@link #closed}) that no event of
+     * the key took since.  Such an event runs free: the order no longer
+     * holds its place, so it is neither a write the recording never made
+     * there, which waits behind the next write to its location, nor a poll
+     * past its recorded count.  An occurrence's id can name other work in
+     * the replay than in the recording -- a daemon's loop region left and
+     * entered again between two turns -- and its close then kills slots
+     * whose events still come (solr-adhoc-19, round MB8s: the Overseer's
+     * state.json write, its slot dead with the region its turns shared in
+     * the recording, waited behind its own write 110 slots on, and the
+     * three nodes polling for the replica names it wrote stalled the order
+     * thirty times, then failed their registrations).
+     */
+    private static final Map<String, Integer> DEAD_BY_KEY =
+            new HashMap<String, Integer>();
+
+    /** The context families whose frontier event a stall gave up: a later
+     *  frontier of theirs stands a grace, not a timeout ({@link
+     *  #watchdogLocked}). */
+    private static final Set<String> FAILED = new HashSet<String>();
+
+    private static final java.util.regex.Pattern TURN_OR_ANCHOR =
+            java.util.regex.Pattern.compile("#[0-9]+|Anchor:[0-9a-f]+");
+
+    /**
+     * A context's family: its node and causal context, a root's turn number
+     * and an anchor's endpoint left out ({@code Root:WAKE/<wait>#*}, {@code
+     * Anchor:*@SOLR_HTTP/test}), its start frames too -- the turns of one
+     * daemon, the receipts of one kind of message on one node.  A replay
+     * that numbers a daemon's turns or mints a message's endpoint otherwise
+     * misses each of them in turn.
+     */
+    static String familyOf(String context) {
+        int node = context.indexOf('|');
+        int frames = node < 0 ? -1 : context.indexOf('|', node + 1);
+        String shape = frames < 0 ? context : context.substring(0, frames);
+        java.util.regex.Matcher numbered = TURN_OR_ANCHOR.matcher(shape);
+        StringBuffer family = new StringBuffer();
+        while (numbered.find()) {
+            numbered.appendReplacement(family,
+                    numbered.group().startsWith("#") ? "#*" : "Anchor:*");
+        }
+        return numbered.appendTail(family).toString();
+    }
+
+    /** Whether {@code event}'s key has a dead slot left: then it takes it
+     *  (the event runs free). */
+    private static boolean deadLocked(Pending event) {
+        Integer dead = DEAD_BY_KEY.get(event.key);
+        if (dead == null) return false;
+        if (dead == 1) {
+            DEAD_BY_KEY.remove(event.key);
+        } else {
+            DEAD_BY_KEY.put(event.key, dead - 1);
+        }
+        return true;
     }
 
     /** An open slot is given up: its event may still come and take it. */
@@ -1478,27 +1776,46 @@ public final class ScheduleLog {
             letGoHeldLocked(stood, now);
             return true;
         }
-        if (stood < timeout) return false;
-        if (stood < CEILING * timeout && computingLocked(now)) return false;
         // A wait held without a slot -- a poll past its recorded count at
         // its context's due slot, or at the line -- waits for no slot's
         // event, so it bounds no give-up: at a slot it would shadow the
         // stalled one, at the line it would give up every slot before it
         // (solr-adhoc-13 MB6: a replica poll held at the cut, 4560 slots at
-        // once).  It is let go instead, a grace apart.
+        // once).  It is let go instead, a grace apart; so is a read held
+        // behind a write.
         int earliest = Integer.MAX_VALUE;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
             if (!HELD.containsKey(waiter.getKey())) {
                 earliest = Math.min(earliest, waiter.getValue());
             }
         }
+        // What the stall gives up first: the one slot a conflicted write
+        // waits behind, else the frontier.  A read stands a grace, not a
+        // timeout: its slot holds no frontier.  So does a slot in a context
+        // family that missed its event in a stall before: that family
+        // diverged from the recording, and each of its later slots cost a
+        // timeout of its own (SG2: 69 of solr-adhoc-38's 138 give-up stalls,
+        // 63 of 19's 70, on a context that had failed one; MB21s/MB22s: 26
+        // of 31's 69, 34 of 10's 58, on another turn or anchor of a family
+        // that had; MB29s: 102 of 39's 145 conflicts stood the timeout, the
+        // family judged by the waiting write's context, not by the one it
+        // waited for).
+        boolean conflicted = earliest != Integer.MAX_VALUE
+                && onlyConflictedAtLocked(earliest);
+        int first = conflicted ? earliest - 1 : firstBlocking;
+        long bound = first < order.size()
+                && (order.get(first).kind() == ScheduleEvent.Kind.READ
+                || FAILED.contains(familyOf(order.get(first).context())))
+                ? Math.min(timeout, LET_GO_GRACE_MS) : timeout;
+        if (stood < bound) return false;
+        if (stood < CEILING * bound && computingLocked(now)) return false;
         if (!HELD.isEmpty() && (!letGoSinceProgress
                 || earliest == Integer.MAX_VALUE)) {
             letGoHeldLocked(stood, now);
             return true;
         }
         if (earliest == Integer.MAX_VALUE) return false;
-        if (onlyConflictedAtLocked(earliest)) {
+        if (conflicted) {
             // A write the order lacks there, or one whose slot holds nothing,
             // waits at the slot after the one write to its location it
             // follows: that write alone is given up, never the run of other
@@ -1510,7 +1827,10 @@ public final class ScheduleLog {
             if (state[write] != OPEN) return false;
             stalls++;
             giveUpLocked(write);
-            stateLocked("schedule-write#" + write, "the write at slot "
+            FAILED.add(familyOf(order.get(write).context()));
+            stateLocked("schedule-write#" + write, "the "
+                    + (order.get(write).kind() == ScheduleEvent.Kind.READ
+                            ? "read" : "write") + " at slot "
                     + write + " (" + order.get(write).render() + ") did not"
                     + " happen in the " + stood + " ms the frontier stood at"
                     + " slot " + firstBlocking + ", while a write to its"
@@ -1536,19 +1856,22 @@ public final class ScheduleLog {
             settleLocked();
             return true;
         }
-        int first = -1;
+        String frontierContext = firstBlocking < order.size()
+                ? order.get(firstBlocking).context() : null;
+        int from = -1;
         int count = 0;
         for (int index = firstOpen; index < earliest; index++) {
             if (state[index] != OPEN) continue;
-            if (first < 0) first = index;
+            if (from < 0) from = index;
             giveUpLocked(index);
             count++;
         }
         if (count == 0) return false;
+        if (frontierContext != null) FAILED.add(familyOf(frontierContext));
         if (earliest >= cut) restStalls++;
-        stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
-                count + " slot(s) of the order from " + first + " on (the"
-                        + " first " + order.get(first).render() + ") did not"
+        stateLocked((from < cut ? "schedule#" : "schedule-rest#") + from,
+                count + " slot(s) of the order from " + from + " on (the"
+                        + " first " + order.get(from).render() + ") did not"
                         + " happen in the " + stood + " ms the frontier"
                         + " stood at slot " + firstBlocking + ", while "
                         + order.get(earliest).render() + " waited at slot "
@@ -1600,6 +1923,9 @@ public final class ScheduleLog {
     private static String heldLocked(Thread thread) {
         Pending held = HELD.get(thread);
         if (held == null) return "a wait the order does not name";
+        if (held.kind == ScheduleEvent.Kind.READ) {
+            return held.render() + " behind a write to its location";
+        }
         return SLOTS.containsKey(held.key)
                 ? held.render() + " past its recorded count"
                 : "the unrecorded " + held.render();
@@ -1767,7 +2093,8 @@ public final class ScheduleLog {
                             ? Collections.<ScheduleEvent>emptyList()
                             : SessionReader.readSchedule(restFile),
                     restFile != null && SessionReader.readScheduleMarks(
-                            restFile).containsKey(ScheduleEvent.WITNESS));
+                            restFile).containsKey(ScheduleEvent.WITNESS),
+                    readsHeld());
         } catch (IOException | RuntimeException unreadable) {
             // An order it cannot read, it left at its first event.
             stateLocked(String.valueOf(file == null ? restFile : file),
@@ -1784,11 +2111,30 @@ public final class ScheduleLog {
         }, "causynth-schedule-progress"));
     }
 
-    /** Holds the run to {@code events}, cut, then {@code after}, which a
-     *  run cut at its witness ends at. */
+    /**
+     * Holds the run to {@code events}, cut, then {@code after}, which a run
+     * cut at its witness ends at.  A READ takes a slot only at a location a
+     * WRITE of the order wrote.  Where {@code readsHeld} is false -- a run
+     * the model orders: a world's planted pairings, CONFIRM, a native
+     * reproduction's plant -- the reads past the cut take none: there the
+     * model's order puts each read (its pairings' ORDER rows), and a flipped
+     * world that reads before the newer write is not held back to the
+     * recorded place.  The prefix ends before the first event the model
+     * reorders ({@code SchedulePrefix}), so its reads keep their places.
+     */
     private static void installLocked(List<ScheduleEvent> events,
                                       List<ScheduleEvent> after,
-                                      boolean atWitness) {
+                                      boolean atWitness, boolean readsHeld) {
+        Set<String> written = new HashSet<String>();
+        for (List<ScheduleEvent> part : Arrays.asList(events, after)) {
+            for (ScheduleEvent event : part) {
+                if (event.kind() == ScheduleEvent.Kind.WRITE) {
+                    written.add(event.site());
+                }
+            }
+        }
+        events = heldReads(events, written, true);
+        after = heldReads(after, written, readsHeld);
         List<ScheduleEvent> all = new ArrayList<ScheduleEvent>(events);
         all.addAll(after);
         order = all;
@@ -1805,6 +2151,8 @@ public final class ScheduleLog {
         LET_GO.clear();
         CONFLICTED.clear();
         BY_LOCATION.clear();
+        DEAD_BY_KEY.clear();
+        FAILED.clear();
         POLLED.clear();
         PASSED_BY_CONTEXT.clear();
         PASSED_SLOTS.clear();
@@ -1835,9 +2183,10 @@ public final class ScheduleLog {
                 BY_CONTEXT.put(event.context(), own);
             }
             own.add(index);
-            if (event.kind() == ScheduleEvent.Kind.WRITE) {
+            if (event.kind() == ScheduleEvent.Kind.WRITE
+                    || event.kind() == ScheduleEvent.Kind.READ) {
                 BY_LOCATION.computeIfAbsent(event.site(),
-                        written -> new ArrayList<Integer>()).add(index);
+                        location -> new ArrayList<Integer>()).add(index);
             }
             if (heldKind(index)) openHeld++;
         }
@@ -1846,6 +2195,28 @@ public final class ScheduleLog {
         restStalls = 0;
         frontierMovedLocked();
         settleLocked();
+    }
+
+    /** {@code events} with no READ but those {@code readsHeld} keeps at a
+     *  location {@code written}. */
+    private static List<ScheduleEvent> heldReads(List<ScheduleEvent> events,
+                                                 Set<String> written,
+                                                 boolean readsHeld) {
+        List<ScheduleEvent> kept = new ArrayList<ScheduleEvent>(events.size());
+        for (ScheduleEvent event : events) {
+            if (event.kind() != ScheduleEvent.Kind.READ
+                    || readsHeld && written.contains(event.site())) {
+                kept.add(event);
+            }
+        }
+        return kept;
+    }
+
+    /** Whether this replay holds its reads to the recorded order: not one
+     *  the model orders ({@link #installLocked}). */
+    private static boolean readsHeld() {
+        return !FocusedReplay.pairs() && !FocusedReplay.confirming()
+                && !RecordingPlant.planting();
     }
 
     /** Writes one mark row into this run's schedule, before the window as
@@ -1926,9 +2297,16 @@ public final class ScheduleLog {
     static void enforceForTests(List<ScheduleEvent> events,
                                 List<ScheduleEvent> after,
                                 boolean atWitness) {
+        enforceForTests(events, after, atWitness, true);
+    }
+
+    /** With {@code readsHeld} false, as a run the model orders. */
+    static void enforceForTests(List<ScheduleEvent> events,
+                                List<ScheduleEvent> after,
+                                boolean atWitness, boolean readsHeld) {
         synchronized (LOCK) {
             loaded = true;
-            installLocked(events, after, atWitness);
+            installLocked(events, after, atWitness, readsHeld);
         }
     }
 
@@ -1945,6 +2323,11 @@ public final class ScheduleLog {
             }
             seq = 0L;
             steps = 0L;
+            realized = null;
+            AWAITED.clear();
+            MADE_AWAITED.clear();
+            OVERDUE.clear();
+            DUE.clear();
             loaded = false;
             holds = false;
             order = Collections.emptyList();
@@ -1961,6 +2344,8 @@ public final class ScheduleLog {
             LET_GO.clear();
             CONFLICTED.clear();
             BY_LOCATION.clear();
+            DEAD_BY_KEY.clear();
+            FAILED.clear();
             POLLED.clear();
             PASSED_BY_CONTEXT.clear();
             PASSED_SLOTS.clear();

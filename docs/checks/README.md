@@ -97,7 +97,9 @@ Per-case workarounds: 21 (tree r7-21, its loop bounds), 07 (tree r8, world depth
 ## Solr, HBase, ZooKeeper: the study checks (their turn comes after HDFS)
 
 Solr's 12 are marked on `gc/solr-checks` (2026-10-08; solr-adhoc-22 is solr-18406's throw), each declared in
-`experiments/solr/solr-adhoc/checks.tsv` and its workload run natively there; none has run as a campaign yet. No HBase
+`experiments/solr/solr-adhoc/checks.tsv` and its workload run natively there. Their live state (rounds, verdicts, what is
+left) is [../STATUS.md](../STATUS.md) "Solr checks" and [../handover/TODO.md](../handover/TODO.md) "Solr" (handover 2026-10-09); the
+"state" column below is the marking state only. No HBase
 or ZooKeeper study point is marked yet.
 
 ### solr
