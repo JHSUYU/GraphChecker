@@ -275,6 +275,7 @@ final class BranchObservation {
         JsonObject mapping = decisionRow(method, unitIndex, occurrence,
                 vmEventId, observedOutcome, mappingBaseline, mappingLimit);
         ForcedArms.mark(active, mapping, read.event);
+        ForcedArms.statesCaller(active, mapping);
         if (conditionIndex >= 0) {
             active.termedDecisions++;
             JsonElement condition = conditions.get(conditionIndex);

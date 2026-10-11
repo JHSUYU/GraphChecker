@@ -149,7 +149,7 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    arm goes on to `b`, §7.10); a caller's guard choosing which of its calls into the method runs;
    likewise a decider neither of whose arms leaves the way, each running to a return of the verdict
    its guard wants or on to an open value), one per TARGET_SITE row, which PLAN copies -- the task's own target's
-   (`ConcolicScheduler#ownTarget`) -- onto the declared task's `targetBranch.force` for the
+   (`StaticScopeMap#ownTarget`) -- onto the declared task's `targetBranch.force` for the
    forced replay (§7.10), less a caller's chain guard where the recording's occurrence entered the
    throw's method (`ForcingTable#forOccurrence`: it reaches the method by some call, and forcing another
    call's guard would only divert it). The same table is COMPOSE's one statement of the arm toward
@@ -310,15 +310,20 @@ occurrence ran).
 Loop bounds (`runtime.LoopAccounting`, per loop per method activation). A backedge traversal counts
 toward the loop's `K_L` only when the iteration it closes recorded a decision with a term (the
 first counts; `ActiveRegion#termedDecisions`): `K_L` bounds the flips a loop offers, and an
-iteration that decided only on concrete values offers none. Every traversal, and every body of a
-fixed-count loop, is charged to the work cap `LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES` (32, or a
-declared `K_L` above it); before, only fixed-count (array-indexed) loops had it, and a
+iteration that decided only on concrete values offers none; an iteration whose symbolic decisions a nested
+planned region records (another occurrence's activation) counts as concrete here, so only the work cap bounds
+it (accepted: its flips are that occurrence's). Every traversal, and every body of a fixed-count loop, is
+charged to one work cap, `LoopBoundPolicy#workCap` (`MAX_REPLAY_PATH_LOOP_BODIES` = 32, or the loop's
+declared `K_L` above it; body 33 is cut, for both kinds, `LoopBackedgeBudget#overWorkCap`); before, only
+fixed-count (array-indexed) loops had it, and a
 condition-bounded loop -- an iterator, a `while` -- was cut at `K_L` bodies whatever it decided on
 (solr-adhoc-05/07/19/21: `CloudDescriptor.<init>`'s loop over a core's properties, every decision
 concrete, cut the CREATE at its 9th body before its throw, in the seed and every replay). Either cut
-ends the activation `CUT`, publishes its prefix and files a `BOUND_INSUFFICIENT` row naming the loop
-(`LoopAccounting#endAtCut`); a path at the anchor that stopped on the way to the throw there is
-counted as the case's `loop_body_bound` (§8, result.json `bounded`).
+ends the activation `CUT`, publishes its prefix and files a `BOUND_INSUFFICIENT` row naming the loop and its
+reason (`LoopAccounting#endAtCut`; `LoopBoundPolicy#K_L_REACHED`, `#WORK_CAP_REACHED`; any other reason --
+`INSTRUMENTATION_POLICY_MISMATCH`, `BOUND_HOOK_FAILURE:*` -- is the accounting's own failure); a path at the
+anchor that a bound cut on the way to the throw is counted as the case's `loop_body_bound` (§8, result.json
+`bounded`).
 
 A replay JVM draws its RSA key pairs from a fixed pool (`runtime.ReplayKeys`, a JCA provider put
 first by `JUnitMethodRunner`; four pairs of exponent 65537 per size of 1024-4096 bits, in the jar's
@@ -1437,18 +1442,25 @@ replace a slot (§7.1) give no arms.
 
 **Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
 (beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
-session that ran the occurrence and left the way to the throw at a guard (`RestsOn#wayGuard`, the
-last decision at a target site's path site, when it took an arm off the way: not the arm the target
-sites' forcing tables name toward the throw, nor at a `passable` branch, §2; a site no table names,
-a switch or a fault call, is taken as left), its prefix the decisions before that guard: at a
+session that ran the occurrence and left the way to the throw at a guard (`RestsOn#wayGuard`: the
+last decision at a path site of the anchor's OWN target -- the TARGET_SITE its target row's site
+guards, `StaticScopeMap#ownTarget`, never pooled over every throw -- that took an arm off the way,
+scanned back past the decisions that kept it -- the arm its forcing table names toward the throw, or a
+`passable` branch, §2 -- and past a decider decided in a call from elsewhere than its row's `via`
+(the decision row states its caller there, `DecisionRow#via`, `ForcedArms#statesCaller`); a site the
+table names no arm for, a switch or a fault call, is taken as left; a path that left at G and later
+kept the way before a normal return left at G), its prefix the decisions before that guard: at a
 SYMBOLIC guard its fatal arm is the guard's other arm, the way to the throw (a witness turns it,
 CONFIRM judges the rest), at a concrete one the constant healthy decision (`false`), the guard named
-in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48). A session whose last way
-decision kept the way, or that decided none, stopped on the way (a loop bound's cut, an exception, a
-return): no arm toward the throw is stated, its fatal is `false`, its WAY row names the anchor and how
-it stopped, and where a loop bound cut the occurrence (its `BOUND_INSUFFICIENT` row, §5) a
-DIAGNOSTIC row `<anchor> loop-body-bound=<N>` makes the case `bounded` (`loop_body_bound`), so its
-UNSAT is not done (CHECKING §1). Before, such a path's last way decision was composed at its other
+in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48). A session none of whose way
+decisions left the way stopped on the way (a loop bound's cut, an exception, a return): no arm toward
+the throw is stated, its fatal is `false`, its WAY row names the anchor and how it stopped. Wherever a
+loop bound cut a non-reaching session's occurrence on the way -- before it left the way, or after it
+left at a guard inside a loop (the guard decided again, or in the cut loop's method: a later turn may
+have come back), and whether or not another session reached the anchor -- a DIAGNOSTIC row
+`<anchor> loop-body-bound=<N>` makes the case `bounded` (`loop_body_bound`), so its UNSAT is not done
+(CHECKING §1); a cut that names the accounting's own failure (§5) is a BLOCKING `BOUND_INSUFFICIENT`
+row, an engine defect (RUN_DEFECT), never a bound (`RestsOn#cut`). Before, such a path's last way decision was composed at its other
 arm: solr-adhoc-19 SG2b's u9 (`!inFlightCreations.add`, taken toward the throw before the cut) became
 the CONFLICT throw "Already creating", and 19's and 21's UNSATs rested on that wrong arm. The seed
 always, a focused session only when all its own verdicts are

@@ -11,6 +11,7 @@ import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * THE FORCED REPLAY (PIPELINE §7.10): in a FORCE run, the declared
@@ -118,6 +119,22 @@ final class ForcedArms {
             disarmed = armed;
             armed = 0L;
             return diverged;
+        }
+    }
+
+    /**
+     * States on a decision row the frame that called its method, where the
+     * occurrence's forcing table names its site with a {@code via} ({@code
+     * DecisionRow#via}): COMPOSE counts a decider on the way only in a call
+     * of its helper from there ({@code compose.RestsOn#wayGuard}), as a
+     * FORCE run forces it only there ({@link #direct}).  In every run, not
+     * only a FORCE run: each task carries its target's table.
+     */
+    static void statesCaller(ActiveRegion active, JsonObject mapping) {
+        ForcingTable.Arm arm = active.activation.forcedArms.get(
+                optionalString(mapping, "siteId"));
+        if (arm != null && !arm.via.isEmpty()) {
+            mapping.addProperty("via", Identity.callerFrame());
         }
     }
 

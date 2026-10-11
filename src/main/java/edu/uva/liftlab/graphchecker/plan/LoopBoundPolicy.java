@@ -3,7 +3,9 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -85,16 +87,36 @@ public final class LoopBoundPolicy {
             "BOUNDED_LOOP_BODY_BOUND_DISAGREES";
     /** Bodies any loop may run per method activation (stops endless service
      *  loops): the work cap of every loop, a fixed-count one's only bound,
-     *  raised to a declared {@code K_L} above it.  {@code K_L} caps the path
-     *  space: it counts only the iterations that decided on a symbol
-     *  ({@code runtime.LoopAccounting.LoopBackedgeBudget#traverse}). */
+     *  raised to a declared {@code K_L} above it ({@link #workCap}).  {@code
+     *  K_L} caps the path space: it counts only the iterations that decided
+     *  on a symbol ({@code runtime.LoopAccounting.LoopBackedgeBudget}). */
     public static final int MAX_REPLAY_PATH_LOOP_BODIES = 32;
+    /** A cut's reason where a loop's {@code K_L} was reached. */
+    public static final String K_L_REACHED = "MAX_LOOP_BODY_ITERATIONS_REACHED";
+    /** A cut's reason where a loop spent its work cap ({@link #workCap}). */
+    public static final String WORK_CAP_REACHED = "REPLAY_LOOP_RESOURCE_CAP";
+    /** The reasons a cut states where a bound was reached; any other names
+     *  a failure of the accounting itself, an engine defect
+     *  ({@code compose.RestsOn#boundReached}). */
+    public static final List<String> BOUND_REACHED = Collections
+            .unmodifiableList(Arrays.asList(K_L_REACHED, WORK_CAP_REACHED));
     private static final int SCHEMA_VERSION = 1;
     private static final String DECLARED_FIELD = "loopBodyBounds";
 
     private final int defaultBackedgeTraversals;
     private final SortedMap<String, Integer> declared;
     private final int maxBackedgeTraversals;
+
+    /**
+     * THE work cap of a loop whose {@code K_L} is {@code bound}: the bodies
+     * one call of it may run, whatever it decides on --
+     * {@link #MAX_REPLAY_PATH_LOOP_BODIES}, or a declared {@code K_L} above
+     * it.  One rule for a loop with a backedge hook and a fixed-count one
+     * ({@code runtime.LoopAccounting.LoopBackedgeBudget}).
+     */
+    public static int workCap(int bound) {
+        return Math.max(MAX_REPLAY_PATH_LOOP_BODIES, bound);
+    }
 
     private LoopBoundPolicy(int defaultBackedgeTraversals,
                             Map<String, Integer> declared) {

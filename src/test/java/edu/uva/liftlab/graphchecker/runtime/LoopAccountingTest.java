@@ -56,6 +56,33 @@ public class LoopAccountingTest {
         }
     }
 
+    /** A fixed-count loop's bodies take the same work cap a backedge's
+     *  traversals do ({@link LoopBoundPolicy#workCap}): raised by a
+     *  declared {@code K_L} above it, both cut at the same body. */
+    @Test
+    public void bothKindsOfLoopTakeOneWorkCap() {
+        int[] bounds = {8, 40};
+        for (int bound : bounds) {
+            LoopAccounting.LoopBackedgeBudget budget =
+                    new LoopAccounting.LoopBackedgeBudget();
+            int bodyCut = 0;
+            int traversalCut = 0;
+            for (int body = 1; body <= 64 && bodyCut == 0; body++) {
+                if (budget.body(LOOP, "fixed", bound) != null) bodyCut = body;
+            }
+            for (int traversal = 1; traversal <= 64 && traversalCut == 0;
+                 traversal++) {
+                // Traversal k enters body k + 1.
+                if (budget.traverse(LOOP, "edge", 0, bound) != null) {
+                    traversalCut = traversal + 1;
+                }
+            }
+            assertEquals("K_L " + bound, LoopBoundPolicy.workCap(bound) + 1,
+                    bodyCut);
+            assertEquals("K_L " + bound, bodyCut, traversalCut);
+        }
+    }
+
     private static int[] ones(int n) {
         int[] values = new int[n];
         java.util.Arrays.fill(values, 1);

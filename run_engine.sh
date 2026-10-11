@@ -6188,9 +6188,9 @@ explore_manifest.json 2>/dev/null) \
               + " \($depth[0].subject | sub(".* "; ""))")}),
         (select(($loops | length) > 0)
          | {by: "loop_body_bound",
-            detail: ("\($loops | length) path(s) at the anchor stopped on"
-              + " the way to the throw where a loop bound cut the"
-              + " occurrence (bodies: " + ($loops | map(.subject
+            detail: ("\($loops | length) path(s) at the anchor a loop"
+              + " bound cut on the way to the throw, before they left it or"
+              + " after they left it inside a loop (bodies: " + ($loops | map(.subject
               | sub(".*="; "")) | unique | join(", ")) + ")")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",

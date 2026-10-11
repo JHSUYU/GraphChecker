@@ -610,6 +610,22 @@ public final class StaticScopeMap {
                 concreteConfigurationReads, forcing, found);
     }
 
+    /** The TARGET_SITE a task's target branch -- an anchor's target row's
+     *  site -- guards: one whose guards, else whose chain, name it; null for
+     *  none.  Its own forcing table is the occurrence's ({@link #forcing}),
+     *  never another throw's. */
+    public Site ownTarget(String targetBranchSite) {
+        for (Site target : targetSites()) {
+            if (target.guards.contains(targetBranchSite)) return target;
+        }
+        for (Site target : targetSites()) {
+            for (Guard guard : target.chain) {
+                if (guard.siteId().equals(targetBranchSite)) return target;
+            }
+        }
+        return null;
+    }
+
     /** The forcing table of the TARGET_SITE at {@code targetSiteId}
      *  ({@link ForcingTable}), a copy; empty where it has none. */
     public JsonArray forcing(String targetSiteId) {

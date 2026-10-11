@@ -75,7 +75,7 @@ final class LoopAccounting {
                 != active.activation.loopBound.maxBackedgeTraversals()
                 ? new ReplayLoopResourceCut(loop, 0, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH")
-                : active.chargeLoopBody(loop),
+                : active.chargeLoopBody(loop, instrumentedMaxTraversals),
                 reason -> new ReplayLoopResourceCut(loop,
                         instrumentedMaxTraversals, 0L, "BODY_HOOK_" + reason));
     }
@@ -264,10 +264,10 @@ final class LoopAccounting {
          *   loop offers, and an iteration that decided only on concrete
          *   values offers none.  At {@code bound} of them it is cut
          *   (attempt {@code K} would enter body {@code K+1});</li>
-         *   <li>every traversal is one more body of work, cut past {@link
-         *   LoopBoundPolicy#MAX_REPLAY_PATH_LOOP_BODIES} (or a declared
-         *   {@code K_L} above it): a loop that never decides on a symbol
-         *   still ends.</li>
+         *   <li>every traversal is one more body of work, cut past the work
+         *   cap ({@link LoopBoundPolicy#workCap}, the rule a fixed-count
+         *   loop's bodies take too, {@link #body}): a loop that never
+         *   decides on a symbol still ends.</li>
          * </ul>
          */
         Error traverse(String loopId, String key, int termed, int bound) {
@@ -278,23 +278,33 @@ final class LoopAccounting {
                     : symbolic.getOrDefault(key, 0);
             if (decided && counted >= bound) {
                 return new LoopBoundCut(loopId, bound,
-                        "MAX_LOOP_BODY_ITERATIONS_REACHED");
+                        LoopBoundPolicy.K_L_REACHED);
             }
-            int cap = Math.max(LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES,
-                    bound);
-            return attempted < cap ? null : new ReplayLoopResourceCut(
-                    loopId, cap, attempted + 1L, ReplayLoopResourceCut.REASON);
+            return overWorkCap(loopId, attempted + 1L, bound);
+        }
+
+        /** One body of fixed-count loop {@code loopId} (budget key {@code
+         *  key}, its {@code K_L} {@code bound}): the cut past its work cap,
+         *  or null. */
+        ReplayLoopResourceCut body(String loopId, String key, int bound) {
+            int entered = bodies.merge(key, 1,
+                    (held, one) -> held == Integer.MAX_VALUE ? held
+                            : held + one);
+            return overWorkCap(loopId, entered, bound);
+        }
+
+        /** THE work cap's rule, for both kinds of loop: body {@code body}
+         *  runs only within {@link LoopBoundPolicy#workCap}. */
+        private static ReplayLoopResourceCut overWorkCap(String loopId,
+                                                         long body,
+                                                         int bound) {
+            int cap = LoopBoundPolicy.workCap(bound);
+            return body <= cap ? null : new ReplayLoopResourceCut(loopId,
+                    cap, body, ReplayLoopResourceCut.REASON);
         }
 
         static String scoped(String loopId, long frame) {
             return nonNull(loopId) + SCOPE_SEPARATOR + frame;
-        }
-
-        /** Counts one body against the cap; returns the body number. */
-        long recordBody(String loopId) {
-            long entered = (long) bodies.getOrDefault(loopId, 0) + 1L;
-            bodies.put(loopId, (int) Math.min(entered, Integer.MAX_VALUE));
-            return entered;
         }
 
     }
@@ -302,7 +312,7 @@ final class LoopAccounting {
     /** Control signal aborting a replay that spent its loop resource cap. */
     public static final class ReplayLoopResourceCut extends Error {
         private static final long serialVersionUID = 1L;
-        static final String REASON = "REPLAY_LOOP_RESOURCE_CAP";
+        static final String REASON = LoopBoundPolicy.WORK_CAP_REACHED;
 
         ReplayLoopResourceCut(String loopId, int maxBodies,
                               long attemptedBody, String reason) {

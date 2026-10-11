@@ -2005,6 +2005,7 @@ public class ComposerTest {
             site.addProperty("siteId", "Throw#u30");
             JsonArray guards = new JsonArray();
             guards.add("way#u3");
+            guards.add(ANCHOR_SITE);
             site.add("guards", guards);
             Files.write(map, Collections.singletonList(site.toString()),
                     java.nio.charset.StandardCharsets.UTF_8);
@@ -2032,38 +2033,90 @@ public class ComposerTest {
         }
 
         // KEPT THE WAY, THEN STOPPED.  The guard's forcing-table arm toward
-        // the throw is false (the TARGET_SITE row's `force`).  A path whose
-        // last way decision took that arm, or a passable branch's (either
-        // arm leads on), never LEFT the way there: its other arm is no way
-        // to the throw, so no guard is named and its fatal is the constant
+        // the throw is false (the anchor's own TARGET_SITE row's `force`).
+        // A path whose last way decision took that arm, or a passable
+        // branch's (either arm leads on), never LEFT the way there: the
+        // scan goes back past it to the last decision that did leave, and
+        // where none did, no guard is named and its fatal is the constant
         // false (solr-adhoc-19 SG2b: create's u9, taken toward the throw
         // before a loop bound cut the occurrence, was composed as the
         // CONFLICT throw).  Where a loop bound cut the occurrence, the
         // composition names the bound (`loop-body-bound`, counted in the
-        // case's `bounded`).  A path that took the other arm left there.
+        // case's `bounded`).  A decider (a row with `via`) counts only in a
+        // call of its helper from its via (DecisionRow#via).
+        String keep = "{\"siteId\":\"way#u3\",\"arm\":false}";
+        String bound = "MAX_LOOP_BODY_ITERATIONS_REACHED at L#loop:u44 after"
+                + " 8 loop body iterations";
+        String inWay = "MAX_LOOP_BODY_ITERATIONS_REACHED at way#loop:u2"
+                + " after 8 loop body iterations";
+        String leaveAt4 = "{\"siteId\":\"way#u4\",\"arm\":true}";
+        String decider = "{\"siteId\":\"H#u1\",\"arm\":true,"
+                + "\"via\":\"<V: void v()>\"}";
         Object[][] kept = {
-                // {why, the table row, the arm taken, cut, the WAY subject,
-                //  the claim's kind, a bounded row}
+                // {why, the table rows, the decisions (site, arm, via, its
+                //  term when not the marker), the cut (null: none), the WAY
+                //  subject, the claim's kind, a bounded row, blocked}
                 {"took the arm toward the throw, then a loop bound cut it",
-                        "{\"siteId\":\"way#u3\",\"arm\":false}", false, true,
-                        ANCHOR.render(), ClaimKind.NO_SUPPORTED_WITNESS, true},
+                        keep, new String[][] {{"way#u3", "false", ""}}, bound,
+                        ANCHOR.render(), ClaimKind.NO_SUPPORTED_WITNESS, true,
+                        false},
                 {"a passable branch: neither arm leaves the way",
                         "{\"siteId\":\"way#u3\",\"arm\":true,"
-                                + "\"passable\":true}", false, false,
-                        ANCHOR.render(), ClaimKind.NO_SUPPORTED_WITNESS, false},
-                {"took the arm off the way: it left there", "{\"siteId\":"
-                        + "\"way#u3\",\"arm\":true}", false, false,
-                        "way#u3#1", ClaimKind.MARKER_FLIPPED, false}};
+                                + "\"passable\":true}",
+                        new String[][] {{"way#u3", "false", ""}}, null,
+                        ANCHOR.render(), ClaimKind.NO_SUPPORTED_WITNESS, false,
+                        false},
+                {"took the arm off the way: it left there",
+                        "{\"siteId\":\"way#u3\",\"arm\":true}",
+                        new String[][] {{"way#u3", "false", ""}}, null,
+                        "way#u3#1", ClaimKind.MARKER_FLIPPED, false, false},
+                {"left at u3, later kept the way at u4, then returned: it "
+                        + "left at u3", "{\"siteId\":\"way#u3\",\"arm\":true},"
+                        + leaveAt4, new String[][] {{"way#u3", "false", ""},
+                        {"way#u4", "true", ""}}, null, "way#u3#1",
+                        ClaimKind.MARKER_FLIPPED, false, false},
+                {"a decider off its arm in a call from elsewhere is no "
+                        + "decision of the way", "{\"siteId\":\"way#u3\","
+                        + "\"arm\":true}," + decider,
+                        new String[][] {{"way#u3", "false", ""},
+                        {"H#u1", "false", "<W: void w()>"}}, null,
+                        "way#u3#1", ClaimKind.MARKER_FLIPPED, false, false},
+                {"the same decider in a call from its via left the way",
+                        "{\"siteId\":\"way#u3\",\"arm\":true}," + decider,
+                        new String[][] {{"way#u3", "false", "", "(< 3 2)"},
+                        {"H#u1", "false", "<V: void v()>"}}, null,
+                        "H#u1#2", ClaimKind.MARKER_FLIPPED, false, false},
+                {"left at u3 outside the loop a bound cut later: the cut "
+                        + "rests on nothing", "{\"siteId\":\"way#u3\","
+                        + "\"arm\":true}", new String[][] {{"way#u3", "false",
+                        ""}}, bound, "way#u3#1", ClaimKind.MARKER_FLIPPED,
+                        false, false},
+                {"left at u3 inside a loop (decided again) a bound cut: "
+                        + "named", "{\"siteId\":\"way#u3\",\"arm\":true}",
+                        new String[][] {{"way#u3", "false", "", "(< 3 2)"},
+                        {"way#u3", "false", ""}}, bound, "way#u3#2",
+                        ClaimKind.MARKER_FLIPPED, true, false},
+                {"left at u3 in the cut loop's own method: named",
+                        "{\"siteId\":\"way#u3\",\"arm\":true}",
+                        new String[][] {{"way#u3", "false", ""}}, inWay,
+                        "way#u3#1", ClaimKind.MARKER_FLIPPED, true, false},
+                {"the loop accounting failed: an engine defect, never a "
+                        + "bound", keep, new String[][] {{"way#u3", "false",
+                        ""}}, "INSTRUMENTATION_POLICY_MISMATCH at L#loop:u44"
+                        + " after 8 loop body iterations", ANCHOR.render(),
+                        ClaimKind.NO_SUPPORTED_WITNESS, false, true}};
         for (Object[] row : kept) {
             Path way = folder.newFolder().toPath();
             Session at = new Session(way, "s0", false);
             at.marker("false");
-            at.decision(ANCHOR, "way#u3", (Boolean) row[2], MARKER);
+            for (String[] made : (String[][]) row[2]) {
+                at.decision(ANCHOR, made[0], Boolean.parseBoolean(made[1]),
+                        made.length > 3 ? made[3] : MARKER, made[2]);
+            }
             at.target("", false, false);
-            if ((Boolean) row[3]) {
-                at.cut(ANCHOR, "this activation's local path was cut:"
-                        + " MAX_LOOP_BODY_ITERATIONS_REACHED at L#loop:u44"
-                        + " after 8 loop body iterations");
+            if (row[3] != null) {
+                at.cut(ANCHOR, "this activation's local path was cut: "
+                        + row[3]);
             }
             at.write();
             Path map = way.resolve(StaticScopeMap.FILE);
@@ -2071,7 +2124,11 @@ public class ComposerTest {
                     + StaticScopeMap.SITE_KIND + "\",\"role\":\""
                     + StaticScopeMap.TARGET_SITE + "\",\"regionId\":\""
                     + ANCHOR.regionId() + "\",\"siteId\":\"Throw#u30\","
-                    + "\"guards\":[\"way#u3\"],\"guardOutcomes\":[false],"
+                    + "\"guards\":[\"way#u3\",\"way#u4\",\"" + ANCHOR_SITE
+                    + "\"],\"guardOutcomes\":[false,true,true],"
+                    + "\"guardDeciders\":{\"way#u4\":[{\"siteId\":\"H#u1\","
+                    + "\"outcome\":true,\"verdict\":true}]},"
+                    + "\"chain\":[{\"siteId\":\"H#u1\",\"outcome\":true}],"
                     + "\"force\":[" + row[1] + "]}";
             Files.write(map, Collections.singletonList(site),
                     java.nio.charset.StandardCharsets.UTF_8);
@@ -2086,13 +2143,36 @@ public class ComposerTest {
             assertEquals((String) row[0], Collections.singletonList(row[4]),
                     ways);
             assertEquals((String) row[0], row[5], decided.claim().kind());
-            boolean bounded = false;
-            for (GapRow gap : composed.gaps()) {
-                bounded |= gap.subject().equals(ANCHOR.render() + " "
-                        + Composer.LOOP_BODY_BOUND + "=8");
-            }
-            assertEquals((String) row[0], row[6], bounded);
+            assertEquals((String) row[0], bounded(composed), row[6]);
+            assertEquals((String) row[0], row[7], decided.claim().blocked());
         }
+
+        // A SESSION BESIDE ONE THAT REACHED THE ANCHOR, cut on the way, is no
+        // disjunct, yet its cut still bounds the search: named all the same.
+        Path beside = folder.newFolder("beside").toPath();
+        Session reaching = new Session(beside, "s0", false);
+        reaching.marker("false");
+        reaching.target(MARKER, false, true);
+        reaching.write();
+        Session stopped = new Session(beside, "s1", true);
+        stopped.decision(ANCHOR, "way#u3", false, MARKER);
+        stopped.target("", false, false);
+        stopped.cut(ANCHOR, "this activation's local path was cut: " + bound);
+        stopped.write();
+        Path besideMap = beside.resolve(StaticScopeMap.FILE);
+        Files.write(besideMap, Collections.singletonList("{\"schemaVersion\":1,"
+                + "\"kind\":\"" + StaticScopeMap.SITE_KIND + "\",\"role\":\""
+                + StaticScopeMap.TARGET_SITE + "\",\"regionId\":\""
+                + ANCHOR.regionId() + "\",\"siteId\":\"Throw#u30\","
+                + "\"guards\":[\"way#u3\",\"" + ANCHOR_SITE + "\"],"
+                + "\"guardOutcomes\":[false,true],\"force\":[" + keep
+                + "]}"), java.nio.charset.StandardCharsets.UTF_8);
+        Composer.Composition besideComposed = compose(beside, ANCHOR, 4,
+                StaticScopeMap.read(besideMap));
+        assertEquals("only the reaching path is a disjunct", 1,
+                besideComposed.disjuncts().size());
+        assertTrue("the cut of the one beside it is named: "
+                + besideComposed.gaps(), bounded(besideComposed));
 
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its
@@ -7550,6 +7630,18 @@ public class ComposerTest {
     }
 
     /** One anchor's composition under the epoch's static facts. */
+    /** Whether a composition names a loop bound's cut at the anchor
+     *  (`loop-body-bound`, counted in a case's `bounded`). */
+    private static boolean bounded(Composer.Composition composed) {
+        for (GapRow gap : composed.gaps()) {
+            if (gap.subject().equals(ANCHOR.render() + " "
+                    + Composer.LOOP_BODY_BOUND + "=8")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static Composer.Composition compose(Path iteration,
                                                 OccurrenceAddress anchor,
                                                 int maxValuations,
@@ -8021,9 +8113,15 @@ public class ComposerTest {
 
         void decision(OccurrenceAddress at, String site, boolean outcome,
                       String term) {
+            decision(at, site, outcome, term, "");
+        }
+
+        /** One decision in a call from {@code via} (DecisionRow#via). */
+        void decision(OccurrenceAddress at, String site, boolean outcome,
+                      String term, String via) {
             decisions.add(DecisionRow.of(id, ++seq, at, site,
                     decisions.size() + 1, outcome, term,
-                    Collections.<String, Long>emptyMap()));
+                    Collections.<String, Long>emptyMap()).via(via));
         }
 
         void target(String phi, boolean observedFatal, boolean reached) {

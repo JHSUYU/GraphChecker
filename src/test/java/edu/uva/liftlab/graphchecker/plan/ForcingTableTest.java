@@ -123,8 +123,7 @@ public class ForcingTableTest {
                 {M + "#u8", M + "#u9", true},
                 {N + "#u2", N + "#u9", false}};
         for (Object[] row : rows) {
-            StaticScopeMap.Site own = ConcolicScheduler.ownTarget(map,
-                    (String) row[0]);
+            StaticScopeMap.Site own = map.ownTarget((String) row[0]);
             assertEquals((String) row[0], row[1], own.siteId);
             Map<String, ForcingTable.Arm> table = ForcingTable.read(
                     map.forcing(own.siteId));

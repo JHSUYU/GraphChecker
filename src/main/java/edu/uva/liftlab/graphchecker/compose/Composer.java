@@ -1415,10 +1415,13 @@ public final class Composer {
         //     at a concrete one, the constant false; the guard named in
         //     concrete[] (WAY) with what its term rests on.  One that left
         //     it at no guard stopped on the way (RestsOn#decided): the
-        //     constant false, named WAY with how it stopped, and where a
-        //     loop bound cut its occurrence a gap the case's `bounded`
+        //     constant false, named WAY with how it stopped.  Where a
+        //     loop bound cut its occurrence on the way -- before it left,
+        //     or after it left inside a loop -- a gap the case's `bounded`
         //     counts (run_engine.sh campaign_bounds: loop_body_bound), so
-        //     its UNSAT rests on that bound.  None stated is no phi.
+        //     its UNSAT rests on that bound; a failure of the loop
+        //     accounting itself is a BLOCKING defect (RestsOn#cut).  None
+        //     stated is no phi.
         String subject = "phi of " + anchor.render();
         String published = target.phiTerm().trim();
         int fatalArm = -1;
@@ -1430,20 +1433,17 @@ public final class Composer {
                     + " way to the throw at", new ArrayList<String>(
                     corpus.termSymbols(session, way.term())))
                     : new Concrete("WAY", anchor.render(), "",
-                    decided.cut.isEmpty() ? "the path stopped on the way to"
-                            + " the throw: it left it at no guard"
+                    decided.cut.isEmpty() && decided.defect.isEmpty()
+                            ? "the path stopped on the way to the throw: it"
+                            + " left it at no guard"
                             : "the path stopped on the way to the throw: a"
                             + " loop bound cut its occurrence ("
-                            + decided.cut + ")",
+                            + (decided.cut.isEmpty() ? decided.defect
+                            : decided.cut) + ")",
                     Collections.<String>emptyList()));
-            if (way == null && !decided.cut.isEmpty()) {
-                gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
-                        anchor.render() + " " + LOOP_BODY_BOUND + "="
-                                + RestsOn.boundOf(decided.cut),
-                        "session " + session + " reached no point of the"
-                                + " anchor and left the way to the throw at"
-                                + " no guard: " + decided.cut);
-            }
+            List<GapRow> named = new ArrayList<GapRow>();
+            restsOn.cut(named, session, decided);
+            gaps.addAll(named);
             String fatal = symbolicWay ? lowering.statedTerm(fatalTerm,
                     "way:" + subject) : fatalTerm;
             if (!fatal.isEmpty() && !unknown(fatal, refusals, subject)) {
