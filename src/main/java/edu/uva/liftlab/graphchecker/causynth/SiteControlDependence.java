@@ -7,6 +7,7 @@ import soot.Body;
 import soot.Unit;
 import soot.jimple.IfStmt;
 import soot.toolkits.graph.BriefUnitGraph;
+import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.MHGPostDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
@@ -98,23 +99,33 @@ public final class SiteControlDependence {
                 return found;
             }
 
+            /** The site's own and chain guards, and those of the calls
+             *  that run its method (the walk {@code targetChain} takes),
+             *  each of whose arms reaches the site -- or, in a caller, one
+             *  of its calls into the chain -- within one iteration
+             *  ({@link MethodGuards#passable}): a guard choosing WHICH call
+             *  runs the method ({@link #choosingCallsInto}) among them. */
             @Override
             public Set<String> passable(String siteId,
                                         Predicate<String> entry) {
                 Set<String> found = new LinkedHashSet<String>();
                 MethodGuards own = bySite.get(siteId);
                 if (own != null) {
-                    found.addAll(own.passable(SiteId.unitIndexOf(siteId),
-                            false));
+                    found.addAll(own.passable(Collections.singleton(
+                            SiteId.unitIndexOf(siteId))));
                 }
+                Map<String, List<Integer>> calls =
+                        new LinkedHashMap<String, List<Integer>>();
                 for (String call : callSitesInto(SiteId.methodOf(siteId),
                         entry.negate())) {
-                    found.addAll(guardsOf(SiteId.methodOf(call)).passable(
-                            SiteId.unitIndexOf(call), true));
+                    calls.computeIfAbsent(SiteId.methodOf(call),
+                            caller -> new ArrayList<Integer>())
+                            .add(SiteId.unitIndexOf(call));
                 }
-                for (StaticScopeMap.Guard choosing
-                        : choosingCallsInto(SiteId.methodOf(siteId))) {
-                    found.add(choosing.siteId());
+                for (Map.Entry<String, List<Integer>> caller
+                        : calls.entrySet()) {
+                    found.addAll(guardsOf(caller.getKey()).passable(
+                            caller.getValue()));
                 }
                 return found;
             }
@@ -361,6 +372,56 @@ public final class SiteControlDependence {
             return found;
         }
 
+        /**
+         * Whether each arm of {@code branch} reaches one of {@code sites}
+         * within one iteration: the branch itself and every backedge -- an
+         * edge into a unit that dominates its source, the loop's header --
+         * are barriers.  An arm that comes back to the way only in the next
+         * iteration of an enclosing loop leaves it in this one ({@code
+         * if (first && !isActive) continue; if (!isLeader) continue; throw}:
+         * isActive's continue arm reaches the throw only through the
+         * header, in a turn where {@code first} is false).
+         */
+        boolean passable(Unit branch, Collection<Unit> sites) {
+            List<Unit> successors = cfg.getSuccsOf(branch);
+            if (successors.size() < 2) return false;
+            for (Unit successor : successors) {
+                if (!reachesWithinIteration(branch, successor, sites)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private boolean reachesWithinIteration(Unit branch, Unit start,
+                                               Collection<Unit> sites) {
+            if (backedge(branch, start)) return false;
+            Set<Unit> seen = new LinkedHashSet<Unit>();
+            Deque<Unit> work = new ArrayDeque<Unit>();
+            work.add(start);
+            while (!work.isEmpty()) {
+                Unit current = work.removeFirst();
+                if (sites.contains(current)) return true;
+                if (current == branch || !seen.add(current)) continue;
+                for (Unit successor : cfg.getSuccsOf(current)) {
+                    if (!backedge(current, successor)) work.add(successor);
+                }
+            }
+            return false;
+        }
+
+        /** Whether {@code from -> to} closes a loop: {@code to} dominates
+         *  {@code from}. */
+        private boolean backedge(Unit from, Unit to) {
+            if (dominators == null) {
+                dominators = new MHGDominatorsFinder<Unit>(cfg);
+            }
+            return dominators.isDominatedBy(from, to);
+        }
+
+        /** The CFG's dominators, built at the first {@link #backedge}. */
+        private MHGDominatorsFinder<Unit> dominators;
+
         /** Reachability within one occurrence: the branch is a barrier. */
         private boolean reachesWithoutRevisiting(Unit start, Unit site,
                                                  Unit branch) {
@@ -515,34 +576,36 @@ public final class SiteControlDependence {
         }
 
         /**
-         * Of the unit's chain (and, with {@code own}, its own guards), those
-         * each of whose arms reaches it within one occurrence (the branch a
-         * barrier): an {@code assert}'s {@code $assertionsDisabled} test is a
-         * chain guard on its skip arm, the arm that alone makes the unit
-         * unavoidable, while its other arm reaches the unit too, through the
-         * assert's own test.  A throw's own guards are never among them: in
-         * {@code if (a || b) throw}, {@code a}'s other arm reaches the throw
-         * through {@code b}, yet {@code a} is the decision the throw stands
-         * at (solr-18406's {@code getAndSaveCommitPoint#u11}); a call's own
-         * guards, with {@code own}, are the throw's chain.
+         * Of the guards and chain of the units at these ORIGINAL indices,
+         * those each of whose arms reaches one of the units within one
+         * iteration ({@link Relation#passable}), so neither arm leaves the
+         * way to them: an {@code assert}'s {@code $assertionsDisabled} test,
+         * a chain guard on its skip arm while its other arm reaches the unit
+         * through the assert's own test; the first test of a throw's {@code
+         * if (a || b)}, whose healthy arm reaches it through {@code b} (a
+         * FORCE run leaves it to its operands, {@code
+         * runtime.ForcedArms#reachedTarget}); in a caller, a guard choosing
+         * which of its calls into the throw's method runs.
          */
-        public Set<String> passable(int unitIndex, boolean own) {
+        public Set<String> passable(Collection<Integer> unitIndices) {
             Set<String> found = new LinkedHashSet<String>();
-            Unit site = byIndex.get(Integer.valueOf(unitIndex));
-            if (site == null || plain == null) return found;
+            if (plain == null) return found;
+            List<Unit> sites = new ArrayList<Unit>();
             Set<String> named = new LinkedHashSet<String>();
-            if (own) {
+            for (int unitIndex : unitIndices) {
+                Unit site = byIndex.get(Integer.valueOf(unitIndex));
+                if (site == null) continue;
+                sites.add(site);
                 for (StaticScopeMap.Guard guard : at(unitIndex)) {
                     named.add(guard.siteId());
                 }
+                for (StaticScopeMap.Guard guard : chain(unitIndex)) {
+                    named.add(guard.siteId());
+                }
             }
-            for (StaticScopeMap.Guard guard : chain(unitIndex)) {
-                named.add(guard.siteId());
-            }
-            List<Unit> controlling = plain.reaching(site, true);
-            for (Unit branch : plain.reaching(site, false)) {
-                if (!controlling.contains(branch)
-                        && named.contains(siteOf(branch))) {
+            for (Unit branch : plain.branches) {
+                if (named.contains(siteOf(branch))
+                        && plain.passable(branch, sites)) {
                     found.add(siteOf(branch));
                 }
             }

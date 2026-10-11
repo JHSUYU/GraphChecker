@@ -83,7 +83,9 @@ public class ForcingTableTest {
                         + "wants (false: expired() returns false)",
                         H + "#u1", "=false via " + M},
                 {"under that open arm, the nested decider at the arm whose "
-                        + "verdict it wants", N + "#u2", "=true via " + H},
+                        + "verdict it wants; its other arm is open, so "
+                        + "neither leaves the way: passable", N + "#u2",
+                        "=true via " + H + " passable"},
                 {"a chain switch: never forced", M + "#u3", null},
                 {"a caller's chain guard", CALLER + "#u4", "=true"},
                 {"a fault call: no arm to force", M + "#u5", null}};
@@ -177,14 +179,14 @@ public class ForcingTableTest {
      * the throw too, through the assert's own test (u3): it is passable,
      * never forced, so a forced world with assertions on states no {@code
      * false} for it (solr-adhoc-07 F2P2: ZkController.register's two
-     * asserts).  The assert's test is forced at its arm, and so is each of
-     * the throw's own guards, {@code if (x > 5 || x < -5)}, though u5's other
-     * arm reaches the throw through u6: the throw stands at u5 (solr-18406
-     * F2V3: getAndSaveCommitPoint's u11, marked passable, was left to its
-     * operands and the FORCE run diverged).  check(int x): u1 z0 =
-     * $assertionsDisabled; u2 if z0 goto u5; u3 if x != 0 goto u5; u4
-     * return; u5 if x > 5 goto u7; u6 if x >= -5 goto u9; u7 r1 = new X (the
-     * throw); u8 throw r1; u9 return.
+     * asserts).  The assert's test is forced at its arm.  Of the throw's own
+     * guards, {@code if (x > 5 || x < -5)}, u5's healthy arm reaches the
+     * throw through u6: passable too, left to its operands, and a FORCE run
+     * goes on to u6 when it takes that arm (runtime.ForcedArms#reachedTarget;
+     * solr-18406 F2V3: getAndSaveCommitPoint's u11); u6, at its fatal arm,
+     * is forced.  check(int x): u1 z0 = $assertionsDisabled; u2 if z0 goto
+     * u5; u3 if x != 0 goto u5; u4 return; u5 if x > 5 goto u7; u6 if x >= -5
+     * goto u9; u7 r1 = new X (the throw); u8 throw r1; u9 return.
      */
     @Test
     public void aBranchBothOfWhoseArmsReachTheThrowIsNeverForced()
@@ -209,9 +211,9 @@ public class ForcingTableTest {
                             check + "#u2", "=true passable"},
                     {"the assert's own test: its other arm returns",
                             check + "#u3", "=true"},
-                    {"the throw's own guard, though its other arm reaches"
+                    {"the throw's own first test: its healthy arm reaches"
                             + " the throw through u6", check + "#u5",
-                            "=true"},
+                            "=true passable"},
                     {"the throw's other guard, at its fatal arm",
                             check + "#u6", "=false"}};
             for (Object[] expected : rows) {
@@ -222,7 +224,7 @@ public class ForcingTableTest {
             }
             assertEquals("a passable branch is no forced site",
                     new java.util.LinkedHashSet<String>(Arrays.asList(
-                            check + "#u5", check + "#u6", check + "#u3")),
+                            check + "#u6", check + "#u3")),
                     read("{\"schemaVersion\":1,\"kind\":\"STATIC_SCOPE_SITE\","
                             + "\"role\":\"TARGET_SITE\",\"regionId\":\"R\","
                             + "\"siteId\":\"" + thrown + "\",\"vmSite\":\"\","
@@ -268,6 +270,104 @@ public class ForcingTableTest {
                 j.newIfStmt(j.newGeExpr(x, IntConstant.v(-5)), end),
                 throwing,
                 j.newThrowStmt(r),
+                end));
+    }
+
+    /**
+     * Passable is reachability within ONE iteration: a backedge (the loop's
+     * header) is a barrier.  scan(int i): u1 if i >= 10 goto u12 (the loop's
+     * test); u2 z1 = first; u3 if z1 == 0 goto u6; u4 z2 = active; u5 if z2
+     * == 0 goto u10 (continue); u6 z3 = leader; u7 if z3 == 0 goto u10
+     * (continue); u8 r1 = new X (the throw); u9 throw r1; u10 i = i + 1; u11
+     * goto u1; u12 return.  isActive's continue arm (u5) comes back to the
+     * throw only through the header, in a turn where {@code first} is false:
+     * it leaves the way in this one, so it is forced; {@code first} (u3)
+     * leads to u6 either way within the turn, so it is passable.
+     */
+    @Test
+    public void aGuardWhoseArmComesBackOnlyInTheNextIterationIsForced()
+            throws IOException {
+        String scan = "<a.L: void scan(int)>";
+        String thrown = scan + "#u8";
+        try {
+            loopBody();
+            StaticScopeMap.Site target = read("{\"schemaVersion\":1,"
+                    + "\"kind\":\"STATIC_SCOPE_SITE\","
+                    + "\"role\":\"TARGET_SITE\",\"regionId\":\"R\","
+                    + "\"siteId\":\"" + thrown + "\",\"vmSite\":\"\","
+                    + "\"cell\":\"\",\"carrier\":\"\",\"portId\":\"\"}")
+                    .targetSites().get(0);
+            Map<String, ForcingTable.Arm> table = ForcingTable.read(
+                    StaticScopeMap.rows(Collections.singletonList(target),
+                            SiteControlDependence.over(
+                                    Collections.singleton(thrown)),
+                            method -> false).get(0).getAsJsonArray("force"));
+            Object[][] rows = {
+                    {"isLeader, the throw's guard, at its fatal arm",
+                            scan + "#u7", "=false"},
+                    {"isActive: its continue arm leaves the way in this turn",
+                            scan + "#u5", "=false"},
+                    {"first: both arms reach isLeader within the turn",
+                            scan + "#u3", "=true passable"},
+                    {"the loop's test: its exit returns", scan + "#u1",
+                            "=false"}};
+            for (Object[] expected : rows) {
+                ForcingTable.Arm arm = table.get((String) expected[1]);
+                assertEquals((String) expected[0], expected[2], arm == null
+                        ? null : arm.toString().substring(
+                        ((String) expected[1]).length()));
+            }
+        } finally {
+            G.reset();
+        }
+    }
+
+    /** {@link #aGuardWhoseArmComesBackOnlyInTheNextIterationIsForced}'s
+     *  body. */
+    private static void loopBody() {
+        Options.v().set_allow_phantom_refs(true);
+        SootClass owner = new SootClass("a.L", Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootField[] flags = new SootField[3];
+        String[] names = {"first", "active", "leader"};
+        for (int index = 0; index < flags.length; index++) {
+            flags[index] = new SootField(names[index], BooleanType.v(),
+                    Modifier.STATIC);
+            owner.addField(flags[index]);
+        }
+        SootMethod scan = new SootMethod("scan",
+                Collections.<Type>singletonList(IntType.v()), VoidType.v(),
+                Modifier.PUBLIC);
+        owner.addMethod(scan);
+        Jimple j = Jimple.v();
+        Body body = j.newBody(scan);
+        scan.setActiveBody(body);
+        Local i = j.newLocal("i0", IntType.v());
+        Local[] z = {j.newLocal("z1", BooleanType.v()),
+                j.newLocal("z2", BooleanType.v()),
+                j.newLocal("z3", BooleanType.v())};
+        RefType thrown = RefType.v("a.X");
+        Local r = j.newLocal("r1", thrown);
+        body.getLocals().addAll(Arrays.asList(i, z[0], z[1], z[2], r));
+        Unit end = j.newReturnVoidStmt();
+        Unit latch = j.newAssignStmt(i, j.newAddExpr(i, IntConstant.v(1)));
+        Unit leader = j.newAssignStmt(z[2],
+                j.newStaticFieldRef(flags[2].makeRef()));
+        Unit head = j.newIfStmt(j.newGeExpr(i, IntConstant.v(10)), end);
+        body.getUnits().addAll(Arrays.asList(
+                j.newIdentityStmt(i, j.newParameterRef(IntType.v(), 0)),
+                head,
+                j.newAssignStmt(z[0], j.newStaticFieldRef(flags[0].makeRef())),
+                j.newIfStmt(j.newEqExpr(z[0], IntConstant.v(0)), leader),
+                j.newAssignStmt(z[1], j.newStaticFieldRef(flags[1].makeRef())),
+                j.newIfStmt(j.newEqExpr(z[1], IntConstant.v(0)), latch),
+                leader,
+                j.newIfStmt(j.newEqExpr(z[2], IntConstant.v(0)), latch),
+                j.newAssignStmt(r, j.newNewExpr(thrown)),
+                j.newThrowStmt(r),
+                latch,
+                j.newGotoStmt(head),
                 end));
     }
 

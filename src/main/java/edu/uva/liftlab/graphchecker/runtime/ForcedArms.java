@@ -164,11 +164,15 @@ final class ForcedArms {
     private static long disarmed;
 
     /**
-     * The armed activation reached its target decision: on its fatal arm
-     * (forced, or as its operands decided), the forced path ends there;
-     * on its healthy one (a branch the VM could not force: no marker owned
-     * it), the run is FORCE_DIVERGED.  Nothing it decides from here is
-     * forced.
+     * The armed activation reached a test of its target: on its fatal arm
+     * (forced, or as its operands decided), the forced path ends there.  On
+     * its healthy arm, a passable test -- one whose healthy arm runs on to
+     * another test of the same throw, the first of {@code if (a || b)},
+     * left to its operands -- decides nothing: the run goes on to the test
+     * that is forced (solr-18406 F2V3: getAndSaveCommitPoint's u11).  Any
+     * other test on its healthy arm (a branch the VM could not force: no
+     * marker owned it) makes the run FORCE_DIVERGED.  Once decided, nothing
+     * the activation decides is forced.
      */
     static void reachedTarget(ActiveRegion active, String site, int ordinal,
                               boolean outcome) {
@@ -178,7 +182,10 @@ final class ForcedArms {
                     ? Boolean.valueOf(
                     active.activation.targetBranchRequiredOutcome)
                     : active.activation.targetGuards.get(site);
-            if (fatal != null && fatal.booleanValue() == outcome) {
+            boolean healthy = fatal == null || fatal.booleanValue() != outcome;
+            ForcingTable.Arm arm = active.activation.forcedArms.get(site);
+            if (healthy && arm != null && arm.passable) return;
+            if (!healthy) {
                 target = site + "#" + ordinal;
             } else {
                 diverged = FORCE_DIVERGED + ": the target decision " + site

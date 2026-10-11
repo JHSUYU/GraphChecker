@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,11 +32,13 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * there).  A switch guard is not forced (the VM forces an if's arm only),
  * nor a fault call, which no branch decides: a forced world they take
  * elsewhere closes before its target, FORCE_DIVERGED.  A guard each of whose
- * arms reaches the throw ({@code StaticScopeMap.Guards#passable}: an {@code
- * assert}'s {@code $assertionsDisabled} test) is stated {@code passable} and
- * never forced: forcing it against its concrete arm would put {@code false}
- * in the forced condition (that world cannot take it), while either arm
- * leads on to the guards that are forced.  The table is also the one
+ * arms reaches the throw within one iteration ({@code
+ * StaticScopeMap.Guards#passable}: an {@code assert}'s {@code
+ * $assertionsDisabled} test, the first test of {@code if (a || b) throw}),
+ * and a decider neither of whose arms leaves the way, are stated {@code
+ * passable} and never forced: forcing one against its concrete arm would put
+ * {@code false} in the forced condition (that world cannot take it), while
+ * either arm leads on to the branches that are forced.  The table is also the one
  * statement of the arm toward the throw COMPOSE asks whether a path left
  * the way at ({@code compose.RestsOn#wayGuard}).  Each TARGET_SITE row has
  * its own table, and a task carries its own target's.</p>
@@ -120,15 +123,33 @@ public final class ForcingTable {
     /**
      * The decider arms of one guard that make it take {@code wanted}: per
      * decider site the arm whose verdict is {@code wanted}, else its open
-     * arm; the deciders of the arm chosen, in turn, at that arm.
+     * arm; the deciders of the arm chosen, in turn, at that arm.  A decider
+     * neither of whose arms leaves the way -- each runs to a return whose
+     * verdict is {@code wanted}, or on to a value no constant states (an
+     * open arm) -- is {@code passable}, as a guard each of whose arms
+     * reaches the throw is: forcing it against its concrete arm would put
+     * {@code false} in the forced condition for an arm that leads on too.
      */
     private static void deciders(Map<String, Arm> table,
                                  List<StaticScopeMap.Guard> deciders,
                                  boolean wanted, String via) {
         Map<String, StaticScopeMap.Guard> chosen =
                 new LinkedHashMap<String, StaticScopeMap.Guard>();
+        Map<String, Set<Boolean>> leaving =
+                new LinkedHashMap<String, Set<Boolean>>();
+        Map<String, Set<Boolean>> arms =
+                new LinkedHashMap<String, Set<Boolean>>();
         for (StaticScopeMap.Guard decider : deciders) {
             if (decider.outcome() == null) continue;
+            arms.computeIfAbsent(decider.siteId(),
+                    site -> new HashSet<Boolean>())
+                    .add(decider.outcome());
+            if (decider.verdict() != null
+                    && decider.verdict().booleanValue() != wanted) {
+                leaving.computeIfAbsent(decider.siteId(),
+                        site -> new HashSet<Boolean>())
+                        .add(decider.outcome());
+            }
             StaticScopeMap.Guard held = chosen.get(decider.siteId());
             boolean fatal = decider.verdict() != null
                     && decider.verdict().booleanValue() == wanted;
@@ -142,7 +163,9 @@ public final class ForcingTable {
         for (StaticScopeMap.Guard decider : chosen.values()) {
             if (table.containsKey(decider.siteId())) continue;
             table.put(decider.siteId(), new Arm(decider.siteId(),
-                    decider.outcome(), via, false));
+                    decider.outcome(), via,
+                    arms.get(decider.siteId()).size() == 2
+                            && !leaving.containsKey(decider.siteId())));
             deciders(table, decider.deciders(), decider.outcome(),
                     SiteId.methodOf(decider.siteId()));
         }

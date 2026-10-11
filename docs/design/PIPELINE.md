@@ -139,12 +139,16 @@ Defaults in parentheses; `solver_timeout_ms` and `schedule_max_jobs` have none.
    = guards + chain + the chain's deciders at every depth; a reached anchor flips its guards and
    the one decision each target row's open decider arm names (`TargetRow.OpenArm`); and `force`,
    the forcing table (each of those ifs with the arm that leads to the throw, a switch never,
-   `plan.ForcingTable`; a chain if each of whose arms reaches the throw within one occurrence -- an
-   `assert`'s `$assertionsDisabled` test, a guard on its skip arm while its other arm reaches the
-   throw through the assert's own test -- stated `passable` and never forced,
-   `SiteControlDependence.MethodGuards#passable`; never one of the throw's own guards, the decisions
-   it stands at, though in `if (a || b) throw` `a`'s other arm reaches it through `b`: solr-18406's
-   `getAndSaveCommitPoint#u11` so marked was left to its operands and its FORCE run diverged), one per TARGET_SITE row, which PLAN copies -- the task's own target's
+   `plan.ForcingTable`; a guard or chain if each of whose arms reaches the throw -- or, in a caller,
+   one of its calls into the throw's method -- within one iteration (the branch and every backedge,
+   an edge into the loop's header, are barriers: an arm that comes back only in the next turn of a
+   loop leaves the way in this one) is stated `passable` and never forced,
+   `SiteControlDependence.MethodGuards#passable`: an `assert`'s `$assertionsDisabled` test, a guard
+   on its skip arm while its other arm reaches the throw through the assert's own test; the first
+   test of `if (a || b) throw`, whose healthy arm reaches it through `b` (a FORCE run that takes that
+   arm goes on to `b`, §7.10); a caller's guard choosing which of its calls into the method runs;
+   likewise a decider neither of whose arms leaves the way, each running to a return of the verdict
+   its guard wants or on to an open value), one per TARGET_SITE row, which PLAN copies -- the task's own target's
    (`ConcolicScheduler#ownTarget`) -- onto the declared task's `targetBranch.force` for the
    forced replay (§7.10), less a caller's chain guard where the recording's occurrence entered the
    throw's method (`ForcingTable#forOccurrence`: it reaches the method by some call, and forcing another
@@ -1372,8 +1376,11 @@ forced path condition: every decision of the occurrence from it up to the target
 a concrete one forced against its arm `false`), and the target's own phi (`RowPublication#forced`); it is
 marked `forced` and observed no fatal (`TargetRow#forced`), so it is never a witness. The run ends once that
 row is published (`AT_FORCED_TARGET`, §5) and its verdict is ADMITTED, `FORCED_TARGET` and how the occurrence
-then ended (the target's throw, or a handler that caught it); an occurrence that closes first, or takes its
-target's healthy arm (a branch no marker of its frame let the VM force), decides the run there
+then ended (the target's throw, or a handler that caught it). A `passable` test of the target taken on its
+healthy arm decides nothing: its healthy arm runs on to the target's next test, which is forced
+(`ForcedArms#reachedTarget`; solr-18406 F2V3, `getAndSaveCommitPoint#u11`, the first test of `a || b`). An
+occurrence that closes first, or takes any other test of its target on its healthy arm (a branch no marker of
+its frame let the VM force), decides the run there
 (`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame, or the loop
 bound that cut it, §5); one that never closed
 (blocked, its activation stranded at the run's end) is decided at the session's close
