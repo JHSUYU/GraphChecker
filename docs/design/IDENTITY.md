@@ -602,6 +602,17 @@ role: passed through to its item's doors, never planned, its own decisions not f
   writer may be held at its SEND while a reader waits for it -- costs the bound, and the read
   then names nothing and a DIAGNOSTIC `LINEAGE_LOST` row names the version and the writes still
   in flight. Writes at other locations, of the same transport or not, order nothing.
+- `reading(transport, location)`: a store read outside a callback -- whether a node exists, its data,
+  its children (the location is then the parent) -- takes its turn as a write does, a `READ` event at
+  the same `<transport>:<location>` key (`RunNames#key`, one spelling with the write's and with the
+  `STORE` location a version is filed under), before the store's call: it waits behind the write the
+  recording made there before it, and the write the recording made there after it waits behind it
+  (§8). What a create-if-absent's check, a compare-and-set's version or a client's view of an alias
+  or a collection's state finds is then the recording's (solr-adhoc-39, MB23s: the commit's node
+  followed the client's view of the alias, which a store read before or after the alias's write
+  decided). A read takes a slot only at a location a write of the order wrote (reads of every other
+  path take none and count as no step), and a `READ` slot holds no frontier: it is never blocking,
+  so a read that never comes holds nothing back.
 
 ### 7.3 Typed faults
 
@@ -625,7 +636,7 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 
 `contract/ScheduleEvent` = (seq, kind, context, site, k, occurrence, endpoint). Kinds: `START`,
 `CLAIM`, `SEND` (with the producer endpoint), `WRITE` (a shared store's write taking its turn before
-the store's call, §7.2), `RECV`, `WAKE` (a timed wait's timeout; a tick's
+the store's call, §7.2), `READ` (a store read's turn, at a location a `WRITE` of the order wrote), `RECV`, `WAKE` (a timed wait's timeout; a tick's
 begin), `END` (a tick's end), `INTERRUPT`. A tick's `WAKE` is computed at its begin and written as
 the turn's first event is admitted, before it, in both passes (`ScheduleLog#turnBegun`,
 `#takeTurnWake`: at `observe`, at a held timed wait's admitted or timed-out `WAKE`; asking whether
@@ -712,6 +723,18 @@ order:
   slot before that write, which only it makes (solr-adhoc-19, round MB14s: a node's extra compare-and-set retry at
   its terms node waited behind another node's later write there, and its eight registration slots stalled one by
   one; 39, MB18s: 45 such writes given up one by one, behind writes up to 970 slots past the frontier);
+- a `READ` is held by its location alone: it waits while a write the order makes there before its slot is
+  open and holds (the earliest such), and a `WRITE` waits so behind the reads there as behind the writes
+  (`#conflictLocked`; reads never wait for reads), with the write rule's owing exception. Its slot is never
+  blocking (`#blocking`), so the frontier passes it. The read's wait is a held one: while the order moves it
+  waits for its write; a grace into a stall it is let go, the write's slot kept (`#letGoHeldLocked`): a
+  read's k-th slot is its context's k-th recorded read there, and a context that reads more often than
+  recorded -- a poll, a cache refresh -- waits for a later write than its own, which may wait on the reader
+  (solr-adhoc-39, MB29s: 37 such waits given their writes up, 447 s, and 145 write conflicts 1,710 s). A
+  write behind a read that does not come gives that read up a grace into the stall, not a timeout. A read
+  with no slot runs free. Only the reads a run's recorded placement decides take slots: in a run the model
+  orders (a world's planted pairings, CONFIRM, a reproduction's plant: `ScheduleLog#readsHeld`) the reads
+  past the cut take none, and the model's `ORDER` rows place them (PIPELINE.md §5);
 - while the prefix stands, a `WAKE` with no slot is held too (`ScheduleLog#waitsAtLocked`). One the
   recording never made waits at the cut. One past its recorded count (a loop polling longer than
   recorded) waits until its context's next slot is due, then polls once per move of the order
@@ -726,11 +749,13 @@ order:
   seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
   still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
   waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
-  give-up of the 4560 slots before it). A frontier whose context family -- its node and causal context, a root's turn
-  number, an anchor's endpoint and the start frames left out -- missed its event in a stall before stands a grace,
-  not a timeout: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up stalls, 63
-  of 19's 70, stood on a context that had failed one; MB21s/MB22s: 34 of 10's 58 and 26 of 31's 69 on another turn
-  or anchor of a family that had). Past the cut a `WAKE` with no slot runs free, except in an
+  give-up of the 4560 slots before it). The slot a stall would give up first -- the one write or read a conflicted
+  write waits behind, else the frontier -- stands a grace, not a timeout, when it is a `READ` or its context family
+  -- its node and causal context, a root's turn number, an anchor's endpoint and the start frames left out -- missed
+  its event in a stall before: that family diverged from the recording (round SG2: 69 of solr-adhoc-38's 138 give-up
+  stalls, 63 of 19's 70, stood on a context that had failed one; MB21s/MB22s: 34 of 10's 58 and 26 of 31's 69 on
+  another turn or anchor of a family that had; MB29s: 102 of 39's 145 conflicts stood the timeout while the family
+  was judged by the waiting write's context, not the one it waited for). Past the cut a `WAKE` with no slot runs free, except in an
   order whose run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
   `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
   not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
