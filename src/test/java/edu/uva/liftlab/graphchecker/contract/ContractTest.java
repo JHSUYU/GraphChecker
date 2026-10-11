@@ -978,6 +978,24 @@ public class ContractTest {
         reachedTwice.targets.add(reachedTwice.targets.get(0));
         assertInvariant(4, GapClass.BLOCKING,
                 "field=occurrence/seq/anchorSiteId", reachedTwice);
+        // A node's view of a store path is its version, as the store's own
+        // write is: two decodes of two versions with no VM event between
+        // them are two events; one version stated twice is one.
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@auto0/node0#epoch0", "/aliases.json");
+        Rows decodes = clean();
+        decodes.writes.add(WriteRow.of("s-gate", 30L, decodes.writeAt, view,
+                3L, "EXPR.0000000000000001", "J"));
+        decodes.writes.add(WriteRow.of("s-gate", 30L, decodes.writeAt, view,
+                4L, "EXPR.0000000000000001", "J"));
+        for (GapRow decode : gate(decodes)) {
+            assertFalse("two decodes of two versions at one event: "
+                    + decode.subject(), decode.detail().contains(
+                    "invariant 4 (") && decode.cls() == GapClass.BLOCKING);
+        }
+        decodes.writes.add(decodes.writes.get(decodes.writes.size() - 1));
+        assertInvariant(4, GapClass.BLOCKING, "field=seq/location/version",
+                decodes);
         // 5: one name, one spelled sort, and a placeholder read's sort is the
         // one its own row declares.
         Rows mixed = clean();

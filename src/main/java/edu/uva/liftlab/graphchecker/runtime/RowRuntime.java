@@ -584,7 +584,7 @@ public final class RowRuntime {
         // A guard that reads several objects of one parse with no VM event
         // between them (a loop over a collection's slices) reads the version
         // once.
-        if (!STORE_READS.add(seq + "|" + location)) return;
+        if (!STORE_EVENTS.add(seq + "|" + location)) return;
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         if (version >= 0L) {
@@ -608,6 +608,9 @@ public final class RowRuntime {
                                  long version) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || view == null) return;
+        // Two decodes of one version on one node with no VM event between
+        // them (a watcher's and a fetch's) re-point the view once.
+        if (!STORE_EVENTS.add(seq + "|" + view + "|" + version)) return;
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         JsonObject value = new JsonObject();
@@ -630,7 +633,7 @@ public final class RowRuntime {
                                 String site, LocationId view, long version) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || view == null) return;
-        if (!STORE_READS.add(seq + "|" + view)) return;
+        if (!STORE_EVENTS.add(seq + "|" + view)) return;
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         session.read(ReadRow.of(sessionId(), sequence(seq), at, view,
@@ -639,8 +642,9 @@ public final class RowRuntime {
         Confirmation.read(at, view, version, ReadRow.UNKNOWN_VERSION);
     }
 
-    /** seq|location of every store read stated: one per event. */
-    private static final Set<String> STORE_READS =
+    /** seq|location of every store read stated, seq|view|version of every
+     *  view write: one per event. */
+    private static final Set<String> STORE_EVENTS =
             ConcurrentHashMap.newKeySet();
 
 
@@ -1432,7 +1436,7 @@ public final class RowRuntime {
             ENDPOINTS.clear();
             WRITTEN.clear();
             READERS.clear();
-            STORE_READS.clear();
+            STORE_EVENTS.clear();
             OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();

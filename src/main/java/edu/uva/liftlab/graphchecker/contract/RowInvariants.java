@@ -335,11 +335,13 @@ public final class RowInvariants {
             twice(session, gaps, seen, "reads", row.seq(), "seq/location",
                     row.seq() + "|" + row.location(), row.location() + "");
         }
-        // A store's write is its version (IDENTITY §7.2): two versions of
-        // one path with no VM event between them, or with no VM clock at all
-        // (seq 0), are two events.
+        // A store's write is its version (IDENTITY §7.2), and so is a node's
+        // view of it (SYMBOL-SCOPE §6.4): two versions of one path, or two
+        // decodes of one path on one node, with no VM event between them,
+        // or with no VM clock at all (seq 0), are two events.
         for (WriteRow row : session.writes()) {
-            boolean store = row.location().kind() == LocationKind.STORE;
+            boolean store = row.location().kind() == LocationKind.STORE
+                    || row.location().kind() == LocationKind.VIEW;
             twice(session, gaps, seen, "writes", row.seq(), store
                     ? "seq/location/version" : "seq/location", row.seq() + "|"
                     + row.location() + (store ? "|" + row.version() : ""),
