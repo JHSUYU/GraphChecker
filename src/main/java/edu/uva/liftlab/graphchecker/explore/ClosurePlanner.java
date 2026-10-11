@@ -76,6 +76,9 @@ public final class ClosurePlanner {
     public static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
     /** Sent the message a member served. */
     public static final String CONTROL_PRODUCER = "CONTROL_PRODUCER";
+    /** Fetched, on a target's data flow, a store location a member read
+     *  ({@link #storeFetches}). */
+    public static final String STORE_FETCH = "STORE_FETCH";
     /** Holds a static write site of a demanded location. */
     public static final String STATIC_CANDIDATE_WRITER =
             "STATIC_CANDIDATE_WRITER";
@@ -801,8 +804,9 @@ public final class ClosurePlanner {
         // A control producer contributes no value: whether its own message
         // exists is no question of the anchor's (solr-18413 round Z7: the
         // doors of every request and queue item behind the store writers'
-        // items, six hops deep, doubled the plan).
-        if (!CONTROL_PRODUCER.equals(demand.why)) {
+        // items, six hops deep, doubled the plan).  Nor does a store fetch.
+        if (!CONTROL_PRODUCER.equals(demand.why)
+                && !STORE_FETCH.equals(demand.why)) {
             controlProducer(walk, demand, next);
         }
         return next;
@@ -1117,6 +1121,7 @@ public final class ClosurePlanner {
     private static void writers(Walk walk, ReadRow row, List<Demand> into) {
         if (row.location().kind() == LocationKind.STORE) {
             storeWriters(walk, row, into);
+            storeFetches(walk, row, into);
             return;
         }
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
@@ -1200,6 +1205,28 @@ public final class ClosurePlanner {
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(), row.endpoint().occurrence())) {
             wrote(walk, write, into);
+        }
+    }
+
+    /**
+     * The fetches of a demanded store read's location, on its reader's node,
+     * that PLAN stated on the target's data flow (SYMBOL-SCOPE §4.2: the
+     * plan's {@code storeFetches}, whose read doors alone mint; {@link
+     * StaticScopeMap#storeFetches}): a fault at one's read registers no
+     * watch, so the node never fetches the next version and its reader reads
+     * an older one.  Each joins contributing no value, flipped at its fault
+     * decisions, as every task is, and is not followed ({@link
+     * #successors}).
+     */
+    private static void storeFetches(Walk walk, ReadRow row,
+                                     List<Demand> into) {
+        NodeId reader = row.endpoint().occurrence().node();
+        for (String fetch : walk.map.storeFetches(row.location().owner(),
+                row.location().slot())) {
+            OccurrenceAddress occurrence = OccurrenceAddress.parse(fetch);
+            if (reader.equals(occurrence.node())) {
+                into.add(new Demand(occurrence, STORE_FETCH, false));
+            }
         }
     }
 

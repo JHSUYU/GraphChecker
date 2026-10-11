@@ -23,9 +23,10 @@ import static org.junit.Assert.assertEquals;
  * only where its fetch lies on the data flow.  The recording states each
  * decode with the occurrence that fetched it ({@link RecordedStore}); PLAN
  * takes the fetch's door to be the data-flow door call that occurrence made
- * last before the decode, every marker of that one call ({@code
- * RuntimeSelectedRegionFinalizer#fetchDoor}), and states the rest as woven
- * but never asked.
+ * last before the decode and after its store event before it, every marker
+ * of that one call ({@code RuntimeSelectedRegionFinalizer#fetchDoor}), and
+ * states the rest as woven but never asked.  A decode of a version its own
+ * occurrence wrote fetched nothing.
  */
 public class StoreFetchDoorsTest {
     private static final String MARKER = "<edu.uva.liftlab.graphchecker."
@@ -53,43 +54,56 @@ public class StoreFetchDoorsTest {
                 capture(EXISTS + "#u2", 1, 10), capture(GET + "#u3", 1, 12),
                 capture(GET + "#u6", 1, 13), capture(SET + "#u4", 1, 15),
                 capture(GET + "#u3", 2, 30), capture(GET + "#u6", 2, 31)));
-        // Per decode seq: the captures its fetch's door made.
+        // Per decode: the seq of its occurrence's store event before it, its
+        // own seq, and the captures its fetch's door made.
         Object[][] rows = {
-            {20L, Arrays.asList(GET + "#u3@1", GET + "#u6@1")},
-            {35L, Arrays.asList(GET + "#u3@2", GET + "#u6@2")},
-            {11L, Collections.singletonList(EXISTS + "#u2@1")},
-            {5L, Collections.<String>emptyList()},
+            {0L, 20L, Arrays.asList(GET + "#u3@1", GET + "#u6@1")},
+            {20L, 35L, Arrays.asList(GET + "#u3@2", GET + "#u6@2")},
+            {0L, 11L, Collections.singletonList(EXISTS + "#u2@1")},
+            {0L, 5L, Collections.<String>emptyList()},
+            // The read door before the write served no later decode.
+            {14L, 20L, Collections.<String>emptyList()},
         };
         for (Object[] row : rows) {
             List<String> door = new ArrayList<>();
             for (Map<String, Object> capture
                     : RuntimeSelectedRegionFinalizer.fetchDoor(activation, map,
-                    (Long) row[0])) {
+                    (Long) row[0], (Long) row[1])) {
                 door.add(capture.get(SiteId.MEMBER) + "@"
                         + capture.get(DeclaredSiteCapture.ORDINAL));
             }
-            assertEquals("decoded at " + row[0], row[1], door);
+            assertEquals("decoded at " + row[1], row[2], door);
         }
 
-        // The recording's decodes: a fetch's in its occurrence, a
-        // provenance site's derived object in none.
+        // The recording's decodes: a fetch's in its occurrence (B's after a
+        // write of its own), a provenance site's derived object in none, and
+        // C's of the version it wrote itself, no fetch.
         RecordedStore store = new RecordedStore(Arrays.asList(
-                RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 3L,
-                        new int[]{7}, "n1/r/A", 20L),
                 RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 4L,
                         new int[]{8}, "n1/r/B", 40L),
+                RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 3L,
+                        new int[]{7}, "n1/r/A", 20L),
+                RecordedStore.Event.written("SOLR_ZK", "/clusterprops.json",
+                        2L, "n1/r/B", 30L),
                 RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 4L,
-                        new int[]{9}, "", 41L)));
+                        new int[]{9}, "", 41L),
+                RecordedStore.Event.written("SOLR_ZK", "/aliases.json", 5L,
+                        "n1/r/C", 50L),
+                RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 5L,
+                        new int[]{10}, "n1/r/C", 52L)));
         List<String> fetched = new ArrayList<>();
-        for (RecordedStore.Fetch fetch : store.fetchesOf(Arrays.asList(8, 9))) {
+        for (RecordedStore.Fetch fetch
+                : store.fetchesOf(Arrays.asList(8, 9, 10))) {
             fetched.add(fetch.occurrence + "@" + fetch.version);
         }
         for (RecordedStore.Fetch fetch
                 : store.fetchesAt("SOLR_ZK\n/aliases.json")) {
-            fetched.add(fetch.occurrence + "@" + fetch.seq);
+            fetched.add(fetch.occurrence + "@" + fetch.since + "-" + fetch.seq);
         }
-        assertEquals(Arrays.asList("n1/r/B@4", "n1/r/A@20", "n1/r/B@40"),
+        assertEquals(Arrays.asList("n1/r/B@4", "n1/r/A@0-20", "n1/r/B@30-40"),
                 fetched);
+        assertEquals(Collections.singletonMap("SOLR_ZK\n/aliases.json", 5L),
+                store.versionsOf(Collections.singletonList(10)));
     }
 
     private static Map<String, Object> capture(String siteId, int ordinal,

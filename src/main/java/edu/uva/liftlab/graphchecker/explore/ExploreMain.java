@@ -211,10 +211,11 @@ public final class ExploreMain {
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
         if (scope == null || !digest.equals(scopeDigest)) {
-            // With the folds of the plan PLAN froze for this iteration: what
-            // an occurrence may read is its folded regions' too (an arm's
-            // key, Corpus#inputShape).
-            scope = StaticScopeMap.read(scopeMap).withFolds(
+            // With what the plan PLAN froze for this iteration states: the
+            // folds (what an occurrence may read is its folded regions' too:
+            // an arm's key, Corpus#inputShape) and the store fetches on a
+            // target's data flow (ClosurePlanner#storeFetches).
+            scope = StaticScopeMap.read(scopeMap).withPlan(
                     iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
         }

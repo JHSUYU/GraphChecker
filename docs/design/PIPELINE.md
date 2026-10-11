@@ -228,10 +228,11 @@ plan are hard links of the one task plan file, so a row GROW appends reaches all
 A door marker mints where its occurrence is planned (`ConcolicScheduler#declaredPorts`), but a store
 read's door (a `DATA_FLOW` door, SYMBOL-SCOPE.md §4.2) only at the captures the seed's closure states
 on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read, and
-the other fetches of that location on its node, `RuntimeSelectedRegionFinalizer#askFetches`); its
-other captures are woven but never asked, and the seed's log line counts them (`data-flow doors: N
-store read(s) in the M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never
-asked`).
+the other fetches, on its node, of a location what it read was decoded from; each such occurrence is
+admitted, `STORE_FETCH_V1`, `RuntimeSelectedRegionFinalizer#askFetches`); its other captures are
+woven but never asked, and the seed's log line counts them (`data-flow doors: N store read(s) in the
+M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never asked; F fetching
+occurrence(s), K admitted only as such`).
 
 ## 4. INSTRUMENT
 
@@ -618,7 +619,11 @@ are counted, never dropped silently: `concreteAnchors` states how many
   eligible row writers by the same rule, on any node (a one-JVM cluster's nodes are one session),
   and the writers of every earlier version of its location (`ClosurePlanner#storeWriters`,
   `#earlierVersions`: each write modifies the document before it, `RestsOn#closure`'s rule); each
-  writer then names the doors of the queue item it took in (below); no static candidate;
+  writer then names the doors of the queue item it took in (below); no static candidate; and the
+  fetches of its location on the reader's node that PLAN stated on the target's data flow (the
+  frozen plan's `storeFetches`, `StaticScopeMap#withPlan`, `ClosurePlanner#storeFetches`: a lost
+  reply there registers no watch, so the node reads an older version), `STORE_FETCH`, contributing
+  no value and not followed, flipped at their fault decisions as every task is;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
@@ -670,7 +675,7 @@ factor member that writes state it reads by what it delivered in this session: i
 producers, its write counts at the locations the guard reads, and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
-`StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm
+`StaticScopeMap#readLocations`, `#withPlan`, joined to the write by `#storedAt`: the flipped arm
 reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
 the lease map share its answer with one where it did not run; how often varies run to run) — never
 delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies

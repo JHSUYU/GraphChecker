@@ -1915,7 +1915,7 @@ public class ExploreTest {
                 StaticScopeMap.read(scopeMap(iteration, write,
                         input.toString())),
                 StaticScopeMap.read(scopeMap(iteration, write, folded))
-                        .withFolds(plan))) {
+                        .withPlan(plan))) {
             assertFalse("an accessor input and a folded region's read feed"
                             + " it too",
                     corpus.inputShape("s-renewed", TARGET, factor, none, map)
@@ -5876,6 +5876,81 @@ public class ExploreTest {
                     focused.contains(restore.render())));
             assertEquals(label, (Boolean) ((List<?>) cases[at][2]).get(2),
                     named(obligations(wave), "Door#u3") != null);
+        }
+    }
+
+    /**
+     * SYMBOL-SCOPE §4.2: a store version the anchor read through a decoded
+     * object rests on the fetches of its location PLAN stated on the
+     * target's data flow (the plan's {@code storeFetches}) on the reader's
+     * node: a lost reply there registers no watch, so the node reads an
+     * older version (solr-adhoc-40: node2's aliases watcher).  They join
+     * contributing no value, and their store-read doors are asked.  Rows:
+     * the occurrence the plan states (none, node2's, node1's) and whether
+     * the read is on the anchor's provenance site.
+     */
+    @Test
+    public void aStoreReadRestsOnItsNodesFetchesOfItsLocation()
+            throws Exception {
+        LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/aliases.json");
+        OccurrenceAddress processor = occurrence("solr-case/node2",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Processor#wrap#1");
+        OccurrenceAddress fetched = occurrence("solr-case/node2",
+                "REGION.watch", CausalContext.of(Role.of("WATCH"), "", 1),
+                "Watcher#run#1");
+        OccurrenceAddress elsewhere = occurrence("solr-case/node1",
+                "REGION.watch", CausalContext.of(Role.of("WATCH"), "", 1),
+                "Watcher#run#1");
+        Object[][] cases = {
+            {fetched, true, true},
+            {null, true, false},
+            {elsewhere, true, false},
+            {fetched, false, false},
+        };
+        for (int at = 0; at < cases.length; at++) {
+            OccurrenceAddress stated = (OccurrenceAddress) cases[at][0];
+            boolean provenance = (Boolean) cases[at][1];
+            Path iteration = tree.newFolder("fetch-" + at).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(processor, false);
+            seed.activation(fetched, false, true, "watch2");
+            seed.activation(elsewhere, false, true, "watch1");
+            seed.root(fetched, "CASE.READ2", "M_READ2", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(fetched, "Read#u12", 1, false, "M_READ2");
+            seed.root(elsewhere, "CASE.READ1", "M_READ1", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(elsewhere, "Read#u17", 1, false, "M_READ1");
+            seed.read(at(processor, "Aliases#props#u2", "Aliases#props#2"),
+                    aliases, 1L, "S_aliases1", null);
+            seed.target(processor, "Guard#u8#1", "false");
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8"), scopeSite(provenance
+                            ? StaticScopeMap.PROVENANCE_SITE
+                            : StaticScopeMap.READ_SITE, "",
+                    "Aliases#props#u2", "Aliases#props",
+                    "<A: java.util.Map props>", "<A: java.util.Map props>",
+                    ""));
+            Files.write(iteration.resolve(ExploreMain.REGION_PLAN),
+                    (stated == null ? "" : "{\"kind\":\"CONCOLIC_REGION_PLAN\","
+                            + "\"regionId\":\"REGION.watch\",\"occurrenceId\":\""
+                            + stated.render() + "\",\"storeFetches\":[{\"siteId\":"
+                            + "\"Read#u12\",\"ordinal\":1,\"fetch\":\"PROVENANCE\","
+                            + "\"location\":\"SOLR_ZK:/aliases.json\",\"version\":1}]}\n")
+                            .getBytes("UTF-8"));
+            Path out = tree.newFolder("fetch-" + at + "-out").toPath();
+            Path results = out.resolve("obligation_results.jsonl");
+            Files.write(results, new byte[0]);
+            Path wave = out.resolve("obligations-0000");
+            plan(iteration, "solr-case/node2#epoch0/region/REGION.target#1",
+                    null, results, wave, 0);
+            assertEquals("case " + at, cases[at][2],
+                    named(obligations(wave), "Read#u12") != null);
+            assertEquals("case " + at + ": another node's fetch", null,
+                    named(obligations(wave), "Read#u17"));
         }
     }
 

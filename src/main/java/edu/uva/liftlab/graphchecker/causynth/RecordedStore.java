@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -22,7 +23,10 @@ import java.util.TreeMap;
  * closure applies to every location ({@code compose.RestsOn#closure}).
  * And which fetch made each decode: the occurrence that read the version and
  * when, whose store-read doors PLAN asks where the fetch lies on the data
- * flow ({@link #fetchesOf}, {@link #fetchesAt}).
+ * flow ({@link #fetchesOf}, {@link #fetchesAt}).  A decode of a version its
+ * own occurrence wrote (Solr's aliases parsed from the bytes a compare-and-
+ * set just stored) fetched nothing: its objects hold the version, and no
+ * read door is on their flow.
  */
 public final class RecordedStore {
     /** One STORE trace row. */
@@ -52,9 +56,10 @@ public final class RecordedStore {
         }
 
         public static Event written(String transport, String location,
-                                    long version, String occurrence) {
+                                    long version, String occurrence,
+                                    long seq) {
             return new Event(true, transport, location, version, occurrence,
-                    0L, new int[0]);
+                    seq, new int[0]);
         }
 
         public static Event decoded(String transport, String location,
@@ -78,12 +83,17 @@ public final class RecordedStore {
         final String occurrence;
         /** Its decode's trace seq: the fetch is the store read just before. */
         final long seq;
+        /** The seq of the store event its occurrence made last before this
+         *  decode (another decode, a write), or 0: the fetch's read came
+         *  after it. */
+        final long since;
 
-        private Fetch(Event decode) {
+        private Fetch(Event decode, long since) {
             this.location = decode.key();
             this.version = decode.version;
             this.occurrence = decode.occurrence;
             this.seq = decode.seq;
+            this.since = since;
         }
     }
 
@@ -98,18 +108,24 @@ public final class RecordedStore {
     private final Map<String, List<Fetch>> fetches = new HashMap<>();
 
     public RecordedStore(Collection<Event> events) {
-        for (Event event : events == null
-                ? Collections.<Event>emptyList() : events) {
-            if (event.write) {
-                if (event.occurrence.isEmpty()) continue;
-                writers.computeIfAbsent(event.key(), ignored -> new TreeMap<>())
-                        .computeIfAbsent(event.version,
-                                ignored -> new LinkedHashSet<>())
-                        .add(event.occurrence);
-                continue;
-            }
-            Fetch fetch = event.occurrence.isEmpty() ? null
-                    : new Fetch(event);
+        List<Event> ordered = new ArrayList<>(events == null
+                ? Collections.<Event>emptyList() : events);
+        ordered.sort(Comparator.comparingLong(event -> event.seq));
+        for (Event event : ordered) {
+            if (!event.write || event.occurrence.isEmpty()) continue;
+            writers.computeIfAbsent(event.key(), ignored -> new TreeMap<>())
+                    .computeIfAbsent(event.version,
+                            ignored -> new LinkedHashSet<>())
+                    .add(event.occurrence);
+        }
+        // occurrence -> the seq of its last store event so far.
+        Map<String, Long> last = new HashMap<>();
+        for (Event event : ordered) {
+            Long since = event.occurrence.isEmpty() ? null
+                    : last.put(event.occurrence, event.seq);
+            if (event.write) continue;
+            Fetch fetch = event.occurrence.isEmpty() || wrote(event) ? null
+                    : new Fetch(event, since == null ? 0L : since);
             if (fetch != null) {
                 fetches.computeIfAbsent(event.key(),
                         ignored -> new ArrayList<>()).add(fetch);
@@ -123,6 +139,13 @@ public final class RecordedStore {
                 if (fetch != null) fetchedBy.putIfAbsent(object, fetch);
             }
         }
+    }
+
+    /** Whether a decode's occurrence made the version it decoded. */
+    private boolean wrote(Event decode) {
+        TreeMap<Long, Set<String>> made = writers.get(decode.key());
+        Set<String> at = made == null ? null : made.get(decode.version);
+        return at != null && at.contains(decode.occurrence);
     }
 
     /** No STORE row: nothing to cross. */

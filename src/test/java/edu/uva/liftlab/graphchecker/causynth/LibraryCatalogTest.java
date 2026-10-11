@@ -159,12 +159,16 @@ public class LibraryCatalogTest {
                     assertEquals(hook.anchor, placed.anchor);
                     assertEquals(hook.after, placed.after);
                 }
-                // Solr's store reads go before its read turn's hook.
+                // Solr's store reads go before its read turn's hook; a
+                // data read's after its reply, where a notification's
+                // occurrence is named: a reply lost.
                 if (system.equals("solr") && door.dataFlow) {
-                    assertEquals(door.method, "<org.apache.solr.common.cloud."
-                            + "SolrZkClient: void causynthReading(java.lang."
-                            + "String)> false", placed.anchor + " "
-                            + placed.after);
+                    assertEquals(door.method, door.method.contains("getData")
+                            ? "<org.apache.solr.common.cloud.SolrZkClient: "
+                            + "void causynthReplied()> false"
+                            : "<org.apache.solr.common.cloud.SolrZkClient: "
+                            + "void causynthReading(java.lang.String)> false",
+                            placed.anchor + " " + placed.after);
                 }
             }
         }

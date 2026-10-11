@@ -418,21 +418,39 @@ method is, as any door at a method, roots no region (`LibraryCatalog#rootsNothin
 in the occurrence that runs the call, as a demanded door's), and is *asked* only where PLAN finds its
 fetch on the data flow (`causynth/RuntimeSelectedRegionFinalizer#askFetches`, over the recording's
 STORE rows, §5.7): the fetch whose decode registered an object the question's target read
-(`PROVENANCE`; its occurrence is admitted, `STORE_FETCH_V1`) and every other fetch of that location
-on the target's node (`LOCATION`): a read that fails registers no watch, so the node never fetches
+(`PROVENANCE`) and every other fetch, on the target's node, of a location what it read was decoded
+from (`LOCATION`), each such occurrence admitted (`STORE_FETCH_V1`; PLAN's log counts them): a read
+that fails registers no watch, so the node never fetches
 the next version and reads the one before (a ZooKeeper watch whose re-read fails only logs and is
 never re-armed: Solr's `AliasesManager#process`, the collection `StateWatcher`'s refresh; an
 external study's "alias must exist" at `RoutedAliasUpdateProcessor:133`, solr-adhoc-40's target, and
 "Could not remove replica" at `DeleteReplicaCmd:278`, solr-adhoc-09's). The recording states each
 decode with the occurrence that fetched it (`MessageDoors#decoded`, the `STORE_DECODED` trace row's
-`occurrenceAddress`); the fetch's door is the data-flow door call that occurrence made last before
-the decode, every marker of that one call (`#fetchDoor`). The occurrence's row states those captures
+`occurrenceAddress`); a decode of a version its own occurrence wrote (Solr's aliases parsed from
+the bytes its compare-and-set stored) fetched nothing (`RecordedStore`); the fetch's door is the
+data-flow door call that occurrence made last before the decode and after its store event before it
+(an earlier door call served that event), every marker of that one call (`#fetchDoor`). The
+occurrence's row states those captures
 (`storeFetches`: site, ordinal, `fetch`, location, version), and only they mint
 (`plan.ConcolicScheduler#declaredPorts`); every other capture of such a door is woven but never
 asked, and is no root another rule admits by (`#rootReads`: no `ROOT_RELEVANT`, no
 `CONTROL_PRODUCER`). An exposed occurrence's data-flow sites mint nothing: no recording places
 its fetch. PLAN's log counts the planned occurrences' store reads, those asked by why and those woven
-but never asked (`#dataFlowDoors`).
+but never asked, and the fetching occurrences (`#dataFlowDoors`). EXPLORE demands the same
+occurrences: a demanded STORE read of a location joins the fetches of it on the reader's node that the
+frozen plan states (`explore.ClosurePlanner#storeFetches`, `STORE_FETCH`), contributing no value,
+flipped at their fault decisions -- one predicate, PLAN's.
+
+A watch callback's occurrence is named only by the first version it reads (IDENTITY §7.2,
+`MessageDoors#fetched`), so a door before that read ran in no occurrence: nothing records it, nothing
+mints or plants it, and a read it failed would leave the callback unnamed. Solr's data read
+(`SolrZkClient#getData`) therefore places its door after the read's hook, where the reply reaches the
+caller after `ZkCmdExecutor`'s retries: the fault is the reply lost. ZooKeeper's client registers a
+data watch only with a delivered reply (`ClientCnxn#finishPacket`, `watchRegistration.register` for
+`rc == 0`) and re-sends only registered watches on reconnect, so the tree's fault arm removes the
+watch the read set on this client alone (`removeWatches(path, w, Data, true)`, its own failure only
+logged) and rethrows: the state a lost reply leaves, the external study's. Its other reads
+(`exists`, `getChildren`) name no occurrence and keep the door before the request.
 
 **Demanded doors.** A local file operation is a door only where the root demand chose its call
 (§4.6): its result or its failure flows into what the slice traces, never every IO call of a class
@@ -488,8 +506,10 @@ inside the door method, where it would fire for the hook method's call too, befo
 break the pairing the hook keeps.
 Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`
 and `#multi` after `causynthWrote` (the store hook `MessageDoors.stored`; in `multi`, after the first
-operation's, so a multi's later operations are unpaired under a fault); `ZooKeeper#getData`,
-`#exists` and both `#getChildren` in `SolrZkClient#getData`, `#exists(String,Watcher,boolean)` and
+operation's, so a multi's later operations are unpaired under a fault); `ZooKeeper#getData` in
+`SolrZkClient#getData` before `causynthReplied` (after the read's hook `causynthRead`, inside the
+`try` whose `catch` removes the watch: a lost reply, above); `ZooKeeper#exists` and both
+`#getChildren` in `SolrZkClient#exists(String,Watcher,boolean)` and
 both `#getChildren` before `causynthReading` (the read turn's hook, `MessageDoors#reading`, at the
 start of each read method, before `ZkCmdExecutor#retryOperation`: the caller sees the fault as it
 sees one after the retries), `SolrZkClient#exists(String,boolean)` by the moved-door rule, every

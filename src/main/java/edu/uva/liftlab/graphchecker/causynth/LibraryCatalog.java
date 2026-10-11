@@ -349,7 +349,8 @@ public final class LibraryCatalog {
      * The catalog's doors, each a system hook names placed at that hook, so
      * the fault keeps the pairing the hook files (Solr's ZooKeeper writes
      * after {@code SolrZkClient#causynthWrote}, its reads before {@code
-     * SolrZkClient#causynthReading}).  A hook naming no catalog door is
+     * SolrZkClient#causynthReading}, a data read's before {@code
+     * #causynthReplied}).  A hook naming no catalog door is
      * refused by name.
      */
     static List<Door> placed(List<Door> catalog, List<Hook> hooks) {

@@ -2223,7 +2223,8 @@ public final class CausynthTraceRecorder {
             trace.store.add(RecordedStore.Event.written(
                     row.stringValue("transport"), row.stringValue("location"),
                     row.longValue("version", -1L),
-                    row.stringValue("occurrenceAddress")));
+                    row.stringValue("occurrenceAddress"),
+                    row.longValue("seq", 0L)));
         } else if (STORE_DECODED_EVENT.equals(eventKind)) {
             String listed = row.stringValue("objects");
             String[] ids = listed.isEmpty() ? new String[0]

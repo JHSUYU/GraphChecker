@@ -1186,15 +1186,17 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * The store reads on the data flow of what {@code target} read through
      * {@code objects} (SYMBOL-SCOPE §4.2, a {@code DATA_FLOW} door): the
-     * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH};
-     * its occurrence is admitted, {@value #STORE_FETCH_ADMISSION}) and every
-     * other fetch of that location on the target's node ({@value
-     * #LOCATION_FETCH}): a read that fails registers no watch, so the next
-     * version is never fetched and the node reads the one before (an
-     * alias's watcher whose re-read failed: solr-adhoc-40's "alias must
-     * exist").  Each fetch's door is the data-flow door call its occurrence
-     * made last before the decode ({@link #fetchDoor}); its captures are
-     * stated ({@link #STORE_FETCHES}), and only they mint.
+     * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH})
+     * and every other fetch, on the target's node, of a location they were
+     * decoded from ({@value #LOCATION_FETCH}): a read that fails registers no
+     * watch, so the next version is never fetched and the node reads the one
+     * before (an alias's watcher whose re-read failed: solr-adhoc-40's "alias
+     * must exist").  Each such occurrence is admitted ({@value
+     * #STORE_FETCH_ADMISSION}), its fetch's door is the data-flow door call
+     * it made last before the decode ({@link #fetchDoor}), and those captures
+     * are stated ({@link #STORE_FETCHES}): only they mint, and EXPLORE
+     * demands the occurrences stated so as fetches of a location a demanded
+     * store read names ({@code explore.ClosurePlanner}).
      */
     private static void askFetches(StaticProgram program, DemandWalk walk,
                                    StaticScopeMap scopeMap,
@@ -1204,39 +1206,38 @@ public final class RuntimeSelectedRegionFinalizer {
         String node = OccurrenceAddress.parse(target).node().render();
         Set<RecordedStore.Fetch> asked = new LinkedHashSet<>();
         for (RecordedStore.Fetch fetch : store.fetchesOf(objects)) {
-            asked.add(fetch);
-            String held = ask(program, scopeMap, byId, fetch,
-                    PROVENANCE_FETCH);
-            if (held != null && !walk.reached.contains(held)
-                    && !walk.excluded.contains(held)) {
-                walk.admit(held, depth, STORE_FETCH_ADMISSION);
+            if (asked.add(fetch)) {
+                admitFetch(program, walk, scopeMap, byId, fetch,
+                        PROVENANCE_FETCH, depth);
             }
         }
-        for (RecordedStore.Fetch provenance : new ArrayList<>(asked)) {
-            for (RecordedStore.Fetch fetch
-                    : store.fetchesAt(provenance.location)) {
-                if (asked.add(fetch) && node.equals(OccurrenceAddress.parse(
-                        fetch.occurrence).node().render())) {
-                    ask(program, scopeMap, byId, fetch, LOCATION_FETCH);
+        for (String location : store.versionsOf(objects).keySet()) {
+            for (RecordedStore.Fetch fetch : store.fetchesAt(location)) {
+                if (node.equals(OccurrenceAddress.parse(fetch.occurrence)
+                        .node().render()) && asked.add(fetch)) {
+                    admitFetch(program, walk, scopeMap, byId, fetch,
+                            LOCATION_FETCH, depth);
                 }
             }
         }
     }
 
-    /** States {@code fetch}'s door captures on the activation that made
-     *  it; that activation, or null where it made none (a fetch outside
-     *  every region, or one no data-flow door is woven into). */
+    /** States {@code fetch}'s door captures on the activation that made it
+     *  and admits it; nothing where it made none (a fetch outside every
+     *  region, or one no data-flow door is woven into). */
     @SuppressWarnings("unchecked")
-    private static String ask(StaticProgram program, StaticScopeMap scopeMap,
-                              Map<String, String> byId,
-                              RecordedStore.Fetch fetch, String why) {
+    private static void admitFetch(StaticProgram program, DemandWalk walk,
+                                   StaticScopeMap scopeMap,
+                                   Map<String, String> byId,
+                                   RecordedStore.Fetch fetch, String why,
+                                   int depth) {
         String held = byId.get(OccurrenceAddress.parse(fetch.occurrence)
                 .id());
-        if (held == null) return null;
+        if (held == null) return;
         Map<String, Object> activation = program.activations.get(held);
         List<Map<String, Object>> door = fetchDoor(activation, scopeMap,
-                fetch.seq);
-        if (door.isEmpty()) return null;
+                fetch.since, fetch.seq);
+        if (door.isEmpty()) return;
         List<Map<String, Object>> stated = (List<Map<String, Object>>)
                 activation.computeIfAbsent(STORE_FETCHES,
                         ignored -> new ArrayList<Map<String, Object>>());
@@ -1256,24 +1257,32 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             if (!known) stated.add(row);
         }
-        return held;
+        if (!walk.reached.contains(held) && !walk.excluded.contains(held)) {
+            walk.admit(held, depth, STORE_FETCH_ADMISSION);
+        }
     }
 
     /**
      * The captures of the data-flow door call an activation made last
-     * before {@code seq} (its fetch's decode): the door method that latest
-     * capture is in, and in it each of the door's marker sites' latest
-     * capture before {@code seq} -- one call runs every marker of its door.
+     * between {@code since} (its store event before the decode) and {@code
+     * seq} (the decode): the door method that latest capture is in, and in
+     * it each of the door's marker sites' latest capture there -- one call
+     * runs every marker of its door.  None where the fetch's own read made
+     * no capture: a door call before {@code since} served an earlier store
+     * event, never this decode.
      */
     static List<Map<String, Object>> fetchDoor(
             Map<String, Object> activation, StaticScopeMap scopeMap,
-            long seq) {
+            long since, long seq) {
         Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
         Map<String, Object> last = null;
         for (Map<String, Object> capture
                 : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
             long at = longNumber(capture.get(DeclaredSiteCapture.EVENT_SEQ), 0L);
-            if (at >= seq || !dataFlowCapture(capture, scopeMap)) continue;
+            if (at <= since || at >= seq
+                    || !dataFlowCapture(capture, scopeMap)) {
+                continue;
+            }
             String site = text(capture.get(SiteId.MEMBER));
             Map<String, Object> held = latest.get(site);
             if (held == null || longNumber(held.get(
@@ -1314,15 +1323,25 @@ public final class RuntimeSelectedRegionFinalizer {
      * The plan log's count of the data-flow doors' calls the planned
      * occurrences made: those asked, by why, and those woven but never
      * asked (a poll of a queue, every refresh of a cluster state no target
-     * read).
+     * read); and how many occurrences fetched on the data flow, and of them
+     * how many only that admitted ({@value #STORE_FETCH_ADMISSION}).
      */
     static String dataFlowDoors(StaticProgram program, Collection<String> planned,
                                 StaticScopeMap scopeMap) {
         int calls = 0;
+        int fetching = 0;
+        int admitted = 0;
         Map<String, Integer> asked = new TreeMap<>();
         for (String occurrence : planned) {
             Map<String, Object> activation = program.activations.get(
                     occurrence);
+            if (activation.containsKey(STORE_FETCHES)) {
+                fetching++;
+                if (STORE_FETCH_ADMISSION.equals(text(activation.get(
+                        ADMISSION_BASIS)))) {
+                    admitted++;
+                }
+            }
             Set<String> doors = new HashSet<>();
             for (Map<String, Object> capture : rows(activation.get(
                     DeclaredSiteCapture.PLAN_FIELD))) {
@@ -1347,7 +1366,8 @@ public final class RuntimeSelectedRegionFinalizer {
         return "data-flow doors: " + calls + " store read(s) in the "
                 + planned.size() + " planned occurrence(s), " + total
                 + " asked " + asked + ", " + (calls - total)
-                + " woven but never asked";
+                + " woven but never asked; " + fetching + " fetching"
+                + " occurrence(s), " + admitted + " admitted only as such";
     }
 
     /**
