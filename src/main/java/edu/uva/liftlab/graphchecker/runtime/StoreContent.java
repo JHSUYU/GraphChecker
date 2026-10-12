@@ -191,7 +191,7 @@ final class StoreContent {
                 javaType = kind == Kind.DEC_LONG ? "J" : "Z";
             }
         } else if (kind == Kind.NUM && !wide(javaType).equals(javaType)) {
-            crossing = widened(crossing, javaType);
+            crossing = widened(crossing, javaType, leaf.value, port);
             javaType = wide(javaType);
         }
         long event = answer.has("exportEvent")
@@ -246,8 +246,28 @@ final class StoreContent {
         }
     }
 
-    /** {@code expression} of {@code javaType} widened to {@link #wide}. */
-    static JsonObject widened(JsonObject expression, String javaType) {
+    /**
+     * {@code expression} of {@code javaType} as the parser reads it back
+     * ({@link #wide}): an integral one widened; a {@code float}, which the
+     * serializer writes as its decimal text and the parser reads as the
+     * {@code double} that text is, crosses as that double -- a constant,
+     * since no theory here renders a float's decimal text; a symbolic float
+     * is named (DIAGNOSTIC) and crosses as its value.
+     */
+    static JsonObject widened(JsonObject expression, String javaType,
+                              Object value, String port) {
+        if ("F".equals(javaType)) {
+            if (VmExpressionIr.exactStringLiteral(expression, any -> true)
+                    == null && !"ConstExpr".equals(optionalString(expression,
+                    "_type"))) {
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        port, "a float leaf crosses as the double its"
+                                + " decimal text reads back as; its"
+                                + " expression is not carried");
+            }
+            return constant("D", Double.toString(Double.parseDouble(
+                    String.valueOf(value))));
+        }
         JsonObject cast = new JsonObject();
         cast.addProperty("_type", "TypeCastExpression");
         cast.add("_exp", expression);
