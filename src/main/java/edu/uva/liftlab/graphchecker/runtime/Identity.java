@@ -1299,13 +1299,29 @@ public final class Identity {
     /**
      * The method that called the innermost one -- the frame one level out,
      * as its level was entered ({@code JvmNames#stable} of the method's
-     * signature) -- or {@code ""} at the thread's root: which call of a
-     * helper a forced replay forces a decider in ({@code ForcedArms}).
+     * signature), past javac's synthetic hops ({@code access$NNN}, a lambda
+     * body {@code lambda$m$N}: a helper a nested class or a lambda calls is
+     * called from the method that wrote the call) -- or {@code ""} at the
+     * thread's root: which call of a helper a forced replay forces a decider
+     * in, and which a decision row states ({@code ForcedArms}).
      */
     static String callerFrame() {
         State state = state();
-        return state.depth() < 2 ? ""
-                : state.frame(state.depth() - 2).callSite();
+        for (int depth = state.depth() - 2; depth >= 0; depth--) {
+            String caller = state.frame(depth).callSite();
+            if (!synthetic(caller)) return caller;
+        }
+        return "";
+    }
+
+    /** Whether a frame's method is a javac synthetic hop. */
+    private static boolean synthetic(String frame) {
+        int colon = frame.indexOf(':');
+        int paren = frame.indexOf('(', colon + 1);
+        if (colon < 0 || paren < 0) return false;
+        String head = frame.substring(colon + 1, paren).trim();
+        String name = head.substring(head.lastIndexOf(' ') + 1);
+        return name.startsWith("access$") || name.startsWith("lambda$");
     }
 
     /** The innermost frame's call site, for a report, or {@code ""}. */

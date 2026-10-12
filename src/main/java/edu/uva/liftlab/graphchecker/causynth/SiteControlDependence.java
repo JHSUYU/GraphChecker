@@ -412,8 +412,9 @@ public final class SiteControlDependence {
 
         /**
          * Whether {@code from -> to} closes a loop: a retreating edge of a
-         * depth-first walk from the method's entry, into a unit still on the
-         * walk's stack -- the loop's header.  From the entry alone: a
+         * depth-first walk from the method's entry -- over the CFG and from
+         * each unit to the handlers of its traps -- into a unit still on the
+         * walk's stack, the loop's header.  From the entry alone: a
          * handler's first unit is a head of this CFG too (it has no
          * exception edges), and dominance over every head would let a
          * loop's latch, reached from a catch block as well, close no loop
@@ -431,6 +432,7 @@ public final class SiteControlDependence {
 
         private Map<Unit, Set<Unit>> retreating() {
             Map<Unit, Set<Unit>> found = new LinkedHashMap<Unit, Set<Unit>>();
+            Map<Unit, List<Unit>> handlers = handlers(cfg.getBody());
             Unit entry = cfg.getBody().getUnits().getFirst();
             Set<Unit> onStack = new LinkedHashSet<Unit>();
             Set<Unit> done = new LinkedHashSet<Unit>();
@@ -439,7 +441,7 @@ public final class SiteControlDependence {
                     new ArrayDeque<Iterator<Unit>>();
             stack.push(entry);
             onStack.add(entry);
-            next.push(cfg.getSuccsOf(entry).iterator());
+            next.push(walked(entry, handlers).iterator());
             while (!stack.isEmpty()) {
                 Unit unit = stack.peek();
                 Iterator<Unit> successors = next.peek();
@@ -458,7 +460,35 @@ public final class SiteControlDependence {
                 } else if (!done.contains(successor)) {
                     stack.push(successor);
                     onStack.add(successor);
-                    next.push(cfg.getSuccsOf(successor).iterator());
+                    next.push(walked(successor, handlers).iterator());
+                }
+            }
+            return found;
+        }
+
+        /** A unit's successors on {@link #retreating}'s walk: its CFG's,
+         *  and the handlers of the traps it lies in, so a catch block is
+         *  walked inside the loop it catches for (a {@code continue} from
+         *  it back to the header closes the loop). */
+        private List<Unit> walked(Unit unit, Map<Unit, List<Unit>> handlers) {
+            List<Unit> handling = handlers.get(unit);
+            if (handling == null) return cfg.getSuccsOf(unit);
+            List<Unit> successors = new ArrayList<Unit>(cfg.getSuccsOf(unit));
+            successors.addAll(handling);
+            return successors;
+        }
+
+        /** Per unit, the handlers of the traps whose range holds it. */
+        private static Map<Unit, List<Unit>> handlers(Body body) {
+            Map<Unit, List<Unit>> found = new LinkedHashMap<Unit, List<Unit>>();
+            for (soot.Trap trap : body.getTraps()) {
+                Unit end = trap.getEndUnit();
+                for (Iterator<Unit> units = body.getUnits().iterator(
+                        trap.getBeginUnit()); units.hasNext(); ) {
+                    Unit unit = units.next();
+                    if (unit == end) break;
+                    found.computeIfAbsent(unit, key -> new ArrayList<Unit>())
+                            .add(trap.getHandlerUnit());
                 }
             }
             return found;

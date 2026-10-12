@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -278,14 +279,16 @@ public class ForcingTableTest {
      * test); u2 z1 = first; u3 if z1 == 0 goto u6; u4 z2 = active; u5 if z2
      * == 0 goto u10 (continue); u6 z3 = leader; u7 if z3 == 0 goto u10
      * (continue); u8 r1 = new X (the throw); u9 throw r1; u10 i = i + 1; u11
-     * goto u1; u12 return; u13 r2 := @caughtexception; u14 goto u10 (a
-     * catch block falling through to the latch: a head of the CFG, which
-     * has no exception edges, so the header dominates no latch -- the loop
-     * is found from the entry, solr-adhoc-07's ZkController$1.command).
-     * isActive's continue arm (u5) comes back to the throw only through the
-     * header, in a turn where {@code first} is false: it leaves the way in
-     * this one, so it is forced; {@code first} (u3) leads to u6 either way
-     * within the turn, so it is passable.
+     * goto u1; u12 return; u13 r2 := @caughtexception (the handler of a
+     * trap over u4-u5); u14 if z1 == 0 goto u1 (a {@code continue} straight
+     * to the header); u15 goto u6.  The catch block is a head of the CFG,
+     * which has no exception edges, so the header dominates no latch: the
+     * loop is found from the entry, through the trap's handler
+     * (solr-adhoc-07's ZkController$1.command).  isActive's continue arm
+     * (u5) comes back to the throw only through the header, in a turn where
+     * {@code first} is false: it leaves the way in this one, so it is
+     * forced; so is the catch block's u14; {@code first} (u3) leads to u6
+     * either way within the turn, so it is passable.
      */
     @Test
     public void aGuardWhoseArmComesBackOnlyInTheNextIterationIsForced()
@@ -313,7 +316,9 @@ public class ForcingTableTest {
                     {"first: both arms reach isLeader within the turn",
                             scan + "#u3", "=true passable"},
                     {"the loop's test: its exit returns", scan + "#u1",
-                            "=false"}};
+                            "=false"},
+                    {"the catch block's continue to the header leaves the"
+                            + " way in this turn", scan + "#u14", "=false"}};
             for (Object[] expected : rows) {
                 ForcingTable.Arm arm = table.get((String) expected[1]);
                 assertEquals((String) expected[0], expected[2], arm == null
@@ -373,9 +378,17 @@ public class ForcingTableTest {
                 j.newThrowStmt(r),
                 latch,
                 j.newGotoStmt(head),
-                end,
-                j.newIdentityStmt(caught, j.newCaughtExceptionRef()),
-                j.newGotoStmt(latch)));
+                end));
+        Unit handler = j.newIdentityStmt(caught, j.newCaughtExceptionRef());
+        body.getUnits().addAll(Arrays.asList(handler,
+                j.newIfStmt(j.newEqExpr(z[0], IntConstant.v(0)), head),
+                j.newGotoStmt(leader)));
+        List<Unit> units = new java.util.ArrayList<Unit>(body.getUnits());
+        SootClass throwable = new SootClass("java.lang.Throwable",
+                Modifier.PUBLIC);
+        Scene.v().addClass(throwable);
+        body.getTraps().add(j.newTrap(throwable, units.get(4), units.get(6),
+                handler));
     }
 
     @Test

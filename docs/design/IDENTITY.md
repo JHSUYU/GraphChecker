@@ -710,7 +710,8 @@ order:
   seconds mid-run and timed out an IPC caller's hand-off to its sender). An event of a timed-wait loop's turn
   (`Root:WAKE/<wait>#k`, `ScheduleLog#timedWaitTurn`) whose slot is not yet due waits at it as such a poll does, held:
   its k counts the loop's wakes, a timing fact, so the replay's k-th turn is another turn than the recording's and its
-  slot may be another turn's; let go, it takes that slot (solr-adhoc-39 MB29s: the recording made 106 turns of the
+  slot may be another turn's; let go, it takes that slot, a `WRITE` still behind an earlier held write to its
+  location (solr-adhoc-39 MB29s: the recording made 106 turns of the
   Overseer's `ZkDistributedQueue.peekElements` loop, the replay 512, and a queue write in replayed turn #88 waited at
   recorded #88's slot and, as the earliest waiter, bounded a give-up of 4251 slots). The watchdog lets held waits go
   when the order stalls; a released timed wait still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held

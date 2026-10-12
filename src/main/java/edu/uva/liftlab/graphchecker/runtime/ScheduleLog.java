@@ -1314,15 +1314,17 @@ public final class ScheduleLog {
             HELD.put(self, event);
             return write + 1;
         }
-        if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) {
-            if (!timedWaitTurn(event.context)) return slot;
+        boolean turn = timedWaitTurn(event.context);
+        if (slot >= 0 && heldKind(slot) && !dueLocked(slot)
+                && !(turn && LET_GO.contains(self))) {
+            if (!turn) return slot;
             // A timed-wait loop's turn: its k counts the loop's wakes, which
             // the replay's timing moves, so its slot may be another turn's.
             // Held like a poll past its count: it bounds no give-up, and let
-            // go it takes the slot its key found (solr-adhoc-39 MB29s: a
-            // queue write in replayed turn #88 waited at recorded #88's slot
-            // and bounded a give-up of 4251 slots).
-            if (LET_GO.contains(self)) return GO;
+            // go it takes the slot its key found -- a WRITE still behind an
+            // earlier held write to its location, below (solr-adhoc-39
+            // MB29s: a queue write in replayed turn #88 waited at recorded
+            // #88's slot and bounded a give-up of 4251 slots).
             HELD.put(self, event);
             return slot;
         }

@@ -1416,8 +1416,8 @@ public final class Composer {
         //     concrete[] (WAY) with what its term rests on.  One that left
         //     it at no guard stopped on the way (RestsOn#decided): the
         //     constant false, named WAY with how it stopped.  Where a
-        //     loop bound cut its occurrence on the way -- before it left,
-        //     or after it left inside a loop -- a gap the case's `bounded`
+        //     loop bound cut its occurrence -- before it left the way or
+        //     after -- a gap the case's `bounded`
         //     counts (run_engine.sh campaign_bounds: loop_body_bound), so
         //     its UNSAT rests on that bound; a failure of the loop
         //     accounting itself is a BLOCKING defect (RestsOn#cut).  None

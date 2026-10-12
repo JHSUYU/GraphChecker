@@ -255,7 +255,8 @@ public class ForcedArmsTest {
 
     /** A decider is forced only in a call of its helper from {@code via}:
      *  the frame one level out, as the weave enters it -- a lambda's
-     *  run-minted class name compared by its stable spelling. */
+     *  run-minted class name compared by its stable spelling, javac's
+     *  synthetic {@code access$NNN} and {@code lambda$} hops passed. */
     @Test
     public void aDeciderIsForcedOnlyInACallFromItsVia() {
         String caller = "<a.Caller$$Lambda$12/1830908236: void run()>";
@@ -266,7 +267,11 @@ public class ForcedArmsTest {
                         "<a.Caller$$Lambda$40/99: void run()>", true},
                 {new String[] {caller, "<a.Other: void go()>", helper},
                         caller, false},
-                {new String[] {helper}, caller, false}};
+                {new String[] {helper}, caller, false},
+                {new String[] {caller, "<a.Caller: boolean access$000("
+                        + "a.Caller)>", helper}, caller, true},
+                {new String[] {caller, "<a.Caller: void lambda$run$0()>",
+                        helper}, caller, true}};
         for (Object[] row : rows) {
             String[] frames = (String[]) row[0];
             long[] tokens = new long[frames.length];

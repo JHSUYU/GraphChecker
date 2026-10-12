@@ -280,7 +280,8 @@ ran in full (`TimedWaits#outlast`, IDENTITY.md §8). A store's reads and writes 
 their location (`READ`, `WRITE`, IDENTITY.md §7.2), so what a store read finds is the recording's
 in the seed and in any replay's prefix. An event of a timed-wait loop's turn (`Root:WAKE/<wait>#k`: k
 counts the loop's wakes, which the replay's timing moves) waits at a slot not yet due held, as a poll past its
-recorded count does, so it never bounds a give-up of the slots before it; let go, it takes that slot (IDENTITY.md §8).
+recorded count does, so it never bounds a give-up of the slots before it; let go, it takes that slot, a `WRITE` still
+behind an earlier held write to its location (IDENTITY.md §8).
 Where the model re-pairs a store read with another version
 (a world's planted pairings, §7.5; CONFIRM's `ORDER` rows, §10; a reproduction's plant) the model's
 order supersedes the recorded placement: the prefix ends before the first event the pairings
@@ -1372,7 +1373,8 @@ decision -- records from its entry and takes the arms that lead to the throw: at
 branch of its table (`BranchObservation#prepare`) the runtime asks the VM to force the branch the next marker
 marks (`System.forceNextConcolicBranch`, VM.md §2), every evaluation of it (a loop's turns, a recursion's
 calls: each forced arm reaches the throw by post-dominance), a decider only inside a call of its helper from
-the table row's `via` method (`Identity#callerFrame`); a nested planned region, another occurrence or thread is
+the table row's `via` method (`Identity#callerFrame`, past javac's synthetic `access$NNN` and `lambda$` hops); a
+nested planned region, another occurrence or thread is
 never forced, nor a switch (the forced world takes its selector's case), nor a `passable` branch (§2: either
 arm leads on to the forced guards, and forcing it against its concrete arm would state `false`:
 solr-adhoc-07's two `assert`s in `ZkController.register`). A forcing the VM refuses (a negative
@@ -1453,7 +1455,9 @@ last decision at a path site of the anchor's OWN target -- the TARGET_SITE its t
 guards, `StaticScopeMap#ownTarget`, never pooled over every throw -- that took an arm off the way,
 scanned back past the decisions that kept it -- the arm its forcing table names toward the throw, or a
 `passable` branch, §2 -- and past a decider decided in a call from elsewhere than its row's `via`
-(the decision row states its caller there, `DecisionRow#via`, `ForcedArms#statesCaller`); a site the
+(the decision row states its caller there, `DecisionRow#via`, `ForcedArms#statesCaller`; a row that
+states none, from a corpus recorded before, is taken as the way's); the anchor's own target is found
+by the target row's site, its label without the occurrence ordinal (`TargetRow#site`); a site the
 table names no arm for, a switch or a fault call, is taken as left; a path that left at G and later
 kept the way before a normal return left at G), its prefix the decisions before that guard: at a
 SYMBOLIC guard its fatal arm is the guard's other arm, the way to the throw (a witness turns it,
@@ -1461,9 +1465,9 @@ CONFIRM judges the rest), at a concrete one the constant healthy decision (`fals
 in `concrete[]` as WAY with what its term rests on (hdfs-adhoc-07, 48). A session none of whose way
 decisions left the way stopped on the way (a loop bound's cut, an exception, a return): no arm toward
 the throw is stated, its fatal is `false`, its WAY row names the anchor and how it stopped. Wherever a
-loop bound cut a non-reaching session's occurrence on the way -- before it left the way, or after it
-left at a guard inside a loop (the guard decided again, or in the cut loop's method: a later turn may
-have come back), and whether or not another session reached the anchor -- a DIAGNOSTIC row
+loop bound cut a non-reaching session's occurrence -- before it left the way or after (a later turn of
+a loop, in its method or a caller's, may have come back), and whether or not another session reached
+the anchor -- a DIAGNOSTIC row
 `<anchor> loop-body-bound=<N>` makes the case `bounded` (`loop_body_bound`), so its UNSAT is not done
 (CHECKING §1); a cut that names the accounting's own failure (§5) is a BLOCKING `BOUND_INSUFFICIENT`
 row, an engine defect (RUN_DEFECT), never a bound (`RestsOn#cut`). Before, such a path's last way decision was composed at its other

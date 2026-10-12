@@ -18,7 +18,6 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.plan.ForcingTable;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
@@ -162,7 +161,7 @@ public final class RestsOn {
 
     /**
      * Names what a path that never reached the anchor rests on, as a gap of
-     * {@code gaps}: a loop bound's cut on the way to the throw, a DIAGNOSTIC
+     * {@code gaps}: a loop bound's cut of its occurrence, a DIAGNOSTIC
      * {@code <anchor> loop-body-bound=<N>} row the case's {@code bounded}
      * counts (run_engine.sh campaign_bounds: {@code loop_body_bound}), so its
      * UNSAT is not done (CHECKING §1); a failure of the anchor's loop
@@ -185,8 +184,7 @@ public final class RestsOn {
                             + (decided.way == null ? "before it left the way"
                             + " to the throw at any guard" : "after it left"
                             + " the way at " + decided.way.siteId() + "#"
-                            + decided.way.ordinal() + " inside a loop")
-                            + ": " + decided.cut);
+                            + decided.way.ordinal()) + ": " + decided.cut);
         }
     }
 
@@ -211,9 +209,9 @@ public final class RestsOn {
          *  the throw; else (a concrete one, or none) the constant false. */
         final String fatalTerm;
         /** Where it reached the anchor at no point and a loop bound cut
-         *  its occurrence on the way to the throw -- before it left the way
-         *  at a guard, or after it left it inside a loop ({@link
-         *  #boundCut}) -- the cut; else "". */
+         *  its occurrence -- before it left the way at a guard or after:
+         *  a later turn of a loop, in its method or a caller's, may have
+         *  come back to the way -- the cut; else "". */
         final String cut;
         /** Where the anchor's loop accounting itself failed (a policy
          *  mismatch, a hook failure: {@link #boundReached} false), its row;
@@ -254,33 +252,8 @@ public final class RestsOn {
         String cut = target.reachedAnchor() ? "" : cutOf(session);
         boolean defect = !cut.isEmpty() && !boundReached(cut);
         return new Decided(way, symbolicWay, cutoff, fatalTerm,
-                defect ? "" : boundCut(way, decisions, cut),
-                defect ? cut : "");
+                defect ? "" : cut, defect ? cut : "");
     }
-
-    /**
-     * The cut a path that never reached the anchor rests on, or "": a loop
-     * bound that cut its occurrence before it left the way (no guard), or
-     * after it left at a guard inside a loop -- the guard's site decided
-     * again, or in the cut loop's own method -- where a later turn may have
-     * come back to the way.  A guard outside the loop that was cut leaves
-     * the way for the rest of the occurrence, and the cut rests on nothing.
-     */
-    static String boundCut(DecisionRow way, List<DecisionRow> decisions,
-                           String cut) {
-        if (cut.isEmpty() || way == null) return cut;
-        int decided = 0;
-        for (DecisionRow decision : decisions) {
-            if (decision.siteId().equals(way.siteId())) decided++;
-        }
-        Matcher loop = CUT_LOOP.matcher(cut);
-        return decided > 1 || loop.find() && loop.group(1).equals(
-                SiteId.methodOf(way.siteId())) ? cut : "";
-    }
-
-    /** The method of the loop a cut names ({@code <method>#loop:uN}). */
-    private static final Pattern CUT_LOOP =
-            Pattern.compile(" at (.+?)#loop:u\\d+");
 
     /** Whether a cut's row says a bound was reached ({@code
      *  plan.LoopBoundPolicy#BOUND_REACHED}): the loop's K_L or the work
@@ -300,7 +273,9 @@ public final class RestsOn {
      * forcing table names toward the throw, or a {@code passable} branch,
      * either arm of which leads on -- and past a decider ({@code via}
      * stated) decided in a call from elsewhere than its row's {@code via},
-     * which is no decision of the way ({@code DecisionRow#via}).  A site the
+     * which is no decision of the way ({@code DecisionRow#via}); a decision
+     * that states no caller (a corpus recorded before rows stated it) is
+     * taken as one of the way, an over-approximation.  A site the
      * table names no arm for (a switch, a fault call) is taken as left.
      * None that left: the path stopped on the way, so null (solr-adhoc-19
      * SG2b: create's u9 `!inFlightCreations.add`, taken toward the throw
@@ -309,7 +284,7 @@ public final class RestsOn {
      * decision before a normal return left at G.
      */
     DecisionRow wayGuard(TargetRow target, List<DecisionRow> decisions) {
-        StaticScopeMap.Site own = scope.ownTarget(target.anchorSiteId());
+        StaticScopeMap.Site own = scope.ownTarget(target.site());
         if (own == null) return null;
         Set<String> way = own.pathSites();
         Map<String, ForcingTable.Arm> table =
@@ -319,8 +294,8 @@ public final class RestsOn {
             if (!way.contains(decision.siteId())) continue;
             ForcingTable.Arm arm = table.get(decision.siteId());
             if (arm == null) return decision;
-            if (!arm.via.isEmpty() && !JvmNames.stable(arm.via)
-                    .equals(decision.via())) {
+            if (!arm.via.isEmpty() && !decision.via().isEmpty()
+                    && !JvmNames.stable(arm.via).equals(decision.via())) {
                 continue;
             }
             if (!arm.passable && arm.arm != decision.outcome()) {

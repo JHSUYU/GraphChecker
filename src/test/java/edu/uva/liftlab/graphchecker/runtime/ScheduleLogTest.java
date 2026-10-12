@@ -992,6 +992,40 @@ public class ScheduleLogTest {
         }
     }
 
+    /**
+     * Let go, a timed-wait turn's WRITE still never passes an earlier held
+     * write to its location: it waits behind it, and the stall gives that
+     * one write up (the write rule), never taking its own slot past it.
+     */
+    @Test(timeout = 30000L)
+    public void aLetGoTurnsWriteStillWaitsBehindTheWriteBeforeIt()
+            throws Exception {
+        noRequest();
+        request("a", () -> written("L"));
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
+        long frame = Identity.enterFrame("<L: void loop()>#u1", node);
+        long wake = RuntimeTraceContext.beginWake("L.poll");
+        written("L");
+        RuntimeTraceContext.endWakeIfInnermost(wake);
+        Identity.exitFrame(frame);
+        order.add(events().get(1));
+        assertTrue(ScheduleLog.timedWaitTurn(order.get(1).context()));
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "3000");
+        enforce(order);
+        Thread waiter = new Thread(() -> {
+            long inner = Identity.enterFrame("<L: void loop()>#u1", node);
+            long turn = RuntimeTraceContext.beginWake("L.poll");
+            written("L");
+            RuntimeTraceContext.endWakeIfInnermost(turn);
+            Identity.exitFrame(inner);
+        });
+        waiter.start();
+        waiter.join(20000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("1 taken, 1 given up"));
+    }
+
     /** {@code site} sent in a timed-wait loop's first turn on the node,
      *  else in a request of the node. */
     private void turnOrRequest(boolean turn, String site) {

@@ -148,7 +148,7 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     arm -- but that decision had taken the arm TOWARD the throw and a loop bound then cut the occurrence, so the
     "fatal" was another throw (19: create's u9, `!inFlightCreations.add`, the CONFLICT "Already creating"). Fixed
     (`RestsOn#wayGuard`: the last decision that took an arm off the way, by the anchor's own forcing table, scanned
-    back past decisions that kept it; a loop bound's cut on the way, before the path left it or after it left inside
-    a loop, makes the case `BOUNDED:loop_body_bound`, a failure of the loop accounting a RUN_DEFECT). Still, for every UNSAT with a `concrete[]` WAY row, the
+    back past decisions that kept it; a loop bound's cut of a path that never reached the anchor, before or after it left
+    the way, makes the case `BOUNDED:loop_body_bound`, a failure of the loop accounting a RUN_DEFECT). Still, for every UNSAT with a `concrete[]` WAY row, the
     reading names the guard (site, file:line), the arm the path took, and the throw its other arm leads to, read in
     the code; a WAY row on the anchor itself means the path stopped on the way and says how.

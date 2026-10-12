@@ -2086,11 +2086,18 @@ public class ComposerTest {
                         new String[][] {{"way#u3", "false", "", "(< 3 2)"},
                         {"H#u1", "false", "<V: void v()>"}}, null,
                         "H#u1#2", ClaimKind.MARKER_FLIPPED, false, false},
-                {"left at u3 outside the loop a bound cut later: the cut "
-                        + "rests on nothing", "{\"siteId\":\"way#u3\","
+                {"left at u3, then a bound cut a loop elsewhere: named "
+                        + "all the same (a later turn of a caller's loop may "
+                        + "come back)", "{\"siteId\":\"way#u3\","
                         + "\"arm\":true}", new String[][] {{"way#u3", "false",
                         ""}}, bound, "way#u3#1", ClaimKind.MARKER_FLIPPED,
-                        false, false},
+                        true, false},
+                {"a decider whose decision states no caller (a corpus "
+                        + "before rows stated it) is taken as the way's",
+                        "{\"siteId\":\"way#u3\",\"arm\":true}," + decider,
+                        new String[][] {{"way#u3", "false", "", "(< 3 2)"},
+                        {"H#u1", "false", ""}}, null, "H#u1#2",
+                        ClaimKind.MARKER_FLIPPED, false, false},
                 {"left at u3 inside a loop (decided again) a bound cut: "
                         + "named", "{\"siteId\":\"way#u3\",\"arm\":true}",
                         new String[][] {{"way#u3", "false", "", "(< 3 2)"},
@@ -2113,6 +2120,9 @@ public class ComposerTest {
                 at.decision(ANCHOR, made[0], Boolean.parseBoolean(made[1]),
                         made.length > 3 ? made[3] : MARKER, made[2]);
             }
+            // As the runtime labels it: the target branch's site and its
+            // occurrence ordinal (RowPublication#target).
+            at.anchorLabel = "way#u9#1";
             at.target("", false, false);
             if (row[3] != null) {
                 at.cut(ANCHOR, "this activation's local path was cut: "
@@ -2124,8 +2134,8 @@ public class ComposerTest {
                     + StaticScopeMap.SITE_KIND + "\",\"role\":\""
                     + StaticScopeMap.TARGET_SITE + "\",\"regionId\":\""
                     + ANCHOR.regionId() + "\",\"siteId\":\"Throw#u30\","
-                    + "\"guards\":[\"way#u3\",\"way#u4\",\"" + ANCHOR_SITE
-                    + "\"],\"guardOutcomes\":[false,true,true],"
+                    + "\"guards\":[\"way#u3\",\"way#u4\",\"way#u9\"],"
+                    + "\"guardOutcomes\":[false,true,true],"
                     + "\"guardDeciders\":{\"way#u4\":[{\"siteId\":\"H#u1\","
                     + "\"outcome\":true,\"verdict\":true}]},"
                     + "\"chain\":[{\"siteId\":\"H#u1\",\"outcome\":true}],"
@@ -8125,9 +8135,12 @@ public class ComposerTest {
         }
 
         void target(String phi, boolean observedFatal, boolean reached) {
-            targets.add(TargetRow.of(id, ++seq, occurrence, ANCHOR_SITE, phi,
+            targets.add(TargetRow.of(id, ++seq, occurrence, anchorLabel, phi,
                     observedFatal, reached));
         }
+
+        /** The label its target rows state ({@link #target}). */
+        String anchorLabel = ANCHOR_SITE;
 
         /** A FORCE run's (PIPELINE §7.10): this session states it ran
          *  forced, its decision forced off the arm its operands took. */
