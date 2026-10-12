@@ -1916,6 +1916,34 @@ public final class SmtLowering {
         return choice.constant(spelled);
     }
 
+    /**
+     * The {@code Enum.valueOf} node a read of an enum slot saw: through
+     * consumer boundaries, a read's stated observed value ({@code
+     * observedVersion.expression}); null for any other operand.
+     */
+    private static JsonObject enumRead(JsonElement operand) {
+        JsonElement at = operand;
+        for (int hop = 0; at != null && at.isJsonObject() && hop < 8;
+             hop++) {
+            if (VmExpressionIr.consumerBoundary(at)) {
+                at = at.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+                continue;
+            }
+            String type = VmExpressionIr.typeOf(at);
+            if ("MethodExpression".equals(type)) {
+                return ENUM_VALUE_OF.equals(optionalString(
+                        at.getAsJsonObject(), "_name"))
+                        ? at.getAsJsonObject() : null;
+            }
+            if (!"ReadFromExpression".equals(type)) return null;
+            JsonElement observed = at.getAsJsonObject().get(
+                    VmRows.OBSERVED_VERSION);
+            at = observed == null || !observed.isJsonObject() ? null
+                    : observed.getAsJsonObject().get("expression");
+        }
+        return null;
+    }
+
     /** The constant names from {@code from} on, as literals; null where
      *  one is none. */
     private static List<String> enumNames(JsonArray arguments, int from) {
@@ -5019,6 +5047,16 @@ public final class SmtLowering {
         if (nullnessUnknown(Collections.singletonList(receiver))) {
             return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
                     "equals:0", Sort.BOOL);
+        }
+        // A constant Enum.valueOf chose, read from a slot whose version no
+        // row states (an object a decode built outside every region): the
+        // name the read saw, as the VM states the compare (SymEnum).
+        if (argument.sort != Sort.STRING && !argument.isNullReference()) {
+            JsonObject chosen = enumRead(params.get(1));
+            if (chosen != null) {
+                argument = enumName(array(chosen, "_param_list"),
+                        origin + ":equals:parameter1");
+            }
         }
         String predicate;
         if (argument.isNullReference()) {

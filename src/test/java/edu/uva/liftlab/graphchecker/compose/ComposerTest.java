@@ -4055,6 +4055,44 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A constant Enum.valueOf chose from a name, read from a slot whose
+     * version no row states (an object a decode built outside every region,
+     * solr-18413 Z2O: Slice.state from state.json's leaf), compared with a
+     * String as the VM states it: the compare of the name the read saw, not
+     * an argument of unmodeled dynamic type.
+     */
+    @Test
+    public void anEnumReadComparedWithAStringComparesTheNameItSaw() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject valueOf = new JsonObject();
+        valueOf.addProperty("_type", "MethodExpression");
+        valueOf.addProperty("_name", "java/lang/Enum valueOf");
+        valueOf.addProperty("_java_type", "Lorg/x/State;");
+        JsonArray arguments = new JsonArray();
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_org.x.State",
+                "java/lang/String"));
+        arguments.add(vmLeaf("SymbolExpression", "s", "Ljava/lang/String;"));
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                "java/lang/String"));
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_DOWN",
+                "java/lang/String"));
+        valueOf.add("_param_list", arguments);
+        JsonObject state = read("INSTANCE_FIELD", 7L, 3L, 4L, "Lorg/x/State;");
+        state.getAsJsonObject("observedVersion").add("expression", valueOf);
+        String text = lowering.dispatch(vmString("equals", vmLeaf(
+                "ConStringSymbolExp", "Y_L'String'_ACTIVE", "java/lang/String"),
+                state), VmTermLowering.Sort.BOOL, "test").text;
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        assertTrue(text, text.contains("\"ACTIVE\"") && text.contains("s"));
+    }
+
     @Test
     public void aStringAMapAnswersIsNullWhereItsCellIs() {
         Map<String, VmTermLowering.Sort> declared =
