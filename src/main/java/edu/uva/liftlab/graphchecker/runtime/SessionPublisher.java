@@ -114,7 +114,7 @@ public final class SessionPublisher {
                                 ? SessionManifest.Role.FOCUSED
                                 : SessionManifest.Role.SEED,
                         FocusedReplay.obligationIds());
-                RowCodec.writeManifest(layout.manifest(), manifest);
+                writeManifest();
             } catch (IOException unwritable) {
                 fail(unwritable);
             }
@@ -188,7 +188,7 @@ public final class SessionPublisher {
             if (failed || closed || manifest == null || withdrawn()) return;
             try {
                 manifest = manifest.atClose(entries, readings, derived);
-                RowCodec.writeManifest(layout.manifest(), manifest);
+                writeManifest();
             } catch (IOException unwritable) {
                 fail(unwritable);
             }
@@ -222,19 +222,10 @@ public final class SessionPublisher {
         append(file, Collections.singletonList(row));
     }
 
-    /**
-     * The rows, each a line of its file, written under the VM's pause: the
-     * session's files are the engine's plumbing, never program state.  A row
-     * a region thread writes (a store door's, RowRuntime#storeWrite) may name
-     * a symbolic String, and unpaused its encoding stored symbolic bytes into
-     * the file writer's reused encoder buffer, which the VM then tracked by
-     * value: every later row any thread wrote versioned its 8 KB, 64 versions
-     * an element, re-listed at every region close (solr-18413's seed, rounds
-     * Y2/Y5: 99.9 % of a read-out page).
-     */
+    /** The rows, each a line of its file, as engine work ({@link
+     *  ConcolicVmBroker#asEngineWork}). */
     private void append(Path file, List<JsonObject> rows) {
-        boolean paused = ConcolicVmBroker.pauseEngineWork();
-        try {
+        ConcolicVmBroker.asEngineWork(() -> {
             synchronized (LOCK) {
                 if (failed || closed) return;
                 try {
@@ -249,9 +240,21 @@ public final class SessionPublisher {
                     fail(unwritable);
                 }
             }
-        } finally {
-            if (paused) ConcolicVmBroker.resumeEngineWork();
-        }
+        });
+    }
+
+    /** The manifest as it stands, as engine work ({@link
+     *  ConcolicVmBroker#asEngineWork}). */
+    private void writeManifest() throws IOException {
+        IOException[] failed = new IOException[1];
+        ConcolicVmBroker.asEngineWork(() -> {
+            try {
+                RowCodec.writeManifest(layout.manifest(), manifest);
+            } catch (IOException unwritable) {
+                failed[0] = unwritable;
+            }
+        });
+        if (failed[0] != null) throw failed[0];
     }
 
     /** The open writer of one row file, or null once withdrawn. */

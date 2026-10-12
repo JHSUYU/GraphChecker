@@ -282,6 +282,23 @@ final class ConcolicVmBroker {
         invokeNative(engine().resumePathCondition);
     }
 
+    /**
+     * Runs the engine's own output -- its session files, its console, its
+     * verdict file -- under the VM's pause: the engine's plumbing is never
+     * program state.  Unpaused on a region thread, a row naming a symbolic
+     * String stored symbolic bytes into its writer's reused encoder buffer,
+     * which the VM then tracked by value and versioned at every later write
+     * (solr-18413's seed under Z1, STATUS defect 38).
+     */
+    static void asEngineWork(Runnable work) {
+        boolean paused = pauseEngineWork();
+        try {
+            work.run();
+        } finally {
+            if (paused) resumeEngineWork();
+        }
+    }
+
     private static void invokeNative(Method method) {
         try {
             method.invoke(null);

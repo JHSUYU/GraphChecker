@@ -1375,16 +1375,18 @@ public final class RowRuntime {
             rows.append(RowCodec.toLine(
                     RowCodec.writeObligationResult(result))).append('\n');
         }
-        try {
-            Files.write(
-                    Paths.get(worker,
-                            ObligationDir.REPLAY_VERDICT),
-                    rows.toString().getBytes(
-                            StandardCharsets.UTF_8));
-        } catch (IOException unwritable) {
-            EngineConsole.println("Causynth could not write the replay's"
-                    + " obligation verdict: " + unwritable);
-        }
+        ConcolicVmBroker.asEngineWork(() -> {
+            try {
+                Files.write(
+                        Paths.get(worker,
+                                ObligationDir.REPLAY_VERDICT),
+                        rows.toString().getBytes(
+                                StandardCharsets.UTF_8));
+            } catch (IOException unwritable) {
+                EngineConsole.println("Causynth could not write the replay's"
+                        + " obligation verdict: " + unwritable);
+            }
+        });
     }
 
     public static void resetForTests() {
