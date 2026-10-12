@@ -98,9 +98,19 @@ public final class ScheduleEvent extends Value {
      * anchor (a DataTransfer op a DataNode's turn received), else "".
      */
     private final String endpoint;
+    /**
+     * Where the run made it among the VM's events: a position after every
+     * VM event so far ({@code runtime.Identity#afterLastEvent}; 0: none
+     * stated), the scale the engine's own rows state their {@code seq} on (a
+     * store's write, a node's decode): where a prefix is cut before such a
+     * row ({@code explore.SchedulePrefix#write}).  Not part of what two runs
+     * compare.
+     */
+    private final long vmEvent;
 
     private ScheduleEvent(long seq, Kind kind, String context, String site,
-                          int k, String occurrence, String endpoint) {
+                          int k, String occurrence, String endpoint,
+                          long vmEvent) {
         this.seq = seq;
         this.kind = kind;
         this.context = context;
@@ -108,6 +118,7 @@ public final class ScheduleEvent extends Value {
         this.k = k;
         this.occurrence = occurrence;
         this.endpoint = endpoint;
+        this.vmEvent = vmEvent;
     }
 
     public static ScheduleEvent of(long seq, Kind kind, String context,
@@ -118,6 +129,13 @@ public final class ScheduleEvent extends Value {
     public static ScheduleEvent of(long seq, Kind kind, String context,
                                    String site, int k, String occurrence,
                                    String endpoint) {
+        return of(seq, kind, context, site, k, occurrence, endpoint, 0L);
+    }
+
+    /** The same, made after the VM's event {@code vmEvent}. */
+    public static ScheduleEvent of(long seq, Kind kind, String context,
+                                   String site, int k, String occurrence,
+                                   String endpoint, long vmEvent) {
         if (seq < 0L) {
             throw new IllegalArgumentException("seq must be >= 0: " + seq);
         }
@@ -128,7 +146,7 @@ public final class ScheduleEvent extends Value {
                 context == null ? "" : context,
                 Fields.text(site, "site"), k,
                 occurrence == null ? "" : occurrence,
-                endpoint == null ? "" : endpoint);
+                endpoint == null ? "" : endpoint, Math.max(0L, vmEvent));
     }
 
     /** A WRITE's or READ's site: the store's transport and the location. */
@@ -176,6 +194,11 @@ public final class ScheduleEvent extends Value {
         return endpoint;
     }
 
+    /** Where the run made it among the VM's events ({@link #vmEvent}), or 0. */
+    public long vmEvent() {
+        return vmEvent;
+    }
+
     /**
      * The message a RECV took in -- the producer endpoint its context is
      * anchored on, else the one it names -- or "" (any other event).
@@ -203,7 +226,7 @@ public final class ScheduleEvent extends Value {
     @Override
     Object[] parts() {
         return new Object[] {seq, kind, context, site, k, occurrence,
-                endpoint};
+                endpoint, vmEvent};
     }
 
     @Override

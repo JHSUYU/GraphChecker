@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.lang.ref.WeakReference;
@@ -1246,6 +1247,7 @@ public final class Identity {
             if (Confirmation.ordering()) {
                 Confirmation.exited(Confirmation.activation(
                         closed.occurrence, ExecutionIndex.empty()));
+                Confirmation.regionClosed(closed.occurrence);
             }
         }
     }
@@ -1604,6 +1606,7 @@ public final class Identity {
             if (Confirmation.ordering()) {
                 Confirmation.exited(Confirmation.activation(
                         region.occurrence, ExecutionIndex.empty()));
+                Confirmation.regionClosed(region.occurrence);
             }
             region.unname();
             return;
@@ -1804,6 +1807,28 @@ public final class Identity {
     }
 
     /**
+     * Where a row the engine states itself stands (contract.RowOrder):
+     * after every VM event so far ({@link #afterLastEvent}) and after every
+     * engine row of that seq stated before it, one count per seq for the
+     * whole JVM.  With no clock, seq 0 and tie 0: it orders nothing.
+     */
+    static RowOrder.Position enginePosition() {
+        synchronized (ENGINE_TIES) {
+            long seq = afterLastEvent();
+            if (seq <= 0L) return new RowOrder.Position(0L, 0);
+            if (seq != ENGINE_TIES[0]) {
+                ENGINE_TIES[0] = seq;
+                ENGINE_TIES[1] = 0L;
+            }
+            return new RowOrder.Position(seq, (int) ++ENGINE_TIES[1]);
+        }
+    }
+
+    /** The last seq an engine row stood at and how many stood there
+     *  ({@link #enginePosition}); guarded by itself. */
+    private static final long[] ENGINE_TIES = {0L, 0L};
+
+    /**
      * One open region entry: where its endpoints are indexed from.  An
      * opening entry carries its occurrence; a folded one ({@link #fold}) or
      * unnamed work's ({@link #occurrence}) carries none and is a marker that
@@ -1886,6 +1911,10 @@ public final class Identity {
         CURRENT.remove();
         STARTS.clear();
         CLOCK = UNAVAILABLE;
+        synchronized (ENGINE_TIES) {
+            ENGINE_TIES[0] = 0L;
+            ENGINE_TIES[1] = 0L;
+        }
         FrameJournal.resetForTests();
     }
 }

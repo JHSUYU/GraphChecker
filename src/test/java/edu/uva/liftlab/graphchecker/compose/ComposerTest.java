@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -846,20 +847,44 @@ public class ComposerTest {
      */
     @Test
     public void aClaimIsJudgedOnThePathsItRestsOn() throws Exception {
-        Path iteration = folder.newFolder("judged-on-its-paths").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+        // A symbol the body spells bare, and one it must bar-quote: the open
+        // link names its producer either way (solr-18413 Z2R: 40 String
+        // leaves, |M_L'String'_...|, named no producer).
+        for (String vh : new String[] {"M_Z_field_HOFF.key",
+                "M_Z_field_HOFF.k'ey"}) {
+            judgedOnItsPaths(vh, "PORT.key", PRODUCER);
+        }
+        // A store content leaf whose unattested producer the closure refuses
+        // by rule (a role: no weave captures it) is a constant of its
+        // version, named, and no open link (lead's rule (a)); the same leaf
+        // of a region producer a round could plan stays an open link.
+        String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
+        judgedOnItsPaths("M_Z_field_HOFF.leaf", content, PRODUCER);
+        judgedOnItsPaths("M_Z_field_HOFF.leaf2", content,
+                OccurrenceAddress.of(PRODUCER.node(),
+                        OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
+                        PRODUCER.context(), ExecutionIndex.empty()));
+    }
+
+    /** How many {@link #judgedOnItsPaths} built: each its own folder. */
+    private int judged;
+
+    private void judgedOnItsPaths(String vh, String site,
+                                  OccurrenceAddress heldBy) throws Exception {
+        Path iteration = folder.newFolder("judged-" + judged++).toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, site,
                 at("export#1", 0), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+        Endpoint consumer = Endpoint.of(ANCHOR, site,
                 at("attach#1", 0), 0);
-        String vh = "M_Z_field_HOFF.key";
         session(iteration, "s0", false, "false", producer, consumer, vh,
                 "false", null, true, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer, vh,
                 "true", null, true, true, "EXPR.v1.marker");
         // A replay paired with another export of the producer, which no
         // session attests (it ran concretely): its arrival is held.
-        Endpoint unattested = Endpoint.of(PRODUCER, "PORT.key",
+        Endpoint unattested = Endpoint.of(heldBy, site,
                 at("export#2", 0), 0);
+        boolean refused = heldBy.role();
         session(iteration, "s2", true, "false", unattested, consumer, vh,
                 "false", null, false, false, "EXPR.v1.marker");
         Composer.Composition composition = compose(iteration, 8);
@@ -871,9 +896,12 @@ public class ComposerTest {
         assertFalse("the witness's own chain is closed: " + sat,
                 sat.has("openChain"));
         JsonArray off = sat.getAsJsonArray("unboundOffWitness");
-        assertEquals("s2's open link is stated: " + sat, 1, off.size());
-        assertEquals(vh, off.get(0).getAsJsonObject().get("symbol")
-                .getAsString());
+        assertEquals("s2's open link is stated: " + sat, refused ? 0 : 1,
+                off == null ? 0 : off.size());
+        if (!refused) {
+            assertEquals(SmtNames.legalSymbols(vh), off.get(0)
+                    .getAsJsonObject().get("symbol").getAsString());
+        }
 
         // The witness's model refuted: the formula is unsat, and rests on
         // s2's path too, whose fatal condition names the held arrival.
@@ -899,11 +927,23 @@ public class ComposerTest {
         ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
         JsonObject unsat = ComposeMain.campaignClaim(next, again);
+        if (refused) {
+            assertFalse("a constant of its version is no open link: "
+                    + unsat, unsat.has("openChain"));
+            boolean named = false;
+            for (GapRow gap : next.gaps()) {
+                named |= gap.detail().contains("constantByRefusedProducer")
+                        && gap.subject().equals(heldBy.render());
+            }
+            assertTrue("named per producer and rule: " + next.gaps(), named);
+            return;
+        }
         assertEquals(unsat.toString(), "RUN_DEFECT",
                 unsat.get("claim").getAsString());
         JsonObject link = unsat.getAsJsonArray("openChain").get(0)
                 .getAsJsonObject();
-        assertEquals(vh, link.get("symbol").getAsString());
+        assertEquals(SmtNames.legalSymbols(vh),
+                link.get("symbol").getAsString());
         assertEquals("the producer GROW would plan", PRODUCER.render(),
                 link.get("producer").getAsString());
     }
@@ -3935,6 +3975,223 @@ public class ComposerTest {
      * never put, a value stored null), so {@code get(k) != null} is a
      * condition over the state, never refused for an unknown nullness.
      */
+    /**
+     * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4): a
+     * guard over the leaf h5 the view's decode of version 5 minted is,
+     * where a read of the view stands that a family may re-pair, the leaf of
+     * whichever decode of the node the view holds -- h3 at version 3 --,
+     * defined only where the view is one of them, lowered once as a
+     * define-fun its uses name; with no such read it is h5 alone.
+     */
+    @Test
+    public void aContentLeafReadsThroughItsNodesView() {
+        LocationId view = LocationId.of(
+                edu.uva.liftlab.graphchecker.contract.LocationKind.VIEW,
+                "SOLR_ZK@case/dn0", "/collections/c/state.json");
+        final String key = SmtLowering.locationKey(view);
+        final String port = "SOLR_ZK#CONTENT:|collections|c|state.json#|c"
+                + "|state";
+        Endpoint at = Endpoint.of(ANCHOR, "guard#VIEW", at("guard#1", 0), 0);
+        final ReadRow read = ReadRow.of("t", 9L, at, view, 5L, "V_r", "J",
+                "5");
+        final List<WriteRow> decodes = Arrays.asList(
+                WriteRow.of("t", 2L, at, view, 3L, "", "J"),
+                WriteRow.of("t", 6L, at, view, 5L, "", "J"));
+        // 0: a family re-pairs the read; 1: a flip query marks it movable
+        // (FlipQuery#movableReads); 2: neither.
+        for (final int mode : new int[] {0, 1, 2}) {
+            final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+            SmtLowering.SessionJoin join = new SmtLowering.SessionJoin() {
+                @Override
+                public com.google.gson.JsonElement writeExpression(
+                        String location, long version) {
+                    return null;
+                }
+
+                @Override
+                public List<WriteRow> writes(String location) {
+                    return key.equals(location) ? decodes
+                            : none.writes(location);
+                }
+
+                @Override
+                public List<ReadRow> reads(String location) {
+                    return key.equals(location)
+                            ? Collections.singletonList(read)
+                            : none.reads(location);
+                }
+
+                @Override
+                public Set<String> mintedReadSymbols(long version) {
+                    return none.mintedReadSymbols(version);
+                }
+
+                @Override
+                public Set<String> readSymbols(String location,
+                                               long version) {
+                    return none.readSymbols(location, version);
+                }
+
+                @Override
+                public boolean moves(String named) {
+                    return true;
+                }
+
+                @Override
+                public boolean repaired(String location, long readEvent) {
+                    return mode == 0 && key.equals(location)
+                            && readEvent == 9L;
+                }
+
+                @Override
+                public boolean concurrent(OccurrenceAddress reader,
+                                          OccurrenceAddress writer) {
+                    return true;
+                }
+
+                @Override
+                public SmtLowering.ViewLeaf viewLeaf(String symbol) {
+                    return "h5".equals(symbol)
+                            ? new SmtLowering.ViewLeaf(key, 5L, port)
+                            : "h3".equals(symbol)
+                            ? new SmtLowering.ViewLeaf(key, 3L, port)
+                            : null;
+                }
+
+                @Override
+                public String viewLeafAt(String viewKey, long version,
+                                         String leafPort) {
+                    return key.equals(viewKey) && port.equals(leafPort)
+                            ? version == 3L ? "h3" : version == 5L ? "h5"
+                            : null : null;
+                }
+            };
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("h5", VmTermLowering.Sort.STRING);
+            declared.put("h3", VmTermLowering.Sort.STRING);
+            declared.put("V_r", VmTermLowering.Sort.INT);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", join, ExpressionTable.empty());
+            if (mode == 1) lowering.movable(read);
+            String text = lowering.dispatch(vmString("equals",
+                    vmLeaf("SymbolExpression", "h5", "Ljava/lang/String;"),
+                    vmLeaf("ConStringSymbolExp", "Y_L'String'_down",
+                            "java/lang/String")),
+                    VmTermLowering.Sort.BOOL, "test").text;
+            lowering.end();
+            // The leaf's ite is lowered once, a define-fun its uses name.
+            StringBuilder declarations = new StringBuilder();
+            for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                    Collections.singletonList(text))) {
+                declarations.append(declaration.render()).append('\n');
+            }
+            assertEquals(text, mode != 2, text.contains("view_leaf__"));
+            assertEquals(declarations.toString(), mode != 2, declarations
+                    .toString().contains("(ite (= V_r 5) h5 h3)"));
+            assertFalse(text, text.contains("(ite (= V_r 5) h5 h3)"));
+            assertTrue(text + declarations, (text + declarations)
+                    .contains("h5"));
+        }
+    }
+
+    /**
+     * A constant Enum.valueOf chose from a name, read from a slot no row
+     * gives the version a value (an object a decode built outside every
+     * region, solr-18413 Z2O: Slice.state from state.json's leaf), compared
+     * with a String as the VM states it: the compare of the name the read
+     * saw, not an argument of unmodeled dynamic type.  A read a root mints
+     * (at the enum's sort, a reference) is the root, never the name this
+     * run saw; nor is a read that is not joinable.
+     */
+    @Test
+    public void anEnumReadComparedWithAStringComparesTheNameItSaw() {
+        JsonObject seen = enumValueOf("seen");
+        Object[][] rows = {
+                // join, read joinable, the leaf the compare names
+                {SmtLowering.NO_JOIN, true, "seen"},
+                {minting("minted"), true, null},
+                {SmtLowering.NO_JOIN, false, null},
+        };
+        for (Object[] row : rows) {
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("seen", VmTermLowering.Sort.STRING);
+            declared.put("minted", VmTermLowering.Sort.REF);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", (SmtLowering.SessionJoin) row[0],
+                    ExpressionTable.empty());
+            JsonObject state = read("INSTANCE_FIELD", 7L, 3L, 4L,
+                    "Lorg/x/State;");
+            state.getAsJsonObject("observedVersion").add("expression", seen);
+            if (!(Boolean) row[1]) {
+                state.addProperty(VmRows.WRITER_SET_COMPLETE, false);
+            }
+            String text = lowering.dispatch(vmString("equals", vmLeaf(
+                    "ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                    "java/lang/String"), state), VmTermLowering.Sort.BOOL,
+                    "test").text;
+            lowering.end();
+            String names = (String) row[2];
+            assertEquals(text, names != null, text.contains("\"ACTIVE\""));
+            assertEquals(text, "seen".equals(names), text.contains("seen"));
+        }
+    }
+
+    /**
+     * String.valueOf: of a String, "null" where it is null and else
+     * itself; of an int, its decimal.  Solr's Replica.<init> chooses its
+     * state as {@code State.valueOf(String.valueOf(map.get(STATE))
+     * .toUpperCase())} (solr-18413 Z2Q: refused UNSUPPORTED_OPERATION once
+     * the state was a content leaf).
+     */
+    @Test
+    public void stringValueOfIsTheStringOrItsDecimal() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject s = vmLeaf("SymbolExpression", "s", "java/lang/String");
+        JsonObject state = enumValueOf("s");
+        JsonArray named = state.getAsJsonArray("_param_list");
+        named.set(1, vmString("toUpperCase", vmString("valueOf", s)));
+        String[][] rows = {
+                // lowered, what its text holds
+                {lowering.dispatch(vmString("valueOf", s), null, "t").text,
+                        "s"},
+                {lowering.dispatch(vmString("valueOf", vmLeaf(
+                        "SymbolExpression", "n", "I")), null, "t").text,
+                        "java_int_to_string"},
+                {lowering.dispatch(state, null, "t").text, "\"ACTIVE\""},
+        };
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        for (String[] row : rows) {
+            assertTrue(row[0], row[0].contains(row[1]));
+        }
+    }
+
+    /** {@code Enum.valueOf(org.x.State, <leaf>)} over ACTIVE and DOWN. */
+    private static JsonObject enumValueOf(String leaf) {
+        JsonObject valueOf = new JsonObject();
+        valueOf.addProperty("_type", "MethodExpression");
+        valueOf.addProperty("_name", "java/lang/Enum valueOf");
+        valueOf.addProperty("_java_type", "Lorg/x/State;");
+        JsonArray arguments = new JsonArray();
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_org.x.State",
+                "java/lang/String"));
+        arguments.add(vmLeaf("SymbolExpression", leaf, "Ljava/lang/String;"));
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                "java/lang/String"));
+        arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_DOWN",
+                "java/lang/String"));
+        valueOf.add("_param_list", arguments);
+        return valueOf;
+    }
+
     @Test
     public void aStringAMapAnswersIsNullWhereItsCellIs() {
         Map<String, VmTermLowering.Sort> declared =
@@ -4854,6 +5111,170 @@ public class ComposerTest {
             assertEquals(detail, 1, recording.size());
             assertEquals(detail, Collections.emptyList(), composition.repaired(
                     witness.selected().selector(), recording));
+        }
+    }
+
+    /**
+     * A VIEW PAIRING IS PLANTED AS ANY OTHER (one writer spelling,
+     * {@code Confirmation#writer}: {@code VIEW@v} for a decode's re-point):
+     * the turn's read of its node's view, held by the world to the decode
+     * of version 1 ahead of the decode of 2 (ConfirmMain's VIEW_HOLD), is
+     * re-paired away from the anchor.  Where the turn's guard {@code view ==
+     * 1} binds to it, the turn's store is what the anchor reads; the fatal
+     * is SAT under the plant's decode and UNSAT under the recording's, so
+     * the recording decides it: a STATE_PAIRING_FLIPPED whose re-paired arm
+     * is the decode of 1.  Where no guard names the view (the turn took its
+     * other path on what the older decode lacked, which no symbol states),
+     * holding the read to the recording's decode leaves the fatal SAT, and
+     * the seed's disjunct is unsat while the session that took the plant
+     * observed the fatal: the world's pairing is the claim, its witness held
+     * to the plant's arm -- or, where no family states the read (the decode
+     * of 2's arm does not lower, so one writer is left), named {@code
+     * PAIRING:<reader>=VIEW@1}.  The same session in a world that planted
+     * nothing names no mechanism.
+     */
+    @Test
+    public void aWorldPlantedViewPairingIsRePairedAsAnyPlantedOneNamedOrNot()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@case/dn0", "/aliases.json");
+        LocationId list = LocationId.of(LocationKind.INSTANCE, "1", "88");
+        OccurrenceAddress writer = occurrence("case/dn0", "REGION.write",
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
+                frame("Volumes#choose#4", 0));
+        OccurrenceAddress turn = occurrence("case/dn0", "REGION.turn",
+                CausalContext.of(Role.of("WAKE"), "", 1),
+                frame("Detector#run#2", 0));
+        OccurrenceAddress older = occurrence("case/dn0", "REGION.watch",
+                CausalContext.of(Role.of("WATCHER"), "", 1),
+                frame("Watcher#process#1", 0));
+        OccurrenceAddress newer = occurrence("case/dn0", "REGION.watch",
+                CausalContext.of(Role.of("WATCHER"), "", 2),
+                frame("Watcher#process#1", 0));
+        Endpoint guard = Endpoint.of(turn, "SOLR_ZK#VIEWED:/aliases.json",
+                at("g#1", 0), 0);
+        Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
+                at("r#1", 0), 0);
+        OccurrenceAddress elsewhere = occurrence("case/dn0", "REGION.other",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Handler#run#3", 0));
+        // planted?, a guard names the view?, the decode of 2 has an arm?,
+        // the turn writes what the anchor reads?, the claim
+        Object[][] table = {
+                {true, true, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, true, true, true, ClaimKind.FORMULA_SAT},
+                {true, false, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, false, true, true, ClaimKind.FORMULA_SAT},
+                {true, false, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                // Unnamed, and its work wrote nothing the fatal reads: off
+                // the fatal path, no pairing claim (the formula's own).
+                {true, false, true, false, ClaimKind.FORMULA_SAT},
+        };
+        for (Object[] row : table) {
+            boolean planted = (Boolean) row[0];
+            boolean named = (Boolean) row[1];
+            boolean again = (Boolean) row[2];
+            boolean onPath = (Boolean) row[3];
+            Path iteration = folder.newFolder("view-planted-" + planted + "-"
+                    + named + "-" + again + "-" + onPath).toPath();
+            for (boolean explored : new boolean[]{false, true}) {
+                String id = explored ? "s1" : "s0";
+                Session session = new Session(iteration, id, explored);
+                session.occurrence = writer;
+                session.activation(writer);
+                session.activation(turn);
+                session.activation(older);
+                session.activation(newer);
+                session.activation(elsewhere);
+                session.expression("EXPR.0000000000000000", integer("I", 0));
+                session.expression("EXPR.0000000000000007", integer("I", 7));
+                session.expression("EXPR.0000000000000011", integer("J", 1));
+                session.expression("EXPR.0000000000000012", integer("J", 2));
+                session.writes.add(WriteRow.initial(id, ++session.seq,
+                        Endpoint.of(writer, "Volumes#excluded#5:INITIAL",
+                                at("r#0", 0), 0), list, 3L,
+                        "EXPR.0000000000000000", "I"));
+                session.writes.add(WriteRow.of(id, ++session.seq,
+                        Endpoint.of(older, "SOLR_ZK#DECODED:/aliases.json",
+                                at("d#1", 0), 0), view, 1L,
+                        "EXPR.0000000000000011", "J"));
+                Endpoint repoint = Endpoint.of(newer,
+                        "SOLR_ZK#DECODED:/aliases.json", at("d#1", 0), 0);
+                // The recording: the decode of 2 before the turn read the
+                // view.  The world: the turn first, its view held at 1.
+                if (!explored) {
+                    session.writes.add(WriteRow.of(id, ++session.seq,
+                            repoint, view, 2L, "EXPR.0000000000000012",
+                            "J"));
+                }
+                long seen = explored ? 1L : 2L;
+                session.read(guard, view, seen, "V_turn", "J",
+                        Long.toString(seen));
+                if (named) {
+                    session.expression("EXPR.0000000000000010", binary("==",
+                            symbol("V_turn", "J"), integer("J", 1L)));
+                    session.decision(turn, "Detector#u63", explored,
+                            "EXPR.0000000000000010");
+                }
+                long listed = 3L;
+                if (explored) {
+                    session.expression("EXPR.0000000000000013", vmLeaf(
+                            "UnstatedExpression", "u", "J"));
+                    session.writes.add(WriteRow.of(id, ++session.seq,
+                            repoint, view, 2L, again ? "EXPR.0000000000000012"
+                                    : "EXPR.0000000000000013", "J"));
+                    session.write(Endpoint.of(onPath ? turn : elsewhere,
+                                    "Detector#run#9:WRITE", at("w#2", 0), 0),
+                            list, 4L, "EXPR.0000000000000007");
+                    listed = 4L;
+                }
+                JsonObject excluded = read("INSTANCE_FIELD", 1L, 88L, listed,
+                        "I");
+                excluded.getAsJsonObject("observedVersion").add("expression",
+                        integer("I", explored ? 7L : 0L));
+                excluded.addProperty("readEventId", session.read(asking, list,
+                        listed, "INSTANCE_FIELD/1#88@v" + listed + "@" + id,
+                        "I", explored ? "7" : "0"));
+                session.expression("EXPR.0000000000000060",
+                        binary("==", excluded, integer("I", 7L)));
+                session.target("EXPR.0000000000000060", explored, true);
+                session.write();
+            }
+            obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                    "Detector#u63", Collections.<String>emptyList(), planted
+                            ? Collections.singletonMap(Confirmation.id(guard),
+                            Confirmation.viewWriter(1L))
+                            : Collections.<String, String>emptyMap());
+            Composer.Composition composition = compose(iteration, writer, 4,
+                    StaticScopeMap.empty());
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String detail = "planted " + planted + ", named " + named
+                    + ", again " + again + ", on path " + onPath + ": "
+                    + decision.claim().gaps() + "\n" + composition.body();
+            assertEquals(detail, row[4], decision.claim().kind());
+            if (!planted || !onPath) continue;
+            if (decision.claim().kind() == ClaimKind.STATE_PAIRING_FLIPPED
+                    && !named) {
+                // The clause that puts the pairing on the fatal path is in
+                // the claim: the turn wrote what the anchor reads.
+                boolean stated = false;
+                for (GapRow gap : decision.claim().gaps()) {
+                    stated |= gap.detail().startsWith("world-pairing claim")
+                            && gap.detail().contains("WROTE");
+                }
+                assertTrue(detail, stated);
+            }
+            assertTrue(detail, decision.claim().polarityDecides());
+            ClaimPolicy.Outcome witness = decision.outcomes().get(
+                    decision.claim().valuationOrdinal());
+            List<String> repaired = composition.repaired(witness.selected()
+                    .selector(), witness.selectedArms().keySet());
+            assertEquals(detail, 1, repaired.size());
+            assertEquals(detail, again ? older.id()
+                    : "PAIRING:" + Confirmation.id(guard) + "=VIEW@1",
+                    again ? composition.arm(repaired.get(0)).groupId()
+                            : repaired.get(0));
         }
     }
 
@@ -6115,6 +6536,45 @@ public class ComposerTest {
      * and read are lowered here as a recording states them; the primitive
      * operators are spelled by their one writer.
      */
+    /**
+     * A charAt is a char wherever it is defined because z3's alphabet is
+     * Java's ({@code VmTermLowering#JAVA_CHARS}, stated before any
+     * declaration): no assertion of the query bounds a character it read,
+     * which unguarded held every index below its string's length on every
+     * path (solr-bugs-snapshot-no-active Z2K: 13,188 such lines).
+     */
+    @Test
+    public void aCharAtStatesNoRangeTheAlphabetGives() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject charAt = vmString("charAt",
+                vmLeaf("SymbolExpression", "s", "java/lang/String"),
+                vmLeaf("SymbolExpression", "n", "I"));
+        VmTermLowering.Term code = lowering.dispatch(charAt, null, "test");
+        // String.valueOf of that char: its range within its definedness.
+        charAt.addProperty("_java_type", "C");
+        VmTermLowering.Term rendered = lowering.dispatch(vmString("valueOf",
+                charAt), null, "test");
+        List<String> texts = new ArrayList<String>(lowering.end());
+        texts.add(code.text);
+        texts.add(code.precondition);
+        texts.add(rendered.text);
+        texts.add(rendered.precondition);
+        String body = lowering.body(texts);
+        assertTrue(code.precondition, code.precondition.contains(
+                "(< n (str.len s))"));
+        assertTrue(rendered.precondition,
+                rendered.precondition.contains("65535"));
+        assertFalse(body, body.replace(rendered.precondition, "")
+                .contains("65535"));
+        int option = body.indexOf(VmTermLowering.JAVA_CHARS);
+        assertTrue(body, option >= 0 && option < body.indexOf("(declare-"));
+    }
+
     @Test
     public void everyOperatorTheLoweringWritesIsBuiltin() {
         Map<String, VmTermLowering.Sort> declared =
@@ -7379,6 +7839,55 @@ public class ComposerTest {
             @Override
             public Set<String> mintedReadSymbols(long version) {
                 return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String at, long version) {
+                return none.readSymbols(at, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return symbol.equals(named);
+            }
+
+            @Override
+            public boolean repaired(String at, long readEvent) {
+                return false;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return false;
+            }
+        };
+    }
+
+    /** The join of no session, where every read's version was minted as
+     *  {@code symbol}. */
+    private static SmtLowering.SessionJoin minting(final String symbol) {
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        return new SmtLowering.SessionJoin() {
+            @Override
+            public com.google.gson.JsonElement writeExpression(String at,
+                                                              long version) {
+                return none.writeExpression(at, version);
+            }
+
+            @Override
+            public List<WriteRow> writes(String at) {
+                return none.writes(at);
+            }
+
+            @Override
+            public List<ReadRow> reads(String at) {
+                return none.reads(at);
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return Collections.singleton(symbol);
             }
 
             @Override

@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -396,8 +397,9 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * Whether a location's owner NAMES one storage cell: a STATIC field, or a
-     * heap owner spelled as the VM's symbolic rid
+     * Whether a location's owner NAMES one storage cell: a STATIC field, a
+     * node's VIEW of a store location, or a heap owner spelled as the VM's
+     * symbolic rid
      * ({@code RowPublication.locationKey}).  A rid is per-run, which suffices
      * because alternatives are asked inside one session.  A CLASS owner on a
      * heap location ({@code runtime.SharedStateCapture}) aliases every
@@ -405,7 +407,11 @@ public final class Arms {
      */
     public static boolean namedOwner(LocationId location) {
         if (location == null) return false;
-        if (location.kind() == LocationKind.STATIC) return true;
+        // A view names one node's view of one store location.
+        if (location.kind() == LocationKind.STATIC
+                || location.kind() == LocationKind.VIEW) {
+            return true;
+        }
         return objectRid(location.owner());
     }
 
@@ -519,7 +525,10 @@ public final class Arms {
         if (state.version() == observedVersion) return true;
         // A forced world's write is what its own forced path read, never
         // another writer a read could have seen (PIPELINE §7.10).
-        if (state.seq() >= rows.forcedFrom(session)) return false;
+        if (!RowOrder.beforeEvent(state.seq(), state.tie(),
+                rows.forcedFrom(session))) {
+            return false;
+        }
         if (!state.initial() && (constructs(state) || !concurrent(reader,
                 state.endpoint().occurrence(), session))) {
             return false;

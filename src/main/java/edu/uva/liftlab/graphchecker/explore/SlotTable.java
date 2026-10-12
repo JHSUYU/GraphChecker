@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -415,8 +416,9 @@ public final class SlotTable {
 
     /**
      * Whether this run read before the write it claims to have observed.
-     * Both rows' seqs are the VM's one event clock of the session
-     * (CONTRACT-SPEC §2.2), so they order the two whatever thread ran
+     * Both rows' positions are on the session's one order (CONTRACT-SPEC
+     * §2.2, {@link RowOrder}: the VM's event clock, then the engine's own
+     * rows of one seq in the order it stated them), whatever thread ran
      * them; a row the clock did not number (seq 0) orders nothing.  Never
      * the anchor chain: an occurrence goes on after the message it sent,
      * and hdfs-11741 r3's balancer dispatcher read the delay its own move
@@ -424,8 +426,7 @@ public final class SlotTable {
      */
     private static boolean contradictsOrder(ReadRow read,
                                             WriteRow observed) {
-        return read.seq() > 0L && observed.seq() > 0L
-                && read.seq() < observed.seq();
+        return RowOrder.before(read, observed);
     }
 
     /** One session that pairs a slot's consumer with another producer. */

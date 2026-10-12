@@ -7,9 +7,11 @@ import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -129,6 +131,8 @@ public final class Confirmation {
             new HashMap<String, Integer>();
     /** The activations that have exited. */
     private static final Set<String> EXITED = new HashSet<String>();
+    /** The view holds this run is held to ({@link #decoding}). */
+    private static final List<ViewHold> VIEW_HOLDS = new ArrayList<ViewHold>();
     /** The order stalls: what the model ordered and this run could not. */
     private static final List<String> UNREALIZED = new ArrayList<String>();
     /** Why this CONFIRM run's edges could not be read, or "". */
@@ -218,7 +222,7 @@ public final class Confirmation {
         load();
         synchronized (LOCK) {
             return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty()
-                    || !BEFORE.isEmpty();
+                    || !BEFORE.isEmpty() || !VIEW_HOLDS.isEmpty();
         }
     }
 
@@ -257,13 +261,39 @@ public final class Confirmation {
                         + chosen.producer + " at another address" : "");
     }
 
+    /**
+     * The writer a STATE row names for a node's decode of {@code version}
+     * of a view (LocationKind.VIEW): decodes in work outside every selected
+     * region share one endpoint, so a view's writer is its version.
+     */
+    public static String viewWriter(long version) {
+        return "VIEW@" + version;
+    }
+
+    /**
+     * The writer a STATE row and a world's pairing name: a view's version
+     * ({@link #viewWriter}) whichever side of the window its decode stood
+     * on (a view's INITIAL too: which one a version gets is the window's
+     * timing), else its endpoint as {@link #id} names it, {@link #INITIAL}
+     * for no occurrence's.  The one spelling CONFIRM, EXPLORE's plants and
+     * COMPOSE's planted families share.
+     */
+    public static String writer(WriteRow write) {
+        return write.location().kind() == LocationKind.VIEW
+                ? viewWriter(write.version())
+                : write.initial() ? INITIAL : id(write.endpoint());
+    }
+
+    /** One write row's version, by the writer {@link #writer} spells: a
+     *  node's decode re-pointing its view is {@link #viewWriter}. */
     static void wrote(LocationId location, long version, Endpoint writer,
                       boolean initial) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
             ranOn();
-            WROTE.put(key(location, version), initial ? INITIAL
-                    : id(writer));
+            WROTE.put(key(location, version),
+                    location.kind() == LocationKind.VIEW
+                    ? viewWriter(version) : initial ? INITIAL : id(writer));
         }
     }
 
@@ -273,6 +303,9 @@ public final class Confirmation {
         if (!expected() || reader == null || location == null) return;
         synchronized (LOCK) {
             ranOn();
+            for (ViewHold hold : VIEW_HOLDS) {
+                if (hold.reader.equals(id(reader))) hold.readSeen = true;
+            }
             if (mintVersion != ReadRow.UNKNOWN_VERSION) {
                 MINTED.add(key(location, observedVersion));
             }
@@ -422,6 +455,164 @@ public final class Confirmation {
                 WAITING.remove(thread);
             }
             planted(RecordingPlant.APPLIED, activation, before);
+        }
+    }
+
+    /**
+     * One VIEW_HOLD row ({@code explore.ConfirmMain#stateEdges}): a pairing
+     * holds a read of a node's view to that node's decode of version {@code
+     * above}, so the node's decodes of the view past it wait while the work
+     * that read it runs, except that work's own ({@code readerContext}: its
+     * node and causal context): until the reader's occurrence exits ({@code
+     * until}), or -- a read in role work, which no hook closes -- until the
+     * first region that work opens after the read ({@code reader}) has
+     * closed (a routed alias captures its view in the request's role work
+     * and writes it in a store door's region), in the run as it goes.
+     */
+    private static final class ViewHold {
+        final String view;
+        final long above;
+        final String readerContext;
+        final String reader;
+        final String until;
+        boolean readSeen;
+        boolean released;
+        boolean gaveWay;
+
+        ViewHold(String view, long above, String readerContext,
+                 String reader, String until) {
+            this.view = view;
+            this.above = above;
+            this.readerContext = readerContext;
+            this.reader = reader;
+            this.until = until;
+        }
+
+        boolean ended() {
+            return gaveWay || released
+                    || !until.isEmpty() && EXITED.contains(until);
+        }
+
+        String label() {
+            return "VIEW_HOLD " + view + " past version " + above;
+        }
+
+        String waitsFor() {
+            return until.isEmpty() ? "the region read " + reader + "'s work"
+                    + " opens next" : until;
+        }
+    }
+
+    /** The key a VIEW_HOLD row names a node's view by. */
+    public static String viewKey(LocationId view) {
+        return view.kind() + "/" + view.owner() + "#" + view.slot();
+    }
+
+    /** The key a VIEW_HOLD row names a reader's work by: its node and its
+     *  causal context, as every delivery of its stored message names it. */
+    public static String contextKey(OccurrenceAddress occurrence) {
+        if (occurrence == null) return "";
+        OccurrenceAddress any = occurrence.anyDelivery();
+        return any.node().render() + "|" + any.context().render();
+    }
+
+    /**
+     * THE DECODE HOLD: a node's decode of {@code version} of its {@code
+     * view}, at {@code at}, before the system re-points the view to it
+     * ({@code MessageDoors#decoded}), in a replay, a CONFIRM run and a
+     * native reproduction alike.  It waits while a hold names the view below
+     * this version and its {@code until} activation has not exited -- never
+     * in the reader's own work --, at most {@link #ORDER_TIMEOUT_PROPERTY};
+     * past it the decode goes on and the hold is unrealized by name (the run
+     * is no model of the pairing: CONFIRM_MISMATCH, PAIRING_UNTAKEN), every
+     * other hold of a native run giving way with it.
+     */
+    static void decoding(LocationId view, long version,
+                         OccurrenceAddress at) {
+        if (view == null) return;
+        load();
+        String key = viewKey(view);
+        String here = contextKey(at);
+        synchronized (LOCK) {
+            List<ViewHold> holding = new ArrayList<ViewHold>();
+            for (ViewHold hold : VIEW_HOLDS) {
+                if (!hold.ended() && hold.view.equals(key)
+                        && version > hold.above
+                        && !hold.readerContext.equals(here)) {
+                    holding.add(hold);
+                }
+            }
+            if (holding.isEmpty()) return;
+            FocusedReplay.worldActed();
+            for (ViewHold hold : holding) {
+                planted(RecordingPlant.HOLDING, hold.label(),
+                        Collections.singleton(hold.waitsFor()));
+            }
+            long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
+                    ORDER_TIMEOUT_MS);
+            long deadline = System.currentTimeMillis() + timeout;
+            while (true) {
+                List<ViewHold> open = new ArrayList<ViewHold>();
+                for (ViewHold hold : holding) {
+                    if (!hold.ended()) open.add(hold);
+                }
+                if (open.isEmpty()) {
+                    for (ViewHold hold : holding) {
+                        if (!hold.gaveWay) {
+                            planted(RecordingPlant.APPLIED, hold.label(),
+                                    Collections.singleton(hold.waitsFor()));
+                        }
+                    }
+                    return;
+                }
+                if (RecordingPlant.orderGaveWay()) return;
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0L) {
+                    for (ViewHold hold : open) {
+                        // One unrealized hold is the run's answer; the
+                        // decodes after it go on.
+                        hold.gaveWay = true;
+                        UNREALIZED.add(hold.label() + ": the decode of"
+                                + " version " + version + " waited " + timeout
+                                + " ms for " + hold.waitsFor() + " to exit,"
+                                + " which it did not, so this program cannot"
+                                + " realize the pairing");
+                        planted(RecordingPlant.UNHELD, hold.label(),
+                                Collections.singleton(hold.waitsFor()));
+                    }
+                    if (RecordingPlant.planting()) RecordingPlant.gaveWay();
+                    return;
+                }
+                try {
+                    LOCK.wait(Math.min(left, 200L));
+                } catch (InterruptedException interrupted) {
+                    // A shutdown ended the wait: the read the pairing asks
+                    // is the STATE edge's to judge at the close.
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
+     * A region closed ({@code Identity#regionExit}, {@code #hopClosed}): a
+     * view hold whose reader read in role work ends at the first region its
+     * work closes after that read.
+     */
+    static void regionClosed(OccurrenceAddress occurrence) {
+        if (occurrence == null || occurrence.role()) return;
+        String context = contextKey(occurrence);
+        synchronized (LOCK) {
+            boolean released = false;
+            for (ViewHold hold : VIEW_HOLDS) {
+                if (hold.until.isEmpty() && hold.readSeen && !hold.released
+                        && hold.readerContext.equals(context)) {
+                    hold.released = true;
+                    released = true;
+                }
+            }
+            if (released) LOCK.notifyAll();
         }
     }
 
@@ -723,6 +914,19 @@ public final class Confirmation {
                             TURNS.put(optionalString(row, "reader"), turns);
                             TURNED.add(turns);
                         }
+                    } else if (RecordingPlant.VIEW_HOLD.equals(kind)) {
+                        ViewHold hold = new ViewHold(
+                                optionalString(row, "view"),
+                                row.get("above").getAsLong(),
+                                optionalString(row, "readerContext"),
+                                optionalString(row, "reader"),
+                                optionalString(row, "until"));
+                        VIEW_HOLDS.add(hold);
+                        if (row.has(RecordingPlant.ROW)) {
+                            PLANTED.put(hold.label() + "\n"
+                                    + hold.waitsFor(),
+                                    row.get(RecordingPlant.ROW).getAsInt());
+                        }
                     } else if (RecordingPlant.ORDER.equals(kind)
                             && optionalString(row, RecordingPlant.SCOPE)
                             .isEmpty()) {
@@ -753,8 +957,11 @@ public final class Confirmation {
                 MINT.clear();
                 BEFORE.clear();
                 PLANTED.clear();
+                VIEW_HOLDS.clear();
             }
-            ordering = BEFORE.isEmpty() ? 1 : 2;
+            // An exit is what an ORDER row and a VIEW_HOLD both wait for:
+            // the frame and region hooks report exits only while ordering.
+            ordering = BEFORE.isEmpty() && VIEW_HOLDS.isEmpty() ? 1 : 2;
         }
     }
 
@@ -763,6 +970,7 @@ public final class Confirmation {
             loaded = false;
             ordering = 0;
             BEFORE.clear();
+            VIEW_HOLDS.clear();
             PLANTED.clear();
             EXITED.clear();
             OVERDUE.clear();

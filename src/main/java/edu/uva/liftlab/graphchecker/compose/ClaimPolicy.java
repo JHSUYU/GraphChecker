@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -694,21 +695,42 @@ public final class ClaimPolicy {
          * 3. The recorded valuation reaches the fatal arm on another
          * session's path that OBSERVED it (the seed's own is no claim,
          * {@link #unasked}), through attested arms, while the seed's own
-         * disjunct does not: the mechanism #mechanism's pin tests name, or
-         * null, named, where none fires.
+         * disjunct does not: the mechanism #mechanism's pin tests name; else,
+         * where a session's world planted a pairing its read took ({@code
+         * Composition#takenPairings}), STATE_PAIRING_FLIPPED -- the pairing
+         * is what the world moved, though no term of the path names the read
+         * (a node's view at a version lacking an alias decides nothing the
+         * VM states: Map#get of a key the older document never had) --, its
+         * witness that session's whole world ({@link #worldPairing}), the
+         * recorded valuation's path first, then every other path that
+         * observed the fatal and took a pairing; or null, named, where none
+         * fires.
          */
         Decision observedElsewhere() {
-            if (recorded == null || !recorded.witness()
-                    || !recorded.selected().fatalObserved()
-                    || !attestedArms(composition, recorded)
+            if (recorded == null || !recorded.witness()) return null;
+            boolean attested = recorded.selected().fatalObserved()
+                    && attestedArms(composition, recorded);
+            List<Composer.Disjunct> worlds = worldPairings();
+            if (!attested && worlds.isEmpty()
                     || !seedDisjunctUnsat(composition, asks)) {
                 return null;
             }
-            ClaimKind kind = mechanism(composition, asks, recorded,
-                    clockDriven);
-            if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
-                return new Decision(Claim.of(kind, 0,
-                        movedRoots(composition, recorded), true, gaps),
+            if (attested) {
+                ClaimKind kind = mechanism(composition, asks, recorded,
+                        clockDriven);
+                if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
+                    return new Decision(Claim.of(kind, 0,
+                            movedRoots(composition, recorded), true, gaps),
+                            outcomes);
+                }
+            }
+            for (Composer.Disjunct selected : worlds) {
+                Outcome witness = worldPairing(selected);
+                if (witness == null) continue;
+                outcomes.set(0, witness);
+                return new Decision(Claim.of(
+                        ClaimKind.STATE_PAIRING_FLIPPED, 0,
+                        movedRoots(composition, witness), true, gaps),
                         outcomes);
             }
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
@@ -717,9 +739,117 @@ public final class ClaimPolicy {
                     "this path of an explored session reaches the fatal arm "
                             + "at the recorded roots and the seed's own "
                             + "disjunct does not, and no state slot, no wire "
-                            + "slot, no moved root and no clock of this "
-                            + "composition is what makes the difference: "
-                            + "there is no mechanism to name"));
+                            + "slot, no moved root, no clock and no pairing "
+                            + "its world planted is what makes the "
+                            + "difference: there is no mechanism to name"));
+            return null;
+        }
+
+        /** The paths that observed the fatal and whose session's world
+         *  planted a pairing its read took: the recorded valuation's first. */
+        private List<Composer.Disjunct> worldPairings() {
+            List<Composer.Disjunct> worlds =
+                    new ArrayList<Composer.Disjunct>();
+            List<Composer.Disjunct> all = new ArrayList<Composer.Disjunct>();
+            all.add(recorded.selected());
+            all.addAll(composition.disjuncts());
+            for (Composer.Disjunct disjunct : all) {
+                if (disjunct.fatalObserved() && !worlds.contains(disjunct)
+                        && !composition.takenPairings(disjunct).isEmpty()) {
+                    worlds.add(disjunct);
+                }
+            }
+            return worlds;
+        }
+
+        /**
+         * The witness of the pairings {@code selected}'s session's world
+         * planted and its reads took: that session's whole world, as CONFIRM
+         * re-runs it -- its own run with every plant of its world ({@code
+         * Composition#worldRun}), its roots at the world's values ({@code
+         * #worldValuation}) and its clocks at the world's skews ({@code
+         * #worldClocks}), so the claim's movedRoots name every fault and
+         * clock the world planted and {@code Composition#repaired} the
+         * pairing.  Null where it does not stand, each named: nothing holds
+         * the path, a taken pairing's read is off the path's fatal cone
+         * ({@code Composition#onFatalPath}), the formula has no such model,
+         * or the session is not that world's run ({@code
+         * Composition#ranWorld}).
+         */
+        private Outcome worldPairing(Composer.Disjunct selected) {
+            String selector = selected.selector();
+            List<String> held = composition.worldRun(selected);
+            // Nothing to hold where no family offers the path an arm: its
+            // own run is then the only one asked (solr-bugs-tra-start-
+            // overwrite Z2S: the paired view read stated by no family).
+            if (held.isEmpty() && composition.offersArms(selector)) {
+                return unclaimed(selected, "nothing holds the path to its "
+                        + "session's run while a family offers it arms: no "
+                        + "delivery of its own, no observed writer arm, no "
+                        + "plant");
+            }
+            Map<String, ReadRow> taken = composition.takenPairings(selected);
+            Map<String, Composer.Composition.FatalPath> clauses =
+                    new LinkedHashMap<String, Composer.Composition.FatalPath>();
+            for (Map.Entry<String, ReadRow> pairing : taken.entrySet()) {
+                Composer.Composition.FatalPath clause =
+                        composition.onFatalPath(selected, pairing.getValue());
+                if (clause == null) {
+                    return unclaimed(selected, "the read " + pairing.getKey()
+                            + " its world re-paired is off the path's fatal"
+                            + " cone: the cone names neither it, nor a store"
+                            + " version its occurrence wrote, and it is not"
+                            + " the anchor's");
+                }
+                clauses.put(pairing.getKey(), clause);
+            }
+            held.addAll(composition.worldClocks(selected));
+            Outcome witness = outcomeOn(composition, asks,
+                    composition.worldValuation(0, selected), held, false,
+                    selector, 0L);
+            if (!witness.answer().decided()) {
+                return unclaimed(selected, "its own run under its world's "
+                        + "plants, roots and clocks is undecided (" + witness
+                        .answer().status() + "): no claim rests on it");
+            }
+            if (!witness.witness()) {
+                return unclaimed(selected, "its own run under its world's "
+                        + "plants, roots and clocks reaches no fatal arm "
+                        + "the formula states");
+            }
+            Map<String, String> moved = movedRoots(composition, witness);
+            Set<Composer.Composition.FatalPath> unnamed =
+                    new LinkedHashSet<Composer.Composition.FatalPath>(
+                            clauses.values());
+            unnamed.remove(Composer.Composition.FatalPath.CONE);
+            if (!moved.isEmpty() && !unnamed.isEmpty()) {
+                return unclaimed(selected, "a pairing no term names lies on"
+                        + " the fatal path only by its occurrence " + clauses
+                        + ", and the world moved " + moved.keySet() + " too:"
+                        + " nothing shows the pairing is what decides");
+            }
+            if (!composition.ranWorld(selected, moved, composition
+                    .realizedPairings(selected).keySet())) {
+                return unclaimed(selected, "the session is not the run of "
+                        + "the world the witness names: it planted another "
+                        + "root, clock or pairing it did not realize, or "
+                        + "minted a moved root elsewhere");
+            }
+            // Which clause puts each pairing on the fatal path, in the
+            // claim, so a reading sees it.
+            gaps.add(GapRow.of(selected.path().sessionId,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    selected.path().pathId, "world-pairing claim: each "
+                            + "pairing on the fatal path by " + clauses));
+            return witness;
+        }
+
+        /** A world pairing that does not stand, named on its path. */
+        private Outcome unclaimed(Composer.Disjunct selected, String why) {
+            gaps.add(GapRow.of(selected.path().sessionId,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    selected.path().pathId, "no world-pairing claim on this "
+                            + "path: " + why));
             return null;
         }
 
@@ -1113,6 +1243,18 @@ public final class ClaimPolicy {
                                    Composer.Valuation valuation,
                                    List<String> pinned, boolean wantCore,
                                    Outcome path, long budgetMillis) {
+        return outcomeOn(composition, asks, valuation, pinned, wantCore,
+                path == null ? null : path.selected().selector(),
+                budgetMillis);
+    }
+
+    /** The same, asked of the path {@code selector} names (null: every
+     *  path). */
+    private static Outcome outcomeOn(Composer.Composition composition,
+                                     Disjunction asks,
+                                     Composer.Valuation valuation,
+                                     List<String> pinned, boolean wantCore,
+                                     String selector, long budgetMillis) {
         List<String> asked = new ArrayList<String>(composition.selectors());
         asked.addAll(composition.armSelectors());
         asked.addAll(composition.stateSelectors());
@@ -1126,11 +1268,11 @@ public final class ClaimPolicy {
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);
-        Z3.Answer answer = path == null
+        Z3.Answer answer = selector == null
                 ? asks.ask(assertions, composition.selectors(), asked,
                 wantCore)
-                : asks.askPath(path.selected().selector(), assertions, asked,
-                wantCore, budgetMillis);
+                : asks.askPath(selector, assertions, asked, wantCore,
+                budgetMillis);
         return new Outcome(valuation, pinned, answer,
                 selectedOf(composition, answer), armsOf(composition, answer));
     }

@@ -1336,7 +1336,11 @@ Capture kinds: `METHOD_PARAMETER` (`index`), `METHOD_RETURN` (no selector), `CAL
 (`callee`, `occurrence`). Both captures' types must equal `javaType`. Any other schema or kind is
 refused, never skipped. A declared row is for a value no protobuf message field carries (HDFS: the
 key id inside the SASL user name; Solr: the routing rule's expiry); a protobuf field is derived
-(§6.2).
+(§6.2), and a store's JSON content crosses leaf by leaf (§6.4). solr-18413's two rows stay while the
+leaf path does not carry `routingRules.*.expireAt` to the guard: node1's watcher parses it outside
+every region and `RoutingRule`'s constructor parses the long there, where the VM propagates nothing,
+so the guard's region reads the field as an INITIAL constant (round Z2L: UNSAT_CLOSED without the
+rows).
 
 SEED demands every capture and joins each producer to each consumer (`wire_handoff`,
 `wire_capture_argument` edges), so the slice continues on the sending side.
@@ -1439,6 +1443,96 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
 A refusal is its frame's: the paths and arms whose closure reaches an occurrence its session filed an
 `UNSTATED_VALUE` row on compose with the constants its rows state, and name the frame
 (`compose/Composer#frames`, a `Composer.Concrete` FRAME).
+
+### 6.4 A store's content
+
+A shared store's version (IDENTITY §7.2) carries a document: Solr's `state.json`, an Overseer queue
+item, `aliases.json`, `clusterprops.json`, a snapshot's metadata, each JSON. Its leaves cross like a
+message's fields, through the system's JSON codec rather than a door's message (`runtime/
+StoreContent`, MessageCodec's analogue). The codec hands the engine what it serialized and what it
+parsed (Solr: `Utils.toJSON` -> `MessageDoors.jsonWritten(bytes, document)`, `Utils.fromJSON(bytes)`
+-> `MessageDoors.jsonRead(bytes, tree)`); the document is the object the writer was handed as its
+serializer walks it, a tree of maps, lists and leaves built from the walk's events (Solr:
+`Utils.CausynthView`, a noggit `JSONWriter` that writes nothing), each leaf the very object the
+writer holds, so its expression comes with it. The store's doors pass the same arrays (`stored`'s
+and `fetched`'s `data`), and the engine pairs them by identity: a write of bytes the codec wrote
+exports each leaf on the version it made, at the writer's occurrence; a fetch names the version its
+bytes are, and a parse of those bytes mints each leaf of the tree on its entry (the VM's leaf
+natives, VM.md §7: `exportLeaf`, `mintLeaf` ENTRY or POSITION) in the parsing occurrence. Each leaf
+is a port of its own, `<transport>#CONTENT:<location>#<JSON pointer>` (RFC 6901; each `/` spelled
+`|`, as a site spells none), and its attach pairs with the export of the version it was fetched
+at, by that version (the message) and the port (CORRELATION_PORT). A watcher can parse a version
+before its writer files it (the store notifies before the write returns): the write exports its
+leaves before it files the version, and a parse first waits for a write in flight at the location to
+file it (`MessageDoors#filed`, the bound a notification's read waits), so its attaches pair (solr-18413
+Z2C: node1's first parse of the routing rule raced the Overseer's export and minted unpaired). A
+door step that fails names itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload.
+Every store door the system's code calls runs with the VM's propagation paused, as a woven hook
+does: its tables and rows are engine plumbing, never program state. So does the codec's own
+serialization walk (Solr: `Utils.toJSON` inside `MessageDoors#serializing`/`#serialized`): the
+writer's leaves are captured as objects (`jsonWritten`), and the serializer's buffers and maps
+would otherwise version as symbolic stores in the writer's region, a read-out that grew
+solr-bugs-snapshot-no-active's CreateSnapshot region past every schedule slot (round Z2G: seed
+replay 121 -> 1017 s, 51 give-ups). Both tables are weak by the array: a document no store write or fetch takes (an
+HTTP response, a log line) is dropped with its bytes. Both sides capture wherever a replay runs them
+(`MessageDoors#capturingContent`), at the activation running there or, outside every one, at the
+thread's occurrence stated unselected (§6.3's entry rule): the Overseer's state writer and queue
+offers write, and a node's watcher parses, outside every opened occurrence (solr-18413 Z2B, writers
+captured only inside one: 142,295 attaches, 332 exports, the routing rule's expiry exported
+nowhere).
+
+A leaf is a String, a number or a boolean. A String whose text is Java's decimal rendering of a long,
+or a boolean's, crosses as that value: its export is the value a lone rendering of the writer's
+expression renders (`compose/StringIdentities#renderedValue`), the text read where the writer held a
+constant, else the parse of what it held; the parse mints the leaf as the rendering of a fresh
+number (`DEC_LONG`, `BOOL`), so a reader's `Long.parseLong` of it is that number and no String
+theory is asked (solr-18413's routing-rule expiry, a clock's rendering through the Overseer's
+queue item and `state.json`). A boolean the writer computed otherwise crosses as its text (`STR`),
+as does any other String; a number or a boolean leaf crosses as its box's value (`NUM`), a number
+widened as the parser reads it back -- a JSON number has no width, and the parser makes a `long` of
+every integral one and a `double` of every other, so a writer's `int`, `short` or `byte` exports as a
+`long`, and its constant `float` as the `double` its decimal text reads back as (0.1f as 0.1); a
+symbolic `float` exports nothing, named (DIAGNOSTIC `UNSTATED_VALUE`: no theory here renders a
+float's decimal text), and its readers mint their own (`StoreContent#wide`, `#widened`). The writer's crossing decides the
+reader's, so a leaf's two ends are declared alike; a reader leaf that cannot cross as its writer's
+mints by its own text, unpaired. At most
+1024 leaves and 16 levels of one document are walked; past them a DIAGNOSTIC `UNSTATED_VALUE` names
+`CONTENT_BOUND:<port>` and the rest crosses as constants. A writer's export of a leaf is the VM's
+expression of it imported through the VM's expression store (`StoreContent#export`, as `WireExport`
+imports a message field's), never its raw answer, whose nodes are references. A leaf whose producer
+the closure refuses by rule is a constant of its version in COMPOSE (PIPELINE §8, `CONSTANT`). A
+wave's answer for a leaf's attach is
+written into the parsed tree before the mint, as the parser would hold it.
+
+What reads a leaf reads the objects the system builds from the tree: Solr's `ZkNodeProps` keeps the
+parsed map, `Slice` and `DocCollection` copy it (each copy carries the entry's expression), and a
+field derived from it goes through the VM's models (`Replica.State.getState` -> `Enum.valueOf`,
+`Long.parseLong`, `String.equals`); a construction-only field logs the derived value (VM.md §5.1).
+A field of an object a decode built outside every region has no write row: a joinable read of it
+that no write, mint or family binds is the value it observed where a `String.equals` compares it --
+as the VM states an enum's `==` with a constant (VM.md §4) -- (`SmtLowering#enumRead`: solr-18413's
+`Slice` state, a `valueOf` over the state leaf).
+Which version a node's objects hold is the PROVENANCE read (§5.7).
+
+A node decides on its VIEW of a location: each decode re-points it, and a guard reads the objects of
+whichever decode the view held. The view is a location of its own (`LocationKind.VIEW`, CONTRACT-SPEC
+§1: the transport at the node, the store's path), its value the version decoded: the first parse of
+a fetched version on its node writes it at the decoding occurrence -- a later parse of a version the
+node decoded before (a watcher's and a fetch's, or one before the window opened) re-points nothing,
+and writes nothing a read could be ordered before (round Z2K: every tra session's view read of
+version 0 met a re-decode of it after the read, `TOPOLOGY_DIVERGENCE`) --, and every PROVENANCE read reads it too, at the
+same site (`#VIEW`), with a symbol of its own. Where no guard's static walk reaches the objects a
+caller holds from the view, the adapter's accessor of the view states the read
+(`MessageDoors#viewed`, site `<transport>#VIEWED:<location>`, a STORE read and a VIEW read of the
+running occurrence, else the thread's role occurrence: Solr's `AliasesManager#getAliases`, STATUS
+"Per-system surface"); PLAN demands such a STORE read as a PROVENANCE site's (`StaticScopeMap#demandedAt`).
+A STATE family may re-pair that read with another
+decode of the node (PIPELINE §8), and the leaves the guard read follow it: a content leaf's attach
+symbol, where a re-pairable read of its view stands in the path, lowers as the leaf of whichever
+decode the view holds (`SmtLowering#throughView`). A pairing flip (PIPELINE §7.4) re-pairs a read of
+a view with an older decode where the difference is no value a term names; CONFIRM holds a view's
+pairing by a `VIEW_HOLD` row: the node's later decodes wait until the reader's work's region exits
+(PIPELINE §7.5).
 
 ## 7. Current limits
 

@@ -331,11 +331,13 @@ public final class RowInvariants {
     private static void onePerEvent(SessionReader session,
                                     List<GapRow> gaps) {
         Set<String> seen = new LinkedHashSet<String>();
-        // A store read is its reader's read of one version (IDENTITY §7.2):
-        // its seq is the JVM's last event, which another node's reader of
-        // another version shares.
+        // A store read is its reader's read of one version (IDENTITY §7.2),
+        // and so is a read of a node's view (SYMBOL-SCOPE §6.4): its seq is
+        // the JVM's last event, which another reader of another version
+        // shares.
         for (ReadRow row : session.reads()) {
-            boolean store = row.location().kind() == LocationKind.STORE;
+            boolean store = row.location().kind() == LocationKind.STORE
+                    || row.location().kind() == LocationKind.VIEW;
             twice(session, gaps, seen, "reads", row.seq(), store
                     ? "occurrence/seq/location/version" : "seq/location",
                     (store ? row.endpoint().occurrence().id() + "|" : "")
@@ -343,11 +345,13 @@ public final class RowInvariants {
                             + (store ? "|" + row.observedVersion() : ""),
                     row.location() + "");
         }
-        // A store's write is its version (IDENTITY §7.2): two versions of
-        // one path with no VM event between them, or with no VM clock at all
-        // (seq 0), are two events.
+        // A store's write is its version (IDENTITY §7.2), and so is a node's
+        // view of it (SYMBOL-SCOPE §6.4): two versions of one path, or two
+        // decodes of one path on one node, with no VM event between them,
+        // or with no VM clock at all (seq 0), are two events.
         for (WriteRow row : session.writes()) {
-            boolean store = row.location().kind() == LocationKind.STORE;
+            boolean store = row.location().kind() == LocationKind.STORE
+                    || row.location().kind() == LocationKind.VIEW;
             twice(session, gaps, seen, "writes", row.seq(), store
                     ? "seq/location/version" : "seq/location", row.seq() + "|"
                     + row.location() + (store ? "|" + row.version() : ""),

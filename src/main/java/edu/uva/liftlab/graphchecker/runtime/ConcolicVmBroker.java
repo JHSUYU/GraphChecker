@@ -89,6 +89,17 @@ final class ConcolicVmBroker {
     private Method trackedLocations;
     private Method installGuardedStoreSites;
     private Method forceNextBranch;
+    private Method exportLeaf;
+    private Method mintLeaf;
+
+    /**
+     * How {@code exportLeaf}/{@code mintLeaf} address a leaf (VM.md §7):
+     * a field of the parent, an element of an array, an entry of a modeled
+     * map, a position of an ArrayList or ArrayDeque, or the leaf object
+     * itself.  The ordinal is the VM's {@code slotKind} (System.java,
+     * concolic/leafBroker.hpp).
+     */
+    enum SlotKind { FIELD, ELEMENT, ENTRY, POSITION, VALUE }
 
     void requireCurrentCapabilities() {
         List<String> missing = new ArrayList<>();
@@ -389,6 +400,29 @@ final class ConcolicVmBroker {
                 ? ((Number) kept).intValue() : MALFORMED_RESULT;
     }
 
+    /**
+     * One leaf's expression for its writer, peeked (nothing is recorded):
+     * the slot's, else the leaf object's, else its typed constant.  One
+     * VM_LEAF_EXPORT document; a refusal is its named {@code status}.
+     */
+    String exportLeaf(Object parent, SlotKind kind, Object slot)
+            throws Exception {
+        return requiredVmJson(exportLeaf.invoke(null, parent, kind.ordinal(),
+                slot), "exportLeaf");
+    }
+
+    /**
+     * States one decoded leaf as {@code template} over fresh hole symbols
+     * (the grammar is System#mintLeaf's).  One VM_LEAF_MINT document; a
+     * refusal landing on the leaf object ({@code landsOn: OBJECT}) asks the
+     * caller to store a fresh equal object and mint again.
+     */
+    String mintLeaf(Object parent, SlotKind kind, Object slot,
+                    String template) throws Exception {
+        return requiredVmJson(mintLeaf.invoke(null, parent, kind.ordinal(),
+                slot, template), "mintLeaf");
+    }
+
     private static String requiredVmJson(Object value, String api) {
         if (!(value instanceof String)
                 || ((String) value).trim().isEmpty()) {
@@ -448,6 +482,10 @@ final class ConcolicVmBroker {
                 "installGuardedStoreSites", String.class);
         api.forceNextBranch = method(system, "forceNextConcolicBranch",
                 boolean.class);
+        api.exportLeaf = method(system, "exportLeaf", Object.class,
+                int.class, Object.class);
+        api.mintLeaf = method(system, "mintLeaf", Object.class, int.class,
+                Object.class, String.class);
         return api;
     }
 

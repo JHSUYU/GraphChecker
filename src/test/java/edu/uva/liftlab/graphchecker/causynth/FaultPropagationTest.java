@@ -196,8 +196,9 @@ public class FaultPropagationTest {
         SootClass client = application(
                 "org.apache.solr.common.cloud.SolrZkClient", object);
         SootMethod wrote = method(client, "causynthWrote",
-                Arrays.<Type>asList(string, IntType.v()), VoidType.v(),
-                Modifier.STATIC | Modifier.NATIVE);
+                Arrays.<Type>asList(string, IntType.v(),
+                        soot.ArrayType.v(soot.ByteType.v(), 1)),
+                VoidType.v(), Modifier.STATIC | Modifier.NATIVE);
         List<Type> one = Collections.<Type>singletonList(string);
         SootMethod hook = writer(client, "create", Arrays.<Type>asList(string,
                 soot.ArrayType.v(soot.ByteType.v(), 1), mode,
@@ -310,7 +311,8 @@ public class FaultPropagationTest {
             }
             if (hooked) {
                 units.add(J.newInvokeStmt(J.newStaticInvokeExpr(
-                        wrote.makeRef(), path, IntConstant.v(0))));
+                        wrote.makeRef(), path, IntConstant.v(0),
+                        soot.jimple.NullConstant.v())));
             }
         }
         units.add(returned instanceof VoidType ? J.newReturnVoidStmt()

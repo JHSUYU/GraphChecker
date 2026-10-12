@@ -9,6 +9,7 @@ import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -959,6 +960,17 @@ public final class ConcolicRegionRuntime {
      */
     public static void observeProvenance(String siteId, Object receiver,
                                          Object holder) {
+        // Woven into the system's code with no trap of its own: an engine
+        // fault is named, never thrown into it (MessageDoors#doorFault).
+        try {
+            observeVersion(siteId, receiver, holder);
+        } catch (RuntimeException fault) {
+            MessageDoors.doorFault("observeProvenance " + siteId, fault);
+        }
+    }
+
+    private static void observeVersion(String siteId, Object receiver,
+                                       Object holder) {
         Provenance.Version version = Provenance.observe(receiver, holder,
                 new boolean[1]);
         ActiveRegion active = activeRegion();
@@ -967,8 +979,19 @@ public final class ConcolicRegionRuntime {
             Provenance.unregistered(nonNull(siteId), receiver);
             return;
         }
-        RowRuntime.storeRead(active.d3Address, RowRuntime.currentEvent(),
+        // On the scale the engine's writes of a store and a view stand on
+        // (Identity#enginePosition, contract.RowOrder): never ordered before
+        // the write or decode it saw.
+        RowRuntime.storeRead(active.d3Address, Identity.enginePosition(),
                 nonNull(siteId), version.location, version.version);
+        // The same read is a read of the node's view (SYMBOL-SCOPE §6.4):
+        // the version the reading node's decodes left there.
+        LocationId view = MessageDoors.viewOf(version.location,
+                active.d3Address);
+        if (view != null) {
+            RowRuntime.viewRead(active.d3Address, Identity.enginePosition(),
+                    nonNull(siteId) + "#VIEW", view, version.version);
+        }
     }
 
     /**

@@ -91,16 +91,24 @@ public final class ObligationFactory {
         }
     }
 
-    /** One flip a round proposes: the path, the decision, and its identity. */
+    /** One flip a round proposes: the path, the decision, and its identity;
+     *  or a PAIRING FLIP ({@link PairingFlip}): the path, a read of a node's
+     *  view and the older version of it the read is to take, no decision. */
     public static final class Candidate {
         public final String obligationId;
         public final Task task;
         public final Corpus.RecordedPath path;
+        /** The flipped decision's index, -1 for a pairing flip. */
         public final int index;
+        /** The flipped decision, null for a pairing flip. */
         public final DecisionRow decision;
         /** A forced path's flip ({@link #forced(Corpus, Task)}): the arm it
          *  asks is the forced one, with the whole forced path condition. */
         public final boolean forced;
+        /** A pairing flip's read of a node's view, else null. */
+        public final ReadRow pairedRead;
+        /** The version of the view a pairing flip's read is to take. */
+        public final long pairedVersion;
 
         private Candidate(Corpus corpus, Task task,
                           Corpus.RecordedPath path, int index,
@@ -123,19 +131,53 @@ public final class ObligationFactory {
             this.decision = path.decisions.get(index);
             this.obligationId = obligationId;
             this.forced = forced;
+            this.pairedRead = null;
+            this.pairedVersion = -1L;
+        }
+
+        /** A pairing flip ({@link PairingFlip}). */
+        Candidate(Task task, Corpus.RecordedPath path, ReadRow read,
+                  long version, String obligationId) {
+            this.task = task;
+            this.path = path;
+            this.index = -1;
+            this.decision = null;
+            this.obligationId = obligationId;
+            this.forced = false;
+            this.pairedRead = read;
+            this.pairedVersion = version;
+        }
+
+        /** Whether it is a pairing flip. */
+        public boolean pairing() {
+            return pairedRead != null;
+        }
+
+        /** The site it asks at: the decision's, or a pairing flip's read
+         *  ({@link PairingFlip#site}). */
+        public String siteId() {
+            return pairing() ? PairingFlip.site(pairedRead)
+                    : decision.siteId();
+        }
+
+        /** The decision's ordinal, or a pairing flip's ({@link
+         *  PairingFlip#ordinal}: an ordinal is 1-based, a version not). */
+        public int ordinal() {
+            return pairing() ? PairingFlip.ordinal(pairedVersion)
+                    : decision.ordinal();
         }
 
         /** The arm it asks: the recorded one's other, or a forced flip's
-         *  forced one. */
+         *  forced one; a pairing flip's is taken. */
         public boolean flippedOutcome() {
-            return decision.outcome() == forced;
+            return pairing() || decision.outcome() == forced;
         }
 
         /** The row a round publishes: what to flip, no model yet (the solver
          *  writes values). */
         public Obligation proposal() {
             return Obligation.of(obligationId, task.taskId(), path.pathId,
-                    decision.siteId(), decision.ordinal(),
+                    siteId(), ordinal(),
                     flippedOutcome(),
                     Collections.<String, String>emptyMap(),
                     Collections.<String, String>emptyMap(),
@@ -181,7 +223,7 @@ public final class ObligationFactory {
          *  Corpus#openArmFlip}): its replay may refute its world. */
         public final boolean openArm;
 
-        private Outcome(Obligation obligation, ObligationResult result,
+        Outcome(Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
                         Map<String, String> rootMints,
                         List<Corpus.Flip> inheritedFlips,
@@ -218,10 +260,10 @@ public final class ObligationFactory {
                 true);
     }
 
-    private static Outcome refused(Candidate candidate, Verdict verdict,
-                                   String detail, String query,
-                                   List<GapRow> gaps, String question,
-                                   boolean settles) {
+    static Outcome refused(Candidate candidate, Verdict verdict,
+                           String detail, String query,
+                           List<GapRow> gaps, String question,
+                           boolean settles) {
         return new Outcome(null, ObligationResult.of(candidate.obligationId,
                 verdict, "", detail), query,
                 Collections.<String, String>emptyMap(),
@@ -272,7 +314,7 @@ public final class ObligationFactory {
     /** A world as a question and a refutation spell it: its roots, skews,
      *  answers and pairings, sorted, then its flips in order, each by its
      *  decision (never the id it was first asked under: ids drift). */
-    private static String worldText(Corpus.World world) {
+    static String worldText(Corpus.World world) {
         StringBuilder text = new StringBuilder()
                 .append(new TreeMap<String, String>(world.rootAssignments))
                 .append(new TreeMap<String, String>(world.clockDeltas))
@@ -395,7 +437,7 @@ public final class ObligationFactory {
      *  ({@code Frontier#inFlight}): an id drifts, a flip does not. */
     public static String flip(Candidate candidate) {
         return flip(candidate.task.taskId(), candidate.path.pathId,
-                candidate.decision.siteId(), candidate.decision.ordinal(),
+                candidate.siteId(), candidate.ordinal(),
                 candidate.flippedOutcome());
     }
 
@@ -505,6 +547,7 @@ public final class ObligationFactory {
             List<Candidate> owedHere = new ArrayList<Candidate>();
             List<Candidate> flying = new ArrayList<Candidate>();
             int unflipped = 0;
+            List<Candidate> asked = new ArrayList<Candidate>();
             for (int index : faultFirst(corpus, path)) {
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(decision)) {
@@ -514,17 +557,20 @@ public final class ObligationFactory {
                         || !FlipQuery.asks(flipSites, decision)) {
                     continue;
                 }
-                Candidate candidate =
-                        new Candidate(corpus, task, path, index,
-                                false);
+                asked.add(new Candidate(corpus, task, path, index, false));
+            }
+            // And the reads of a node's view the path may re-pair.
+            asked.addAll(PairingFlip.candidates(corpus, task, path, gaps));
+            for (Candidate candidate : asked) {
                 if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate);
                 if (!reason.isEmpty()) {
                     offered.add(candidate.obligationId);
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                            decision.siteId() + "#" + decision.ordinal()
-                                    + " -> " + !decision.outcome(), reason));
+                            candidate.siteId() + "#" + candidate.ordinal()
+                                    + " -> " + candidate.flippedOutcome(),
+                            reason));
                     continue;
                 }
                 // Queued or running: owed, but not this round's to ask
@@ -630,7 +676,7 @@ public final class ObligationFactory {
         final Map<String, String> answers =
                 new LinkedHashMap<String, String>();
         /** Reader -> writer: the writer choices the model moved off the
-         *  recording ({@link ConfirmMain#writer}). */
+         *  recording ({@link Confirmation#writer}). */
         final Map<String, String> pairings =
                 new LinkedHashMap<String, String>();
         final List<String> unproducible = new ArrayList<String>();
@@ -726,13 +772,13 @@ public final class ObligationFactory {
                             + "the other arm with read " + read.endpoint()
                             + " of session " + read.sessionId() + " paired "
                             + "to " + (write == null ? "an arm stating no "
-                            + "write" : "writer " + ConfirmMain.writer(write))
+                            + "write" : "writer " + Confirmation.writer(write))
                             + ", and the replay runs the world of "
                             + candidate.path.sessionId;
                     return planted;
                 }
                 planted.pairings.put(Confirmation.id(read.endpoint()),
-                        ConfirmMain.writer(write));
+                        Confirmation.writer(write));
             }
         }
         return planted;
@@ -862,6 +908,9 @@ public final class ObligationFactory {
         paths.addAll(forced);
         for (Corpus.RecordedPath path : paths) {
             if (!path.pathId.equals(obligation.pathId())) continue;
+            if (Obligation.pairing(obligation.siteId())) {
+                return PairingFlip.locate(corpus, task, path, obligation);
+            }
             for (int index = 0; index < path.decisions.size(); index++) {
                 DecisionRow decision = path.decisions.get(index);
                 if (decision.siteId().equals(obligation.siteId())
@@ -908,6 +957,9 @@ public final class ObligationFactory {
     public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
                                 long timeoutMillis, String given,
                                 Map<String, ObligationDir.Answer> answered) {
+        if (candidate.pairing()) {
+            return PairingFlip.solve(corpus, candidate, given, answered);
+        }
         String id = candidate.obligationId;
         DecisionRow decision = candidate.decision;
         FlipQuery.Built built = candidate.forced
@@ -1175,7 +1227,7 @@ public final class ObligationFactory {
                     if (writer == null) continue;
                     for (Map.Entry<String, WriteRow> write
                             : choice.writes.entrySet()) {
-                        if (write.getValue() != null && ConfirmMain.writer(
+                        if (write.getValue() != null && Confirmation.writer(
                                 write.getValue()).equals(writer)) {
                             selector = write.getKey();
                         }
@@ -1255,7 +1307,7 @@ public final class ObligationFactory {
     }
 
     /** {@code base} with {@code over} laid on top: {@code over} wins. */
-    private static Map<String, String> overlay(Map<String, String> base,
+    static Map<String, String> overlay(Map<String, String> base,
                                                Map<String, String> over) {
         Map<String, String> merged = new LinkedHashMap<String, String>(base);
         merged.putAll(over);

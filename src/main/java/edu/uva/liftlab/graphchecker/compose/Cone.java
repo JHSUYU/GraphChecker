@@ -69,6 +69,15 @@ final class Cone {
         for (Node family : families) {
             bound.addAll(names(family, Collections.<String>emptySet()));
         }
+        // A store content leaf held as its version's constant, its producer
+        // refused by rule (SmtLowering.Unbound#CONSTANT): no open link.
+        for (Composer.Concrete row : concrete) {
+            if (SmtLowering.Unbound.CONSTANT.equals(row.kind)
+                    && pathId.equals(row.pathId)) {
+                bound.add(row.subject);
+                bound.add(SmtNames.legalSymbols(row.subject));
+            }
+        }
         // The last fatal assertion of the selector, as cone.py's dict keeps.
         if (!fatal.isEmpty()) {
             for (String name : names(fatal.get(fatal.size() - 1),

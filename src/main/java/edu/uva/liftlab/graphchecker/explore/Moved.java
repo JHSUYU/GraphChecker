@@ -143,7 +143,26 @@ public final class Moved {
     /** {@link #ranBy} but its clocks: what a model that is not yet refined
      *  (its clocks not yet pinned back) can already be judged by. */
     public boolean ranRootsBy(Corpus.World world, SessionReader session) {
-        if (!refusal.isEmpty() || !world.pairings.isEmpty()) return false;
+        return world.pairings.isEmpty() && rootsOf(world, session);
+    }
+
+    /**
+     * {@link #ranBy} of a claim that names pairings besides the model's
+     * moves (a world pairing's, {@code compose.ClaimPolicy}): the world
+     * planted exactly the pairings {@code readers} took, every other test
+     * as {@link #ranBy}'s.
+     */
+    public boolean ranWorldBy(Corpus.World world, SessionReader session,
+                              Set<String> readers) {
+        return world.pairings.keySet().equals(readers)
+                && rootsOf(world, session) && clocksOf(world.clockDeltas);
+    }
+
+    /** The model plants, its world planted no root beyond its moves at a
+     *  value other than the recording's, and it minted every moved root at
+     *  the model's value ({@link #ranBy}). */
+    private boolean rootsOf(Corpus.World world, SessionReader session) {
+        if (!refusal.isEmpty()) return false;
         for (Map.Entry<String, String> planted
                 : world.rootAssignments.entrySet()) {
             if (values.containsKey(planted.getKey())) continue;

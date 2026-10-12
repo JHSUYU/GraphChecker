@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
@@ -528,7 +529,8 @@ public final class ClosurePlanner {
             for (ReadRow read : corpus.readsOn(sessionId, anchor)) {
                 if (named.contains(Long.valueOf(read.seq()))) {
                     reads.add(read);
-                } else if (read.seq() >= at) {
+                } else if (!RowOrder.beforeEvent(read.seq(), read.tie(),
+                        at)) {
                     continue;
                 } else if (scope.demandedAt(read.endpoint().site(),
                         read.javaType(), read.location().kind())) {
@@ -570,7 +572,8 @@ public final class ClosurePlanner {
             }
             for (ReadRow read : corpus.readsOn(row.sessionId(), anchor)) {
                 if (read.location().kind() == LocationKind.STORE
-                        && read.seq() < at && scope.demandedAt(
+                        && RowOrder.beforeEvent(read.seq(), read.tie(), at)
+                        && scope.demandedAt(
                         read.endpoint().site(), read.javaType(),
                         LocationKind.STORE)) {
                     symbols.add(read.symbol());

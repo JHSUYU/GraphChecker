@@ -115,8 +115,8 @@ public class ProvenanceTest {
     public void aDecodeWaitsForTheCreateInFlightToNameItsLife()
             throws Exception {
         Object owner = new Object();
-        MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner);
-        MessageDoors.stored("SOLR_ZK", "/m5/race@1", owner);
+        MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner, null);
+        MessageDoors.stored("SOLR_ZK", "/m5/race@1", owner, null);
         java.util.concurrent.CountDownLatch open =
                 new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch file =
@@ -129,7 +129,7 @@ public class ProvenanceTest {
             } catch (InterruptedException ignored) {
                 return;
             }
-            MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner);
+            MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner, null);
             MessageDoors.storeEnded("SOLR_ZK", store);
         });
         creator.start();

@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
@@ -951,7 +952,7 @@ public class RowRuntimeTest {
                 ExecutionIndex.parse("W.offer()#u1@0")), 1L, "XCH.item", 0L,
                 0, null, "J", "3");
         assertTrue(SymbolicMessageEnvelope.stage("XCH.item", 0L, writer));
-        MessageDoors.stored("STORE", "/q/qn-1@0", owner);
+        MessageDoors.stored("STORE", "/q/qn-1@0", owner, null);
         RuntimeTraceContext.endRequest(request);
         MessageDoors.consumed("STORE", "/q/qn-1@0");
         MessageDoors.Inbound item = MessageDoors.current();
@@ -960,6 +961,121 @@ public class RowRuntimeTest {
         assertEquals("CORRELATION_PORT", pairing.key());
         assertEquals(writer, pairing.producer());
         RowRuntime.closeSession();
+    }
+
+    /**
+     * A node's view takes one write per version it decodes: a second parse
+     * of a version the node decoded before (a watcher's and a fetch's, or
+     * one before any row was stated), or of one a read of the view already
+     * observed, re-points nothing, so no read of the view is ordered before
+     * a write of the version it saw (round Z2K: every tra session's view
+     * read of version 0 met a re-decode of it after the read,
+     * TOPOLOGY_DIVERGENCE).  The version decoded before any row was stated
+     * is the view's INITIAL, stated before its first row in the window
+     * (review re-check M4: unrowed, it was never a pairing's writer).
+     */
+    @Test
+    public void aNodesViewTakesOneWritePerVersionItDecodes() throws Exception {
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        long request = RuntimeTraceContext.beginRequest(owner, "watch");
+        // Decoded before any row is stated, then again once they are.
+        MessageDoors.decoded("STORE", "/views/once.json@0", new Object());
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        MessageDoors.decoded("STORE", "/views/once.json@0", new Object());
+        MessageDoors.decoded("STORE", "/views/once.json@1", new Object());
+        // A version a read of the view observed before any parse of it
+        // stated a row (one a thread no node owns decoded) is held already.
+        OccurrenceAddress here = Identity.currentOccurrence(NN.key());
+        RowRuntime.viewRead(here, new RowOrder.Position(0L, 0),
+                "STORE#VIEWED:|views|once.json#VIEW",
+                MessageDoors.viewOf(MessageDoors.storeLocation("STORE",
+                        "/views/once.json"), here), 2L);
+        MessageDoors.decoded("STORE", "/views/once.json@2", new Object());
+        RuntimeTraceContext.endRequest(request);
+        RowRuntime.closeSession();
+        List<String> versions = new ArrayList<String>();
+        for (WriteRow write : SessionReader.read(session()).writes()) {
+            if (write.location().kind() == LocationKind.VIEW) {
+                versions.add((write.initial() ? "INITIAL " : "")
+                        + write.version());
+            }
+        }
+        assertEquals(Arrays.asList("INITIAL 0", "1"), versions);
+    }
+
+    /**
+     * A decode on a thread no registered node owns (a test building its
+     * cluster in @Before) re-points no view: it is no node's decision, so it
+     * states no row and names nothing (solr-sg3 SP2-10: it threw a
+     * NullPointerException into the workload, killing the seed replay).
+     */
+    @Test
+    public void anUnregisteredDecodeRePointsNothing() throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        Identity.occurrence(OccurrenceBinding.UNREGISTERED_SOURCE_KEY,
+                "REGION.before", true);
+        MessageDoors.decoded("SOLR_ZK", "/views/nobody.json@0",
+                new Object());
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        SessionReader rows = SessionReader.read(session());
+        for (WriteRow write : rows.writes()) {
+            assertFalse(write.toString(),
+                    write.location().kind() == LocationKind.VIEW);
+        }
+        assertTrue(rows.gaps().toString(), rows.gaps().isEmpty());
+    }
+
+    /**
+     * Every row the engine states of a store or a node's view stands after
+     * every VM event so far (IDENTITY §7.2): a decode and a read of the view
+     * at one VM event are ordered write first, not read first (round Z2L:
+     * the reads stood one event earlier than the writes they saw, 78
+     * BLOCKING TOPOLOGY_DIVERGENCE rows) -- by the order they were stated in,
+     * their ties (contract.RowOrder; review re-check B3: tied, a decode read
+     * as after the read).
+     */
+    @Test
+    public void aDecodeAndAReadAtOneVmEventStandWriteFirst() throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        Identity.clock(() -> 41L);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        Identity.occurrence(NN.key(), "REGION.view", true);
+        org.example.decoded.Decoded.Slice slice =
+                new org.example.decoded.Decoded.Slice("shard1", "active");
+        MessageDoors.decoded("SOLR_ZK", "/views/one-event.json@3", slice);
+        MessageDoors.viewed("SOLR_ZK", "/views/one-event.json", slice);
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        SessionReader rows = SessionReader.read(session());
+        List<String> seqs = new ArrayList<>();
+        WriteRow decode = null;
+        for (WriteRow write : rows.writes()) {
+            if (write.location().kind() == LocationKind.VIEW) {
+                seqs.add("write " + write.seq() + "/" + write.tie());
+                decode = write;
+            }
+        }
+        ReadRow viewRead = null;
+        for (ReadRow read : rows.reads()) {
+            if (read.location().kind() == LocationKind.VIEW
+                    || read.location().kind() == LocationKind.STORE) {
+                seqs.add(read.location().kind() + " read " + read.seq() + "/"
+                        + read.tie());
+                if (read.location().kind() == LocationKind.VIEW) {
+                    viewRead = read;
+                }
+            }
+        }
+        assertEquals(Arrays.asList("write 42/1", "STORE read 42/2",
+                "VIEW read 42/3"), seqs);
+        assertTrue(RowOrder.before(decode, viewRead));
+        assertFalse(RowOrder.before(viewRead, decode));
     }
 
     /**
@@ -976,7 +1092,8 @@ public class RowRuntimeTest {
         Object owner = new Object();
         RuntimeTraceContext.registerSource(owner, NN);
         Identity.occurrence(NN.key(), "REGION.write", true);
-        MessageDoors.stored("SOLR_ZK", "/collections/t/state.json@3", owner);
+        MessageDoors.stored("SOLR_ZK", "/collections/t/state.json@3", owner,
+                null);
         Identity.regionExit(null);
         RowRuntime.closeSession();
         List<Long> seqs = new ArrayList<>();
@@ -1003,7 +1120,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(owner, NN);
         Identity.occurrence(NN.key(), "REGION.lives", true);
         for (String version : new String[] {"0", "1", "0", "1", "0"}) {
-            MessageDoors.stored("SOLR_ZK", "/m5/life@" + version, owner);
+            MessageDoors.stored("SOLR_ZK", "/m5/life@" + version, owner, null);
         }
         Identity.regionExit(null);
         RowRuntime.closeSession();

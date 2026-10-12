@@ -147,6 +147,9 @@ public enum GapKind {
     /**
      * A session no reader could read whole.  BLOCKING at IMPORT: a truncated
      * row or absent {@code manifest.json} reads back as "this run had none".
+     * Also an engine fault in a door the system's code calls ({@code
+     * runtime.MessageDoors#doorFault}): named instead of thrown into the
+     * system, the rows that door states missing, BLOCKING.
      */
     SESSION_INCOMPLETE,
     /**

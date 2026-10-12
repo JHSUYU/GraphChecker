@@ -174,10 +174,24 @@ def main():
     # A SAT stands on its witness's path; an UNSAT on every path.
     sat = result.get('claim') == 'SAT_CANDIDATE' and bool(selector)
     out['unboundOffWitness'] = []
+    # A store content leaf held as its version's constant because the
+    # closure refuses its producer by rule (concrete[] kind CONSTANT,
+    # compose.Composer#refusedByRule): named, and no open link.
+    path_of = {p.get('selector', ''): p.get('pathId', '')
+               for p in manifest.get('paths') or []}
+    constant = {}
+    for row in result.get('concrete') or []:
+        if row.get('kind') == 'CONSTANT':
+            constant.setdefault(row.get('pathId', ''), set()).add(
+                row.get('subject', ''))
+    out['constantByRefusedProducer'] = sorted(
+        {s for subjects in constant.values() for s in subjects})
     for each, own in sorted(fatal.items()):
         bound = set()
         for family in families.get(each, []):
             bound |= family
+        for subject in constant.get(path_of.get(each, ''), set()):
+            bound |= {subject, '|' + subject + '|'}
         open_links = sorted(c for c in own if is_boundary(c) and c not in bound)
         if sat and each != selector:
             out['unboundOffWitness'] += open_links

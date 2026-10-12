@@ -87,9 +87,38 @@ public final class Obligation extends Value {
         return force;
     }
 
-    /** Whether this obligation owes a decision the other arm at all. */
+    /** Whether this obligation owes a decision the other arm at all, or a
+     *  read another writer ({@link #pairing}). */
     public boolean flips() {
         return !siteId.isEmpty();
+    }
+
+    /**
+     * A PAIRING FLIP's site (PIPELINE §7.4): {@code PAIRING:<reader>}, the
+     * read of a node's view as CONFIRM names its endpoint, its ordinal the
+     * older version of the view the read is to take plus one ({@link
+     * #pairedVersion}).  No decision has it.
+     */
+    public static final String PAIRING = "PAIRING:";
+
+    /** Whether {@code siteId} is a pairing flip's ({@link #PAIRING}). */
+    public static boolean pairing(String siteId) {
+        return siteId != null && siteId.startsWith(PAIRING);
+    }
+
+    /** Whether this obligation is a pairing flip ({@link #PAIRING}). */
+    public boolean pairing() {
+        return pairing(siteId);
+    }
+
+    /** The version of the view a pairing flip's read is to take. */
+    public long pairedVersion() {
+        return ordinal - 1L;
+    }
+
+    /** A pairing flip's read, as CONFIRM names its endpoint; else "". */
+    public String pairedReader() {
+        return pairing() ? siteId.substring(PAIRING.length()) : "";
     }
 
     public String obligationId() {

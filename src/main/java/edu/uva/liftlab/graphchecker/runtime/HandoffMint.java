@@ -325,7 +325,7 @@ final class HandoffMint {
      * {@code (port, consumer occurrence, k, element path)}; empty when any
      * part is missing.
      */
-    private static String handoffMintKey(String portId,
+    static String handoffMintKey(String portId,
                                          String consumerAddress,
                                          int attachOrdinal,
                                          String elementPath) {
@@ -344,7 +344,7 @@ final class HandoffMint {
      * tells a configured-source root by its {@code _field_SRC.<label>_}
      * marker.
      */
-    private static String mintLabel(String mintKey, String portId) {
+    static String mintLabel(String mintKey, String portId) {
         return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
                 + nonNull(portId));
     }

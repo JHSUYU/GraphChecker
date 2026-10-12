@@ -35,8 +35,23 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * else an opaque STR piece.  A read is never looked through: its value is the
  * write a family pairs it with.</p>
  */
-final class StringIdentities {
+public final class StringIdentities {
     private StringIdentities() {
+    }
+
+    /**
+     * The value a lone rendering renders -- {@code toString} of an integral
+     * (DEC) or, {@code bool}, of a boolean (BOOL) -- or null: what a store
+     * content's leaf whose text is such a rendering crosses as
+     * ({@code runtime.StoreContent}).
+     */
+    public static JsonElement renderedValue(JsonElement string,
+                                            boolean bool) {
+        List<Part> parts = template(string);
+        if (parts == null || parts.size() != 1) return null;
+        Part part = parts.get(0);
+        return part.kind == (bool ? Kind.BOOL : Kind.DEC) ? part.operand
+                : null;
     }
 
     /** What one piece of a template is. */

@@ -493,6 +493,21 @@ final class ComposedFamilies {
         return Collections.unmodifiableMap(recordedAtPlants);
     }
 
+    /** Path selector -> location key -> the arms there that are its
+     *  world's plant ({@link #worldArms}). */
+    private final Map<String, Map<String, List<String>>> worldArms =
+            new LinkedHashMap<String, Map<String, List<String>>>();
+
+    /**
+     * Each path's arms at the locations its session's world planted a
+     * pairing on that ARE the plant: the planted writer's, and the observed
+     * arm holding the reads to what the plant gave them.  A model taking one
+     * names the world's pairing by its arm ({@code Composition#repaired}).
+     */
+    Map<String, Map<String, List<String>>> worldArms() {
+        return Collections.unmodifiableMap(worldArms);
+    }
+
     private void own(Map<String, List<String>> owned, String arm) {
         List<String> arms = owned.computeIfAbsent(path,
                 key -> new ArrayList<String>());
@@ -1760,6 +1775,13 @@ final class ComposedFamilies {
             String run = plants.isEmpty() ? taken
                     : "(not " + VmTermLowering.or(plants) + ")";
             if (!recorded.contains(run)) recorded.add(run);
+            if (!plants.isEmpty()) {
+                Map<String, List<String>> world = worldArms.computeIfAbsent(
+                        selector, key -> new LinkedHashMap<String,
+                                List<String>>());
+                List<String> before = world.put(location.key, plants);
+                pathUndo.add(() -> restore(world, location.key, before));
+            }
             for (String arm : plants.isEmpty()
                     ? Collections.<String>emptyList() : selectors) {
                 if (!plants.contains(arm)) own(recordedAtPlants, arm);

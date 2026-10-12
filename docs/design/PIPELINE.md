@@ -835,6 +835,31 @@ each arm once per task round. The planner builds no query;
 an arm in flight is held by its flip (`ObligationFactory#flip`, §7.3), the first half of its
 question.
 
+**The pairing flip** (`explore.PairingFlip`, SYMBOL-SCOPE §6.4): a read of a node's VIEW of a
+store location takes an older decode of that node. A node decides on whichever decode its view held,
+and what a stale view changes is often no value a term names (a key an older document lacks, a
+replica a loop skips), so no decision's flip reaches it. A task offers pairing flips where its
+occurrence writes a STORE version or is the declared anchor's: for each view its occurrence read, or
+its node read under its causal context in role work before it opened (a routed alias captures its
+view in the request's role work and writes it in a store door's region), its earliest read is
+offered each older version the node decoded before it in the session (on the session's one order,
+`contract.RowOrder`: a decode and a read stated with no VM event between them in the order the engine
+stated them; the view's INITIAL -- what the node held when the window opened, a decode before it,
+stated at the view's first row in the window, seq 0 -- before every read), newest first, none older than
+a decode the reader's own work (its node and causal context) made before the read -- the hold never
+holds that work's own decodes, so its view is at least that one's --, at most
+`PairingFlip#PER_READ` (8); past them a `pairing-bound` gap, counted in result.json `bounded`
+(`pairing_flip_per_read`). Its site is `PAIRING:<reader>` (`Obligation#PAIRING`, the read as CONFIRM
+names its endpoint), its ordinal the version plus one (an ordinal is 1-based), its outcome taken, its
+dependence constant; it counts
+as a flip of the world (depth) and among a path's owed arms. No query is asked: the path is the one
+its session ran, up to the read, and the world is that session's with the read paired to the decode
+of the asked version (a view's writer is its version, `Confirmation#viewWriter`), held by CONFIRM's
+rows (`ConfirmMain#holding`). The replay takes it where the read observed that version
+(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw, and a read
+that never ran leaves its occurrence unflipped (the prefix abandoned). A child inherits the pairing
+as a pairing of its world, never as a decision to take.
+
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
 The obligations of an exploration that run on one host are answered by ONE solver JVM there
@@ -923,7 +948,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   eligible writer is its own symbol, as COMPOSE keeps the anchor's
   (`FlipQuery#movableReads`, `SmtLowering#rowSymbol`): inlined, the VM's guarded read is the
   written value, a constant no selector moves (hdfs-bugs-slowdisk-zero: the detector turn's
-  `maxSlowDisksToExclude <= 0` over the reconfiguration's 0 and its INITIAL 1).
+  `maxSlowDisksToExclude <= 0` over the reconfiguration's 0 and its INITIAL 1). A read of a node's
+  VIEW (SYMBOL-SCOPE §6.4) with more than one eligible decode is marked movable too
+  (`SmtLowering#movable`), so a content leaf the path read through it lowers as the leaf of
+  whichever decode its selectors pick (`SmtLowering#throughView`): a flip on such a leaf moves the
+  view's pairing, which a model plants as any writer choice.
   Only reads the text names are variables: a container state behind a guard is inlined by its join
   (the closure demands its writers, §7.2), so the query declares nothing for it — a variable bound
   to each writer's state would constrain nothing, and its equalities over states built by removals
@@ -936,7 +965,12 @@ operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads wit
 operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
 `str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them,
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
-and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
+and the `Array` sort); COMPOSE refuses a path on the same test. The preamble states z3's alphabet as
+Java's, `(set-option :encoding bmp)` (`VmTermLowering#JAVA_CHARS`: every character a UTF-16 code
+unit), so a `charAt` is a char wherever its definedness (`0 <= i < length`, on its path) holds and no
+query bounds the characters it reads (an unguarded range per `charAt` held every index below its
+string's length on every path: solr-bugs-snapshot-no-active Z2K, 13,188 lines, 44 of 46 MB,
+undecided; with the alphabet, sat in 1.8 s). A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
 none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked, whatever
 variables a prefix decision binds: by the owner's ruling (only SAT or UNSAT; a concrete value is a
@@ -978,7 +1012,7 @@ string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A writer choice the
 model sets away from the writer the recording's reads observed, the location's INITIAL among them,
 is a **planted pairing**, counted like an answered handoff (`ObligationFactory#planted`: reader →
-writer, each as CONFIRM names them, `ConfirmMain#writer`; one of a read another session made refuses,
+writer, each as CONFIRM names them, `Confirmation#writer`; one of a read another session made refuses,
 `PAIRING_UNPLANTABLE`). A pairing is planted only where the recorded ones take no flip: a model
 that moves one is asked again with every writer choice held to the recorded writer
 (`ObligationFactory#heldToRecording`; a container state follows its writer's, and a refused term
@@ -1006,15 +1040,44 @@ Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMIN
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and
-the flipped world may read it again, CONFIRM's for the read's activation); a pairing that session states no read
-or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
+the flipped world may read it again, CONFIRM's for the read's activation; for a node's VIEW, whose
+decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
+`VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
+before the system re-points the view, and the schedule cut stops before the first of them before the
+read (`RowOrder`) (`MessageDoors#decoded`, `Confirmation#decoding`; a decode on a thread no registered
+node owns re-points no view; a view's writer is its version, its INITIAL's too; an on-demand
+watch's refresh waits at its start, before the adapter's lock, `MessageDoors#refreshing`, as a decode
+of the newest version a write filed in the location's current life and one more per thread with a write
+in flight there that has not filed its version (a write files and stops being in flight in one step,
+`#filedVersion`), at the view a decode on its thread re-points (`#decoderNode`), so a
+refresh that can reach no version past the paired one goes on; the system's own
+refresh -- Solr's `forceUpdateCollection`, a lazy collection's fetch, `MessageDoors#refreshStarting`
+-- reads the store as it stands and is never held, since holding one on the program's way holds the
+reader's work too: one that brings a version past the paired one leaves the pairing untaken), until the reader's
+work is done -- the reader's occurrence exits, or, for a read in role work which no hook closes, the
+first region that work closes after the read in the run as it goes, a named region's exit or a hop's
+close (`Confirmation#regionClosed`: a routed alias captures its view in the request's role work and
+writes it in a store door's region) --, never the
+decodes of the reader's own work (its node and causal context), at most the order's timeout (300 s), past which
+the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
+native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
+states no read or write of refuses (`PAIRING_UNSTATED`). A pairing no term of a path names is claimed
+from the session that took it as that session's whole world (§11 rule 3): its own run with the plants
+in place of the recording's pairing at each planted location (`Composition#worldRun`; the own run
+alone holds there "any arm but the plant"), only where the paired read lies on the fatal path at the
+occurrence level (`Composition#onFatalPath`: its symbol in the cone, or its occurrence the anchor's or
+the writer of a version a read in the cone observed). The worker writes `obligation_result.jsonl`
 (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
 schedule up to the first event or mark of the flip occurrence, the focused occurrence, a factor
 member, or an occurrence an `ORDER` moves after another's that the session ran first (the
-prefix is followed only up to the first event the pairings reorder) goes to
-`schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
+prefix is followed only up to the first event the pairings reorder), and before the first event made
+at or after a decode a `VIEW_HOLD` reorders (`Holding#cutBefore`; each schedule event states where it
+was made among the VM's events, `ScheduleEvent#vmEvent`, on the scale a decode's view write states
+its seq on, after every VM event so far (`Identity#afterLastEvent`): a decode in a
+watcher's or the Overseer's role work, which runs on, is cut before itself and not before its
+occurrence's first event) goes to `schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
 
 ### 7.6 The obligation replay
 
@@ -1655,9 +1718,16 @@ forced world's and asserting them in another world could make a real witness UNS
   an attach no session attests the producer of (or with no producer named) has a producer no row
   states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
   the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
-  body holds it, none on the path's own); one whose producer is attested and no export of
-  it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
-  it, and a path is never dropped for it;
+  body holds it, none on the path's own) -- a String arrival held at its text (`Composer#arrived`)
+  --, except a store content leaf (`contract.ContentPort`) whose producer the closure refuses by
+  rule (a role, which no weave captures; a daemon tick past the recording's last,
+  `Corpus#tickPastRecording`): that one is a constant of its version, as the read was before
+  capture, held the same way but named `CONSTANT` (`Composer#refusedByRule`,
+  `SmtLowering#constantByRefusedProducer`; one DIAGNOSTIC per producer and rule with its leaf count),
+  and no open link of a chain (`Cone`, `cone.py`'s `constantByRefusedProducer`) -- a leaf with no
+  producer, or one a round could plan, stays HELD and open; one whose producer is attested and no
+  export of it lowers, or whose row states a value the lowering places nowhere, is FREE, named:
+  nothing pins it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
   rests on, where its stated producer rests on what can move; HELD at its recorded value, named
   "producer unstated", where no row states its producer; never free by default, never a silent
@@ -1788,6 +1858,19 @@ so a witness that needs either names it as the arm it re-paired (`repairedArms`)
 decides it (STATE_PAIRING_FLIPPED); a location where no arm is that pairing (the one write the
 reads saw has no arm) is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the
 formula.
+
+**A store content's leaf through a node's view** (`SmtLowering#throughView`, SYMBOL-SCOPE §6.4). A
+guard that decides on a node's view of a store location -- Solr's `ZkStateReader.clusterState`,
+re-pointed by each decode -- reads the leaf of the decode the view held. The field read of the view
+reference cannot carry that leaf: the VM states the leaf's value where the decode's construction
+stored it (a `Replica`'s state, four containers below the `ClusterState`, by value), so no
+projection through an owner (below, one level from the movable read) reaches it, and the field is
+re-pointed by every collection's decode, mixing locations. The family is over the PROVENANCE read's
+VIEW instead (`LocationKind.VIEW`, the reading node and the store path), whose writers are that
+node's decodes: where a read of it a family may re-pair stands in the path, a content leaf's attach
+symbol of that view lowers as `(ite (= view v_1) leaf_1 ... leaf)`, the leaf of each decode of the
+node that took it in, defined only where the view is one of them (`#perCandidate`); with no such read
+it is its own.
 
 **A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
 `Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
@@ -2149,7 +2232,28 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
-     every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
+     every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any; else,
+     where that session's world planted a pairing its read took (`Composition#takenPairings`: the
+     read observed the planted writer's version and could have seen another writer),
+     `STATE_PAIRING_FLIPPED` -- the world's pairing is what moved, though no term of the path names
+     the read (a node's view at a version lacking an alias decides nothing the VM states) --, its
+     witness that session's whole world, as CONFIRM re-runs it: the path's own run with the plants in
+     place of the recording's pairing at each planted location (`Composition#worldRun`), the
+     world's roots (`#worldValuation`) and clock skews (`#worldClocks`), so `movedRoots` names every
+     fault and clock the world planted besides the pairing; it needs no attested arm (nothing moves in
+     one: solr-bugs-tra-start-overwrite Z2K, whose request arms' producers ran concretely), and the
+     pairing is named in `repairedArms`, by its arm, else `PAIRING:<reader>=<writer>` where no family
+     states the read. It stands only where something holds the path (or no family offers the path an
+     arm, `Composition#offersArms`: its own run is then the only one asked), each taken pairing lies on the
+     fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, `CONE`, or -- a read
+     no term names -- its occurrence is the anchor's, `ANCHOR`, or wrote a version a read in the cone
+     observed, `WROTE`; the clause of each pairing is named in the claim's gaps, and an `ANCHOR` or
+     `WROTE` pairing stands only in a world that moved no root or clock, since nothing else shows the
+     pairing decides), the path's ask is decided (an undecided one is named so), and the session is
+     that world's run (`Composition#ranWorld`, `Moved#ranWorldBy`: its roots and clocks the witness's,
+     its pairings exactly those its replay realized, `Composition#realizedPairings`, inherited ones and
+     ones no other writer could replace included); else a DIAGNOSTIC names why and the next path that
+     observed the fatal and took a pairing is tried, the recorded valuation's first;
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
      root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer
      is the verdict; the enumeration of single and pair moves above only picks a witness's
@@ -2274,6 +2378,9 @@ with it is a `RUN_DEFECT`.
   §8; a recorded join to an INITIAL is no edge -- no occurrence wrote it, and which access first
   observes the location is the run's own history (`WriteRow#initial`) -- and an INITIAL the model
   chose names writer `INITIAL`, `Confirmation#INITIAL`, which every INITIAL a run logs is to it),
+  for a node's VIEW one `VIEW_HOLD {view, above, readerContext, reader, until}` row instead of
+  `ORDER` rows (§7.5: the node's later decodes wait at the decode until the reader's work is done,
+  never the reader's own; a VIEW row's read is checked exactly, no `readerAnyTurn`), else
   `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its
@@ -2411,7 +2518,9 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   port's call-return capture and the regions declaring it IN;
 - CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, §10: the join
   closure's at the locations the fatal rests on, and those holding the pairings the world plants --
-  an INITIAL pairing holds every other writer of the location after the read), each pair once; a pairing at a placeholder (a mint
+  an INITIAL pairing holds every other writer of the location after the read), each pair once, and
+  its `VIEW_HOLD` rows, each once, which the native run holds at the decode as CONFIRM does
+  (`Confirmation#decoding`, each stated held, waited or unheld); a pairing at a placeholder (a mint
   read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
   plant's summary counts them (`placeholderPairings`);
 - the **realized order** (`explore.RealizedOrder`): `ORDER {scope EVENT, before: <event>, after:
@@ -2435,7 +2544,8 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
 
   Only on the claim's cone: the WAKE's context and the step's (node and causal context, the
   handoffs left out) are each the context of an occurrence a ROOT row is minted at, of the anchor,
-  or of one CONFIRM's WIRE, STATE or ORDER rows name (`ConfirmMain.Witness#cone`), or, one hop,
+  or of one CONFIRM's WIRE, STATE or ORDER rows name, a VIEW_HOLD's later decodes included
+  (`ConfirmMain.Witness#cone`), or, one hop,
   the context of a SEND one of these received (paired by endpoint: `RealizedOrder#withProducers`;
   restore's first RESTORE task, whose state-update message the mint's turn applied and whose wait
   the order holds -- 0/10 without the hop), and the step is

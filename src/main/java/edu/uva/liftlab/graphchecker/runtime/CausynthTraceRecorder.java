@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.causynth.TracedRows;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
@@ -98,6 +99,12 @@ public final class CausynthTraceRecorder {
     private static BufferedWriter traceWriter;
     /** Guarded by {@link #LOCK}; a reset must not install duplicate hooks. */
     private static boolean shutdownHookRegistered;
+    /** Gaps stated before the recording window opened ({@link
+     *  #recordingGap}), written when it opens; guarded by {@link #LOCK}. */
+    private static final List<GapRow> BEFORE_WINDOW = new ArrayList<GapRow>();
+    /** The most {@link #BEFORE_WINDOW} keeps: a door that faults on every
+     *  call before the window says so in its first rows. */
+    private static final int BEFORE_WINDOW_MAX = 256;
 
     private CausynthTraceRecorder() {
     }
@@ -106,6 +113,14 @@ public final class CausynthTraceRecorder {
     public static void startRecording() {
         initialize();
         RecordingWindow.open();
+        List<GapRow> before;
+        synchronized (LOCK) {
+            before = new ArrayList<GapRow>(BEFORE_WINDOW);
+            BEFORE_WINDOW.clear();
+        }
+        for (GapRow gap : before) {
+            recordingGap(gap.kind(), gap.cls(), gap.subject(), gap.detail());
+        }
         // Enforced prefix: running timed waits are held to their turns.
         if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
     }
@@ -492,7 +507,18 @@ public final class CausynthTraceRecorder {
             GapKind kind,
             GapClass cls,
             String subject, String detail) {
-        if (!RecordingWindow.opened()) return;
+        if (!RecordingWindow.opened()) {
+            // Before the window (a door fault while a test builds its
+            // cluster): stated once it opens (#startRecording), never lost.
+            synchronized (LOCK) {
+                if (BEFORE_WINDOW.size() < BEFORE_WINDOW_MAX) {
+                    BEFORE_WINDOW.add(GapRow.of("recording", kind, cls,
+                            nonNull(subject).isEmpty() ? "recording"
+                                    : subject, nonNull(detail)));
+                }
+            }
+            return;
+        }
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,

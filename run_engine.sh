@@ -6347,12 +6347,14 @@ campaign_stream_manifest() {
 # deferred some -- an earlier round's deferral is work the rounds after it
 # read first, and a fixed point defers none -- and the world depth a round
 # cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
-# bound in their subject; the static candidates one anchor's closure plans
-# (region_path_max_tasks: the last round's `truncated` less its `ceilingCut`,
-# as campaign_stream_truncation judges it, since a later round plans what an
-# earlier one left) and the occurrences the rows connect past the closure
-# ceiling (region_path_closure_ceiling, ClosurePlanner#CLOSURE_CEILING: the
-# runaway guard, never a silently unlimited plan); the occurrences PLAN plans
+# bound in their subject; the older decodes one read of a node's view is offered
+# as pairing flips (pairing_flip_per_read, PairingFlip's pairing-bound rows); the
+# static candidates one anchor's closure plans (region_path_max_tasks: the last
+# round's `truncated` less its `ceilingCut`, as campaign_stream_truncation judges
+# it, since a later round plans what an earlier one left) and the occurrences the
+# rows connect past the closure ceiling (region_path_closure_ceiling,
+# ClosurePlanner#CLOSURE_CEILING: the runaway guard, never a silently unlimited
+# plan); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
 # decided again after CONFIRM refuted one (campaign_max_claims).  A round's
 # max-flips-per-path is no such bound -- the next round asks the decisions it
@@ -6384,6 +6386,7 @@ explore_manifest.json 2>/dev/null) \
     | ([$inputs[] | bound("unplanned-input-max") | .subject] | unique)
       as $inputs
     | rows("max-world-depth") as $depth
+    | rows("pairing-bound") as $pairing
     | rows("loop-body-bound") as $loops
     | ($rounds | last | .ceilingCut // 0) as $ceiling
     | (($rounds | last | .truncated // 0) - $ceiling) as $truncated
@@ -6402,6 +6405,11 @@ explore_manifest.json 2>/dev/null) \
             detail: ("\($depth | length) task round(s) cut from no path"
               + " in a world deeper than"
               + " \($depth[0].subject | sub(".* "; ""))")}),
+        (select(($pairing | length) > 0)
+         | {by: "pairing_flip_per_read",
+            detail: ("\($pairing | length) read(s) of a node'"'"'s view offered"
+              + " only the \($pairing[0].subject | sub(".*="; "")) newest of"
+              + " the older decodes before it")}),
         (select(($loops | length) > 0)
          | {by: "loop_body_bound",
             detail: ("\($loops | length) path(s) at the anchor a loop"

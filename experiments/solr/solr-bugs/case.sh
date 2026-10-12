@@ -73,9 +73,11 @@ case "${1:?usage: case.sh <bug>}" in
     ;;
   # Bug study #16: CREATESNAPSHOT asks only the replicas its Overseer sees
   # ACTIVE and records success while no request it sent failed.  The workload
-  # snapshots a shard of two replicas, deletes the leader replica, and backs
-  # up from the snapshot (non-incremental, the path that reads it).  The
-  # witness: the Overseer's view of the other replica not ACTIVE yet at
+  # creates the shard's leader on the Overseer's node, adds a replica on the
+  # other node (no final state awaited; the client waits for it ACTIVE in its
+  # own view), snapshots the shard, deletes the leader replica, and backs up
+  # from the snapshot (non-incremental, the path that reads it).  The
+  # witness: the Overseer's view of the added replica not ACTIVE yet at
   # CREATESNAPSHOT.  The target: the backup's search for a live replica with
   # the snapshot, the window's only one.
   snapshot-no-active)

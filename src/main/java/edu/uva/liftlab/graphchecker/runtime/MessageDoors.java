@@ -1,17 +1,21 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -53,6 +57,15 @@ public final class MessageDoors {
      */
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
+    /** Each node's view and version a decode re-pointed it to, once,
+     *  inside the window or before it ({@link #decode}). */
+    private static final Set<String> REPOINTED =
+            ConcurrentHashMap.newKeySet();
+    /** The newest version of each location a write filed ({@link
+     *  #filedVersion}), by transport and the location named with its life
+     *  ({@link #life}): how far a refresh can reach ({@link #refreshing}). */
+    private static final Map<String, Long> NEWEST =
+            new ConcurrentHashMap<String, Long>();
     /**
      * The writes to a shared store in flight ({@link #storing}), by
      * transport and token.  Guarded by itself; every {@link #storeEnded}
@@ -74,6 +87,9 @@ public final class MessageDoors {
     private static final class Write {
         private final Thread thread;
         private final String location;
+        /** Whether its version is filed ({@link #filedVersion}): no longer
+         *  one more a refresh can reach.  Guarded by {@link #STORING}. */
+        private boolean filed;
 
         private Write(Thread thread, String location) {
             this.thread = thread;
@@ -166,14 +182,20 @@ public final class MessageDoors {
                                  String attemptId, String half,
                                  Object localOwner, Object scope,
                                  String verb, Object message) {
-        // Staged before the door files what the message carries.
-        MessageCodec.send(message);
-        String trace = CausynthTraceRecorder.outboundExchange(transport,
-                correlationId, attemptId, half, localOwner, scope,
-                trimmed(verb));
-        String symbolic = SymbolicMessageEnvelope.takeOutbound();
-        return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
-                : new Outbound(correlationId, attemptId, trace, symbolic);
+        try {
+            // Staged before the door files what the message carries.
+            MessageCodec.send(message);
+            String trace = CausynthTraceRecorder.outboundExchange(transport,
+                    correlationId, attemptId, half, localOwner, scope,
+                    trimmed(verb));
+            String symbolic = SymbolicMessageEnvelope.takeOutbound();
+            return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
+                    : new Outbound(correlationId, attemptId, trace,
+                    symbolic);
+        } catch (RuntimeException fault) {
+            doorFault("send " + transport + " " + correlationId, fault);
+            return Outbound.EMPTY;
+        }
     }
 
     /**
@@ -193,10 +215,15 @@ public final class MessageDoors {
      */
     public static long requestStarting(String transport, String verb,
                                        int attempt) {
-        callStarting();
-        return Identity.requestStarting(Endpoint.messageSite(
-                trimmed(transport), REQUEST, trimmed(verb)), verb,
-                attempt);
+        try {
+            callStarting();
+            return Identity.requestStarting(Endpoint.messageSite(
+                    trimmed(transport), REQUEST, trimmed(verb)), verb,
+                    attempt);
+        } catch (RuntimeException fault) {
+            doorFault("requestStarting " + transport + " " + verb, fault);
+            return 0L;
+        }
     }
 
     /**
@@ -234,10 +261,16 @@ public final class MessageDoors {
      */
     public static Object handingOff(String transport, String correlationId,
                                     String half) {
-        String sender = Interactions.sender(trimmed(transport),
-                trimmed(correlationId), trimmed(half));
-        return Identity.handoffStarting(sender.isEmpty() ? ""
-                : trimmed(transport) + "." + sender);
+        try {
+            String sender = Interactions.sender(trimmed(transport),
+                    trimmed(correlationId), trimmed(half));
+            return Identity.handoffStarting(sender.isEmpty() ? ""
+                    : trimmed(transport) + "." + sender);
+        } catch (RuntimeException fault) {
+            doorFault("handingOff " + transport + " " + correlationId,
+                    fault);
+            return null;
+        }
     }
 
     /** The hand-off {@link #handingOff} began is over. */
@@ -256,6 +289,19 @@ public final class MessageDoors {
                                   String transport, String correlationId,
                                   String attemptId, String half,
                                   Object localOwner, boolean keepSymbolic) {
+        try {
+            return install(trace, symbolic, transport, correlationId,
+                    attemptId, half, localOwner, keepSymbolic);
+        } catch (RuntimeException fault) {
+            doorFault("inbound " + transport + " " + correlationId, fault);
+            return Inbound.EMPTY;
+        }
+    }
+
+    private static Inbound install(String trace, String symbolic,
+                                   String transport, String correlationId,
+                                   String attemptId, String half,
+                                   Object localOwner, boolean keepSymbolic) {
         // Every receipt ends the request this thread had in hand, whether or
         // not it carries a context (Identity#requestInHand).
         Identity.requestInHand("");
@@ -295,6 +341,18 @@ public final class MessageDoors {
     public static Inbound received(String symbolic, String transport,
                                    String correlationId, String attemptId,
                                    Object localOwner) {
+        try {
+            return take(symbolic, transport, correlationId, attemptId,
+                    localOwner);
+        } catch (RuntimeException fault) {
+            doorFault("received " + transport + " " + correlationId, fault);
+            return Inbound.EMPTY;
+        }
+    }
+
+    private static Inbound take(String symbolic, String transport,
+                                String correlationId, String attemptId,
+                                Object localOwner) {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         String declared = trimmed(symbolic);
@@ -320,7 +378,11 @@ public final class MessageDoors {
      * ({@link MessageCodec#receive}), for the getters that read it.
      */
     public static void parsed(Object message) {
-        MessageCodec.receive(message);
+        try {
+            MessageCodec.receive(message);
+        } catch (RuntimeException fault) {
+            doorFault("parsed", fault);
+        }
     }
 
     /** Ends {@code scope} if the thread still serves it. */
@@ -379,8 +441,13 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
-        turn(ScheduleEvent.Kind.WRITE, transport, location);
-        return inFlight(transport, location);
+        boolean paused = pause();
+        try {
+            turn(ScheduleEvent.Kind.WRITE, transport, location);
+            return inFlight(transport, location);
+        } finally {
+            resume(paused);
+        }
     }
 
     /**
@@ -397,11 +464,16 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storingChild(String transport, String location) {
-        String path = trimmed(location);
-        int slash = path.lastIndexOf('/');
-        turn(ScheduleEvent.Kind.WRITE, transport,
-                slash <= 0 ? "/" : path.substring(0, slash));
-        return inFlight(transport, location);
+        boolean paused = pause();
+        try {
+            String path = trimmed(location);
+            int slash = path.lastIndexOf('/');
+            turn(ScheduleEvent.Kind.WRITE, transport,
+                    slash <= 0 ? "/" : path.substring(0, slash));
+            return inFlight(transport, location);
+        } finally {
+            resume(paused);
+        }
     }
 
     /**
@@ -414,7 +486,54 @@ public final class MessageDoors {
      * went to another node).
      */
     public static void reading(String transport, String location) {
-        turn(ScheduleEvent.Kind.READ, transport, location);
+        boolean paused = pause();
+        try {
+            turn(ScheduleEvent.Kind.READ, transport, location);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    /**
+     * Engine work a system's code called runs with the VM's propagation
+     * paused, as every hook the weave emits does: the engine's plumbing is
+     * never program state (solr-bugs-snapshot-no-active Z2G: a store
+     * write's door, keying a path spelled from a request's values, stated
+     * 1,441 versions of the JDK's UTF-8 encoder arrays as the
+     * CREATESNAPSHOT task's writes).  Only in a replay: elsewhere no VM
+     * propagates.  Pair with {@link #resume} in a finally.
+     */
+    private static boolean pause() {
+        if (!RowRuntime.open()) return false;
+        ConcolicRegionRuntime.pauseObservation();
+        return true;
+    }
+
+    /** Ends what {@link #pause} began. */
+    private static void resume(boolean paused) {
+        if (paused) ConcolicRegionRuntime.resumeObservation();
+    }
+
+    /**
+     * A system's JSON codec serializes a document into bytes: the VM
+     * propagates nothing until {@link #serialized}.  A store's content
+     * crosses leaf by leaf, from the document the codec was handed ({@link
+     * #jsonWritten}), never through its bytes, which are concrete; so is
+     * any other use of the codec's output.  Unpaused, every character of a
+     * symbolic leaf written into the codec's buffers was a version
+     * (solr-bugs-snapshot-no-active Z2G: 2,100 array writes of noggit's
+     * CharArr and ByteUtils.UTF16toUTF8 in the CREATESNAPSHOT task, whose
+     * publication held every region close behind it).
+     *
+     * @return whether it paused, for {@link #serialized}
+     */
+    public static boolean serializing() {
+        return pause();
+    }
+
+    /** The codec's serialization {@link #serializing} paused has ended. */
+    public static void serialized(boolean paused) {
+        resume(paused);
     }
 
     /** A write's or a read's turn at {@code location}, keyed as every run
@@ -478,7 +597,7 @@ public final class MessageDoors {
      * behind this reader, say -- and a DIAGNOSTIC row names the version and
      * the writes still in flight.
      */
-    private static Outbound filed(String transport, String key) {
+    static Outbound filed(String transport, String key) {
         String filed = transport + "\n" + key;
         Outbound message = STORED.get(filed);
         if (message != null) return message;
@@ -518,7 +637,7 @@ public final class MessageDoors {
     }
 
     /** A stored version's location: its key without the version. */
-    private static String location(String key) {
+    static String location(String key) {
         int at = key.lastIndexOf('@');
         return at < 0 ? key : key.substring(0, at);
     }
@@ -547,19 +666,39 @@ public final class MessageDoors {
      * version is filed ({@link #storing}), from wherever its adapter opened
      * the bracket: before the store's call, or here.
      *
+     * <p>{@code data} is what the write wrote: when a system's codec
+     * serialized it ({@link #jsonWritten}), each leaf of that document is
+     * exported on this version ({@link StoreContent}).</p>
+     *
      * @param key the location and the version this write made
      */
-    public static void stored(String transport, String key, Object owner) {
-        // In flight until filed, whatever bracket the adapter opened: the
-        // SEND and the producer it mints take the concolic VM milliseconds.
-        long store = inFlight(transport, location(key));
+    public static void stored(String transport, String key, Object owner,
+                              byte[] data) {
+        boolean paused = false;
+        long store = -1L;
         try {
+            paused = pause();
+            // In flight until filed, whatever bracket the adapter opened:
+            // the SEND and the producer it mints take the concolic VM
+            // milliseconds.
+            store = inFlight(transport, location(key));
+            // Its place on the session's order before anything files it: a
+            // reader released by the filing (#filed) stands after the write
+            // (review re-check M8: positioned after the filing, a decode of
+            // the version stood before its write, TOPOLOGY_DIVERGENCE).
+            RowOrder.Position position = Identity.enginePosition();
+            // The content first: a reader that finds the version filed
+            // finds its leaves exported ({@link #filed}).
+            StoreContent.stored(transport, key, data);
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
-            written(transport, key, owner);
+            written(transport, key, owner, position);
+        } catch (RuntimeException fault) {
+            doorFault("stored " + key, fault);
         } finally {
             storeEnded(transport, store);
+            resume(paused);
         }
     }
 
@@ -569,10 +708,12 @@ public final class MessageDoors {
      * replay, a STORE_WRITE trace row in the recording, which PLAN crosses
      * from a demanded read of it ({@code RecordedStore}).
      */
-    private static void written(String transport, String key, Object owner) {
+    private static void written(String transport, String key, Object owner,
+                                RowOrder.Position position) {
         long version = version(key);
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
+        filedVersion(transport, location(key), path, version);
         String node = RuntimeTraceContext.ownedSource(owner).key();
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
                 Identity.currentOccurrence(node));
@@ -582,10 +723,32 @@ public final class MessageDoors {
         // After every VM event so far, as a concrete target stands: a closure
         // cuts a writer strictly before its write's seq, and the writer's
         // own last event (its door's fault marker) is before the write.
-        RowRuntime.storeWrite(at, Identity.afterLastEvent(),
+        RowRuntime.storeWrite(at, position,
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
+    }
+
+    /**
+     * This thread's write filed {@code version} of {@code location} ({@code
+     * path}: named with its life): the newest a refresh of that life
+     * reaches, and the writes this thread has in flight there are no longer
+     * one more -- in one step under {@link #STORING}, so no refresh counts
+     * one write as filed and in flight ({@link #refreshing}).
+     */
+    private static void filedVersion(String transport, String location,
+                                     String path, long version) {
+        synchronized (STORING) {
+            NEWEST.merge(transport + "\n" + path, version, Math::max);
+            Map<Long, Write> writes = STORING.get(transport);
+            if (writes == null) return;
+            for (Write write : writes.values()) {
+                if (write.thread == Thread.currentThread()
+                        && write.makes(location)) {
+                    write.filed = true;
+                }
+            }
+        }
     }
 
     /**
@@ -599,6 +762,37 @@ public final class MessageDoors {
      * the objects each occurrence read a field on.
      */
     public static void decoded(String transport, String key, Object product) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            decode(transport, key, product);
+        } catch (RuntimeException fault) {
+            doorFault("decoded " + key, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    /**
+     * An engine fault in a door the system's code calls -- one that
+     * observes it (decodes, views, refreshes, stores, content) or brackets
+     * its messages and requests: named, never thrown into the system's
+     * code, which such a door leaves as it found it (a NullPointerException
+     * of #decode killed every seed replay whose test builds its cluster in
+     * @Before, solr-sg3 SP2-10).  The rows the door would have stated are
+     * missing: SESSION_INCOMPLETE, BLOCKING.  A fault door's planted fault
+     * is the system's world, not an engine fault: it is thrown, never here.
+     */
+    static void doorFault(String door, RuntimeException fault) {
+        StackTraceElement[] frames = fault.getStackTrace();
+        RowRuntime.gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING, door,
+                "the engine's door threw " + fault + (frames.length == 0
+                        ? "" : " at " + frames[0]) + "; the system's call"
+                        + " went on, and the rows the door states are"
+                        + " missing");
+    }
+
+    private static void decode(String transport, String key, Object product) {
         long version = version(key);
         if (version < 0L || product == null) return;
         // A write in flight at the path may have made this version, its
@@ -607,13 +801,243 @@ public final class MessageDoors {
         // names the life the version was made in.
         filed(trimmed(transport), trimmed(key));
         String path = life(transport, location(key), version, false);
+        LocationId store = storeLocation(transport, path);
+        // The decode re-points its node's view (LocationKind.VIEW) once the
+        // system takes it: a pairing's hold waits here first
+        // (Confirmation#decoding), then the view's write is stated.  A
+        // version its node decoded before -- a watcher's and a fetch's parse
+        // of one version, or one decoded before the window opened --
+        // re-points nothing: one write of a view per version, the first.
+        String node = nodeHere();
+        OccurrenceAddress here = Identity.currentOccurrence(node);
+        String decoder = decoderNode(here, node);
+        LocationId view = viewOf(store, decoder);
+        // A thread no registered node owns (a test building its cluster in
+        // @Before) has no view to re-point: its parse is no node's decision.
+        boolean repoints = view != null && REPOINTED.add(
+                trimmed(transport) + "\n" + path + "\n" + decoder + "@"
+                        + version);
+        // A system's own refresh reads the store as it stands
+        // (#refreshStarting): no hold waits on it.
+        if (repoints && REFRESHING.get() == 0) {
+            Confirmation.decoding(view, version, here);
+        }
         List<Object> registered = Provenance.register(new Provenance.Version(
-                storeLocation(transport, path), path, version), product);
+                store, path, version), product);
         // The decode runs on the fetching thread right after the read: the
         // occurrence running it is the fetch's.
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
-                registered, Identity.currentOccurrence(
-                        RuntimeTraceContext.nodeHere()));
+                registered, here);
+        if (!repoints) return;
+        if (!RowRuntime.open()) {
+            // Before the window: what the node holds when it opens, the
+            // view's INITIAL at its first row (RowRuntime#viewInitial).
+            RowRuntime.viewBeforeWindow(view, version);
+            return;
+        }
+        // The running occurrence, else the node's role occurrence: never
+        // none on a registered node's thread.
+        OccurrenceAddress at = RowRuntime.doorOccurrence(node);
+        // After every VM event so far, as a store's write stands.
+        RowRuntime.viewWrite(at, Identity.enginePosition(),
+                Endpoint.messageSite(trimmed(transport), "VIEW",
+                        view.slot().replace('/', '.').replace('@', '.')),
+                viewOf(store, at), version);
+    }
+
+    /**
+     * A watch's refresh of one node's view of {@code path} begins, before it
+     * takes its own lock (Solr's {@code StatefulCollectionWatch#refreshAndWatch}
+     * and {@code #refreshAndWatchChildren}, which decode under the
+     * collection's refresh lock): a pairing's hold of that view waits here,
+     * as a decode of the newest version the refresh can reach would ({@code
+     * Confirmation#decoding}), so a held refresh never holds a lock the
+     * reader's own work may need.  That is the newest version a write filed
+     * there and one more per write in flight at it (a store's version counts
+     * its writes); a refresh that can reach no version past the paired one
+     * goes on (round Z2O: past every version while a write was in flight, a
+     * collection's creation held its node's watch for the order's timeout).
+     */
+    public static void refreshing(String transport, String path) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            String node = nodeHere();
+            OccurrenceAddress at = Identity.currentOccurrence(node);
+            String location = trimmed(path);
+            // The view a decode here re-points (#decode): the path's life
+            // now, at the node #decoderNode names.
+            String life = life(transport, location, 0L, false);
+            // Each write of the location makes the next version (a store's
+            // version counts its writes): the newest filed in this life, and
+            // one more per thread with a write in flight there unfiled.
+            long reach;
+            synchronized (STORING) {
+                Set<Thread> writers = new HashSet<Thread>();
+                for (Write write : inFlight(transport, location,
+                        Thread.currentThread()).values()) {
+                    if (!write.filed) writers.add(write.thread);
+                }
+                reach = NEWEST.getOrDefault(transport + "\n" + life, -1L)
+                        + writers.size();
+            }
+            Confirmation.decoding(viewOf(storeLocation(transport, life),
+                    decoderNode(at, node)), reach, at);
+        } catch (RuntimeException fault) {
+            doorFault("refreshing " + path, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    /**
+     * The node whose view a decode or a refresh on this thread re-points:
+     * the running occurrence's, else the thread's scope's (a decode before
+     * the window, or on a thread no occurrence runs on).
+     */
+    private static String decoderNode(OccurrenceAddress here, String node) {
+        return here != null ? here.node().render() : node;
+    }
+
+    /**
+     * The system's own refresh of a view begins (Solr's {@code
+     * ZkStateReader#forceUpdateCollection}, {@code
+     * #forciblyRefreshAllClusterStateSlow}, a lazy collection's {@code
+     * LazyCollectionRef#get}): it reads the store as it stands, as its
+     * caller asked, so no pairing's hold waits on its decodes -- a refresh
+     * on the program's way (the Overseer applying a RefreshCollectionMessage,
+     * a leader's prep-recovery) held for the reader's work would hold that
+     * work too (round Z2N: every snapshot-no-active pairing gave way at the
+     * timeout); a refresh that brings a version past the paired one leaves
+     * the pairing untaken.  Ends at {@link #refreshEnded}.
+     *
+     * @return the token {@link #refreshEnded} takes
+     */
+    public static long refreshStarting() {
+        int depth = REFRESHING.get();
+        REFRESHING.set(depth + 1);
+        return depth;
+    }
+
+    /** Ends the refresh {@link #refreshStarting} began. */
+    public static void refreshEnded(long token) {
+        if (token <= 0L) {
+            REFRESHING.remove();
+        } else {
+            REFRESHING.set((int) token);
+        }
+    }
+
+    /** How many system refreshes run on this thread ({@link
+     *  #refreshStarting}). */
+    private static final ThreadLocal<Integer> REFRESHING =
+            ThreadLocal.withInitial(() -> 0);
+
+    /** The node the running thread's work is attributed to, or "". */
+    private static String nodeHere() {
+        RuntimeTraceContext.View view = RuntimeTraceContext.current();
+        return view.source == null ? "" : view.source.key();
+    }
+
+    /**
+     * The adapter's accessor of one node's view of {@code path} handed out
+     * {@code product}, the object its decodes re-point (Solr's {@code
+     * AliasesManager#getAliases}): a read of the version a decode made it
+     * from ({@link Provenance}), stated as a STORE read and a VIEW read of
+     * the running occurrence -- the admitted activation's, else the
+     * thread's role occurrence -- at the accessor's site ({@link
+     * ContentPort#viewed}), as a PROVENANCE site states one (SYMBOL-SCOPE
+     * §6.4).
+     * An object no decode made states nothing.
+     */
+    public static void viewed(String transport, String path, Object product) {
+        if (product == null || !RowRuntime.open()) return;
+        boolean paused = false;
+        try {
+            paused = pause();
+            view(transport, path, product);
+        } catch (RuntimeException fault) {
+            doorFault("viewed " + path, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void view(String transport, String path, Object product) {
+        Provenance.Version version = Provenance.observe(product, null,
+                new boolean[1]);
+        if (version == null) return;
+        String node = nodeHere();
+        OccurrenceAddress at = RowRuntime.doorOccurrence(node);
+        if (at == null) return;
+        // On the scale the engine's writes of a store and a view stand on,
+        // after every VM event so far and every engine row stated before it
+        // (contract.RowOrder): never ordered before the write it saw.
+        String site = ContentPort.viewed(trimmed(transport), path);
+        RowRuntime.storeRead(at, Identity.enginePosition(), site,
+                version.location, version.version);
+        LocationId view = viewOf(version.location, at);
+        if (view != null) {
+            RowRuntime.viewRead(at, Identity.enginePosition(), site + "#VIEW",
+                    view, version.version);
+        }
+    }
+
+    /**
+     * Whether a system's JSON codec hands this thread's documents over
+     * ({@link #jsonWritten}, {@link #jsonRead}): in a replay.  The codec
+     * builds the writer's document only then.
+     */
+    public static boolean capturingContent() {
+        return StoreContent.capturing();
+    }
+
+    /**
+     * A system's JSON codec serialized {@code document} -- a tree of maps,
+     * lists and leaves as its serializer walked the object it was handed,
+     * each leaf the object the writer holds -- into {@code bytes}: a store
+     * write of these bytes ({@link #stored}) exports its leaves.  Kept
+     * weakly by the array, so bytes no store takes drop it.
+     */
+    public static void jsonWritten(byte[] bytes, Object document) {
+        try {
+            StoreContent.written(bytes, document);
+        } catch (RuntimeException fault) {
+            doorFault("jsonWritten", fault);
+        }
+    }
+
+    /**
+     * A system's JSON codec parsed {@code bytes} into {@code tree}: when a
+     * store fetch returned these bytes ({@link #fetched}), each leaf of the
+     * tree is minted on its entry, paired with that version's export of it
+     * ({@link StoreContent}).
+     */
+    public static void jsonRead(byte[] bytes, Object tree) {
+        try {
+            StoreContent.parsed(bytes, tree);
+        } catch (RuntimeException fault) {
+            doorFault("jsonRead", fault);
+        }
+    }
+
+    /**
+     * One node's view of a store location (LocationKind.VIEW): the
+     * transport at the node of {@code at}, the location as every run spells
+     * it; null for no registered node, whose view is no node's.
+     */
+    static LocationId viewOf(LocationId store, OccurrenceAddress at) {
+        return viewOf(store, at == null ? "" : at.node().render());
+    }
+
+    /** The same, of the node {@code node} names. */
+    private static LocationId viewOf(LocationId store, String node) {
+        if (store == null || node.isEmpty() || node.startsWith(
+                OccurrenceBinding.UNREGISTERED_SOURCE_KEY)) {
+            return null;
+        }
+        return LocationId.of(LocationKind.VIEW, store.owner() + "@" + node,
+                store.slot());
     }
 
     /** A store location as every run spells it: the path as {@link
@@ -686,8 +1110,14 @@ public final class MessageDoors {
         try {
             callback.run();
         } finally {
-            NOTIFIED.remove();
-            endInbound();
+            // The callback's own exception is the system's and goes on; an
+            // engine fault here would replace it, so it is named instead.
+            try {
+                NOTIFIED.remove();
+                endInbound();
+            } catch (RuntimeException fault) {
+                doorFault("notified " + kind, fault);
+            }
         }
     }
 
@@ -702,8 +1132,25 @@ public final class MessageDoors {
      * timing lets it.  A read that takes what its write carried -- the
      * writer's context in a notification -- first waits for the version to
      * be filed, if a write in flight may file it ({@link #filed}).
+     * {@code data} is what the fetch returned: a parse of it by a system's
+     * codec ({@link #jsonRead}) takes in this version's content.
      */
-    public static void fetched(String transport, String key, Object owner) {
+    public static void fetched(String transport, String key, Object owner,
+                               byte[] data) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            fetch(transport, key, owner, data);
+        } catch (RuntimeException fault) {
+            doorFault("fetched " + key, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void fetch(String transport, String key, Object owner,
+                              byte[] data) {
+        StoreContent.fetched(transport, key, data);
         String kind = NOTIFIED.get();
         if (kind == null) return;
         Outbound message = filed(transport, key);
@@ -746,6 +1193,18 @@ public final class MessageDoors {
      * of the window filed names nothing.
      */
     public static void consumed(String transport, String key) {
+        boolean paused = false;
+        try {
+            paused = pause();
+            consume(transport, key);
+        } catch (RuntimeException fault) {
+            doorFault("consumed " + key, fault);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void consume(String transport, String key) {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         Outbound message = filed(transport, key);

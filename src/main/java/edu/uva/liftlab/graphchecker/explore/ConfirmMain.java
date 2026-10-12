@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.Refutations;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
@@ -23,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -516,7 +518,8 @@ public final class ConfirmMain {
      *   world skews a clock: every such reading runs on its node's clock;</li>
      *   <li>an ANSWER per attach the world answers, at its port's call-return
      *   capture: the endpoint, the call and the regions declaring it;</li>
-     *   <li>the world's ORDER rows as CONFIRM holds them, each pair once;
+     *   <li>the world's ORDER and VIEW_HOLD rows as CONFIRM holds them, each
+     *   once;
      *   and the order the session CONFIRM saw ran in from the roots' mint
      *   occurrences on, ORDER rows of events ({@link RealizedOrder}), which
      *   a native run holds as CONFIRM holds its own: a run on the
@@ -583,7 +586,9 @@ public final class ConfirmMain {
             }
             if (RecordingPlant.ORDER.equals(kind)
                     && orders.add(optionalString(edge, "before") + "\n"
-                    + optionalString(edge, "after"))) {
+                    + optionalString(edge, "after"))
+                    || RecordingPlant.VIEW_HOLD.equals(kind)
+                    && orders.add(edge.toString())) {
                 rows.add(edge);
             }
         }
@@ -1546,6 +1551,11 @@ public final class ConfirmMain {
     static final class Holding {
         final List<JsonObject> edges = new ArrayList<JsonObject>();
         final Set<String> reordered = new LinkedHashSet<String>();
+        /** The first row (by its seq, a VM event) the order the session ran
+         *  moves where it is no occurrence's start: a node's decode a view
+         *  hold waits, which the schedule cut stops before
+         *  ({@code SchedulePrefix#write}). */
+        long cutBefore = Long.MAX_VALUE;
         /** The occurrences its STATE and ORDER rows name: the writers,
          *  readers and activations the claim rests on. */
         final Set<OccurrenceAddress> cone =
@@ -1610,10 +1620,14 @@ public final class ConfirmMain {
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
-            edge.addProperty("readerAnyTurn",
-                    Confirmation.anyTurn(read.endpoint()));
+            // A view's paired read is checked exactly: a read of the view at
+            // another turn of the accessor's site is another read.
+            if (read.location().kind() != LocationKind.VIEW) {
+                edge.addProperty("readerAnyTurn",
+                        Confirmation.anyTurn(read.endpoint()));
+            }
             edge.addProperty("mint", mint);
-            edge.addProperty("writer", writer(held));
+            edge.addProperty("writer", Confirmation.writer(held));
             edge.addProperty("version", held.version());
             edge.addProperty("location", location);
             holding.edges.add(edge);
@@ -1627,7 +1641,47 @@ public final class ConfirmMain {
             // realized order), and an ORDER naming a store write's activation
             // is no event a native run's weave states (solr-18413 Y8: 84 of
             // 96 plant rows unheld, native 0/10).
-            if (mint || held.location().kind() == LocationKind.STORE) {
+            if (mint || held.location().kind() == LocationKind.STORE) continue;
+            // A node's view: its decodes run in work no activation hook
+            // holds (watch deliveries, request handlers), so the pairing
+            // holds them at the decode -- every decode of the view past
+            // the paired version, but the reader's work's own, waits until
+            // that work's region exits (Confirmation#decoding) -- and
+            // orders nothing else.
+            if (held.location().kind() == LocationKind.VIEW) {
+                JsonObject hold = new JsonObject();
+                hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
+                hold.addProperty("view",
+                        Confirmation.viewKey(held.location()));
+                hold.addProperty("above", held.version());
+                OccurrenceAddress readBy = read.endpoint().occurrence();
+                hold.addProperty("readerContext",
+                        Confirmation.contextKey(readBy));
+                hold.addProperty("reader", Confirmation.id(read.endpoint()));
+                // A read in role work no hook closes: its hold ends at the
+                // first region its work closes after the read, in the run.
+                hold.addProperty("until", readBy.role() ? ""
+                        : Confirmation.activation(readBy,
+                        ExecutionIndex.empty()));
+                holding.edges.add(hold);
+                // The node's decodes past the paired version: the hold acts
+                // on them, so their work is the claim's cone.  Those that
+                // came before the read: the schedule cut stops before the
+                // first of them -- the decode itself, in work that runs on
+                // -- or its prefix replays the recorded order against the
+                // hold.
+                for (WriteRow decode : closure.byLocation.getOrDefault(
+                        location, Collections.<WriteRow>emptyList())) {
+                    if (decode.version() <= held.version()
+                            || decode.initial()) {
+                        continue;
+                    }
+                    holding.cone.add(decode.endpoint().occurrence());
+                    if (RowOrder.before(decode, read)) {
+                        holding.cutBefore = Math.min(holding.cutBefore,
+                                decode.seq());
+                    }
+                }
                 continue;
             }
             if (!held.initial()) {
@@ -1686,13 +1740,6 @@ public final class ConfirmMain {
         }
     }
 
-    /** The writer a STATE row names: its endpoint as {@link Confirmation#id}
-     *  names it, or {@link Confirmation#INITIAL}, which no occurrence
-     *  wrote. */
-    static String writer(WriteRow write) {
-        return write.initial() ? Confirmation.INITIAL
-                : Confirmation.id(write.endpoint());
-    }
 
     /**
      * What holds an obligation replay to the pairings its world plants
@@ -1721,7 +1768,7 @@ public final class ConfirmMain {
             for (WriteRow write : closure.byLocation.getOrDefault(
                     SmtLowering.locationKey(read.location()),
                     Collections.<WriteRow>emptyList())) {
-                if (!writer.equals(writer(write))
+                if (!writer.equals(Confirmation.writer(write))
                         || held != null && held.version()
                         == read.observedVersion()) {
                     continue;
