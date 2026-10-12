@@ -868,7 +868,9 @@ public final class ConcolicRegionRuntime {
         Provenance.Version version = Provenance.observe(receiver, holder,
                 new boolean[1]);
         ActiveRegion active = activeRegion();
-        if (version == null || active == null || active.d3Address == null) {
+        if (active == null || active.d3Address == null) return;
+        if (version == null) {
+            Provenance.unregistered(nonNull(siteId), receiver);
             return;
         }
         RowRuntime.storeRead(active.d3Address, RowRuntime.currentEvent(),

@@ -80,6 +80,10 @@ final class Provenance {
     private static final AtomicLong MAX_NANOS = new AtomicLong();
     private static final AtomicLong BOUNDED = new AtomicLong();
     private static final AtomicLong SHARED = new AtomicLong();
+    private static final AtomicLong UNREGISTERED = new AtomicLong();
+    /** Provenance sites whose read of an unregistered object is stated. */
+    private static final java.util.Set<String> UNREGISTERED_SITES =
+            ConcurrentHashMap.newKeySet();
     /** Class, holding version and reaching version of each shared object
      *  stated: one row each. */
     private static final java.util.Set<String> STATED =
@@ -278,6 +282,21 @@ final class Provenance {
         return known;
     }
 
+    /**
+     * A provenance site in a region read an object no decode registered: its
+     * guard reads no store version, so no closure crosses to a writer of
+     * one.  Counted, stated once per site (DIAGNOSTIC), never silent.
+     */
+    static void unregistered(String siteId, Object receiver) {
+        if (receiver == null) return;
+        UNREGISTERED.incrementAndGet();
+        if (!UNREGISTERED_SITES.add(siteId)) return;
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, siteId,
+                "this provenance site read a " + receiver.getClass().getName()
+                        + " no decode registered, so its guard reads no store"
+                        + " version and no closure crosses to a writer of one");
+    }
+
     /** A value is no holder of decoded state: its identity carries none. */
     private static boolean valueLike(Class<?> type) {
         return type.isPrimitive() || type.isEnum() || type == String.class
@@ -333,7 +352,9 @@ final class Provenance {
                 : NANOS.get() / 1e6 / decodes) + " ms each, longest "
                 + String.format("%.2f", MAX_NANOS.get() / 1e6) + " ms, "
                 + BOUNDED.get() + " at the bound, " + SHARED.get()
-                + " object(s) reached that another version holds";
+                + " object(s) reached that another version holds, "
+                + UNREGISTERED.get() + " provenance read(s) of an object no"
+                + " decode registered";
     }
 
     /** Whether any decode was walked (the summary says something). */
@@ -350,6 +371,13 @@ final class Provenance {
         BOUNDED.set(0L);
         SHARED.set(0L);
         STATED.clear();
+        UNREGISTERED.set(0L);
+        UNREGISTERED_SITES.clear();
+    }
+
+    /** Provenance reads of an object no decode registered (tests). */
+    static long unregistered() {
+        return UNREGISTERED.get();
     }
 
     /** Objects decodes reached that another version holds (tests). */

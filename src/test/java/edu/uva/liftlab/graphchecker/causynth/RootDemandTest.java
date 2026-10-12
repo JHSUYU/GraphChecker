@@ -188,6 +188,10 @@ public class RootDemandTest {
             assertEquals("the read the scope map marks", (stored ? "TRACK"
                     : "PROVENANCE") + " 3 true",
                     mark(demand.marks().at(init + "#u2", flag)));
+            // A PROVENANCE field feeds scope growth as a PRE_WINDOW one
+            // does: its writer is a decode's constructor, maybe out of scope.
+            assertEquals("stored=" + stored + ": scope growth takes the copy",
+                    "PROVENANCE", demand.frontier().get(copy).kind);
         }
     }
 

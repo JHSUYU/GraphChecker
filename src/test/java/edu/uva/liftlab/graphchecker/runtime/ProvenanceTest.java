@@ -88,6 +88,12 @@ public class ProvenanceTest {
         assertEquals("it keeps its version", 5L,
                 Provenance.of(collection.slices.get("shard1")).version);
         assertEquals("and is stated", 1L, Provenance.shared());
+        // A provenance site's read of an object no decode registered is
+        // counted (and stated once per site); no receiver, no read.
+        Provenance.unregistered("Guard#u3", new Object());
+        Provenance.unregistered("Guard#u3", new Object());
+        Provenance.unregistered("Guard#u3", null);
+        assertEquals("unregistered reads", 2L, Provenance.unregistered());
     }
 
     /**
