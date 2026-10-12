@@ -233,6 +233,7 @@ public final class ExploreMain {
                 new LinkedHashSet<OccurrenceAddress>();
         List<String> witnesses = witnesses(corpus, roots);
         int truncated = 0;
+        int ceilingCut = 0;
         Map<OccurrenceAddress, ClosurePlanner.Concrete> concrete =
                 new LinkedHashMap<OccurrenceAddress,
                         ClosurePlanner.Concrete>();
@@ -248,13 +249,17 @@ public final class ExploreMain {
                 // (the manifest's `truncated`, PIPELINE §7.9).  This round's
                 // own is its record.
                 truncated += plan.truncated.size();
+                ceilingCut += plan.ceilingCut.size();
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         root.render(), "PLAN_CLOSURE_CUT: closure "
-                                + "truncated at " + maxTasks + " tasks, "
-                                + "static candidates cut before any "
-                                + "occurrence the rows connect; "
-                                + plan.truncated.size()
+                                + "truncated: static candidates past "
+                                + maxTasks + (plan.ceilingCut.isEmpty() ? ""
+                                : ", and " + plan.ceilingCut.size()
+                                + " occurrence(s) the rows connect past the"
+                                + " closure ceiling of "
+                                + ClosurePlanner.CLOSURE_CEILING)
+                                + "; " + plan.truncated.size()
                                 + " occurrences were not planned, so this "
                                 + "anchor's closure is incomplete: "
                                 + plan.truncated));
@@ -359,7 +364,8 @@ public final class ExploreMain {
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
-                witnesses, wave(iteration, corpus), branches, concrete);
+                ceilingCut, witnesses, wave(iteration, corpus), branches,
+                concrete);
         manifest.add("openArms", openArms(corpus, scope, roots, tasks,
                 frontier, open, byFlip));
         manifest.add("force", forced.manifest);
@@ -902,6 +908,7 @@ public final class ExploreMain {
                                        List<GapRow> gaps, SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
                                        int exposed, int truncated,
+                                       int ceilingCut,
                                        List<String> witnesses,
                                        int wave, Branches branches,
                                        Map<OccurrenceAddress,
@@ -931,8 +938,11 @@ public final class ExploreMain {
         manifest.addProperty("heldInFlight", open.heldInFlight);
         manifest.addProperty("branchesStopped", branches.stopped());
         manifest.addProperty("exposedRegions", exposed);
-        // Occurrences this round's closure did not plan (--max-tasks).
+        // Occurrences this round's closure did not plan: static candidates
+        // past --max-tasks, and of them those the rows connect past the
+        // closure ceiling (ClosurePlanner#CLOSURE_CEILING).
         manifest.addProperty("truncated", truncated);
+        manifest.addProperty("ceilingCut", ceilingCut);
         JsonObject skeletonRow = new JsonObject();
         skeletonRow.addProperty("slots", slots.size());
         skeletonRow.addProperty("opened", skeleton.opened.size());

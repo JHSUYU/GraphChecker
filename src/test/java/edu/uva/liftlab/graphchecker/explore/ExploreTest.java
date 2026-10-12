@@ -3038,21 +3038,45 @@ public class ExploreTest {
                         + "node other than the PAIRED producer's: "
                         + scopedWhy,
                 scopedWhy.containsKey(foreignExporter.render()));
-        // Over the task bound, a static candidate is cut before an
-        // occurrence the rows connect, however late the walk finds that one:
-        // the sibling is found with the writer, the producer only through
-        // the writer's attach (PLAN_CLOSURE_CUT, ClosurePlanner#Candidates).
+        // The task bound counts static candidates only: whatever it is, the
+        // occurrences the rows connect are planned, however late the walk
+        // finds them (the sibling is found with the writer, the producer
+        // only through the writer's attach); past it a candidate is cut
+        // (PLAN_CLOSURE_CUT, ClosurePlanner#Candidates).
         Corpus spreadCorpus = Corpus.read(perNode, null);
-        ClosurePlanner.Plan cut = ClosurePlanner.plan(spreadCorpus, target,
-                3, spreadMap, Branches.of(spreadCorpus,
-                        Collections.singletonList(target),
-                        new ArrayList<GapRow>()));
-        List<String> kept = new ArrayList<String>();
-        for (Task task : cut.tasks) kept.add(task.focused().render());
-        assertEquals("recorded writer and producer first: " + kept,
-                Arrays.asList(target.render(), writer.render(),
-                        producer.render()), kept);
-        assertEquals(Collections.singleton(sibling.render()), cut.truncated);
+        for (int bound : new int[] {0, 1}) {
+            ClosurePlanner.Plan cut = ClosurePlanner.plan(spreadCorpus,
+                    target, bound, spreadMap, Branches.of(spreadCorpus,
+                            Collections.singletonList(target),
+                            new ArrayList<GapRow>()));
+            List<String> kept = new ArrayList<String>();
+            for (Task task : cut.tasks) kept.add(task.focused().render());
+            List<String> expected = new ArrayList<String>(Arrays.asList(
+                    target.render(), writer.render(), producer.render()));
+            if (bound > 0) expected.add(sibling.render());
+            assertEquals("bound " + bound + ": " + kept, expected, kept);
+            assertEquals(bound > 0 ? Collections.<String>emptySet()
+                    : Collections.singleton(sibling.render()), cut.truncated);
+            assertTrue(cut.ceilingCut.isEmpty());
+        }
+        // The round says how much it did not plan, and its own truncation
+        // row is DIAGNOSTIC: whether it blocks a claim is the exploration's
+        // end's to say (PIPELINE §7.9).
+        Path cutWave = tree.newFolder("spread-cut").toPath();
+        JsonObject truncated = ExploreMain.plan(perNode, TARGET_SELECTOR,
+                null, perNode.resolve("results.jsonl"), null,
+                perNode.resolve(StaticScopeMap.FILE), cutWave, 0, "epoch0", 0,
+                DEFAULT_BOUNDS);
+        assertEquals(1, truncated.get("truncated").getAsInt());
+        assertEquals(0, truncated.get("ceilingCut").getAsInt());
+        boolean recorded = false;
+        for (GapRow gap : RowCodec.readAll(cutWave.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            if (!gap.detail().startsWith("PLAN_CLOSURE_CUT")) continue;
+            assertEquals(GapClass.DIAGNOSTIC, gap.cls());
+            recorded = true;
+        }
+        assertTrue("the round records its truncation", recorded);
         assertEquals("while the producer the rows paired stays a member: "
                         + scopedWhy, ClosurePlanner.CLOSURE_MEMBER,
                 scopedWhy.get(producer.render()));
@@ -4110,23 +4134,18 @@ public class ExploreTest {
                 manifest.get("tasks").getAsInt() >= 2);
         assertFalse("and a run's own address is not a second root: " + anchors,
                 anchors.contains(ran.render()));
-        // Cut at one task, the round says how much it did not plan, and its
-        // own truncation row is DIAGNOSTIC: whether it blocks a claim is the
-        // exploration's end's to say (PIPELINE §7.9).
+        // A task bound of none cuts nothing the rows connect: the writer and
+        // the producer are planned whatever --max-tasks says, and the round
+        // records no truncation.
         Path cut = tree.newFolder("roots-cut").toPath();
-        JsonObject truncated = ExploreMain.plan(iteration, TARGET_SELECTOR,
+        JsonObject uncut = ExploreMain.plan(iteration, TARGET_SELECTOR,
                 null, iteration.resolve("results.jsonl"), null,
-                iteration.resolve(StaticScopeMap.FILE), cut, 0, "epoch0", 1,
+                iteration.resolve(StaticScopeMap.FILE), cut, 0, "epoch0", 0,
                 DEFAULT_BOUNDS);
-        assertTrue(truncated.get("truncated").getAsInt() >= 1);
-        boolean recorded = false;
-        for (GapRow gap : RowCodec.readAll(cut.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            if (!gap.detail().startsWith("PLAN_CLOSURE_CUT")) continue;
-            assertEquals(GapClass.DIAGNOSTIC, gap.cls());
-            recorded = true;
-        }
-        assertTrue("the round records its truncation", recorded);
+        assertEquals(manifest.get("tasks").getAsInt(),
+                uncut.get("tasks").getAsInt());
+        assertEquals(0, uncut.get("truncated").getAsInt());
+        assertEquals(0, uncut.get("ceilingCut").getAsInt());
 
         // A declared anchor the seed session never ran: BLOCKING, and the
         // refusal names the address rather than leaving "no tasks".

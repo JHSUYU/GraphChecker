@@ -6139,9 +6139,12 @@ campaign_stream_manifest() {
 # deferred some -- an earlier round's deferral is work the rounds after it
 # read first, and a fixed point defers none -- and the world depth a round
 # cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
-# bound in their subject; the tasks one anchor's closure plans (region_path_max_tasks:
-# the last round's `truncated`, as campaign_stream_truncation judges it, since
-# a later round plans what an earlier one left); the occurrences PLAN plans
+# bound in their subject; the static candidates one anchor's closure plans
+# (region_path_max_tasks: the last round's `truncated` less its `ceilingCut`,
+# as campaign_stream_truncation judges it, since a later round plans what an
+# earlier one left) and the occurrences the rows connect past the closure
+# ceiling (region_path_closure_ceiling, ClosurePlanner#CLOSURE_CEILING: the
+# runaway guard, never a silently unlimited plan); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
 # decided again after CONFIRM refuted one (campaign_max_claims).  A round's
 # max-flips-per-path is no such bound -- the next round asks the decisions it
@@ -6169,7 +6172,8 @@ explore_manifest.json 2>/dev/null) \
       | bound($bound)];
     [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
-    | ($rounds | last | .truncated // 0) as $truncated
+    | ($rounds | last | .ceilingCut // 0) as $ceiling
+    | (($rounds | last | .truncated // 0) - $ceiling) as $truncated
     | ($index[0].closureCut // null) as $cut
     | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]
       as $armsBounded
@@ -6188,7 +6192,12 @@ explore_manifest.json 2>/dev/null) \
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"
-              + " \($truncated) occurrence(s), at the task bound")}),
+              + " \($truncated) static candidate(s), at the task bound")}),
+        (select($ceiling > 0)
+         | {by: "region_path_closure_ceiling",
+            detail: ("the last round planned its closure without"
+              + " \($ceiling) occurrence(s) the rows connect, past the"
+              + " closure ceiling")}),
         (select(($armsBounded | length) > 0)
          | {by: "open_arm_max_refuted_worlds",
             detail: ("\($armsBounded | length) open decider arm(s) asked no"

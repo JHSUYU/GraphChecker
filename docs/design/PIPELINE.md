@@ -447,13 +447,17 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    BLOCKING gap and leaves the round with no root.
 3. Stops the branches that cannot answer the question (`explore.Branches`, §7.4) and plans the
    anchor's closure (§7.2). Every occurrence the rows connect (a recorded writer or producer, a
-   control producer) is planned as the walk finds it; static candidate writers and producers wait
-   until none is left and are then planned round-robin over their (node, region, context shape)
-   class (`ClosurePlanner.Candidates`), so over `--max-tasks` the cut takes static candidates first
-   (solr-adhoc-07 IB1: 59 of 64 tasks were `CoreContainer.getCore` candidates while two recorded
-   `create` writers were cut). A truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP`
-   (`PLAN_CLOSURE_CUT: ...`) and its manifest's `truncated` (the occurrences not planned); whether it
-   blocks a claim is the exploration's end's to say (§7.9).
+   control producer, the anchor) is planned as the walk finds it and never counts against the task
+   bound; static candidate writers and producers wait until none is left and are then planned
+   round-robin over their (node, region, context shape) class, at most `--max-tasks`
+   (`region_path_max_tasks`, default 64) of them (`ClosurePlanner.Candidates`). solr-adhoc-07 IB1:
+   59 of its 64 tasks were `CoreContainer.getCore` candidates while two recorded `create` writers were
+   cut; its row-connected closure is 252 occurrences, planned whole. The runaway guard: past
+   `ClosurePlanner.CLOSURE_CEILING` (1024) occurrences the rows connect are cut too, counted in the
+   manifest's `ceilingCut` and named in result.json `bounded` (`region_path_closure_ceiling`). A
+   truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP` (`PLAN_CLOSURE_CUT: ...`) and its
+   manifest's `truncated` (the occurrences not planned); whether it blocks a claim is the
+   exploration's end's to say (§7.9).
 4. Reconciles the slot table (`explore.SlotTable`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
    world is a replacement, and a read whose observed write the run orders after it (the two rows'
@@ -712,7 +716,8 @@ difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
-`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
+`--max-tasks` 64 (static candidates; occurrences the rows connect are never counted, up to the
+closure ceiling of 1024), `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
 arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is
 keyed, and the path bound counts only the paths that offer an OWED arm -- one no ledger settles, no
 round has in flight and no path before it offers: a path whose arms are all settled, in flight or
@@ -2415,8 +2420,9 @@ recording's own is not kept apart.
    search -- the wave budget (`region_path_max_waves`, the stop REGION_PATH_WAVE_BUDGET_REACHED),
    `region_path_max_paths_per_region` (the LAST round's deferral rows: an earlier round's the rounds
    after it read, §7.4) and `region_path_max_world_depth` (ObligationFactory's DIAGNOSTIC rows, the
-   bound in their subject), `region_path_max_tasks` (the last round's
-   `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
+   bound in their subject), `region_path_max_tasks` (the static candidates the last round's closure
+   cut: `truncated` less `ceilingCut`), `region_path_closure_ceiling` (occurrences the rows connect cut
+   past `ClosurePlanner.CLOSURE_CEILING`, 1024), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
    (an open arm the last round left BOUNDED, §7.1) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a

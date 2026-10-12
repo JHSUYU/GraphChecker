@@ -69,8 +69,17 @@ import java.util.TreeSet;
  * session activated is named (PIPELINE §7.2), not a task.</p>
  */
 public final class ClosurePlanner {
-    /** How many tasks one anchor may open, before the closure is truncated. */
+    /** How many static candidate writers and producers one anchor's closure
+     *  plans before the rest are cut ({@code region_path_max_tasks}); the
+     *  occurrences the rows connect are never counted ({@link Candidates}). */
     public static final int DEFAULT_MAX_TASKS = 64;
+
+    /** The runaway guard: past this many occurrences the rows connect, the
+     *  closure is cut there too and the cut is a declared bound (result.json
+     *  {@code bounded}, {@code region_path_closure_ceiling}), never a
+     *  silently unlimited plan (solr-adhoc-07's whole row-connected closure
+     *  is 252). */
+    public static final int CLOSURE_CEILING = 1024;
 
     /** Connected by rows. */
     public static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
@@ -104,6 +113,9 @@ public final class ClosurePlanner {
         /** Demanded past the task bound, so not planned: the closure is
          *  incomplete, which only {@link ExploreMain} can weigh. */
         public final Set<String> truncated;
+        /** Of them, those the rows connect, cut at {@link
+         *  #CLOSURE_CEILING}. */
+        public final Set<String> ceilingCut;
         /** What every admitted path decided the anchor on, when that is no
          *  symbol ({@link ClosurePlanner#concrete}): no root reaches it yet,
          *  which only {@link ExploreMain} can weigh.  Null for any other
@@ -115,7 +127,7 @@ public final class ClosurePlanner {
                      Map<String, Set<String>> flipSites,
                      Map<OccurrenceAddress, String> exposed,
                      Set<OccurrenceAddress> waiting, Set<String> truncated,
-                     Concrete concrete) {
+                     Set<String> ceilingCut, Concrete concrete) {
             this.tasks = Collections.unmodifiableList(tasks);
             this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
@@ -123,6 +135,7 @@ public final class ClosurePlanner {
             this.exposed = Collections.unmodifiableMap(exposed);
             this.waiting = Collections.unmodifiableSet(waiting);
             this.truncated = Collections.unmodifiableSet(truncated);
+            this.ceilingCut = Collections.unmodifiableSet(ceilingCut);
             this.concrete = concrete;
         }
     }
@@ -187,7 +200,9 @@ public final class ClosurePlanner {
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
+        Set<String> ceilingCut = new LinkedHashSet<String>();
         Candidates candidates = new Candidates(corpus);
+        int candidatesPlanned = 0;
         while (true) {
             while (!pending.isEmpty()) {
                 Demand demand = demands.get(pending.remove());
@@ -203,13 +218,25 @@ public final class ClosurePlanner {
                     }
                     Demand queued = candidates.take(next);
                     if (queued == null) continue;
-                    admit(queued, demands, pending, truncated, maxTasks);
+                    if (demands.size() >= CLOSURE_CEILING) {
+                        truncated.add(queued.occurrence.render());
+                        ceilingCut.add(queued.occurrence.render());
+                        continue;
+                    }
+                    admit(queued, demands, pending);
                 }
             }
-            // Row-connected demand is exhausted: the next static candidate.
+            // Row-connected demand is exhausted: the next static candidate,
+            // while the bound has room.
             Demand candidate = candidates.next();
             if (candidate == null) break;
-            admit(candidate, demands, pending, truncated, maxTasks);
+            if (candidatesPlanned >= maxTasks
+                    || demands.size() >= CLOSURE_CEILING) {
+                truncated.add(candidate.occurrence.render());
+                continue;
+            }
+            candidatesPlanned++;
+            admit(candidate, demands, pending);
         }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
@@ -237,34 +264,31 @@ public final class ClosurePlanner {
             flips.put(taskId, sites);
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
-                exposed, waiting, truncated, concrete);
+                exposed, waiting, truncated, ceilingCut, concrete);
     }
 
-    /** Plans one demand, or names it cut once {@code maxTasks} are
-     *  planned (PLAN_CLOSURE_CUT, {@link Candidates}). */
+    /** Plans one demand. */
     private static void admit(Demand demand, Map<String, Demand> demands,
-                              Deque<String> pending, Set<String> truncated,
-                              int maxTasks) {
-        if (demands.size() >= maxTasks) {
-            truncated.add(demand.occurrence.render());
-            return;
-        }
+                              Deque<String> pending) {
         demands.put(demand.occurrence.id(), demand);
         pending.add(demand.occurrence.id());
     }
 
     /**
-     * THE TASK BOUND CUTS STATIC CANDIDATES FIRST (owner: the closure keeps
-     * every static writer; over budget, recorded writers first, the rest cut
-     * by a named PLAN_CLOSURE_CUT).  A demand the rows connect -- a recorded
+     * THE TASK BOUND COUNTS STATIC CANDIDATES ONLY (owner: a genuinely large
+     * closure converges; over budget, recorded writers first, the rest cut by
+     * a named PLAN_CLOSURE_CUT).  A demand the rows connect -- a recorded
      * writer or producer, a control producer, the anchor's own -- is planned
-     * as it is found; a static candidate writer or producer waits until no
-     * row-connected demand is left, and then the candidates are planned
-     * round-robin over their (node, region, context shape) class, so one
-     * class's many occurrences (solr-adhoc-07: 59 of 64 tasks were {@code
-     * CoreContainer.getCore} candidates of {@code SolrCores.cores}, while
-     * two recorded {@code create} writers were cut) never crowd out the
-     * rest.  A candidate the rows later connect is planned at once.
+     * as it is found, never counted against the bound (only {@link
+     * #CLOSURE_CEILING} stops it, a declared bound); a static candidate
+     * writer or producer waits until no row-connected demand is left, and
+     * then the candidates are planned round-robin over their (node, region,
+     * context shape) class, at most {@code maxTasks} of them, so one class's
+     * many occurrences never crowd out the rest (solr-adhoc-07 IB1: 59 of 64
+     * tasks were {@code CoreContainer.getCore} candidates of {@code
+     * SolrCores.cores} while two recorded {@code create} writers were cut;
+     * its row-connected closure is 252 occurrences).  A candidate the rows
+     * later connect is planned at once.
      */
     private static final class Candidates {
         private final Corpus corpus;
