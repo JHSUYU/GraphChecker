@@ -30,7 +30,7 @@ Which branch runs which case, with the case's budget and what series EX1 ended w
   `bin/z3` at `~/.local/bin/z3` (or name it as `Z3_BIN`).
 
 Where things go is stated once, in [`tools/lib/gc-env.sh`](../tools/lib/gc-env.sh): `GC_BULK` (the shared storage),
-`GC_OUT` (run outputs), `GC_TREES` (the HDFS trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
+`GC_OUT` (run outputs), `GC_TREES` (the system trees), `GC_M2` (their Maven repositories), `Z3_BIN`, `LIFTS` (the
 hosts) and `CAUSYNTH_HOST_MAX_USED_PCT` (70: no start may leave a host fuller). On another cluster, edit those
 defaults in that file on both checkouts. A value exported in the shell that starts a run also works: every hop of the
 run passes them on (`gc_env_words`); `tools/onlift.sh` does not, so give it `env NAME=value` in its command. The
@@ -171,7 +171,10 @@ with the adapter, every case's target marker and the bug checks' workloads.
    the checkout's jar (`experiments/solr/build.sh`), and runs every case's workload once natively under its seed
    (`experiments/solr/system.sh` `solr_seed`), one Ant run each: a case's classpath is read off its workload's junit4
    report. The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or
-   `MISSING` (the script fails). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
+   `MISSING` (the script fails). On `gc/solr-final` (2026-10-12) all 17 workloads of the 20 cases passed (05 and 07
+   share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
+   each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
+   experiments/solr/<case dir> <arg> validate` found every case's configuration valid. After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
    $GC_TREES/lucene-solr-checks F0993D5343E20BA4 '<Class>#<method>'` runs one workload; never build a tree a run
    reads.
 
