@@ -321,11 +321,20 @@ constructor calls keep them all. A guard `v ==/!= c` (`c` an int, null or an enu
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,
-jumps, at most 16 units) to a return of a constant of `c`'s kind, each with its `verdict` -- whether
+jumps, calls that store nothing, a branch both of whose arms return the same constant -- javac's
+inlined `finally` -- at most 16 units) to a return of a constant of `c`'s kind, each with its `verdict` -- whether
 the guard's condition holds when it runs; none for an OPEN arm, one that runs on to a value no
 constant states -- and the deciders of the nested helper return its branch tests, three helpers
 deep; a branch whose two arms are open, or return constants the guard takes alike, decides
-nothing, a helper with a switch has none. A helper with no branch that returns `h2().equals(c)`
+nothing, a helper with a switch has none. The call may be an interface or virtual call on an
+object the method created -- `new C`, or the `bootstrap$` of Soot's desugared lambda -- whose class
+then names the helper (`causynth/CreatedFrom`, the rule the slice enters a functional argument by);
+a guard on a `Boolean`'s `booleanValue()` is one on the call that returned it, its `Boolean.TRUE`
+and `FALSE` arms 1 and 0; and a helper with no branch that returns one call's result (the lambda
+class's `call()` running `lambda$m$N`) forwards to that call's deciders, one helper deeper
+(solr-adhoc-09: `if (!callable.call())`, DeleteReplicaCmd.java:277, is decided by the lambda's
+`waitForCoreNodeGone` tests; its deciders' `via` is `deleteCore`, since `Identity#callerFrame`
+passes the lambda class's and `lambda$` frames). A helper with no branch that returns `h2().equals(c)`
 (an enum's `equals` is identity) is the guard `h2() == c`, its verdicts read through the boolean it
 returns: hdfs-adhoc-15/17's `isComplete()` is `getBlockUCState().equals(COMPLETE)`, decided by
 `uc == null ? COMPLETE : uc.getBlockUCState()`, whose `uc != null` arm is open; hdfs-adhoc-40's

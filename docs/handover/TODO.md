@@ -256,7 +256,8 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
   after it), 21 (2023 in flight) and 14 must reach their fixed points; measure the growth on the merged body. 05:
   FORCE diverged at K_L in `SolrCore.createInstances`; D1b (the FORCE run's armed occurrence takes the work cap
   alone) is coded on `solr-study`, a live 05 FORCE run pending. 09: its forced
-  condition is `false`, a guard on a lambda's return through `Callable.call` (deciders through a lambda). 10: not yet
+  condition was `false`, a guard on a lambda's return through `Callable.call`: deciders through a lambda coded on
+  `solr-study` (`BooleanReturns`, `CreatedFrom`), a live 09 FORCE run pending. 10: not yet
   run whole (it plans 356 tasks).
 - **e2. EXPLORE redundancy (package EX, agent RD on `solr-explore2`, brief `analysis/solr-2026-10-11/brief-explore-redundancy.md`):** IB1's 07/21 spent ~83 % of their proposals re-asking arms in fault worlds that changed nothing at the task (the obligation key carries inherited prefixes, `ObligationFactory.keyed`, and exact feeder ids, `Corpus.inputShape`), and 07's closure truncation (`ClosurePlanner`, first-come) dropped recorded `create` writers for 59 static `getCore` candidates, against the recorded-writers-first rule. Fixes: key by the effect at the task, feeders by context-shape class, recorded writers first in the cut, an ADMITTED flip settles. Design gate for the key, review before merge.
 - **h. The realized order and tick indices:** e53e88bae names a message hop by its sender's first send of its site, which took solr-18413's native from 0/10 to 2/10 on IB1; the 8 others hold a client WAKE behind a write of `Root:OVERSEER_STATE_UPDATE#21`, an index the state updater's batching moves. Dropping tick indices too would follow the same principle, but restore-construction's 10/10 rests on state-update ticks: decide on Z1's merged head with restore, 18413 and reindex natively.
