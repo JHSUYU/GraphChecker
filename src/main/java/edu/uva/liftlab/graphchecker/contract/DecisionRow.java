@@ -20,12 +20,15 @@ public final class DecisionRow extends Value {
     /** The arm the run's operands decided where a forced replay forced
      *  another ({@link #forced}); null otherwise. */
     private final Boolean concreteOutcome;
+    /** The frame that called the decision's method, where the anchor's
+     *  forcing table names the site with a {@code via}; "" otherwise. */
+    private final String via;
 
     private DecisionRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String siteId,
                         int ordinal, boolean outcome, String term,
                         Map<String, Long> clockReadings,
-                        Boolean concreteOutcome) {
+                        Boolean concreteOutcome, String via) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -35,6 +38,7 @@ public final class DecisionRow extends Value {
         this.term = term;
         this.clockReadings = clockReadings;
         this.concreteOutcome = concreteOutcome;
+        this.via = via;
     }
 
     public static DecisionRow of(String sessionId, long seq,
@@ -47,7 +51,7 @@ public final class DecisionRow extends Value {
                 Fields.text(siteId, "siteId"),
                 Fields.ordinal(ordinal, "ordinal"), outcome,
                 Fields.required(term, "term"), Fields.copy(clockReadings),
-                null);
+                null, "");
     }
 
     /**
@@ -57,7 +61,25 @@ public final class DecisionRow extends Value {
      */
     public DecisionRow forced(boolean concrete) {
         return new DecisionRow(sessionId, seq, occurrence, siteId, ordinal,
-                outcome, term, clockReadings, Boolean.valueOf(concrete));
+                outcome, term, clockReadings, Boolean.valueOf(concrete), via);
+    }
+
+    /**
+     * This decision, made in a call from {@code caller} (a frame as {@code
+     * runtime.Identity#callerFrame} names it): stated where the occurrence's
+     * forcing table names the site with a {@code via}, a decider counting
+     * only in a call of its helper from there ({@code
+     * compose.RestsOn#wayGuard}).
+     */
+    public DecisionRow via(String caller) {
+        return new DecisionRow(sessionId, seq, occurrence, siteId, ordinal,
+                outcome, term, clockReadings, concreteOutcome,
+                caller == null ? "" : caller.trim());
+    }
+
+    /** The frame that called it, or "" where none was stated. */
+    public String via() {
+        return via;
     }
 
     /** Whether a forced replay forced this decision. */
@@ -111,7 +133,7 @@ public final class DecisionRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, siteId, ordinal,
-                outcome, term, clockReadings, concreteOutcome};
+                outcome, term, clockReadings, concreteOutcome, via};
     }
 
     @Override

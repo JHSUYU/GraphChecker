@@ -15,6 +15,8 @@ public final class Role extends Value {
     public static final Role CLIENT = new Role("CLIENT");
     /** Work a JDK executor ran, as the submission's own hop. */
     public static final Role EXECUTOR_TASK = new Role("EXECUTOR_TASK");
+    /** A turn of a timed-wait loop: its k counts the loop's wakes. */
+    public static final Role WAKE = new Role("WAKE");
 
     private final String name;
 
@@ -31,6 +33,7 @@ public final class Role extends Value {
         if (name.isEmpty() || name.equals(UNKNOWN.name)) return UNKNOWN;
         if (name.equals(CLIENT.name)) return CLIENT;
         if (name.equals(EXECUTOR_TASK.name)) return EXECUTOR_TASK;
+        if (name.equals(WAKE.name)) return WAKE;
         return new Role(name);
     }
 

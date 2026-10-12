@@ -6173,6 +6173,7 @@ explore_manifest.json 2>/dev/null) \
       | bound($bound)];
     [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
+    | rows("loop-body-bound") as $loops
     | ($rounds | last | .ceilingCut // 0) as $ceiling
     | (($rounds | last | .truncated // 0) - $ceiling) as $truncated
     | ($index[0].closureCut // null) as $cut
@@ -6190,6 +6191,12 @@ explore_manifest.json 2>/dev/null) \
             detail: ("\($depth | length) task round(s) cut from no path"
               + " in a world deeper than"
               + " \($depth[0].subject | sub(".* "; ""))")}),
+        (select(($loops | length) > 0)
+         | {by: "loop_body_bound",
+            detail: ("\($loops | length) path(s) at the anchor a loop"
+              + " bound cut before they reached it, before or after they"
+              + " left the way to the throw (bodies: " + ($loops | map(.subject
+              | sub(".*="; "")) | unique | join(", ")) + ")")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"

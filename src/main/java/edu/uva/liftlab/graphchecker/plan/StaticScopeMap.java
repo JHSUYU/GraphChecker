@@ -169,6 +169,17 @@ public final class StaticScopeMap {
         default List<Guard> choosingCallsInto(String method) {
             return Collections.<Guard>emptyList();
         }
+
+        /** Of {@code siteId}'s own guards and the branches {@link
+         *  #targetChain} names for it, those each of whose arms reaches the
+         *  site (or a call into its method: {@link #choosingCallsInto}
+         *  among them) within one iteration, so neither arm leaves the way
+         *  to it: an {@code assert}'s {@code $assertionsDisabled} test, the
+         *  first test of {@code if (a || b) throw}.  None with no CFG. */
+        default Set<String> passable(String siteId,
+                                     Predicate<String> entry) {
+            return Collections.<String>emptySet();
+        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -599,6 +610,22 @@ public final class StaticScopeMap {
                 concreteConfigurationReads, forcing, found);
     }
 
+    /** The TARGET_SITE a task's target branch -- an anchor's target row's
+     *  site -- guards: one whose guards, else whose chain, name it; null for
+     *  none.  Its own forcing table is the occurrence's ({@link #forcing}),
+     *  never another throw's. */
+    public Site ownTarget(String targetBranchSite) {
+        for (Site target : targetSites()) {
+            if (target.guards.contains(targetBranchSite)) return target;
+        }
+        for (Site target : targetSites()) {
+            for (Guard guard : target.chain) {
+                if (guard.siteId().equals(targetBranchSite)) return target;
+            }
+        }
+        return null;
+    }
+
     /** The forcing table of the TARGET_SITE at {@code targetSiteId}
      *  ({@link ForcingTable}), a copy; empty where it has none. */
     public JsonArray forcing(String targetSiteId) {
@@ -610,7 +637,9 @@ public final class StaticScopeMap {
     public Set<String> forcedSites() {
         Set<String> sites = new LinkedHashSet<String>();
         for (JsonArray table : forcing.values()) {
-            sites.addAll(ForcingTable.read(table).keySet());
+            for (ForcingTable.Arm arm : ForcingTable.read(table).values()) {
+                if (!arm.passable) sites.add(arm.siteId);
+            }
         }
         return sites;
     }
@@ -1004,7 +1033,9 @@ public final class StaticScopeMap {
             }
             JsonObject row = row(guarded);
             if (TARGET_SITE.equals(site.role)) {
-                JsonArray force = ForcingTable.of(guarded);
+                JsonArray force = ForcingTable.of(guarded, guards == null
+                        ? Collections.<String>emptySet()
+                        : guards.passable(site.siteId, entry));
                 if (force.size() > 0) row.add(FORCE, force);
             }
             rows.add(row);

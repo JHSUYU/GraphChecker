@@ -262,14 +262,18 @@ public final class RowRuntime {
     public static void decision(OccurrenceAddress occurrence, long seq,
                                 String siteId, int ordinal, boolean outcome,
                                 JsonObject condition) {
-        decision(occurrence, seq, siteId, ordinal, outcome, condition, null);
+        decision(occurrence, seq, siteId, ordinal, outcome, condition, null,
+                "");
     }
 
     /** One decision; {@code concreteOutcome} non-null: a FORCE run forced
-     *  it ({@code DecisionRow#forced}), its operands deciding that arm. */
+     *  it ({@code DecisionRow#forced}), its operands deciding that arm;
+     *  {@code via}, the frame that called its method where the forcing
+     *  table names the site with one ({@code DecisionRow#via}), or "". */
     static void decision(OccurrenceAddress occurrence, long seq,
                          String siteId, int ordinal, boolean outcome,
-                         JsonObject condition, Boolean concreteOutcome) {
+                         JsonObject condition, Boolean concreteOutcome,
+                         String via) {
         if (occurrence == null) return;
         SessionPublisher session = publisher;
         if (session != null) {
@@ -277,7 +281,7 @@ public final class RowRuntime {
             // Polarity-free: the composer conjoins (outcome ? term : not term).
             DecisionRow row = DecisionRow.of(sessionId(), sequence(seq),
                     occurrence, trimmed(siteId), ordinal, outcome, ref,
-                    clockReadings(condition));
+                    clockReadings(condition)).via(via);
             session.decision(concreteOutcome == null ? row
                     : row.forced(concreteOutcome.booleanValue()));
         }
