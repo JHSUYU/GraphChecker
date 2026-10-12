@@ -1385,8 +1385,11 @@ a concrete one forced against its arm `false`), and the target's own phi (`RowPu
 marked `forced` and observed no fatal (`TargetRow#forced`), so it is never a witness. The run ends once that
 row is published (`AT_FORCED_TARGET`, §5) and its verdict is ADMITTED, `FORCED_TARGET` and how the occurrence
 then ended (the target's throw, or a handler that caught it). A `passable` test of the target taken on its
-healthy arm decides nothing: its healthy arm runs on to the target's next test, which is forced
-(`ForcedArms#reachedTarget`; solr-18406 F2V3, `getAndSaveCommitPoint#u11`, the first test of `a || b`). An
+healthy arm decides nothing: its healthy arm runs on to the target's next test, which is forced, and its reach
+is not the target row's, which stands at the forced test and states the forced path condition up to it
+(`ForcedArms#reachedTarget`; solr-18406 F2V3, `getAndSaveCommitPoint#u11`, the first test of `a || b`; SC1: a
+row left at u11, before the forced world opened at u12, stated the plain disjunction, and that forced path made
+every witness composition satisfiable at the recorded roots). An
 occurrence that closes first, or takes any other test of its target on its healthy arm (a branch no marker of
 its frame let the VM force), decides the run there
 (`FORCE_DIVERGED`, naming the first exception the forced world threw and its frame, or the loop

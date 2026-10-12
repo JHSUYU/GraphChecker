@@ -221,8 +221,9 @@ public class ForcedArmsTest {
     /**
      * {@code if (a || b) throw}: the first test is passable (its healthy arm
      * runs on to the second), left to its operands; on its healthy arm it
-     * decides nothing, and the run reaches its target at the second, forced
-     * (solr-18406 F2V3: getAndSaveCommitPoint's u11).  A test that is not
+     * decides nothing -- its reach is not the target row's -- and the run
+     * reaches its target at the second, forced (solr-18406 F2V3:
+     * getAndSaveCommitPoint's u11).  A test that is not
      * passable diverges on its healthy arm.
      */
     @Test
@@ -242,7 +243,9 @@ public class ForcedArmsTest {
                     + "','arm':true" + ((Boolean) row[0] ? ",'passable':true"
                     : "") + "},");
             ForcedArms.arm(active);
-            ForcedArms.reachedTarget(active, first, 1, false);
+            assertEquals(row[0] + ": the first test's reach is the row's"
+                    + " only where it decided", !(Boolean) row[0],
+                    ForcedArms.reachedTarget(active, first, 1, false));
             ForcedArms.reachedTarget(active, TARGET, 1, true);
             String detail = FocusedReplay.results("s").get(0).detail();
             assertTrue(row[0] + ": " + detail, detail.startsWith(

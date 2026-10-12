@@ -198,18 +198,24 @@ final class ForcedArms {
      * other test on its healthy arm (a branch the VM could not force: no
      * marker owned it) makes the run FORCE_DIVERGED.  Once decided, nothing
      * the activation decides is forced.
+     *
+     * @return whether this test's reach is the target row's: false for the
+     *         passable test that decided nothing, so the row stands at the
+     *         forced test and states the forced path condition up to it
+     *         (solr-18406 SC1: a row left at u11, before the forced world
+     *         opened at u12, stated the plain disjunction as its phi)
      */
-    static void reachedTarget(ActiveRegion active, String site, int ordinal,
-                              boolean outcome) {
+    static boolean reachedTarget(ActiveRegion active, String site,
+                                 int ordinal, boolean outcome) {
         synchronized (LOCK) {
-            if (active.token != armed) return;
+            if (active.token != armed) return true;
             Boolean fatal = site.equals(active.activation.targetBranchSite)
                     ? Boolean.valueOf(
                     active.activation.targetBranchRequiredOutcome)
                     : active.activation.targetGuards.get(site);
             boolean healthy = fatal == null || fatal.booleanValue() != outcome;
             ForcingTable.Arm arm = active.activation.forcedArms.get(site);
-            if (healthy && arm != null && arm.passable) return;
+            if (healthy && arm != null && arm.passable) return false;
             if (!healthy) {
                 target = site + "#" + ordinal;
             } else {
@@ -219,6 +225,7 @@ final class ForcedArms {
             }
             disarmed = armed;
             armed = 0L;
+            return true;
         }
     }
 
