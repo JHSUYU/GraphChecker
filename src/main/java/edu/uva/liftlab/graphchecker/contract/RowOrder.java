@@ -37,6 +37,17 @@ public final class RowOrder {
         return tie > 0 && (otherTie == 0 || tie < otherTie);
     }
 
+    /**
+     * Whether the row at ({@code seq}, {@code tie}) stands before VM event
+     * {@code event} (a decision's, a cutoff's): an earlier seq, or an
+     * engine row stated at seq {@code event}, after event - 1.  A row with
+     * no clock (seq 0) stands before every event, as {@code seq < event}
+     * reads it.
+     */
+    public static boolean beforeEvent(long seq, int tie, long event) {
+        return seq < event || seq == event && tie > 0;
+    }
+
     /** Whether this read stands before this write. */
     public static boolean before(ReadRow read, WriteRow write) {
         return before(read.seq(), read.tie(), write.seq(), write.tie());

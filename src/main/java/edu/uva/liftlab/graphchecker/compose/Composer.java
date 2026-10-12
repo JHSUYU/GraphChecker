@@ -49,6 +49,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -215,7 +216,7 @@ public final class Composer {
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
         private final Map<String, List<String>> heldArrivals;
-        private final Map<String, Endpoint> unattestedArrivals;
+        private final Map<String, Endpoint> openArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         /** refuted_claim__k -> the model it excludes. */
         private final Map<String, Refutations.Refuted> refutations;
@@ -286,9 +287,9 @@ public final class Composer {
                     Collections.unmodifiableMap(composed.observedArrivals);
             this.heldArrivals =
                     Collections.unmodifiableMap(composed.heldArrivals);
-            this.unattestedArrivals = Collections.unmodifiableMap(
+            this.openArrivals = Collections.unmodifiableMap(
                     new LinkedHashMap<String, Endpoint>(
-                            composed.unattestedArrivals));
+                            composed.openArrivals));
             this.armChoices = composed.composedFamilies.armChoices();
             this.refutations = Collections.unmodifiableMap(
                     new LinkedHashMap<String, Refutations.Refuted>(
@@ -590,7 +591,7 @@ public final class Composer {
                            List<JsonObject> open) {
             for (String symbol : cone().unbound(path.selector(),
                     path.path().pathId, arms, concrete)) {
-                Endpoint producer = unattestedArrivals.get(symbol);
+                Endpoint producer = openArrivals.get(symbol);
                 JsonObject row = new JsonObject();
                 row.addProperty("symbol", symbol);
                 row.addProperty("pathId", path.path().pathId);
@@ -859,23 +860,42 @@ public final class Composer {
         public Map<String, ReadRow> takenPairings(Disjunct selected) {
             Map<String, ReadRow> taken = new LinkedHashMap<String, ReadRow>();
             String session = selected.path().sessionId;
-            Map<String, String> pairings = corpus.world(session).pairings;
-            SessionReader rows = corpus.session(session);
-            if (pairings.isEmpty() || rows == null) return taken;
-            for (ReadRow read : rows.reads()) {
-                String reader = Confirmation.id(read.endpoint());
-                String writer = pairings.get(reader);
-                if (writer == null || taken.containsKey(reader)) continue;
-                WriteRow write = corpus.writeOf(session, SmtLowering
-                        .locationKey(read.location()), read.observedVersion());
-                if (write != null
-                        && writer.equals(Confirmation.writer(write))
-                        && anotherWriter(corpus, session,
-                        Collections.singletonList(read))) {
-                    taken.put(reader, read);
+            for (Map.Entry<String, ReadRow> realized
+                    : realizedPairings(selected).entrySet()) {
+                if (anotherWriter(corpus, session, Collections
+                        .singletonList(realized.getValue()))) {
+                    taken.put(realized.getKey(), realized.getValue());
                 }
             }
             return taken;
+        }
+
+        /**
+         * The pairings {@code selected}'s session's world planted that its
+         * replay realized: the reader's read observed a version the planted
+         * writer wrote ({@code Confirmation#writer}), whether or not another
+         * writer could have replaced it, inherited ones too -- what the
+         * session ran ({@link #ranWorld}).
+         */
+        public Map<String, ReadRow> realizedPairings(Disjunct selected) {
+            Map<String, ReadRow> realized =
+                    new LinkedHashMap<String, ReadRow>();
+            String session = selected.path().sessionId;
+            Map<String, String> pairings = corpus.world(session).pairings;
+            SessionReader rows = corpus.session(session);
+            if (pairings.isEmpty() || rows == null) return realized;
+            for (ReadRow read : rows.reads()) {
+                String reader = Confirmation.id(read.endpoint());
+                String writer = pairings.get(reader);
+                if (writer == null || realized.containsKey(reader)) continue;
+                WriteRow write = corpus.writeOf(session, SmtLowering
+                        .locationKey(read.location()), read.observedVersion());
+                if (write != null
+                        && writer.equals(Confirmation.writer(write))) {
+                    realized.put(reader, read);
+                }
+            }
+            return realized;
         }
 
         /**
@@ -953,36 +973,69 @@ public final class Composer {
                     .ranWorldBy(corpus.world(session), rows, readers);
         }
 
+        /** How a pairing's read lies on a path's fatal path ({@link
+         *  #onFatalPath}). */
+        public enum FatalPath {
+            /** Its symbol is in the path's cone. */
+            CONE,
+            /** A read no term names, made by the anchor's occurrence. */
+            ANCHOR,
+            /** A read no term names, whose occurrence wrote a version a
+             *  read in the cone observed. */
+            WROTE
+        }
+
         /**
-         * Whether a pairing's read lies on {@code selected}'s fatal path (a
-         * world pairing's claim, {@code ClaimPolicy}): its symbol is in the
-         * path's cone ({@link #cone}); or -- a read no term names: a key an
-         * older document lacks decides nothing the VM states -- its
-         * occurrence is the anchor's, or wrote a version a read in the cone
-         * observed (that read's symbol in the cone: a store version the
-         * stale view's work wrote back, a field the anchor reads).
+         * How a pairing's read lies on {@code selected}'s fatal path (a world
+         * pairing's claim, {@code ClaimPolicy}): its symbol in the path's
+         * cone ({@link #cone}); or -- a read no term names: a key an older
+         * document lacks decides nothing the VM states -- its occurrence is
+         * the anchor's, or wrote a version a read in the cone observed (a
+         * store version the stale view's work wrote back, a field the anchor
+         * reads).  Null where none holds.
          */
-        public boolean onFatalPath(Disjunct selected, ReadRow read) {
+        public FatalPath onFatalPath(Disjunct selected, ReadRow read) {
             Set<String> cone = cone(selected.selector());
-            if (named(cone, read.symbol())) return true;
+            if (named(cone, read.symbol())) return FatalPath.CONE;
             OccurrenceAddress reader = read.endpoint().occurrence();
-            if (reader.equals(selected.path().occurrence)) return true;
-            SessionReader rows = corpus.session(selected.path().sessionId);
-            if (rows == null) return false;
+            if (reader.equals(selected.path().occurrence)) {
+                return FatalPath.ANCHOR;
+            }
+            String session = selected.path().sessionId;
+            SessionReader rows = corpus.session(session);
+            if (rows == null) return null;
+            Map<String, List<String>> observed = readsByVersion(session);
             for (WriteRow write : rows.writes()) {
                 if (write.initial()
                         || !reader.equals(write.endpoint().occurrence())) {
                     continue;
                 }
-                for (ReadRow observed : rows.reads()) {
-                    if (observed.location().equals(write.location())
-                            && observed.observedVersion() == write.version()
-                            && named(cone, observed.symbol())) {
-                        return true;
-                    }
+                for (String symbol : observed.getOrDefault(
+                        write.location() + "@" + write.version(),
+                        Collections.<String>emptyList())) {
+                    if (named(cone, symbol)) return FatalPath.WROTE;
                 }
             }
-            return false;
+            return null;
+        }
+
+        /** Session -> location@version -> the symbols of its reads of it. */
+        private final Map<String, Map<String, List<String>>> readsByVersion =
+                new HashMap<String, Map<String, List<String>>>();
+
+        private synchronized Map<String, List<String>> readsByVersion(
+                String session) {
+            return readsByVersion.computeIfAbsent(session, id -> {
+                Map<String, List<String>> index =
+                        new HashMap<String, List<String>>();
+                for (ReadRow read : corpus.session(id).reads()) {
+                    index.computeIfAbsent(read.location() + "@"
+                                    + read.observedVersion(),
+                            key -> new ArrayList<String>())
+                            .add(read.symbol());
+                }
+                return index;
+            });
         }
 
         /** Whether the cone names {@code symbol}, as written or quoted. */
@@ -1147,6 +1200,22 @@ public final class Composer {
          * asserted under its selector that name one of them.
          */
         public Set<String> cone(String selector) {
+            synchronized (cones) {
+                Set<String> known = cones.get(selector);
+                if (known != null) return known;
+            }
+            Set<String> cone = coneOf(selector);
+            synchronized (cones) {
+                cones.put(selector, cone);
+            }
+            return cone;
+        }
+
+        /** Selector -> its cone ({@link #cone}): the body never changes. */
+        private final Map<String, Set<String>> cones =
+                new HashMap<String, Set<String>>();
+
+        private Set<String> coneOf(String selector) {
             Set<String> cone = new LinkedHashSet<String>();
             List<Set<String>> families = new ArrayList<Set<String>>();
             int start = 0;
@@ -1230,9 +1299,11 @@ public final class Composer {
     /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
-    /** Each arrival no producer the corpus attests delivered, by symbol:
-     *  the producer its attach names, or null (Composer#arrival). */
-    private final Map<String, Endpoint> unattestedArrivals =
+    /** Each arrival no producer's export binds -- none the corpus attests,
+     *  or an attested one whose exports do not lower -- by the symbol as the
+     *  body spells it: the producer its attach names, or null
+     *  (Composer#arrival, Composition#openChain). */
+    private final Map<String, Endpoint> openArrivals =
             new LinkedHashMap<String, Endpoint>();
     /** This epoch's skeleton: which interactions have a slot (PIPELINE
      *  §7.1). */
@@ -2134,6 +2205,10 @@ public final class Composer {
             return;
         }
         Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
+        // The one GROW could plan, where the attach names one
+        // (Composition#openChain), under the body's spelling of the symbol.
+        openArrivals.put(SmtNames.legalSymbols(attach.symbol()),
+                attach.producer());
         if (!attested.isEmpty()) {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "attested producer "
@@ -2141,12 +2216,10 @@ public final class Composer {
                     + attested.size() + " export(s) did not lower");
             return;
         }
-        // No producer the corpus attests delivered it: the one GROW could
-        // plan, where the attach names one (Composition#openChain).
-        unattestedArrivals.put(attach.symbol(), attach.producer());
+        // No producer the corpus attests delivered it.
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
-        Term value = lowering.statedValue(received, attach.javaType());
+        Term value = arrived(received, attach.javaType());
         if (value == null) {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "no producer is attested "
@@ -2188,6 +2261,23 @@ public final class Composer {
             return true;
         }
         return false;
+    }
+
+    /**
+     * What an attach row states it received, as a term: a String's arrival
+     * is its text (the mint states the value itself, {@code
+     * HandoffMint#publishAttachRow}, {@code StoreContent#attach}), not a
+     * JSON literal -- read as one, every String arrival held nowhere and
+     * went FREE (solr-18413 Z2R: a state.json leaf "active"); "" says
+     * nothing (an empty String or none).  Any other as the row spells it
+     * ({@link SmtLowering#statedValue}).
+     */
+    private Term arrived(String received, String javaType) {
+        if (JavaSmtSorts.sortOfJava(javaType) == Sort.STRING
+                && !received.isEmpty() && !received.startsWith("\"")) {
+            return Term.nonNullString(VmExpressionIr.quote(received), "true");
+        }
+        return lowering.statedValue(received, javaType);
     }
 
     /**

@@ -975,8 +975,7 @@ decodes run in work no activation hook holds -- watch deliveries, request handle
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
 before the system re-points the view, and the schedule cut stops before the first of them before the
 read (`RowOrder`) (`MessageDoors#decoded`, `Confirmation#decoding`; a decode on a thread no registered
-node owns re-points no view, and one in the window on a thread no occurrence runs is named
-`LINEAGE_LOST`, its version unrowed; an on-demand
+node owns re-points no view; a view's writer is its version, its INITIAL's too; an on-demand
 watch's refresh waits at its start, before the adapter's lock, `MessageDoors#refreshing`, as a decode
 of the newest version a write filed in the location's current life and one more per thread with a write
 in flight there that has not filed its version (a write files and stops being in flight in one step,
@@ -2158,10 +2157,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      one: solr-bugs-tra-start-overwrite Z2K, whose request arms' producers ran concretely), and the
      pairing is named in `repairedArms`, by its arm, else `PAIRING:<reader>=<writer>` where no family
      states the read. It stands only where something holds the path, each taken pairing lies on the
-     fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, or -- a read no term
-     names -- its occurrence is the anchor's or wrote a version a read in the cone observed), and the
-     session is that world's run (`Composition#ranWorld`, `Moved#ranWorldBy`: its roots and clocks the
-     witness's, its pairings exactly those taken); else a DIAGNOSTIC names why and the next path that
+     fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, `CONE`, or -- a read
+     no term names -- its occurrence is the anchor's, `ANCHOR`, or wrote a version a read in the cone
+     observed, `WROTE`; the clause of each pairing is named in the claim's gaps, and an `ANCHOR` or
+     `WROTE` pairing stands only in a world that moved no root or clock, since nothing else shows the
+     pairing decides), the path's ask is decided (an undecided one is named so), and the session is
+     that world's run (`Composition#ranWorld`, `Moved#ranWorldBy`: its roots and clocks the witness's,
+     its pairings exactly those its replay realized, `Composition#realizedPairings`, inherited ones and
+     ones no other writer could replace included); else a DIAGNOSTIC names why and the next path that
      observed the fatal and took a pairing is tried, the recorded valuation's first;
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
      root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer

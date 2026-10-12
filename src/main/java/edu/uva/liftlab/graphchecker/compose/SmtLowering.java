@@ -4912,13 +4912,21 @@ public final class SmtLowering {
             return codecGap("toString", "NON_INTEGRAL_TERM", origin,
                     Sort.STRING);
         }
-        assertJavaIntegralDomain(value.text, javaType);
+        // Its Java range, within its own definedness: stated alone it held
+        // on every path, and over a charAt it held 0 <= i < length there too
+        // (z3's str.to_code of "" is -1; review re-check of f6f35d191).
+        JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                JavaPrimitiveSmtSemantics.domainOfJavaType(javaType);
+        String defined = domain == null ? value.precondition
+                : and(Arrays.asList(value.precondition,
+                VmTermLowering.integralRange(domain.lower, value.text,
+                        domain.upper)));
         if ("C".equals(javaType)) {
             return Term.nonNullString("(str.from_code " + value.text + ")",
-                    value.precondition);
+                    defined);
         }
         return Term.nonNullString("(java_int_to_string " + value.text + ")",
-                value.precondition);
+                defined);
     }
 
     private static final Set<String> DECIMAL_OR_CHAR = new LinkedHashSet<String>(

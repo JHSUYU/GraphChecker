@@ -160,9 +160,19 @@ final class StoreContent {
                                    Leaf leaf) {
         String port = port(transport, location, leaf.pointer);
         JsonObject answer;
+        JsonElement expression;
         try {
-            answer = JsonParser.parseString(engine().exportLeaf(leaf.parent,
-                    leaf.slotKind(), leaf.slot)).getAsJsonObject();
+            String serialized = engine().exportLeaf(leaf.parent,
+                    leaf.slotKind(), leaf.slot);
+            answer = JsonParser.parseString(serialized).getAsJsonObject();
+            // Through the VM's expression store, as every engine read of an
+            // expression is (ConcolicRegionRuntime#engineExpression): a node
+            // the VM states by reference is its definition.  Taken raw, a
+            // leaf's expression was a bare VmExpressionReference no session
+            // table resolves, so no export of a store's content lowered
+            // (solr-18413 Z2R: 4,152 refusals, every state.json leaf of the
+            // witness's chain FREE or HELD).
+            expression = ConcolicRegionRuntime.engineExpression(serialized);
         } catch (Throwable refused) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, port,
                     "the leaf's expression could not be read: "
@@ -170,7 +180,6 @@ final class StoreContent {
             return null;
         }
         String status = optionalString(answer, "status");
-        JsonElement expression = answer.get("expression");
         if (!"OK".equals(status) && !"CONSTANT".equals(status)
                 || expression == null || !expression.isJsonObject()) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, port,

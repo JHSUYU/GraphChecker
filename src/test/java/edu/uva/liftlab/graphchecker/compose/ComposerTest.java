@@ -846,12 +846,21 @@ public class ComposerTest {
      */
     @Test
     public void aClaimIsJudgedOnThePathsItRestsOn() throws Exception {
-        Path iteration = folder.newFolder("judged-on-its-paths").toPath();
+        // A symbol the body spells bare, and one it must bar-quote: the open
+        // link names its producer either way (solr-18413 Z2R: 40 String
+        // leaves, |M_L'String'_...|, named no producer).
+        for (String vh : new String[] {"M_Z_field_HOFF.key",
+                "M_Z_field_HOFF.k'ey"}) {
+            judgedOnItsPaths(vh);
+        }
+    }
+
+    private void judgedOnItsPaths(String vh) throws Exception {
+        Path iteration = folder.newFolder("judged-" + vh.length()).toPath();
         Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
                 at("export#1", 0), 0);
         Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
                 at("attach#1", 0), 0);
-        String vh = "M_Z_field_HOFF.key";
         session(iteration, "s0", false, "false", producer, consumer, vh,
                 "false", null, true, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer, vh,
@@ -872,8 +881,8 @@ public class ComposerTest {
                 sat.has("openChain"));
         JsonArray off = sat.getAsJsonArray("unboundOffWitness");
         assertEquals("s2's open link is stated: " + sat, 1, off.size());
-        assertEquals(vh, off.get(0).getAsJsonObject().get("symbol")
-                .getAsString());
+        assertEquals(SmtNames.legalSymbols(vh), off.get(0).getAsJsonObject()
+                .get("symbol").getAsString());
 
         // The witness's model refuted: the formula is unsat, and rests on
         // s2's path too, whose fatal condition names the held arrival.
@@ -903,7 +912,8 @@ public class ComposerTest {
                 unsat.get("claim").getAsString());
         JsonObject link = unsat.getAsJsonArray("openChain").get(0)
                 .getAsJsonObject();
-        assertEquals(vh, link.get("symbol").getAsString());
+        assertEquals(SmtNames.legalSymbols(vh),
+                link.get("symbol").getAsString());
         assertEquals("the producer GROW would plan", PRODUCER.render(),
                 link.get("producer").getAsString());
     }
@@ -5214,6 +5224,17 @@ public class ComposerTest {
                     + decision.claim().gaps() + "\n" + composition.body();
             assertEquals(detail, row[4], decision.claim().kind());
             if (!planted || !onPath) continue;
+            if (decision.claim().kind() == ClaimKind.STATE_PAIRING_FLIPPED
+                    && !named) {
+                // The clause that puts the pairing on the fatal path is in
+                // the claim: the turn wrote what the anchor reads.
+                boolean stated = false;
+                for (GapRow gap : decision.claim().gaps()) {
+                    stated |= gap.detail().startsWith("world-pairing claim")
+                            && gap.detail().contains("WROTE");
+                }
+                assertTrue(detail, stated);
+            }
             assertTrue(detail, decision.claim().polarityDecides());
             ClaimPolicy.Outcome witness = decision.outcomes().get(
                     decision.claim().valuationOrdinal());
@@ -6500,16 +6521,26 @@ public class ComposerTest {
         declared.put("n", VmTermLowering.Sort.INT);
         SmtLowering lowering = new SmtLowering(declared);
         lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
-        VmTermLowering.Term code = lowering.dispatch(vmString("charAt",
+        JsonObject charAt = vmString("charAt",
                 vmLeaf("SymbolExpression", "s", "java/lang/String"),
-                vmLeaf("SymbolExpression", "n", "I")), null, "test");
+                vmLeaf("SymbolExpression", "n", "I"));
+        VmTermLowering.Term code = lowering.dispatch(charAt, null, "test");
+        // String.valueOf of that char: its range within its definedness.
+        charAt.addProperty("_java_type", "C");
+        VmTermLowering.Term rendered = lowering.dispatch(vmString("valueOf",
+                charAt), null, "test");
         List<String> texts = new ArrayList<String>(lowering.end());
         texts.add(code.text);
         texts.add(code.precondition);
+        texts.add(rendered.text);
+        texts.add(rendered.precondition);
         String body = lowering.body(texts);
         assertTrue(code.precondition, code.precondition.contains(
                 "(< n (str.len s))"));
-        assertFalse(body, body.contains("65535"));
+        assertTrue(rendered.precondition,
+                rendered.precondition.contains("65535"));
+        assertFalse(body, body.replace(rendered.precondition, "")
+                .contains("65535"));
         int option = body.indexOf(VmTermLowering.JAVA_CHARS);
         assertTrue(body, option >= 0 && option < body.indexOf("(declare-"));
     }

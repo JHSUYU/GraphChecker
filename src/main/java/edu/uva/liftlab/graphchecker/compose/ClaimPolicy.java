@@ -785,31 +785,58 @@ public final class ClaimPolicy {
                         + " writer arm, no plant");
             }
             Map<String, ReadRow> taken = composition.takenPairings(selected);
+            Map<String, Composer.Composition.FatalPath> clauses =
+                    new LinkedHashMap<String, Composer.Composition.FatalPath>();
             for (Map.Entry<String, ReadRow> pairing : taken.entrySet()) {
-                if (!composition.onFatalPath(selected, pairing.getValue())) {
+                Composer.Composition.FatalPath clause =
+                        composition.onFatalPath(selected, pairing.getValue());
+                if (clause == null) {
                     return unclaimed(selected, "the read " + pairing.getKey()
                             + " its world re-paired is off the path's fatal"
                             + " cone: the cone names neither it, nor a store"
                             + " version its occurrence wrote, and it is not"
                             + " the anchor's");
                 }
+                clauses.put(pairing.getKey(), clause);
             }
             held.addAll(composition.worldClocks(selected));
             Outcome witness = outcomeOn(composition, asks,
                     composition.worldValuation(0, selected), held, false,
                     selector, 0L);
+            if (!witness.answer().decided()) {
+                return unclaimed(selected, "its own run under its world's "
+                        + "plants, roots and clocks is undecided (" + witness
+                        .answer().status() + "): no claim rests on it");
+            }
             if (!witness.witness()) {
                 return unclaimed(selected, "its own run under its world's "
                         + "plants, roots and clocks reaches no fatal arm "
                         + "the formula states");
             }
-            if (!composition.ranWorld(selected,
-                    movedRoots(composition, witness), taken.keySet())) {
+            Map<String, String> moved = movedRoots(composition, witness);
+            Set<Composer.Composition.FatalPath> unnamed =
+                    new LinkedHashSet<Composer.Composition.FatalPath>(
+                            clauses.values());
+            unnamed.remove(Composer.Composition.FatalPath.CONE);
+            if (!moved.isEmpty() && !unnamed.isEmpty()) {
+                return unclaimed(selected, "a pairing no term names lies on"
+                        + " the fatal path only by its occurrence " + clauses
+                        + ", and the world moved " + moved.keySet() + " too:"
+                        + " nothing shows the pairing is what decides");
+            }
+            if (!composition.ranWorld(selected, moved, composition
+                    .realizedPairings(selected).keySet())) {
                 return unclaimed(selected, "the session is not the run of "
                         + "the world the witness names: it planted another "
-                        + "root, clock or pairing, or minted a moved root "
-                        + "elsewhere");
+                        + "root, clock or pairing it did not realize, or "
+                        + "minted a moved root elsewhere");
             }
+            // Which clause puts each pairing on the fatal path, in the
+            // claim, so a reading sees it.
+            gaps.add(GapRow.of(selected.path().sessionId,
+                    GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    selected.path().pathId, "world-pairing claim: each "
+                            + "pairing on the fatal path by " + clauses));
             return witness;
         }
 

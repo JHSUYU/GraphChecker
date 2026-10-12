@@ -271,15 +271,17 @@ public final class Confirmation {
     }
 
     /**
-     * The writer a STATE row and a world's pairing name: its endpoint as
-     * {@link #id} names it, {@link #INITIAL} for no occurrence's, or a
-     * view's version ({@link #viewWriter}).  The one spelling CONFIRM,
-     * EXPLORE's plants and COMPOSE's planted families share.
+     * The writer a STATE row and a world's pairing name: a view's version
+     * ({@link #viewWriter}) whichever side of the window its decode stood
+     * on (a view's INITIAL too: which one a version gets is the window's
+     * timing), else its endpoint as {@link #id} names it, {@link #INITIAL}
+     * for no occurrence's.  The one spelling CONFIRM, EXPLORE's plants and
+     * COMPOSE's planted families share.
      */
     public static String writer(WriteRow write) {
-        return write.initial() ? INITIAL
-                : write.location().kind() == LocationKind.VIEW
-                ? viewWriter(write.version()) : id(write.endpoint());
+        return write.location().kind() == LocationKind.VIEW
+                ? viewWriter(write.version())
+                : write.initial() ? INITIAL : id(write.endpoint());
     }
 
     /** One write row's version, by the writer {@link #writer} spells: a
@@ -289,9 +291,9 @@ public final class Confirmation {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
             ranOn();
-            WROTE.put(key(location, version), initial ? INITIAL
-                    : location.kind() == LocationKind.VIEW
-                    ? viewWriter(version) : id(writer));
+            WROTE.put(key(location, version),
+                    location.kind() == LocationKind.VIEW
+                    ? viewWriter(version) : initial ? INITIAL : id(writer));
         }
     }
 

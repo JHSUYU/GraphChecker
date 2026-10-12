@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayList;
@@ -632,13 +633,18 @@ public final class MessageDoors {
         // SEND and the producer it mints take the concolic VM milliseconds.
         long store = inFlight(transport, location(key));
         try {
+            // Its place on the session's order before anything files it: a
+            // reader released by the filing (#filed) stands after the write
+            // (review re-check M8: positioned after the filing, a decode of
+            // the version stood before its write, TOPOLOGY_DIVERGENCE).
+            RowOrder.Position position = Identity.enginePosition();
             // The content first: a reader that finds the version filed
             // finds its leaves exported ({@link #filed}).
             StoreContent.stored(transport, key, data);
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
-            written(transport, key, owner);
+            written(transport, key, owner, position);
         } catch (RuntimeException fault) {
             observerFault("stored " + key, fault);
         } finally {
@@ -653,7 +659,8 @@ public final class MessageDoors {
      * replay, a STORE_WRITE trace row in the recording, which PLAN crosses
      * from a demanded read of it ({@code RecordedStore}).
      */
-    private static void written(String transport, String key, Object owner) {
+    private static void written(String transport, String key, Object owner,
+                                RowOrder.Position position) {
         long version = version(key);
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
@@ -667,7 +674,7 @@ public final class MessageDoors {
         // After every VM event so far, as a concrete target stands: a closure
         // cuts a writer strictly before its write's seq, and the writer's
         // own last event (its door's fault marker) is before the write.
-        RowRuntime.storeWrite(at, Identity.enginePosition(),
+        RowRuntime.storeWrite(at, position,
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
@@ -774,16 +781,9 @@ public final class MessageDoors {
             RowRuntime.viewBeforeWindow(view, version);
             return;
         }
+        // The running occurrence, else the node's role occurrence: never
+        // none on a registered node's thread.
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
-        if (at == null) {
-            RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                    view + "@" + version, "a decode re-pointed this view in"
-                            + " the window on a thread no occurrence runs"
-                            + " on: no write row states the version, so its"
-                            + " reads are unattributed (UNATTRIBUTED_STORE)"
-                            + " and no read is re-paired across it");
-            return;
-        }
         // After every VM event so far, as a store's write stands.
         RowRuntime.viewWrite(at, Identity.enginePosition(),
                 Endpoint.messageSite(trimmed(transport), "VIEW",

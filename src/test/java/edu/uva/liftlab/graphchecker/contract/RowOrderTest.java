@@ -26,5 +26,18 @@ public class RowOrderTest {
                     RowOrder.before((Long) row[0], (Integer) row[1],
                             (Long) row[2], (Integer) row[3]));
         }
+        Object[][] cutoffs = {
+                // seq, tie, the VM event, before it?
+                {41L, 0, 42L, true},
+                {42L, 1, 42L, true},   // the guard's read, then its branch
+                {42L, 0, 42L, false},
+                {43L, 1, 42L, false},
+                {0L, 0, 42L, true},    // no clock: as seq < event
+        };
+        for (Object[] row : cutoffs) {
+            assertEquals(java.util.Arrays.toString(row), row[3],
+                    RowOrder.beforeEvent((Long) row[0], (Integer) row[1],
+                            (Long) row[2]));
+        }
     }
 }

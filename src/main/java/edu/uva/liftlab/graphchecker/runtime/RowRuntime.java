@@ -626,12 +626,13 @@ public final class RowRuntime {
 
     /**
      * A node's view re-pointed before the window opened (a decode while no
-     * row is stated, {@code MessageDoors#decoded}): the newest version, per
-     * view, which {@link #viewInitial} states as the view's INITIAL.
+     * row is stated, {@code MessageDoors#decoded}): the last version, per
+     * view -- what the node holds when the window opens --, which {@link
+     * #viewInitial} states as the view's INITIAL.
      */
     static void viewBeforeWindow(LocationId view, long version) {
         if (view == null || version < 0L) return;
-        PRE_WINDOW.merge(Confirmation.viewKey(view), version, Math::max);
+        PRE_WINDOW.put(Confirmation.viewKey(view), version);
     }
 
     /**
@@ -667,7 +668,7 @@ public final class RowRuntime {
         Confirmation.wrote(view, version, at, true);
     }
 
-    /** View key -> the newest version a decode re-pointed it to before the
+    /** View key -> the last version a decode re-pointed it to before the
      *  window ({@link #viewBeforeWindow}), until {@link #viewInitial}. */
     private static final Map<String, Long> PRE_WINDOW =
             new ConcurrentHashMap<String, Long>();

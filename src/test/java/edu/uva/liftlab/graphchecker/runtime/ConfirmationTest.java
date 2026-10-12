@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -72,6 +73,33 @@ public class ConfirmationTest {
     private static Endpoint endpoint(String occurrence, String site) {
         return Endpoint.of(OccurrenceAddress.parse(occurrence), site,
                 ExecutionIndex.empty(), 0);
+    }
+
+    /**
+     * A view's writer is its version whichever side of the window its
+     * decode stood on (review re-check B3: a view's INITIAL spelled
+     * INITIAL and the same version decoded in the window VIEW@v, so a
+     * pairing EXPLORE planted to one was refuted by CONFIRM's other); any
+     * other location's INITIAL is INITIAL, a write its endpoint.
+     */
+    @Test
+    public void aViewsWriterIsItsVersionOnEitherSideOfTheWindow() {
+        Endpoint at = endpoint(ANCHOR, "SOLR_ZK#VIEW:.aliases.json");
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
+        LocationId field = LocationId.of(LocationKind.INSTANCE, "7", "3");
+        Object[][] rows = {
+                {WriteRow.initial("s", 0L, at, view, 3L, "", "J"), "VIEW@3"},
+                {WriteRow.of("s", 9L, at, view, 3L, "", "J"), "VIEW@3"},
+                {WriteRow.initial("s", 0L, at, field, 0L, "", "I"),
+                        Confirmation.INITIAL},
+                {WriteRow.of("s", 9L, at, field, 1L, "", "I"),
+                        Confirmation.id(at)},
+        };
+        for (Object[] row : rows) {
+            assertEquals(row[0].toString(), row[1],
+                    Confirmation.writer((WriteRow) row[0]));
+        }
     }
 
     @Test

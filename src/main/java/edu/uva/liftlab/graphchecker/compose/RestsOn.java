@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -528,7 +529,8 @@ public final class RestsOn {
             if (at == null) continue;
             for (ReadRow read : corpus.readsOn(session, at)) {
                 if (read.location().kind() == LocationKind.STORE
-                        && read.seq() < each.getValue()) {
+                        && RowOrder.beforeEvent(read.seq(), read.tie(),
+                        each.getValue())) {
                     locations.add(SmtLowering.locationKey(read.location()));
                 }
             }
@@ -636,7 +638,8 @@ public final class RestsOn {
                 boolean whole = anchorWhole && anchor.id().equals(at);
                 long cut = reached.get(at);
                 for (ReadRow read : log.readsOn(at)) {
-                    if (!whole && read.seq() >= cut) {
+                    if (!whole && !RowOrder.beforeEvent(read.seq(),
+                            read.tie(), cut)) {
                         if (reads != null) reads.past(read);
                         continue;
                     }
