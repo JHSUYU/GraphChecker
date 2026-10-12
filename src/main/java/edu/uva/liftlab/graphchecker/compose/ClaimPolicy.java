@@ -694,8 +694,14 @@ public final class ClaimPolicy {
          * 3. The recorded valuation reaches the fatal arm on another
          * session's path that OBSERVED it (the seed's own is no claim,
          * {@link #unasked}), through attested arms, while the seed's own
-         * disjunct does not: the mechanism #mechanism's pin tests name, or
-         * null, named, where none fires.
+         * disjunct does not: the mechanism #mechanism's pin tests name; else,
+         * where that session's world planted a pairing its read took ({@code
+         * Composition#takenPairings}), STATE_PAIRING_FLIPPED -- the pairing
+         * is what the world moved, though no term of the path names the read
+         * (a node's view at a version lacking an alias decides nothing the
+         * VM states: Map#get of a key the older document never had), and
+         * the witness names it ({@code Composition#repaired}); or null,
+         * named, where none fires.
          */
         Decision observedElsewhere() {
             if (recorded == null || !recorded.witness()
@@ -706,9 +712,24 @@ public final class ClaimPolicy {
             }
             ClaimKind kind = mechanism(composition, asks, recorded,
                     clockDriven);
+            Outcome witness = recorded;
+            if (kind == ClaimKind.NO_SUPPORTED_WITNESS && !composition
+                    .takenPairings(recorded.selected()).isEmpty()) {
+                // The witness is asked on its path with the families held
+                // to the plants its session took, so the arms it names are
+                // the world's pairing.
+                List<String> plants = composition.worldPlants(
+                        recorded.selected());
+                witness = plants.isEmpty() ? recorded : outcome(composition,
+                        asks, recorded.valuation(), plants, false, recorded);
+                if (witness.witness()) {
+                    kind = ClaimKind.STATE_PAIRING_FLIPPED;
+                    outcomes.set(0, witness);
+                }
+            }
             if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
                 return new Decision(Claim.of(kind, 0,
-                        movedRoots(composition, recorded), true, gaps),
+                        movedRoots(composition, witness), true, gaps),
                         outcomes);
             }
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
@@ -717,9 +738,9 @@ public final class ClaimPolicy {
                     "this path of an explored session reaches the fatal arm "
                             + "at the recorded roots and the seed's own "
                             + "disjunct does not, and no state slot, no wire "
-                            + "slot, no moved root and no clock of this "
-                            + "composition is what makes the difference: "
-                            + "there is no mechanism to name"));
+                            + "slot, no moved root, no clock and no pairing "
+                            + "its world planted is what makes the "
+                            + "difference: there is no mechanism to name"));
             return null;
         }
 

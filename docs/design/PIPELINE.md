@@ -2028,7 +2028,14 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    - a witness moving no root whose mechanism is `CLOCK_SKEW`, `STATE_PAIRING_FLIPPED` or
      `MESSAGE_PAIRING_FLIPPED`, with `recordingDecides` or `polarityDecides`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
-     every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
+     every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any; else,
+     where that session's world planted a pairing its read took (`Composition#takenPairings`: the
+     read observed the planted writer's version and could have seen another writer),
+     `STATE_PAIRING_FLIPPED` -- the world's pairing is what moved, though no term of the path names
+     the read (a node's view at a version lacking an alias decides nothing the VM states) --, its
+     witness asked with the path's families held to the plants (`Composition#worldPlants`) and the
+     pairing named in `repairedArms`, by its arm, else `PAIRING:<reader>=<writer>` where no family
+     states the read;
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
      root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer
      is the verdict; the enumeration of single and pair moves above only picks a witness's

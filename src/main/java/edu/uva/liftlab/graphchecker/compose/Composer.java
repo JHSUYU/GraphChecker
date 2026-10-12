@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
@@ -221,6 +222,7 @@ public final class Composer {
         private final List<JsonObject> refusedPaths;
         private final Map<String, List<String>> ownArms;
         private final Map<String, List<String>> recordedAtPlants;
+        private final Map<String, Map<String, List<String>>> worldArms;
         private final String seedSessionId;
         /** The sessions, their worlds and rows ({@link #ranModel}). */
         private final Corpus corpus;
@@ -308,6 +310,7 @@ public final class Composer {
             this.ownArms = composed.composedFamilies.ownArms();
             this.recordedAtPlants =
                     composed.composedFamilies.recordedAtPlants();
+            this.worldArms = composed.composedFamilies.worldArms();
             this.seedSessionId = composed.seed();
             this.corpus = composed.corpus;
             Map<String, String> readings = new LinkedHashMap<String, String>();
@@ -763,7 +766,11 @@ public final class Composer {
          * plant, {@code ComposedFamilies#recordedAtPlants}): the re-paired
          * ones, which a pairing kind moved where no root did.  Only that
          * path's: another path's arms are free in the model, as its
-         * selector is.
+         * selector is.  And each pairing the path's session's world planted
+         * and its read took ({@link #takenPairings}) at a location no family
+         * of the path states (its read had no other writer to be re-paired
+         * with), spelled {@code PAIRING:<reader>=<writer>}: the world's
+         * pairing is re-paired from the recording's all the same.
          */
         public List<String> repaired(String selector,
                                      Collection<String> taken) {
@@ -784,7 +791,70 @@ public final class Composer {
                     repaired.add(arm);
                 }
             }
+            if (disjunct == null) return repaired;
+            Map<String, List<String>> world = worldArms.get(selector);
+            for (Map.Entry<String, ReadRow> pairing
+                    : takenPairings(disjunct).entrySet()) {
+                if (world != null && world.containsKey(SmtLowering
+                        .locationKey(pairing.getValue().location()))) {
+                    continue;
+                }
+                repaired.add(Obligation.PAIRING + pairing.getKey() + "="
+                        + corpus.world(disjunct.path().sessionId).pairings
+                        .get(pairing.getKey()));
+            }
             return repaired;
+        }
+
+        /**
+         * {@code selected}'s families held to its world's plants: at each
+         * location its session's world planted a pairing on, the plant's
+         * arm or the observed arm holding the reads to what it gave them
+         * ({@code ComposedFamilies#worldArms}).  What a witness claiming the
+         * world's pairing is asked under ({@code ClaimPolicy}).
+         */
+        public List<String> worldPlants(Disjunct selected) {
+            List<String> held = new ArrayList<String>();
+            Map<String, List<String>> world =
+                    worldArms.get(selected.selector());
+            if (world == null) return held;
+            for (List<String> arms : world.values()) {
+                held.add("(assert " + VmTermLowering.or(arms) + ")");
+            }
+            return held;
+        }
+
+        /**
+         * The pairings {@code selected}'s session's world planted (reader ->
+         * writer, as {@code runtime.Confirmation} names them) that its read
+         * took: the reader's read observed a version the planted writer
+         * wrote ({@code Confirmation#writer}), and could have seen another
+         * writer ({@link Composer#anotherWriter}, the test that admits a
+         * planted read to a family), each with that read.  A plant the
+         * replay could not make (an inherited one whose writer came first)
+         * is none, and so is one no other writer could have replaced (a
+         * write no read could have preceded: the run's).
+         */
+        public Map<String, ReadRow> takenPairings(Disjunct selected) {
+            Map<String, ReadRow> taken = new LinkedHashMap<String, ReadRow>();
+            String session = selected.path().sessionId;
+            Map<String, String> pairings = corpus.world(session).pairings;
+            SessionReader rows = corpus.session(session);
+            if (pairings.isEmpty() || rows == null) return taken;
+            for (ReadRow read : rows.reads()) {
+                String reader = Confirmation.id(read.endpoint());
+                String writer = pairings.get(reader);
+                if (writer == null || taken.containsKey(reader)) continue;
+                WriteRow write = corpus.writeOf(session, SmtLowering
+                        .locationKey(read.location()), read.observedVersion());
+                if (write != null
+                        && writer.equals(Confirmation.writer(write))
+                        && anotherWriter(corpus, session,
+                        Collections.singletonList(read))) {
+                    taken.put(reader, read);
+                }
+            }
+            return taken;
         }
 
         /**
@@ -2381,6 +2451,11 @@ public final class Composer {
      *  could have seen a writer besides the one it did
      *  ({@link #repairing}). */
     private boolean anotherWriter(String session, List<ReadRow> block) {
+        return anotherWriter(corpus, session, block);
+    }
+
+    private static boolean anotherWriter(Corpus corpus, String session,
+                                         List<ReadRow> block) {
         Set<Long> asked = new LinkedHashSet<Long>();
         for (ReadRow read : block) {
             long version = read.observedVersion();

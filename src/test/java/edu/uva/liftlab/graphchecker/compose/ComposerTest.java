@@ -4749,15 +4749,22 @@ public class ComposerTest {
      * {@code Confirmation#writer}: {@code VIEW@v} for a decode's re-point):
      * the turn's read of its node's view, held by the world to the decode
      * of version 1 ahead of the decode of 2 (ConfirmMain's VIEW_HOLD), is
-     * re-paired away from the anchor.  The turn's guard {@code view == 1}
-     * binds to it, the turn's store is what the anchor reads; the fatal is
-     * SAT under the plant's decode and UNSAT under the recording's, so the
-     * recording decides it: a STATE_PAIRING_FLIPPED whose re-paired arm is
-     * the decode of 1.  The same session in a world that planted nothing
-     * names no mechanism.
+     * re-paired away from the anchor.  Where the turn's guard {@code view ==
+     * 1} binds to it, the turn's store is what the anchor reads; the fatal
+     * is SAT under the plant's decode and UNSAT under the recording's, so
+     * the recording decides it: a STATE_PAIRING_FLIPPED whose re-paired arm
+     * is the decode of 1.  Where no guard names the view (the turn took its
+     * other path on what the older decode lacked, which no symbol states),
+     * holding the read to the recording's decode leaves the fatal SAT, and
+     * the seed's disjunct is unsat while the session that took the plant
+     * observed the fatal: the world's pairing is the claim, its witness held
+     * to the plant's arm -- or, where no family states the read (the decode
+     * of 2's arm does not lower, so one writer is left), named {@code
+     * PAIRING:<reader>=VIEW@1}.  The same session in a world that planted
+     * nothing names no mechanism.
      */
     @Test
-    public void aWorldPlantedViewPairingIsRePairedAsAnyPlantedOne()
+    public void aWorldPlantedViewPairingIsRePairedAsAnyPlantedOneNamedOrNot()
             throws Exception {
         LocationId view = LocationId.of(LocationKind.VIEW,
                 "SOLR_ZK@case/dn0", "/aliases.json");
@@ -4778,14 +4785,21 @@ public class ComposerTest {
                 at("g#1", 0), 0);
         Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
                 at("r#1", 0), 0);
+        // planted?, a guard names the view?, the decode of 2 has an arm?,
+        // the claim
         Object[][] table = {
-                {true, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, ClaimKind.FORMULA_SAT},
+                {true, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, true, true, ClaimKind.FORMULA_SAT},
+                {true, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, false, true, ClaimKind.FORMULA_SAT},
+                {true, false, false, ClaimKind.STATE_PAIRING_FLIPPED},
         };
         for (Object[] row : table) {
             boolean planted = (Boolean) row[0];
-            Path iteration = folder.newFolder("view-planted-" + planted)
-                    .toPath();
+            boolean named = (Boolean) row[1];
+            boolean again = (Boolean) row[2];
+            Path iteration = folder.newFolder("view-planted-" + planted + "-"
+                    + named + "-" + again).toPath();
             for (boolean explored : new boolean[]{false, true}) {
                 String id = explored ? "s1" : "s0";
                 Session session = new Session(iteration, id, explored);
@@ -4818,15 +4832,19 @@ public class ComposerTest {
                 long seen = explored ? 1L : 2L;
                 session.read(guard, view, seen, "V_turn", "J",
                         Long.toString(seen));
-                session.expression("EXPR.0000000000000010", binary("==",
-                        symbol("V_turn", "J"), integer("J", 1L)));
-                session.decision(turn, "Detector#u63", explored,
-                        "EXPR.0000000000000010");
+                if (named) {
+                    session.expression("EXPR.0000000000000010", binary("==",
+                            symbol("V_turn", "J"), integer("J", 1L)));
+                    session.decision(turn, "Detector#u63", explored,
+                            "EXPR.0000000000000010");
+                }
                 long listed = 3L;
                 if (explored) {
+                    session.expression("EXPR.0000000000000013", vmLeaf(
+                            "UnstatedExpression", "u", "J"));
                     session.writes.add(WriteRow.of(id, ++session.seq,
-                            repoint, view, 2L, "EXPR.0000000000000012",
-                            "J"));
+                            repoint, view, 2L, again ? "EXPR.0000000000000012"
+                                    : "EXPR.0000000000000013", "J"));
                     session.write(Endpoint.of(turn, "Detector#run#9:WRITE",
                                     at("w#2", 0), 0), list, 4L,
                             "EXPR.0000000000000007");
@@ -4853,19 +4871,21 @@ public class ComposerTest {
                     StaticScopeMap.empty());
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                     solver());
-            String detail = "planted " + planted + ": "
-                    + decision.claim().gaps() + "\n" + composition.body();
-            assertEquals(detail, row[1], decision.claim().kind());
+            String detail = "planted " + planted + ", named " + named
+                    + ", again " + again + ": " + decision.claim().gaps()
+                    + "\n" + composition.body();
+            assertEquals(detail, row[3], decision.claim().kind());
             if (!planted) continue;
+            assertTrue(detail, decision.claim().polarityDecides());
             ClaimPolicy.Outcome witness = decision.outcomes().get(
                     decision.claim().valuationOrdinal());
-            List<String> groups = new ArrayList<String>();
-            for (String arm : composition.repaired(witness.selected()
-                    .selector(), witness.selectedArms().keySet())) {
-                groups.add(composition.arm(arm).groupId());
-            }
-            assertEquals(detail, Collections.singletonList(older.id()),
-                    groups);
+            List<String> repaired = composition.repaired(witness.selected()
+                    .selector(), witness.selectedArms().keySet());
+            assertEquals(detail, 1, repaired.size());
+            assertEquals(detail, again ? older.id()
+                    : "PAIRING:" + Confirmation.id(guard) + "=VIEW@1",
+                    again ? composition.arm(repaired.get(0)).groupId()
+                            : repaired.get(0));
         }
     }
 
