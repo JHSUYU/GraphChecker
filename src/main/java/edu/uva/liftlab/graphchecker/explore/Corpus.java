@@ -692,7 +692,7 @@ public final class Corpus implements Arms.Rows {
      * {@code SolrCore.close} and watcher occurrences re-keyed every arm).
      * A line with handoffs or writes at the guard's locations keeps its
      * multiplicity, and each such write states what it wrote as the guard
-     * reads it ({@link #writeSites}): hdfs-11741's four keys instead of
+     * reads it, canonical ({@link #written}): hdfs-11741's four keys instead of
      * five, a second writer of what the guard reads, or a member flip that
      * writes another value at the same site, re-key.  LIMITS: a member's
      * write the recording states at no write site (unwoven) re-keys no arm;
@@ -865,12 +865,11 @@ public final class Corpus implements Arms.Rows {
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 
     /** Per-site counts of the writes to {@code locations}, each with what
-     *  it wrote as the guard reads it: the written term as a flip query
-     *  lowers it ({@link FlipQuery#statedTerm}), constants included,
-     *  digested -- a member flip that writes another value at the same site
-     *  is another world (a request writing 5 or 7, an arm writing {@code
-     *  M_A+10} or {@code M_A-1}), and a poll writing the same term folds; an
-     *  INITIAL row is no write. */
+     *  it wrote as the guard reads it, canonical ({@link #written}): a
+     *  member flip that writes another value at the same site is another
+     *  world (a request writing 5 or 7, an arm writing {@code M_A+10} or
+     *  {@code M_A-1}), and a poll writing the same term folds; an INITIAL
+     *  row is no write. */
     private List<String> writeSites(String sessionId,
                                     OccurrenceAddress occurrence,
                                     Set<String> locations) {
@@ -887,16 +886,103 @@ public final class Corpus implements Arms.Rows {
         return sites;
     }
 
-    /** {@link #writeSites}' written term, digested once per session and
-     *  reference. */
+    /**
+     * A written term as the guard reads it, CANONICAL, digested: the term
+     * as a flip query lowers it ({@link FlipQuery#statedTerm}) with its
+     * semantic content kept -- operators, constants, each root by its id,
+     * each handoff by its site, each container subterm by its canonical
+     * body -- and the run's own names dropped: an identity's or an
+     * unsupported subterm's minted digest (an object handle), and a read's
+     * event, version and owner.  A read is named by its location's kind and
+     * slot and by what binds it in a flip query ({@code FlipQuery}): pinned
+     * to its observed value where no write of the session made its version,
+     * else bound through its writers' arms, so by its observed writer's
+     * class ({@link #classOf}) and site and, to {@value #WRITTEN_DEPTH}
+     * levels, what that writer wrote -- two worlds whose written term reads
+     * a location another writer wrote re-key.  Memoized per session,
+     * reference and depth.
+     */
     private String written(String sessionId, String expressionRef) {
-        if (expressionRef == null || expressionRef.isEmpty()) return "";
-        return writtenTerms.computeIfAbsent(sessionId + "|" + expressionRef,
-                key -> ArtifactIO.digest(FlipQuery.statedTerm(this,
-                        sessionId, expressionRef), 16));
+        return written(sessionId, expressionRef, WRITTEN_DEPTH);
     }
 
-    /** {@link #written}, once asked. */
+    private String written(String sessionId, String expressionRef,
+                           int depth) {
+        if (expressionRef == null || expressionRef.isEmpty()) return "";
+        String key = sessionId + "|" + expressionRef + "|" + depth;
+        String held = writtenTerms.get(key);
+        if (held != null) return held;
+        String digest = ArtifactIO.digest(canonical(sessionId,
+                FlipQuery.statedTerm(this, sessionId, expressionRef), depth),
+                16);
+        writtenTerms.put(key, digest);
+        return digest;
+    }
+
+    /** How many writers deep a written term's reads are named by what
+     *  their writers wrote; past it, by the writer's class and site. */
+    static final int WRITTEN_DEPTH = 3;
+
+    /** {@link #written}'s canonical text of one lowered term. */
+    private String canonical(String sessionId, String text, int depth) {
+        SmtLowering lowering = lowering(sessionId);
+        return SmtNames.substitute(text, token -> {
+            if (SmtNames.BUILTIN.contains(token)) return null;
+            String body = lowering == null ? null
+                    : lowering.sharedBody(token);
+            if (body != null) {
+                return "dag:" + sharedCanonical(sessionId, token, body,
+                        depth);
+            }
+            switch (symbolKind(sessionId, token)) {
+                case ROOT: {
+                    RootMintRow root = rootBySymbol(sessionId, token);
+                    return (root.kind() == RootKind.CLOCK ? "clock:"
+                            : "root:") + root.rootId();
+                }
+                case HANDOFF:
+                    return "handoff:" + attach(sessionId, token).endpoint()
+                            .site();
+                case READ:
+                    return readCanonical(sessionId,
+                            read(sessionId, token), depth);
+                default:
+                    // A name the lowering minted from a run's handle.
+                    return lowering != null && lowering.minted(token)
+                            ? token.replaceAll("__[0-9a-f]+$", "__") : null;
+            }
+        });
+    }
+
+    /** One container subterm's canonical body, digested once per session,
+     *  name and depth. */
+    private String sharedCanonical(String sessionId, String name,
+                                   String body, int depth) {
+        String key = sessionId + "|" + name + "|" + depth;
+        String held = writtenTerms.get(key);
+        if (held != null) return held;
+        String digest = ArtifactIO.digest(canonical(sessionId, body, depth),
+                16);
+        writtenTerms.put(key, digest);
+        return digest;
+    }
+
+    /** One read inside a written term, as {@link #written} names it. */
+    private String readCanonical(String sessionId, ReadRow row, int depth) {
+        String location = "read:" + row.location().kind() + ":"
+                + row.location().slot();
+        WriteRow observed = writeOf(sessionId, row.location(),
+                row.observedVersion());
+        if (observed == null || observed.initial()) {
+            return location + "=" + row.concreteValue();
+        }
+        return location + "<-" + classOf(observed.endpoint().occurrence())
+                + "@" + observed.endpoint().site() + (depth <= 0 ? ""
+                : "=" + written(sessionId, observed.expressionRef(),
+                depth - 1));
+    }
+
+    /** {@link #written} and its container subterms, once asked. */
     private final Map<String, String> writtenTerms =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 

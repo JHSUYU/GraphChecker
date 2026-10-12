@@ -690,8 +690,14 @@ whether the task's occurrence ran, its handoff sites and producers, and each fac
 writes state it reads, named by its class (node, region, `Corpus#contextShape`; a producer too, never
 an address's anchor hashes or counts), by what it delivered in this session: its handoff sites and
 producers, its writes at the locations the guard reads (per site, each with the written term as a
-flip query lowers it, constants included, digested: a member flip that writes another value there is
-another world), and whether it wrote any state the
+flip query lowers it, canonical and digested, `Corpus#written`: operators, constants, roots by id,
+handoffs by site, container subterms by their canonical bodies kept; an object handle's or
+unsupported subterm's minted digest and a read's event, version and owner dropped; a read named by
+its location's kind and slot and by what binds it in the flip query -- its observed value where no
+write of the session made its version (pinned), else its observed writer's class and site and, three
+writers deep, what that writer wrote (bound through the writers' arms). A member flip that writes
+another value there, or a term reading what another writer wrote, is another world; a poll writing
+the same canonical term folds), and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
 `StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm

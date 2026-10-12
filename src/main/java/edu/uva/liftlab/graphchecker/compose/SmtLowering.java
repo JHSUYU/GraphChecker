@@ -3512,6 +3512,13 @@ public final class SmtLowering {
         return held != null && held.inQuery;
     }
 
+    /** The body of one container subterm this lowering named ({@code
+     *  container_dag__...}), or null for any other name. */
+    public String sharedBody(String name) {
+        SharedTerm held = sharedByName.get(name);
+        return held == null ? null : held.body;
+    }
+
     /**
      * Whether this query gives one name a meaning at all: a
      * {@code declare-const} or a container subterm's {@code define-fun}.

@@ -1610,7 +1610,64 @@ public class ExploreTest {
         afterGuard.flush();
         // Feeders that wrote other terms where the guard reads (a member
         // flip writing M_A-1 where the seed wrote M_A+10; requests writing
-        // 5 or 7).
+        // 5 or 7; a term reading a location another writer wrote).
+        LocationId inner = LocationId.of(LocationKind.INSTANCE, "40", "7");
+        OccurrenceAddress innerA = occurrence("hdfs-case/dn0",
+                "REGION.innerA", CausalContext.of(Role.of("INNER_A"), "", 1),
+                "o.a.h.h.s.d.InnerA#run#1");
+        OccurrenceAddress innerA2 = occurrence("hdfs-case/dn0",
+                "REGION.innerA", CausalContext.of(Role.of("INNER_A"), "", 2),
+                "o.a.h.h.s.d.InnerA#run#2");
+        OccurrenceAddress innerB = occurrence("hdfs-case/dn0",
+                "REGION.innerB", CausalContext.of(Role.of("INNER_B"), "", 1),
+                "o.a.h.h.s.d.InnerB#run#1");
+        JsonObject symbolA = new JsonObject();
+        symbolA.addProperty("_type", "SymbolExpression");
+        symbolA.addProperty("_exp", "M_A");
+        symbolA.addProperty("_java_type", "I");
+        JsonObject innerRead = new JsonObject();
+        innerRead.addProperty("_type", "SymbolExpression");
+        innerRead.addProperty("_exp", "M_INNER");
+        innerRead.addProperty("_java_type", "I");
+        // session, written term, the inner location's writer (or none)
+        Object[][] writtenRows = {
+            {"s-plus", binary("+", symbolA, literal(10)), null},
+            {"s-minus", binary("-", symbolA, literal(1)), null},
+            {"s-plus-again", binary("+", symbolA, literal(10)), null},
+            {"s-inner-a", innerRead, innerA},
+            {"s-inner-a2", innerRead, innerA2},
+            {"s-inner-b", innerRead, innerB},
+        };
+        for (Object[] row : writtenRows) {
+            Session session = new Session(iteration, (String) row[0]);
+            session.activation(TARGET, true);
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.symbolic("e.stored", "M_A");
+            session.expression("EXPR.00000000000000e2", (JsonObject) row[1]);
+            session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000e2");
+            if (row[2] != null) {
+                OccurrenceAddress writer = (OccurrenceAddress) row[2];
+                session.constant("EXPR.00000000000000e3", "3");
+                session.write(at(writer, writer.regionId() + "#u1:WRITE",
+                        writer.regionId() + "#u1"), inner, 7L,
+                        "EXPR.00000000000000e3");
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"), inner,
+                        7L, "M_INNER", "3");
+            }
+            session.write(negotiated, qop, 1L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.activation(READER, false);
+            session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+            session.decision(TARGET, "Near#u2", 1, true, "(> M_A 1)");
+            session.decision(TARGET, "Far#u4", 1, true, "(> M_B 1)");
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
         for (String[] written : new String[][] {{"s-five", "5"},
                 {"s-seven", "7"}, {"s-seven-again", "7"}}) {
             Session session = new Session(iteration, written[0]);
@@ -1654,6 +1711,21 @@ public class ExploreTest {
         assertEquals("the same term written again is the same world",
                 dependence(corpus, task, "s-seven", "Guard#u8"),
                 dependence(corpus, task, "s-seven-again", "Guard#u8"));
+        assertFalse("M_A+10 against M_A-1 at one site re-keys (the review's"
+                        + " scenario)",
+                dependence(corpus, task, "s-plus", "Guard#u8").equals(
+                        dependence(corpus, task, "s-minus", "Guard#u8")));
+        assertEquals("the same canonical term in another session folds",
+                dependence(corpus, task, "s-plus", "Guard#u8"),
+                dependence(corpus, task, "s-plus-again", "Guard#u8"));
+        assertFalse("a term reading a location another writer wrote "
+                        + "re-keys",
+                dependence(corpus, task, "s-inner-a", "Guard#u8").equals(
+                        dependence(corpus, task, "s-inner-b", "Guard#u8")));
+        assertEquals("a writer of the same class and site, the same value,"
+                        + " folds",
+                dependence(corpus, task, "s-inner-a", "Guard#u8"),
+                dependence(corpus, task, "s-inner-a2", "Guard#u8"));
         assertEquals("a prefix decision over a root the guard never names "
                 + "is not what it depends on", seed,
                 dependence(corpus, task, "s-far", "Guard#u8"));

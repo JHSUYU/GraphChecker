@@ -447,8 +447,10 @@ Correctness:
     member wrote differently there. A line that only fed the region (no handoff, no write at the
     guard's locations) counts once per class: how many members of one class wrote state the region
     reads elsewhere than the guard's locations no longer re-keys (a write at the guard's locations
-    states its written term and keeps its count). A member whose context shape has a hop no row names
-    keeps its address as its class.
+    states its canonical written term, `Corpus#written`, and keeps its count). A member whose context
+    shape has a hop no row names keeps its address as its class. The canonical term drops object
+    handles: two writes of the same structure over different objects fold; a read inside it is named
+    by its writer's class and site and, three writers deep, what that writer wrote.
 69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
     decision; where that occurrence is the task's own and the inherited flip lies after the arm being
     flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is
