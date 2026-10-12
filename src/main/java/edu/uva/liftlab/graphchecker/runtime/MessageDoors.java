@@ -579,7 +579,10 @@ public final class MessageDoors {
         if (!RowRuntime.open()) return;
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         LocationId location = storeLocation(transport, path);
-        RowRuntime.storeWrite(at, RowRuntime.currentEvent(),
+        // After every VM event so far, as a concrete target stands: a closure
+        // cuts a writer strictly before its write's seq, and the writer's
+        // own last event (its door's fault marker) is before the write.
+        RowRuntime.storeWrite(at, Identity.afterLastEvent(),
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);

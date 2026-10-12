@@ -955,6 +955,33 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A store's write stands after every VM event so far (IDENTITY §7.2), as
+     * a concrete target does: a closure cuts a writer strictly before its
+     * write's seq, so the writer's own last event -- its door's fault
+     * marker -- is kept.
+     */
+    @Test
+    public void aStoreWriteStandsAfterItsWritersLastEvent() throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        Identity.clock(() -> 41L);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        Identity.occurrence(NN.key(), "REGION.write", true);
+        MessageDoors.stored("SOLR_ZK", "/collections/t/state.json@3", owner);
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        List<Long> seqs = new ArrayList<>();
+        for (WriteRow write : SessionReader.read(session()).writes()) {
+            if (write.location().kind() == LocationKind.STORE) {
+                seqs.add(write.seq());
+            }
+        }
+        assertEquals("one past the writer's last event, 41",
+                Collections.singletonList(42L), seqs);
+    }
+
+    /**
      * Never silent: an export or attach the VM refused, and a receipt whose
      * sender this run does not hold, each name the occurrence they ran in.
      * An attach no activation ran is the closure's to admit: an

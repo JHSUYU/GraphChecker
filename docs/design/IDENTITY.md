@@ -524,9 +524,11 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   with the version. It is also a version of the path's `STORE` location (CONTRACT-SPEC §1: owner the
   transport, slot the path as `RunNames` keys it, version the store's own): a write row at the
   writer's occurrence in a replay (the admitted activation's, else the one running there, stated as
-  an unselected activation), site `<transport>#WRITE:<path, dotted>`, no expression, seq the VM's
-  last event id (0 on a thread with no VM context: no order check reads it; two versions of one path
-  at one seq are two events, CONTRACT-SPEC §2.6); a `STORE_WRITE` trace row naming the writer's
+  an unselected activation), site `<transport>#WRITE:<path, dotted>`, no expression, seq one past
+  the VM's last event id, where a concrete target stands (`Identity#afterLastEvent`: a closure cuts a
+  writer strictly before its write, and keeps the writer's own last event, its door's fault marker;
+  0 with no VM clock: no order check reads it; two versions of one path at one seq are two events,
+  CONTRACT-SPEC §2.6); a `STORE_WRITE` trace row naming the writer's
   address in the recording.
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
