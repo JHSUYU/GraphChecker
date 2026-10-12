@@ -37,10 +37,10 @@ import java.util.Set;
  *       {@link Verdict#SAT_MODEL_READY} is NOT an answer (replay not
  *       run).  An ADMITTED replay also settles its flip ({@link
  *       ObligationFactory#flip}: task, path, site, ordinal, outcome) whatever
- *       id the arm has since: sessions landing after it grow the dependence,
- *       and the same flip of the same path re-keyed would plant the same
- *       world again (solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of
- *       them already ADMITTED).</li>
+ *       id the arm has since: a replay of that flip of that path already took
+ *       the arm in the path's world, and only the sessions landed after it
+ *       moved the dependence (solr-adhoc-07 IB1: 59 answered flips re-keyed,
+ *       25 of them already ADMITTED).</li>
  * </ul>
  *
  * <p>An arm queued or running ({@link #inFlight}) is not settled and not
@@ -145,8 +145,7 @@ public final class Frontier {
         for (Map.Entry<String, List<ObligationResult>> flip
                 : byFlip.entrySet()) {
             for (ObligationResult result : flip.getValue()) {
-                if (result.verdict() == Verdict.ADMITTED
-                        && result.refutation() == null) {
+                if (result.verdict() == Verdict.ADMITTED) {
                     admittedFlips.add(flip.getKey());
                 }
             }
@@ -228,9 +227,9 @@ public final class Frontier {
             return reason;
         }
         return "flip already ADMITTED by an earlier round under another "
-                + "dependence: the same flip of the same path plants the "
-                + "same world, and only the sessions landed since moved its "
-                + "key";
+                + "dependence: a replay of this flip of this path took the "
+                + "arm in the path's world, and only the sessions landed "
+                + "since moved its key";
     }
 
     private void settle(String obligationId, String reason) {

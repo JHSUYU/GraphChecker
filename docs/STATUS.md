@@ -444,7 +444,17 @@ Correctness:
     having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and delivered
     nothing). Known limit: a member's write the recording states at no write site (unwoven code, an
     unrecorded store) re-keys no arm, so an arm settled in one world may stand for another whose
-    member wrote differently there.
+    member wrote differently there. A line that only fed the region (no handoff, no write at the
+    guard's locations) counts once per class: how many members of one class wrote state the region
+    reads elsewhere than the guard's locations no longer re-keys (a write at the guard's locations
+    states its written term and keeps its count). A member whose context shape has a hop no row names
+    keeps its address as its class.
+69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
+    decision; where that occurrence is the task's own and the inherited flip lies after the arm being
+    flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is
+    UNSAT by construction (review of solr-explore2, 2026-10-11). Since an arm is keyed by its effect at
+    the task, such a world's arm shares the seed's key and is mostly not re-asked; the query is to
+    stop its inherited prefix at the flipped decision (open).
 65. PLAN does not cross from a reader that never touched a demanded field to a writer whose objects
     are all unreachable from the reader over the recorded heap and, with every recorded holder
     above them, mentioned under one causal context (one tick, one served request, one client root:

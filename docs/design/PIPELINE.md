@@ -455,7 +455,7 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    cut; its row-connected closure is 252 occurrences, planned whole. The runaway guard: past
    `ClosurePlanner.CLOSURE_CEILING` (1024) occurrences the rows connect are cut too, counted in the
    manifest's `ceilingCut` and named in result.json `bounded` (`region_path_closure_ceiling`). A
-   truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP` (`PLAN_CLOSURE_CUT: ...`) and its
+   truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP` (`REGION_PATH_CLOSURE_TRUNCATED: ...`; `PLAN_CLOSURE_CUT` is PLAN's cut at `schedule_max_jobs`, §3) and its
    manifest's `truncated` (the occurrences not planned); whether it blocks a claim is the
    exploration's end's to say (§7.9).
 4. Reconciles the slot table (`explore.SlotTable`): one slot per
@@ -643,15 +643,18 @@ outcome and `dependence`, the arm's effect at the task: the task's own earlier d
 that share a variable with the guard, directly or through the task's own reads
 (`compose.Independence.ofGuard`), plus the input shape (`Corpus.inputShape`). The inherited flips'
 prefixes are no part of it (`FlipQuery` still asserts them): a prefix only adds conjuncts, so a
-world's arm whose own path and input shape equal another's is UNSAT where that one is, and where
-that one was admitted the joint world stays reachable by nesting from its session (solr-adhoc-07 IB1:
-a fault later in the task's own occurrence kept 13 decisions after the arm and re-asked 979 seed
-arms); a reduced world's NOT_ADMITTED stands for the parent world's arm too (STATUS open defect 59;
-an open decider arm whose every ask came back so ends `OPEN_ARM_UNANSWERED`). The input shape:
+world's arm whose own path and input shape equal another's -- the input shape stating what each
+member wrote at the guard's locations as the guard reads it -- is UNSAT where that one is
+(solr-adhoc-07 IB1: a fault later in the task's own occurrence kept 13 decisions after the arm and
+re-asked 979 seed arms); a reduced world's NOT_ADMITTED stands for the parent world's arm too
+(STATUS open defect 59; an open decider arm whose every ask came back so ends
+`OPEN_ARM_UNANSWERED`). The input shape:
 whether the task's occurrence ran, its handoff sites and producers, and each factor member that
 writes state it reads, named by its class (node, region, `Corpus#contextShape`; a producer too, never
 an address's anchor hashes or counts), by what it delivered in this session: its handoff sites and
-producers, its write counts at the locations the guard reads, and whether it wrote any state the
+producers, its writes at the locations the guard reads (per site, each with the written term as a
+flip query lowers it, constants included, digested: a member flip that writes another value there is
+another world), and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
 `StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm
@@ -668,9 +671,10 @@ most of its 8,802 re-keyed ids were members that ran and delivered nothing). Kno
 defect 64): a member's write the recording states at no write site re-keys no arm. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer); an `ADMITTED` replay also
-settles its flip (`ObligationFactory#flip`) under whatever id the arm has since, as the same flip of
-the same path plants the same world again (`Frontier#settled(Candidate)`; solr-adhoc-07 IB1: 59
-answered flips re-keyed, 25 of them ADMITTED). An arm in flight is not
+settles its flip (`ObligationFactory#flip`) under whatever id the arm has since: a replay of that flip
+of that path already took the arm in the path's world, and only the sessions landed since moved its
+key (`Frontier#settled(Candidate)`; solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of them
+ADMITTED). An UNSAT or NOT_ADMITTED answer settles its own id only. An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
 flipped outcome), since its id may move while it flies: sessions landing since its round grow the
 dependence.

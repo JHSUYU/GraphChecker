@@ -5175,8 +5175,9 @@ deeper occurrence(s) were not planned, so a claim over it misses their arms \
   (( truncated > 0 )) || return 0
   campaign_stream_gap BLOCKING REGION_PATH_CLOSURE_TRUNCATED "the \
 exploration ended (${stream_stop}) on $(basename "${last}")'s closure, \
-truncated at its task bound: ${truncated} occurrence(s) were not planned \
-(its gaps.jsonl names them), so a claim over it misses their arms"
+truncated: ${truncated} occurrence(s) were not planned, static candidates past \
+its task bound and occurrences the rows connect past the closure ceiling (its \
+gaps.jsonl names them), so a claim over it misses their arms"
 }
 
 # One COMPOSE over the corpus as it stands -- the stage's own entry,

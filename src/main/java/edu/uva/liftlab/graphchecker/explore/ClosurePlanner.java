@@ -74,11 +74,11 @@ public final class ClosurePlanner {
      *  occurrences the rows connect are never counted ({@link Candidates}). */
     public static final int DEFAULT_MAX_TASKS = 64;
 
-    /** The runaway guard: past this many occurrences the rows connect, the
-     *  closure is cut there too and the cut is a declared bound (result.json
-     *  {@code bounded}, {@code region_path_closure_ceiling}), never a
-     *  silently unlimited plan (solr-adhoc-07's whole row-connected closure
-     *  is 252). */
+    /** The runaway guard: past this many occurrences the rows connect
+     *  (static candidates not counted), the rest of them are cut too and the
+     *  cut is a declared bound (result.json {@code bounded}, {@code
+     *  region_path_closure_ceiling}), never a silently unlimited plan
+     *  (solr-adhoc-07's whole row-connected closure is 252). */
     public static final int CLOSURE_CEILING = 1024;
 
     /** Connected by rows. */
@@ -113,8 +113,9 @@ public final class ClosurePlanner {
         /** Demanded past the task bound, so not planned: the closure is
          *  incomplete, which only {@link ExploreMain} can weigh. */
         public final Set<String> truncated;
-        /** Of them, those the rows connect, cut at {@link
-         *  #CLOSURE_CEILING}. */
+        /** Of them, those the rows connect, cut past {@link
+         *  #CLOSURE_CEILING}; the rest are static candidates cut past the
+         *  task bound. */
         public final Set<String> ceilingCut;
         /** What every admitted path decided the anchor on, when that is no
          *  symbol ({@link ClosurePlanner#concrete}): no root reaches it yet,
@@ -202,6 +203,8 @@ public final class ClosurePlanner {
         Set<String> truncated = new LinkedHashSet<String>();
         Set<String> ceilingCut = new LinkedHashSet<String>();
         Candidates candidates = new Candidates(corpus);
+        // The anchor is the first occurrence the rows connect.
+        int connectedPlanned = 1;
         int candidatesPlanned = 0;
         while (true) {
             while (!pending.isEmpty()) {
@@ -218,11 +221,12 @@ public final class ClosurePlanner {
                     }
                     Demand queued = candidates.take(next);
                     if (queued == null) continue;
-                    if (demands.size() >= CLOSURE_CEILING) {
+                    if (connectedPlanned >= CLOSURE_CEILING) {
                         truncated.add(queued.occurrence.render());
                         ceilingCut.add(queued.occurrence.render());
                         continue;
                     }
+                    connectedPlanned++;
                     admit(queued, demands, pending);
                 }
             }
@@ -230,8 +234,7 @@ public final class ClosurePlanner {
             // while the bound has room.
             Demand candidate = candidates.next();
             if (candidate == null) break;
-            if (candidatesPlanned >= maxTasks
-                    || demands.size() >= CLOSURE_CEILING) {
+            if (candidatesPlanned >= maxTasks) {
                 truncated.add(candidate.occurrence.render());
                 continue;
             }
@@ -276,14 +279,15 @@ public final class ClosurePlanner {
 
     /**
      * THE TASK BOUND COUNTS STATIC CANDIDATES ONLY (owner: a genuinely large
-     * closure converges; over budget, recorded writers first, the rest cut by
-     * a named PLAN_CLOSURE_CUT).  A demand the rows connect -- a recorded
+     * closure converges; over budget, recorded writers first, the rest cut and
+     * named: REGION_PATH_CLOSURE_TRUNCATED).  A demand the rows connect -- a recorded
      * writer or producer, a control producer, the anchor's own -- is planned
      * as it is found, never counted against the bound (only {@link
      * #CLOSURE_CEILING} stops it, a declared bound); a static candidate
      * writer or producer waits until no row-connected demand is left, and
      * then the candidates are planned round-robin over their (node, region,
-     * context shape) class, at most {@code maxTasks} of them, so one class's
+     * context shape) class ({@link Corpus#classOf}), at most {@code
+     * maxTasks} of them, so one class's
      * many occurrences never crowd out the rest (solr-adhoc-07 IB1: 59 of 64
      * tasks were {@code CoreContainer.getCore} candidates of {@code
      * SolrCores.cores} while two recorded {@code create} writers were cut;
@@ -355,8 +359,7 @@ public final class ClosurePlanner {
         }
 
         private String classOf(OccurrenceAddress occurrence) {
-            return occurrence.node().render() + "|" + occurrence.regionId()
-                    + "|" + corpus.contextShape(occurrence.context());
+            return corpus.classOf(occurrence);
         }
 
         private static boolean staticCandidate(Demand demand) {

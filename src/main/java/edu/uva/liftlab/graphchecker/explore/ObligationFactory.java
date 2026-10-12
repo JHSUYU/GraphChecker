@@ -314,10 +314,11 @@ public final class ObligationFactory {
      * <p>Never the session, and never the inherited flips' prefixes, which
      * {@link FlipQuery} still asserts: a prefix only adds conjuncts to the
      * query, so a world's arm whose own path and input shape equal another's
-     * is UNSAT where that one is, and where that one was admitted the joint
-     * world stays reachable by nesting from its session (solr-adhoc-07 IB1:
-     * a fault at the task's own {@code makePath} later in the occurrence
-     * kept 13 decisions after the arm and re-asked 979 seed arms).  LIMIT:
+     * -- the input shape stating what each feeder wrote at the guard's
+     * locations as the guard reads it -- is UNSAT where that one is
+     * (solr-adhoc-07 IB1: a fault at the task's own {@code makePath} later
+     * in the occurrence kept 13 decisions after the arm and re-asked 979
+     * seed arms).  LIMIT:
      * a NOT_ADMITTED answer in the reduced world stands for the parent
      * world's arm too (an open decider arm whose every ask came back so
      * still ends {@code OPEN_ARM_UNANSWERED}).  Trap: the world stays even

@@ -252,7 +252,7 @@ public final class ExploreMain {
                 ceilingCut += plan.ceilingCut.size();
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        root.render(), "PLAN_CLOSURE_CUT: closure "
+                        root.render(), "REGION_PATH_CLOSURE_TRUNCATED: closure "
                                 + "truncated: static candidates past "
                                 + maxTasks + (plan.ceilingCut.isEmpty() ? ""
                                 : ", and " + plan.ceilingCut.size()

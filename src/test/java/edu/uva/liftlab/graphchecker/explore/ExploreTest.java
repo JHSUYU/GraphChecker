@@ -1608,6 +1608,31 @@ public class ExploreTest {
                 "(> (+ M_A M_READ_KEY) 3)");
         afterGuard.decision(TARGET, "Later#u20", 1, true, "(> M_A 5)");
         afterGuard.flush();
+        // Feeders that wrote other terms where the guard reads (a member
+        // flip writing M_A-1 where the seed wrote M_A+10; requests writing
+        // 5 or 7).
+        for (String[] written : new String[][] {{"s-five", "5"},
+                {"s-seven", "7"}, {"s-seven-again", "7"}}) {
+            Session session = new Session(iteration, written[0]);
+            session.activation(TARGET, true);
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.symbolic("e.stored", "M_A");
+            session.constant("EXPR.00000000000000e1", written[1]);
+            session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000e1");
+            session.write(negotiated, qop, 1L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.activation(READER, false);
+            session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+            session.decision(TARGET, "Near#u2", 1, true, "(> M_A 1)");
+            session.decision(TARGET, "Far#u4", 1, true, "(> M_B 1)");
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
         worker(iteration, "obligations-0000", "ob-later", "OBL.later",
                 "s-later", TARGET, "Later#u20",
                 Collections.<String, String>emptyMap(),
@@ -1620,6 +1645,15 @@ public class ExploreTest {
         assertEquals("a world's flip after the guard is no condition of its"
                 + " arm", seed, dependence(corpus, task, "s-later",
                 "Guard#u8"));
+        assertFalse("a feeder that wrote another term where the guard reads"
+                        + " is another world (M_A against 7)",
+                seed.equals(dependence(corpus, task, "s-seven", "Guard#u8")));
+        assertFalse("and another constant too (5 against 7)",
+                dependence(corpus, task, "s-five", "Guard#u8").equals(
+                        dependence(corpus, task, "s-seven", "Guard#u8")));
+        assertEquals("the same term written again is the same world",
+                dependence(corpus, task, "s-seven", "Guard#u8"),
+                dependence(corpus, task, "s-seven-again", "Guard#u8"));
         assertEquals("a prefix decision over a root the guard never names "
                 + "is not what it depends on", seed,
                 dependence(corpus, task, "s-far", "Guard#u8"));
@@ -1942,6 +1976,45 @@ public class ExploreTest {
                 corpus.inputShape("s-one", TARGET, polls, guard, reads),
                 corpus.inputShape("s-renumbered", TARGET, polls, guard,
                         reads));
+        // Members started by messages no row names: their shape has an
+        // unknown hop, which tells nothing apart, so each keeps its address.
+        Path unknown = tree.newFolder("member-unknown-hop").toPath();
+        List<OccurrenceAddress> unnamed = new ArrayList<OccurrenceAddress>();
+        for (int k : new int[] {1, 2}) {
+            unnamed.add(occurrence("hdfs-case/dn0", "REGION.addkeys",
+                    CausalContext.of("E-unnamed-" + k, "Poller#poll"),
+                    "o.a.h.h.s.d.Poller#poll#" + k));
+        }
+        for (Object[] row : new Object[][] {{"s-one", new int[] {0}},
+                {"s-two", new int[] {0, 1}}}) {
+            Session session = new Session(unknown, (String) row[0]);
+            session.activation(TARGET, false);
+            session.constant("e.stored", "7");
+            for (int at : (int[]) row[1]) {
+                session.activation(unnamed.get(at), false);
+                session.write(at(unnamed.get(at), Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), ALL_KEYS,
+                        5L + at, "e.stored");
+            }
+            session.flush();
+        }
+        Corpus unknownCorpus = Corpus.read(unknown, null);
+        StaticScopeMap unknownReads = StaticScopeMap.read(scopeMap(unknown,
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                        "BlockTokenSecretManager#u8",
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                        "<example.Manager: example.Keys allKeys>",
+                        "<example.Manager: example.Keys allKeys>", "")));
+        assertFalse("two members of an unknown hop are not one class",
+                unknownCorpus.inputShape("s-one", TARGET, unnamed, none,
+                        unknownReads).equals(unknownCorpus.inputShape(
+                        "s-two", TARGET, unnamed, none, unknownReads)));
     }
 
     /**
@@ -3042,7 +3115,7 @@ public class ExploreTest {
         // occurrences the rows connect are planned, however late the walk
         // finds them (the sibling is found with the writer, the producer
         // only through the writer's attach); past it a candidate is cut
-        // (PLAN_CLOSURE_CUT, ClosurePlanner#Candidates).
+        // (REGION_PATH_CLOSURE_TRUNCATED, ClosurePlanner#Candidates).
         Corpus spreadCorpus = Corpus.read(perNode, null);
         for (int bound : new int[] {0, 1}) {
             ClosurePlanner.Plan cut = ClosurePlanner.plan(spreadCorpus,
@@ -3072,7 +3145,9 @@ public class ExploreTest {
         boolean recorded = false;
         for (GapRow gap : RowCodec.readAll(cutWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
-            if (!gap.detail().startsWith("PLAN_CLOSURE_CUT")) continue;
+            if (!gap.detail().startsWith("REGION_PATH_CLOSURE_TRUNCATED")) {
+                continue;
+            }
             assertEquals(GapClass.DIAGNOSTIC, gap.cls());
             recorded = true;
         }
@@ -4582,12 +4657,13 @@ public class ExploreTest {
      * ({@link Frontier#consume}): sessions landing after it move the
      * dependence, and the same flip of the same path would plant the same
      * world again (solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of them
-     * ADMITTED).  A NOT_ADMITTED answer under another id stays owed.
+     * ADMITTED).  A NOT_ADMITTED or UNSAT answer under another id stays
+     * owed: it answered another question.
      */
     @Test
     public void anAdmittedFlipIsSettledUnderAnyId() throws Exception {
         for (Verdict verdict : new Verdict[] {Verdict.ADMITTED,
-                Verdict.NOT_ADMITTED}) {
+                Verdict.NOT_ADMITTED, Verdict.UNSAT}) {
             Path iteration = twoWriters("flip-" + verdict, "(= M_READ_KEY 2)",
                     null);
             Path out = tree.newFolder("flip-" + verdict + "-out").toPath();
@@ -5403,6 +5479,94 @@ public class ExploreTest {
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()));
+    }
+
+    /**
+     * The task bound counts static candidates only ({@code
+     * ClosurePlanner.Candidates}): a candidate the rows later connect -- here
+     * the producer of what the anchor's writer attached, found first as a
+     * static writer of the map -- is planned whatever the bound, and the
+     * candidates left take turns by class, so a bound of two plans one of
+     * each class before a second of either.
+     */
+    @Test
+    public void aConnectedCandidateIsPlannedAndCandidatesTakeTurnsByClass()
+            throws Exception {
+        Path iteration = tree.newFolder("candidate-turns").toPath();
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        OccurrenceAddress sibling = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 9),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        OccurrenceAddress siblingB = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 11),
+                "o.a.h.h.s.d.BPServiceActor#offerService#43");
+        OccurrenceAddress siblingC = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 12),
+                "o.a.h.h.s.d.BPServiceActor#offerService#44");
+        OccurrenceAddress refresher = occurrence("hdfs-case/dn0",
+                "REGION.refresh", CausalContext.of(Role.of("KEY_REFRESH"), "",
+                        1), "o.a.h.h.s.d.KeyRefresh#run#1");
+        Endpoint exported = at(siblingB, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Endpoint attached = at(WRITER, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Session seed = new Session(iteration, "s-seed");
+        for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER, sibling,
+                siblingB, siblingC, refresher)) {
+            seed.activation(at, false);
+        }
+        seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.export(exported, "e.119992", 11L, "119992");
+        seed.attach(attached, "M_HOFF_KEY", "119992", exported);
+        seed.write(STORED, allKeys, 5L, "e.stored");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
+                allKeys, 5L, "M_READ_KEY", "119992");
+        seed.target(TARGET, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.flush();
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "KeyManager#u4", "KeyManager#refresh",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""))));
+        Corpus corpus = Corpus.read(iteration, null);
+        // Per bound: the static candidates planned, and those cut.
+        Object[][] rows = {
+            {0, Collections.<OccurrenceAddress>emptyList(),
+                    Arrays.asList(sibling, siblingC, refresher)},
+            {2, Arrays.asList(sibling, refresher),
+                    Collections.singletonList(siblingC)},
+        };
+        for (Object[] row : rows) {
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
+                    (Integer) row[0], map, Branches.of(corpus,
+                            Collections.singletonList(TARGET),
+                            new ArrayList<GapRow>()));
+            Set<String> planned = new LinkedHashSet<String>();
+            for (Task task : plan.tasks) planned.add(task.focused().render());
+            Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
+                    TARGET.render(), WRITER.render(), siblingB.render()));
+            for (Object at : (List<?>) row[1]) {
+                expected.add(((OccurrenceAddress) at).render());
+            }
+            assertEquals("bound " + row[0] + ": " + planned, expected,
+                    planned);
+            Set<String> cut = new LinkedHashSet<String>();
+            for (Object at : (List<?>) row[2]) {
+                cut.add(((OccurrenceAddress) at).render());
+            }
+            assertEquals("bound " + row[0], cut, plan.truncated);
+            assertTrue(plan.ceilingCut.isEmpty());
+        }
     }
 
     /**

@@ -691,9 +691,14 @@ public final class Corpus implements Arms.Rows {
      * or k' times (solr-adhoc-07/21 IB1: per-request {@code getCore},
      * {@code SolrCore.close} and watcher occurrences re-keyed every arm).
      * A line with handoffs or writes at the guard's locations keeps its
-     * multiplicity: hdfs-11741's four keys instead of five, or a second
-     * writer of what the guard reads, re-key.  LIMIT: a member's write the
-     * recording states at no write site (unwoven) re-keys no arm.</p>
+     * multiplicity, and each such write states what it wrote as the guard
+     * reads it ({@link #writeSites}): hdfs-11741's four keys instead of
+     * five, a second writer of what the guard reads, or a member flip that
+     * writes another value at the same site, re-key.  LIMITS: a member's
+     * write the recording states at no write site (unwoven) re-keys no arm;
+     * a fed-only line loses its multiplicity, so how many members of one
+     * class wrote state the region reads elsewhere than the guard's
+     * locations no longer re-keys.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
@@ -839,13 +844,19 @@ public final class Corpus implements Arms.Rows {
         return from;
     }
 
-    /** An occurrence's class as an arm's key names it: its node, region
-     *  and context shape ({@link #contextShape}), no address's anchor
-     *  hashes or counts. */
-    private String classOf(OccurrenceAddress occurrence) {
-        return classes.computeIfAbsent(occurrence.id(), id ->
-                occurrence.node().render() + "|" + occurrence.regionId()
-                        + "|" + contextShape(occurrence.context()));
+    /** An occurrence's class: its node, region and context shape ({@link
+     *  #contextShape}), no address's anchor hashes or counts -- an arm's key
+     *  names a member by it, and the closure's static candidates take their
+     *  turns by it ({@code ClosurePlanner}).  A shape with a hop no row names
+     *  ({@link ContextShape#UNKNOWN_HOP}) tells nothing apart: such an
+     *  occurrence is its own class, by its address. */
+    String classOf(OccurrenceAddress occurrence) {
+        return classes.computeIfAbsent(occurrence.id(), id -> {
+            List<String> shape = contextShape(occurrence.context());
+            return shape.contains(ContextShape.UNKNOWN_HOP) ? id
+                    : occurrence.node().render() + "|"
+                            + occurrence.regionId() + "|" + shape;
+        });
     }
 
     /** {@link #classOf}, once per occurrence: a corpus does not change once
@@ -853,7 +864,12 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, String> classes =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 
-    /** Per-site counts of the writes to {@code locations} (not values); an
+    /** Per-site counts of the writes to {@code locations}, each with what
+     *  it wrote as the guard reads it: the written term as a flip query
+     *  lowers it ({@link FlipQuery#statedTerm}), constants included,
+     *  digested -- a member flip that writes another value at the same site
+     *  is another world (a request writing 5 or 7, an arm writing {@code
+     *  M_A+10} or {@code M_A-1}), and a poll writing the same term folds; an
      *  INITIAL row is no write. */
     private List<String> writeSites(String sessionId,
                                     OccurrenceAddress occurrence,
@@ -864,11 +880,25 @@ public final class Corpus implements Arms.Rows {
                     SmtLowering.locationKey(write.location()))) {
                 continue;
             }
-            sites.add(write.endpoint().site());
+            sites.add(write.endpoint().site() + "="
+                    + written(sessionId, write.expressionRef()));
         }
         Collections.sort(sites);
         return sites;
     }
+
+    /** {@link #writeSites}' written term, digested once per session and
+     *  reference. */
+    private String written(String sessionId, String expressionRef) {
+        if (expressionRef == null || expressionRef.isEmpty()) return "";
+        return writtenTerms.computeIfAbsent(sessionId + "|" + expressionRef,
+                key -> ArtifactIO.digest(FlipQuery.statedTerm(this,
+                        sessionId, expressionRef), 16));
+    }
+
+    /** {@link #written}, once asked. */
+    private final Map<String, String> writtenTerms =
+            new java.util.concurrent.ConcurrentHashMap<String, String>();
 
     /** The verdict the WAVE's file states for one obligation, or null. Only a
      *  cross-check: the SESSION's row is the verdict, and a corpus stating two
