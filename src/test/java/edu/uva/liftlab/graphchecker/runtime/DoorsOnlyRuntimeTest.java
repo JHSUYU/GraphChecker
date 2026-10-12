@@ -87,10 +87,10 @@ public class DoorsOnlyRuntimeTest {
     }
 
     /** A doors-only task keeps its door markers' inputs alone and reads no
-     *  tracked state from entry; its pause is lifted before a named
-     *  container mutation and at a door decision, never at a read, restored
-     *  at the next hook, and released at the close: one resume more than the
-     *  pauses asked here, the start's. */
+     *  tracked state from entry; its pause is taken at the end of its entry
+     *  hook's bracket, lifted before a named container mutation and at a
+     *  door decision, never at a read, restored at the next hook, and
+     *  released at the close: the pauses and resumes balance. */
     @Test
     public void aDoorsOnlyOccurrenceRunsPausedButForItsDoors()
             throws Exception {
@@ -101,23 +101,32 @@ public class DoorsOnlyRuntimeTest {
         assertEquals(1, task.symbolize.size());
         assertEquals("FAULT:SOLR_HTTP:SEND", task.symbolize.get(0).marker);
         ActiveRegion active = region(task);
-        active.basePaused = true;
+        // The entry hook's bracket ends: the base pause is taken there.
+        ConcolicRegionRuntime.pauseObservation();
+        ConcolicRegionRuntime.resumeObservation();
+        assertTrue(active.basePaused);
+        assertEquals(2, Vm.pauses);
+        assertEquals(1, Vm.resumes);
 
         ConcolicRegionRuntime.observeTrackedContainer("s", MAP,
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_READ);
-        assertEquals("a read stays paused", 0, Vm.resumes);
+        assertEquals("a read stays paused", 1, Vm.resumes);
         ConcolicRegionRuntime.observeTrackedContainer("s", MAP,
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_BEFORE_MUTATION);
-        assertEquals("a mutation runs hooked", 1, Vm.resumes);
+        assertEquals("a mutation runs hooked", 2, Vm.resumes);
         assertFalse(active.basePaused);
 
         ConcolicRegionRuntime.pauseObservation();
         assertTrue("the next hook restores the pause", active.basePaused);
         ConcolicRegionRuntime.resumeObservation();
 
+        // A door's mint runs in its hook's bracket: the bracket's end keeps
+        // the window open.
+        ConcolicRegionRuntime.pauseObservation();
         ConcolicRegionRuntime.openDoorWindow(active);
+        ConcolicRegionRuntime.resumeObservation();
         assertFalse("a door decides unpaused", active.basePaused);
         ConcolicRegionRuntime.pauseObservation();
         assertTrue(active.basePaused);
@@ -126,9 +135,10 @@ public class DoorsOnlyRuntimeTest {
         release.setAccessible(true);
         release.invoke(null, active);
         assertFalse(active.basePaused);
+        active.finished.set(true);
         ConcolicRegionRuntime.resumeObservation();
-        assertEquals("balanced against the start's pause", 1,
-                Vm.resumes - Vm.pauses);
+        assertFalse("a closed occurrence holds no pause", active.basePaused);
+        assertEquals("balanced", 0, Vm.resumes - Vm.pauses);
         assertEquals("[false, false]", Vm.observed.toString());
     }
 

@@ -129,8 +129,9 @@ public final class ConcolicRegionRuntime {
 
     /**
      * A doors-only occurrence ({@code RuntimeTask#doorsOnly}) runs with its
-     * path condition paused from its start to its close, but for its door
-     * decisions: its marker's mint lifts the pause (called inside the mint's
+     * path condition paused from its start to its close ({@link
+     * #holdBasePause}), but for its door decisions: its marker's mint lifts
+     * the pause (called inside the mint's
      * hook, whose own pause still stands), so the woven test of the marker
      * records its decision, and the next hook on the thread restores it
      * ({@link #closeDoorWindow}).  Between them only the marker's boolean is
@@ -188,6 +189,29 @@ public final class ConcolicRegionRuntime {
             engine().resumePathCondition();
         } catch (Throwable ignored) {
             // Resume is intentionally harmless when no region is active.
+        }
+        if (depth <= 1) holdBasePause();
+    }
+
+    /**
+     * The outermost hook's end: a doors-only occurrence running on this
+     * thread holds its base pause again, unless a door decision's window is
+     * open.  Taken here, outside every hook's bracket, and never inside a
+     * region's start: the start runs in the bracket of its entry hook, whose
+     * resume would release a pause taken there.
+     */
+    private static void holdBasePause() {
+        if (DOOR_WINDOW.get() != null) return;
+        ActiveRegion active = activeRegion();
+        if (active == null || !active.activation.doorsOnly
+                || active.basePaused || active.finished.get()) {
+            return;
+        }
+        try {
+            engine().pausePathCondition();
+            active.basePaused = true;
+        } catch (Throwable ignored) {
+            // No region to pause: nothing is recorded either.
         }
     }
 
@@ -600,15 +624,11 @@ public final class ConcolicRegionRuntime {
             }
             // The declared entry setup.
             RootMint.symbolizeReceiverFields(active, admitted, api);
-            // A doors-only occurrence keeps the setup's pause as its base
-            // (#openDoorWindow), released at its close.
-            if (admitted.doorsOnly) {
-                active.basePaused = true;
-                RowRuntime.ranDoorsOnly(active.d3Address);
-            } else {
-                api.resumePathCondition();
-            }
+            api.resumePathCondition();
             pathConditionPaused = false;
+            // A doors-only occurrence takes its base pause at the end of the
+            // entry hook's bracket (#holdBasePause).
+            if (admitted.doorsOnly) RowRuntime.ranDoorsOnly(active.d3Address);
             return active;
         } catch (Throwable throwable) {
             if (active != null) {
