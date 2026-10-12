@@ -1917,31 +1917,52 @@ public final class SmtLowering {
     }
 
     /**
-     * The {@code Enum.valueOf} node a read of an enum slot saw: through
-     * consumer boundaries, a read's stated observed value ({@code
-     * observedVersion.expression}); null for any other operand.
+     * The {@code Enum.valueOf} node a read of an enum slot saw, through
+     * consumer boundaries as {@link #lowered} passes them: the observed
+     * value ({@link #observedVersionExpression}, a joinable read's) of a
+     * read no row gives a value ({@link #unstatedVersion}).  Null for any
+     * other operand, and for a read a row binds: its writers decide it
+     * ({@link #bind}).
      */
-    private static JsonObject enumRead(JsonElement operand) {
+    private JsonObject enumRead(JsonElement operand) {
         JsonElement at = operand;
+        boolean read = false;
         for (int hop = 0; at != null && at.isJsonObject() && hop < 8;
              hop++) {
-            if (VmExpressionIr.consumerBoundary(at)) {
-                at = at.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+            JsonObject node = at.getAsJsonObject();
+            if (VmExpressionIr.consumerBoundary(node)) {
+                at = node.get(VmExpressionIr.EXPRESSION);
                 continue;
             }
-            String type = VmExpressionIr.typeOf(at);
+            String type = VmExpressionIr.typeOf(node);
             if ("MethodExpression".equals(type)) {
-                return ENUM_VALUE_OF.equals(optionalString(
-                        at.getAsJsonObject(), "_name"))
-                        ? at.getAsJsonObject() : null;
+                return read && ENUM_VALUE_OF.equals(optionalString(node,
+                        "_name")) ? node : null;
             }
-            if (!"ReadFromExpression".equals(type)) return null;
-            JsonElement observed = at.getAsJsonObject().get(
-                    VmRows.OBSERVED_VERSION);
-            at = observed == null || !observed.isJsonObject() ? null
-                    : observed.getAsJsonObject().get("expression");
+            if (!VmRows.GUARDED_READ_TYPE.equals(type)
+                    || !unstatedVersion(node)) {
+                return null;
+            }
+            read = true;
+            at = observedVersionExpression(node);
         }
         return null;
+    }
+
+    /**
+     * Whether no row gives a read's version a value -- no write row, none
+     * in a refused frame, no mint, no family re-pairing the read -- so that
+     * {@link #bind} holds it at what it returned.
+     */
+    private boolean unstatedVersion(JsonObject read) {
+        String key = locationKey(JsonFields.object(read, "location"));
+        long version = VmRows.joinedVersion(read);
+        if (key.isEmpty() || version < 0L) return true;
+        JsonElement written = join.writeExpression(key, version);
+        return (written == null || written.isJsonNull())
+                && join.frameOfWrite(key, version) == null
+                && "".equals(mintedReadSymbol(join, version))
+                && !join.repaired(key, VmRows.readEvent(read));
     }
 
     /** The constant names from {@code from} on, as literals; null where
@@ -5038,7 +5059,14 @@ public final class SmtLowering {
         }
         Term receiver = dispatch(params.get(0), null,
                 origin + ":equals:parameter0");
-        Term argument = dispatch(params.get(1), null,
+        // A constant Enum.valueOf chose, read from a slot no row gives the
+        // version a value (an object a decode built outside every region):
+        // the name the read saw, as the VM states the compare (SymEnum).
+        JsonObject chosen = enumRead(params.get(1));
+        Term argument = chosen != null
+                ? enumName(array(chosen, "_param_list"),
+                origin + ":equals:parameter1")
+                : dispatch(params.get(1), null,
                 origin + ":equals:parameter1");
         if (receiver.sort != Sort.STRING) {
             return codecGap("equals", "NON_STRING_PARAMETER", origin,
@@ -5047,16 +5075,6 @@ public final class SmtLowering {
         if (nullnessUnknown(Collections.singletonList(receiver))) {
             return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
                     "equals:0", Sort.BOOL);
-        }
-        // A constant Enum.valueOf chose, read from a slot whose version no
-        // row states (an object a decode built outside every region): the
-        // name the read saw, as the VM states the compare (SymEnum).
-        if (argument.sort != Sort.STRING && !argument.isNullReference()) {
-            JsonObject chosen = enumRead(params.get(1));
-            if (chosen != null) {
-                argument = enumName(array(chosen, "_param_list"),
-                        origin + ":equals:parameter1");
-            }
         }
         String predicate;
         if (argument.isNullReference()) {

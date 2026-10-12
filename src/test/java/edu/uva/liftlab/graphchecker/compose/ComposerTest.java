@@ -4056,19 +4056,50 @@ public class ComposerTest {
     }
 
     /**
-     * A constant Enum.valueOf chose from a name, read from a slot whose
-     * version no row states (an object a decode built outside every region,
-     * solr-18413 Z2O: Slice.state from state.json's leaf), compared with a
-     * String as the VM states it: the compare of the name the read saw, not
-     * an argument of unmodeled dynamic type.
+     * A constant Enum.valueOf chose from a name, read from a slot no row
+     * gives the version a value (an object a decode built outside every
+     * region, solr-18413 Z2O: Slice.state from state.json's leaf), compared
+     * with a String as the VM states it: the compare of the name the read
+     * saw, not an argument of unmodeled dynamic type.  A read a root mints
+     * (at the enum's sort, a reference) is the root, never the name this
+     * run saw; nor is a read that is not joinable.
      */
     @Test
     public void anEnumReadComparedWithAStringComparesTheNameItSaw() {
-        Map<String, VmTermLowering.Sort> declared =
-                new LinkedHashMap<String, VmTermLowering.Sort>();
-        declared.put("s", VmTermLowering.Sort.STRING);
-        SmtLowering lowering = new SmtLowering(declared);
-        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject seen = enumValueOf("seen");
+        Object[][] rows = {
+                // join, read joinable, the leaf the compare names
+                {SmtLowering.NO_JOIN, true, "seen"},
+                {minting("minted"), true, null},
+                {SmtLowering.NO_JOIN, false, null},
+        };
+        for (Object[] row : rows) {
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("seen", VmTermLowering.Sort.STRING);
+            declared.put("minted", VmTermLowering.Sort.REF);
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", (SmtLowering.SessionJoin) row[0],
+                    ExpressionTable.empty());
+            JsonObject state = read("INSTANCE_FIELD", 7L, 3L, 4L,
+                    "Lorg/x/State;");
+            state.getAsJsonObject("observedVersion").add("expression", seen);
+            if (!(Boolean) row[1]) {
+                state.addProperty(VmRows.WRITER_SET_COMPLETE, false);
+            }
+            String text = lowering.dispatch(vmString("equals", vmLeaf(
+                    "ConStringSymbolExp", "Y_L'String'_ACTIVE",
+                    "java/lang/String"), state), VmTermLowering.Sort.BOOL,
+                    "test").text;
+            lowering.end();
+            String names = (String) row[2];
+            assertEquals(text, names != null, text.contains("\"ACTIVE\""));
+            assertEquals(text, "seen".equals(names), text.contains("seen"));
+        }
+    }
+
+    /** {@code Enum.valueOf(org.x.State, <leaf>)} over ACTIVE and DOWN. */
+    private static JsonObject enumValueOf(String leaf) {
         JsonObject valueOf = new JsonObject();
         valueOf.addProperty("_type", "MethodExpression");
         valueOf.addProperty("_name", "java/lang/Enum valueOf");
@@ -4076,21 +4107,13 @@ public class ComposerTest {
         JsonArray arguments = new JsonArray();
         arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_org.x.State",
                 "java/lang/String"));
-        arguments.add(vmLeaf("SymbolExpression", "s", "Ljava/lang/String;"));
+        arguments.add(vmLeaf("SymbolExpression", leaf, "Ljava/lang/String;"));
         arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_ACTIVE",
                 "java/lang/String"));
         arguments.add(vmLeaf("ConStringSymbolExp", "Y_L'String'_DOWN",
                 "java/lang/String"));
         valueOf.add("_param_list", arguments);
-        JsonObject state = read("INSTANCE_FIELD", 7L, 3L, 4L, "Lorg/x/State;");
-        state.getAsJsonObject("observedVersion").add("expression", valueOf);
-        String text = lowering.dispatch(vmString("equals", vmLeaf(
-                "ConStringSymbolExp", "Y_L'String'_ACTIVE", "java/lang/String"),
-                state), VmTermLowering.Sort.BOOL, "test").text;
-        lowering.end();
-        assertTrue(lowering.openRefusals().toString(),
-                lowering.openRefusals().isEmpty());
-        assertTrue(text, text.contains("\"ACTIVE\"") && text.contains("s"));
+        return valueOf;
     }
 
     @Test
@@ -7682,6 +7705,55 @@ public class ComposerTest {
             @Override
             public Set<String> mintedReadSymbols(long version) {
                 return none.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String at, long version) {
+                return none.readSymbols(at, version);
+            }
+
+            @Override
+            public boolean moves(String named) {
+                return symbol.equals(named);
+            }
+
+            @Override
+            public boolean repaired(String at, long readEvent) {
+                return false;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return false;
+            }
+        };
+    }
+
+    /** The join of no session, where every read's version was minted as
+     *  {@code symbol}. */
+    private static SmtLowering.SessionJoin minting(final String symbol) {
+        final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
+        return new SmtLowering.SessionJoin() {
+            @Override
+            public com.google.gson.JsonElement writeExpression(String at,
+                                                              long version) {
+                return none.writeExpression(at, version);
+            }
+
+            @Override
+            public List<WriteRow> writes(String at) {
+                return none.writes(at);
+            }
+
+            @Override
+            public List<ReadRow> reads(String at) {
+                return none.reads(at);
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return Collections.singleton(symbol);
             }
 
             @Override

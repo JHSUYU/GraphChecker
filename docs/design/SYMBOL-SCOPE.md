@@ -1424,6 +1424,10 @@ What reads a leaf reads the objects the system builds from the tree: Solr's `ZkN
 parsed map, `Slice` and `DocCollection` copy it (each copy carries the entry's expression), and a
 field derived from it goes through the VM's models (`Replica.State.getState` -> `Enum.valueOf`,
 `Long.parseLong`, `String.equals`); a construction-only field logs the derived value (VM.md §5.1).
+A field of an object a decode built outside every region has no write row: a joinable read of it
+that no write, mint or family binds is the value it observed where a `String.equals` compares it --
+as the VM states an enum's `==` with a constant (VM.md §4) -- (`SmtLowering#enumRead`: solr-18413's
+`Slice` state, a `valueOf` over the state leaf).
 Which version a node's objects hold is the PROVENANCE read (§5.7).
 
 A node decides on its VIEW of a location: each decode re-points it, and a guard reads the objects of
