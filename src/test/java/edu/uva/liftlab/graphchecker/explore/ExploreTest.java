@@ -30,6 +30,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -6316,6 +6317,57 @@ public class ExploreTest {
             versions.add(offered.pairedVersion);
         }
         assertEquals(Arrays.asList(4L, 3L, 2L), versions);
+    }
+
+    /**
+     * Decodes and reads the engine states at one VM event stand in the order
+     * it stated them ({@link RowOrder}: seq, then tie; review re-check B3):
+     * the decode of 2 tied before the read is an older decode it is offered,
+     * and the decode of 3 tied before it is one the pairing's hold reorders,
+     * so the schedule cut stops before it; the view's INITIAL (what the node
+     * held when the window opened, seq 0) is offered too.  The decode of 4,
+     * tied after the read, is none of them.
+     */
+    @Test
+    public void tiedDecodesStandInTheOrderTheEngineStatedThem()
+            throws Exception {
+        Path iteration = tree.newFolder("pairing-tied").toPath();
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs-case/dn0#epoch0", "/aliases.json");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        Endpoint decoder = at(WRITER, "SOLR_ZK#VIEW:.aliases.json",
+                "decode#1");
+        seed.writes.add(WriteRow.initial("s-seed", 0L, at(TARGET,
+                Endpoint.initialSite("SOLR_ZK#VIEW:.aliases.json"),
+                "first#1"), view, 0L, "", "J"));
+        long[][] decodes = {{1L, 5L, 1L}, {2L, 8L, 1L}, {3L, 8L, 2L},
+                {4L, 8L, 4L}};
+        for (long[] decode : decodes) {
+            seed.writes.add(WriteRow.of("s-seed", decode[1], decoder, view,
+                    decode[0], "", "J").withTie((int) decode[2]));
+        }
+        seed.reads.add(ReadRow.of("s-seed", 8L, at(TARGET, "Guard#u3#VIEW",
+                "o.a.h.h.s.d.DataXceiver#run#12"), view, 3L, "V_t", "J",
+                "3").withTie(3));
+        seed.decision(TARGET, "Guard#u8", 1, false, "(= M_A 1)");
+        seed.target(TARGET, "Guard#u8", "(= M_A 1)");
+        seed.flush();
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = Task.of("T", TARGET,
+                Collections.<OccurrenceAddress>emptyList(), "s-seed");
+        List<ObligationFactory.Candidate> offered = PairingFlip.candidates(
+                corpus, task, corpus.pathsOf(TARGET).get(0),
+                new ArrayList<GapRow>());
+        List<Long> versions = new ArrayList<Long>();
+        for (ObligationFactory.Candidate candidate : offered) {
+            versions.add(candidate.pairedVersion);
+        }
+        assertEquals(Arrays.asList(2L, 1L, 0L), versions);
+        ObligationFactory.Outcome outcome = PairingFlip.solve(corpus,
+                offered.get(0), "given", Collections
+                        .<String, ObligationDir.Answer>emptyMap());
+        assertEquals(8L, outcome.holding.cutBefore);
     }
 
     /**

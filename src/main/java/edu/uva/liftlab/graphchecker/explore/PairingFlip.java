@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -93,14 +94,14 @@ final class PairingFlip {
                     read.endpoint().occurrence());
             long floor = -1L;
             for (WriteRow decode : corpus.writesOf(path.sessionId, view)) {
-                if (decode.seq() < read.seq() && reader.equals(Confirmation
+                if (decodedBefore(decode, read) && reader.equals(Confirmation
                         .contextKey(decode.endpoint().occurrence()))) {
                     floor = Math.max(floor, decode.version());
                 }
             }
             Set<Long> older = new TreeSet<Long>(Collections.reverseOrder());
             for (WriteRow decode : corpus.writesOf(path.sessionId, view)) {
-                if (decode.seq() < read.seq() && decode.version() >= floor
+                if (decodedBefore(decode, read) && decode.version() >= floor
                         && decode.version() < read.observedVersion()) {
                     older.add(decode.version());
                 }
@@ -126,6 +127,13 @@ final class PairingFlip {
             }
         }
         return offered;
+    }
+
+    /** Whether the node held this decode before the read: the view's
+     *  INITIAL (what it held when the window opened), or a decode before it
+     *  on the session's order ({@link RowOrder}). */
+    private static boolean decodedBefore(WriteRow decode, ReadRow read) {
+        return decode.initial() || RowOrder.before(decode, read);
     }
 
     /**
@@ -176,7 +184,8 @@ final class PairingFlip {
             if (!own && !prefix) continue;
             String view = SmtLowering.locationKey(read.location());
             ReadRow held = earliest.get(view);
-            if (held == null || read.seq() < held.seq()) {
+            if (held == null || RowOrder.before(read.seq(), read.tie(),
+                    held.seq(), held.tie())) {
                 earliest.put(view, read);
             }
         }

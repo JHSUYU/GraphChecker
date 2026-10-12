@@ -26,11 +26,12 @@ public final class ReadRow extends Value {
     private final String concreteValue;
     private final long mintVersion;
     private final boolean unnamedWriter;
+    private final int tie;
 
     private ReadRow(String sessionId, long seq, Endpoint endpoint,
                     LocationId location, long observedVersion, String symbol,
                     String javaType, String concreteValue, long mintVersion,
-                    boolean unnamedWriter) {
+                    boolean unnamedWriter, int tie) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -41,6 +42,7 @@ public final class ReadRow extends Value {
         this.concreteValue = concreteValue;
         this.mintVersion = mintVersion;
         this.unnamedWriter = unnamedWriter;
+        this.tie = tie;
     }
 
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
@@ -73,7 +75,22 @@ public final class ReadRow extends Value {
                 Fields.required(location, "location"), observedVersion,
                 Fields.text(symbol, "symbol"),
                 Fields.text(javaType, "javaType"),
-                Fields.optional(concreteValue), mintVersion, unnamedWriter);
+                Fields.optional(concreteValue), mintVersion, unnamedWriter, 0);
+    }
+
+    /** The same row at {@code tie} among the engine's rows of its seq
+     *  ({@link RowOrder}). */
+    public ReadRow withTie(int tie) {
+        if (tie == this.tie) return this;
+        return new ReadRow(sessionId, seq, endpoint, location,
+                observedVersion, symbol, javaType, concreteValue, mintVersion,
+                unnamedWriter, (int) Fields.nonNegative(tie, "tie"));
+    }
+
+    /** Where among the engine's rows of its seq this row stands: 0 for a
+     *  VM row ({@link RowOrder}). */
+    public int tie() {
+        return tie;
     }
 
     /**
@@ -204,7 +221,7 @@ public final class ReadRow extends Value {
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, location,
                 observedVersion, symbol, javaType, concreteValue, mintVersion,
-                unnamedWriter};
+                unnamedWriter, tie};
     }
 
     @Override

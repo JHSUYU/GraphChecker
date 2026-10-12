@@ -321,6 +321,7 @@ public final class RowCodec {
                     row.referentStateRefused());
         }
         if (row.initial()) json.addProperty(INITIAL, true);
+        if (row.tie() > 0) json.addProperty(TIE, row.tie());
         return json;
     }
 
@@ -331,7 +332,7 @@ public final class RowCodec {
             return WriteRow.initial(string(json, SESSION_ID),
                     number(json, SEQ), endpoint, location,
                     number(json, "version"), string(json, "expressionRef"),
-                    string(json, JAVA_TYPE));
+                    string(json, JAVA_TYPE)).withTie(tie(json));
         }
         JsonObject referent = optionalObject(json, REFERENT_STATE);
         return WriteRow.of(string(json, SESSION_ID), number(json, SEQ),
@@ -340,8 +341,17 @@ public final class RowCodec {
                 referent == null ? null : WriteRow.Referent.of(
                         readLocation(object(referent, LOCATION)),
                         number(referent, "version")),
-                optionalString(json, REFERENT_STATE_REFUSED));
+                optionalString(json, REFERENT_STATE_REFUSED))
+                .withTie(tie(json));
     }
+
+    /** A row's tie among the engine's rows of its seq ({@link RowOrder}):
+     *  0 where none is stated, as a VM row's and an older corpus's. */
+    private static int tie(JsonObject json) {
+        return json.has(TIE) ? Math.toIntExact(number(json, TIE)) : 0;
+    }
+
+    private static final String TIE = "tie";
 
     private static final String INITIAL = "initial";
     private static final String REFERENT_STATE = "referentState";
@@ -365,6 +375,7 @@ public final class RowCodec {
         if (row.unnamedWriter()) {
             json.addProperty("unnamedWriter", true);
         }
+        if (row.tie() > 0) json.addProperty(TIE, row.tie());
         return json;
     }
 
@@ -378,7 +389,8 @@ public final class RowCodec {
                 json.has("mintVersion") ? number(json, "mintVersion")
                         : ReadRow.UNKNOWN_VERSION,
                 json.has("unnamedWriter")
-                        && json.get("unnamedWriter").getAsBoolean());
+                        && json.get("unnamedWriter").getAsBoolean())
+                .withTie(tie(json));
     }
 
     public static JsonObject writeRootMint(RootMintRow row) {

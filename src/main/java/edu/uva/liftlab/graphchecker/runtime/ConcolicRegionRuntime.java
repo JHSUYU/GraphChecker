@@ -875,18 +875,17 @@ public final class ConcolicRegionRuntime {
             return;
         }
         // On the scale the engine's writes of a store and a view stand on
-        // (Identity#afterLastEvent): a read with no VM event since the
-        // write or decode it saw is never ordered before it.
-        long seq = Identity.afterLastEvent();
-        RowRuntime.storeRead(active.d3Address, seq, nonNull(siteId),
-                version.location, version.version);
+        // (Identity#enginePosition, contract.RowOrder): never ordered before
+        // the write or decode it saw.
+        RowRuntime.storeRead(active.d3Address, Identity.enginePosition(),
+                nonNull(siteId), version.location, version.version);
         // The same read is a read of the node's view (SYMBOL-SCOPE §6.4):
         // the version the reading node's decodes left there.
         LocationId view = MessageDoors.viewOf(version.location,
                 active.d3Address);
         if (view != null) {
-            RowRuntime.viewRead(active.d3Address, seq, nonNull(siteId)
-                    + "#VIEW", view, version.version);
+            RowRuntime.viewRead(active.d3Address, Identity.enginePosition(),
+                    nonNull(siteId) + "#VIEW", view, version.version);
         }
     }
 

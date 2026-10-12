@@ -639,6 +639,8 @@ public final class MessageDoors {
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
             written(transport, key, owner);
+        } catch (RuntimeException fault) {
+            observerFault("stored " + key, fault);
         } finally {
             storeEnded(transport, store);
             resume(paused);
@@ -665,7 +667,7 @@ public final class MessageDoors {
         // After every VM event so far, as a concrete target stands: a closure
         // cuts a writer strictly before its write's seq, and the writer's
         // own last event (its door's fault marker) is before the write.
-        RowRuntime.storeWrite(at, Identity.afterLastEvent(),
+        RowRuntime.storeWrite(at, Identity.enginePosition(),
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
@@ -707,9 +709,28 @@ public final class MessageDoors {
         boolean paused = pause();
         try {
             decode(transport, key, product);
+        } catch (RuntimeException fault) {
+            observerFault("decoded " + key, fault);
         } finally {
             resume(paused);
         }
+    }
+
+    /**
+     * An engine fault in a door that only observes the system -- its
+     * decodes, views, refreshes, stores and content: named, never thrown
+     * into the system's code, which such a door leaves as it found it (a
+     * NullPointerException of #decode killed every seed replay whose test
+     * builds its cluster in @Before, solr-sg3 SP2-10).  The rows the door
+     * would have stated are missing: SESSION_INCOMPLETE, BLOCKING.
+     */
+    private static void observerFault(String door, RuntimeException fault) {
+        StackTraceElement[] frames = fault.getStackTrace();
+        RowRuntime.gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING, door,
+                "the engine's door threw " + fault + (frames.length == 0
+                        ? "" : " at " + frames[0]) + "; the system's call"
+                        + " went on, and the rows the door states are"
+                        + " missing");
     }
 
     private static void decode(String transport, String key, Object product) {
@@ -732,7 +753,9 @@ public final class MessageDoors {
         OccurrenceAddress here = Identity.currentOccurrence(node);
         String decoder = decoderNode(here, node);
         LocationId view = viewOf(store, decoder);
-        boolean repoints = !decoder.isEmpty() && REPOINTED.add(
+        // A thread no registered node owns (a test building its cluster in
+        // @Before) has no view to re-point: its parse is no node's decision.
+        boolean repoints = view != null && REPOINTED.add(
                 trimmed(transport) + "\n" + path + "\n" + decoder + "@"
                         + version);
         // A system's own refresh reads the store as it stands
@@ -744,14 +767,28 @@ public final class MessageDoors {
                 store, path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered);
-        if (repoints && RowRuntime.open()) {
-            OccurrenceAddress at = RowRuntime.doorOccurrence(node);
-            // After every VM event so far, as a store's write stands.
-            RowRuntime.viewWrite(at, Identity.afterLastEvent(),
-                    Endpoint.messageSite(trimmed(transport), "VIEW",
-                            view.slot().replace('/', '.').replace('@', '.')),
-                    viewOf(store, at), version);
+        if (!repoints) return;
+        if (!RowRuntime.open()) {
+            // Before the window: what the node holds when it opens, the
+            // view's INITIAL at its first row (RowRuntime#viewInitial).
+            RowRuntime.viewBeforeWindow(view, version);
+            return;
         }
+        OccurrenceAddress at = RowRuntime.doorOccurrence(node);
+        if (at == null) {
+            RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                    view + "@" + version, "a decode re-pointed this view in"
+                            + " the window on a thread no occurrence runs"
+                            + " on: no write row states the version, so its"
+                            + " reads are unattributed (UNATTRIBUTED_STORE)"
+                            + " and no read is re-paired across it");
+            return;
+        }
+        // After every VM event so far, as a store's write stands.
+        RowRuntime.viewWrite(at, Identity.enginePosition(),
+                Endpoint.messageSite(trimmed(transport), "VIEW",
+                        view.slot().replace('/', '.').replace('@', '.')),
+                viewOf(store, at), version);
     }
 
     /**
@@ -791,6 +828,8 @@ public final class MessageDoors {
             }
             Confirmation.decoding(viewOf(storeLocation(transport, life),
                     decoderNode(at, node)), reach, at);
+        } catch (RuntimeException fault) {
+            observerFault("refreshing " + path, fault);
         } finally {
             resume(paused);
         }
@@ -861,6 +900,8 @@ public final class MessageDoors {
         boolean paused = pause();
         try {
             view(transport, path, product);
+        } catch (RuntimeException fault) {
+            observerFault("viewed " + path, fault);
         } finally {
             resume(paused);
         }
@@ -874,16 +915,15 @@ public final class MessageDoors {
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         if (at == null) return;
         // On the scale the engine's writes of a store and a view stand on,
-        // after every VM event so far: a read stated with no VM event since
-        // the write it saw is never ordered before it.
-        long seq = Identity.afterLastEvent();
+        // after every VM event so far and every engine row stated before it
+        // (contract.RowOrder): never ordered before the write it saw.
         String site = ContentPort.viewed(trimmed(transport), path);
-        RowRuntime.storeRead(at, seq, site, version.location,
-                version.version);
+        RowRuntime.storeRead(at, Identity.enginePosition(), site,
+                version.location, version.version);
         LocationId view = viewOf(version.location, at);
         if (view != null) {
-            RowRuntime.viewRead(at, seq, site + "#VIEW", view,
-                    version.version);
+            RowRuntime.viewRead(at, Identity.enginePosition(), site + "#VIEW",
+                    view, version.version);
         }
     }
 
@@ -904,7 +944,11 @@ public final class MessageDoors {
      * weakly by the array, so bytes no store takes drop it.
      */
     public static void jsonWritten(byte[] bytes, Object document) {
-        StoreContent.written(bytes, document);
+        try {
+            StoreContent.written(bytes, document);
+        } catch (RuntimeException fault) {
+            observerFault("jsonWritten", fault);
+        }
     }
 
     /**
@@ -914,7 +958,11 @@ public final class MessageDoors {
      * ({@link StoreContent}).
      */
     public static void jsonRead(byte[] bytes, Object tree) {
-        StoreContent.parsed(bytes, tree);
+        try {
+            StoreContent.parsed(bytes, tree);
+        } catch (RuntimeException fault) {
+            observerFault("jsonRead", fault);
+        }
     }
 
     /**
@@ -1030,6 +1078,8 @@ public final class MessageDoors {
         boolean paused = pause();
         try {
             fetch(transport, key, owner, data);
+        } catch (RuntimeException fault) {
+            observerFault("fetched " + key, fault);
         } finally {
             resume(paused);
         }

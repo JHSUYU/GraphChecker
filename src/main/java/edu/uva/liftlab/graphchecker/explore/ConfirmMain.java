@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -1671,9 +1672,12 @@ public final class ConfirmMain {
                 // hold.
                 for (WriteRow decode : closure.byLocation.getOrDefault(
                         location, Collections.<WriteRow>emptyList())) {
-                    if (decode.version() <= held.version()) continue;
+                    if (decode.version() <= held.version()
+                            || decode.initial()) {
+                        continue;
+                    }
                     holding.cone.add(decode.endpoint().occurrence());
-                    if (decode.seq() < read.seq()) {
+                    if (RowOrder.before(decode, read)) {
                         holding.cutBefore = Math.min(holding.cutBefore,
                                 decode.seq());
                     }

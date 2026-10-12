@@ -17,11 +17,12 @@ public final class WriteRow extends Value {
     private final Referent referentState;
     private final String referentStateRefused;
     private final boolean initial;
+    private final int tie;
 
     private WriteRow(String sessionId, long seq, Endpoint endpoint,
                      LocationId location, long version, String expressionRef,
                      String javaType, Referent referentState,
-                     String referentStateRefused, boolean initial) {
+                     String referentStateRefused, boolean initial, int tie) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -32,6 +33,7 @@ public final class WriteRow extends Value {
         this.referentState = referentState;
         this.referentStateRefused = referentStateRefused;
         this.initial = initial;
+        this.tie = tie;
     }
 
     public static WriteRow of(String sessionId, long seq, Endpoint endpoint,
@@ -51,7 +53,7 @@ public final class WriteRow extends Value {
                 expressionRef, javaType);
         return new WriteRow(row.sessionId, row.seq, row.endpoint,
                 row.location, row.version, row.expressionRef, row.javaType,
-                null, null, true);
+                null, null, true, 0);
     }
 
     /** The same write of a reference, stating the state of the container
@@ -72,7 +74,22 @@ public final class WriteRow extends Value {
                 Fields.required(location, "location"), version,
                 Fields.required(expressionRef, "expressionRef"),
                 Fields.text(javaType, "javaType"), referentState, refused,
-                false);
+                false, 0);
+    }
+
+    /** The same row at {@code tie} among the engine's rows of its seq
+     *  ({@link RowOrder}). */
+    public WriteRow withTie(int tie) {
+        if (tie == this.tie) return this;
+        return new WriteRow(sessionId, seq, endpoint, location, version,
+                expressionRef, javaType, referentState, referentStateRefused,
+                initial, (int) Fields.nonNegative(tie, "tie"));
+    }
+
+    /** Where among the engine's rows of its seq this row stands: 0 for a
+     *  VM row ({@link RowOrder}). */
+    public int tie() {
+        return tie;
     }
 
     public String sessionId() {
@@ -138,7 +155,7 @@ public final class WriteRow extends Value {
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, location, version,
                 expressionRef, javaType, referentState, referentStateRefused,
-                initial};
+                initial, tie};
     }
 
     @Override

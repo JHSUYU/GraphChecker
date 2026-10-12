@@ -772,7 +772,10 @@ replica a loop skips), so no decision's flip reaches it. A task offers pairing f
 occurrence writes a STORE version or is the declared anchor's: for each view its occurrence read, or
 its node read under its causal context in role work before it opened (a routed alias captures its
 view in the request's role work and writes it in a store door's region), its earliest read is
-offered each older version the node decoded before it in the session, newest first, none older than
+offered each older version the node decoded before it in the session (on the session's one order,
+`contract.RowOrder`: a decode and a read stated with no VM event between them in the order the engine
+stated them; the view's INITIAL -- what the node held when the window opened, a decode before it,
+stated at the view's first row in the window, seq 0 -- before every read), newest first, none older than
 a decode the reader's own work (its node and causal context) made before the read -- the hold never
 holds that work's own decodes, so its view is at least that one's --, at most
 `PairingFlip#PER_READ` (8); past them a `pairing-bound` gap, counted in result.json `bounded`
@@ -970,7 +973,10 @@ the reader's occurrence to close, since the choice binds every read it makes of 
 the flipped world may read it again, CONFIRM's for the read's activation; for a node's VIEW, whose
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
-before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`; an on-demand
+before the system re-points the view, and the schedule cut stops before the first of them before the
+read (`RowOrder`) (`MessageDoors#decoded`, `Confirmation#decoding`; a decode on a thread no registered
+node owns re-points no view, and one in the window on a thread no occurrence runs is named
+`LINEAGE_LOST`, its version unrowed; an on-demand
 watch's refresh waits at its start, before the adapter's lock, `MessageDoors#refreshing`, as a decode
 of the newest version a write filed in the location's current life and one more per thread with a write
 in flight there that has not filed its version (a write files and stops being in flight in one step,
@@ -986,7 +992,12 @@ writes it in a store door's region) --, never the
 decodes of the reader's own work (its node and causal context), at most the order's timeout (300 s), past which
 the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
-states no read or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
+states no read or write of refuses (`PAIRING_UNSTATED`). A pairing no term of a path names is claimed
+from the session that took it as that session's whole world (§11 rule 3): its own run with the plants
+in place of the recording's pairing at each planted location (`Composition#worldRun`; the own run
+alone holds there "any arm but the plant"), only where the paired read lies on the fatal path at the
+occurrence level (`Composition#onFatalPath`: its symbol in the cone, or its occurrence the anchor's or
+the writer of a version a read in the cone observed). The worker writes `obligation_result.jsonl`
 (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's

@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -542,19 +543,20 @@ public final class RowRuntime {
      * reader decides on it rests on the version, which the closure follows
      * to its writer.
      */
-    public static void storeWrite(OccurrenceAddress occurrence, long seq,
+    public static void storeWrite(OccurrenceAddress occurrence,
+                                  RowOrder.Position at,
                                   String site, LocationId location,
                                   long version) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) {
             return;
         }
-        Endpoint at = Identity.endpointAt(occurrence, site, 0);
-        if (at == null) return;
+        Endpoint writer = Identity.endpointAt(occurrence, site, 0);
+        if (writer == null) return;
         WRITTEN.add(Confirmation.key(location, version));
-        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, "", STORE_TYPE));
-        Confirmation.wrote(location, version, at, false);
+        session.write(WriteRow.of(sessionId(), sequence(at.seq), writer,
+                location, version, "", STORE_TYPE).withTie(at.tie));
+        Confirmation.wrote(location, version, writer, false);
     }
 
     /**
@@ -563,7 +565,8 @@ public final class RowRuntime {
      * Provenance}).  Its symbol names the version ({@link #storeSymbol}),
      * as one symbol names one heap version; no expression holds it.
      */
-    public static void storeRead(OccurrenceAddress occurrence, long seq,
+    public static void storeRead(OccurrenceAddress occurrence,
+                                 RowOrder.Position position,
                                  String site, LocationId location,
                                  long version) {
         SessionPublisher session = publisher;
@@ -572,10 +575,10 @@ public final class RowRuntime {
         }
         // A guard that reads several objects of one parse with no VM event
         // between them (a loop over a collection's slices) reads the version
-        // once.  The seq is the JVM's last event id, which another node's
-        // reader shares: one read per occurrence, event, location and version.
-        if (!STORE_READS.add(occurrence.id() + "|" + seq + "|" + location
-                + "|" + version)) {
+        // once: one read per occurrence, VM event, location and version
+        // (RowInvariants invariant 4), at the first one's position.
+        if (!STORE_READS.add(occurrence.id() + "|" + position.seq + "|"
+                + location + "|" + version)) {
             return;
         }
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
@@ -585,8 +588,9 @@ public final class RowRuntime {
                     key -> new Readers(at, location, version))
                     .count.incrementAndGet();
         }
-        session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
-                version, storeSymbol(location, version), STORE_TYPE, null));
+        session.read(ReadRow.of(sessionId(), sequence(position.seq), at,
+                location, version, storeSymbol(location, version), STORE_TYPE,
+                null).withTie(position.tie));
         Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
     }
 
@@ -596,11 +600,13 @@ public final class RowRuntime {
      * decoding occurrence, its value the version decoded (a {@code long}
      * constant), under the site {@code <transport>#VIEW:<location>}.
      */
-    public static void viewWrite(OccurrenceAddress occurrence, long seq,
+    public static void viewWrite(OccurrenceAddress occurrence,
+                                 RowOrder.Position position,
                                  String site, LocationId view,
                                  long version) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || view == null) return;
+        viewInitial(occurrence, view);
         // A version a read of the view observed already: the node held it,
         // decoded where no row was stated (a thread no node owns), so this
         // parse re-points nothing.
@@ -612,10 +618,59 @@ public final class RowRuntime {
         value.addProperty("_exp", "Y_J_" + version);
         value.addProperty("_java_type", "J");
         WRITTEN.add(Confirmation.key(view, version));
-        session.write(WriteRow.of(sessionId(), sequence(seq), at, view,
-                version, expressionRef(value), "J"));
+        session.write(WriteRow.of(sessionId(), sequence(position.seq), at,
+                view, version, expressionRef(value), "J")
+                .withTie(position.tie));
         Confirmation.wrote(view, version, at, false);
     }
+
+    /**
+     * A node's view re-pointed before the window opened (a decode while no
+     * row is stated, {@code MessageDoors#decoded}): the newest version, per
+     * view, which {@link #viewInitial} states as the view's INITIAL.
+     */
+    static void viewBeforeWindow(LocationId view, long version) {
+        if (view == null || version < 0L) return;
+        PRE_WINDOW.merge(Confirmation.viewKey(view), version, Math::max);
+    }
+
+    /**
+     * Before the first row of a view in this session: the version a decode
+     * re-pointed it to before the window, as the view's INITIAL -- what the
+     * node held when the window opened -- stated at the occurrence of that
+     * first row under the view's INITIAL site, seq 0 (it orders nothing, as
+     * every INITIAL).  A version re-pointed there is then a writer a pairing
+     * may ask and an arm a read may be re-paired across (Arms#eligible), no
+     * longer an unrowed version.
+     */
+    private static void viewInitial(OccurrenceAddress occurrence,
+                                    LocationId view) {
+        Long version = PRE_WINDOW.remove(Confirmation.viewKey(view));
+        if (version == null
+                || WRITTEN.contains(Confirmation.key(view, version))) {
+            return;
+        }
+        String owner = view.owner();
+        int node = owner.indexOf('@');
+        String site = Endpoint.initialSite(Endpoint.messageSite(
+                node < 0 ? owner : owner.substring(0, node), "VIEW",
+                view.slot().replace('/', '.').replace('@', '.')));
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "ConstExpr");
+        value.addProperty("_exp", "Y_J_" + version);
+        value.addProperty("_java_type", "J");
+        WRITTEN.add(Confirmation.key(view, version));
+        publisher.write(WriteRow.initial(sessionId(), 0L, at, view, version,
+                expressionRef(value), "J"));
+        Confirmation.wrote(view, version, at, true);
+    }
+
+    /** View key -> the newest version a decode re-pointed it to before the
+     *  window ({@link #viewBeforeWindow}), until {@link #viewInitial}. */
+    private static final Map<String, Long> PRE_WINDOW =
+            new ConcurrentHashMap<String, Long>();
 
     /**
      * A guard read an object of the decode its node's view holds ({@link
@@ -623,21 +678,23 @@ public final class RowRuntime {
      * version observed its value, its symbol the read's own ({@code V_} and
      * the endpoint), which a family re-pairs to another decode of the node.
      */
-    public static void viewRead(OccurrenceAddress occurrence, long seq,
+    public static void viewRead(OccurrenceAddress occurrence,
+                                RowOrder.Position position,
                                 String site, LocationId view, long version) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || view == null) return;
-        if (!STORE_READS.add(occurrence.id() + "|" + seq + "|" + view + "|"
-                + version)) {
+        viewInitial(occurrence, view);
+        if (!STORE_READS.add(occurrence.id() + "|" + position.seq + "|"
+                + view + "|" + version)) {
             return;
         }
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         READERS.computeIfAbsent(Confirmation.key(view, version),
                 key -> new Readers(at, view, version)).count.incrementAndGet();
-        session.read(ReadRow.of(sessionId(), sequence(seq), at, view,
+        session.read(ReadRow.of(sessionId(), sequence(position.seq), at, view,
                 version, "V_" + ArtifactIO.digest(at.id(), 16), "J",
-                Long.toString(version)));
+                Long.toString(version)).withTie(position.tie));
         Confirmation.read(at, view, version, ReadRow.UNKNOWN_VERSION);
         FocusedReplay.viewRead(at, version);
     }
@@ -1439,6 +1496,7 @@ public final class RowRuntime {
             WRITTEN.clear();
             READERS.clear();
             STORE_READS.clear();
+            PRE_WINDOW.clear();
             OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();
