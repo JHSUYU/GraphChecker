@@ -507,7 +507,12 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    the per-site counts) is a `TOPOLOGY_DIVERGENCE` as well, BLOCKING when the session is admitted
    and in a world where the member ran, else DIAGNOSTIC (a new occurrence); under the member's shape
    it ran the member, whatever it counted (a poll's k-th wake is another k in every run), and under
-   that shape and another too it grew. A slot stands on the session that opened it: the slots of a
+   that shape and another too it grew. A member the session ran under its own shape (no `Lost`
+   context), at its region and index, on another node MOVED -- the world placed the work there, and
+   what runs at its code point is other work (solr-bugs-snapshot-no-active Z2K: a setData fault made
+   node1 the Overseer, the client's update ran on node0, node1's autoscaling write stood at
+   setData's code point) -- an `ADDRESS_UNSTABLE` DIAGNOSTIC row naming the node, never a
+   replacement. A slot stands on the session that opened it: the slots of a
    session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
    where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
    replay answered by its shape (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the planned

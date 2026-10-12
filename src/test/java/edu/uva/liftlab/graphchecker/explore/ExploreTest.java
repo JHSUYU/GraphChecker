@@ -3390,6 +3390,59 @@ public class ExploreTest {
                             Collections.singleton(member.id()), 6).replaced);
         }
 
+        // A member this replay ran under its own context on another node
+        // MOVED (solr-bugs-snapshot-no-active Z2K: a setData fault made node1
+        // the Overseer, and the update node1 had served ran on node0, beside
+        // node1's new autoscaling write at setData's code point): named,
+        // DIAGNOSTIC, never a replacement -- unless all it ran elsewhere is
+        // a Lost context, which names no shape.
+        OccurrenceAddress served = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "update", 1),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress lost = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.UNKNOWN),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress movedRequest = occurrence("hdfs-case/dn1",
+                "REGION.checksum", served.context(),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress lostThere = occurrence("hdfs-case/dn1",
+                "REGION.checksum", CausalContext.of(Role.UNKNOWN),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        // what else the replay ran, whether it replaced the member, the
+        // moved rows
+        Object[][] movedRows = {
+                {movedRequest, false, 1},
+                {lostThere, true, 0},
+        };
+        for (Object[] row : movedRows) {
+            Path dir = tree.newFolder("closure-moved-" + ((OccurrenceAddress)
+                    row[0]).node().render().hashCode() + "-" + row[2])
+                    .toPath();
+            Session ranIt = new Session(dir, "s-seed");
+            ranIt.activation(served, false);
+            ranIt.flush();
+            Session ranThere = new Session(dir, "s-flip");
+            ranThere.activation(lost, true);
+            ranThere.activation((OccurrenceAddress) row[0], false);
+            ranThere.answered(ObligationResult.of("OBL.s-flip",
+                    Verdict.ADMITTED, "s-flip",
+                    "the focused prefix reproduced"));
+            ranThere.flush();
+            SlotTable.Reconciliation reconciled = new SlotTable().reconcile(
+                    Corpus.read(dir, null),
+                    Collections.singleton(served.id()), 6);
+            assertEquals(row[0] + " elsewhere", row[1], reconciled.replaced);
+            int named = 0;
+            for (GapRow gap : reconciled.gaps) {
+                if (gap.kind() != GapKind.ADDRESS_UNSTABLE) continue;
+                assertEquals(GapClass.DIAGNOSTIC, gap.cls());
+                assertEquals(served.render(), gap.subject());
+                assertTrue(gap.detail(), gap.detail().contains("hdfs-case/dn1"));
+                named++;
+            }
+            assertEquals(row[0] + " elsewhere", row[2], named);
+        }
+
         // The closure may hold TWO occurrences of one code point: hdfs-17897's
         // dn0 serves the client's SASL handshake and the checksum leader's
         // own at one callback, and the leader's co-reads the key map the
