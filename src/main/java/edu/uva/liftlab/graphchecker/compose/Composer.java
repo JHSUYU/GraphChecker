@@ -3158,20 +3158,19 @@ public final class Composer {
     }
 
     /**
-     * What this session received at these attaches, one term per symbol.
-     * Kept beside the path, not in it: an arrival is a consequence of its
-     * producer's roots, so pinning it would pin them.
+     * What this session received at these attaches, one term per symbol, as
+     * {@link #arrived} reads a row (a String arrival its text).  Kept beside
+     * the path, not in it: an arrival is a consequence of its producer's
+     * roots, so pinning it would pin them.
      */
     private List<String> arrivals(List<AttachRow> attaches) {
         List<String> stated = new ArrayList<String>();
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : attaches) {
             if (!seen.add(attach.symbol())) continue;
-            String literal = smtLiteral(JsonFields.firstNonBlank(
-                    attach.answeredValue(), attach.arrival()),
-                    JavaSmtSorts.sortOfJava(attach.javaType()));
-            if (literal.isEmpty()) continue;
-            stated.add("(= " + attach.symbol() + " " + literal + ")");
+            Term received = arrived(attach);
+            if (received == null) continue;
+            stated.add("(= " + attach.symbol() + " " + received.text + ")");
         }
         return stated;
     }

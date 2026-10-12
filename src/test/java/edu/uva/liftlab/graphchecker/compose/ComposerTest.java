@@ -1935,15 +1935,17 @@ public class ComposerTest {
         }
     }
 
-    @Test
-    public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
-        Path iteration = folder.newFolder("arrivals").toPath();
+    /** Two sessions' arrivals of one sort: {@code sort} is the Java type,
+     *  each session's arrival, and the literal each path is held to. */
+    private void arrivalsOfTheirOwnSessions(String[] sort) throws Exception {
+        Path iteration = folder.newFolder("arrivals-" + sort[0].length())
+                .toPath();
         Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
                 at("export#1", 0), 0);
         Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
                 at("attach#1", 0), 0);
-        for (String[] each : new String[][]{{"s0", "10", "false"},
-                {"s1", "20", "true"}}) {
+        for (String[] each : new String[][]{{"s0", sort[1], "false"},
+                {"s1", sort[2], "true"}}) {
             Session session = new Session(iteration, each[0],
                     "true".equals(each[2]));
             // The producer's rows are stated, so its arm is attested and
@@ -1952,10 +1954,11 @@ public class ComposerTest {
             // that run had and not a reason for it.
             session.activation(PRODUCER);
             session.marker("false");
-            session.expression("EXPR.v1.id", integer("I",
-                    Long.parseLong(each[1])));
-            session.export(producer, "EXPR.v1.id", 1L, each[1]);
-            session.attach(consumer, "vh", "I", each[1], producer);
+            session.expression("EXPR.v1.id", "I".equals(sort[0])
+                    ? integer("I", Long.parseLong(each[1]))
+                    : VmExpressionIr.stringConstant(each[1]));
+            session.export(producer, "EXPR.v1.id", sort[0], 1L, each[1]);
+            session.attach(consumer, "vh", sort[0], each[1], producer);
             session.target("true", false, true);
             session.write();
         }
@@ -1963,7 +1966,8 @@ public class ComposerTest {
         Composer.Composition composition = compose(iteration, 4);
         assertEquals(2, composition.disjuncts().size());
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            String own = "s0".equals(disjunct.path().sessionId) ? "10" : "20";
+            String own = "s0".equals(disjunct.path().sessionId) ? sort[3]
+                    : sort[4];
             assertTrue("this path states the arrival ITS OWN session "
                             + "recorded: " + disjunct.path().sessionId + " "
                             + composition.observedArrivals(
@@ -1987,7 +1991,22 @@ public class ComposerTest {
                     "sat", solver.ask(alone,
                             Collections.<String>emptyList(), false).status());
         }
+    }
 
+    @Test
+    public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
+        // A String arrival is its text, whatever it begins with (Composer
+        // #arrived): read as a literal it was kept nowhere, and no
+        // MESSAGE_PAIRING_FLIPPED witness could replace it.
+        for (String[] sort : new String[][]{{"I", "10", "20", "10", "20"},
+                {"Ljava/lang/String;", "active", "\"down", "\"active\"",
+                        "\"\"\"down\""}}) {
+            arrivalsOfTheirOwnSessions(sort);
+        }
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
         // AND THE OTHER HALF OF THE ONE RULE.  The same two sessions with
         // no rows for the producer at all: no row states the producer, so
         // each path holds its arrival at what its own row states it
