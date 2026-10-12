@@ -566,7 +566,11 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   (`markTaskAsRunning`) runs in a region of it, for the task's Runner, which took the same item in.
   Every occurrence of the turn that sent a message is a door of it too: a fault anywhere in the turn
   can stop it short of the send (RestoreCmd's RESTORECORE requests before its ACTIVE offer, their
-  failure an exception that crosses the shard handler's executor, which no term names).
+  failure an exception that crosses the shard handler's executor, which no term names). Each
+  narrowing names what it cut, a counted DIAGNOSTIC row (PLAN's plan gaps, EXPLORE's): the served
+  occurrence's own turn, the turns standing on the message (its handlers,
+  `RecordedMessages#handlerStancesOf`), and a control producer, whose own message's doors are not
+  asked (it contributes no value).
 
 A STORE read rests on the write that made its version and on every earlier version of its location:
 a store keeps one document per location, and each write modifies the one before it (Solr's state

@@ -36,6 +36,9 @@ final class RecordedMessages {
     /** Producer endpoint id -> the stances of the turns that took it in at
      *  their root, no occurrence open ({@link #doorStancesOf}). */
     private final Map<String, Set<String>> receivingStances = new HashMap<>();
+    /** Producer endpoint id -> the stances of the turns standing on it, its
+     *  handlers ({@link #handlerStancesOf}): what it started, no door. */
+    private final Map<String, Set<String>> handlers = new HashMap<>();
 
     RecordedMessages(Collection<ScheduleEvent> schedule) {
         for (ScheduleEvent event : schedule) {
@@ -62,11 +65,11 @@ final class RecordedMessages {
                     receivers.computeIfAbsent(message,
                             ignored -> new LinkedHashSet<>())
                             .add(event.occurrence());
-                } else if (at != null
-                        && !(at.context() instanceof CausalContext.Anchor)) {
+                } else if (at != null) {
                     // Taken in at a turn's root; a turn standing on the
                     // message (a request's handler) is what it started.
-                    receivingStances.computeIfAbsent(message,
+                    (at.context() instanceof CausalContext.Anchor ? handlers
+                            : receivingStances).computeIfAbsent(message,
                             ignored -> new LinkedHashSet<>())
                             .add(at.render());
                 }
@@ -111,6 +114,18 @@ final class RecordedMessages {
             if (sentFrom != null) doors.add(sentFrom.render());
         }
         return doors;
+    }
+
+    /** The stances of the turns standing on a message that started {@code
+     *  occurrence} -- its handlers, which it started: no doors of it, each
+     *  cut named by its caller. */
+    Set<String> handlerStancesOf(OccurrenceAddress occurrence) {
+        Set<String> stances = new LinkedHashSet<>();
+        for (String endpoint : startedBy(occurrence)) {
+            stances.addAll(handlers.getOrDefault(endpoint,
+                    Collections.<String>emptySet()));
+        }
+        return stances;
     }
 
     /** The producer endpoints of the messages that started {@code

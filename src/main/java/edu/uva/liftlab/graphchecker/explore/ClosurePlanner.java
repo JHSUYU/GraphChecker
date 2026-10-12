@@ -626,6 +626,8 @@ public final class ClosurePlanner {
         /** Doors said to decide no fault, once each ({@link
          *  #controlProducer}). */
         private final Set<String> faultless = new LinkedHashSet<String>();
+        /** The narrowings' cuts already named (occurrence, message, kind). */
+        private final Set<String> cut = new LinkedHashSet<String>();
         /** session|store location -> the highest version whose earlier
          *  versions' writers are demanded ({@link #earlierVersions}). */
         private final Map<String, Long> storeExpanded =
@@ -804,6 +806,13 @@ public final class ClosurePlanner {
         // items, six hops deep, doubled the plan).
         if (!CONTROL_PRODUCER.equals(demand.why)) {
             controlProducer(walk, demand, next);
+        } else if (!walk.corpus.startedBy(demand.occurrence).isEmpty()
+                && walk.cut.add(demand.occurrence.id() + "|producer")) {
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    demand.occurrence.render(), "a control producer "
+                            + "contributes no value: the doors of the message"
+                            + " that started it are not asked"));
         }
         return next;
     }
@@ -841,8 +850,25 @@ public final class ClosurePlanner {
     private static void doorsOf(Walk walk, Demand demand, String endpoint,
                                 List<Demand> next) {
         Corpus corpus = walk.corpus;
-        for (OccurrenceAddress door : corpus.doorsOf(endpoint,
-                demand.occurrence)) {
+        Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
+        List<OccurrenceAddress> doors = corpus.doorsOf(endpoint,
+                demand.occurrence, cut);
+        // Each narrowing names what it cut (counted, DIAGNOSTIC).
+        for (Map.Entry<String, Integer> each : cut.entrySet()) {
+            if (!walk.cut.add(demand.occurrence.id() + "|" + endpoint + "|"
+                    + each.getKey())) {
+                continue;
+            }
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    demand.occurrence.render(), each.getValue()
+                            + " occurrence(s) of " + (Corpus.OWN_TURN.equals(
+                            each.getKey()) ? "this occurrence's own turn"
+                            : "turns standing on the message (its handlers)")
+                            + " hold no door of message " + endpoint
+                            + " that started it: they are what it started"));
+        }
+        for (OccurrenceAddress door : doors) {
             if (door.equals(demand.occurrence)) continue;
             if (walk.faulted(door)) {
                 next.add(new Demand(door, CONTROL_PRODUCER, false));

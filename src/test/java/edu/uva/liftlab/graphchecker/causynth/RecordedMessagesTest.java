@@ -74,6 +74,12 @@ public class RecordedMessagesTest {
             assertEquals((String) row[0], row[2],
                     messages.doorStancesOf(occurrence));
         }
+        // The handler's turn is what e1 started: no door, a cut its caller
+        // names (review M4).
+        assertEquals(set("s/n3#epoch0|Anchor:e1@HADOOP_IPC/hb"),
+                messages.handlerStancesOf(OccurrenceAddress.parse(
+                        "s/n1#epoch0/region/REGION.h/ctx:Anchor:e1@HADOOP_IPC"
+                                + "/hb/idx:")));
     }
 
     /** A batching turn (an Overseer state writer flushing several queue
