@@ -153,49 +153,29 @@ final class PairingFlip {
     }
 
     /**
-     * The view reads a task's path offers: its occurrence's, and its
-     * node's under its causal context in role work before it opened (its
-     * first row), the earliest per view.  Before and first by the one order
-     * ({@link RowOrder}, seq then tie): a role's view read and the store
-     * write that opens the occurrence may share a seq (round SG3A tra: the
-     * seed's read at (538, 12), its alias update's write at (538, 24); by
-     * seq alone the seed offered no pairing flip, and the one session that
-     * did carried a root its replay never minted).
+     * The view reads a task's path offers: its occurrence's, and those of
+     * its role prefix ({@link Corpus#rolePrefix}: its node's under its
+     * causal context in role work before it opened, by the one order -- a
+     * role's view read and the store write that opens the occurrence may
+     * share a seq: round SG3A tra, the seed's read at (538, 12), its alias
+     * update's write at (538, 24); by seq alone the seed offered no pairing
+     * flip, and the one session that did carried a root its replay never
+     * minted), the earliest per view.
      */
     private static List<ReadRow> reads(Corpus corpus, Task task,
                                        SessionReader session) {
         OccurrenceAddress focused = task.focused();
-        long openedSeq = Long.MAX_VALUE;
-        int openedTie = 0;
-        for (ReadRow read : corpus.readsOn(session.sessionId(), focused)) {
-            if (RowOrder.beforeCut(read.seq(), read.tie(), openedSeq,
-                    openedTie)) {
-                openedSeq = read.seq();
-                openedTie = read.tie();
-            }
-        }
-        for (WriteRow write : session.writes()) {
-            if (write.endpoint().occurrence().equals(focused)
-                    && RowOrder.beforeCut(write.seq(), write.tie(),
-                    openedSeq, openedTie)) {
-                openedSeq = write.seq();
-                openedTie = write.tie();
-            }
-        }
         Map<String, ReadRow> earliest = new LinkedHashMap<String, ReadRow>();
         for (ReadRow read : session.reads()) {
             if (read.location().kind() != LocationKind.VIEW
                     || read.observedVersion() < 0L) {
                 continue;
             }
-            OccurrenceAddress at = read.endpoint().occurrence();
-            boolean own = at.equals(focused);
-            boolean prefix = !own && at.role()
-                    && at.node().equals(focused.node())
-                    && at.context().equals(focused.context())
-                    && RowOrder.beforeCut(read.seq(), read.tie(), openedSeq,
-                    openedTie);
-            if (!own && !prefix) continue;
+            if (!read.endpoint().occurrence().equals(focused)
+                    && !corpus.rolePrefix(session.sessionId(), read,
+                    focused)) {
+                continue;
+            }
             String view = SmtLowering.locationKey(read.location());
             ReadRow held = earliest.get(view);
             if (held == null || RowOrder.before(read.seq(), read.tie(),

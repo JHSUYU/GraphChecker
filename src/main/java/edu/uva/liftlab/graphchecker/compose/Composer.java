@@ -985,8 +985,9 @@ public final class Composer {
             CONE,
             /** A read no term names, made by the anchor's occurrence. */
             ANCHOR,
-            /** A read no term names, whose occurrence wrote a version a
-             *  read in the cone observed. */
+            /** A read no term names, whose occurrence -- or one it is the
+             *  role prefix of ({@link Corpus#rolePrefix}) -- wrote a version
+             *  a read in the cone observed. */
             WROTE
         }
 
@@ -997,7 +998,11 @@ public final class Composer {
          * document lacks decides nothing the VM states -- its occurrence is
          * the anchor's, or wrote a version a read in the cone observed (a
          * store version the stale view's work wrote back, a field the anchor
-         * reads).  Null where none holds.
+         * reads), a role read counting as the read of each occurrence it is
+         * the role prefix of, by the rule a pairing flip is offered by
+         * ({@link Corpus#rolePrefix}: round SG3B tra, node1's getAliases()
+         * view read in the request's role work, whose alias update wrote
+         * {@code /aliases.json} back).  Null where none holds.
          */
         public FatalPath onFatalPath(Disjunct selected, ReadRow read) {
             Set<String> cone = cone(selected.selector());
@@ -1010,9 +1015,14 @@ public final class Composer {
             SessionReader rows = corpus.session(session);
             if (rows == null) return null;
             Map<String, List<String>> observed = readsByVersion(session);
+            Map<OccurrenceAddress, Boolean> its =
+                    new HashMap<OccurrenceAddress, Boolean>();
+            its.put(reader, Boolean.TRUE);
             for (WriteRow write : rows.writes()) {
-                if (write.initial()
-                        || !reader.equals(write.endpoint().occurrence())) {
+                OccurrenceAddress writer = write.endpoint().occurrence();
+                if (write.initial() || !its.computeIfAbsent(writer,
+                        occurrence -> reader.role() && corpus.rolePrefix(
+                                session, read, occurrence))) {
                     continue;
                 }
                 for (String symbol : observed.getOrDefault(

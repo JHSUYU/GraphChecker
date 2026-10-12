@@ -5279,7 +5279,11 @@ public class ComposerTest {
      * to the plant's arm -- or, where no family states the read (the decode
      * of 2's arm does not lower, so one writer is left), named {@code
      * PAIRING:<reader>=VIEW@1}.  The same session in a world that planted
-     * nothing names no mechanism.
+     * nothing names no mechanism.  A read the turn's role work made before
+     * it opened, on its node under its causal context, is the turn's
+     * ({@code Corpus#rolePrefix}: round SG3B tra's getAliases() read): on
+     * the fatal path by what the turn wrote; one under another context is
+     * not.
      */
     @Test
     public void aWorldPlantedViewPairingIsRePairedAsAnyPlantedOneNamedOrNot()
@@ -5299,32 +5303,50 @@ public class ComposerTest {
         OccurrenceAddress newer = occurrence("case/dn0", "REGION.watch",
                 CausalContext.of(Role.of("WATCHER"), "", 2),
                 frame("Watcher#process#1", 0));
-        Endpoint guard = Endpoint.of(turn, "SOLR_ZK#VIEWED:/aliases.json",
-                at("g#1", 0), 0);
+        OccurrenceAddress prefix = OccurrenceAddress.of(turn.node(),
+                OccurrenceAddress.ROLE_REGION + "SOLR_HTTP", turn.context(),
+                ExecutionIndex.empty());
         Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
                 at("r#1", 0), 0);
         OccurrenceAddress elsewhere = occurrence("case/dn0", "REGION.other",
                 CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Handler#run#3", 0));
         // planted?, a guard names the view?, the decode of 2 has an arm?,
-        // the turn writes what the anchor reads?, the claim
+        // the turn writes what the anchor reads?, who reads the view, the
+        // claim
         Object[][] table = {
-                {true, true, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, true, true, true, ClaimKind.FORMULA_SAT},
-                {true, false, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, false, true, true, ClaimKind.FORMULA_SAT},
-                {true, false, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {true, true, true, true, turn,
+                        ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, true, true, true, turn, ClaimKind.FORMULA_SAT},
+                {true, false, true, true, turn,
+                        ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, false, true, true, turn, ClaimKind.FORMULA_SAT},
+                {true, false, false, true, turn,
+                        ClaimKind.STATE_PAIRING_FLIPPED},
                 // Unnamed, and its work wrote nothing the fatal reads: off
                 // the fatal path, no pairing claim (the formula's own).
-                {true, false, true, false, ClaimKind.FORMULA_SAT},
+                {true, false, true, false, turn, ClaimKind.FORMULA_SAT},
+                // The turn's role prefix reads the view: the turn's read.
+                {true, false, true, true, prefix,
+                        ClaimKind.STATE_PAIRING_FLIPPED},
+                // Role work under another context is no prefix of it.
+                {true, false, true, true, OccurrenceAddress.of(turn.node(),
+                        OccurrenceAddress.ROLE_REGION + "SOLR_HTTP",
+                        elsewhere.context(), ExecutionIndex.empty()),
+                        ClaimKind.FORMULA_SAT},
         };
         for (Object[] row : table) {
             boolean planted = (Boolean) row[0];
             boolean named = (Boolean) row[1];
             boolean again = (Boolean) row[2];
             boolean onPath = (Boolean) row[3];
+            OccurrenceAddress reader = (OccurrenceAddress) row[4];
+            Endpoint guard = Endpoint.of(reader,
+                    "SOLR_ZK#VIEWED:/aliases.json", at("g#1", 0), 0);
             Path iteration = folder.newFolder("view-planted-" + planted + "-"
-                    + named + "-" + again + "-" + onPath).toPath();
+                    + named + "-" + again + "-" + onPath + "-"
+                    + reader.regionId() + reader.context().render()
+                    .hashCode()).toPath();
             for (boolean explored : new boolean[]{false, true}) {
                 String id = explored ? "s1" : "s0";
                 Session session = new Session(iteration, id, explored);
@@ -5400,8 +5422,8 @@ public class ComposerTest {
             String detail = "planted " + planted + ", named " + named
                     + ", again " + again + ", on path " + onPath + ": "
                     + decision.claim().gaps() + "\n" + composition.body();
-            assertEquals(detail, row[4], decision.claim().kind());
-            if (!planted || !onPath) continue;
+            assertEquals(detail, row[5], decision.claim().kind());
+            if (row[5] != ClaimKind.STATE_PAIRING_FLIPPED) continue;
             if (decision.claim().kind() == ClaimKind.STATE_PAIRING_FLIPPED
                     && !named) {
                 // The clause that puts the pairing on the fatal path is in
@@ -5419,9 +5441,12 @@ public class ComposerTest {
             List<String> repaired = composition.repaired(witness.selected()
                     .selector(), witness.selectedArms().keySet());
             assertEquals(detail, 1, repaired.size());
-            assertEquals(detail, again ? older.id()
+            // A role prefix's read is no read of the closure, so no family
+            // states it: named by its pairing.
+            boolean family = again && reader == turn;
+            assertEquals(detail, family ? older.id()
                     : "PAIRING:" + Confirmation.id(guard) + "=VIEW@1",
-                    again ? composition.arm(repaired.get(0)).groupId()
+                    family ? composition.arm(repaired.get(0)).groupId()
                             : repaired.get(0));
         }
     }

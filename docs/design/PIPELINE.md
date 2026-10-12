@@ -1010,7 +1010,9 @@ from the session that took it as that session's whole world (§11 rule 3): its o
 in place of the recording's pairing at each planted location (`Composition#worldRun`; the own run
 alone holds there "any arm but the plant"), only where the paired read lies on the fatal path at the
 occurrence level (`Composition#onFatalPath`: its symbol in the cone, or its occurrence the anchor's or
-the writer of a version a read in the cone observed). The worker writes `obligation_result.jsonl`
+the writer of a version a read in the cone observed -- a role read counting as the read of each
+occurrence it is the role prefix of, the rule the pairing flip was offered by, `Corpus#rolePrefix`).
+The worker writes `obligation_result.jsonl`
 (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
@@ -2193,7 +2195,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      arm, `Composition#offersArms`: its own run is then the only one asked), each taken pairing lies on the
      fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, `CONE`, or -- a read
      no term names -- its occurrence is the anchor's, `ANCHOR`, or wrote a version a read in the cone
-     observed, `WROTE`; the clause of each pairing is named in the claim's gaps, and an `ANCHOR` or
+     observed, `WROTE`, a role read counting as the read of each occurrence it is the role prefix of
+     (`Corpus#rolePrefix`: its node's work under its causal context before that occurrence's first row,
+     the one rule `PairingFlip` offers it by; round SG3B tra: node1's `getAliases()` view read in the
+     request's role work, whose alias update wrote `/aliases.json` back); the clause of each pairing is named in the claim's gaps, and an `ANCHOR` or
      `WROTE` pairing stands only in a world that moved no root or clock, since nothing else shows the
      pairing decides), the path's ask is decided (an undecided one is named so), and the session is
      that world's run (`Composition#ranWorld`, `Moved#ranWorldBy`: its roots and clocks the witness's,
