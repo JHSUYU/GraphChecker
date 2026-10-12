@@ -222,8 +222,9 @@ State of `solr-zk-doors` (RD, 2026-10-11; Solr tree `gc/solr-zk-doors` 92c234a5d
   - read markers root nothing and trigger no other admission rule;
   - `RecordedStore`: fetch occurrences off `STORE_DECODED`, a decode of the occurrence's own write no fetch;
     `#fetchDoor` takes the door call after the occurrence's previous store event;
-  - `RuntimeSelectedRegionFinalizer#askFetches`: PROVENANCE and LOCATION fetches admitted (`STORE_FETCH_V1`), plan
-    log counts the fetching occurrences;
+  - `RuntimeSelectedRegionFinalizer#askFetches`: PROVENANCE and LOCATION fetches admitted (`STORE_FETCH_V1`; a LOCATION
+    fetch at a version up to the one read: Z1D4 asked node2's eight later re-reads), plan log counts the fetching
+    occurrences;
   - EXPLORE demands the plan's fetches of a demanded store read's location on the reader's node
     (`ClosurePlanner#storeFetches`, `STORE_FETCH`, no value; `StaticScopeMap#withPlan`; lead-approved B2);
   - docs.

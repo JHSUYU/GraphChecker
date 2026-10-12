@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -104,6 +105,41 @@ public class StoreFetchDoorsTest {
                 fetched);
         assertEquals(Collections.singletonMap("SOLR_ZK\n/aliases.json", 5L),
                 store.versionsOf(Collections.singletonList(10)));
+    }
+
+    /** The fetches a target asks: the one that decoded what it read, and its
+     *  node's other fetches of that location up to the version read (a
+     *  failed one registers no watch); a later one, or another node's, is on
+     *  no flow of the read. */
+    @Test
+    public void aTargetAsksItsNodesFetchesUpToTheVersionItRead() {
+        String node2 = "auto0/node2#epoch0/region/REGION.w/ctx:Root:CLIENT/"
+                + "suite#1/idx:<a.B: void m()>@";
+        String node3 = "auto0/node3#epoch0/region/REGION.w/ctx:Root:CLIENT/"
+                + "suite#1/idx:<a.B: void m()>@";
+        RecordedStore store = new RecordedStore(Arrays.asList(
+                RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 1L,
+                        new int[]{1}, node2 + "1", 10L),
+                RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 1L,
+                        new int[]{2}, node3 + "1", 11L),
+                RecordedStore.Event.decoded("SOLR_ZK", "/aliases.json", 2L,
+                        new int[]{3}, node2 + "2", 30L)));
+        Object[][] rows = {
+            {1, Collections.singletonList(node2 + "1@1 PROVENANCE")},
+            {3, Arrays.asList(node2 + "2@2 PROVENANCE",
+                    node2 + "1@1 LOCATION")},
+        };
+        for (Object[] row : rows) {
+            List<String> asked = new ArrayList<>();
+            for (Map.Entry<RecordedStore.Fetch, String> fetch
+                    : RuntimeSelectedRegionFinalizer.dataFlowFetches(store,
+                    Collections.singletonList((Integer) row[0]),
+                    NodeId.parse("auto0/node2#epoch0")).entrySet()) {
+                asked.add(fetch.getKey().occurrence + "@"
+                        + fetch.getKey().version + " " + fetch.getValue());
+            }
+            assertEquals("read object " + row[0], row[1], asked);
+        }
     }
 
     private static Map<String, Object> capture(String siteId, int ordinal,

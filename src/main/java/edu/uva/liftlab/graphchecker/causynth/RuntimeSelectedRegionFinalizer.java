@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
@@ -1188,10 +1189,12 @@ public final class RuntimeSelectedRegionFinalizer {
      * {@code objects} (SYMBOL-SCOPE §4.2, a {@code DATA_FLOW} door): the
      * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH})
      * and every other fetch, on the target's node, of a location they were
-     * decoded from ({@value #LOCATION_FETCH}): a read that fails registers no
-     * watch, so the next version is never fetched and the node reads the one
-     * before (an alias's watcher whose re-read failed: solr-adhoc-40's "alias
-     * must exist").  Each such occurrence is admitted ({@value
+     * decoded from, at a version up to the one they hold ({@value
+     * #LOCATION_FETCH}): a read that fails registers no watch, so the next
+     * version is never fetched and the node reads the one before (an alias's
+     * watcher whose re-read failed: solr-adhoc-40's "alias must exist"); a
+     * later version's fetch ran after the target read, on no flow of it (Z1D4:
+     * node2's eight re-reads of /aliases.json after the first update).  Each such occurrence is admitted ({@value
      * #STORE_FETCH_ADMISSION}), its fetch's door is the data-flow door call
      * it made last before the decode ({@link #fetchDoor}), and those captures
      * are stated ({@link #STORE_FETCHES}): only they mint, and EXPLORE
@@ -1203,23 +1206,31 @@ public final class RuntimeSelectedRegionFinalizer {
                                    RecordedStore store,
                                    Map<String, String> byId, String target,
                                    Set<Integer> objects, int depth) {
-        String node = OccurrenceAddress.parse(target).node().render();
-        Set<RecordedStore.Fetch> asked = new LinkedHashSet<>();
-        for (RecordedStore.Fetch fetch : store.fetchesOf(objects)) {
-            if (asked.add(fetch)) {
-                admitFetch(program, walk, scopeMap, byId, fetch,
-                        PROVENANCE_FETCH, depth);
-            }
+        for (Map.Entry<RecordedStore.Fetch, String> fetch : dataFlowFetches(
+                store, objects, OccurrenceAddress.parse(target).node())
+                .entrySet()) {
+            admitFetch(program, walk, scopeMap, byId, fetch.getKey(),
+                    fetch.getValue(), depth);
         }
-        for (String location : store.versionsOf(objects).keySet()) {
-            for (RecordedStore.Fetch fetch : store.fetchesAt(location)) {
-                if (node.equals(OccurrenceAddress.parse(fetch.occurrence)
-                        .node().render()) && asked.add(fetch)) {
-                    admitFetch(program, walk, scopeMap, byId, fetch,
-                            LOCATION_FETCH, depth);
+    }
+
+    /** {@link #askFetches}'s fetches, each with why, in the order asked. */
+    static Map<RecordedStore.Fetch, String> dataFlowFetches(
+            RecordedStore store, Collection<Integer> objects, NodeId node) {
+        Map<RecordedStore.Fetch, String> fetches = new LinkedHashMap<>();
+        for (RecordedStore.Fetch fetch : store.fetchesOf(objects)) {
+            fetches.putIfAbsent(fetch, PROVENANCE_FETCH);
+        }
+        for (Map.Entry<String, Long> read
+                : store.versionsOf(objects).entrySet()) {
+            for (RecordedStore.Fetch fetch : store.fetchesAt(read.getKey())) {
+                if (fetch.version <= read.getValue() && node.equals(
+                        OccurrenceAddress.parse(fetch.occurrence).node())) {
+                    fetches.putIfAbsent(fetch, LOCATION_FETCH);
                 }
             }
         }
+        return fetches;
     }
 
     /** States {@code fetch}'s door captures on the activation that made it

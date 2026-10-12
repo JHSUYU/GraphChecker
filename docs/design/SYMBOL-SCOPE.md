@@ -428,7 +428,8 @@ in the occurrence that runs the call, as a demanded door's), and is *asked* only
 fetch on the data flow (`causynth/RuntimeSelectedRegionFinalizer#askFetches`, over the recording's
 STORE rows, §5.7): the fetch whose decode registered an object the question's target read
 (`PROVENANCE`) and every other fetch, on the target's node, of a location what it read was decoded
-from (`LOCATION`), each such occurrence admitted (`STORE_FETCH_V1`; PLAN's log counts them): a read
+from, at a version up to the one it holds (`LOCATION`; a later version's fetch ran after the read),
+each such occurrence admitted (`STORE_FETCH_V1`; PLAN's log counts them): a read
 that fails registers no watch, so the node never fetches
 the next version and reads the one before (a ZooKeeper watch whose re-read fails only logs and is
 never re-armed: Solr's `AliasesManager#process`, the collection `StateWatcher`'s refresh; an
