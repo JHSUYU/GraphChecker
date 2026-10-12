@@ -114,7 +114,7 @@ public final class SessionPublisher {
                                 ? SessionManifest.Role.FOCUSED
                                 : SessionManifest.Role.SEED,
                         FocusedReplay.obligationIds());
-                RowCodec.writeManifest(layout.manifest(), manifest);
+                writeManifest();
             } catch (IOException unwritable) {
                 fail(unwritable);
             }
@@ -188,7 +188,7 @@ public final class SessionPublisher {
             if (failed || closed || manifest == null || withdrawn()) return;
             try {
                 manifest = manifest.atClose(entries, readings, derived);
-                RowCodec.writeManifest(layout.manifest(), manifest);
+                writeManifest();
             } catch (IOException unwritable) {
                 fail(unwritable);
             }
@@ -222,21 +222,39 @@ public final class SessionPublisher {
         append(file, Collections.singletonList(row));
     }
 
+    /** The rows, each a line of its file, as engine work ({@link
+     *  ConcolicVmBroker#asEngineWork}). */
     private void append(Path file, List<JsonObject> rows) {
-        synchronized (LOCK) {
-            if (failed || closed) return;
-            try {
-                BufferedWriter writer = writer(file);
-                if (writer == null) return;
-                for (JsonObject row : rows) {
-                    writer.write(RowCodec.toLine(row));
-                    writer.newLine();
+        ConcolicVmBroker.asEngineWork(() -> {
+            synchronized (LOCK) {
+                if (failed || closed) return;
+                try {
+                    BufferedWriter writer = writer(file);
+                    if (writer == null) return;
+                    for (JsonObject row : rows) {
+                        writer.write(RowCodec.toLine(row));
+                        writer.newLine();
+                    }
+                    writer.flush();
+                } catch (IOException unwritable) {
+                    fail(unwritable);
                 }
-                writer.flush();
-            } catch (IOException unwritable) {
-                fail(unwritable);
             }
-        }
+        });
+    }
+
+    /** The manifest as it stands, as engine work ({@link
+     *  ConcolicVmBroker#asEngineWork}). */
+    private void writeManifest() throws IOException {
+        IOException[] failed = new IOException[1];
+        ConcolicVmBroker.asEngineWork(() -> {
+            try {
+                RowCodec.writeManifest(layout.manifest(), manifest);
+            } catch (IOException unwritable) {
+                failed[0] = unwritable;
+            }
+        });
+        if (failed[0] != null) throw failed[0];
     }
 
     /** The open writer of one row file, or null once withdrawn. */

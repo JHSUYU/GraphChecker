@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import edu.uva.liftlab.graphchecker.causynth.RecordedStore;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -389,6 +390,72 @@ public final class CausynthTraceRecorder {
 
     /** {@code event} of one gap the RECORDING states. */
     static final String GAP_EVENT = "GAP";
+    /** {@code event} of one version a shared store's write made. */
+    static final String STORE_WRITE_EVENT = "STORE_WRITE";
+    /** {@code event} of the objects one fetch of a version was parsed
+     *  into. */
+    static final String STORE_DECODED_EVENT = "STORE_DECODED";
+
+    /**
+     * The recording's half of a store write ({@link MessageDoors#stored}):
+     * the version and the occurrence that made it, which PLAN crosses to
+     * from a demanded read of it ({@code causynth.RecordedStore}).
+     */
+    static void storeWritten(String transport, String location, long version,
+                             OccurrenceAddress writer) {
+        if (!RecordingWindow.opened() || writer == null) return;
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", STORE_WRITE_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "transport", nonNull(transport),
+                    "location", nonNull(location),
+                    "version", version,
+                    "occurrenceAddress", writer.render());
+        }
+    }
+
+    /**
+     * The recording's half of a provenance site in a constructor (SYMBOL-
+     * SCOPE §5.7): the object it builds from a decoded receiver holds that
+     * version, stated as a decode of it alone, which PLAN joins with the
+     * objects a target read a field on.
+     */
+    public static void observeProvenance(String siteId, Object receiver,
+                                         Object holder) {
+        boolean[] derived = new boolean[1];
+        Provenance.Version version = Provenance.observe(receiver, holder,
+                derived);
+        if (version == null || !derived[0]) return;
+        storeDecoded(version.location.owner(), version.path, version.version,
+                Collections.singletonList(holder));
+    }
+
+    /**
+     * The recording's half of a decode ({@link MessageDoors#decoded}): the
+     * objects it registered, by the identity every other row names them by,
+     * which PLAN joins with the objects an occurrence read a field on.
+     */
+    static void storeDecoded(String transport, String location, long version,
+                             List<Object> objects) {
+        if (!RecordingWindow.opened() || objects.isEmpty()) return;
+        synchronized (LOCK) {
+            StringBuilder ids = new StringBuilder();
+            for (Object object : objects) {
+                if (ids.length() > 0) ids.append(',');
+                ids.append(identity(object));
+            }
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", STORE_DECODED_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "transport", nonNull(transport),
+                    "location", nonNull(location),
+                    "version", version,
+                    "objects", ids.toString());
+        }
+    }
 
     /**
      * A gap row's subject: {@code named}, else this thread's source key, else
@@ -1601,6 +1668,7 @@ public final class CausynthTraceRecorder {
                         observedMethods, activationGraph.runtimeInstances,
                         branchObservations(trace.execution, trace.methods),
                         scopeMap, declaredOccurrence, trace.schedule,
+                        new RecordedStore(trace.store),
                         RuntimeRegionPlanner.recordedAccesses(trace.fields,
                                 trace.execution, storingCalls, fieldCalls),
                         RuntimeRegionPlanner.recordedHeap(trace.methods,
@@ -1830,6 +1898,11 @@ public final class CausynthTraceRecorder {
         for (SourceTraceEvent event : trace.sources) {
             event.objectId = identity.nameOf(event.objectId);
         }
+        for (RecordedStore.Event event : trace.store) {
+            for (int at = 0; at < event.objects.length; at++) {
+                event.objects[at] = identity.nameOf(event.objects[at]);
+            }
+        }
     }
 
     /**
@@ -2039,6 +2112,7 @@ public final class CausynthTraceRecorder {
             trace.sources.addAll(part.sources);
             // Every list the parse fills, gaps included.
             trace.lineageGaps.addAll(part.lineageGaps);
+            trace.store.addAll(part.store);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("trace parse interrupted", interrupted);
@@ -2139,6 +2213,22 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestApi"),
                     row.stringValue("producerEndpointId"),
                     row.stringValue("producerEndpoint")));
+        } else if (STORE_WRITE_EVENT.equals(eventKind)) {
+            trace.store.add(RecordedStore.Event.written(
+                    row.stringValue("transport"), row.stringValue("location"),
+                    row.longValue("version", -1L),
+                    row.stringValue("occurrenceAddress")));
+        } else if (STORE_DECODED_EVENT.equals(eventKind)) {
+            String listed = row.stringValue("objects");
+            String[] ids = listed.isEmpty() ? new String[0]
+                    : listed.split(",");
+            int[] objects = new int[ids.length];
+            for (int at = 0; at < ids.length; at++) {
+                objects[at] = Integer.parseInt(ids[at].trim());
+            }
+            trace.store.add(RecordedStore.Event.decoded(
+                    row.stringValue("transport"), row.stringValue("location"),
+                    row.longValue("version", -1L), objects));
         } else if (GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
@@ -2439,6 +2529,8 @@ public final class CausynthTraceRecorder {
         final List<ScheduleEvent> schedule = new ArrayList<>();
         /** Lineage gaps the recording stated, as plan-gap rows. */
         final List<Map<String, Object>> lineageGaps = new ArrayList<>();
+        /** The shared store's writes and decodes ({@code RecordedStore}). */
+        final List<RecordedStore.Event> store = new ArrayList<>();
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));

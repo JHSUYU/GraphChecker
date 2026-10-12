@@ -23,13 +23,14 @@ final class EngineConsole {
     private EngineConsole() {
     }
 
-    /** One line to the engine's console. */
+    /** One line to the engine's console, as engine work ({@link
+     *  ConcolicVmBroker#asEngineWork}): its encoder's buffer is the engine's. */
     static void println(String line) {
-        ERR.println(line);
+        ConcolicVmBroker.asEngineWork(() -> ERR.println(line));
     }
 
-    /** A throwable's stack to the engine's console. */
+    /** A throwable's stack to the engine's console, as {@link #println}. */
     static void trace(Throwable thrown) {
-        thrown.printStackTrace(ERR);
+        ConcolicVmBroker.asEngineWork(() -> thrown.printStackTrace(ERR));
     }
 }

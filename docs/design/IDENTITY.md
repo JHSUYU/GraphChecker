@@ -521,16 +521,71 @@ SYMBOL-SCOPE.md §4.2's.
 For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
 - `stored(transport, key, owner)`: a write of `path@version` is a SEND; its staged values are kept
-  with the version.
+  with the version. It is also a version of the path's `STORE` location (CONTRACT-SPEC §1: owner the
+  transport, slot the path as `RunNames` keys it -- `<path>#<n>` from its n-th life on, a version 0
+  written once the path stood at a version being a create after its delete (`MessageDoors#life`) --,
+  version the store's own): a write row at the
+  writer's occurrence in a replay (the admitted activation's, else the one running there, stated as
+  an unselected activation), site `<transport>#WRITE:<path, dotted>`, no expression, seq one past
+  the VM's last event id, where a concrete target stands (`Identity#afterLastEvent`: a closure cuts a
+  writer strictly before its write, and keeps the writer's own last event, its door's fault marker;
+  0 with no VM clock: no order check reads it; two versions of one path at one seq are two events,
+  CONTRACT-SPEC §2.6); a `STORE_WRITE` trace row naming the writer's
+  address in the recording.
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
   `.<n>` from a node's second delivery of that version on; how many deliveries a run takes is the
   store's timing, so CONFIRM names every delivery of one version alike,
   `CausalContext.Anchor#anyDelivery`). Such receipts are unawaited: the work
-  they anchor takes no place in the schedule. A read outside a callback is data, not a cause.
+  they anchor takes no place in the schedule. A read outside a callback is no cause; what it
+  fetched is read where the objects it was parsed into are read (below).
+- `decoded(transport, key, product)`: the objects a fetch of `key` was parsed into (the adapter's
+  product: Solr's `ClusterState.load`, `Aliases.fromJSON`) hold that version (`runtime/Provenance`):
+  the product's graph is walked once -- instance fields of application objects, the contents of
+  maps, collections and object arrays; no JDK object, value, lambda, synthetic class, engine object
+  or inner object's outer one; at most 4096 objects and 16 hops, a walk cut there a DIAGNOSTIC
+  `UNSTATED_VALUE` -- with the VM's propagation paused, and each object it meets is registered with
+  the version, the first decode keeping it (another version's decode reaching it states a DIAGNOSTIC
+  row, counted in `Causynth decoded walks:`, never a re-pin, as are a constructor's holder built from two
+  decodes, which keeps the first, and a member the walk could not read); a class's constant (an object a static
+  field of its own class holds, itself or as a value of a table it holds: `DocRouter.DEFAULT`, the
+  routers of `DocRouter.routerMap`) and a supplier with what it holds (`PrsSupplier`'s per-replica
+  states) are no product of the decode, which cannot tell what it allocated: each skip is stated and
+  counted. A decode first waits for a write in flight at its path to file (`MessageDoors#filed`,
+  bounded and named), so a create's version 0 names the life it opened. A guard that reads a construction-only field of a
+  registered object at a `PROVENANCE_SITE` (SYMBOL-SCOPE §5.7) reads that version: a STORE read row
+  at the reading occurrence, its symbol naming the version (`RowRuntime#storeRead`); a path rests on each such read its closure made before its cutoff, though no term names it, and CONFIRM holds it to the version the session read (a STATE row, `compose/RestsOn#storeLocations`: a run whose reader read another version does not confirm), compared and ordered by nothing: the store's own turn orders its reads and writes, and a native run's weave states no store write's activation (`explore/ConfirmMain#stateEdges`). The recording
+  states each decode's objects by identity (`STORE_DECODED`), which PLAN joins with the objects an
+  occurrence read a field on. Each replay's log states the walks' cost (`Causynth decoded walks:`).
 - `consumed(transport, key)`: a queue item taken, as `received` takes a request: it ends what the
   thread served and is the message the thread serves until the next (its key and `REQUEST`, as its
-  write sent it), its staged values with it; the consumer keeps its own context.
+  write sent it), its staged values with it; the consumer keeps its own context, and its RECV names
+  the item it took in (`CausynthTraceRecorder#receivedExchange`), so the item's sender is a door of
+  the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`) --
+  of every item a batching turn took in (the Overseer's state writer flushing several at once). A
+  RECV a turn makes at its root, before any of its regions opened, names no occurrence: unless the
+  turn stands on the item (a request's handler, which the item started), every occurrence the turn
+  runs is then a receiver, a door of the item for an occurrence of another turn (its own turn is
+  what the item started: solr-18413's Overseer state updates, each one consumer's) (`Corpus#doorsOf`,
+  `RecordedMessages#doorStancesOf`) -- the Overseer queue loop's turn, whose ZooKeeper door
+  (`markTaskAsRunning`) runs in a region of it, for the task's Runner, which took the same item in.
+  Every occurrence of the turn that sent a message is a door of it too: a fault anywhere in the turn
+  can stop it short of the send (RestoreCmd's RESTORECORE requests before its ACTIVE offer, their
+  failure an exception that crosses the shard handler's executor, which no term names). Each
+  narrowing names what it cut, a counted DIAGNOSTIC row (PLAN's plan gaps, EXPLORE's): the served
+  occurrence's own turn, the turns standing on the message (its handlers,
+  `RecordedMessages#handlerStancesOf`), and a control producer, whose own message's doors are not
+  asked (it contributes no value).
+
+A STORE read rests on the write that made its version and on every earlier version of its location:
+a store keeps one document per location, and each write modifies the one before it (Solr's state
+writer and aliases, every compare-and-set write), the rule `compose.RestsOn#closure` applies to
+every location. The closure demands those writers on any node -- a one-JVM cluster's nodes are one
+session, whose happens-before spans them -- each with the doors of the item it took in
+(`ClosurePlanner#storeWriters`, `#earlierVersions`; PIPELINE §7.2); PLAN admits the same
+(SYMBOL-SCOPE §4.4, `STORE_WRITER_V1`). No static candidate: a path is no field a site stores. A
+writer that runs no woven region (an updater turn of an Overseer whose code is out of scope) is a
+role: passed through to its item's doors, never planned, its own decisions not flipped (STATUS).
 - `storing(transport, location)` ... `storeEnded(transport, token)`: a write in flight at one
   location (a sequential create's: the prefix the store completes). The write first takes its turn,
   a `WRITE` event whose site is `<transport>:<location>` (§8), so writes to one location run in the

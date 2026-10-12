@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RecordedAccesses;
+import edu.uva.liftlab.graphchecker.causynth.RecordedStore;
 import edu.uva.liftlab.graphchecker.causynth.RecordedHeap;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
@@ -352,6 +353,7 @@ public class RegionFoldPlanTest {
                 activations.runtimeInstances, cutObservations(threw),
                 cutScopeMap(ambiguous), RuntimeWorkflowDiscovery.FIRST,
                 Collections.<ScheduleEvent>emptyList(),
+                new RecordedStore(null),
                 new RecordedAccesses.Builder().build(),
                 new RecordedHeap.Builder().build());
     }

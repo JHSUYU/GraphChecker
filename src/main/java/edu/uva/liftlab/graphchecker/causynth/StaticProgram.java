@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
@@ -75,6 +76,24 @@ public final class StaticProgram {
     /** Minted region activations, by occurrence id. */
     final Map<String, Map<String, Object>> activations =
             new LinkedHashMap<>();
+
+    /** The activations by stance ({@code ContextShape.Stance}), built once
+     *  the activations are read: a door rule asks it per served occurrence
+     *  (RuntimeSelectedRegionFinalizer#doorsOf). */
+    private Map<String, List<String>> byStance;
+
+    Map<String, List<String>> activationsByStance() {
+        if (byStance == null) {
+            byStance = new LinkedHashMap<>();
+            for (String activation : activations.keySet()) {
+                byStance.computeIfAbsent(ContextShape.Stance.of(
+                        edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
+                                .parse(activation)).render(),
+                        key -> new ArrayList<>()).add(activation);
+            }
+        }
+        return byStance;
+    }
 
     // Indexes, each built once
 
