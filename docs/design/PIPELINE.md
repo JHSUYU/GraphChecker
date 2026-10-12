@@ -723,8 +723,8 @@ prefixes are no part of it (`FlipQuery` still asserts them): a prefix only adds 
 world's arm whose own path and input shape equal another's -- the input shape stating what each
 member wrote at the guard's locations as the guard reads it -- is UNSAT where that one is
 (solr-adhoc-07 IB1: a fault later in the task's own occurrence kept 13 decisions after the arm and
-re-asked 979 seed arms); a reduced world's NOT_ADMITTED stands for the parent world's arm too
-(STATUS open defect 59; an open decider arm whose every ask came back so ends
+re-asked 979 seed arms); a reduced world's faithful NOT_ADMITTED (`WORLD_RAN:`) stands for the
+parent world's arm too (STATUS open defect 59; an open decider arm whose every ask came back so ends
 `OPEN_ARM_UNANSWERED`). The input shape:
 whether the task's occurrence ran, its handoff sites and producers, and each factor member that
 writes state it reads, named by its class (node, region, `Corpus#contextShape`; a producer too, never
@@ -769,7 +769,10 @@ open defect 64): a member's write the recording states at no write site re-keys 
 downstream of a schedule variant (a member that ran in one replay of a world only) is not asked
 again: schedules are not worlds. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer); an `ADMITTED` replay also
+`ADMITTED`, `UNSAT` or a faithful `NOT_ADMITTED` (`ObligationResult#settlesArm`: its replay ran its
+world as asked, `WORLD_RAN:`; any other NOT_ADMITTED -- its world not run, or its query refused --
+settles only its own flip, once a second one of it lands; `SAT_MODEL_READY` is no answer); an
+`ADMITTED` replay also
 settles its flip (`ObligationFactory#flip`) under whatever id the arm has since: a replay of that flip
 of that path already took the arm in the path's world, and only the sessions landed since moved its
 key (`Frontier#settled(Candidate)`; solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of them

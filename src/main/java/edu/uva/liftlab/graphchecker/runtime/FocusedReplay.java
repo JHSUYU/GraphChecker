@@ -678,12 +678,17 @@ public final class FocusedReplay {
                 List<String> unrefuted = new ArrayList<String>();
                 WorldRefutation refutation = OPEN_ARMS.contains(id)
                         ? refuted(obligation, held, unrefuted) : null;
+                String unrun = unrun(obligation);
                 results.add(refutation == null
                         ? ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                        sessionId, unrefuted.isEmpty() ? detail
-                        : ObligationResult.WORLD_UNREFUTED + ": " + detail
+                        sessionId, !unrefuted.isEmpty()
+                        ? ObligationResult.WORLD_UNREFUTED + ": " + detail
                         + "; its world is not refuted: "
-                        + String.join("; ", unrefuted))
+                        + String.join("; ", unrefuted)
+                        : unrun.isEmpty()
+                        ? ObligationResult.WORLD_RAN + ": " + detail
+                        + ", and the world it ran was the one asked"
+                        : detail + "; its world did not run: " + unrun)
                         : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                         sessionId, WORLD_REFUTED + ": " + detail + ", and the"
                         + " world it ran, faithfully, never entered it: "
@@ -696,6 +701,20 @@ public final class FocusedReplay {
 
     /** The reason a verdict opens with when the replay refuted its world. */
     static final String WORLD_REFUTED = "WORLD_REFUTED";
+
+    /**
+     * Why this replay did not run an obligation's world as asked, or "":
+     * (a) of {@link #refuted} -- every assignment minted and planted, no
+     * prefix abandoned and no refusal deciding the replay, and every flip it
+     * inherited reached and taken (the path it stands on ran).  Called under
+     * {@link #LOCK}.
+     */
+    private static String unrun(Obligation obligation) {
+        return firstNonBlank(unstated(obligation), refusedAt, inherited(),
+                unplantedLocked().isEmpty() ? ""
+                        : "an assignment was left unplanted: "
+                        + unplantedLocked());
+    }
 
     /**
      * Why this replay's world is no world of an open decider arm's flip
@@ -727,13 +746,7 @@ public final class FocusedReplay {
         if (!workloadEnded) {
             unrefuted.add("(d) the workload did not end by itself");
         }
-        // (a) the world as asked: every assignment minted and planted, no
-        // prefix abandoned and no refusal deciding the replay, and every
-        // flip it inherited reached and taken (the path it stands on ran).
-        String world = firstNonBlank(unstated(obligation), refusedAt,
-                inherited(), unplantedLocked().isEmpty() ? ""
-                        : "an assignment was left unplanted: "
-                        + unplantedLocked());
+        String world = unrun(obligation);
         if (!world.isEmpty()) unrefuted.add("(a) " + world);
         if (held == null) {
             unrefuted.add("(b) the run's order holds could not be read");

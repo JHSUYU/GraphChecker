@@ -612,8 +612,9 @@ public class ExploreTest {
         // (81 sessions) wave 0's 36 answers left 30 arms unrecorded and
         // wave 1 asked those same 30 facts as 706 obligations.
         record(results, ObligationResult.of(deeper.obligationId(),
-                Verdict.NOT_ADMITTED, "",
-                "the focused occurrence's own prefix did not match"));
+                Verdict.NOT_ADMITTED, "", ObligationResult.WORLD_RAN
+                + ": the focused occurrence ran its world and never reached"
+                + " Guard#u19"));
         Session other = new Session(iteration, "s-flip-2");
         other.activation(target, true);
         other.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
@@ -2682,9 +2683,13 @@ public class ExploreTest {
             // a sibling path's flip
             {helper, Verdict.UNSAT, "UNSAT", "shared", 0},
             // never asked itself, its id answered NOT_ADMITTED by a sibling
-            // path's flip (an arm keyed by its effect at the task: a
-            // reduced world's answer stands for it) -- still unanswered
+            // path's flip whose replay ran its world (an arm keyed by its
+            // effect at the task: a reduced world's answer stands for it) --
+            // still unanswered; one whose replay did not run its world
+            // stands for no other world: the arm is asked in its own
             {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "shared-only", 0},
+            {helper, Verdict.NOT_ADMITTED, "PENDING", "shared-only-unrun",
+                0},
             {helper, Verdict.NOT_ADMITTED, "PENDING", "unrun-once", 1},
             {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "unrun-twice", 2},
             {"", null, "NOT_FLIPPABLE", null, 0}};
@@ -2723,11 +2728,13 @@ public class ExploreTest {
             }
             JsonObject named = first;
             int unrun = (Integer) row[4];
-            if ("shared-only".equals(row[3])) {
+            if (String.valueOf(row[3]).startsWith("shared-only")) {
                 Obligation flip = proposed.get(0);
                 ObligationResult sibling = ObligationResult.of(
                         flip.obligationId(), Verdict.NOT_ADMITTED, "",
-                        "sibling");
+                        "shared-only".equals(row[3])
+                                ? ObligationResult.WORLD_RAN + ": sibling"
+                                : "sibling; its world did not run: (a)");
                 record(results, sibling);
                 Path worker = iteration.resolve("obligations-0000")
                         .resolve(flip.obligationId());
@@ -2764,7 +2771,10 @@ public class ExploreTest {
                     ObligationResult answer = ObligationResult.of(
                             row[3] == null || unrun > 0 ? flip.obligationId()
                                     : (String) row[3], (Verdict) row[1],
-                            "s-flip" + run, unrun == 0 ? "answered"
+                            "s-flip" + run, unrun == 0
+                                    ? (row[1] == Verdict.NOT_ADMITTED
+                                    ? ObligationResult.WORLD_RAN
+                                    + ": never reached" : "answered")
                                     : ObligationResult.WORLD_UNREFUTED
                                     + ": never reached; its world is not"
                                     + " refuted: (a) no root mint row");
@@ -5055,6 +5065,70 @@ public class ExploreTest {
                     out.resolve("results.jsonl"), wave1, 1);
             assertEquals(verdict.name(), verdict != Verdict.ADMITTED,
                     named(obligations(wave1), "Lookup#u8") != null);
+        }
+    }
+
+    /**
+     * ONLY A FAITHFUL VERDICT SETTLES AN ARM ({@link Frontier#consume},
+     * {@code ObligationResult#settlesArm}): a NOT_ADMITTED whose replay ran
+     * its world as asked and never reached the decision ({@code WORLD_RAN})
+     * settles the arm for every world, as today; one whose replay did not
+     * run its world (an inherited root not minted, a refusal, a stall) is a
+     * fact about that world only -- the arm stays owed for any other world,
+     * the flip itself asked once more and settled by a second such answer
+     * (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's world never
+     * minted its inherited root, and its NOT_ADMITTED closed the arm).
+     */
+    @Test
+    public void onlyAFaithfulNotAdmittedSettlesTheArm() throws Exception {
+        String ran = ObligationResult.WORLD_RAN + ": occurrence o never"
+                + " reached Lookup#u8#1 in this replay, and the world it ran"
+                + " was the one asked";
+        String unrun = "occurrence o never reached Lookup#u8#1 in this"
+                + " replay; its world did not run: the inherited root R was"
+                + " never minted";
+        Object[][] rows = {
+            // its answer's detail, how many of them landed on its flip,
+            // whether the arm is settled for every world, whether the next
+            // round asks the flip again from the same path
+            {ran, 1, true, false},
+            {unrun, 1, false, true},
+            {unrun, 2, false, false},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            String name = "faithful-" + at++;
+            Path iteration = twoWriters(name, "(= M_READ_KEY 2)", null);
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path results = out.resolve("results.jsonl");
+            plan(iteration, TARGET_SELECTOR, null, results,
+                    out.resolve("obligations-0000"), 0);
+            Obligation lookup = named(obligations(
+                    out.resolve("obligations-0000")), "Lookup#u8");
+            String flip = ObligationFactory.flip(lookup.taskId(),
+                    lookup.pathId(), lookup.siteId(), lookup.ordinal(),
+                    lookup.flippedOutcome());
+            ObligationResult answer = ObligationResult.of(
+                    lookup.obligationId(), Verdict.NOT_ADMITTED, "",
+                    (String) row[0]);
+            record(results, answer);
+            for (int k = 0; k < (Integer) row[1]; k++) {
+                answer(iteration, "OB." + k, ObligationDir.QUESTION,
+                        flip + ":content", Verdict.NOT_ADMITTED, "",
+                        (String) row[0]);
+            }
+            Frontier frontier = new Frontier(Corpus.read(iteration, null),
+                    Collections.<Task>emptyList(),
+                    Collections.<String, Set<String>>emptyMap());
+            frontier.consume(Collections.singletonList(answer),
+                    ExploreMain.answersByFlip(iteration));
+            assertEquals(name + ": the arm settled for every world",
+                    row[2], !frontier.settled(lookup.obligationId())
+                            .isEmpty());
+            Path next = out.resolve("obligations-0001");
+            plan(iteration, TARGET_SELECTOR, null, results, next, 1);
+            assertEquals(name + ": the flip asked again from its path",
+                    row[3], named(obligations(next), "Lookup#u8") != null);
         }
     }
 

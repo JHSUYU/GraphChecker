@@ -446,11 +446,17 @@ Correctness:
     world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
     under the next. The open-arm judgment reads answers by flip; on the proposal side an ADMITTED
     answer settles its flip under any id (`Frontier#settled(Candidate)`), while an UNSAT or
-    NOT_ADMITTED one settles only its own id. An arm is keyed by its effect at the task (its own
-    path and input shape, never the inherited flips' prefixes, `ObligationFactory#dependence`), so
-    a reduced world's NOT_ADMITTED stands for the parent world's arm: a joint world whose reduced
-    half diverged is not asked (an open decider arm whose every ask came back so still ends
-    `OPEN_ARM_UNANSWERED`).
+    NOT_ADMITTED one settles only its own id. Only a faithful verdict settles an arm
+    (`ObligationResult#settlesArm`, lead's rule 2026-10-12): ADMITTED, UNSAT, or a NOT_ADMITTED whose
+    replay ran its world as asked and never reached the decision (`WORLD_RAN:`); any other
+    NOT_ADMITTED -- its world not run (a root not minted, an inherited flip not taken, a refusal, a
+    stall, a killed or unfinished worker) or its query refused -- settles only its own flip, once a
+    second one of it lands (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's world never
+    minted its inherited root, and its NOT_ADMITTED closed the arm for every world). An arm is keyed
+    by its effect at the task (its own path and input shape, never the inherited flips' prefixes,
+    `ObligationFactory#dependence`), so a reduced world's faithful NOT_ADMITTED stands for the parent
+    world's arm: a joint world whose reduced half ran and never reached the decision is not asked
+    (an open decider arm whose every ask came back so still ends `OPEN_ARM_UNANSWERED`).
 64. An arm's key names a factor member only by its class (node, region, context shape) and what it
     delivered the query (`gc/explore/Corpus#inputShape`: its handoffs, its writes at the locations
     the guard and its kept conditions read, each by its canonical written term, `Corpus#written`),

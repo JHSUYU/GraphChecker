@@ -13,6 +13,12 @@ public final class ObligationResult extends Value {
      *  reached the decision and did not run its world faithfully either
      *  ({@code runtime.FocusedReplay#refuted}'s conditions failed). */
     public static final String WORLD_UNREFUTED = "WORLD_UNREFUTED";
+    /** How a NOT_ADMITTED opens when its replay ran its world as asked --
+     *  every assignment minted and planted, no prefix abandoned, no refusal
+     *  deciding it, every inherited flip taken -- and never reached the
+     *  decision ({@code runtime.FocusedReplay#unrun}): the one NOT_ADMITTED
+     *  that is a fact about the arm ({@link #settlesArm}). */
+    public static final String WORLD_RAN = "WORLD_RAN";
 
     private final String obligationId;
     private final Verdict verdict;
@@ -70,6 +76,21 @@ public final class ObligationResult extends Value {
     /** Why the replay refuted its world, or null. */
     public WorldRefutation refutation() {
         return refutation;
+    }
+
+    /**
+     * Whether this answer is a fact about its ARM, whatever world asks it
+     * ({@code explore.Frontier#consume}): ADMITTED, UNSAT, or a NOT_ADMITTED
+     * whose replay ran its world as asked ({@link #WORLD_RAN}).  Any other
+     * NOT_ADMITTED -- the replay did not run its world (a root not minted, an
+     * inherited flip not taken, a refusal, a stall, a killed or unfinished
+     * worker), or the query was refused -- is a fact about its own world
+     * only, and a refuted world answers nothing of the arm.
+     */
+    public boolean settlesArm() {
+        return verdict == Verdict.ADMITTED || verdict == Verdict.UNSAT
+                || verdict == Verdict.NOT_ADMITTED && refutation == null
+                && detail.startsWith(WORLD_RAN + ":");
     }
 
     /** Whether this is an open-arm flip's replay that ran its world neither

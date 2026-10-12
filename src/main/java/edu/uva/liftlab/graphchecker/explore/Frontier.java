@@ -9,7 +9,6 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,9 +31,16 @@ import java.util.Set;
  *       alone lets a recording over other inputs settle an arm that is still
  *       needed (hdfs-11741: the same expiry compare over a map of four keys
  *       instead of five).</li>
- *   <li><b>a round answered it</b>: ADMITTED, UNSAT or NOT_ADMITTED.
- *       {@link Verdict#SAT_MODEL_READY} is NOT an answer (replay not
- *       run).  An ADMITTED replay also settles its flip ({@link
+ *   <li><b>a round answered it</b>: ADMITTED, UNSAT, or a NOT_ADMITTED
+ *       whose replay ran its world as asked ({@link
+ *       ObligationResult#settlesArm}).  {@link Verdict#SAT_MODEL_READY} is
+ *       NOT an answer (replay not run).  Any other NOT_ADMITTED -- its replay
+ *       did not run its world, or its query was refused -- is a fact about
+ *       that world only: it settles its own flip, once a second such answer
+ *       of it lands (asked once more), and the arm stays owed in every other
+ *       world (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's
+ *       world never minted its inherited root, and its NOT_ADMITTED closed
+ *       the arm for every world).  An ADMITTED replay also settles its flip ({@link
  *       ObligationFactory#flip}: task, path, site, ordinal, outcome) whatever
  *       id the arm has since: a replay of that flip of that path already took
  *       the arm in the path's world, and only the sessions landed after it
@@ -90,6 +96,9 @@ public final class Frontier {
             new LinkedHashMap<String, String>();
     /** The flips a round's replay ADMITTED, whatever id their arm has. */
     private final Set<String> admittedFlips = new LinkedHashSet<String>();
+    /** The flips answered twice by a NOT_ADMITTED about their own world
+     *  only ({@link #consume}). */
+    private final Set<String> worldOnlyFlips = new LinkedHashSet<String>();
     /** The ids, and the flips, of the arms queued or running. */
     private final Set<String> inFlightIds = new LinkedHashSet<String>();
     private final Set<String> inFlightFlips = new LinkedHashSet<String>();
@@ -134,30 +143,31 @@ public final class Frontier {
 
     /** Takes earlier rounds' verdicts, and each answer by the flip it asked
      *  ({@code ExploreMain#answersByFlip}); a recording, if any, stays the
-     *  stated reason.  A replay that refuted its world (an open decider
-     *  arm's flip, {@code ObligationResult#refutation}) answers nothing of
-     *  the arm: it stays owed, asked again without that world.  One that did
-     *  not run its world ({@code ObligationResult#worldUnrefuted}) answers
-     *  nothing either: asked once more, and settled by a second such run. */
+     *  stated reason.  An answer settles its arm only where it is a fact
+     *  about the arm ({@code ObligationResult#settlesArm}); a replay that
+     *  refuted its world answers nothing of it (asked again without that
+     *  world); any other NOT_ADMITTED settles its own flip once a second one
+     *  of it lands. */
     public void consume(Collection<ObligationResult> results,
                         Map<String, List<ObligationResult>> byFlip) {
         for (Map.Entry<String, List<ObligationResult>> flip
                 : byFlip.entrySet()) {
+            int worldOnly = 0;
             for (ObligationResult result : flip.getValue()) {
                 if (result.verdict() == Verdict.ADMITTED) {
                     admittedFlips.add(flip.getKey());
                 }
+                if (result.verdict() == Verdict.NOT_ADMITTED
+                        && result.refutation() == null
+                        && !result.settlesArm()) {
+                    worldOnly++;
+                }
             }
+            if (worldOnly >= 2) worldOnlyFlips.add(flip.getKey());
         }
-        Map<String, Integer> unrun = new HashMap<String, Integer>();
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
-            if (result.verdict() == Verdict.SAT_MODEL_READY
-                    || result.refutation() != null
-                    || result.worldUnrefuted() && unrun.merge(
-                            result.obligationId(), 1, Integer::sum) < 2) {
-                continue;
-            }
+            if (!result.settlesArm()) continue;
             settle(result.obligationId(), "arm already answered "
                     + result.verdict() + " by an earlier round"
                     + (result.sessionId().isEmpty() ? ""
@@ -221,14 +231,18 @@ public final class Frontier {
      *  ADMITTED under another id; {@code ""} while it is owed. */
     public String settled(ObligationFactory.Candidate candidate) {
         String reason = settled(candidate.obligationId);
-        if (!reason.isEmpty()
-                || !admittedFlips.contains(ObligationFactory.flip(candidate))) {
-            return reason;
+        if (!reason.isEmpty()) return reason;
+        String flip = ObligationFactory.flip(candidate);
+        if (admittedFlips.contains(flip)) {
+            return "flip already ADMITTED by an earlier round under another "
+                    + "dependence: a replay of this flip of this path took "
+                    + "the arm in the path's world, and only the sessions "
+                    + "landed since moved its key";
         }
-        return "flip already ADMITTED by an earlier round under another "
-                + "dependence: a replay of this flip of this path took the "
-                + "arm in the path's world, and only the sessions landed "
-                + "since moved its key";
+        return worldOnlyFlips.contains(flip) ? "flip answered NOT_ADMITTED "
+                + "twice in its own world, whose replays did not run it: a "
+                + "fact about that world, so the arm stays owed in others"
+                : "";
     }
 
     private void settle(String obligationId, String reason) {

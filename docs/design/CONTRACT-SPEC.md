@@ -228,6 +228,11 @@ field=<f> <subject>`.
   whose replay never entered the decision and failed a faithfulness condition opens its `detail` with
   `WORLD_UNREFUTED:` (`ObligationResult#worldUnrefuted`): its world was not run, so the flip is asked
   once more (`explore.Frontier#consume`; no question reuse answers it) and a second such run settles it.
+  Any flip's NOT_ADMITTED whose replay ran its world as asked -- every assignment minted and planted, no
+  prefix abandoned, no refusal deciding it, every inherited flip taken -- and never reached the decision
+  opens its `detail` with `WORLD_RAN:` (`runtime.FocusedReplay#unrun`): the one NOT_ADMITTED that settles
+  its arm for every world (`ObligationResult#settlesArm`); any other settles only its own flip, once a
+  second one of it lands.
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl` (the answer, written once by the worker),
   `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer
