@@ -349,6 +349,45 @@ public class ConfirmMainTest {
     }
 
     /**
+     * A store read the path rests on is held to the version the session
+     * read (a STATE row, review B2: a run whose reader read another version
+     * does not confirm), and ordered by nothing: the store's own turn orders
+     * its reads and writes, and a native run's weave states no store
+     * write's activation (solr-18413 Y8: native 0/10 on such ORDER rows).
+     */
+    @Test
+    public void aStoreReadIsComparedByItsVersionAndOrderedByNothing()
+            throws Exception {
+        Path iteration = iteration();
+        LocationId store = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/t/state.json");
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").writes(),
+                Arrays.asList(WriteRow.of("sel", 10L, writer, store, 3L, "",
+                        "[B"), WriteRow.of("sel", 35L, producer, store, 4L,
+                        "", "[B")), RowCodec::writeWrite);
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Collections.singletonList(ReadRow.of("sel", 30L, reader,
+                        store, 3L, "S_state3", "[B", null)),
+                RowCodec::writeRead);
+        Path out = folder.newFolder("store-read").toPath();
+        ConfirmMain.write(iteration, claim("FAULT:IPC", "true"),
+                manifest(SmtLowering.locationKey(store)), out);
+        List<String> held = new ArrayList<String>();
+        for (JsonObject edge : RowCodec.readJsonl(
+                out.resolve(Confirmation.FILE))) {
+            String kind = edge.get("kind").getAsString();
+            if ("STATE".equals(kind)) {
+                held.add("STATE " + edge.get("reader").getAsString() + "@"
+                        + edge.get("version").getAsString());
+            } else if ("ORDER".equals(kind)) {
+                held.add("ORDER");
+            }
+        }
+        assertEquals(Collections.singletonList("STATE "
+                + Confirmation.id(reader) + "@3"), held);
+    }
+
+    /**
      * A forced path's claim (PIPELINE §7.10) is confirmed unforced, on the
      * recording's schedule: its session ran a forced world to its forced
      * target, and that tail is no order a run takes.

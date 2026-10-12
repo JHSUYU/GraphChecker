@@ -549,7 +549,7 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   field of its own class holds: `DocRouter.DEFAULT`) and what a supplier holds (`PrsSupplier`'s
   per-replica states) are no product of the decode, which cannot tell what it allocated. A guard that reads a construction-only field of a
   registered object at a `PROVENANCE_SITE` (SYMBOL-SCOPE §5.7) reads that version: a STORE read row
-  at the reading occurrence, its symbol naming the version (`RowRuntime#storeRead`); a path rests on each such read its closure made before its cutoff, though no term names it, and CONFIRM holds it to the version the session read (a STATE row, `compose/RestsOn#storeLocations`: a run whose reader read another version does not confirm). The recording
+  at the reading occurrence, its symbol naming the version (`RowRuntime#storeRead`); a path rests on each such read its closure made before its cutoff, though no term names it, and CONFIRM holds it to the version the session read (a STATE row, `compose/RestsOn#storeLocations`: a run whose reader read another version does not confirm), compared and ordered by nothing: the store's own turn orders its reads and writes, and a native run's weave states no store write's activation (`explore/ConfirmMain#stateEdges`). The recording
   states each decode's objects by identity (`STORE_DECODED`), which PLAN joins with the objects an
   occurrence read a field on. Each replay's log states the walks' cost (`Causynth decoded walks:`).
 - `consumed(transport, key)`: a queue item taken, as `received` takes a request: it ends what the
