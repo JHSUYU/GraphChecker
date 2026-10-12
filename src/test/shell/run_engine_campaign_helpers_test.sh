@@ -630,6 +630,23 @@ for state in UNSAT UNANSWERED; do
 $(jq -c '{claim, concrete, evidence, defects}' "${campaign_final}/result.json")"
 done
 
+# SOLVER-TIMEOUT: an obligation the hard lane left undecided at the full
+# budget (solver_timeouts.jsonl) is a SOLVER_TIMEOUT defect
+# (campaign_solver_timeouts): no UNSAT closes over its arm.
+emit_unsat_fixture
+jq '.solver.unsatClosureComplete = true' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+jq -n -c '{obligationId: "OB.H", detail: "SOLVER_TIMEOUT after 1800000ms",
+  host: "lift12"}' >"${emit_iteration}/solver_timeouts.jsonl"
+run_emit
+jq -e '.claim == "RUN_DEFECT"
+  and ([.defects[] | select(.subject == "SOLVER_TIMEOUT")] | length == 1)' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an undecided hard ask was not a named defect: \
+$(jq -c '{claim, defects}' "${campaign_final}/result.json")"
+rm -f -- "${emit_iteration}/solver_timeouts.jsonl"
+
 # A satisfiable formula no mechanism names (FORMULA_SAT) is a claim like any
 # other: published as CONFIRM left it.
 emit_fixture
@@ -2071,6 +2088,24 @@ $(live_charges "${solver_test}/hosts")"
      && ! -e "${solver_home}/server" \
      && -z "$(ls "${solver_home}/requests")" ]] \
     || fail "a host with no room for a solver held its question (${status})"
+  # Busy: a live solver that has not taken the question within
+  # campaign_solver_busy_patience_s gives it up, 5, withdrawn from its queue.
+  campaign_host_max_used_pct=100
+  campaign_solver_busy_patience_s=1
+  mkdir -p "${solver_test}/d"
+  sleep 30 &
+  busy_pid=$!
+  printf '%s\n' "${busy_pid}" >"${solver_home}/server"
+  started=${SECONDS}
+  status=0
+  campaign_solve_obligation OB.d "${solver_wave}/obligations.jsonl" \
+    "${solver_test}/iteration/sessions" "${solver_test}/d" \
+    >/dev/null 2>&1 || status=$?
+  kill "${busy_pid}"
+  rm -f -- "${solver_home}/server"
+  [[ "${status}" -eq 5 && $(( SECONDS - started )) -lt 10 \
+     && -z "$(ls "${solver_home}/requests")" ]] \
+    || fail "a question behind a busy solver was not withdrawn (${status})"
 )
 
 # A question its host's solver could not answer (out of heap, died, ended at
@@ -2157,6 +2192,46 @@ nohost 4096
 measured 6000
 EOF_RETRY
 
+# SOLVE-LANES-WORKER: a first ask goes to its host's solver (at the first
+# budget, campaign_solver_first_ms); one its host had no room for (3) or whose
+# solver stayed busy past its patience (5) is asked alone at that budget; a
+# HARD ask never goes to the host's solver: alone, at the full budget.  Per
+# row: the lane, what the host's solver returns, and every ask made.
+lanes_worker=${test_tmp}/lanes-worker
+while IFS='|' read -r wl_lane wl_service wl_asks; do
+  wl_dir="${lanes_worker}/${wl_lane:-first}${wl_service}"
+  mkdir -p "${wl_dir}"
+  wl_said=$(
+    solver_timeout_ms=1800000
+    campaign_solver_first_tier_ms=60000
+    campaign_log() { :; }
+    lanes_answer() {
+      printf '{"verdict":"UNSAT","obligationId":"OB.1"}\n' \
+        >"$1/obligation_result.jsonl"
+      printf '(assert false)\n' >"$1/obligation_query.smt2"
+    }
+    campaign_solve_obligation() {
+      printf 'service,' >>"$4/asked"
+      [[ "${wl_service}" != 0 ]] || lanes_answer "$4"
+      return "${wl_service}"
+    }
+    campaign_solve_obligation_alone() {
+      printf 'alone %s at %s,' "$5" "$6" >>"$4/asked"
+      lanes_answer "$4"
+    }
+    campaign_obligation_worker OB.1 obligations sessions "${wl_dir}" 1024 \
+      ${wl_lane} >/dev/null 2>&1 || echo "failed,"
+    cat "${wl_dir}/asked"
+  )
+  [[ "${wl_said}" == "${wl_asks}" ]] \
+    || fail "lane '${wl_lane}', service ${wl_service}: ${wl_said}, not ${wl_asks}"
+done <<'EOF_LANES'
+|0|service,
+|3|service,alone 1024 at 60000,
+|5|service,alone 1024 at 60000,
+HARD|0|alone 1024 at 1800000,
+EOF_LANES
+
 # SOLVER-PLACED: a solver asked again goes to the pool's host with the most
 # room for its need (MemAvailable less the 30000 MB reserve of a 100000 MB
 # host), charged there while it runs and released after: here, or a peer
@@ -2195,7 +2270,7 @@ while read -r placed_own placed_14 placed_15 placed_need placed_expected; do
         | grep -c "^$7\\.")" >"${placed_dir}/ran"
     }
     run_capturing_status campaign_solve_obligation_placed OB.1 obligations \
-      sessions "${placed_dir}/worker" "${placed_need}"
+      sessions "${placed_dir}/worker" "${placed_need}" 60000
     if [[ "${placed_expected}" == none ]]; then
       [[ "${status}" -eq 4 && ! -e "${placed_dir}/ran" ]] \
         || fail "a need no host holds was placed (${status})"
@@ -3649,6 +3724,86 @@ done <<'EOF'
 SAT_MODEL_READY|0|REPLAY obligations-0000 A g0/classes g0/plan.jsonl|-
 UNSAT|0|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 0
 SAT_MODEL_READY|1|OBLIGATION obligations-0000 B|OBLIGATION obligations-0000 A lift12 1
+EOF
+
+# SOLVE-LANES: what a solve's return does with the lanes.  A first ask
+# undecided at the first budget (SOLVER_TIMEOUT) leaves for the hard lane,
+# landing nothing, its first answer kept aside; with no shorter first budget
+# it lands as any answer, and so does any other refusal; a HARD ask's
+# SOLVER_TIMEOUT lands, named in solver_timeouts.jsonl.  Per row: the full
+# budget, the ending job's kind, its answer's detail, the hard lane after,
+# what waits to land, the first answer kept aside, and the named timeout.
+lanes_dir="${test_tmp}/solve-lanes"
+while IFS='|' read -r ln_budget ln_kind ln_detail ln_hard ln_pending ln_aside \
+    ln_named; do
+  rm -rf -- "${lanes_dir}"
+  ln_worker="${lanes_dir}/it/obligations-0000/A"
+  mkdir -p "${ln_worker}"
+  ln_said=$(
+    iteration_dir="${lanes_dir}/it"
+    results="${lanes_dir}/results.jsonl"
+    solver_timeout_ms=${ln_budget}
+    campaign_solver_first_tier_ms=60000
+    declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
+      stream_job_tree=() stream_host_jobs=() stream_host_solves=() \
+      stream_host_hard=() stream_flying=()
+    stream_queue=()
+    stream_pending=()
+    stream_hard=()
+    stream_staged=()
+    stream_ticker=""
+    stream_step_pid=""
+    campaign_log() { :; }
+    campaign_replay_measured() { :; }
+    jq -n -c --arg d "${ln_detail}" \
+      '{obligationId: "A", verdict: "NOT_ADMITTED", detail: $d}' \
+      >"${ln_worker}/obligation_result.jsonl"
+    sleep 0 &
+    ln_pid=$!
+    wait "${ln_pid}"
+    stream_jobs[${ln_pid}]="${ln_kind} obligations-0000 A lift12 "
+    stream_job_worker[${ln_pid}]=${ln_worker}
+    stream_host_jobs[lift12]=1
+    stream_host_solves[lift12]=1
+    stream_host_hard[lift12]=1
+    campaign_stream_ended "${ln_pid}" 0
+    ln_waiting="${stream_pending[*]:--}"
+    campaign_stream_land
+    printf '%s|%s|%s|%s' "${stream_hard[*]:--}" "${ln_waiting% }" \
+      "$([[ -e "${ln_worker}/obligation_result.first.jsonl" ]] && echo aside \
+        || echo -)" "$(jq -r .obligationId \
+        "${lanes_dir}/it/solver_timeouts.jsonl" 2>/dev/null || echo -)"
+  )
+  [[ "${ln_said}" == "${ln_hard}|${ln_pending}|${ln_aside}|${ln_named}" ]] \
+    || fail "a ${ln_kind} answer '${ln_detail}' under ${ln_budget} ms left \
+${ln_said}, not ${ln_hard}|${ln_pending}|${ln_aside}|${ln_named}"
+done <<'EOF'
+1800000|OBLIGATION|SOLVER_TIMEOUT after 60000ms|HARD obligations-0000 A|-|aside|-
+60000|OBLIGATION|SOLVER_TIMEOUT after 60000ms|-|OBLIGATION obligations-0000 A lift12 0|-|-
+1800000|OBLIGATION|the query was refused: no root|-|OBLIGATION obligations-0000 A lift12 0|-|-
+1800000|HARD|SOLVER_TIMEOUT after 1800000ms|-|HARD obligations-0000 A lift12 0|-|A
+EOF
+
+# SOLVE-LANES-DISPATCH: the hard lane starts once no other start waits, and
+# like any solve not while GROW holds the solves.  Per row: GROW's hold and
+# the starts made, in order.
+while IFS='|' read -r ld_hold ld_started; do
+  ld_said=$(
+    stream_queue=("OBLIGATION obligations-0001 B" "REPLAY obligations-0000 C g0/c g0/p")
+    [[ "${ld_hold}" -eq 0 ]] || stream_queue=()
+    stream_hard=("HARD obligations-0000 A")
+    stream_hold=${ld_hold}
+    campaign_stream_collect_jobs() { :; }
+    campaign_stream_has_slot() { return 0; }
+    campaign_stream_admit_host() { stream_admitted_host=lift12; }
+    campaign_stream_start() { printf '%s;' "$1"; }
+    campaign_stream_dispatch
+  )
+  [[ "${ld_said}" == "${ld_started}" ]] \
+    || fail "hold ${ld_hold}: started '${ld_said}', not '${ld_started}'"
+done <<'EOF'
+0|OBLIGATION obligations-0001 B;REPLAY obligations-0000 C g0/c g0/p;HARD obligations-0000 A;
+1|
 EOF
 
 # STREAM-CONFIRM-FIRST: a confirmation queued, running or returned is owed
