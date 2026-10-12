@@ -137,11 +137,15 @@ public class FocusedReplayDecidedTest {
         assertFalse(FocusedReplay.stalledAfterFlip());
         ObligationResult refused = only("");
         assertEquals(Verdict.NOT_ADMITTED, refused.verdict());
-        assertEquals(FocusedReplay.REPLAY_NO_PROGRESS + ": " + still
-                + "; no schedule hold was live; the replay ended there and"
-                + " published no session (until then: occurrence "
+        String stall = FocusedReplay.REPLAY_NO_PROGRESS + ": " + still
+                + "; no schedule hold was live";
+        assertEquals(stall + "; the replay ended there and published no"
+                + " session (until then: occurrence "
                 + OccurrenceAddress.parse(FOCUS).id() + " never reached "
-                + SITE + "#1 in this replay)", refused.detail());
+                + SITE + "#1 in this replay; its world did not run: "
+                + stall + ")", refused.detail());
+        assertFalse("a stall is no fact about the arm",
+                refused.settlesArm());
 
         reset();
         handed();
