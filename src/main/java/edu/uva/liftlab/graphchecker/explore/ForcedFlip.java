@@ -114,7 +114,7 @@ final class ForcedFlip {
             if (flipAnswered && candidate.task.taskId().equals(
                     anchor.taskId()) && seed.equals(candidate.path.sessionId)
                     && sites.contains(candidate.decision.siteId())
-                    && frontier.settled(candidate.obligationId).isEmpty()
+                    && frontier.settled(candidate).isEmpty()
                     && !frontier.flying(candidate)) {
                 after++;
             }

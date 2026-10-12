@@ -430,7 +430,9 @@ Correctness:
 59. An obligation's id moves as the corpus grows: its dependence is recomputed each round, so one
     flip's answers land under several ids (hdfs-adhoc-39 WD2: the re-ask of 0562399f's refuted
     world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
-    under the next. The open-arm judgment reads answers by flip; the proposal side is unchanged.
+    under the next. The open-arm judgment reads answers by flip; on the proposal side an ADMITTED
+    answer settles its flip under any id (`Frontier#settled(Candidate)`), while an UNSAT or
+    NOT_ADMITTED one settles only its own id.
 64. An arm's key names a factor member only by what it delivered the task (`gc/explore/Corpus#inputShape`:
     its handoffs, its writes at the guard's locations, whether it wrote state the task's region reads
     on any arm, its folded regions' included, `StaticScopeMap#readLocations`), not by

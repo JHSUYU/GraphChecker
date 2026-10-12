@@ -524,7 +524,7 @@ public final class ObligationFactory {
                         new Candidate(corpus, scope, task, path, index,
                                 false);
                 if (offered.contains(candidate.obligationId)) continue;
-                String reason = owed.settled(candidate.obligationId);
+                String reason = owed.settled(candidate);
                 if (!reason.isEmpty()) {
                     offered.add(candidate.obligationId);
                     gaps.add(GapRow.of(path.sessionId,

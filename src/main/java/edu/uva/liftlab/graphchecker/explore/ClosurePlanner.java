@@ -187,25 +187,29 @@ public final class ClosurePlanner {
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
-        while (!pending.isEmpty()) {
-            Demand demand = demands.get(pending.remove());
-            demand.dirty = false;
-            for (Demand next : successors(walk, demand)) {
-                Demand held = demands.get(next.occurrence.id());
-                if (held != null) {
-                    if (held.absorb(next) && !held.dirty) {
-                        held.dirty = true;
-                        pending.add(held.occurrence.id());
+        Candidates candidates = new Candidates(corpus);
+        while (true) {
+            while (!pending.isEmpty()) {
+                Demand demand = demands.get(pending.remove());
+                demand.dirty = false;
+                for (Demand next : successors(walk, demand)) {
+                    Demand held = demands.get(next.occurrence.id());
+                    if (held != null) {
+                        if (held.absorb(next) && !held.dirty) {
+                            held.dirty = true;
+                            pending.add(held.occurrence.id());
+                        }
+                        continue;
                     }
-                    continue;
+                    Demand queued = candidates.take(next);
+                    if (queued == null) continue;
+                    admit(queued, demands, pending, truncated, maxTasks);
                 }
-                if (demands.size() >= maxTasks) {
-                    truncated.add(next.occurrence.render());
-                    continue;
-                }
-                demands.put(next.occurrence.id(), next);
-                pending.add(next.occurrence.id());
             }
+            // Row-connected demand is exhausted: the next static candidate.
+            Demand candidate = candidates.next();
+            if (candidate == null) break;
+            admit(candidate, demands, pending, truncated, maxTasks);
         }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
@@ -234,6 +238,107 @@ public final class ClosurePlanner {
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
                 exposed, waiting, truncated, concrete);
+    }
+
+    /** Plans one demand, or names it cut once {@code maxTasks} are
+     *  planned (PLAN_CLOSURE_CUT, {@link Candidates}). */
+    private static void admit(Demand demand, Map<String, Demand> demands,
+                              Deque<String> pending, Set<String> truncated,
+                              int maxTasks) {
+        if (demands.size() >= maxTasks) {
+            truncated.add(demand.occurrence.render());
+            return;
+        }
+        demands.put(demand.occurrence.id(), demand);
+        pending.add(demand.occurrence.id());
+    }
+
+    /**
+     * THE TASK BOUND CUTS STATIC CANDIDATES FIRST (owner: the closure keeps
+     * every static writer; over budget, recorded writers first, the rest cut
+     * by a named PLAN_CLOSURE_CUT).  A demand the rows connect -- a recorded
+     * writer or producer, a control producer, the anchor's own -- is planned
+     * as it is found; a static candidate writer or producer waits until no
+     * row-connected demand is left, and then the candidates are planned
+     * round-robin over their (node, region, context shape) class, so one
+     * class's many occurrences (solr-adhoc-07: 59 of 64 tasks were {@code
+     * CoreContainer.getCore} candidates of {@code SolrCores.cores}, while
+     * two recorded {@code create} writers were cut) never crowd out the
+     * rest.  A candidate the rows later connect is planned at once.
+     */
+    private static final class Candidates {
+        private final Corpus corpus;
+        /** occurrence id -> its waiting demand. */
+        private final Map<String, Demand> waiting =
+                new HashMap<String, Demand>();
+        /** class -> its waiting candidates, in the order found. */
+        private final Map<String, Deque<Demand>> byClass =
+                new HashMap<String, Deque<Demand>>();
+        /** The classes with a waiting candidate, the next one first. */
+        private final Deque<String> turn = new ArrayDeque<String>();
+
+        private Candidates(Corpus corpus) {
+            this.corpus = corpus;
+        }
+
+        /** The demand to plan now, or null: a static candidate waits (and
+         *  absorbs another reason to demand it); a row-connected demand of
+         *  a waiting one takes it out of the wait. */
+        private Demand take(Demand next) {
+            String id = next.occurrence.id();
+            Demand held = waiting.get(id);
+            boolean candidate = staticCandidate(next);
+            if (held == null) {
+                if (!candidate) return next;
+                waiting.put(id, next);
+                String key = classOf(next.occurrence);
+                Deque<Demand> queue = byClass.get(key);
+                if (queue == null) {
+                    queue = new ArrayDeque<Demand>();
+                    byClass.put(key, queue);
+                    if (!turn.contains(key)) turn.add(key);
+                }
+                queue.add(next);
+                return null;
+            }
+            held.absorb(next);
+            if (candidate) return null;
+            waiting.remove(id);
+            byClass.get(classOf(held.occurrence)).remove(held);
+            return held;
+        }
+
+        /** The next waiting candidate, round-robin over the classes, or
+         *  null when none waits. */
+        private Demand next() {
+            while (!turn.isEmpty()) {
+                String key = turn.remove();
+                Deque<Demand> queue = byClass.get(key);
+                Demand next = queue.poll();
+                if (next == null) {
+                    byClass.remove(key);
+                    continue;
+                }
+                if (queue.isEmpty()) {
+                    byClass.remove(key);
+                } else {
+                    turn.add(key);
+                }
+                waiting.remove(next.occurrence.id());
+                return next;
+            }
+            return null;
+        }
+
+        private String classOf(OccurrenceAddress occurrence) {
+            return occurrence.node().render() + "|" + occurrence.regionId()
+                    + "|" + corpus.contextShape(occurrence.context());
+        }
+
+        private static boolean staticCandidate(Demand demand) {
+            return STATIC_CANDIDATE_WRITER.equals(demand.why)
+                    || STATIC_CANDIDATE_PRODUCER.equals(demand.why);
+        }
     }
 
     /**

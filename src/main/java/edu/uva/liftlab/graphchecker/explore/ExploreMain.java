@@ -250,8 +250,11 @@ public final class ExploreMain {
                 truncated += plan.truncated.size();
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        root.render(), "closure truncated at " + maxTasks
-                                + " tasks; " + plan.truncated.size()
+                        root.render(), "PLAN_CLOSURE_CUT: closure "
+                                + "truncated at " + maxTasks + " tasks, "
+                                + "static candidates cut before any "
+                                + "occurrence the rows connect; "
+                                + plan.truncated.size()
                                 + " occurrences were not planned, so this "
                                 + "anchor's closure is incomplete: "
                                 + plan.truncated));
@@ -286,7 +289,8 @@ public final class ExploreMain {
         Frontier frontier = new Frontier(corpus, scope, tasks, flipSites);
         List<ObligationResult> answers = RowCodec.readAll(results,
                 RowCodec::readObligationResult);
-        frontier.consume(answers);
+        Map<String, List<ObligationResult>> byFlip = answersByFlip(iteration);
+        frontier.consume(answers, byFlip);
         if (inFlight != null) {
             frontier.inFlight(RowCodec.readAll(inFlight,
                     ExploreCodec::readObligation));
@@ -299,7 +303,6 @@ public final class ExploreMain {
                     gaps));
         }
         // The forced replay of the anchor first (PIPELINE §7.10).
-        Map<String, List<ObligationResult>> byFlip = answersByFlip(iteration);
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
                 anchorTask(tasks, roots), scope, frontier, answers, byFlip,
                 candidates);

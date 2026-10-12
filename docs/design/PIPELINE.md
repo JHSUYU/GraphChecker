@@ -446,9 +446,14 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    no single SEED session, an unresolved selector, or an address the seed never activated is a
    BLOCKING gap and leaves the round with no root.
 3. Stops the branches that cannot answer the question (`explore.Branches`, §7.4) and plans the
-   anchor's closure (§7.2). A closure truncated at `--max-tasks` is the round's DIAGNOSTIC
-   `ADMISSION_GAP` and its manifest's `truncated` (the occurrences not planned); whether it blocks
-   a claim is the exploration's end's to say (§7.9).
+   anchor's closure (§7.2). Every occurrence the rows connect (a recorded writer or producer, a
+   control producer) is planned as the walk finds it; static candidate writers and producers wait
+   until none is left and are then planned round-robin over their (node, region, context shape)
+   class (`ClosurePlanner.Candidates`), so over `--max-tasks` the cut takes static candidates first
+   (solr-adhoc-07 IB1: 59 of 64 tasks were `CoreContainer.getCore` candidates while two recorded
+   `create` writers were cut). A truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP`
+   (`PLAN_CLOSURE_CUT: ...`) and its manifest's `truncated` (the occurrences not planned); whether it
+   blocks a claim is the exploration's end's to say (§7.9).
 4. Reconciles the slot table (`explore.SlotTable`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
    world is a replacement, and a read whose observed write the run orders after it (the two rows'
@@ -647,7 +652,10 @@ every session that did not run it, re-keyed every arm of the session; solr-bugs-
 most of its 8,802 re-keyed ids were members that ran and delivered nothing). Known limit (STATUS open
 defect 64): a member's write the recording states at no write site re-keys no arm. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer); an `ADMITTED` replay also
+settles its flip (`ObligationFactory#flip`) under whatever id the arm has since, as the same flip of
+the same path plants the same world again (`Frontier#settled(Candidate)`; solr-adhoc-07 IB1: 59
+answered flips re-keyed, 25 of them ADMITTED). An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
 flipped outcome), since its id may move while it flies: sessions landing since its round grow the
 dependence.

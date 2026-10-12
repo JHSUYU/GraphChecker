@@ -2918,6 +2918,21 @@ public class ExploreTest {
                         + "node other than the PAIRED producer's: "
                         + scopedWhy,
                 scopedWhy.containsKey(foreignExporter.render()));
+        // Over the task bound, a static candidate is cut before an
+        // occurrence the rows connect, however late the walk finds that one:
+        // the sibling is found with the writer, the producer only through
+        // the writer's attach (PLAN_CLOSURE_CUT, ClosurePlanner#Candidates).
+        Corpus spreadCorpus = Corpus.read(perNode, null);
+        ClosurePlanner.Plan cut = ClosurePlanner.plan(spreadCorpus, target,
+                3, spreadMap, Branches.of(spreadCorpus,
+                        Collections.singletonList(target),
+                        new ArrayList<GapRow>()));
+        List<String> kept = new ArrayList<String>();
+        for (Task task : cut.tasks) kept.add(task.focused().render());
+        assertEquals("recorded writer and producer first: " + kept,
+                Arrays.asList(target.render(), writer.render(),
+                        producer.render()), kept);
+        assertEquals(Collections.singleton(sibling.render()), cut.truncated);
         assertEquals("while the producer the rows paired stays a member: "
                         + scopedWhy, ClosurePlanner.CLOSURE_MEMBER,
                 scopedWhy.get(producer.render()));
@@ -3987,7 +4002,7 @@ public class ExploreTest {
         boolean recorded = false;
         for (GapRow gap : RowCodec.readAll(cut.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
-            if (!gap.detail().startsWith("closure truncated")) continue;
+            if (!gap.detail().startsWith("PLAN_CLOSURE_CUT")) continue;
             assertEquals(GapClass.DIAGNOSTIC, gap.cls());
             recorded = true;
         }
@@ -4421,6 +4436,37 @@ public class ExploreTest {
         assertFalse("a reuse settles nothing itself: its source does",
                 Files.exists(settled.directory.resolve(
                         ObligationDir.QUESTION)));
+    }
+
+    /**
+     * An ADMITTED replay settles its flip whatever id the arm has since
+     * ({@link Frontier#consume}): sessions landing after it move the
+     * dependence, and the same flip of the same path would plant the same
+     * world again (solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of them
+     * ADMITTED).  A NOT_ADMITTED answer under another id stays owed.
+     */
+    @Test
+    public void anAdmittedFlipIsSettledUnderAnyId() throws Exception {
+        for (Verdict verdict : new Verdict[] {Verdict.ADMITTED,
+                Verdict.NOT_ADMITTED}) {
+            Path iteration = twoWriters("flip-" + verdict, "(= M_READ_KEY 2)",
+                    null);
+            Path out = tree.newFolder("flip-" + verdict + "-out").toPath();
+            Path wave0 = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave0, 0);
+            Obligation lookup = named(obligations(wave0), "Lookup#u8");
+            answer(iteration, "OB.rekeyed", ObligationDir.QUESTION,
+                    ObligationFactory.flip(lookup.taskId(), lookup.pathId(),
+                            lookup.siteId(), lookup.ordinal(),
+                            lookup.flippedOutcome()) + ":content", verdict,
+                    "", "answered");
+            Path wave1 = out.resolve("obligations-0001");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave1, 1);
+            assertEquals(verdict.name(), verdict != Verdict.ADMITTED,
+                    named(obligations(wave1), "Lookup#u8") != null);
+        }
     }
 
     /** One earlier worker of this iteration: its question file and the
