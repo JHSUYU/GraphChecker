@@ -142,4 +142,27 @@ public class PlanTest {
                 ExecutionIndex.of(Collections.singletonList(
                         Frame.of(CHECKSUM, 0))));
     }
+
+    /** A doors-only occurrence's task declares its door markers alone: a
+     *  fault marker's port is kept, a read's and a clock's are not. */
+    @Test
+    public void aDoorsOnlyTaskDeclaresItsDoorMarkersAlone() {
+        com.google.gson.JsonArray actions = new com.google.gson.JsonArray();
+        for (String[] action : new String[][] {
+                {"FAULT:SOLR_HTTP:SEND", "EXPLICIT_SYMBOLIC_FAULT"},
+                {"", "READ_PLACEHOLDER"},
+                {"", "EXTERNAL_CALL_RETURN"}}) {
+            com.google.gson.JsonObject port = new com.google.gson.JsonObject();
+            if (!action[0].isEmpty()) {
+                port.addProperty(InputActionCatalog.DECLARED_FAULT_MARKER,
+                        action[0]);
+            }
+            port.addProperty("sourceKind", action[1]);
+            actions.add(port);
+        }
+        com.google.gson.JsonArray doors = ConcolicScheduler.doorMarkers(actions);
+        assertEquals(1, doors.size());
+        assertEquals("FAULT:SOLR_HTTP:SEND", doors.get(0).getAsJsonObject()
+                .get(InputActionCatalog.DECLARED_FAULT_MARKER).getAsString());
+    }
 }

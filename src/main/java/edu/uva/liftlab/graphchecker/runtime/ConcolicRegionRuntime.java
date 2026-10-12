@@ -105,11 +105,71 @@ public final class ConcolicRegionRuntime {
      * flow over symbolized objects lands in the workload's path condition.
      */
     public static void pauseObservation() {
+        closeDoorWindow();
         OBSERVATION_PAUSE_DEPTH.set(OBSERVATION_PAUSE_DEPTH.get() + 1);
         try {
             engine().pausePathCondition();
         } catch (Throwable ignored) {
             // A missing/inactive engine is already handled by the region hook.
+        }
+    }
+
+    /**
+     * The doors-only occurrence whose door decision runs unpaused on this
+     * thread, until its next hook ({@link #openDoorWindow}); null for none.
+     */
+    private static final ThreadLocal<ActiveRegion> DOOR_WINDOW =
+            new ThreadLocal<>();
+
+    /**
+     * A doors-only occurrence ({@code RuntimeTask#doorsOnly}) runs with its
+     * path condition paused from its start to its close, but for its door
+     * decisions: its marker's mint lifts the pause (called inside the mint's
+     * hook, whose own pause still stands), so the woven test of the marker
+     * records its decision, and the next hook on the thread restores it
+     * ({@link #closeDoorWindow}).  Between them only the marker's boolean is
+     * symbolic: a fault arm builds an exception with a constant message, the
+     * healthy arm reaches the request's call-site hook.  So does a mutation
+     * of a tracked container at a site the scope map names ({@link
+     * #observeTrackedContainer}): it runs hooked, its version logged, never
+     * an unhooked mutation no log is marked by.  A field it writes runs
+     * unhooked, as an unplanned occurrence's: a later read of the word is
+     * stated as changed by an unhooked write.
+     */
+    static void openDoorWindow(ActiveRegion active) {
+        if (!active.activation.doorsOnly || !active.basePaused) return;
+        try {
+            engine().resumePathCondition();
+            active.basePaused = false;
+            DOOR_WINDOW.set(active);
+        } catch (Throwable ignored) {
+            // The pause stands: the door's decision records concretely.
+        }
+    }
+
+    /** Restores a doors-only occurrence's pause after its door decision. */
+    private static void closeDoorWindow() {
+        ActiveRegion open = DOOR_WINDOW.get();
+        if (open == null) return;
+        DOOR_WINDOW.remove();
+        try {
+            engine().pausePathCondition();
+            open.basePaused = true;
+        } catch (Throwable ignored) {
+            // No region to pause: nothing is recorded either.
+        }
+    }
+
+    /** Releases a doors-only occurrence's base pause at its close (inside
+     *  the close's own pause, so the read-out runs as every close's). */
+    private static void releaseBasePause(ActiveRegion active) {
+        if (DOOR_WINDOW.get() == active) DOOR_WINDOW.remove();
+        if (!active.basePaused) return;
+        active.basePaused = false;
+        try {
+            engine().resumePathCondition();
+        } catch (Throwable ignored) {
+            // Resume is harmless when no region is active.
         }
     }
 
@@ -534,7 +594,13 @@ public final class ConcolicRegionRuntime {
             }
             // The declared entry setup.
             RootMint.symbolizeReceiverFields(active, admitted, api);
-            api.resumePathCondition();
+            // A doors-only occurrence keeps the setup's pause as its base
+            // (#openDoorWindow), released at its close.
+            if (admitted.doorsOnly) {
+                active.basePaused = true;
+            } else {
+                api.resumePathCondition();
+            }
             pathConditionPaused = false;
             return active;
         } catch (Throwable throwable) {
@@ -836,7 +902,8 @@ public final class ConcolicRegionRuntime {
                                           Object receiver) {
         ActiveRegion active = activeRegion();
         if (active == null || receiver == null
-                || nonNull(fieldSignature).isEmpty()) {
+                || nonNull(fieldSignature).isEmpty()
+                || active.activation.doorsOnly) {
             return;
         }
         try {
@@ -899,9 +966,14 @@ public final class ConcolicRegionRuntime {
                                                boolean afterMutation) {
         // A region thread starts the log before; one outside every region
         // marks it after.
-        if (container == null || (activeRegion() == null) != afterMutation) {
+        ActiveRegion active = activeRegion();
+        if (container == null || (active == null) != afterMutation) {
             return;
         }
+        // A doors-only occurrence's mutation here runs hooked, as a planned
+        // one's (#openDoorWindow until the hook after it): paused it would
+        // be unhooked, and a region thread marks no log incomplete.
+        if (active.activation.doorsOnly) openDoorWindow(active);
         try {
             if (engine().observeContainer(container, afterMutation)
                     == ConcolicVmBroker.UNSUPPORTED_TARGET) {
@@ -1494,6 +1566,7 @@ public final class ConcolicRegionRuntime {
         }
         // Judgement and publication are bookkeeping: muted until VM close.
         pauseObservation();
+        releaseBasePause(active);
         try {
             try {
                 AccessorCallContext scope =
@@ -1526,6 +1599,7 @@ public final class ConcolicRegionRuntime {
             STRANDED.remove(token);
         }
         pauseObservation();
+        releaseBasePause(stranded);
         try {
             closeOccurrence(stranded);
         } finally {

@@ -86,6 +86,14 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final String CONTROL_PRODUCER_ADMISSION =
             "CONTROL_PRODUCER_V1";
     /**
+     * A plan row's and its task's mark: the occurrence is planned for its
+     * doors alone -- its final basis is {@link #CONTROL_PRODUCER_ADMISSION},
+     * so it contributes no value -- and the replay runs it with the path
+     * condition paused but for its door decisions ({@code
+     * runtime.ConcolicRegionRuntime}; {@link #stateDoorsOnly}).
+     */
+    public static final String DOORS_ONLY = "doorsOnly";
+    /**
      * {@code admissionBasis} of an activation carried because it exported a
      * value the walk demanded on the other side of a message: the recording
      * bound its OUT capture of a port to the exchange leg the demanding
@@ -1038,7 +1046,32 @@ public final class RuntimeSelectedRegionFinalizer {
         stateShapes(instances, walk.reached, context -> shapes.computeIfAbsent(
                 context, messages::shape));
         LOG.info("PLAN {}", dataFlowDoors(program, walk.reached, scopeMap));
+        LOG.info("PLAN doors-only: {} control producer(s) of the {} planned"
+                + " occurrence(s) run paused but for their doors",
+                stateDoorsOnly(instances, walk.reached), walk.reached.size());
         return walk.reached;
+    }
+
+    /**
+     * Marks {@link #DOORS_ONLY} each planned occurrence whose final basis is
+     * {@link #CONTROL_PRODUCER_ADMISSION}: admitted for the doors of a
+     * message that started another planned occurrence, it contributes no
+     * value -- a value rule reaching it moves its basis ({@code
+     * DemandWalk#reach}, {@code #admitValue}) -- and its own guards to the
+     * send are no question of the target's.  How many.
+     */
+    static int stateDoorsOnly(Map<String, Map<String, Object>> instances,
+                              Collection<String> planned) {
+        int doorsOnly = 0;
+        for (String occurrence : planned) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
+                    ADMISSION_BASIS)))) {
+                activation.put(DOORS_ONLY, true);
+                doorsOnly++;
+            }
+        }
+        return doorsOnly;
     }
 
     /**
@@ -1181,9 +1214,8 @@ public final class RuntimeSelectedRegionFinalizer {
                         version.getValue())) {
                     if (!crossed.add(writer)) continue;
                     if (program.activations.containsKey(writer)
-                            && !walk.reached.contains(writer)
                             && !walk.excluded.contains(writer)) {
-                        walk.admit(writer, depth, STORE_WRITER_ADMISSION);
+                        walk.admitValue(writer, depth, STORE_WRITER_ADMISSION);
                     }
                     for (String door : doorsOf(messages, program,
                             OccurrenceAddress.parse(writer))) {
@@ -1473,10 +1505,8 @@ public final class RuntimeSelectedRegionFinalizer {
                             walk.demandedOf(occurrence, influence)));
                 }
                 if (through.isEmpty()) continue;
-                if (!walk.reached.contains(occurrence)) {
-                    walk.admit(occurrence, 1, ROOT_RELEVANT_ADMISSION);
-                    progressed = true;
-                }
+                progressed |= walk.admitValue(occurrence, 1,
+                        ROOT_RELEVANT_ADMISSION);
                 for (String cell : through) {
                     Demand demand = new Demand(occurrence, cell);
                     if (!walk.visited.contains(demand)) seeds.add(demand);
@@ -1501,6 +1531,10 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                     if (through.isEmpty()) continue;
                     crossed.add(key);
+                    // It contributes the value it took in: no control
+                    // producer's doors-only plan.
+                    progressed |= walk.admitValue(occurrence, 1,
+                            ROOT_RELEVANT_ADMISSION);
                     walk.crossMessage(occurrence, attach, seeds::add);
                     for (String cell : through) {
                         Demand demand = new Demand(occurrence, cell);
@@ -1872,6 +1906,28 @@ public final class RuntimeSelectedRegionFinalizer {
             reached.add(occurrence);
             heldApart.add(occurrence);
             recordDepth(occurrence, depth);
+        }
+
+        /** Admits one occurrence on a value rule (a root its influence
+         *  reaches the demand by, a store version the target rests on): one
+         *  reached only as a control producer contributes a value now and
+         *  takes the rule's basis, as {@link #reach} gives it a demand's.
+         *  Whether it changed the plan. */
+        private boolean admitValue(String occurrence, int depth,
+                                   String basis) {
+            if (!reached.contains(occurrence)) {
+                admit(occurrence, depth, basis);
+                return true;
+            }
+            Map<String, Object> activation = program.activations.get(
+                    occurrence);
+            if (!CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
+                    ADMISSION_BASIS)))) {
+                return false;
+            }
+            activation.put(ADMISSION_BASIS, basis);
+            recordDepth(occurrence, depth);
+            return true;
         }
 
         /** Reaches one occurrence by a demand of the walk: the shortest

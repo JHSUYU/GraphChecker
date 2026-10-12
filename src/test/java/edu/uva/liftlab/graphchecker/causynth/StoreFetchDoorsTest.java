@@ -142,6 +142,30 @@ public class StoreFetchDoorsTest {
         }
     }
 
+    /** A planned occurrence whose final basis is the control producer's is
+     *  doors-only; one a value rule moved, or a target, is not. */
+    @Test
+    public void aControlProducerIsPlannedDoorsOnly() {
+        Map<String, Map<String, Object>> instances = new LinkedHashMap<>();
+        String[][] rows = {{"cp", "CONTROL_PRODUCER_V1"},
+                {"writer", "SHARED_LOCATION_DEMAND_V1"},
+                {"root", "ROOT_RELEVANT_V1"}, {"target", ""}};
+        for (String[] row : rows) {
+            Map<String, Object> activation = new LinkedHashMap<>();
+            if (!row[1].isEmpty()) {
+                activation.put(RuntimeSelectedRegionFinalizer.ADMISSION_BASIS,
+                        row[1]);
+            }
+            instances.put(row[0], activation);
+        }
+        assertEquals(1, RuntimeSelectedRegionFinalizer.stateDoorsOnly(
+                instances, instances.keySet()));
+        for (String[] row : rows) {
+            assertEquals(row[0], "cp".equals(row[0]), instances.get(row[0])
+                    .containsKey(RuntimeSelectedRegionFinalizer.DOORS_ONLY));
+        }
+    }
+
     private static Map<String, Object> capture(String siteId, int ordinal,
                                                long seq) {
         Map<String, Object> capture = new LinkedHashMap<>();

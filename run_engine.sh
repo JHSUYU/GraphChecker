@@ -7235,10 +7235,16 @@ campaign_emit() {
   bounded=$(campaign_bounds "${iteration_dir}") \
     || campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
       "the declared bounds the search touched could not be read"
+  # The planned occurrences run paused but for their doors (control
+  # producers, RuntimeSelectedRegionFinalizer#DOORS_ONLY): one plan row each.
+  local doors_only
+  doors_only=$(grep -c '"doorsOnly":true' -- "${runtime_region_plan}") \
+    || doors_only=0
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
     --argjson bounded "${bounded}" \
+    --argjson doorsOnly "${doors_only}" \
     --arg formula "${formula_path}" \
     --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
@@ -7339,6 +7345,10 @@ campaign_emit() {
      # region plan catalog'"'"'s gap rows): null, or their sum, by owner
      # class, and the first rows.  An UNSAT reading looks at the anchor'"'"'s
      # demanded fields among them: the recorded heap is partial.
+     # How many planned occurrences ran paused but for their doors: the
+     # control producers, which contribute no value (SYMBOL-SCOPE §4.4,
+     # RuntimeSelectedRegionFinalizer#DOORS_ONLY).
+     doorsOnlyOccurrences: $doorsOnly,
      confinedWriters: ([($planCatalog[0].gaps // [])[]
          | select(.kind == "CLOSURE_CONFINED")] as $rows
        | if ($rows | length) == 0 then null

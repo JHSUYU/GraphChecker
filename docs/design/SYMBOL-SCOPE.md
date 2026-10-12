@@ -873,7 +873,20 @@ reaches, to a fixed point:
   owner's rule: the recorded order is no fixed order). It contributes no value, so the doors of the
   message that started it are not admitted in turn. These are the control producers EXPLORE
   proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS `MARKER_FLIPPED` witnesses
-  move such an IPC door.
+  move such an IPC door. A value rule that reaches one moves its basis -- a demand (`DemandWalk#reach`),
+  a root or an attached value whose influence reaches the demand, a store version the target rests on
+  (`#admitValue`) -- and one that keeps it is planned **doors-only** (`DOORS_ONLY`, `#stateDoorsOnly`;
+  PLAN's log and result.json `doorsOnlyOccurrences` count them): its task declares its door markers
+  alone (`plan.ConcolicScheduler#doorMarkers`), and the replay runs it with the path condition paused
+  from its start to its close (`runtime.ConcolicRegionRuntime#openDoorWindow`) but for each door
+  decision -- the marker's mint lifts the pause, the woven test records the decision, the next hook
+  restores it -- and each mutation of a tracked container at a site the scope map names, which so
+  runs hooked. COMPOSE reads from it its door roots and decisions and the schedule's events of its
+  send; CONFIRM no state row of it. A field it writes runs unhooked, as an unplanned occurrence's: a
+  later read of the word is stated as changed by an unhooked write (VM.md §10), where a planned writer's
+  version was named before -- a reader of a location it writes that is no demand of the walk, or one
+  another node's demand reads through an object the JVM shares (a static: MiniSolrCloudCluster's
+  nodes are one JVM, and the walk crosses to writers on the reader's node only).
 
 - **Equivalent deciders are one class** (`DemandWalk#classDeciders`). Occurrences the walk reached
   only as writers of a demanded store that stored no demanded cell in the recording (each left the

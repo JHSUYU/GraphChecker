@@ -953,6 +953,11 @@ final class ConcolicTaskPlan {
         final boolean capturesTargetReach;
         /** Whether the region reads a tracked cell (SYMBOL-SCOPE F2). */
         final boolean readsTrackedState;
+        /** Whether the occurrence is planned for its doors alone (a control
+         *  producer's, {@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}):
+         *  it runs with the path condition paused but for its door
+         *  decisions ({@code ConcolicRegionRuntime#openDoorWindow}). */
+        final boolean doorsOnly;
         /**
          * Whether this non-loop address has completed its goal, which closes
          * its admission; loop-body roots are governed by K_L alone.
@@ -1068,6 +1073,8 @@ final class ConcolicTaskPlan {
                     .maxBackedgeTraversals(task.rootLoopSiteId());
             this.readsTrackedState = optionalBool(task.json(),
                     ExecutionTask.READS_TRACKED_STATE, false);
+            this.doorsOnly = optionalBool(task.json(),
+                    RuntimeSelectedRegionFinalizer.DOORS_ONLY, false);
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
             // Already validated when the plan row was decoded.

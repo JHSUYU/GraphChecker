@@ -1012,6 +1012,10 @@ final class RootMint {
             if (Boolean.TRUE.equals(fresh)) {
                 Identity.doorFaulted(action.marker);
             }
+            // A doors-only occurrence decides its door unpaused.
+            if (!action.marker.isEmpty()) {
+                ConcolicRegionRuntime.openDoorWindow(active);
+            }
             return fresh;
         } catch (Throwable throwable) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, assignedByTheWave(root)

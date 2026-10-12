@@ -187,9 +187,17 @@ public final class ConcolicScheduler {
                 candidate.inputActions);
         selected = removeInboundProtocolHandoffInputs(selected,
                 CommunicationHandoffSpec.decode(plan.json()));
+        boolean doorsOnly = optionalBool(plan.json(),
+                RuntimeSelectedRegionFinalizer.DOORS_ONLY, false);
+        if (doorsOnly) selected = doorMarkers(selected);
         ExecutionTask task = ExecutionTask.create(candidate.goal,
                 candidate.seedTaskId(selected), selected, branchMethods,
                 loopBound);
+        if (doorsOnly) {
+            task.json().addProperty(RuntimeSelectedRegionFinalizer.DOORS_ONLY,
+                    true);
+            return task;
+        }
         List<String> regions = new ArrayList<>(strings(plan.json(),
                 RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
         regions.add(plan.regionId());
@@ -197,6 +205,20 @@ public final class ConcolicScheduler {
             task.json().addProperty(ExecutionTask.READS_TRACKED_STATE, true);
         }
         return task;
+    }
+
+    /** A doors-only occurrence's inputs: its door markers' alone (a control
+     *  producer's, {@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}). */
+    static JsonArray doorMarkers(JsonArray actions) {
+        JsonArray doors = new JsonArray();
+        for (JsonElement action : actions) {
+            if (action.isJsonObject() && !optionalString(
+                    action.getAsJsonObject(),
+                    InputActionCatalog.DECLARED_FAULT_MARKER).isEmpty()) {
+                doors.add(action);
+            }
+        }
+        return doors;
     }
 
     /** The ONE cap rule's refusal: not even the target's own demand level
