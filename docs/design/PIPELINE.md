@@ -2309,6 +2309,15 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   - a later count is a loop's (a poll's, a retry's, one send per item), which natively runs
     another number of times.
 
+  Only on the claim's cone: the WAKE's context and the step's (node and causal context, the
+  handoffs left out) are each the context of an occurrence a ROOT row is minted at, of the anchor,
+  or of one CONFIRM's WIRE, STATE or ORDER rows name (`ConfirmMain.Witness#cone`), and the step is
+  in no turn-counted root (a `Root:` of any role but CLIENT: a daemon tick, a timed wait's turn)
+  unless a ROOT row is minted there; a WAKE elsewhere is timing the claim rests on nowhere, and a
+  tick's k counts turns a native run numbers on its own timing (solr-18413 Y8: 56 rows -- the
+  client's REQUESTSTATUS polls, other Overseer task and state-updater turns -- and every native run
+  waited at a queue write of `Root:OVERSEER_STATE_UPDATE#15` it never made at that tick, 0/10).
+
   Both events are named by their stable contexts (`contract.StableEventNames`, computed alike by
   the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`), and each message
   hop is named by its sender's stable context and the send's site when that send was the sender's
