@@ -993,6 +993,44 @@ public class RowRuntimeTest {
     }
 
     /**
+     * Every row the engine states of a store or a node's view stands after
+     * every VM event so far (IDENTITY §7.2): a decode and a read of the view
+     * at one VM event are ordered write first, not read first (round Z2L:
+     * the reads stood one event earlier than the writes they saw, 78
+     * BLOCKING TOPOLOGY_DIVERGENCE rows).
+     */
+    @Test
+    public void aDecodeAndAReadAtOneVmEventStandWriteFirst() throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        Identity.clock(() -> 41L);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        Identity.occurrence(NN.key(), "REGION.view", true);
+        org.example.decoded.Decoded.Slice slice =
+                new org.example.decoded.Decoded.Slice("shard1", "active");
+        MessageDoors.decoded("SOLR_ZK", "/views/one-event.json@3", slice);
+        MessageDoors.viewed("SOLR_ZK", "/views/one-event.json", slice);
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        SessionReader rows = SessionReader.read(session());
+        List<String> seqs = new ArrayList<>();
+        for (WriteRow write : rows.writes()) {
+            if (write.location().kind() == LocationKind.VIEW) {
+                seqs.add("write " + write.seq());
+            }
+        }
+        for (ReadRow read : rows.reads()) {
+            if (read.location().kind() == LocationKind.VIEW
+                    || read.location().kind() == LocationKind.STORE) {
+                seqs.add(read.location().kind() + " read " + read.seq());
+            }
+        }
+        assertEquals(Arrays.asList("write 42", "STORE read 42",
+                "VIEW read 42"), seqs);
+    }
+
+    /**
      * A store's write stands after every VM event so far (IDENTITY §7.2), as
      * a concrete target does: a closure cuts a writer strictly before its
      * write's seq, so the writer's own last event -- its door's fault

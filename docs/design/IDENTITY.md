@@ -531,7 +531,12 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   writer strictly before its write, and keeps the writer's own last event, its door's fault marker;
   0 with no VM clock: no order check reads it; two versions of one path at one seq are two events,
   CONTRACT-SPEC §2.6); a `STORE_WRITE` trace row naming the writer's
-  address in the recording.
+  address in the recording. Every row the engine states of a store or a node's view stands on that
+  scale -- a decode's view write, a PROVENANCE site's and a view accessor's STORE and VIEW reads, and
+  each schedule event's `vmEvent` -- so a read stated with no VM event since the write it saw is
+  never ordered before it (`SlotTable#contradictsOrder`; round Z2L: 78 BLOCKING
+  `TOPOLOGY_DIVERGENCE` rows while the reads stood one event earlier -- a PROVENANCE read with no
+  VM event since its decode or the store write it saw was stated so too).
 - `notified(kind, callback)` + `fetched(transport, key, owner)`: inside a watch callback, the first
   read of a stored version installs the writer's context, with `via` = the watcher kind (and
   `.<n>` from a node's second delivery of that version on; how many deliveries a run takes is the

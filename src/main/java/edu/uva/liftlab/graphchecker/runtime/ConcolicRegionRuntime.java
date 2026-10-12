@@ -874,7 +874,10 @@ public final class ConcolicRegionRuntime {
             Provenance.unregistered(nonNull(siteId), receiver);
             return;
         }
-        long seq = RowRuntime.currentEvent();
+        // On the scale the engine's writes of a store and a view stand on
+        // (Identity#afterLastEvent): a read with no VM event since the
+        // write or decode it saw is never ordered before it.
+        long seq = Identity.afterLastEvent();
         RowRuntime.storeRead(active.d3Address, seq, nonNull(siteId),
                 version.location, version.version);
         // The same read is a read of the node's view (SYMBOL-SCOPE §6.4):

@@ -704,10 +704,14 @@ public final class MessageDoors {
         // of one version, or one decoded before the window opened --
         // re-points nothing: one write of a view per version, the first.
         String node = nodeHere();
-        boolean repoints = !node.isEmpty() && REPOINTED.add(trimmed(transport)
-                + "\n" + path + "\n" + node + "@" + version);
         OccurrenceAddress here = Identity.currentOccurrence(node);
         LocationId view = viewOf(store, here);
+        // The node: the running occurrence's, else the thread's scope's (a
+        // decode before the window, which opened no occurrence).
+        String decoder = here != null ? here.node().render() : node;
+        boolean repoints = !decoder.isEmpty() && REPOINTED.add(
+                trimmed(transport) + "\n" + path + "\n" + decoder + "@"
+                        + version);
         if (repoints) Confirmation.decoding(view, version, here);
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
@@ -790,7 +794,10 @@ public final class MessageDoors {
         String node = nodeHere();
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         if (at == null) return;
-        long seq = RowRuntime.currentEvent();
+        // On the scale the engine's writes of a store and a view stand on,
+        // after every VM event so far: a read stated with no VM event since
+        // the write it saw is never ordered before it.
+        long seq = Identity.afterLastEvent();
         String site = ContentPort.viewed(trimmed(transport), path);
         RowRuntime.storeRead(at, seq, site, version.location,
                 version.version);
