@@ -117,7 +117,6 @@ final class SharedStateCapture {
     private static final AtomicLong READ_OUT_NANOS = new AtomicLong();
     private static final AtomicLong DECODE_NANOS = new AtomicLong();
     private static final AtomicLong VERSIONS = new AtomicLong();
-    private static final AtomicLong BEFORE = new AtomicLong();
 
     /** Whether any region close read out its log this session. */
     static boolean readOutsTaken() {
@@ -128,16 +127,15 @@ final class SharedStateCapture {
     static String readOutSummary() {
         return String.format(java.util.Locale.ROOT, "%d page(s), %.1f MB,"
                         + " %.1f s in the VM, %.1f s decoding, %d version(s)"
-                        + " listed, %d of them before their window",
+                        + " listed",
                 READ_OUT_PAGES.get(), READ_OUT_CHARS.get() / 1e6,
                 READ_OUT_NANOS.get() / 1e9, DECODE_NANOS.get() / 1e9,
-                VERSIONS.get(), BEFORE.get());
+                VERSIONS.get());
     }
 
     static void resetForTests() {
         for (AtomicLong counter : new AtomicLong[] {READ_OUT_PAGES,
-                READ_OUT_CHARS, READ_OUT_NANOS, DECODE_NANOS, VERSIONS,
-                BEFORE}) {
+                READ_OUT_CHARS, READ_OUT_NANOS, DECODE_NANOS, VERSIONS}) {
             counter.set(0L);
         }
     }
@@ -259,13 +257,7 @@ final class SharedStateCapture {
     private static void fileVersionsEnvelope(JsonObject envelope,
                                              ActiveRegion active,
                                              Set<JsonElement> clean) {
-        for (JsonElement version : array(envelope, "versions")) {
-            VERSIONS.incrementAndGet();
-            if (version.isJsonObject()
-                    && beforeWindow(version.getAsJsonObject())) {
-                BEFORE.incrementAndGet();
-            }
-        }
+        VERSIONS.addAndGet(array(envelope, "versions").size());
         String fault = versionsFault(envelope, clean);
         String locationKey = locationKey(envelope);
         if (!fault.isEmpty()) {
@@ -303,7 +295,6 @@ final class SharedStateCapture {
             JsonObject version = element.getAsJsonObject();
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
-            copyIfPresent(version, entry, BEFORE_WINDOW);
             // Its kind: an INITIAL is a write row flagged as one.
             copyIfPresent(version, entry, "versionKind");
             // Site and activation: the two halves of the WriteRow's
@@ -329,7 +320,6 @@ final class SharedStateCapture {
             JsonObject read = element.getAsJsonObject();
             JsonObject entry = new JsonObject();
             copyIfPresent(read, entry, "readEventId");
-            copyIfPresent(read, entry, BEFORE_WINDOW);
             copyIfPresent(read, entry, "regionEnterEventId");
             copyIfPresent(read, entry, "site");
             copyIfPresent(read, entry, VmRows.OBSERVED_VERSION);
@@ -723,21 +713,6 @@ final class SharedStateCapture {
     }
 
     /**
-     * Whether the VM stated a version or a read as before the read-out's
-     * window (VM.md, the read-out): a version an earlier window's read-out
-     * published, stated without its value and guard (a read of the window
-     * that observed it brings it whole), a read whose row that read-out
-     * stated.  Listed still, for what names it: the event index, a
-     * referent's row, a mint's earlier write.
-     */
-    static boolean beforeWindow(JsonObject logged) {
-        return optionalBool(logged, BEFORE_WINDOW, false);
-    }
-
-    /** {@link #beforeWindow}'s member. */
-    static final String BEFORE_WINDOW = "beforeWindow";
-
-    /**
      * Whether a version is its location's INITIAL: the value from before
      * every store the log names, which whichever access first observed the
      * location started its log with -- a scalar's word, a container's
@@ -782,8 +757,7 @@ final class SharedStateCapture {
                 || optionalString(version, "taskId").isEmpty())) {
             return "version " + id + " names no writer case";
         }
-        boolean before = beforeWindow(version);
-        if (!before && !version.has("pathGuard")) {
+        if (!version.has("pathGuard")) {
             // Explicit null is the empty conjunction; absent is uncaptured.
             return "version " + id + " omits its writer path guard";
         }
@@ -791,9 +765,6 @@ final class SharedStateCapture {
         if (!base.isEmpty()) return base;
         String referent = referentFault(version, id, versionKind, mapState);
         if (!referent.isEmpty()) return referent;
-        // An earlier window's version: its value and guard were that
-        // window's read-out's to check.
-        if (before) return "";
         JsonElement expression = version.get("expression");
         if (expression == null || expression.isJsonNull()) {
             return "version " + id + " carries no value expression";

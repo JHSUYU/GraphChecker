@@ -1541,34 +1541,6 @@ public class RowRuntimeTest {
     }
 
     /**
-     * VM.md, the read-out: a version before the read-out's window is listed
-     * without its value and guard, which its own window's read-out checked;
-     * one of the window must carry both.
-     */
-    @Test
-    public void aVersionBeforeItsWindowCarriesNoValueAndNeedsNone()
-            throws Exception {
-        java.lang.reflect.Method fault = SharedStateCapture.class
-                .getDeclaredMethod("versionFault", JsonObject.class,
-                        boolean.class, java.util.Set.class);
-        fault.setAccessible(true);
-        for (boolean before : new boolean[] {true, false}) {
-            JsonObject version = new JsonObject();
-            version.addProperty("fieldVersionId", 50L);
-            version.addProperty("versionKind", "WRITE");
-            version.addProperty("regionEnterEventId", 41L);
-            version.addProperty("regionId", "REGION.a");
-            version.addProperty("taskId", "TASK.a");
-            version.addProperty("writerContextId", 7L);
-            if (before) version.addProperty("beforeWindow", true);
-            String said = (String) fault.invoke(null, version, false,
-                    new java.util.HashSet<Object>());
-            assertEquals("before=" + before + ": " + said, before,
-                    said.isEmpty());
-        }
-    }
-
-    /**
      * A reference write's container state, or why none is stated, rides on
      * a WRITE or RMW of a field or element only: at most one of the two, a
      * state naming an older MAP_STATE version, a refusal naming its reason.

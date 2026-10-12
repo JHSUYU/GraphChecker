@@ -570,17 +570,19 @@ Scale and robustness:
     (`ConcolicResultPublisher#decodeBeforePublication`), and is decoded there one location at a time
     (`gc/runtime/SharedStateCapture`, 16 MB pages): SB12's obligation 0a1a085e98d056aa still read 50-60 MB per activation, and each
     page repeats the expression closure its locations share (1.6 times the text of 64 MB pages).
-    The VM now states each selected location's versions and reads before the activation's entry
-    without their values (`beforeWindow`, image vm-force6; VM.md, PIPELINE §5): a whole log re-sent
-    every value of a hot location with every close, and 18413's seed replay spent 3-10 times MB7's
-    485 s parsing them. Still open: a location is selected whole whatever thread touched it, and
-    every page repeats its locations' closure; asking for the locations the activation itself read
-    or wrote, with one table across a read-out's pages, needs the VM again. A session's close prints
-    what its read-outs cost (`Causynth read-outs:` pages, MB, the VM's seconds on the closing
-    threads, the publication thread's seconds decoding, the versions listed and those before their
-    window; `SharedStateCapture#readOutSummary`).
-    Under Z1 it dominates solr-18413's seed (2429-3400 s against MB7's 485 s); the window failed the row gate on
-    solr-18406 (a stranded activation's 199 writes lost): kept or reverted on 18413's measurement (TODO Solr §1 row 3).
+    Asking for the locations the activation itself read or wrote, with one table across a
+    read-out's pages, needs the VM: publication rows a write by the occurrence that performed it,
+    whichever read-out found it first (`RowPublication#writes`), so a read-out cannot narrow itself
+    on the Java side. A session's close prints what its read-outs cost (`Causynth read-outs:` pages,
+    MB, the VM's seconds on the closing threads, the publication thread's seconds decoding, the
+    versions listed; `SharedStateCapture#readOutSummary`).
+    A VM window (vm-force6, c71ab25a3: an activation's earlier versions as metadata only) saved under
+    20 % on solr-18413 (913 -> 730 MB read out, decoding 2746 -> 2281 s, seed 3456 -> 3478 s) and lost a
+    stranded activation's 199 writes on solr-18406: reverted (lead, 2026-10-11); vm-force5 stays the
+    image. What made 18413's read-outs large under Z1 was one array tracked by value: a reused logging
+    encoder's byte buffer (8,628 elements written at `UTF_8$Encoder.encodeArrayLoop`, 64 versions
+    each, written outside every region by every later log line and re-listed at every close: 99.9 %
+    of a page's envelopes, 681K distinct versions by page 120; round Y2).
 39. Which turn of a DataNode carries a request is its clock's: a block report the recording sent in
     turn #1 may ride turn #2 in a replay, and then every anchor below it differs in the root's k;
     its occurrences are answered by their shape (§9), but the request-scoped events the
