@@ -588,7 +588,12 @@ Scale and robustness:
     written on a region thread (`RowRuntime#storeWrite` from a tree hook, unpaused) had made symbolic.
     The engine's own output -- session rows and manifests, the console, the verdict file -- now runs
     under the VM's pause (`runtime/ConcolicVmBroker#asEngineWork`: the engine's plumbing is never
-    program state).
+    program state): 18413's seed replay 7m02s, 234 pages, 102 MB read out, 158 s decoding, 24.8K
+    versions listed (round Y8; Y4 before it: past its 2400 s bound, 638 MB, 1.34M). The residue is cost
+    only: the tree-facing `MessageDoors` entries run unpaused (their staging is symbolic work, and Z2's
+    content capture reads expressions at `stored`), so engine containers they mutate on a region thread
+    (`ExecutionIndex.fold`'s, `RowRuntime#storeWrite`'s, `MessageDoors.stored`'s maps) are versioned and
+    listed too, and imported as plumbing.
 39. Which turn of a DataNode carries a request is its clock's: a block report the recording sent in
     turn #1 may ride turn #2 in a replay, and then every anchor below it differs in the root's k;
     its occurrences are answered by their shape (§9), but the request-scoped events the
