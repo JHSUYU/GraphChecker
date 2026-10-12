@@ -449,8 +449,9 @@ Correctness:
     reads elsewhere than the guard's locations no longer re-keys (a write at the guard's locations
     states its canonical written term, `Corpus#written`, and keeps its count). A member whose context
     shape has a hop no row names keeps its address as its class. The canonical term drops object
-    handles: two writes of the same structure over different objects fold; a read inside it is named
-    by its writer's class and site and, three writers deep, what that writer wrote.
+    handles: two writes of the same structure over different objects fold; a handoff or a read inside
+    it is named by what binds it in the flip query (its own run's wire arms, every writer the query
+    offers, or the pinned value), with no depth bound.
 69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
     decision; where that occurrence is the task's own and the inherited flip lies after the arm being
     flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is

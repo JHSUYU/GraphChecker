@@ -75,9 +75,10 @@ public final class ClosurePlanner {
     public static final int DEFAULT_MAX_TASKS = 64;
 
     /** The runaway guard: past this many occurrences the rows connect
-     *  (static candidates not counted), the rest of them are cut too and the
-     *  cut is a declared bound (result.json {@code bounded}, {@code
-     *  region_path_closure_ceiling}), never a silently unlimited plan
+     *  (static candidates not counted), the rest of them are cut too, and so
+     *  is every static candidate (a recorded writer is never cut while one
+     *  is kept); the cut is a declared bound (result.json {@code bounded},
+     *  {@code region_path_closure_ceiling}), never a silently unlimited plan
      *  (solr-adhoc-07's whole row-connected closure is 252). */
     public static final int CLOSURE_CEILING = 1024;
 
@@ -170,6 +171,13 @@ public final class ClosurePlanner {
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
                             Branches branches) {
+        return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
+                branches);
+    }
+
+    /** {@link #plan} under another closure ceiling (a test's). */
+    static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
+                     int ceiling, StaticScopeMap scope, Branches branches) {
         Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -204,6 +212,10 @@ public final class ClosurePlanner {
         // The anchor is the first occurrence the rows connect.
         int connectedPlanned = 1;
         int candidatesPlanned = 0;
+        // The static candidates planned so far, and whether the rows'
+        // demand reached the ceiling: then no candidate stays planned.
+        Set<String> plannedCandidates = new LinkedHashSet<String>();
+        boolean ceilingReached = false;
         while (true) {
             while (!pending.isEmpty()) {
                 Demand demand = demands.get(pending.remove());
@@ -219,9 +231,24 @@ public final class ClosurePlanner {
                     }
                     Demand queued = candidates.take(next);
                     if (queued == null) continue;
-                    if (connectedPlanned >= CLOSURE_CEILING) {
+                    if (connectedPlanned >= ceiling) {
                         truncated.add(queued.occurrence.render());
                         ceilingCut.add(queued.occurrence.render());
+                        // A recorded writer is never cut while a static
+                        // candidate is kept: the candidates planned so far
+                        // leave the plan.
+                        for (String id : plannedCandidates) {
+                            Demand planned = demands.get(id);
+                            if (planned == null
+                                    || !Candidates.staticCandidate(planned)) {
+                                continue;
+                            }
+                            demands.remove(id);
+                            pending.remove(id);
+                            truncated.add(planned.occurrence.render());
+                        }
+                        plannedCandidates.clear();
+                        ceilingReached = true;
                         continue;
                     }
                     connectedPlanned++;
@@ -232,11 +259,12 @@ public final class ClosurePlanner {
             // while the bound has room.
             Demand candidate = candidates.next();
             if (candidate == null) break;
-            if (candidatesPlanned >= maxTasks) {
+            if (ceilingReached || candidatesPlanned >= maxTasks) {
                 truncated.add(candidate.occurrence.render());
                 continue;
             }
             candidatesPlanned++;
+            plannedCandidates.add(candidate.occurrence.id());
             admit(candidate, demands, pending);
         }
         List<Task> tasks = new ArrayList<Task>();

@@ -1978,6 +1978,140 @@ public class ExploreTest {
     }
 
     /**
+     * WHAT A FEEDER WROTE WHERE THE GUARD READS is named by what binds it in
+     * the flip query ({@code Corpus#written}): a handoff it wrote by its own
+     * run's wire arms (the producer's class, export site, canonical term),
+     * else by its arrival; a read inside its term by every writer the query
+     * offers it, else by its value; a term that does not lower by the values
+     * observed; no depth bound.  Each row: two worlds, and whether they
+     * share the arm's key.
+     */
+    @Test
+    public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
+            throws Exception {
+        Path iteration = tree.newFolder("written-binds").toPath();
+        JsonObject symbolA = new JsonObject();
+        symbolA.addProperty("_type", "SymbolExpression");
+        symbolA.addProperty("_exp", "M_A");
+        symbolA.addProperty("_java_type", "I");
+        LocationId[] chain = new LocationId[4];
+        OccurrenceAddress[] writers = new OccurrenceAddress[4];
+        for (int at = 0; at < 4; at++) {
+            chain[at] = LocationId.of(LocationKind.INSTANCE, "50", "" + at);
+            writers[at] = occurrence("hdfs-case/dn0", "REGION.chain" + at,
+                    CausalContext.of(Role.of("CHAIN" + at), "", 1),
+                    "o.a.h.h.s.d.Chain" + at + "#run#1");
+        }
+        OccurrenceAddress concurrent = occurrence("hdfs-case/dn0",
+                "REGION.extra", CausalContext.of(Role.of("EXTRA"), "", 1),
+                "o.a.h.h.s.d.Extra#run#1");
+        OccurrenceAddress innerReader = occurrence("hdfs-case/dn0",
+                "REGION.innerReader", CausalContext.of(Role.of("INNER"), "",
+                        1), "o.a.h.h.s.d.InnerReader#run#1");
+        JsonObject mystery = new JsonObject();
+        mystery.addProperty("_type", "NoSuchExpression");
+        mystery.addProperty("_java_type", "I");
+        // session -> what WRITER writes at the guard's location
+        String[] names = {"s-seed", "h-plus", "h-minus", "h-plus-again",
+            "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
+            "u-five-again", "d-one", "d-two"};
+        for (String name : names) {
+            Session session = new Session(iteration, name);
+            session.activation(TARGET, !name.equals("s-seed"));
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            String guardValue = "0";
+            if (name.startsWith("h-")) {
+                session.activation(PRODUCER, false);
+                session.expression("EXPR.00000000000000f1", binary(
+                        name.equals("h-minus") ? "-" : "+", symbolA,
+                        literal(name.equals("h-minus") ? 1 : 10)));
+                session.export(ROTATED, "EXPR.00000000000000f1", 11L, "11");
+                session.attach(DELIVERED, "M_HOFF_KEY", "11", ROTATED);
+                session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("p-")) {
+                session.attach(DELIVERED, "M_HOFF_KEY",
+                        name.equals("p-five") ? "5" : "7", null);
+                session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("i-")) {
+                // An inner read by a turn of its own, which a concurrent
+                // writer (its own thread, instrumented) may have fed.
+                session.activation(innerReader, false, true, "inner");
+                session.activation(writers[0], false, true, "chain0");
+                session.constant("EXPR.00000000000000f3", "3");
+                session.write(at(writers[0], "Chain0#u1:WRITE", "Chain0#u1"),
+                        chain[0], 7L, "EXPR.00000000000000f3");
+                if (name.equals("i-two")) {
+                    session.activation(concurrent, false, true, "extra");
+                    session.constant("EXPR.00000000000000f4", "9");
+                    session.write(at(concurrent, "Extra#u1:WRITE",
+                            "Extra#u1"), chain[0], 8L,
+                            "EXPR.00000000000000f4");
+                }
+                session.read(at(innerReader, "Inner#u2:READ", "Inner#u2"),
+                        chain[0], 7L, "M_INNER", "3");
+                session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
+            } else if (name.startsWith("u-")) {
+                session.expression("EXPR.00000000000000f2", mystery);
+                guardValue = name.startsWith("u-five") ? "5" : "7";
+            } else if (name.equals("s-seed")) {
+                session.constant("EXPR.00000000000000f2", "4");
+            } else {
+                // A chain four writers deep: WRITER's term reads chain[0],
+                // written by writers[0] from chain[1], ... chain[3] holds
+                // a constant, 1 or 2.
+                for (int at = 0; at < 4; at++) {
+                    session.activation(writers[at], false);
+                    String ref = String.format("EXPR.00000000000000%02x",
+                            0xa0 + at);
+                    if (at == 3) {
+                        session.constant(ref, name.equals("d-one") ? "1"
+                                : "2");
+                    } else {
+                        session.symbolic(ref, "M_CHAIN" + (at + 1), "I");
+                        session.read(at(writers[at], "Chain" + at
+                                        + "#u2:READ", "Chain" + at + "#u2"),
+                                chain[at + 1], 5L, "M_CHAIN" + (at + 1), "1");
+                    }
+                    session.write(at(writers[at], "Chain" + at + "#u1:WRITE",
+                            "Chain" + at + "#u1"), chain[at], 5L, ref);
+                }
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
+                        chain[0], 5L, "M_CHAIN0", "1");
+                session.symbolic("EXPR.00000000000000f2", "M_CHAIN0", "I");
+            }
+            session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000f2");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", guardValue);
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = ClosurePlanner.taskOf(corpus,
+                ClosurePlanner.taskId(TARGET));
+        Object[][] rows = {
+            {"h-plus", "h-minus", false,
+                    "a producer sending M_A-1 after its flip, not M_A+10"},
+            {"h-plus", "h-plus-again", true, "the same arm in another run"},
+            {"p-five", "p-seven", false, "a pinned payload 5 against 7"},
+            {"i-one", "i-two", false,
+                    "a concurrent writer the inner read may take"},
+            {"u-five", "u-seven", false,
+                    "a term that does not lower, observed 5 against 7"},
+            {"u-five", "u-five-again", true,
+                    "the same observed value of such a term"},
+            {"d-one", "d-two", false,
+                    "a constant four writers deep (no depth bound)"},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[3], row[2], dependence(corpus, task,
+                    (String) row[0], "Guard#u8").equals(dependence(corpus,
+                    task, (String) row[1], "Guard#u8")));
+        }
+    }
+
+    /**
      * A MEMBER IS NAMED BY ITS CLASS ({@link Corpus#inputShape}): node,
      * region and context shape, never its address, and a line that only fed
      * the region counts once however many members of its class ran it -- a
@@ -5639,6 +5773,22 @@ public class ExploreTest {
             assertEquals("bound " + row[0], cut, plan.truncated);
             assertTrue(plan.ceilingCut.isEmpty());
         }
+        // Past a ceiling of two occurrences the rows connect, the producer
+        // the writer's attach names is cut and named, and no static
+        // candidate stays planned whatever the bound.
+        ClosurePlanner.Plan capped = ClosurePlanner.plan(corpus, TARGET, 2, 2,
+                map, Branches.of(corpus, Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()));
+        Set<String> kept = new LinkedHashSet<String>();
+        for (Task task : capped.tasks) kept.add(task.focused().render());
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
+                WRITER.render())), kept);
+        assertEquals(Collections.singleton(siblingB.render()),
+                capped.ceilingCut);
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(
+                siblingB.render(), sibling.render(), siblingC.render(),
+                refresher.render())), new LinkedHashSet<String>(
+                capped.truncated));
     }
 
     /**

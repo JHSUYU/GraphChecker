@@ -490,8 +490,10 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    (`region_path_max_tasks`, default 64) of them (`ClosurePlanner.Candidates`). solr-adhoc-07 IB1:
    59 of its 64 tasks were `CoreContainer.getCore` candidates while two recorded `create` writers were
    cut; its row-connected closure is 252 occurrences, planned whole. The runaway guard: past
-   `ClosurePlanner.CLOSURE_CEILING` (1024) occurrences the rows connect are cut too, counted in the
-   manifest's `ceilingCut` and named in result.json `bounded` (`region_path_closure_ceiling`). A
+   `ClosurePlanner.CLOSURE_CEILING` (1024) occurrences the rows connect are cut too, and so is every
+   static candidate (one planned before leaves the plan: a recorded writer is never cut while a static
+   candidate is kept), counted in the manifest's `ceilingCut` and named in result.json `bounded`
+   (`region_path_closure_ceiling`). A
    truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP` (`REGION_PATH_CLOSURE_TRUNCATED: ...`; `PLAN_CLOSURE_CUT` is PLAN's cut at `schedule_max_jobs`, §3) and its
    manifest's `truncated` (the occurrences not planned); whether it blocks a claim is the
    exploration's end's to say (§7.9).
@@ -689,15 +691,21 @@ re-asked 979 seed arms); a reduced world's NOT_ADMITTED stands for the parent wo
 whether the task's occurrence ran, its handoff sites and producers, and each factor member that
 writes state it reads, named by its class (node, region, `Corpus#contextShape`; a producer too, never
 an address's anchor hashes or counts), by what it delivered in this session: its handoff sites and
-producers, its writes at the locations the guard reads (per site, each with the written term as a
-flip query lowers it, canonical and digested, `Corpus#written`: operators, constants, roots by id,
-handoffs by site, container subterms by their canonical bodies kept; an object handle's or
-unsupported subterm's minted digest and a read's event, version and owner dropped; a read named by
-its location's kind and slot and by what binds it in the flip query -- its observed value where no
-write of the session made its version (pinned), else its observed writer's class and site and, three
-writers deep, what that writer wrote (bound through the writers' arms). A member flip that writes
-another value there, or a term reading what another writer wrote, is another world; a poll writing
-the same canonical term folds), and whether it wrote any state the
+producers, its writes at the locations the guard reads (per site, each with what it wrote as the
+flip query reads it, `Corpus#written` -- the rule: the key names everything the query depends on at
+the task, modulo the run's own names. The written term canonical and digested: operators,
+constants, roots by id, container subterms by their canonical bodies kept; an object handle's minted
+digest and a read's event, version and owner dropped; a handoff by what binds it in the query (its
+own run's wire arms: each producer's class, export site, canonical term, path-condition predicates
+and roots' guard, else pinned to its arrival); a read by its location's kind and slot and every
+writer the query offers it (`Arms#stateArms`: each writer's class, write site and canonical term;
+one whose term does not lower a free choice, `?`, with the observed value where it is the observed
+writer; none that lowers: pinned to its observed value); a term that does not lower (an unsupported
+subterm) by the values its readers observed. No depth bound: memoized per session and reference, a
+walk meeting a term it is expanding names it `cycle`, unmemoized. A member flip that writes another
+value there, a producer sending another term, a pinned payload of another value, or a term reading a
+location another (or one more) writer may have written is another world; a poll writing the same
+canonical term folds), and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
 `StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm

@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -57,6 +58,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -880,59 +882,105 @@ public final class Corpus implements Arms.Rows {
                 continue;
             }
             sites.add(write.endpoint().site() + "="
-                    + written(sessionId, write.expressionRef()));
+                    + written(sessionId, write));
         }
         Collections.sort(sites);
         return sites;
     }
 
     /**
-     * A written term as the guard reads it, CANONICAL, digested: the term
-     * as a flip query lowers it ({@link FlipQuery#statedTerm}) with its
-     * semantic content kept -- operators, constants, each root by its id,
-     * each handoff by its site, each container subterm by its canonical
-     * body -- and the run's own names dropped: an identity's or an
-     * unsupported subterm's minted digest (an object handle), and a read's
-     * event, version and owner.  A read is named by its location's kind and
-     * slot and by what binds it in a flip query ({@code FlipQuery}): pinned
-     * to its observed value where no write of the session made its version,
-     * else bound through its writers' arms, so by its observed writer's
-     * class ({@link #classOf}) and site and, to {@value #WRITTEN_DEPTH}
-     * levels, what that writer wrote -- two worlds whose written term reads
-     * a location another writer wrote re-key.  Memoized per session,
-     * reference and depth.
+     * WHAT A WRITE WROTE, AS A FLIP QUERY READS IT (the rule: an arm's key
+     * names everything its flip query depends on at the task, modulo the
+     * run's own names): its term canonical ({@link #term}), or, where the
+     * term does not lower -- the query then binds nothing through it -- the
+     * values the session's reads of that version observed.
      */
-    private String written(String sessionId, String expressionRef) {
-        return written(sessionId, expressionRef, WRITTEN_DEPTH);
+    private String written(String sessionId, WriteRow write) {
+        String term = term(sessionId, write.expressionRef(), new Naming());
+        return term != null ? term : "?" + observedValues(sessionId,
+                SmtLowering.locationKey(write.location()), write.version());
     }
 
-    private String written(String sessionId, String expressionRef,
-                           int depth) {
+    /** The values a session's reads of one version observed, sorted. */
+    private Set<String> observedValues(String sessionId, String locationKey,
+                                       long version) {
+        Set<String> values = new TreeSet<String>();
+        for (ReadRow read : readsOf(sessionId, locationKey)) {
+            if (read.observedVersion() == version) {
+                values.add(read.concreteValue());
+            }
+        }
+        return values;
+    }
+
+    /** One canonical naming walk: what it is expanding now, and whether it
+     *  met itself (a cycle through concurrent writers) or an unsupported
+     *  subterm. */
+    private static final class Naming {
+        final Set<String> active = new HashSet<String>();
+        boolean cyclic;
+        boolean unsupported;
+    }
+
+    /** A memoized name that does not lower. */
+    private static final String UNLOWERED = "!";
+
+    /**
+     * One term, CANONICAL and digested, or null where it does not lower as
+     * a flip query lowers an arm ({@link SmtLowering#lower}; a term holding
+     * an unsupported subterm is one): operators, constants, each root by its
+     * id, each handoff and each read by what binds it in the query ({@link
+     * #handoffName}, {@link #readName}), each container subterm by its
+     * canonical body; a name the lowering minted from a run's handle (an
+     * identity) by its kind alone.  No depth bound: a walk that meets a term
+     * it is expanding names it {@code cycle} and that answer is not
+     * memoized; every other answer is, per session and reference.
+     */
+    private String term(String sessionId, String expressionRef,
+                        Naming naming) {
         if (expressionRef == null || expressionRef.isEmpty()) return "";
-        String key = sessionId + "|" + expressionRef + "|" + depth;
-        String held = writtenTerms.get(key);
-        if (held != null) return held;
-        String digest = ArtifactIO.digest(canonical(sessionId,
-                FlipQuery.statedTerm(this, sessionId, expressionRef), depth),
-                16);
-        writtenTerms.put(key, digest);
-        return digest;
+        String key = "term|" + sessionId + "|" + expressionRef;
+        String held = canonicalNames.get(key);
+        if (held != null) return UNLOWERED.equals(held) ? null : held;
+        if (!naming.active.add(key)) {
+            naming.cyclic = true;
+            return "cycle";
+        }
+        boolean cyclic = naming.cyclic;
+        boolean unsupported = naming.unsupported;
+        naming.cyclic = false;
+        naming.unsupported = false;
+        try {
+            SmtLowering lowering = lowering(sessionId);
+            SmtLowering.Lowered lowered = lowering == null ? null
+                    : lowering.lower(expressionRef);
+            String result = null;
+            if (lowered != null && lowered.ok()) {
+                String text = canonical(sessionId, lowered.text(), naming);
+                if (!naming.unsupported) {
+                    result = ArtifactIO.digest(text, 16);
+                }
+            }
+            if (!naming.cyclic) {
+                canonicalNames.put(key, result == null ? UNLOWERED : result);
+            }
+            return result;
+        } finally {
+            naming.active.remove(key);
+            naming.cyclic |= cyclic;
+            naming.unsupported = unsupported;
+        }
     }
 
-    /** How many writers deep a written term's reads are named by what
-     *  their writers wrote; past it, by the writer's class and site. */
-    static final int WRITTEN_DEPTH = 3;
-
-    /** {@link #written}'s canonical text of one lowered term. */
-    private String canonical(String sessionId, String text, int depth) {
+    /** {@link #term}'s canonical text of one lowered text. */
+    private String canonical(String sessionId, String text, Naming naming) {
         SmtLowering lowering = lowering(sessionId);
         return SmtNames.substitute(text, token -> {
             if (SmtNames.BUILTIN.contains(token)) return null;
             String body = lowering == null ? null
                     : lowering.sharedBody(token);
             if (body != null) {
-                return "dag:" + sharedCanonical(sessionId, token, body,
-                        depth);
+                return "dag:" + sharedName(sessionId, token, body, naming);
             }
             switch (symbolKind(sessionId, token)) {
                 case ROOT: {
@@ -941,49 +989,141 @@ public final class Corpus implements Arms.Rows {
                             : "root:") + root.rootId();
                 }
                 case HANDOFF:
-                    return "handoff:" + attach(sessionId, token).endpoint()
-                            .site();
+                    return handoffName(attach(sessionId, token), naming);
                 case READ:
-                    return readCanonical(sessionId,
-                            read(sessionId, token), depth);
+                    return readName(sessionId, read(sessionId, token),
+                            naming);
                 default:
+                    if (lowering == null || !lowering.minted(token)) {
+                        return null;
+                    }
+                    if (token.startsWith("unsupported__")) {
+                        naming.unsupported = true;
+                    }
                     // A name the lowering minted from a run's handle.
-                    return lowering != null && lowering.minted(token)
-                            ? token.replaceAll("__[0-9a-f]+$", "__") : null;
+                    return token.replaceAll("__[0-9a-f]+$", "__");
             }
         });
     }
 
-    /** One container subterm's canonical body, digested once per session,
-     *  name and depth. */
-    private String sharedCanonical(String sessionId, String name,
-                                   String body, int depth) {
-        String key = sessionId + "|" + name + "|" + depth;
-        String held = writtenTerms.get(key);
-        if (held != null) return held;
-        String digest = ArtifactIO.digest(canonical(sessionId, body, depth),
-                16);
-        writtenTerms.put(key, digest);
-        return digest;
+    /** One container subterm's canonical body, digested; memoized per
+     *  session and name with whether it holds an unsupported subterm. */
+    private String sharedName(String sessionId, String name, String body,
+                              Naming naming) {
+        String key = "dag|" + sessionId + "|" + name;
+        String held = canonicalNames.get(key);
+        if (held != null) {
+            naming.unsupported |= held.startsWith("U");
+            return held.substring(1);
+        }
+        if (!naming.active.add(key)) {
+            naming.cyclic = true;
+            return "cycle";
+        }
+        boolean cyclic = naming.cyclic;
+        boolean unsupported = naming.unsupported;
+        naming.cyclic = false;
+        naming.unsupported = false;
+        try {
+            String digest = ArtifactIO.digest(canonical(sessionId, body,
+                    naming), 16);
+            if (!naming.cyclic) {
+                canonicalNames.put(key, (naming.unsupported ? "U" : "S")
+                        + digest);
+            }
+            unsupported |= naming.unsupported;
+            return digest;
+        } finally {
+            naming.active.remove(key);
+            naming.cyclic |= cyclic;
+            naming.unsupported = unsupported;
+        }
     }
 
-    /** One read inside a written term, as {@link #written} names it. */
-    private String readCanonical(String sessionId, ReadRow row, int depth) {
+    /**
+     * A read as its flip query binds it ({@code FlipQuery#bind}): by its
+     * location's kind and slot and the writers it may take its value from
+     * ({@link Arms#stateArms}, as the query offers them), each by its
+     * class ({@link #classOf}), write site and canonical term -- one whose
+     * term does not lower binds nothing, a free choice the read may take
+     * ({@code ?}, with the observed value where it is the observed
+     * writer); with none that lowers it is pinned to its observed value.
+     */
+    private String readName(String sessionId, ReadRow row, Naming naming) {
         String location = "read:" + row.location().kind() + ":"
                 + row.location().slot();
-        WriteRow observed = writeOf(sessionId, row.location(),
-                row.observedVersion());
-        if (observed == null || observed.initial()) {
-            return location + "=" + row.concreteValue();
+        List<Arms.Arm> eligible = arms().stateArms(row.endpoint(), sessionId,
+                SmtLowering.locationKey(row.location()),
+                row.observedVersion(), !row.unnamedWriter());
+        // Asked again by the flip query that states them (Arms recomputes
+        // every arm): this walk files nothing.
+        arms().drainRefusals();
+        List<String> writers = new ArrayList<String>();
+        boolean lowers = false;
+        for (Arms.Arm arm : eligible) {
+            WriteRow write = arm.write();
+            boolean observed = write != null
+                    && write.version() == row.observedVersion();
+            String who = write == null ? classOf(arm.producer())
+                    : write.initial() ? "initial"
+                    : classOf(arm.producer()) + "@" + write.endpoint().site();
+            String term = term(sessionId, arm.expressionRef(), naming);
+            if (term == null) {
+                writers.add(who + "=?" + (observed ? row.concreteValue()
+                        : ""));
+                continue;
+            }
+            lowers = true;
+            writers.add(who + "=" + term);
         }
-        return location + "<-" + classOf(observed.endpoint().occurrence())
-                + "@" + observed.endpoint().site() + (depth <= 0 ? ""
-                : "=" + written(sessionId, observed.expressionRef(),
-                depth - 1));
+        if (!lowers) return location + "=" + row.concreteValue();
+        Collections.sort(writers);
+        return location + "<-" + writers;
     }
 
-    /** {@link #written} and its container subterms, once asked. */
-    private final Map<String, String> writtenTerms =
+    /**
+     * A handoff as its flip query binds it ({@code FlipQuery#handoff}): by
+     * its port and the arms of its own run that deliver it ({@link
+     * Arms#wireArms}), each by its producer's class, the export's site, its
+     * canonical delivered term, its path condition's predicates and its
+     * roots' guard; with none that lowers it is pinned to its arrival.
+     */
+    private String handoffName(AttachRow attach, Naming naming) {
+        String port = "handoff:" + attach.endpoint().site();
+        List<String> arms = new ArrayList<String>();
+        if (attach.producer() != null) {
+            String sessionId = attach.sessionId();
+            for (Arms.Arm arm : arms().wireArms(Interaction.of(
+                    InteractionKind.WIRE, attach.producer(),
+                    attach.endpoint()), attach.symbol(), sessionId)) {
+                if (!arm.sessionId().equals(sessionId)
+                        || !arm.symbol().isEmpty()
+                        && !arm.symbol().equals(attach.symbol())) {
+                    continue;
+                }
+                String term = term(sessionId, arm.expressionRef(), naming);
+                if (term == null) continue;
+                List<String> conditions = new ArrayList<String>();
+                for (String conjunct : arm.pi()) {
+                    if (!Arms.predicate(conjunct)) continue;
+                    conditions.add(canonical(sessionId, FlipQuery.statedTerm(
+                            this, sessionId, conjunct), naming));
+                }
+                arms.add(classOf(arm.producer()) + "@"
+                        + attach.producer().site() + "=" + term + "|"
+                        + conditions + "|" + new TreeMap<String, String>(
+                        arm.guard()));
+            }
+            arms().drainRefusals();
+        }
+        if (arms.isEmpty()) return port + "=" + attach.arrival();
+        Collections.sort(arms);
+        return port + "<-" + arms;
+    }
+
+    /** {@link #term}, {@link #sharedName}: the canonical names asked so
+     *  far, per session. */
+    private final Map<String, String> canonicalNames =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 
     /** The verdict the WAVE's file states for one obligation, or null. Only a
