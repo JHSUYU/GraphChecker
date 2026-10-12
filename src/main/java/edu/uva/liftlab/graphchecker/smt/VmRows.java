@@ -133,6 +133,25 @@ public final class VmRows {
                 ? symbol.substring(0, symbol.lastIndexOf('-')) : symbol;
     }
 
+    /** An instance the VM named ({@code M_L'class'_rid}, a placeholder's
+     *  {@code P_L'class'_rid}). */
+    private static final Pattern INSTANCE_IDENTITY =
+            Pattern.compile("([MP]_L'[^']*'_)\\d+");
+
+    /**
+     * One object the VM named, by its class alone: {@code M_L'class'_}
+     * (and a placeholder's), {@code A<type>_} for an array; any other value
+     * as it is.  The rid is the run's own name for the object, as a minted
+     * handle's digest is ({@code explore.Corpus#observed}).
+     */
+    public static String byClass(String value) {
+        if (value == null) return null;
+        Matcher instance = INSTANCE_IDENTITY.matcher(value);
+        if (instance.matches()) return instance.group(1);
+        Matcher array = ARRAY_IDENTITY.matcher(value);
+        return array.matches() ? value.substring(0, array.start(1)) : value;
+    }
+
     /**
      * The rid one object the VM named states, or -1: an instance's {@code
      * M_L'class'_rid}, or an array's {@code A<type>_<rid>-<version>}

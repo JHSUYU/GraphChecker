@@ -17,13 +17,27 @@ import java.util.regex.Pattern;
  * recording and every replay: the runtime keys a store location so ({@code
  * runtime.RunNames}), each session states them at its close ({@link
  * SessionManifest#runSpellings}), and an arm's key names a written term's
- * constants and observed values so ({@code explore.Corpus#term}).
+ * constants and observed values so ({@code explore.Corpus#term}).  An
+ * object's identity hash, as the JDK's default {@code toString} spells it
+ * ({@code <Class>@<hex>}, also inside a longer string: {@code
+ * Searcher@1a2b3c[core] main}), is a run's own name too, named {@code
+ * <Class>@#} ({@link #IDENTITY}).
  */
 public final class RunSpellings {
     /** What spells a run's own name: a long number (a session id, a time)
      *  or a host and port. */
     public static final Pattern UNNAMED = Pattern.compile(
             "\\d{13,}|\\d{1,3}(?:\\.\\d{1,3}){3}:\\d+");
+
+    /** An identity hash after the class name the JDK's default {@code
+     *  toString} puts before it: a class (a whole word: its package, if
+     *  any, then a name starting upper case, nested names after {@code $})
+     *  or an array's ({@code [I}, {@code [Ljava.lang.String;}), {@code @},
+     *  and one to eight hex digits no word character follows. */
+    public static final Pattern IDENTITY = Pattern.compile(
+            "((?<![\\w$.])(?:[A-Za-z_$][\\w$]*\\.)*[A-Z][\\w$]*"
+                    + "|\\[+(?:[BCDFIJSZ]|L[\\w$.]+;))"
+                    + "@[0-9a-f]{1,8}(?![\\w])");
 
     public static final RunSpellings NONE =
             new RunSpellings(Collections.<String[]>emptyList());
@@ -63,14 +77,16 @@ public final class RunSpellings {
         return new RunSpellings(next);
     }
 
-    /** {@code text} with each spelling named by its node, {@code {node}}. */
+    /** {@code text} with each spelling named by its node, {@code {node}},
+     *  and each identity hash by its class, {@code <Class>@#}. */
     public String name(String text) {
-        if (text == null || spellings.isEmpty()) return text;
+        if (text == null) return null;
         String named = text;
         for (String[] spelling : spellings) {
             named = named.replace(spelling[0], "{" + spelling[1] + "}");
         }
-        return named;
+        return named.indexOf('@') < 0 ? named
+                : IDENTITY.matcher(named).replaceAll("$1@#");
     }
 
     /** The first run-only name {@code named} still spells, or "". */

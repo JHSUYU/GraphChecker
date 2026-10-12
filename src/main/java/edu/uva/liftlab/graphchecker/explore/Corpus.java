@@ -928,19 +928,22 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * A value one session observed, with each name a node had only in that
-     * run (its host and port, its store session's id) named by the node
-     * ({@link RunSpellings}, as the session states them, {@code
-     * SessionManifest#runSpellings}): one port spelling names {@code node1}
-     * in every run, and a run that states none keeps its spelling (another
-     * world, never a fold).
+     * A value one session observed, with the names its run alone had named
+     * by what they stand for: each name a node had only in that run (its
+     * host and port, its store session's id) by the node ({@link
+     * RunSpellings}, as the session states them, {@code
+     * SessionManifest#runSpellings}), an identity hash by its class ({@link
+     * RunSpellings#IDENTITY}), and an object the VM named by its class
+     * ({@link VmRows#byClass}, as the canonical walk names a minted handle):
+     * one port spelling names {@code node1} in every run, and a run that
+     * states none keeps its spelling (another world, never a fold).
      */
     private String observed(String sessionId, String value) {
         SessionReader session = sessionById.get(sessionId);
         RunSpellings spellings = session == null
                 || session.manifest() == null ? RunSpellings.NONE
                 : session.manifest().runSpellings();
-        return spellings.name(String.valueOf(value));
+        return spellings.name(VmRows.byClass(String.valueOf(value)));
     }
 
     /** One canonical naming walk: the terms and container subterms it is

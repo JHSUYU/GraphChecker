@@ -456,9 +456,13 @@ Correctness:
     it is named by what binds it in the flip query (its own run's wire arms, every writer the query
     offers, or the pinned value), by the query's own conditions (an arm or value it drops binds
     nothing), with no depth bound; a name a node had only in its run (a host and port, a store
-    session's id: the manifest's `runSpellings`) by the node (live 07/21 RX1: every replay's new
-    Solr ports re-keyed every arm whose guard reads node state). A session that did not close states
-    no spellings and keeps them (a re-ask, never a fold). Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
+    session's id: the manifest's `runSpellings`) by the node, an identity hash (`<Class>@<hex>`, also
+    inside a longer string) and an object the VM named (`M_L'<class>'_<rid>`) by the class (live
+    21: RX1 12.2 asks per arm, every replay's new Solr ports; RX2 6.9, a searcher's name spelling its
+    identity hash). A session that did not close states no spellings and keeps them (a re-ask, never
+    a fold). By design the key keeps how many times a member wrote the guard's locations, though
+    that count follows a run's timing (a ZooKeeper state watcher's writes): another count is another
+    world. Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
     raw ids in its name (its roots' guard by root symbol, an id its predicates state), so arms that
     differ only in a run's ids re-key -- a re-ask, never a fold; a root no domain bounds is named by
     its id alone (as before).

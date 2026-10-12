@@ -1982,8 +1982,9 @@ public class ExploreTest {
      * observed; no depth bound, a back-edge by how far up it points.  Each
      * by the query's own conditions: an arm or a writer's value the query
      * drops (a name it cannot declare, a value of another sort) binds
-     * nothing; a name a node has only in one run by the node.  Each row: two
-     * worlds, and whether they share the arm's key.
+     * nothing; a name a node has only in one run by the node, an identity
+     * hash and an object the VM named by its class.  Each row: two worlds,
+     * and whether they share the arm's key.
      */
     @Test
     public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
@@ -2020,7 +2021,9 @@ public class ExploreTest {
             "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
             "u-five-again", "u-unstated", "d-one", "d-two", "c-up",
             "c-self", "g-eleven", "g-eleven-minus", "g-twelve", "r-three",
-            "r-four", "b-three", "b-four", "n-one", "n-one-again", "n-two"};
+            "r-four", "b-three", "b-four", "n-one", "n-one-again", "n-two",
+            "y-hash", "y-hash-again", "y-other", "v-doc", "v-doc-again",
+            "v-other"};
         for (String name : names) {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
@@ -2069,6 +2072,21 @@ public class ExploreTest {
                         chain[0], 7L, "M_INNER",
                         name.endsWith("three") ? "3" : "4");
                 session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
+            } else if (name.startsWith("y-")) {
+                // A searcher's name, which spells its identity hash.
+                session.expression("EXPR.00000000000000f2",
+                        VmExpressionIr.stringConstant("Searcher@"
+                                + (name.equals("y-hash") ? "4d4eeaac"
+                                : "2a3146e9") + "["
+                                + (name.equals("y-other") ? "other" : "core")
+                                + "] main"));
+            } else if (name.startsWith("v-")) {
+                // A term that does not lower, whose reader observed an
+                // object the VM named, by its run's rid.
+                session.expression("EXPR.00000000000000f2", mystery);
+                guardValue = name.equals("v-doc") ? "M_L'org/x/Doc'_6574"
+                        : name.equals("v-doc-again") ? "M_L'org/x/Doc'_6601"
+                        : "M_L'org/x/Other'_6574";
             } else if (name.startsWith("n-")) {
                 // A node's URL, at the port this run gave it: node1 at 46805
                 // (n-one) or 36143 (n-one-again), node2 at 41111 (n-two).
@@ -2194,6 +2212,12 @@ public class ExploreTest {
             {"n-one", "n-one-again", true,
                     "one node's URL at the port each run gave it"},
             {"n-one", "n-two", false, "another node's URL"},
+            {"y-hash", "y-hash-again", true,
+                    "one name at another identity hash"},
+            {"y-hash", "y-other", false, "another name"},
+            {"v-doc", "v-doc-again", true,
+                    "an observed object of one class at another rid"},
+            {"v-doc", "v-other", false, "an object of another class"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], dependence(corpus, task,
