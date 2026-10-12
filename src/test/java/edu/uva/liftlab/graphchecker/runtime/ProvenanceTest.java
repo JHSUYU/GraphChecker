@@ -58,12 +58,98 @@ public class ProvenanceTest {
         assertNull("a lambda's capture is none", Provenance.of(client));
         assertNull("nor what it holds", Provenance.of(client.connection));
         assertNull("an object no decode made", Provenance.of(new Object()));
+        assertNull("a class's constant is no decode's",
+                Provenance.of(Decoded.Router.DEFAULT));
+        assertEquals("the later product reached the first's slice: stated",
+                1L, Provenance.shared());
+    }
+
+    /**
+     * What a decode reaches but did not make is none of its product: what a
+     * supplier hands over (another fetch's states); an object another
+     * version's decode registered keeps that version, and is stated.
+     */
+    @Test
+    public void aSuppliersStatesAreNoProductAndAnotherVersionsObjectIsStated() {
+        Decoded.Slice fetched = new Decoded.Slice("replica", "active");
+        Decoded.Collection collection = new Decoded.Collection(
+                new Decoded.Client(), new Decoded.Slice("shard1", "active"));
+        collection.states = new Decoded.States(fetched);
+        Provenance.register(new Provenance.Version(STATE, PATH, 5L),
+                collection);
+        assertNull("the supplier's states", Provenance.of(fetched));
+        assertEquals("nothing shared yet", 0L, Provenance.shared());
+        assertEquals("the supplier and the constant router: skipped, stated",
+                2L, Provenance.skipped());
+        // A router a static table holds as a value is a constant too.
+        Decoded.Collection implicit = new Decoded.Collection(
+                new Decoded.Client(), new Decoded.Slice("shard9", "active"));
+        implicit.router = Decoded.Router.ROUTERS.get("implicit");
+        Provenance.register(new Provenance.Version(STATE, PATH, 6L),
+                implicit);
+        assertNull("the table's router", Provenance.of(implicit.router));
+        assertEquals("skipped, stated", 3L, Provenance.skipped());
+        LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/aliases.json");
+        Decoded.Collection again = new Decoded.Collection(
+                new Decoded.Client(), collection.slices.get("shard1"));
+        Provenance.register(new Provenance.Version(aliases, "/aliases.json",
+                2L), again);
+        assertEquals("it keeps its version", 5L,
+                Provenance.of(collection.slices.get("shard1")).version);
+        assertEquals("and is stated", 1L, Provenance.shared());
+        // A provenance site's read of an object no decode registered is
+        // counted (and stated once per site); no receiver, no read.
+        Provenance.unregistered("Guard#u3", new Object());
+        Provenance.unregistered("Guard#u3", new Object());
+        Provenance.unregistered("Guard#u3", null);
+        assertEquals("unregistered reads", 2L, Provenance.unregistered());
+    }
+
+    /**
+     * A decode waits for a write in flight at its path to file before it
+     * names the version's life (review M5): a create's version 0 decoded
+     * before its creator's hook ran names the new life, not the old one.
+     */
+    @Test
+    public void aDecodeWaitsForTheCreateInFlightToNameItsLife()
+            throws Exception {
+        Object owner = new Object();
+        MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner);
+        MessageDoors.stored("SOLR_ZK", "/m5/race@1", owner);
+        java.util.concurrent.CountDownLatch open =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch file =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread creator = new Thread(() -> {
+            long store = MessageDoors.storing("SOLR_ZK", "/m5/race");
+            open.countDown();
+            try {
+                file.await();
+            } catch (InterruptedException ignored) {
+                return;
+            }
+            MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner);
+            MessageDoors.storeEnded("SOLR_ZK", store);
+        });
+        creator.start();
+        open.await();
+        Decoded.Slice parsed = new Decoded.Slice("shard1", "active");
+        Thread decoder = new Thread(() ->
+                MessageDoors.decoded("SOLR_ZK", "/m5/race@0", parsed));
+        decoder.start();
+        Thread.sleep(200L);
+        file.countDown();
+        decoder.join();
+        creator.join();
+        assertEquals("/m5/race#2", Provenance.of(parsed).location.slot());
     }
 
     /**
      * SYMBOL-SCOPE §5.7: an object a constructor builds from a decoded
      * receiver it reads holds the receiver's version (a processor's copy of
-     * its collection's read-only flag), once: it keeps the first.
+     * its collection's read-only flag), once: it keeps the first, and a
+     * second decode's is stated.
      */
     @Test
     public void aConstructorsCopyOfADecodedObjectHoldsItsVersion() {
@@ -79,6 +165,8 @@ public class ProvenanceTest {
         Provenance.observe(two, processor, derived);
         assertEquals("the first kept", 7L, Provenance.of(processor).version);
         assertEquals("not taken again", false, derived[0]);
+        assertEquals("a holder built from two decodes: stated", 1L,
+                Provenance.shared());
         assertNull("an object no decode made derives nothing",
                 Provenance.observe(new Object(), new Object(), derived));
     }

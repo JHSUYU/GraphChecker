@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -325,6 +326,11 @@ public final class ConfirmMain {
         final Moved moved;
         /** Whether the session's reads saw every write the model chose. */
         final boolean sawChosen;
+        /** The claim's cone as {@link #edges} names it: the anchor, both
+         *  ends of each WIRE, the writers and readers of its STATE rows and
+         *  the occurrences of its ORDER rows' activations. */
+        final Set<OccurrenceAddress> cone =
+                new LinkedHashSet<OccurrenceAddress>();
 
         private Witness(JsonObject claim, JsonObject manifest, Path iteration)
                 throws IOException {
@@ -431,7 +437,8 @@ public final class ConfirmMain {
                         armSession));
             }
             List<JsonObject> edges = new ArrayList<JsonObject>();
-            edges.addAll(wireEdges(arms, armSessions, anchor));
+            cone.add(anchor);
+            edges.addAll(wireEdges(arms, armSessions, anchor, cone));
             List<ReadRow> resting = new ArrayList<ReadRow>();
             for (ReadRow read : closure.readers.values()) {
                 if (restsOn.contains(SmtLowering.locationKey(
@@ -439,12 +446,16 @@ public final class ConfirmMain {
                     resting.add(read);
                 }
             }
-            edges.addAll(stateEdges(closure, resting, chosen, false).edges);
+            Holding state = stateEdges(closure, resting, chosen, false);
+            edges.addAll(state.edges);
+            cone.addAll(state.cone);
             // The pairings the selected session's world planted are its
             // world as much as its roots: held by the rows its replay was
             // held to.
-            edges.addAll(holding(session, ExploreCodec.map(object(world,
-                    "pairings"))).edges);
+            Holding pairings = holding(session, ExploreCodec.map(object(world,
+                    "pairings")));
+            edges.addAll(pairings.edges);
+            cone.addAll(pairings.cone);
             heldOnce(edges);
             edges.addAll(markerEdges(manifest, planted.assignments));
             JsonObject anchorRow = new JsonObject();
@@ -581,17 +592,20 @@ public final class ConfirmMain {
                     + ") is not there, so its order cannot be held");
         }
         // The order from the roots on: from where the occurrences their ROOT
-        // rows are minted at opened.
-        Set<String> mints = new LinkedHashSet<String>();
+        // rows are minted at opened; held only on the claim's cone, the
+        // occurrences CONFIRM's own rows name (Witness#cone).
+        Set<OccurrenceAddress> mints = new LinkedHashSet<OccurrenceAddress>();
         for (JsonObject row : rows) {
             if (RecordingPlant.ROOT.equals(optionalString(row,
                     RecordingPlant.KIND))) {
-                mints.add(optionalString(row, RecordingPlant.OCCURRENCE));
+                mints.add(mintOf(world, optionalString(row,
+                        RecordingPlant.ROOT_ID)));
             }
         }
         List<JsonObject> realized = RealizedOrder.rows(SessionDir.of(
                 confirmedSession.getParent().getParent(),
-                confirmedSession.getFileName().toString()).schedule(), mints);
+                confirmedSession.getFileName().toString()).schedule(), mints,
+                witness.cone);
         rows.addAll(realized);
         if (rows.isEmpty()) {
             throw new Refused("NATIVE_PLANT_UNSUPPORTED: the world plants no "
@@ -1073,7 +1087,8 @@ public final class ConfirmMain {
      *  shape carry the delivery the model chose. */
     private static List<JsonObject> wireEdges(
             List<JsonObject> arms, Map<String, SessionReader> armSessions,
-            OccurrenceAddress anchor) throws IOException {
+            OccurrenceAddress anchor, Set<OccurrenceAddress> cone)
+            throws IOException {
         List<JsonObject> edges = new ArrayList<JsonObject>();
         for (JsonObject arm : arms) {
             String selector = optionalString(arm, "selector");
@@ -1100,6 +1115,8 @@ public final class ConfirmMain {
                 edge.addProperty("producer",
                         Confirmation.id(paired.producer()));
                 edge.addProperty("selector", selector);
+                cone.add(paired.endpoint().occurrence());
+                cone.add(paired.producer().occurrence());
                 if (paired.endpoint().occurrence().id().equals(anchor.id())
                         && producerSession.answered().contains(
                         anchor.render())) {
@@ -1231,24 +1248,28 @@ public final class ConfirmMain {
          */
         private void order(Holding holding, Exit first, Endpoint then,
                            long thenSeq) {
-            if (first.occurrence.equals(then.occurrence().id())) return;
+            if (first.occurrence.id().equals(then.occurrence().id())) return;
             Hold hold = held(then, thenSeq);
             holding.orders.add(first.activation + "\n" + hold.activation);
-            if (thenSeq < first.seq) holding.reordered.add(hold.occurrence);
+            holding.cone.add(first.occurrence);
+            holding.cone.add(hold.occurrence);
+            if (thenSeq < first.seq) {
+                holding.reordered.add(hold.occurrence.id());
+            }
         }
 
         /** What an ORDER waits for to exit, the occurrence it is of, and
          *  where the session ran it. */
         private static final class Exit {
             private final String activation;
-            private final String occurrence;
+            private final OccurrenceAddress occurrence;
             private final long seq;
 
             private Exit(OccurrenceAddress occurrence, List<Frame> frames,
                          long seq) {
                 this.activation = Confirmation.activation(occurrence,
                         ExecutionIndex.of(frames));
-                this.occurrence = occurrence.id();
+                this.occurrence = occurrence;
                 this.seq = seq;
             }
         }
@@ -1284,11 +1305,11 @@ public final class ConfirmMain {
         /** Where an event is held: the activation entry, and the
          *  occurrence it is of. */
         private static final class Hold {
-            private final String occurrence;
+            private final OccurrenceAddress occurrence;
             private final String activation;
 
             private Hold(OccurrenceAddress occurrence, List<Frame> frames) {
-                this.occurrence = occurrence.id();
+                this.occurrence = occurrence;
                 this.activation = Confirmation.activation(occurrence,
                         ExecutionIndex.of(frames));
             }
@@ -1521,6 +1542,10 @@ public final class ConfirmMain {
     static final class Holding {
         final List<JsonObject> edges = new ArrayList<JsonObject>();
         final Set<String> reordered = new LinkedHashSet<String>();
+        /** The occurrences its STATE and ORDER rows name: the writers,
+         *  readers and activations the claim rests on. */
+        final Set<OccurrenceAddress> cone =
+                new LinkedHashSet<OccurrenceAddress>();
         /** Each ORDER as "before\nafter", once. */
         private final Set<String> orders = new LinkedHashSet<String>();
     }
@@ -1588,7 +1613,19 @@ public final class ConfirmMain {
             edge.addProperty("version", held.version());
             edge.addProperty("location", location);
             holding.edges.add(edge);
-            if (mint) continue;
+            holding.cone.add(read.endpoint().occurrence());
+            if (!held.initial()) {
+                holding.cone.add(held.endpoint().occurrence());
+            }
+            // A store's version is compared, not ordered: the store's own
+            // turn at the location orders its reads and writes (ScheduleLog's
+            // WRITE and READ events, runtime.MessageDoors#turn; a native run's
+            // realized order), and an ORDER naming a store write's activation
+            // is no event a native run's weave states (solr-18413 Y8: 84 of
+            // 96 plant rows unheld, native 0/10).
+            if (mint || held.location().kind() == LocationKind.STORE) {
+                continue;
+            }
             if (!held.initial()) {
                 closure.order(holding, closure.exit(held.endpoint(),
                         held.seq()), read.endpoint(), read.seq());

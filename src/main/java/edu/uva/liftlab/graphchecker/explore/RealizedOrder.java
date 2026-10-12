@@ -1,8 +1,12 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 
 import java.io.IOException;
@@ -59,8 +63,27 @@ import java.util.Set;
  *   later count is a loop's (a poll's, a retry's, one send per item), which
  *   natively runs another number of times, so its k-th event is no fixed
  *   point of the world (solr-18413: a request handler's sixth and
- *   fourteenth SEND, which some native runs never made).</li>
+ *   fourteenth SEND, which some native runs never made);</li>
+ *   <li>both events in contexts of the claim's cone: the contexts of the
+ *   occurrences its moved roots are minted in, of the anchor, and of those
+ *   CONFIRM's WIRE, STATE and ORDER rows name, and of the senders of the
+ *   messages these received ({@link #withProducers}).  A WAKE elsewhere
+ *   is timing the claim rests on nowhere (solr-18413 Y8: the client's
+ *   {@code RequestStatus.waitFor} polls and the other nodes' Overseer
+ *   turns, held behind steps some native runs never made);</li>
+ *   <li>the step in no turn-counted root ({@link #turnCounted}) but a
+ *   mint's: a daemon tick's or a timed wait's k counts turns a native run
+ *   numbers on its own timing (Y8: a queue write of
+ *   {@code Root:OVERSEER_STATE_UPDATE#15} no native run made at that
+ *   tick).</li>
  * </ul>
+ * Both events of an edge are named by their stable contexts ({@link
+ * StableEventNames}: without the frames' counts, each message hop its
+ * sender's first send of its site), the names the native run computes
+ * alike; an edge whose events have none is not held, for the same reason
+ * as a later count (solr-18413 IB1: a SPLIT request sent after a
+ * REQUESTSTATUS poll had another endpoint id natively, so a WAKE held behind
+ * the node work it started waited for an event no native run named, 0/10).
  * Each edge held is an {@code ORDER} row of scope {@value #SCOPE}, {@code
  * before} and {@code after} two events, which the native run's ScheduleLog
  * holds at admission.</p>
@@ -74,16 +97,29 @@ final class RealizedOrder {
 
     /**
      * The ORDER rows of the confirmed session's realized order, read off its
-     * {@code schedule} file, from where an occurrence in {@code mints} (by
-     * id) opened on, each pair once; none when no such occurrence opened.
+     * {@code schedule} file, from where an occurrence of {@code mints}
+     * opened on, each pair once, both its events in contexts of the claim's
+     * cone ({@code cone}, the mints among it); none when no mint opened.
      */
-    static List<JsonObject> rows(Path schedule, Set<String> mints)
+    static List<JsonObject> rows(Path schedule,
+                                 Set<OccurrenceAddress> mints,
+                                 Set<OccurrenceAddress> cone)
             throws IOException {
         List<ScheduleEvent> events = SessionReader.readSchedule(schedule);
+        Set<String> ids = new HashSet<String>();
+        Set<String> minted = new HashSet<String>();
+        for (OccurrenceAddress mint : mints) {
+            ids.add(mint.id());
+            minted.add(scope(mint));
+        }
+        Set<String> onCone = new HashSet<String>(minted);
+        for (OccurrenceAddress occurrence : cone) {
+            onCone.add(scope(occurrence));
+        }
         long from = from(events, SessionReader.readScheduleMarks(schedule),
-                mints);
+                ids);
         List<JsonObject> rows = new ArrayList<JsonObject>();
-        for (ScheduleEvent[] edge : edges(events, from)) {
+        for (ScheduleEvent[] edge : edges(events, from, minted, onCone)) {
             JsonObject row = new JsonObject();
             row.addProperty(RecordingPlant.KIND, RecordingPlant.ORDER);
             row.addProperty(RecordingPlant.SCOPE, SCOPE);
@@ -126,10 +162,20 @@ final class RealizedOrder {
     /**
      * The edges of {@code schedule}'s realized order from position {@code
      * from} on that a native run holds (class comment): {before, after}
-     * pairs in schedule order, one per WAKE held.
+     * pairs in schedule order, one per WAKE held, each event under its stable
+     * context; {@code minted} and {@code occurrences} are the {@link
+     * #scope}s of the mints' and the cone's occurrences.
      */
     static List<ScheduleEvent[]> edges(List<ScheduleEvent> schedule,
-                                       long from) {
+                                       long from, Set<String> minted,
+                                       Set<String> occurrences) {
+        StableEventNames names = new StableEventNames();
+        for (ScheduleEvent event : schedule) {
+            if (event.kind() == ScheduleEvent.Kind.SEND) {
+                names.sent(event.context(), event.site(), event.endpoint());
+            }
+        }
+        Set<String> onCone = withProducers(schedule, occurrences);
         Set<String> running = new HashSet<String>();
         List<ScheduleEvent[]> edges = new ArrayList<ScheduleEvent[]>();
         Map<String, Integer> held = new HashMap<String, Integer>();
@@ -143,16 +189,90 @@ final class RealizedOrder {
             if (event.kind() == ScheduleEvent.Kind.WAKE && latest >= 0
                     && running.contains(event.context())) {
                 ScheduleEvent before = schedule.get(latest);
+                String step = scope(before.context());
+                ScheduleEvent stableBefore = stable(before, names);
+                ScheduleEvent stableAfter = stable(event, names);
                 if (!before.context().equals(event.context())
                         && before.k() == 0
+                        && onCone.contains(scope(event.context()))
+                        && onCone.contains(step)
+                        && (!turnCounted(step) || minted.contains(step))
+                        && stableBefore != null && stableAfter != null
                         && latest > held.getOrDefault(event.context(), -1)) {
-                    edges.add(new ScheduleEvent[] {before, event});
+                    edges.add(new ScheduleEvent[] {stableBefore, stableAfter});
                     held.put(event.context(), latest);
                 }
             }
             if (step(event)) latest = at;
         }
         return edges;
+    }
+
+    /**
+     * {@code scopes} and, one hop, the scope of each SEND a context in them
+     * received (paired by endpoint): the work whose message a cone
+     * occurrence took in is the claim's too (solr-bugs-restore-construction:
+     * the first RESTORE task's state-update message is what the mint's
+     * state-updater turn applied, and that task's wait is what the confirmed
+     * order held, natively 0/10 without it).
+     */
+    static Set<String> withProducers(List<ScheduleEvent> schedule,
+                                     Set<String> scopes) {
+        Map<String, String> senders = new HashMap<String, String>();
+        for (ScheduleEvent event : schedule) {
+            if (event.kind() == ScheduleEvent.Kind.SEND
+                    && !event.endpoint().isEmpty()) {
+                senders.putIfAbsent(event.endpoint(), scope(event.context()));
+            }
+        }
+        Set<String> cone = new HashSet<String>(scopes);
+        for (ScheduleEvent event : schedule) {
+            String sender = senders.get(event.endpoint());
+            if (event.kind() == ScheduleEvent.Kind.RECV && sender != null
+                    && scopes.contains(scope(event.context()))) {
+                cone.add(sender);
+            }
+        }
+        return cone;
+    }
+
+    /** {@code event} under its stable context; null when it has none. */
+    private static ScheduleEvent stable(ScheduleEvent event,
+                                        StableEventNames names) {
+        String context = names.context(event.context());
+        return context == null ? null : ScheduleEvent.of(event.seq(),
+                event.kind(), context, event.site(), event.k(),
+                event.occurrence(), event.endpoint());
+    }
+
+    /** An event context's node and causal context, its handoffs left out
+     *  ({@code runtime.ScheduleLog#contextOf}): the root or the message its
+     *  work descends from. */
+    static String scope(String context) {
+        int node = context.indexOf('|');
+        int frames = node < 0 ? -1 : context.indexOf('|', node + 1);
+        return frames < 0 ? context : context.substring(0, frames);
+    }
+
+    /** An occurrence's node and causal context, as its events' contexts
+     *  begin. */
+    static String scope(OccurrenceAddress occurrence) {
+        return occurrence.node().render() + "|"
+                + occurrence.context().render();
+    }
+
+    /**
+     * Whether a context stands in a turn-counted root: a daemon tick or a
+     * timed-wait loop's turn ({@code Root:<role>#k}, any role but the
+     * workload's CLIENT), whose k counts turns a native run, on its own
+     * timing, numbers otherwise (a state updater's batches, a poll's wakes).
+     */
+    static boolean turnCounted(String context) {
+        String scope = scope(context);
+        CausalContext hop = CausalContext.parse(
+                scope.substring(scope.indexOf('|') + 1));
+        return hop instanceof CausalContext.Root
+                && !((CausalContext.Root) hop).role().equals(Role.CLIENT);
     }
 
     /** Whether an event is a step: not the clock (a WAKE, a turn's END). */

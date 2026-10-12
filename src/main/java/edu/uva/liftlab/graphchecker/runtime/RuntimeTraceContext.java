@@ -605,7 +605,7 @@ final class RuntimeTraceContext {
         long token = nextId();
         ScopeFrame scope = new ScopeFrame(token, state);
         scope.turn = true;
-        scope.lineageToken = Lineage.pushRoot(source.key(), Role.of("WAKE"),
+        scope.lineageToken = Lineage.pushRoot(source.key(), Role.WAKE,
                 normalizedApi);
         scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         standIn(state, scope, source, source.key() + "/wake/"

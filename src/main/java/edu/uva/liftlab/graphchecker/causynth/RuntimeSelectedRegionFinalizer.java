@@ -1480,13 +1480,24 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
+                if (served.contains(occurrence)) continue;
                 // A control producer contributes no value: its own
-                // message's doors are no question of the target's.
+                // message's doors are no question of the target's, named
+                // (it is served once a value reaches it, walk#reach).
                 if (CONTROL_PRODUCER_ADMISSION.equals(text(program.activations
-                        .get(occurrence).get(ADMISSION_BASIS)))
-                        || !served.add(occurrence)) {
+                        .get(occurrence).get(ADMISSION_BASIS)))) {
+                    if (!messages.doorsOf(OccurrenceAddress.parse(occurrence))
+                            .isEmpty()) {
+                        planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                                GapClass.DIAGNOSTIC, occurrence
+                                        + " control producer", "a control"
+                                        + " producer contributes no value:"
+                                        + " the doors of the message that"
+                                        + " started it are not asked");
+                    }
                     continue;
                 }
+                served.add(occurrence);
                 for (String door : doorsOf(messages, program,
                         OccurrenceAddress.parse(occurrence))) {
                     String held = occurrenceById.get(door);
@@ -1520,14 +1531,43 @@ public final class RuntimeSelectedRegionFinalizer {
                                        OccurrenceAddress occurrence) {
         Set<String> doors = new LinkedHashSet<>(messages.doorsOf(occurrence));
         Set<String> stances = messages.doorStancesOf(occurrence);
-        if (stances.isEmpty()) return doors;
+        Set<String> handlers = messages.handlerStancesOf(occurrence);
+        if (stances.isEmpty() && handlers.isEmpty()) return doors;
         String own = ContextShape.Stance.of(occurrence).render();
-        for (String activation : program.activations.keySet()) {
-            String stance = ContextShape.Stance.of(
-                    OccurrenceAddress.parse(activation)).render();
-            if (stances.contains(stance) && !stance.equals(own)) {
-                doors.add(OccurrenceAddress.parse(activation).id());
+        int ownTurn = 0;
+        int handling = 0;
+        Map<String, List<String>> byStance = program.activationsByStance();
+        Set<String> asked = new LinkedHashSet<>(stances);
+        asked.addAll(handlers);
+        for (String stance : asked) {
+            for (String activation : byStance.getOrDefault(stance,
+                    Collections.<String>emptyList())) {
+                String id = OccurrenceAddress.parse(activation).id();
+                if (id.equals(occurrence.id())) continue;
+                if (stances.contains(stance) && !stance.equals(own)) {
+                    doors.add(id);
+                } else if (stances.contains(stance)) {
+                    ownTurn++;
+                } else {
+                    handling++;
+                }
             }
+        }
+        // Each narrowing names what it cut (counted, DIAGNOSTIC).
+        if (ownTurn > 0) {
+            planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, occurrence.id() + " own turn",
+                    ownTurn + " other occurrence(s) of this occurrence's own"
+                            + " turn hold no door of the message that started"
+                            + " it: they are what it started too");
+        }
+        if (handling > 0) {
+            planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, occurrence.id() + " handlers",
+                    handling + " occurrence(s) of turns standing on the"
+                            + " message that started this occurrence (its"
+                            + " handlers) hold no door of it: it started"
+                            + " them");
         }
         return doors;
     }

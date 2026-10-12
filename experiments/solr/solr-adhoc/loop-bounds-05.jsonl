@@ -1,0 +1,11 @@
+# solr-adhoc-05's own loop bounds (case.sh): the default of 8, except the two below.
+# SolrResourceLoader.inform walks the core's SolrInfoBeans, one body per bean (an
+# array: a fixed-count loop, bounded by the work cap alone); a core registers more
+# than 32 of them, so its FORCE run's occurrence, the core's creation, was cut at
+# body 33 (solr-study SF2, after D1b took it past SolrCore.createInstances' K_L).
+{"loopSiteId":"<org.apache.solr.core.SolrResourceLoader: void inform(java.util.Map)>#u19","loopBodyBound":64,"reason":"one body per SolrInfoBean of a core; a core registers more than 32"}
+# SolrCore.createInstances walks SearchComponent.standard_components (10 entries in
+# 8.11) through an iterator whose hasNext is termed, so every body counts toward K_L;
+# at 8 it cut the core's CREATE before the throw on the seed and two replays
+# (solr-study SF3, BOUNDED:loop_body_bound).
+{"loopSiteId":"<org.apache.solr.core.SolrCore: java.util.Map createInstances(java.util.Map)>#u8","loopBodyBound":16,"reason":"one body per standard search component (10 in Solr 8.11)"}

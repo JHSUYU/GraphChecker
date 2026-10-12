@@ -262,14 +262,18 @@ public final class RowRuntime {
     public static void decision(OccurrenceAddress occurrence, long seq,
                                 String siteId, int ordinal, boolean outcome,
                                 JsonObject condition) {
-        decision(occurrence, seq, siteId, ordinal, outcome, condition, null);
+        decision(occurrence, seq, siteId, ordinal, outcome, condition, null,
+                "");
     }
 
     /** One decision; {@code concreteOutcome} non-null: a FORCE run forced
-     *  it ({@code DecisionRow#forced}), its operands deciding that arm. */
+     *  it ({@code DecisionRow#forced}), its operands deciding that arm;
+     *  {@code via}, the frame that called its method where the forcing
+     *  table names the site with one ({@code DecisionRow#via}), or "". */
     static void decision(OccurrenceAddress occurrence, long seq,
                          String siteId, int ordinal, boolean outcome,
-                         JsonObject condition, Boolean concreteOutcome) {
+                         JsonObject condition, Boolean concreteOutcome,
+                         String via) {
         if (occurrence == null) return;
         SessionPublisher session = publisher;
         if (session != null) {
@@ -277,7 +281,7 @@ public final class RowRuntime {
             // Polarity-free: the composer conjoins (outcome ? term : not term).
             DecisionRow row = DecisionRow.of(sessionId(), sequence(seq),
                     occurrence, trimmed(siteId), ordinal, outcome, ref,
-                    clockReadings(condition));
+                    clockReadings(condition)).via(via);
             session.decision(concreteOutcome == null ? row
                     : row.forced(concreteOutcome.booleanValue()));
         }
@@ -583,8 +587,12 @@ public final class RowRuntime {
         }
         // A guard that reads several objects of one parse with no VM event
         // between them (a loop over a collection's slices) reads the version
-        // once.
-        if (!STORE_READS.add(seq + "|" + location)) return;
+        // once.  The seq is the JVM's last event id, which another node's
+        // reader shares: one read per occurrence, event, location and version.
+        if (!STORE_READS.add(occurrence.id() + "|" + seq + "|" + location
+                + "|" + version)) {
+            return;
+        }
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         if (version >= 0L) {
@@ -597,7 +605,8 @@ public final class RowRuntime {
         Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
     }
 
-    /** seq|location of every store read stated: one per event. */
+    /** occurrence|seq|location|version of every store read stated: one
+     *  per event (RowInvariants invariant 4 keys a STORE read alike). */
     private static final Set<String> STORE_READS =
             ConcurrentHashMap.newKeySet();
 
@@ -1370,16 +1379,18 @@ public final class RowRuntime {
             rows.append(RowCodec.toLine(
                     RowCodec.writeObligationResult(result))).append('\n');
         }
-        try {
-            Files.write(
-                    Paths.get(worker,
-                            ObligationDir.REPLAY_VERDICT),
-                    rows.toString().getBytes(
-                            StandardCharsets.UTF_8));
-        } catch (IOException unwritable) {
-            EngineConsole.println("Causynth could not write the replay's"
-                    + " obligation verdict: " + unwritable);
-        }
+        ConcolicVmBroker.asEngineWork(() -> {
+            try {
+                Files.write(
+                        Paths.get(worker,
+                                ObligationDir.REPLAY_VERDICT),
+                        rows.toString().getBytes(
+                                StandardCharsets.UTF_8));
+            } catch (IOException unwritable) {
+                EngineConsole.println("Causynth could not write the replay's"
+                        + " obligation verdict: " + unwritable);
+            }
+        });
     }
 
     public static void resetForTests() {

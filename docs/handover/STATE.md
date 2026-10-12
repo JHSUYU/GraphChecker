@@ -21,8 +21,8 @@ evidence is [../STATUS.md](../STATUS.md) "Solr checks".
 - **`system/solr` `7abebd846`** (worktree `/bigtemp/vnr3ne/wt/gc-solr`, image `/bigtemp/vnr3ne/vm-force5/j2sdk-image`):
   everything gated so far (TODO Solr §0). Canaries on it (SG2c): solr-18406, solr-18413, solr-bugs-migrate-buffer-leak
   SAT, confirmed, native 10/10, FORCED_TARGET.
-- **Branches in flight, merge order** (TODO Solr §1; `solr-body` 873fdaa20, the store READ turn, merged 2026-10-11):
-  `solr-force2` aefd699c2 (loop bound, way guard, passable asserts; canaries PASS), `solr-zk-state` e97464d7d (Z1:
+- **Branches in flight, merge order** (TODO Solr §1; `solr-body` 873fdaa20 and `solr-study` 01eda3dc0 (force2 + the
+  Root:WAKE rule + D1b + admitted reach + lambda deciders) merged 2026-10-11/12; `solr-zk-state` (Z1) 184995cdb merged 2026-10-12): superseded: `solr-force2` aefd699c2 (loop bound, way guard, passable asserts; canaries PASS), `solr-zk-state` e97464d7d (Z1:
   ZooKeeper store versions and provenance; not ready: the read-out cost on 18413), `solr-zk-doors` 6cbc40a93 (WIP: the
   owner-priority ZooKeeper READ doors), `solr-zk2` 17aa4e7ee (Z2: stale cluster-state views; partial).
 - **Bug checks:** 3 done on `system/solr` (18406, 18413, migrate-buffer-leak); 3 SAT and confirmed on Z1 (overseer-lock-

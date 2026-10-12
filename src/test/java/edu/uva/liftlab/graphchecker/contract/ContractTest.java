@@ -974,6 +974,34 @@ public class ContractTest {
                 true));
         assertTrue("two occurrences deciding concretely after one event: "
                 + names(gate(decided)), noViolation(gate(decided), 4));
+        // A store read is one reader's read of one version: two nodes'
+        // readers (or two versions) at one shared JVM event are two reads.
+        LocationId stateJson = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/c/state.json");
+        for (Object[] each : new Object[][] {
+                {"another reader", other, 4L, true},
+                {"another version", null, 5L, true},
+                {"the same read", null, 4L, false}}) {
+            Rows stored = clean();
+            stored.activations.add(ActivationRow.of("s-gate", other, "t",
+                    false, true, "DataXceiver-8#42"));
+            Endpoint first = Endpoint.of(stored.anchor, "Guard#u3:READ",
+                    stored.readAt.siteIndex(), 0);
+            Endpoint reader = each[1] == null ? first
+                    : Endpoint.of((OccurrenceAddress) each[1], first.site(),
+                    first.siteIndex(), 0);
+            stored.reads.add(ReadRow.of("s-gate", 22L, first,
+                    stateJson, 4L, "S_v4", "[B", null));
+            stored.reads.add(ReadRow.of("s-gate", 22L, reader, stateJson,
+                    (Long) each[2], "S_v" + each[2], "[B", null));
+            if ((Boolean) each[3]) {
+                assertTrue(each[0] + ": " + names(gate(stored)),
+                        noViolation(gate(stored), 4));
+            } else {
+                assertInvariant(4, GapClass.BLOCKING,
+                        "field=occurrence/seq/location/version", stored);
+            }
+        }
         Rows reachedTwice = clean();
         reachedTwice.targets.add(reachedTwice.targets.get(0));
         assertInvariant(4, GapClass.BLOCKING,

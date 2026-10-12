@@ -142,6 +142,111 @@ public class BooleanReturnsTest {
         }
     }
 
+    /**
+     * {@code if (!callable.call())} (solr-adhoc-09, DeleteReplicaCmd.java:277):
+     * the guard unboxes a {@code Boolean} an interface call returned; the
+     * object is Soot's desugared lambda its {@code bootstrap$} made, whose
+     * {@code call()} forwards to the lambda's body; the body's arms return
+     * {@code Boolean.TRUE} or {@code FALSE} through javac's inlined {@code
+     * finally} (a null test, a call), which decides nothing.  body(int i0):
+     * u1 if i0 <= 0 goto u6; u2 b = TRUE; u3 if i0 == 7 goto u5; u4 noop();
+     * u5 return b; u6 b = FALSE; u7 if i0 == 7 goto u9; u8 noop(); u9
+     * return b.
+     */
+    @Test
+    public void aGuardOnALambdasBooleanIsDecidedByTheLambdasArms() {
+        SootClass owner = new SootClass(OWNER, Modifier.PUBLIC);
+        Scene.v().addClass(owner);
+        owner.setApplicationClass();
+        SootClass object = library("java.lang.Object");
+        SootClass bool = library("java.lang.Boolean");
+        SootClass callable = library("java.util.concurrent.Callable");
+        callable.setModifiers(Modifier.PUBLIC | Modifier.INTERFACE);
+        Jimple j = Jimple.v();
+        RefType boolType = bool.getType();
+
+        SootMethod noop = method(owner, "noop", soot.VoidType.v());
+        noop.getActiveBody().getUnits().add(j.newReturnVoidStmt());
+        SootMethod body = method(owner, "lambda$run$0", boolType);
+        Body lambdaBody = body.getActiveBody();
+        Local i0 = lambdaBody.getParameterLocal(0);
+        Local b = local(lambdaBody, "b", boolType);
+        Unit returnTrue = j.newReturnStmt(b);
+        Unit returnFalse = j.newReturnStmt(b);
+        Unit falseArm = j.newAssignStmt(b, j.newStaticFieldRef(
+                Scene.v().makeFieldRef(bool, "FALSE", boolType, true)));
+        lambdaBody.getUnits().addAll(Arrays.asList(
+                j.newIfStmt(j.newLeExpr(i0, IntConstant.v(0)), falseArm),
+                j.newAssignStmt(b, j.newStaticFieldRef(
+                        Scene.v().makeFieldRef(bool, "TRUE", boolType, true))),
+                j.newIfStmt(j.newEqExpr(i0, IntConstant.v(7)), returnTrue),
+                j.newInvokeStmt(j.newStaticInvokeExpr(noop.makeRef(), i0)),
+                returnTrue,
+                falseArm,
+                j.newIfStmt(j.newEqExpr(i0, IntConstant.v(7)), returnFalse),
+                j.newInvokeStmt(j.newStaticInvokeExpr(noop.makeRef(), i0)),
+                returnFalse));
+
+        SootClass lambda = new SootClass(OWNER + "$lambda_run_0__1",
+                Modifier.PUBLIC);
+        lambda.setSuperclass(object);
+        lambda.addInterface(callable);
+        Scene.v().addClass(lambda);
+        lambda.setApplicationClass();
+        SootMethod call = new SootMethod("call",
+                Collections.<Type>emptyList(), object.getType(),
+                Modifier.PUBLIC);
+        lambda.addMethod(call);
+        Body forward = j.newBody(call);
+        call.setActiveBody(forward);
+        Local self = local(forward, "this", lambda.getType());
+        Local result = local(forward, "$r", boolType);
+        forward.getUnits().addAll(Arrays.asList(
+                j.newIdentityStmt(self, j.newThisRef(lambda.getType())),
+                j.newAssignStmt(result, j.newStaticInvokeExpr(body.makeRef(),
+                        IntConstant.v(1))),
+                j.newReturnStmt(result)));
+        SootMethod bootstrap = new SootMethod("bootstrap$",
+                Collections.<Type>emptyList(), callable.getType(),
+                Modifier.PUBLIC | Modifier.STATIC);
+        lambda.addMethod(bootstrap);
+
+        SootMethod run = method(owner, "run", soot.VoidType.v());
+        Body caller = run.getActiveBody();
+        Local made = local(caller, "$f", callable.getType());
+        Local answer = local(caller, "$o", object.getType());
+        Local boxed = local(caller, "$b", boolType);
+        Local value = local(caller, "$z", BooleanType.v());
+        Unit end = j.newReturnVoidStmt();
+        Unit guard = j.newIfStmt(j.newNeExpr(value, IntConstant.v(0)), end);
+        caller.getUnits().addAll(Arrays.asList(
+                j.newAssignStmt(made, j.newStaticInvokeExpr(
+                        bootstrap.makeRef())),
+                j.newAssignStmt(answer, j.newInterfaceInvokeExpr(made,
+                        Scene.v().makeMethodRef(callable, "call",
+                                Collections.<Type>emptyList(),
+                                object.getType(), false))),
+                j.newAssignStmt(boxed, j.newCastExpr(answer, boolType)),
+                j.newAssignStmt(value, j.newVirtualInvokeExpr(boxed,
+                        Scene.v().makeMethodRef(bool, "booleanValue",
+                                Collections.<Type>emptyList(),
+                                BooleanType.v(), false))),
+                guard,
+                end));
+        assertEquals("the lambda body's test, each arm with whether the "
+                        + "guard holds there; its finally decides nothing",
+                Arrays.asList(sig(body) + "#u1=true:false[]",
+                        sig(body) + "#u1=false:true[]"),
+                render(BooleanReturns.deciders(caller, guard)));
+    }
+
+    private static SootClass library(String name) {
+        SootClass type = new SootClass(name, Modifier.PUBLIC);
+        Scene.v().addClass(type);
+        type.setLibraryClass();
+        return type;
+    }
+
     private static List<String> render(List<StaticScopeMap.Guard> guards) {
         List<String> rendered = new ArrayList<String>();
         for (StaticScopeMap.Guard guard : guards) {

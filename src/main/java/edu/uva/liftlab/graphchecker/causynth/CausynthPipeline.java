@@ -1711,6 +1711,9 @@ public final class CausynthPipeline {
         int walked = 0;
         int waited = 0;
         int lineage = 0;
+        int logging = 0;
+        // Replays only: the recording runs on a VM with no pause to take.
+        boolean pausesLogging = refs.ref(Hook.PAUSE_VM_PATH_CONDITION) != null;
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
             // A lineage-only class gets starts, claims and waits only.
@@ -1760,6 +1763,10 @@ public final class CausynthPipeline {
                     else last = stmt;
                     replaceRandom(body, stmt, site);
                     replaceListing(stmt);
+                    if (pausesLogging && loggingCall(stmt.getInvokeExpr())) {
+                        pauseAround(body, stmt, refs);
+                        logging++;
+                    }
                     if (claims && last instanceof AssignStmt
                             && ((AssignStmt) last).getLeftOp()
                                     instanceof Local
@@ -1789,8 +1796,56 @@ public final class CausynthPipeline {
         LOG.info("Instrumented {} calling-context frame(s), {} work start(s),"
                 + " {} work claim(s) and {} timed wait(s) across {} method(s)"
                 + " of the application scope for the execution index, {} "
-                + "class(es) of it for their lineage alone", framed, filed,
-                claimed, waited, walked, lineage);
+                + "class(es) of it for their lineage alone; {} logging"
+                + " call(s) run under the VM's pause", framed, filed,
+                claimed, waited, walked, lineage, logging);
+    }
+
+    /**
+     * The logging APIs, by the class an invocation names its callee in.  A
+     * call to one is IO off the traced flow (RULES: "IO only on the traced
+     * flow"): nothing the program decides reads its own log.  Run
+     * symbolically, its formatting put the branches of an argument's
+     * {@code toString} into the path condition, and its encoding stored
+     * symbolic bytes into a long-lived reused buffer that the VM then
+     * versioned at every later log line -- solr-18413's seed read out 8,628
+     * elements of one encoder's byte array, 64 versions each, at every
+     * region close (round Y2, STATUS defect 38).
+     */
+    private static final Set<String> LOGGING_APIS =
+            Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                    "org.slf4j.Logger",
+                    "org.apache.logging.log4j.Logger",
+                    "org.apache.log4j.Category",
+                    "org.apache.log4j.Logger",
+                    "java.util.logging.Logger",
+                    "org.apache.commons.logging.Log")));
+
+    /** Whether {@code invoke} names its callee in a logging API. */
+    static boolean loggingCall(InvokeExpr invoke) {
+        return LOGGING_APIS.contains(
+                invoke.getMethodRef().getDeclaringClass().getName());
+    }
+
+    /**
+     * Runs {@code call} under the VM's pause ({@code
+     * System.pauseConcolicPathCondition}): no symbolic value propagates and
+     * no branch is recorded inside it, and a throw resumes before it
+     * rethrows.  A tracked location the call writes is left unversioned,
+     * which the next read of it names (an UNOBSERVED version, the writer set
+     * incomplete: VM.md §5), never a silent loss.
+     */
+    static void pauseAround(Body body, Stmt call, HookCatalog refs) {
+        List<Unit> before = new ArrayList<>();
+        emit(before, refs.ref(Hook.PAUSE_VM_PATH_CONDITION));
+        insertBeforeSequence(body, call, before);
+        Unit resumed = invoke(refs.ref(Hook.RESUME_VM_PATH_CONDITION));
+        List<Unit> normal = new ArrayList<>();
+        normal.add(resumed);
+        List<Unit> thrown = new ArrayList<>();
+        emit(thrown, refs.ref(Hook.RESUME_VM_PATH_CONDITION));
+        guardCall(body, call, normal, resumed, thrown,
+                "$causynthLoggingThrown");
     }
 
     /**
@@ -2728,11 +2783,11 @@ public final class CausynthPipeline {
                 boolean fixedCount = naturalLoopHasSite(
                         method, loop, continuations,
                                 fixedCountLoopSites);
-                // A fixed-count loop is a resource loop: charged per body.
-                int loopBodyBound = fixedCount
-                        ? policy.maxBackedgeTraversals()
-                        : naturalLoopBodyBound(
-                                method, loop, continuations, policy);
+                // A fixed-count loop is a resource loop, charged per body to
+                // the work cap its own K_L raises (LoopBoundPolicy#workCap);
+                // a condition-bounded one counts its traversals.
+                int loopBodyBound = naturalLoopBodyBound(
+                        method, loop, continuations, policy);
                 for (CfgLoopControl.Backedge backedge : loop.backedges) {
                     if (method.isConstructor()
                             && (safeEntry == null || !unitAtOrAfter(
@@ -3928,7 +3983,7 @@ public final class CausynthPipeline {
                             object);
         }
 
-        private static HookCatalog concolic() {
+        static HookCatalog concolic() {
             SootClass runtime = phantomClass(CONCOLIC_REGION_RUNTIME_CLASS);
             Type string = RefType.v("java.lang.String");
             Type object = RefType.v("java.lang.Object");

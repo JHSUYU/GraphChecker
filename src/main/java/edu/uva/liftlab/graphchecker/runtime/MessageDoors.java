@@ -572,14 +572,17 @@ public final class MessageDoors {
     private static void written(String transport, String key, Object owner) {
         long version = version(key);
         if (version < 0L) return;
-        String path = location(key);
+        String path = life(transport, location(key), version, true);
         String node = RuntimeTraceContext.ownedSource(owner).key();
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
                 Identity.currentOccurrence(node));
         if (!RowRuntime.open()) return;
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         LocationId location = storeLocation(transport, path);
-        RowRuntime.storeWrite(at, RowRuntime.currentEvent(),
+        // After every VM event so far, as a concrete target stands: a closure
+        // cuts a writer strictly before its write's seq, and the writer's
+        // own last event (its door's fault marker) is before the write.
+        RowRuntime.storeWrite(at, Identity.afterLastEvent(),
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
@@ -598,7 +601,12 @@ public final class MessageDoors {
     public static void decoded(String transport, String key, Object product) {
         long version = version(key);
         if (version < 0L || product == null) return;
-        String path = location(key);
+        // A write in flight at the path may have made this version, its
+        // hook not yet run (a create's version 0 opening a new life): the
+        // decode waits for it to file, bounded and named (#filed), so it
+        // names the life the version was made in.
+        filed(trimmed(transport), trimmed(key));
+        String path = life(transport, location(key), version, false);
         List<Object> registered = Provenance.register(new Provenance.Version(
                 storeLocation(transport, path), path, version), product);
         // The decode runs on the fetching thread right after the read: the
@@ -608,11 +616,47 @@ public final class MessageDoors {
                         RuntimeTraceContext.nodeHere()));
     }
 
-    /** A store location as every run spells it. */
+    /** A store location as every run spells it: the path as {@link
+     *  RunNames} keys it, then its life ({@link #life}) past the first. */
     static LocationId storeLocation(String transport, String path) {
+        String named = trimmed(path);
+        int life = named.lastIndexOf(LIFE);
+        String suffix = life < 0 ? "" : named.substring(life);
+        String bare = life < 0 ? named : named.substring(0, life);
         return LocationId.of(LocationKind.STORE, trimmed(transport),
-                RunNames.key(trimmed(path)).location);
+                RunNames.key(bare).location + suffix);
     }
+
+    /**
+     * {@code path} named with its life in this run (design Z §1): {@code
+     * <path>#<n>} from its second life on.  A store restarts a path's
+     * versions at 0 when the path is created again after its delete, so a
+     * version 0 written once the path stood at a version is a new life --
+     * without it, writeOf(location, v) could pick the other life's v.  A
+     * decode names the life it read and starts none: it first waits for a
+     * write in flight at the path to file ({@link #decoded}).
+     */
+    private static String life(String transport, String path,
+                               long version, boolean write) {
+        String key = trimmed(transport) + "\n" + trimmed(path);
+        synchronized (LIVES) {
+            int[] held = LIVES.get(key);
+            if (held == null) {
+                held = new int[] {1, 0};
+                LIVES.put(key, held);
+            }
+            if (write && version == 0L && held[1] != 0) held[0]++;
+            if (write || version > 0L) held[1] = 1;
+            return held[0] == 1 ? trimmed(path)
+                    : trimmed(path) + LIFE + held[0];
+        }
+    }
+
+    /** transport + path -> {its life, whether it stood at a version}. */
+    private static final Map<String, int[]> LIVES = new HashMap<>();
+
+    /** What separates a path from its life in a store location's name. */
+    private static final String LIFE = "#";
 
     /** A stored version's version: its key after the last {@code @}, or -1. */
     private static long version(String key) {

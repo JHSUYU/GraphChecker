@@ -6043,6 +6043,11 @@ public class ExploreTest {
             // doors in turn.
             assertEquals("case " + at + ": the Runner's own turn", null,
                     named(obligations(wave), "Sib#u5"));
+            // Each narrowing names what it cut (review M4).
+            String gaps = new String(Files.readAllBytes(
+                    wave.resolve("gaps.jsonl")), StandardCharsets.UTF_8);
+            assertTrue("case " + at + ": the own turn's cut is named",
+                    gaps.contains("own turn hold no door of message e-task"));
         }
     }
 

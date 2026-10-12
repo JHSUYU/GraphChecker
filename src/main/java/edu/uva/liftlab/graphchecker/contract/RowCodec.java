@@ -226,8 +226,12 @@ public final class RowCodec {
             json.addProperty(FORCED, true);
             json.addProperty("concreteOutcome", row.concreteOutcome());
         }
+        if (!row.via().isEmpty()) json.addProperty(VIA, row.via());
         return json;
     }
+
+    /** The calling frame a decision states (DecisionRow#via). */
+    private static final String VIA = "via";
 
     /** A FORCED row's mark (DecisionRow#forced, TargetRow#forced). */
     private static final String FORCED = "forced";
@@ -243,8 +247,9 @@ public final class RowCodec {
                 readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "siteId"), integer(json, "ordinal"),
                 bool(json, "outcome"), string(json, "term"), clocks);
-        return json.has(FORCED) ? row.forced(bool(json, "concreteOutcome"))
-                : row;
+        DecisionRow read = json.has(FORCED)
+                ? row.forced(bool(json, "concreteOutcome")) : row;
+        return json.has(VIA) ? read.via(string(json, VIA)) : read;
     }
 
     public static JsonObject writeExport(ExportRow row) {
