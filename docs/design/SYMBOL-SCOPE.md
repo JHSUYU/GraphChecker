@@ -456,9 +456,9 @@ and `Lock#tryLock` with a timeout (direction `AWAIT`, `ACQUIRE`), `0` for
 and its JDK queues as the call names them), and a `Future#get(long,TimeUnit)` throws its
 `TimeoutException` (`GET`). A demanded door's call return is an IO boundary of the root demand
 (§4.6), so the walk reaches it as it reaches a file operation's; a sleep or an `Object#wait` states
-no outcome and is no door. A latch's wait itself stays out of the weave's timed waits (IDENTITY
-limits): held as one, its waiter changed how a replay's order gives way, and solr-18413's
-CONFIRM held its order past the witness's state decode, 0/3, where it confirms 1/1 without it.
+no outcome and is no door. The door needs no held wait (its marker returns the timeout before the
+call), so a latch's wait itself stays out of the weave's timed waits and runs on the wall clock
+(IDENTITY limits).
 
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a
