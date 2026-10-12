@@ -104,7 +104,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   (`campaign_stream_has_slot`).
   A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host
   before it measured anything, what its planner or composer starts at (`tools/lib/heads.sh`
-  `case_head_reserve_mb`, 8 GB), not its engine heap: a40's Solr heads asked for 16 GB and waited
+  `case_head_reserve_mb`, the 8 GB planner's JVM footprint, 9088 MB: an engine JVM is charged at its heap + heap/16 + 384 MB, `campaign_jvm_footprint_mb`), not its engine heap: a40's Solr heads asked for 16 GB and waited
   while one case's 27-32 replays filled the lifts. Once its engine JVMs have run, the room it holds
   is their measured peak times 1.25 (`run_engine.sh` `campaign_head_need_mb`). A lift holds the
   largest idle reservation of its heads, not their sum.

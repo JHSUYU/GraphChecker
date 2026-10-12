@@ -5283,7 +5283,7 @@ reset_config
 
 # MEMORY-4: HEAD ROOM.  A head's host keeps room for the head's next engine
 # JVM against every other start -- what its planner or composer starts at
-# (campaign_head_need_mb), not the case's engine heap: an obligation counts
+# (campaign_head_need_mb: that JVM's footprint), not the case's engine heap: an obligation counts
 # the largest idle, fresh reservation of the host as used, a head's own
 # start counts none, one of its JVMs running (busy) or a reservation gone
 # stale frees it, and the head gives it up when it exits.  The hosts are
@@ -5300,11 +5300,11 @@ engine_memory_mb=12000
 (
   campaign_head_charging=1
   campaign_head_reserve
-  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
   run_capturing_status campaign_host_try_start localhost 6000
-  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"8192 MB held \
+  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"$(campaign_jvm_footprint_mb 8192) MB held \
 for a head"* ]] || fail "an obligation took the room a head reserved: \
 ${campaign_host_wait_reason}"
   campaign_host_try_start lift14 6000 \
@@ -5323,7 +5323,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
     || fail "a subshell of the head gave up the head's room"
   # A head step no host has room for holds its need on the host with the
   # most room (lift14's 39400 MB less the 30000 MB reserve, against the
-  # head's 39300 less its own 8192 held): an obligation lift14 would admit
+  # head's 39300 less its own 9088 held, an 8192 MB heap's footprint): an obligation lift14 would admit
   # is refused while the 9500 MB step waits, the step takes lift14 once it
   # has room, its own hold not held against it, and gives the hold up.
   campaign_worker_hosts="gate-head lift14"
@@ -5352,7 +5352,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   grep -q 'held on lift14' "${memory_dir}/head-place.log" \
     || fail "a waiting head step did not say where it held its need"
   [[ -z "$(ls "${campaign_host_gate_root}/lift14/heads/")" \
-     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
     || fail "a placed head step kept its hold: \
 $(ls "${campaign_host_gate_root}"/*/heads/)"
 ) || exit 1
@@ -5491,7 +5491,8 @@ reset_config
 # (campaign_engine_jvm) and its peak joins the campaign's engine_peak_mb,
 # never lowering it; its status is the JVM's.  The head's held room is that
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
-# heap; before any was measured, what its planner or composer starts at.
+# heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
+# footprint of what its planner or composer starts at.
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
 # file after them, and the held room (engine heap 12000).
 need_dir=${test_tmp}/head-need
@@ -5519,11 +5520,11 @@ while IFS='|' read -r need_peaks need_file need_room; do
     || fail "engine peaks ${need_peaks} left ${need_said}, not \
 ${need_file}|${need_room}"
 done <<'EOF'
-|-|8192
+|-|9088
 700:0|700|1024
 2949:0 1200:3|2949|3712
 9000:0|9000|11264
-20000:0 300:0|20000|12000
+20000:0 300:0|20000|13134
 EOF
 campaign_root=""
 
@@ -5638,7 +5639,9 @@ EOF
 
 # HEADS-2: launch-round.sh weighs a case's head by its engine heap; a sweep
 # admits it for the room it reserves on its host, what its planner or
-# composer starts at (campaign_head_need_mb), never more than that heap:
+# composer starts at with the JVM's own memory beside its heap
+# (campaign_head_need_mb, campaign_jvm_footprint_mb), never more than that
+# heap's footprint:
 # a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
 # while one case's obligations filled the lifts.  Per row: the case's
 # configuration, its weight and its head's room.
@@ -5648,9 +5651,9 @@ while IFS='|' read -r heads_config heads_heap heads_reserve; do
     || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
 and reserves $(case_head_reserve_mb "${heads_config}")"
 done <<'EOF'
-engine_memory_mb=16384|16384|8192
-engine_memory_mb=|8192|8192
-engine_memory_mb=4096|4096|4096
+engine_memory_mb=16384|16384|9088
+engine_memory_mb=|8192|9088
+engine_memory_mb=4096|4096|4736
 EOF
 
 # POOL-SLOTS: the obligation slots a sweep's cases share
@@ -5679,7 +5682,8 @@ $(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
 EOF
 )
 
-# SWEEP-1: sweep.sh launches every case with its head's room as its need,
+# SWEEP-1: sweep.sh launches every case with its head's room as its need (an
+# engine heap of 1 MB: its JVM footprint, 385 MB),
 # in the shared pool, and a measurement sweep's stop stage and pruning on the
 # job's command line (ssh carries no environment); a case id that names no
 # case launches no case.
@@ -5702,7 +5706,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
-  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
+  && grep -q "^ADMIT_MB=385 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room in the \
 shared pool: $(cat "${sweep_dir}/launched" \

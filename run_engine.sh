@@ -491,6 +491,16 @@ run_in_directory() {
 # where a planner left to the JVM collected for ten minutes and died with
 # exit 1 of "GC overhead limit exceeded" (sweep a40h2, DataStreamer-638),
 # so a caller can tell the most heap a head JVM is given from a crash.
+# campaign_jvm_footprint_mb <heap_mb>: what an engine JVM run at -Xmx<heap_mb>
+# is charged and held on its host: its heap and the JVM's own memory beside
+# it (metaspace, code cache, the collector's tables, thread stacks), a
+# sixteenth of the heap and 384 MB.  Charged at its heap alone, a served
+# planner that filled it passed its charge on a host near the ceiling and was
+# ended (solr-adhoc-07 RX4: 8375 MB resident at an 8192 MB heap).
+campaign_jvm_footprint_mb() {
+  printf '%s\n' "$(( $1 + $1 / 16 + 384 ))"
+}
+
 campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
 engine_java() {
@@ -506,7 +516,8 @@ engine_java() {
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "${start}" campaign_engine_jvm \
+    campaign_head_charged "$(campaign_jvm_footprint_mb "${start}")" \
+      campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
@@ -523,7 +534,8 @@ engine_java() {
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "${heap}" campaign_engine_jvm \
+  campaign_head_charged "$(campaign_jvm_footprint_mb "${heap}")" \
+    campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     -XX:+ExitOnOutOfMemoryError "$@"
@@ -615,16 +627,18 @@ campaign_engine_need_mb() {
 # The room a head reserves on its host, in MB (campaign_head_reserve): its
 # measured step need -- the largest peak any of its engine JVMs reached
 # (${campaign_root}/engine_peak_mb, campaign_engine_jvm) times 1.25, rounded
-# up to 128 MB, at least 1024 and at most the engine heap, read again at
-# every heartbeat; before any was measured, what the largest of its engine
-# JVMs that come back every round starts at -- a round's planner, a
+# up to 128 MB, at least 1024 and at most the engine heap's JVM footprint
+# (campaign_jvm_footprint_mb), read again at every heartbeat; before any was
+# measured, the footprint the largest of its engine JVMs that come back every
+# round starts at -- a round's planner, a
 # witness's composer (engine_java) -- not the case's engine heap, unless one
 # of them outgrew its need.  An idle 8 GB hold for steps that peaked at a
 # median 0.7 GB (p90 3.7, p99 7.8; 609 planners and composers of sweep HG5A
 # and round MCH2) kept 8 GB of every lift from the pool.  A step its held
 # room does not cover is placed by its own charge (campaign_head_charged).
 campaign_head_need_mb() {
-  local main start largest=0 peak heap=${engine_memory_mb:-8192}
+  local main start largest=0 peak heap
+  heap=$(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}")
   if [[ -n "${campaign_root}" ]] \
       && read -r peak 2>/dev/null <"${campaign_root}/engine_peak_mb" \
       && [[ "${peak}" =~ ^[1-9][0-9]*$ ]]; then
@@ -635,7 +649,7 @@ campaign_head_need_mb() {
   fi
   for main in edu.uva.liftlab.graphchecker.explore.ExploreMain \
       edu.uva.liftlab.graphchecker.compose.ComposeMain; do
-    start=$(campaign_engine_start_mb "${main}")
+    start=$(campaign_jvm_footprint_mb "$(campaign_engine_start_mb "${main}")")
     (( start <= largest )) || largest=${start}
   done
   printf '%s\n' "${largest}"
@@ -4760,7 +4774,7 @@ campaign_planner_alive() {
 # held by the shell that holds it for as long as it runs.
 campaign_planner_start() {
   local heap=$1 state="${iteration_dir}/planner" host charge id busy=""
-  campaign_head_place "${heap}" >&2
+  campaign_head_place "$(campaign_jvm_footprint_mb "${heap}")" >&2
   host=${campaign_placed_host}
   charge=${campaign_host_charge_id}
   id="$(date +%s%N)"
@@ -4839,7 +4853,8 @@ campaign_planner_serve() {
   mv -f -- "${dir}/server.part" "${dir}/server"
   printf '%s\n' "${jvm}" >"${jvm_file}"
   watched=$(mktemp -d) || return
-  campaign_watch_workload "${jvm}" "${heap}" "${watched}" 2>>"${log}"
+  campaign_watch_workload "${jvm}" "$(campaign_jvm_footprint_mb "${heap}")" \
+    "${watched}" 2>>"${log}"
   wait "${jvm}" || status=$?
   read -r peak 2>/dev/null <"${watched}/workload_rss_mb" || peak=0
   # Its server file stays, naming a pid gone: a question asked after says

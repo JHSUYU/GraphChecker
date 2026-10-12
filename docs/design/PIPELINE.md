@@ -1191,8 +1191,11 @@ runs its engine JVMs on its own host first, between the obligations every campai
 there, so it reserves room for the next one -- its measured step need (`campaign_head_need_mb`:
 the largest peak any of its engine JVMs reached, each watched where its step runs and folded into
 `<campaign>/engine_peak_mb` by `campaign_engine_jvm`, times 1.25, at least 1 GB, at most the engine
-heap, read again at every heartbeat; before any was measured, what its planner or composer starts
-at), never the case's engine heap; a step its room does not cover is placed by its own charge, as
+heap's JVM footprint, read again at every heartbeat; before any was measured, the footprint of what
+its planner or composer starts at), never the case's engine heap; an engine JVM at a heap of H MB is
+charged, held and watched at its footprint, H + H/16 + 384 MB (`campaign_jvm_footprint_mb`: the
+JVM's own memory beside its heap; charged at H alone, solr-adhoc-07's served planner reached 8375 MB
+at an 8192 MB heap on a host near the ceiling and was ended); a step its room does not cover is placed by its own charge, as
 every head step is -- (`campaign_head_reserve`,
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
