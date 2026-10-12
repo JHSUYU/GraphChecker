@@ -160,9 +160,11 @@ public final class ObligationFactory {
                     : decision.siteId();
         }
 
-        /** The decision's ordinal, or the version a pairing flip asks. */
+        /** The decision's ordinal, or a pairing flip's ({@link
+         *  PairingFlip#ordinal}: an ordinal is 1-based, a version not). */
         public int ordinal() {
-            return pairing() ? (int) pairedVersion : decision.ordinal();
+            return pairing() ? PairingFlip.ordinal(pairedVersion)
+                    : decision.ordinal();
         }
 
         /** The arm it asks: the recorded one's other, or a forced flip's

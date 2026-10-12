@@ -6092,8 +6092,10 @@ public class ExploreTest {
                 continue;
             }
             assertEquals(PairingFlip.PER_READ, offered.size());
-            assertEquals(9, offered.get(0).ordinal());
-            assertEquals(2, offered.get(PairingFlip.PER_READ - 1).ordinal());
+            assertEquals(9L, offered.get(0).pairedVersion);
+            assertEquals(10, offered.get(0).ordinal());
+            assertEquals(2L, offered.get(PairingFlip.PER_READ - 1)
+                    .pairedVersion);
             assertEquals(role, offered.get(0).pairedRead.endpoint()
                     .occurrence());
             assertTrue(offered.get(0).pairing()

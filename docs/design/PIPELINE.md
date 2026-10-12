@@ -743,7 +743,8 @@ view in the request's role work and writes it in a store door's region), its ear
 offered each older version the node decoded before it in the session, newest first, at most
 `PairingFlip#PER_READ` (8); past them a `pairing-bound` gap, counted in result.json `bounded`
 (`pairing_flip_per_read`). Its site is `PAIRING:<reader>` (`Obligation#PAIRING`, the read as CONFIRM
-names its endpoint), its ordinal the version, its outcome taken, its dependence constant; it counts
+names its endpoint), its ordinal the version plus one (an ordinal is 1-based), its outcome taken, its
+dependence constant; it counts
 as a flip of the world (depth) and among a path's owed arms. No query is asked: the path is the one
 its session ran, up to the read, and the world is that session's with the read paired to the decode
 of the asked version (a view's writer is its version, `Confirmation#viewWriter`), held by CONFIRM's

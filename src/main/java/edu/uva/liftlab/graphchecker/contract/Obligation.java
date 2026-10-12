@@ -94,9 +94,10 @@ public final class Obligation extends Value {
     }
 
     /**
-     * A PAIRING FLIP's site (PIPELINE §7.5): {@code PAIRING:<reader>}, the
+     * A PAIRING FLIP's site (PIPELINE §7.4): {@code PAIRING:<reader>}, the
      * read of a node's view as CONFIRM names its endpoint, its ordinal the
-     * older version of the view the read is to take.  No decision has it.
+     * older version of the view the read is to take plus one ({@link
+     * #pairedVersion}).  No decision has it.
      */
     public static final String PAIRING = "PAIRING:";
 
@@ -108,6 +109,11 @@ public final class Obligation extends Value {
     /** Whether this obligation is a pairing flip ({@link #PAIRING}). */
     public boolean pairing() {
         return pairing(siteId);
+    }
+
+    /** The version of the view a pairing flip's read is to take. */
+    public long pairedVersion() {
+        return ordinal - 1L;
     }
 
     /** A pairing flip's read, as CONFIRM names its endpoint; else "". */

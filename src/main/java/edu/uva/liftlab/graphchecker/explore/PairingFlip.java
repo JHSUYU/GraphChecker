@@ -66,6 +66,12 @@ final class PairingFlip {
         return Obligation.PAIRING + Confirmation.id(read.endpoint());
     }
 
+    /** A pairing flip's ordinal: the version it asks plus one, an ordinal
+     *  being 1-based ({@link Obligation#pairedVersion}). */
+    static int ordinal(long version) {
+        return Math.toIntExact(version + 1L);
+    }
+
     /** Whether an obligation's site is a pairing flip's. */
     static boolean asks(String siteId) {
         return Obligation.pairing(siteId);
@@ -109,7 +115,7 @@ final class PairingFlip {
                 }
                 offered.add(new ObligationFactory.Candidate(task, path, read,
                         version, ObligationFactory.obligationId(
-                        task.taskId(), site(read), (int) version, true,
+                        task.taskId(), site(read), ordinal(version), true,
                         DEPENDENCE)));
             }
         }
@@ -182,7 +188,7 @@ final class PairingFlip {
             if (read.location().kind() == LocationKind.VIEW
                     && site(read).equals(obligation.siteId())) {
                 return new ObligationFactory.Candidate(task, path, read,
-                        obligation.ordinal(), obligation.obligationId());
+                        obligation.pairedVersion(), obligation.obligationId());
             }
         }
         return null;

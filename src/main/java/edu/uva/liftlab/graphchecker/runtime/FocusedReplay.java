@@ -408,13 +408,13 @@ public final class FocusedReplay {
                         || FLIPPED.contains(asked)) {
                     continue;
                 }
-                if (version == obligation.ordinal()) {
+                if (version == obligation.pairedVersion()) {
                     FLIPPED.add(asked);
                 } else {
                     REFUSALS.put(asked, PAIRING_UNTAKEN + ": read " + id
                             + " observed version " + version + " of its"
                             + " view, the pairing flip asks version "
-                            + obligation.ordinal());
+                            + obligation.pairedVersion());
                 }
             }
         }
@@ -652,7 +652,7 @@ public final class FocusedReplay {
                                 sessionId, obligation.pairing()
                                 ? "the focused prefix reproduced and read "
                                 + obligation.pairedReader() + " took version "
-                                + obligation.ordinal() + " of its view"
+                                + obligation.pairedVersion() + " of its view"
                                 : obligation.flips()
                                 ? "the focused prefix reproduced and "
                                 + trimmed(obligation.siteId()) + "#"
