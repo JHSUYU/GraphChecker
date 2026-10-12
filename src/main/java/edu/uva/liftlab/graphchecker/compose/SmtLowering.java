@@ -5001,8 +5001,9 @@ public final class SmtLowering {
         String length = "(str.len " + text + ")";
         if ("charAt".equals(operation)) {
             String index = argument.text;
+            // A char wherever it is defined: z3's alphabet is Java's
+            // (VmTermLowering#JAVA_CHARS).
             String code = "(str.to_code (str.at " + text + " " + index + "))";
-            assertJavaIntegralDomain(code, "C");
             return definedResult(code, Sort.INT, IntegralWidth.JAVA_INT,
                     and(Arrays.asList(stringDefinedness(
                                     Collections.singletonList(receiver),

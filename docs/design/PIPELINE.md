@@ -892,7 +892,12 @@ operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads wit
 operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
 `str.from_code`, `str.to_code`, and `str.in_re`, `re.*`, `re.range` of `String.trim` among them,
 the floating-point operators, `to_fp`, `int2bv`, `bv2int`
-and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
+and the `Array` sort); COMPOSE refuses a path on the same test. The preamble states z3's alphabet as
+Java's, `(set-option :encoding bmp)` (`VmTermLowering#JAVA_CHARS`: every character a UTF-16 code
+unit), so a `charAt` is a char wherever its definedness (`0 <= i < length`, on its path) holds and no
+query bounds the characters it reads (an unguarded range per `charAt` held every index below its
+string's length on every path: solr-bugs-snapshot-no-active Z2K, 13,188 lines, 44 of 46 MB,
+undecided; with the alphabet, sat in 1.8 s). A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query whose flipped predicate reaches no variable of its own --
 none it names, none a definition it rests on names (`FlipQuery#flipCone`) -- is not asked, whatever
 variables a prefix decision binds: by the owner's ruling (only SAT or UNSAT; a concrete value is a

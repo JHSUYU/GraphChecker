@@ -6441,6 +6441,35 @@ public class ComposerTest {
      * and read are lowered here as a recording states them; the primitive
      * operators are spelled by their one writer.
      */
+    /**
+     * A charAt is a char wherever it is defined because z3's alphabet is
+     * Java's ({@code VmTermLowering#JAVA_CHARS}, stated before any
+     * declaration): no assertion of the query bounds a character it read,
+     * which unguarded held every index below its string's length on every
+     * path (solr-bugs-snapshot-no-active Z2K: 13,188 such lines).
+     */
+    @Test
+    public void aCharAtStatesNoRangeTheAlphabetGives() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        VmTermLowering.Term code = lowering.dispatch(vmString("charAt",
+                vmLeaf("SymbolExpression", "s", "java/lang/String"),
+                vmLeaf("SymbolExpression", "n", "I")), null, "test");
+        List<String> texts = new ArrayList<String>(lowering.end());
+        texts.add(code.text);
+        texts.add(code.precondition);
+        String body = lowering.body(texts);
+        assertTrue(code.precondition, code.precondition.contains(
+                "(< n (str.len s))"));
+        assertFalse(body, body.contains("65535"));
+        int option = body.indexOf(VmTermLowering.JAVA_CHARS);
+        assertTrue(body, option >= 0 && option < body.indexOf("(declare-"));
+    }
+
     @Test
     public void everyOperatorTheLoweringWritesIsBuiltin() {
         Map<String, VmTermLowering.Sort> declared =

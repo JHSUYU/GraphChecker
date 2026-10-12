@@ -228,12 +228,24 @@ public final class VmTermLowering {
                     + " (str.++ \"-\" (str.from_int (- i)))"
                     + " (str.from_int i)))";
 
+    /**
+     * z3's alphabet as Java's: every character of every String a query
+     * names is a UTF-16 code unit, U+0000..U+FFFF, which every Java String
+     * is made of, so a {@code charAt} is a char wherever it is defined and no
+     * query states a range per character read (solr-bugs-snapshot-no-active
+     * Z2K: 13,188 unguarded char-range assertions, 44 of 46 MB, undecided
+     * in 900 s; with this option sat in 1.8 s).  Stated before any string
+     * literal is read.
+     */
+    public static final String JAVA_CHARS = "(set-option :encoding bmp)";
+
     /** The declarations every lowered query opens with. */
     public static List<String> preamble() {
         List<String> lines = new ArrayList<>();
         // Wrapping arithmetic yields nested "mod 2^32" terms that only z3's
         // simplex arithmetic closes; a strategy choice, not a meaning change.
         lines.add("(set-option :smt.arith.solver 2)");
+        lines.add(JAVA_CHARS);
         lines.add("(declare-sort Ref 0)");
         lines.add(ContainerStateModel.valueDatatypeDeclaration());
         lines.add("(declare-const nullRef Ref)");
