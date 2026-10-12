@@ -1354,40 +1354,6 @@ public final class ConfirmMain {
             return new Hold(event.occurrence(), hold);
         }
 
-        /**
-         * The occurrence whose close ends a view pairing's hold: the
-         * reader's, or -- a read in role work -- the first region its node
-         * opened after it under the same causal context (a routed alias
-         * captures its view in the request's role work and writes it in a
-         * store door's region); with none, the reader's, which no hook
-         * closes: its hold is then unrealized past the timeout.
-         */
-        private OccurrenceAddress viewUntil(ReadRow read) {
-            OccurrenceAddress reader = read.endpoint().occurrence();
-            if (!reader.role()) return reader;
-            String context = Confirmation.contextKey(reader);
-            OccurrenceAddress until = reader;
-            long first = Long.MAX_VALUE;
-            for (ActivationRow activation : activations.values()) {
-                OccurrenceAddress candidate = activation.occurrence();
-                List<Placed> events = placed.get(candidate.id());
-                if (candidate.role() || events == null
-                        || !Confirmation.contextKey(candidate).equals(
-                        context)) {
-                    continue;
-                }
-                long opened = Long.MAX_VALUE;
-                for (Placed event : events) {
-                    opened = Math.min(opened, event.seq);
-                }
-                if (opened > read.seq() && opened < first) {
-                    first = opened;
-                    until = candidate;
-                }
-            }
-            return until;
-        }
-
         /** Where the session's events sat, and its writes: what an ORDER is
          *  built from ({@link #order}), with no closure. */
         private StateClosure(SessionReader session) {
@@ -1619,10 +1585,14 @@ public final class ConfirmMain {
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", Confirmation.id(read.endpoint()));
-            edge.addProperty("readerAnyTurn",
-                    Confirmation.anyTurn(read.endpoint()));
+            // A view's paired read is checked exactly: a read of the view at
+            // another turn of the accessor's site is another read.
+            if (read.location().kind() != LocationKind.VIEW) {
+                edge.addProperty("readerAnyTurn",
+                        Confirmation.anyTurn(read.endpoint()));
+            }
             edge.addProperty("mint", mint);
-            edge.addProperty("writer", writer(held));
+            edge.addProperty("writer", Confirmation.writer(held));
             edge.addProperty("version", held.version());
             edge.addProperty("location", location);
             holding.edges.add(edge);
@@ -1639,12 +1609,27 @@ public final class ConfirmMain {
                 hold.addProperty("view",
                         Confirmation.viewKey(held.location()));
                 hold.addProperty("above", held.version());
-                hold.addProperty("readerContext", Confirmation.contextKey(
-                        read.endpoint().occurrence()));
-                hold.addProperty("until", Confirmation.activation(
-                        closure.viewUntil(read), ExecutionIndex.empty()));
+                OccurrenceAddress readBy = read.endpoint().occurrence();
+                hold.addProperty("readerContext",
+                        Confirmation.contextKey(readBy));
                 hold.addProperty("reader", Confirmation.id(read.endpoint()));
+                // A read in role work no hook closes: its hold ends at the
+                // first region its work closes after the read, in the run.
+                hold.addProperty("until", readBy.role() ? ""
+                        : Confirmation.activation(readBy,
+                        ExecutionIndex.empty()));
                 holding.edges.add(hold);
+                // The node's decodes past the paired version that came
+                // before the read: the schedule cut stops before them, or
+                // its prefix replays the recorded order against the hold.
+                for (WriteRow decode : closure.byLocation.getOrDefault(
+                        location, Collections.<WriteRow>emptyList())) {
+                    if (decode.version() > held.version()
+                            && decode.seq() < read.seq()) {
+                        holding.reordered.add(
+                                decode.endpoint().occurrence().id());
+                    }
+                }
                 continue;
             }
             if (!held.initial()) {
@@ -1703,15 +1688,6 @@ public final class ConfirmMain {
         }
     }
 
-    /** The writer a STATE row names: its endpoint as {@link Confirmation#id}
-     *  names it, or {@link Confirmation#INITIAL}, which no occurrence
-     *  wrote, or a view's version ({@link Confirmation#viewWriter}). */
-    static String writer(WriteRow write) {
-        return write.initial() ? Confirmation.INITIAL
-                : write.location().kind() == LocationKind.VIEW
-                ? Confirmation.viewWriter(write.version())
-                : Confirmation.id(write.endpoint());
-    }
 
     /**
      * What holds an obligation replay to the pairings its world plants
@@ -1740,7 +1716,7 @@ public final class ConfirmMain {
             for (WriteRow write : closure.byLocation.getOrDefault(
                     SmtLowering.locationKey(read.location()),
                     Collections.<WriteRow>emptyList())) {
-                if (!writer.equals(writer(write))
+                if (!writer.equals(Confirmation.writer(write))
                         || held != null && held.version()
                         == read.observedVersion()) {
                     continue;

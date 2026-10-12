@@ -683,7 +683,7 @@ public final class ObligationFactory {
         final Map<String, String> answers =
                 new LinkedHashMap<String, String>();
         /** Reader -> writer: the writer choices the model moved off the
-         *  recording ({@link ConfirmMain#writer}). */
+         *  recording ({@link Confirmation#writer}). */
         final Map<String, String> pairings =
                 new LinkedHashMap<String, String>();
         final List<String> unproducible = new ArrayList<String>();
@@ -779,13 +779,13 @@ public final class ObligationFactory {
                             + "the other arm with read " + read.endpoint()
                             + " of session " + read.sessionId() + " paired "
                             + "to " + (write == null ? "an arm stating no "
-                            + "write" : "writer " + ConfirmMain.writer(write))
+                            + "write" : "writer " + Confirmation.writer(write))
                             + ", and the replay runs the world of "
                             + candidate.path.sessionId;
                     return planted;
                 }
                 planted.pairings.put(Confirmation.id(read.endpoint()),
-                        ConfirmMain.writer(write));
+                        Confirmation.writer(write));
             }
         }
         return planted;
@@ -915,7 +915,7 @@ public final class ObligationFactory {
         paths.addAll(forced);
         for (Corpus.RecordedPath path : paths) {
             if (!path.pathId.equals(obligation.pathId())) continue;
-            if (PairingFlip.asks(obligation.siteId())) {
+            if (Obligation.pairing(obligation.siteId())) {
                 return PairingFlip.locate(corpus, task, path, obligation);
             }
             for (int index = 0; index < path.decisions.size(); index++) {
@@ -1235,7 +1235,7 @@ public final class ObligationFactory {
                     if (writer == null) continue;
                     for (Map.Entry<String, WriteRow> write
                             : choice.writes.entrySet()) {
-                        if (write.getValue() != null && ConfirmMain.writer(
+                        if (write.getValue() != null && Confirmation.writer(
                                 write.getValue()).equals(writer)) {
                             selector = write.getKey();
                         }

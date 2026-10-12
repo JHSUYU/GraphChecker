@@ -28,7 +28,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * THE PAIRING FLIP (PIPELINE §7.5, SYMBOL-SCOPE §6.4): a read of a node's
+ * THE PAIRING FLIP (PIPELINE §7.4, SYMBOL-SCOPE §6.4): a read of a node's
  * VIEW of a store location takes an older decode of that node.  A node
  * decides on whichever decode its view held, and a view is late by the
  * delivery of a watch; what a stale view changes is often no value a term
@@ -36,7 +36,7 @@ import java.util.TreeSet;
  * so no decision's flip reaches it.  The flip asks the path as its
  * session ran it, up to the read, with the read paired to the node's
  * decode of the older version, and plants that pairing: CONFIRM's rows
- * hold it (ConfirmMain#holding, a VIEW_HOLD per pairing), and the replay
+ * hold it (ConfirmMain#holding, a VIEW_HOLD per pairing, PIPELINE §7.5), and the replay
  * is admitted when the read observed that version.
  *
  * <p>Candidates (one task path): the VIEW reads of its occurrence, and
@@ -70,11 +70,6 @@ final class PairingFlip {
      *  being 1-based ({@link Obligation#pairedVersion}). */
     static int ordinal(long version) {
         return Math.toIntExact(version + 1L);
-    }
-
-    /** Whether an obligation's site is a pairing flip's. */
-    static boolean asks(String siteId) {
-        return Obligation.pairing(siteId);
     }
 
     /**

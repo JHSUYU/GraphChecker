@@ -358,4 +358,53 @@ public class FocusedReplayDecidedTest {
                     .testFrame().contains("FocusedReplayDecidedTest"));
         }
     }
+
+    /**
+     * A PAIRING FLIP's replay takes it where its read observed the version
+     * it asks ({@code FocusedReplay#viewRead}); another version refuses it
+     * by name, the version seen; a read of another endpoint decides nothing.
+     */
+    @Test
+    public void aPairingFlipIsTakenWhereItsReadObservedTheVersionItAsks()
+            throws Exception {
+        OccurrenceAddress focus = OccurrenceAddress.parse(FOCUS);
+        edu.uva.liftlab.graphchecker.contract.Endpoint read =
+                edu.uva.liftlab.graphchecker.contract.Endpoint.of(focus,
+                        "SOLR_ZK#VIEWED:|aliases.json#VIEW",
+                        edu.uva.liftlab.graphchecker.contract.ExecutionIndex
+                                .empty(), 0);
+        edu.uva.liftlab.graphchecker.contract.Endpoint other =
+                edu.uva.liftlab.graphchecker.contract.Endpoint.of(focus,
+                        "SOLR_ZK#VIEWED:|other.json#VIEW",
+                        edu.uva.liftlab.graphchecker.contract.ExecutionIndex
+                                .empty(), 0);
+        for (long seen : new long[] {1L, 2L}) {
+            reset();
+            Path worker = folder.newFolder().toPath();
+            Files.write(worker.resolve("focused_task.jsonl"), ("{\"taskId\":"
+                    + "\"T\",\"obligationId\":\"OB\",\"pathId\":\"p\","
+                    + "\"focused\":\"" + FOCUS + "\",\"focusedOccurrenceId\":"
+                    + "\"" + focus.id() + "\",\"seedSessionId\":\"seed\","
+                    + "\"flip\":{\"siteId\":\"PAIRING:" + Confirmation.id(read)
+                    + "\",\"ordinal\":2,\"outcome\":true},"
+                    + "\"rootAssignments\":{},\"clockDeltas\":{},"
+                    + "\"answers\":{},\"rootMints\":{}}\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            Path plan = worker.resolve("execution_task_plan.jsonl");
+            Files.write(plan, new byte[0]);
+            System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
+            FocusedReplay.viewRead(other, 7L);
+            assertTrue("another read decides nothing",
+                    FocusedReplay.refusal(focus).isEmpty());
+            FocusedReplay.viewRead(read, seen);
+            // Version 1 is ordinal 2 (an ordinal is 1-based).
+            if (seen == 1L) {
+                assertTrue("taken", FocusedReplay.complete(focus));
+            } else {
+                String refusal = FocusedReplay.refusal(focus);
+                assertTrue(refusal, refusal.startsWith("PAIRING_UNTAKEN:")
+                        && refusal.contains("observed version 2"));
+            }
+        }
+    }
 }

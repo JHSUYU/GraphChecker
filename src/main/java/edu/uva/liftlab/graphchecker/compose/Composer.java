@@ -2322,8 +2322,7 @@ public final class Composer {
             if (writer == null) continue;
             String key = SmtLowering.locationKey(read.location());
             for (WriteRow write : corpus.join(session).writes(key)) {
-                if (Confirmation.INITIAL.equals(writer) ? write.initial()
-                        : writer.equals(Confirmation.id(write.endpoint()))) {
+                if (writer.equals(Confirmation.writer(write))) {
                     planted.put(key, ComposedFamilies.writer(write));
                     plantedBlocks.add(block(read));
                     break;

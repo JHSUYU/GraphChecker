@@ -900,7 +900,7 @@ string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 by COMPOSE's one rule (`SmtText#literal` → `VmTermLowering#smtLiteral`). A writer choice the
 model sets away from the writer the recording's reads observed, the location's INITIAL among them,
 is a **planted pairing**, counted like an answered handoff (`ObligationFactory#planted`: reader →
-writer, each as CONFIRM names them, `ConfirmMain#writer`; one of a read another session made refuses,
+writer, each as CONFIRM names them, `Confirmation#writer`; one of a read another session made refuses,
 `PAIRING_UNPLANTABLE`). A pairing is planted only where the recorded ones take no flip: a model
 that moves one is asked again with every writer choice held to the recorded writer
 (`ObligationFactory#heldToRecording`; a container state follows its writer's, and a refused term
@@ -931,10 +931,12 @@ the reader's occurrence to close, since the choice binds every read it makes of 
 the flipped world may read it again, CONFIRM's for the read's activation; for a node's VIEW, whose
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
-before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`), until the
-reader's work's region exits -- the reader's occurrence, or for a read in role work the first region
-its node opened after it under the same causal context (`ConfirmMain#viewUntil`: a routed alias
-captures its view in the request's role work and writes it in a store door's region) --, never the
+before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`; an on-demand
+refresh waits at its start, before the adapter's locks, `MessageDoors#refreshing`), until the reader's
+work is done -- the reader's occurrence exits, or, for a read in role work which no hook closes, the
+first region that work closes after the read in the run as it goes (`Confirmation#regionClosed`: a
+routed alias captures its view in the request's role work and writes it in a store door's region) --,
+never the
 decodes of the reader's own work (its node and causal context), at most the order's timeout (300 s), past which
 the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
@@ -2151,6 +2153,9 @@ with it is a `RUN_DEFECT`.
   §8; a recorded join to an INITIAL is no edge -- no occurrence wrote it, and which access first
   observes the location is the run's own history (`WriteRow#initial`) -- and an INITIAL the model
   chose names writer `INITIAL`, `Confirmation#INITIAL`, which every INITIAL a run logs is to it),
+  for a node's VIEW one `VIEW_HOLD {view, above, readerContext, reader, until}` row instead of
+  `ORDER` rows (§7.5: the node's later decodes wait at the decode until the reader's work is done,
+  never the reader's own; a VIEW row's read is checked exactly, no `readerAnyTurn`), else
   `ORDER` rows (the writer's activation exits before the reader's read: the order holds the last
   activation entry before the read on its thread, the last call the reader's activation made before
   it, else that activation's own (`ConfirmMain.StateClosure#holdBefore`); an event in its
@@ -2288,7 +2293,9 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   port's call-return capture and the regions declaring it IN;
 - CONFIRM's own `ORDER` rows (`{before, after}` of activations, no `scope`, §10: the join
   closure's at the locations the fatal rests on, and those holding the pairings the world plants --
-  an INITIAL pairing holds every other writer of the location after the read), each pair once; a pairing at a placeholder (a mint
+  an INITIAL pairing holds every other writer of the location after the read), each pair once, and
+  its `VIEW_HOLD` rows, each once, which the native run holds at the decode as CONFIRM does
+  (`Confirmation#decoding`, each stated held, waited or unheld); a pairing at a placeholder (a mint
   read) holds no order in CONFIRM either, and natively nothing checks the version it read: the
   plant's summary counts them (`placeholderPairings`);
 - the **realized order** (`explore.RealizedOrder`): `ORDER {scope EVENT, before: <event>, after:

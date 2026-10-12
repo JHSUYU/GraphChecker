@@ -4745,6 +4745,131 @@ public class ComposerTest {
     }
 
     /**
+     * A VIEW PAIRING IS PLANTED AS ANY OTHER (one writer spelling,
+     * {@code Confirmation#writer}: {@code VIEW@v} for a decode's re-point):
+     * the turn's read of its node's view, held by the world to the decode
+     * of version 1 ahead of the decode of 2 (ConfirmMain's VIEW_HOLD), is
+     * re-paired away from the anchor.  The turn's guard {@code view == 1}
+     * binds to it, the turn's store is what the anchor reads; the fatal is
+     * SAT under the plant's decode and UNSAT under the recording's, so the
+     * recording decides it: a STATE_PAIRING_FLIPPED whose re-paired arm is
+     * the decode of 1.  The same session in a world that planted nothing
+     * names no mechanism.
+     */
+    @Test
+    public void aWorldPlantedViewPairingIsRePairedAsAnyPlantedOne()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@case/dn0", "/aliases.json");
+        LocationId list = LocationId.of(LocationKind.INSTANCE, "1", "88");
+        OccurrenceAddress writer = occurrence("case/dn0", "REGION.write",
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
+                frame("Volumes#choose#4", 0));
+        OccurrenceAddress turn = occurrence("case/dn0", "REGION.turn",
+                CausalContext.of(Role.of("WAKE"), "", 1),
+                frame("Detector#run#2", 0));
+        OccurrenceAddress older = occurrence("case/dn0", "REGION.watch",
+                CausalContext.of(Role.of("WATCHER"), "", 1),
+                frame("Watcher#process#1", 0));
+        OccurrenceAddress newer = occurrence("case/dn0", "REGION.watch",
+                CausalContext.of(Role.of("WATCHER"), "", 2),
+                frame("Watcher#process#1", 0));
+        Endpoint guard = Endpoint.of(turn, "SOLR_ZK#VIEWED:/aliases.json",
+                at("g#1", 0), 0);
+        Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
+                at("r#1", 0), 0);
+        Object[][] table = {
+                {true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, ClaimKind.FORMULA_SAT},
+        };
+        for (Object[] row : table) {
+            boolean planted = (Boolean) row[0];
+            Path iteration = folder.newFolder("view-planted-" + planted)
+                    .toPath();
+            for (boolean explored : new boolean[]{false, true}) {
+                String id = explored ? "s1" : "s0";
+                Session session = new Session(iteration, id, explored);
+                session.occurrence = writer;
+                session.activation(writer);
+                session.activation(turn);
+                session.activation(older);
+                session.activation(newer);
+                session.expression("EXPR.0000000000000000", integer("I", 0));
+                session.expression("EXPR.0000000000000007", integer("I", 7));
+                session.expression("EXPR.0000000000000011", integer("J", 1));
+                session.expression("EXPR.0000000000000012", integer("J", 2));
+                session.writes.add(WriteRow.initial(id, ++session.seq,
+                        Endpoint.of(writer, "Volumes#excluded#5:INITIAL",
+                                at("r#0", 0), 0), list, 3L,
+                        "EXPR.0000000000000000", "I"));
+                session.writes.add(WriteRow.of(id, ++session.seq,
+                        Endpoint.of(older, "SOLR_ZK#DECODED:/aliases.json",
+                                at("d#1", 0), 0), view, 1L,
+                        "EXPR.0000000000000011", "J"));
+                Endpoint repoint = Endpoint.of(newer,
+                        "SOLR_ZK#DECODED:/aliases.json", at("d#1", 0), 0);
+                // The recording: the decode of 2 before the turn read the
+                // view.  The world: the turn first, its view held at 1.
+                if (!explored) {
+                    session.writes.add(WriteRow.of(id, ++session.seq,
+                            repoint, view, 2L, "EXPR.0000000000000012",
+                            "J"));
+                }
+                long seen = explored ? 1L : 2L;
+                session.read(guard, view, seen, "V_turn", "J",
+                        Long.toString(seen));
+                session.expression("EXPR.0000000000000010", binary("==",
+                        symbol("V_turn", "J"), integer("J", 1L)));
+                session.decision(turn, "Detector#u63", explored,
+                        "EXPR.0000000000000010");
+                long listed = 3L;
+                if (explored) {
+                    session.writes.add(WriteRow.of(id, ++session.seq,
+                            repoint, view, 2L, "EXPR.0000000000000012",
+                            "J"));
+                    session.write(Endpoint.of(turn, "Detector#run#9:WRITE",
+                                    at("w#2", 0), 0), list, 4L,
+                            "EXPR.0000000000000007");
+                    listed = 4L;
+                }
+                JsonObject excluded = read("INSTANCE_FIELD", 1L, 88L, listed,
+                        "I");
+                excluded.getAsJsonObject("observedVersion").add("expression",
+                        integer("I", explored ? 7L : 0L));
+                excluded.addProperty("readEventId", session.read(asking, list,
+                        listed, "INSTANCE_FIELD/1#88@v" + listed + "@" + id,
+                        "I", explored ? "7" : "0"));
+                session.expression("EXPR.0000000000000060",
+                        binary("==", excluded, integer("I", 7L)));
+                session.target("EXPR.0000000000000060", explored, true);
+                session.write();
+            }
+            obligation(iteration, "s1", Collections.<String, String>emptyMap(),
+                    "Detector#u63", Collections.<String>emptyList(), planted
+                            ? Collections.singletonMap(Confirmation.id(guard),
+                            Confirmation.viewWriter(1L))
+                            : Collections.<String, String>emptyMap());
+            Composer.Composition composition = compose(iteration, writer, 4,
+                    StaticScopeMap.empty());
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            String detail = "planted " + planted + ": "
+                    + decision.claim().gaps() + "\n" + composition.body();
+            assertEquals(detail, row[1], decision.claim().kind());
+            if (!planted) continue;
+            ClaimPolicy.Outcome witness = decision.outcomes().get(
+                    decision.claim().valuationOrdinal());
+            List<String> groups = new ArrayList<String>();
+            for (String arm : composition.repaired(witness.selected()
+                    .selector(), witness.selectedArms().keySet())) {
+                groups.add(composition.arm(arm).groupId());
+            }
+            assertEquals(detail, Collections.singletonList(older.id()),
+                    groups);
+        }
+    }
+
+    /**
      * The recorded arm is the pairing the run took, or there is none and the
      * claim is blocked by name.  (a) The observed writer wrote again after
      * the read: its arm is the write read, not the later one.  (b) Two reads

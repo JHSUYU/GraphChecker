@@ -488,6 +488,101 @@ public class ConfirmationTest {
     }
 
     /**
+     * A VIEW_HOLD is released by the region exit Identity reports: a run held
+     * to view holds alone reports exits (it orders), so the decode waits
+     * exactly until the reader's region closes, never the order's timeout.
+     */
+    @Test
+    public void aViewHoldIsReleasedByTheRegionExitIdentityReports()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
+                "auto0/node0", 0);
+        long hop = RuntimeTraceContext.beginRequest(node, "read");
+        try {
+            OccurrenceAddress reader = Identity.occurrence(node.key(),
+                    "REGION.reader", true);
+            LocationId view = LocationId.of(LocationKind.VIEW,
+                    "SOLR_ZK@" + node.key(), "/aliases.json");
+            Confirmation.resetForTests();
+            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                    + "\"view\":\"" + Confirmation.viewKey(view) + "\","
+                    + "\"above\":1,\"readerContext\":\""
+                    + Confirmation.contextKey(reader) + "\",\"until\":\""
+                    + Endpoint.activation(reader, ExecutionIndex.empty())
+                    + "\"}"));
+            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "5000");
+            assertTrue("a run held to a view hold orders",
+                    Confirmation.ordering());
+            OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+            long[] decoded = new long[1];
+            Thread watch = new Thread(() -> {
+                Confirmation.decoding(view, 2L, decoder);
+                decoded[0] = System.nanoTime();
+            });
+            watch.start();
+            Thread.sleep(100L);
+            long exited = System.nanoTime();
+            Identity.regionExit(null);
+            watch.join(4000L);
+            assertTrue("the decode went on at the region's exit",
+                    decoded[0] >= exited && !watch.isAlive());
+            assertTrue(Confirmation.close().isEmpty());
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+            RuntimeTraceContext.endRequest(hop);
+            Identity.resetForTests();
+        }
+    }
+
+    /**
+     * A view hold whose reader read in role work, which no hook closes, ends
+     * at the first region that work closes after the read, in the run as it
+     * goes: a region of its context closing before the read ends nothing.
+     */
+    @Test
+    public void aRoleReadersHoldEndsAtTheFirstRegionItsWorkClosesAfterTheRead()
+            throws Exception {
+        OccurrenceAddress region = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress role = OccurrenceAddress.of(region.node(),
+                OccurrenceAddress.ROLE_REGION + "XCEIVER", region.context(),
+                ExecutionIndex.empty());
+        Endpoint read = endpoint(ANCHOR, "SOLR_ZK#VIEWED:|aliases.json#VIEW");
+        read = Endpoint.of(role, read.site(), ExecutionIndex.empty(), 0);
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
+        handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                + "\"view\":\"" + Confirmation.viewKey(view) + "\","
+                + "\"above\":1,\"readerContext\":\""
+                + Confirmation.contextKey(role) + "\",\"reader\":\""
+                + Confirmation.id(read) + "\",\"until\":\"\"}"));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "3000");
+        try {
+            OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+            long[] decoded = new long[1];
+            Thread watch = new Thread(() -> {
+                Confirmation.decoding(view, 2L, decoder);
+                decoded[0] = System.nanoTime();
+            });
+            watch.start();
+            Confirmation.regionClosed(region);
+            Thread.sleep(100L);
+            assertTrue("a region closing before the read ends nothing",
+                    watch.isAlive());
+            Confirmation.read(read, view, 1L, ReadRow.UNKNOWN_VERSION);
+            long closed = System.nanoTime();
+            Confirmation.regionClosed(region);
+            watch.join(2000L);
+            assertTrue("released at the region's close after the read",
+                    !watch.isAlive() && decoded[0] >= closed);
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+        }
+    }
+
+    /**
      * How a replay held its world ({@code Confirmation#held}, condition (b)
      * of a WORLD_REFUTED): a hold an interrupt ended stands while its
      * activation does nothing tracked after it, and gave way once it does;

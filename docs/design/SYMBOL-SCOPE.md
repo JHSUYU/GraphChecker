@@ -1346,7 +1346,14 @@ before its writer files it (the store notifies before the write returns): the wr
 leaves before it files the version, and a parse first waits for a write in flight at the location to
 file it (`MessageDoors#filed`, the bound a notification's read waits), so its attaches pair (solr-18413
 Z2C: node1's first parse of the routing rule raced the Overseer's export and minted unpaired). A
-door step that fails names itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload. Both tables are weak by the array: a document no store write or fetch takes (an
+door step that fails names itself (DIAGNOSTIC `UNSTATED_VALUE`) and never throws into the workload.
+Every store door the system's code calls runs with the VM's propagation paused, as a woven hook
+does: its tables and rows are engine plumbing, never program state. So does the codec's own
+serialization walk (Solr: `Utils.toJSON` inside `MessageDoors#serializing`/`#serialized`): the
+writer's leaves are captured as objects (`jsonWritten`), and the serializer's buffers and maps
+would otherwise version as symbolic stores in the writer's region, a read-out that grew
+solr-bugs-snapshot-no-active's CreateSnapshot region past every schedule slot (round Z2G: seed
+replay 121 -> 1017 s, 51 give-ups). Both tables are weak by the array: a document no store write or fetch takes (an
 HTTP response, a log line) is dropped with its bytes. Both sides capture wherever a replay runs them
 (`MessageDoors#capturingContent`), at the activation running there or, outside every one, at the
 thread's occurrence stated unselected (§6.3's entry rule): the Overseer's state writer and queue

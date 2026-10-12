@@ -6104,6 +6104,26 @@ public class ExploreTest {
             assertEquals(1, gaps.size());
             assertEquals("T pairing-bound=" + PairingFlip.PER_READ,
                     gaps.get(0).subject());
+            // Solved with no query: the world's pairing, held by a STATE row
+            // to the decode's version and a VIEW_HOLD; located back off its
+            // published row.
+            ObligationFactory.Candidate newest = offered.get(0);
+            ObligationFactory.Outcome outcome = PairingFlip.solve(corpus,
+                    newest, "given", Collections
+                            .<String, ObligationDir.Answer>emptyMap());
+            assertEquals(Verdict.SAT_MODEL_READY, outcome.result.verdict());
+            assertEquals("VIEW@9", outcome.pairings.get(Confirmation.id(
+                    newest.pairedRead.endpoint())));
+            List<String> kinds = new ArrayList<String>();
+            for (JsonObject edge : outcome.holding.edges) {
+                kinds.add(edge.get("kind").getAsString());
+            }
+            assertEquals(Arrays.asList("STATE", "VIEW_HOLD"), kinds);
+            ObligationFactory.Candidate located = PairingFlip.locate(corpus,
+                    task, corpus.pathsOf(TARGET).get(0),
+                    outcome.obligation);
+            assertEquals(9L, located.pairedVersion);
+            assertEquals(newest.siteId(), located.siteId());
         }
     }
 

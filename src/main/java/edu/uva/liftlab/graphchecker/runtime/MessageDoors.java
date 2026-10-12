@@ -697,6 +697,26 @@ public final class MessageDoors {
         }
     }
 
+    /**
+     * The adapter's on-demand refresh of one node's view of {@code path}
+     * begins, before it takes its own locks (Solr's {@code
+     * ZkStateReader#forceUpdateCollection}, which decodes under its update
+     * lock): a pairing's hold of that view waits here, as a decode would
+     * ({@code Confirmation#decoding}), so a held refresh never holds a lock
+     * the reader's own work may need.
+     */
+    public static void refreshing(String transport, String path) {
+        boolean paused = pause();
+        try {
+            String node = nodeHere();
+            OccurrenceAddress at = Identity.currentOccurrence(node);
+            Confirmation.decoding(viewOf(storeLocation(transport, path), at),
+                    Long.MAX_VALUE, at);
+        } finally {
+            resume(paused);
+        }
+    }
+
     /** The node the running thread's work is attributed to, or "". */
     private static String nodeHere() {
         RuntimeTraceContext.View view = RuntimeTraceContext.current();

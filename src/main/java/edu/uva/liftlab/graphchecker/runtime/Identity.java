@@ -1246,6 +1246,7 @@ public final class Identity {
             if (Confirmation.ordering()) {
                 Confirmation.exited(Confirmation.activation(
                         closed.occurrence, ExecutionIndex.empty()));
+                Confirmation.regionClosed(closed.occurrence);
             }
         }
     }
