@@ -1025,8 +1025,20 @@ public final class SmtLowering {
         /** method-return symbol -> the value its node states. */
         private final Map<String, String> pinnedReturns =
                 new LinkedHashMap<String, String>();
-        /** What could not be bound: FREE or HELD ({@link #unbound}). */
+        /** What could not be bound: FREE or HELD ({@link #unbound}), each
+         *  value once.  A memoized node is committed on every hit, so a
+         *  list taking a child's values again on each one doubled per
+         *  level of a shared chain (solr-adhoc-07 RX6: a 78 MB corpus's
+         *  arm keys filled a 16 GB planner, lowering one container
+         *  chain's writes). */
         private final List<Unbound> unbound = new ArrayList<Unbound>();
+        /** {@link #unbound}, by identity: a value is one object. */
+        private final Set<Unbound> unboundHeld = Collections.newSetFromMap(
+                new IdentityHashMap<Unbound, Boolean>());
+
+        private void unbound(Unbound value) {
+            if (unboundHeld.add(value)) unbound.add(value);
+        }
         /** A named DIAGNOSTIC that refuses nothing -> why
          *  ({@link #diagnostics}). */
         private final Map<String, String> diagnostics =
@@ -1056,7 +1068,7 @@ public final class SmtLowering {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
             pinnedReturns.putAll(other.pinnedReturns);
-            unbound.addAll(other.unbound);
+            for (Unbound value : other.unbound) unbound(value);
             diagnostics.putAll(other.diagnostics);
         }
     }
@@ -1209,8 +1221,11 @@ public final class SmtLowering {
     /** Takes back the values left unbound since {@code mark}: an arm
      *  refused, or a copy of one taken already, states none. */
     public void unboundRollback(int mark) {
-        List<Unbound> held = top().unbound;
-        held.subList(Math.min(mark, held.size()), held.size()).clear();
+        Raised frame = top();
+        List<Unbound> taken = frame.unbound.subList(
+                Math.min(mark, frame.unbound.size()), frame.unbound.size());
+        frame.unboundHeld.removeAll(taken);
+        taken.clear();
     }
 
     /** What the conjunction now open refused, each cause once. */
@@ -1957,7 +1972,7 @@ public final class SmtLowering {
     /** Records a value left free over what it rests on ({@link
      *  #unbound}). */
     private void freed(String subject, String why, Set<String> movesWith) {
-        top().unbound.add(new Unbound(Unbound.FREE, subject, "", why,
+        top().unbound(new Unbound(Unbound.FREE, subject, "", why,
                 new ArrayList<String>(movesWith), arm));
     }
 
@@ -3773,7 +3788,7 @@ public final class SmtLowering {
      * no write states, or of an arrival no producer this corpus attests.
      */
     public void held(String subject, String value, String why) {
-        top().unbound.add(new Unbound(Unbound.HELD, subject, value,
+        top().unbound(new Unbound(Unbound.HELD, subject, value,
                 Unbound.PRODUCER_UNSTATED + ": " + why,
                 Collections.<String>emptyList(), arm));
     }
