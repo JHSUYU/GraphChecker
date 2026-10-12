@@ -551,15 +551,6 @@ public final class StaticScopeMap {
      *  every row of a site, and each answer scans every site. */
     private final Map<String, Set<String>> carriers =
             new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
-    /** {@link #readLocations}, once asked. */
-    private final Map<String, Set<String>> readLocations =
-            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
-    /** {@link #storedAt}, once asked. */
-    private final Map<String, Set<String>> stored =
-            new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
-    /** Region -> the regions an occurrence of it folded in the epoch's
-     *  plan ({@link #withPlan}); empty for a map read alone. */
-    private final Map<String, Set<String>> folds;
     /** Store location ({@code <transport>:<path>}) -> the occurrences the
      *  epoch's plan states fetched it on a target's data flow ({@link
      *  #withPlan}); empty for a map read alone. */
@@ -574,7 +565,6 @@ public final class StaticScopeMap {
                            Map<String, List<String>> concreteReads,
                            Map<String, JsonArray> forcing) {
         this(sites, regionMethods, concreteReads, forcing,
-                Collections.<String, Set<String>>emptyMap(),
                 Collections.<String, Set<String>>emptyMap());
     }
 
@@ -582,45 +572,27 @@ public final class StaticScopeMap {
                            Map<String, Set<String>> regionMethods,
                            Map<String, List<String>> concreteReads,
                            Map<String, JsonArray> forcing,
-                           Map<String, Set<String>> folds,
                            Map<String, Set<String>> fetches) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
                 Collections.unmodifiableMap(concreteReads);
         this.forcing = forcing;
-        this.folds = Collections.unmodifiableMap(folds);
         this.fetches = Collections.unmodifiableMap(fetches);
     }
 
     /**
      * This map with what the plan PLAN froze for the iteration states of its
-     * occurrences.  The fold relation: per region, the regions its
-     * occurrences folded (each region row's {@code foldedRegionIds}, {@code
-     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}); a folded region's
-     * text ran inside the enclosing occurrence, whose skeleton does not name
-     * it (the weave stops at a nested root), so what that occurrence may
-     * read is its region's and theirs ({@link #readLocations}).  And the
-     * store fetches on a target's data flow ({@code
+     * occurrences: the store fetches on a target's data flow ({@code
      * RuntimeSelectedRegionFinalizer#STORE_FETCHES}, {@link #storeFetches}).
      * An unreadable plan is refused by name.
      */
     public StaticScopeMap withPlan(Path regionPlan) {
-        Map<String, Set<String>> found =
-                new LinkedHashMap<String, Set<String>>();
         Map<String, Set<String>> fetched =
                 new LinkedHashMap<String, Set<String>>();
         if (regionPlan != null && Files.isRegularFile(regionPlan)) {
             try {
                 for (JsonObject row : ArtifactIO.readJsonl(regionPlan)) {
-                    String regionId = optionalString(row, "regionId");
-                    List<String> folded = strings(row,
-                            RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS);
-                    if (!regionId.isEmpty() && !folded.isEmpty()) {
-                        found.computeIfAbsent(regionId,
-                                key -> new LinkedHashSet<String>())
-                                .addAll(folded);
-                    }
                     JsonElement stated = row.get(
                             RuntimeSelectedRegionFinalizer.STORE_FETCHES);
                     String occurrence = optionalString(row, "occurrenceId");
@@ -641,7 +613,7 @@ public final class StaticScopeMap {
             }
         }
         return new StaticScopeMap(sites, regionMethods,
-                concreteConfigurationReads, forcing, found, fetched);
+                concreteConfigurationReads, forcing, fetched);
     }
 
     /**
@@ -1710,73 +1682,7 @@ public final class StaticScopeMap {
         return carriers;
     }
 
-    /**
-     * The locations one region's code reads where a replay versions the
-     * read, on any arm, by cell and carrier: its READ_SITEs ({@link
-     * #READ_SITE}) and its accessor reads the slice made inputs ({@link
-     * #READ_INPUT}: an atomic's {@code get()} another region's {@code
-     * incrementAndGet} writes), in the methods it holds ({@link
-     * #methodsOf}; by its id when the map knows none), and those of the
-     * regions its occurrences folded ({@link #withPlan}).  A recorded write
-     * whose stored locations ({@link #storedAt}) meet them may feed what an
-     * occurrence of the region reads, whether or not the arm a session took
-     * read it.
-     */
-    public Set<String> readLocations(String regionId) {
-        String region = regionId == null ? "" : regionId;
-        return readLocations.computeIfAbsent(region, key -> {
-            Set<String> found = new LinkedHashSet<String>();
-            Set<String> regions = new LinkedHashSet<String>();
-            regions.add(region);
-            regions.addAll(folds.getOrDefault(region,
-                    Collections.<String>emptySet()));
-            for (String held : regions) {
-                Set<String> methods = methodsOf(held);
-                for (Site read : sites) {
-                    boolean reads = READ_SITE.equals(read.role)
-                            || DECLARED_SITE.equals(read.role)
-                            && read.declared != null
-                            && READ_INPUT.equals(read.declared.inputKind);
-                    if (!reads || !(methods.isEmpty()
-                            ? held.equals(read.regionId)
-                            : methods.contains(SiteId.methodOf(read.siteId)))) {
-                        continue;
-                    }
-                    if (!read.cell.isEmpty()) found.add(read.cell);
-                    if (!read.carrier.isEmpty()) found.add(read.carrier);
-                }
-            }
-            return Collections.unmodifiableSet(found);
-        });
-    }
 
-    /**
-     * The locations one RECORDED write stores, by cell and carrier: those
-     * of the WRITE_SITEs in its method that store a location of its kind
-     * and may hold its type, joined as {@link #carriersAt} joins.
-     */
-    public Set<String> storedAt(String recordedSite, String javaType,
-                                LocationKind kind) {
-        String site = recordedSite == null ? "" : recordedSite;
-        return stored.computeIfAbsent(site + "|" + javaType + "|" + kind,
-                key -> {
-                    Set<String> found = new LinkedHashSet<String>();
-                    for (Site named : ofRole(WRITE_SITE, row -> true)) {
-                        if (named.vmSite.isEmpty()
-                                || !site.startsWith(named.vmSite + "#")
-                                || !stores(named, kind)
-                                || !sameType(descriptorOfCellType(
-                                named.cell), javaType)) {
-                            continue;
-                        }
-                        if (!named.cell.isEmpty()) found.add(named.cell);
-                        if (!named.carrier.isEmpty()) {
-                            found.add(named.carrier);
-                        }
-                    }
-                    return Collections.unmodifiableSet(found);
-                });
-    }
 
     /**
      * Whether one RECORDED read is a read the root demand found on the

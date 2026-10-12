@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -101,7 +100,7 @@ public final class Frontier {
      *  ObligationFactory#candidates}): no candidate is keyed anywhere else.
      *
      *  @param flipSites task id -> the site ids its demand names */
-    public Frontier(Corpus corpus, StaticScopeMap scope, List<Task> tasks,
+    public Frontier(Corpus corpus, List<Task> tasks,
                     Map<String, Set<String>> flipSites) {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
         for (Task task : this.tasks) {
@@ -117,7 +116,7 @@ public final class Frontier {
                     String arm = ObligationFactory.obligationId(
                             task.taskId(), decision.siteId(),
                             decision.ordinal(), decision.outcome(),
-                            ObligationFactory.dependence(corpus, scope, task,
+                            ObligationFactory.dependence(corpus, task,
                                     path, index));
                     recorded.add(arm);
                     settle(arm,

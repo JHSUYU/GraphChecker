@@ -25,7 +25,6 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
-import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
 import java.math.BigInteger;
@@ -35,6 +34,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -102,7 +102,7 @@ public final class ObligationFactory {
          *  asks is the forced one, with the whole forced path condition. */
         public final boolean forced;
 
-        private Candidate(Corpus corpus, StaticScopeMap scope, Task task,
+        private Candidate(Corpus corpus, Task task,
                           Corpus.RecordedPath path, int index,
                           boolean forced) {
             // A forced flip asks the whole way to the throw: another
@@ -111,7 +111,7 @@ public final class ObligationFactory {
                     path.decisions.get(index).siteId(),
                     path.decisions.get(index).ordinal(),
                     path.decisions.get(index).outcome() == forced,
-                    dependence(corpus, scope, task, path, index)
+                    dependence(corpus, task, path, index)
                             + (forced ? "|forced" : "")), forced);
         }
 
@@ -302,13 +302,18 @@ public final class ObligationFactory {
      *       the path that share a variable with the guard, directly or
      *       through one another or the task's own reads ({@link
      *       Independence#ofGuard}), each as its occurrence and {@code
-     *       siteId#ordinal=outcome}. Any other conjunct holds at its
-     *       recorded values whatever the flip's model is, so two paths
-     *       differing only there ask the same question.</li>
+     *       siteId=outcome} with how many different conditions it decided
+     *       there ({@link Corpus#decisionShape}): a poll deciding the same
+     *       condition again is one (semantic counts only: an ordinal is
+     *       how many times it ran, and shifts with every earlier poll),
+     *       a loop's iterations over another bound are not.  Any other
+     *       conjunct holds at its recorded values whatever the flip's model
+     *       is, so two paths differing only there ask the same
+     *       question.</li>
      *   <li><b>Its world, by its effect at the task</b>: what the world
      *       delivered to the task and to the factor members that feed it
-     *       ({@link Corpus#inputShape}), the writes counted at the locations
-     *       the guard and its kept conditions read.</li>
+     *       ({@link Corpus#inputShape}), the writes at the locations the
+     *       guard and its kept conditions read.</li>
      * </ul>
      *
      * <p>Never the session, and never the inherited flips' prefixes, which
@@ -325,16 +330,14 @@ public final class ObligationFactory {
      * where the guard names none of it (hdfs-11741's witness, see {@link
      * Corpus#inputShape}).</p>
      */
-    public static String dependence(Corpus corpus, StaticScopeMap scope,
-                                    Task task, Corpus.RecordedPath path,
-                                    int index) {
+    public static String dependence(Corpus corpus, Task task,
+                                    Corpus.RecordedPath path, int index) {
         return corpus.dependence(task, path.pathId + "#" + index,
-                () -> keyed(corpus, scope, task, path, index));
+                () -> keyed(corpus, task, path, index));
     }
 
     /** {@link #dependence}, computed. */
-    private static String keyed(Corpus corpus, StaticScopeMap scope,
-                                Task task,
+    private static String keyed(Corpus corpus, Task task,
                                 Corpus.RecordedPath path, int index) {
         DecisionRow flipped = path.decisions.get(index);
         List<DecisionRow> predicates = new ArrayList<DecisionRow>();
@@ -344,7 +347,9 @@ public final class ObligationFactory {
         Independence rests = Independence.ofGuard(corpus, path.sessionId,
                 flipped.term(), predicates,
                 corpus.readsOn(path.sessionId, task.focused()));
-        Set<String> kept = new TreeSet<String>();
+        // Per occurrence, site and outcome, the different conditions decided
+        // there.
+        Map<String, Set<String>> kept = new TreeMap<String, Set<String>>();
         // The domain of every integral configuration the guard or a kept
         // condition names: a corpus that widens it owes the arm again
         // (Corpus#domainOf).
@@ -352,13 +357,20 @@ public final class ObligationFactory {
         domains(corpus, path.sessionId, flipped.term(), domains);
         for (DecisionRow condition : predicates) {
             if (!rests.keeps(condition)) continue;
-            kept.add(condition.occurrence().id() + "|" + condition.siteId()
-                    + "#" + condition.ordinal() + "=" + condition.outcome());
+            kept.computeIfAbsent(condition.occurrence().id() + "|"
+                    + condition.siteId() + "=" + condition.outcome(),
+                    key -> new HashSet<String>()).add(corpus.decisionShape(
+                    path.sessionId, condition.term()));
             domains(corpus, path.sessionId, condition.term(), domains);
         }
-        return ArtifactIO.digest(String.join("/", kept) + "\n"
+        StringBuilder text = new StringBuilder();
+        for (Map.Entry<String, Set<String>> decided : kept.entrySet()) {
+            text.append(decided.getKey()).append('x')
+                    .append(decided.getValue().size()).append('/');
+        }
+        return ArtifactIO.digest(text + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
-                corpus.feeders(task), rests.locations(), scope)
+                corpus.feeders(task), rests.locations())
                 + (domains.isEmpty() ? "" : "\n" + domains), 16);
     }
 
@@ -465,8 +477,7 @@ public final class ObligationFactory {
      * @param gaps      receives settled candidates, so a shrinking round is
      * explained
      */
-    public static List<Candidate> candidates(Corpus corpus,
-                                             StaticScopeMap scope, Task task,
+    public static List<Candidate> candidates(Corpus corpus, Task task,
                                              Set<String> flipSites,
                                              Bounds bounds, Branches branches,
                                              Frontier owed,
@@ -504,7 +515,7 @@ public final class ObligationFactory {
                     continue;
                 }
                 Candidate candidate =
-                        new Candidate(corpus, scope, task, path, index,
+                        new Candidate(corpus, task, path, index,
                                 false);
                 if (offered.contains(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate);
@@ -869,8 +880,7 @@ public final class ObligationFactory {
      * asked at the forced arm with the whole forced path condition ({@link
      * FlipQuery#buildForced}).  Empty where no forced path reached it.
      */
-    public static List<Candidate> forced(Corpus corpus, StaticScopeMap scope,
-                                         Task task) {
+    public static List<Candidate> forced(Corpus corpus, Task task) {
         List<Candidate> candidates = new ArrayList<Candidate>();
         for (Corpus.RecordedPath path
                 : corpus.forcedPaths(task.focused())) {
@@ -878,8 +888,8 @@ public final class ObligationFactory {
                 DecisionRow decision = path.decisions.get(index);
                 if (decision.isForced()
                         && decision.concreteOutcome() != decision.outcome()) {
-                    candidates.add(new Candidate(corpus, scope, task, path,
-                            index, true));
+                    candidates.add(new Candidate(corpus, task, path, index,
+                            true));
                     break;
                 }
             }

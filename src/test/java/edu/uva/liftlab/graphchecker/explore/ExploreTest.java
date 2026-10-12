@@ -813,9 +813,11 @@ public class ExploreTest {
 
         // Y: nn0's rotation flipped.  Its rows AT THE TARGET are the seed's,
         // letter for letter; what its world changed is the STRUCTURE of what
-        // addKeys received -- one handoff fewer, because the rotation it was
-        // held to delivered one key less -- and addKeys writes what the
-        // target reads.  (11741: four attaches instead of five.)
+        // addKeys received -- one handoff more, because the rotation it was
+        // held to delivered one key more -- and addKeys writes what the
+        // target reads.  (11741: four attaches instead of five.  A member
+        // that received nothing at all and wrote nothing the guard reads is
+        // no line: it is no conjunct of the guard's query.)
         Session wye = new Session(iteration, "s-world-y");
         wye.activation(PRODUCER, true);
         wye.activation(target, false);
@@ -831,8 +833,9 @@ public class ExploreTest {
         wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
         wye.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         wye.decision(target, "Concrete#u3", 1, false, "");
-        // No attach here at all: the rotation it was held to delivered
-        // nothing, so addKeys stored what it already had.
+        wye.export(ROTATED, "e.kept", 11L, "119992");
+        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
         wye.write(STORED, ALL_KEYS, 5L, "e.kept");
         wye.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         wye.answered(ObligationResult.of("OBL.world-y", Verdict.ADMITTED,
@@ -892,8 +895,8 @@ public class ExploreTest {
                 worlds.decisionsOf("s-seed", target).size(),
                 worlds.decisionsOf("s-world-y", target).size());
         assertEquals("what its world changed is the STRUCTURE of what the "
-                        + "factor member received: one handoff fewer",
-                worlds.attachesOn("s-seed", WRITER).size() - 1,
+                        + "factor member received: one handoff more",
+                worlds.attachesOn("s-seed", WRITER).size() + 1,
                 worlds.attachesOn("s-world-y", WRITER).size());
         String seedInputs = dependence(worlds, anchored, "s-seed",
                 "Guard#u8");
@@ -1535,7 +1538,7 @@ public class ExploreTest {
      * ObligationFactory#dependence}): a prefix decision sharing no variable
      * with the guard, and a factor member's writes to state the guard does
      * not read, never split one question in two; a prefix decision over the
-     * guard's own root, and one more write to the state it reads, do.
+     * guard's own root, and another value written where it reads, do.
      * (hdfs-11741 v79: 4984 candidates, 2422 keys by the whole prefix and
      * every write of the factor, 499 by what the guard depends on.)
      */
@@ -1738,8 +1741,9 @@ public class ExploreTest {
                 dependence(corpus, task, "s-coreader", "Guard#u8"));
         assertFalse("a prefix decision over the guard's own root is",
                 seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
-        assertFalse("and so is one more write to the state it reads",
-                seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
+        assertEquals("but not the same value written again where it reads"
+                + " (semantic counts only)", seed,
+                dependence(corpus, task, "s-more", "Guard#u8"));
         List<OccurrenceAddress> reversed =
                 new ArrayList<OccurrenceAddress>(task.factor());
         Collections.reverse(reversed);
@@ -1747,10 +1751,8 @@ public class ExploreTest {
                 SmtLowering.locationKey(qop));
         assertEquals("the factor is a set: the order the corpus lists it in "
                         + "moves as sessions land",
-                corpus.inputShape("s-more", TARGET, task.factor(), qopKey,
-                        StaticScopeMap.empty()),
-                corpus.inputShape("s-more", TARGET, reversed, qopKey,
-                        StaticScopeMap.empty()));
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey));
         // A member's replies from two producers, in either arrival order.
         Path raced = tree.newFolder("raced").toPath();
         for (String order : new String[] {"s-ab", "s-ba"}) {
@@ -1770,11 +1772,9 @@ public class ExploreTest {
         assertEquals("who delivered is a set: the order replies arrive in "
                         + "is a race",
                 racedCorpus.inputShape("s-ab", TARGET,
-                        Collections.singletonList(WRITER), qopKey,
-                        StaticScopeMap.empty()),
+                        Collections.singletonList(WRITER), qopKey),
                 racedCorpus.inputShape("s-ba", TARGET,
-                        Collections.singletonList(WRITER), qopKey,
-                        StaticScopeMap.empty()));
+                        Collections.singletonList(WRITER), qopKey));
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
@@ -2269,16 +2269,20 @@ public class ExploreTest {
     }
 
     /**
-     * A MEMBER IS NAMED BY ITS CLASS ({@link Corpus#inputShape}): node,
-     * region and context shape, never its address, and a line that only fed
-     * the region counts once however many members of its class ran it -- a
-     * poll that ran once, three times or under renumbered indices delivers
-     * one world (solr-adhoc-07/21 IB1: per-request and watcher occurrences
-     * re-keyed every arm).  A line that writes what the guard reads keeps
-     * its multiplicity: a second writer of the guard's location re-keys.
+     * A MEMBER IS NAMED BY ITS CLASS AND WHAT THE QUERY READS OF IT ({@link
+     * Corpus#inputShape}): node, region and context shape, never its
+     * address; semantic counts only -- the same value written k or k' times,
+     * or by a member under renumbered ids, is one world (solr-adhoc-07/21:
+     * polls and watcher callbacks re-keyed every arm) -- while another value
+     * written where a read of the task looks, or another pinned value its
+     * read observed of a write the query cannot state, is another; and a
+     * member that wrote only state the region reads elsewhere is no line
+     * (no conjunct of the query: solr-adhoc-21 RX4).  What another
+     * occurrence's read observed is no input of the task's query.
      */
     @Test
-    public void aMemberIsNamedByItsClass() throws Exception {
+    public void aMemberIsNamedByItsClassAndWhatTheQueryReads()
+            throws Exception {
         Path iteration = tree.newFolder("member-class").toPath();
         List<OccurrenceAddress> polls = new ArrayList<OccurrenceAddress>();
         for (int k : new int[] {1, 2, 3, 7}) {
@@ -2286,59 +2290,88 @@ public class ExploreTest {
                     CausalContext.of(Role.of("POLL"), "", k),
                     "o.a.h.h.s.d.Poller#poll#" + k));
         }
-        // Per session: the polls that ran, each writing the map once.
+        JsonObject mystery = new JsonObject();
+        mystery.addProperty("_type", "NoSuchExpression");
+        mystery.addProperty("_java_type", "I");
+        // session, the polls that ran (each writing the map once), what they
+        // wrote (a constant, or "?" a term that does not lower), what the
+        // task's read of the first write observed ("-": none read it), and
+        // whether another occurrence's read observed it
         Object[][] sessions = {
-            {"s-one", new int[] {0}},
-            {"s-three", new int[] {0, 1, 2}},
-            {"s-renumbered", new int[] {3}},
-            {"s-none", new int[] {}},
+            {"s-one", new int[] {0}, "7", "7", false},
+            {"s-three", new int[] {0, 1, 2}, "7", "7", false},
+            {"s-renumbered", new int[] {3}, "7", "7", false},
+            {"s-nine", new int[] {0}, "9", "9", false},
+            {"s-none", new int[] {}, "7", "-", false},
+            {"s-u7", new int[] {0}, "?", "7", false},
+            {"s-u9", new int[] {0}, "?", "9", false},
+            {"s-u-other", new int[] {0}, "?", "-", true},
+            {"s-u-unread", new int[] {0}, "?", "-", false},
         };
         for (Object[] row : sessions) {
             Session session = new Session(iteration, (String) row[0]);
             session.activation(TARGET, false);
-            session.constant("e.stored", "7");
+            if ("?".equals(row[2])) {
+                session.expression("EXPR.00000000000000e7", mystery);
+            } else {
+                session.constant("EXPR.00000000000000e7", (String) row[2]);
+            }
             for (int at : (int[]) row[1]) {
                 session.activation(polls.get(at), false);
                 session.write(at(polls.get(at), Endpoint.stateSite(
                         "BlockTokenSecretManager", "addKeys", 12, true),
                         "BlockTokenSecretManager#addKeys#12"), ALL_KEYS,
-                        5L + at, "e.stored");
+                        5L + at, "EXPR.00000000000000e7");
+            }
+            if (!"-".equals(row[3])) {
+                session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY",
+                        (String) row[3]);
+            }
+            if ((Boolean) row[4]) {
+                session.activation(READER, false);
+                session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "7");
             }
             session.flush();
         }
         Corpus corpus = Corpus.read(iteration, null);
-        StaticScopeMap reads = StaticScopeMap.read(scopeMap(iteration,
-                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
-                        "BlockTokenSecretManager#u12",
-                        "BlockTokenSecretManager#addKeys",
-                        "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")),
-                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
-                        "BlockTokenSecretManager#u8",
-                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
-                        "<example.Manager: example.Keys allKeys>",
-                        "<example.Manager: example.Keys allKeys>", "")));
-        Set<String> none = Collections.<String>emptySet();
-        String once = corpus.inputShape("s-one", TARGET, polls, none, reads);
-        assertFalse("a poll that fed the region is part of the world",
-                once.equals(corpus.inputShape("s-none", TARGET, polls, none,
-                        reads)));
-        assertEquals("a poll that only fed the region, three times",
-                once, corpus.inputShape("s-three", TARGET, polls, none,
-                        reads));
-        assertEquals("or under another index", once,
-                corpus.inputShape("s-renumbered", TARGET, polls, none,
-                        reads));
         Set<String> guard = Collections.singleton(
                 SmtLowering.locationKey(ALL_KEYS));
-        assertFalse("but three writers of what the guard reads are not one",
-                corpus.inputShape("s-one", TARGET, polls, guard, reads)
-                        .equals(corpus.inputShape("s-three", TARGET, polls,
-                                guard, reads)));
-        assertEquals("whichever index each ran under",
-                corpus.inputShape("s-one", TARGET, polls, guard, reads),
-                corpus.inputShape("s-renumbered", TARGET, polls, guard,
-                        reads));
+        Set<String> none = Collections.<String>emptySet();
+        String once = corpus.inputShape("s-one", TARGET, polls, guard);
+        Object[][] rows = {
+            // session, with location set, same key as s-one under it, why
+            {"s-three", guard, true, "the same value three times"},
+            {"s-renumbered", guard, true, "under another index"},
+            {"s-nine", guard, false,
+                    "another value a read of the task observed"},
+            {"s-none", guard, false, "no writer of what the guard reads"},
+            {"s-none", none, true,
+                    "a member that only fed the region is no line"},
+        };
+        for (Object[] row : rows) {
+            @SuppressWarnings("unchecked")
+            Set<String> locations = (Set<String>) row[1];
+            assertEquals((String) row[3], row[2], corpus.inputShape(
+                    "s-one", TARGET, polls, locations).equals(
+                    corpus.inputShape((String) row[0], TARGET, polls,
+                            locations)));
+        }
+        assertEquals("the polls of s-one as s-one", once,
+                corpus.inputShape("s-one", TARGET, polls, guard));
+        Object[][] unlowered = {
+            {"s-u7", "s-u9", false,
+                    "a term the query cannot state, pinned to 7 against 9"},
+            {"s-u7", "s-u-other", false,
+                    "pinned by the task's read against read by no one's"},
+            {"s-u-other", "s-u-unread", true,
+                    "another occurrence's read is no input of the query"},
+        };
+        for (Object[] row : unlowered) {
+            assertEquals((String) row[3], row[2], corpus.inputShape(
+                    (String) row[0], TARGET, polls, guard).equals(
+                    corpus.inputShape((String) row[1], TARGET, polls,
+                            guard)));
+        }
         // Members started by messages no row names: their shape has an
         // unknown hop, which tells nothing apart, so each keeps its address.
         Path unknown = tree.newFolder("member-unknown-hop").toPath();
@@ -2363,109 +2396,10 @@ public class ExploreTest {
             session.flush();
         }
         Corpus unknownCorpus = Corpus.read(unknown, null);
-        StaticScopeMap unknownReads = StaticScopeMap.read(scopeMap(unknown,
-                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
-                        "BlockTokenSecretManager#u12",
-                        "BlockTokenSecretManager#addKeys",
-                        "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")),
-                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
-                        "BlockTokenSecretManager#u8",
-                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
-                        "<example.Manager: example.Keys allKeys>",
-                        "<example.Manager: example.Keys allKeys>", "")));
         assertFalse("two members of an unknown hop are not one class",
-                unknownCorpus.inputShape("s-one", TARGET, unnamed, none,
-                        unknownReads).equals(unknownCorpus.inputShape(
-                        "s-two", TARGET, unnamed, none, unknownReads)));
-    }
-
-    /**
-     * A MEMBER FEEDS WHAT THE REGION READS ON ANY ARM ({@link
-     * Corpus#inputShape}): a renewer that wrote the lease map in one session
-     * and did not run in another delivered different worlds, though the
-     * arm each session took never read the map -- the flipped arm (the
-     * expiry scan) does.  Judged by the region's static reads (a READ_SITE,
-     * a READ input, a folded region's), never by what one session's arm
-     * read: two such sessions share no answer.
-     */
-    @Test
-    public void aMemberFeedsWhatTheRegionReadsOnAnyArm() throws Exception {
-        Path iteration = tree.newFolder("fed-any-arm").toPath();
-        for (String id : new String[] {"s-renewed", "s-quiet"}) {
-            Session session = new Session(iteration, id);
-            session.activation(TARGET, false);
-            if ("s-renewed".equals(id)) {
-                session.activation(WRITER, false);
-                session.constant("e.stored", "7");
-                session.write(STORED, ALL_KEYS, 5L, "e.stored");
-            }
-            session.flush();
-        }
-        Corpus corpus = Corpus.read(iteration, null);
-        StaticScopeMap reads = StaticScopeMap.read(scopeMap(iteration,
-                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
-                        "BlockTokenSecretManager#u12",
-                        "BlockTokenSecretManager#addKeys",
-                        "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")),
-                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
-                        "BlockTokenSecretManager#u8",
-                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
-                        "<example.Manager: example.Keys allKeys>",
-                        "<example.Manager: example.Keys allKeys>", "")));
-        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
-        Set<String> none = Collections.<String>emptySet();
-        assertFalse("the renewer's write is part of the world",
-                corpus.inputShape("s-renewed", TARGET, factor, none, reads)
-                        .equals(corpus.inputShape("s-quiet", TARGET, factor,
-                                none, reads)));
-        assertEquals("a region that reads no carrier it wrote is fed nothing",
-                corpus.inputShape("s-renewed", TARGET, factor, none,
-                        StaticScopeMap.empty()),
-                corpus.inputShape("s-quiet", TARGET, factor, none,
-                        StaticScopeMap.empty()));
-        // The same read as an accessor input (an atomic's get(), a READ
-        // input) of the target's region, and as a READ_SITE of a region the
-        // target's occurrences folded in the iteration's plan.
-        String write = put(scopeSite(StaticScopeMap.WRITE_SITE,
-                "REGION.addkeys", "BlockTokenSecretManager#u12",
-                "BlockTokenSecretManager#addKeys",
-                "<example.Keys: int value>",
-                "<example.Manager: example.Keys allKeys>", ""));
-        JsonObject input = com.google.gson.JsonParser.parseString(scopeSite(
-                StaticScopeMap.DECLARED_SITE, "REGION.target",
-                "BlockTokenSecretManager#u8",
-                "BlockTokenSecretManager#retrieveDataEncryptionKey",
-                "<example.Keys: int value>", "", "")).getAsJsonObject();
-        input.addProperty("declaredKind", StaticScopeMap.ACCESSOR_RETURN);
-        input.addProperty("inputKind", StaticScopeMap.READ_INPUT);
-        String folded = scopeSite(StaticScopeMap.READ_SITE, "REGION.expiry",
-                "Expiry#u3", "Expiry#scan",
-                "<example.Manager: example.Keys allKeys>",
-                "<example.Manager: example.Keys allKeys>", "");
-        Path plan = iteration.resolve(ExploreMain.REGION_PLAN);
-        Files.write(plan, ("{\"kind\":\"CONCOLIC_REGION_PLAN\","
-                + "\"regionId\":\"REGION.target\",\"foldedRegionIds\":"
-                + "[\"REGION.expiry\"]}\n").getBytes("UTF-8"));
-        for (StaticScopeMap map : Arrays.asList(
-                StaticScopeMap.read(scopeMap(iteration, write,
-                        input.toString())),
-                StaticScopeMap.read(scopeMap(iteration, write, folded))
-                        .withPlan(plan))) {
-            assertFalse("an accessor input and a folded region's read feed"
-                            + " it too",
-                    corpus.inputShape("s-renewed", TARGET, factor, none, map)
-                            .equals(corpus.inputShape("s-quiet", TARGET,
-                                    factor, none, map)));
-        }
-        assertEquals("the folded region's read without the plan's folds",
-                corpus.inputShape("s-renewed", TARGET, factor, none,
-                        StaticScopeMap.read(scopeMap(iteration, write,
-                                folded))),
-                corpus.inputShape("s-quiet", TARGET, factor, none,
-                        StaticScopeMap.read(scopeMap(iteration, write,
-                                folded))));
+                unknownCorpus.inputShape("s-one", TARGET, unnamed, guard)
+                        .equals(unknownCorpus.inputShape("s-two", TARGET,
+                                unnamed, guard)));
     }
 
     /** What the guard at {@code siteId} depends on in one session's path of
@@ -2477,9 +2411,8 @@ public class ExploreTest {
             if (!path.sessionId.equals(sessionId)) continue;
             for (int index = 0; index < path.decisions.size(); index++) {
                 if (path.decisions.get(index).siteId().equals(siteId)) {
-                    return ObligationFactory.dependence(corpus,
-                            StaticScopeMap.read(corpus.iteration().resolve(
-                                    StaticScopeMap.FILE)), task, path, index);
+                    return ObligationFactory.dependence(corpus, task, path,
+                            index);
                 }
             }
         }

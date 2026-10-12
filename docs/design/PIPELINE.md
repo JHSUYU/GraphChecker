@@ -715,7 +715,10 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
 outcome and `dependence`, the arm's effect at the task: the task's own earlier decisions on the path
 that share a variable with the guard, directly or through the task's own reads
-(`compose.Independence.ofGuard`), plus the input shape (`Corpus.inputShape`). The inherited flips'
+(`compose.Independence.ofGuard`), each by its occurrence, site and outcome with how many different
+conditions it decided there (`Corpus#decisionShape`: the stated term, reads by location; a poll
+deciding the same condition again is one, a loop's iterations over another bound are not; never the
+ordinal, which shifts with every earlier poll), plus the input shape (`Corpus.inputShape`). The inherited flips'
 prefixes are no part of it (`FlipQuery` still asserts them): a prefix only adds conjuncts, so a
 world's arm whose own path and input shape equal another's -- the input shape stating what each
 member wrote at the guard's locations as the guard reads it -- is UNSAT where that one is
@@ -739,7 +742,9 @@ free choice `?` (with the observed value where it is the observed writer) where 
 nothing in particular, no choice `/` where it is a value of another sort; nothing bound: pinned to
 its observed value). A term states nothing where it does not lower or names what the query cannot
 declare (`FlipQuery#undeclared`), and nothing in particular where it holds an unsupported subterm;
-a written term of either kind by the values its readers observed. A name a node has only in the
+a written term of either kind by the values the task's own reads of its version observed, the only
+reads the query pins to a value through it (`FlipQuery#stated`), `?` where none did (an alternative
+the query takes no value from; what another occurrence's read observed is no input of the query). A name a node has only in the
 session's run (a host and port, a store session's id: the manifest's `runSpellings`) is named by the
 node wherever the program spelled it (an observed value, a term's constants; never an engine-built
 name), so a URL at another port names one node; a run's handle for an object -- an identity hash
@@ -750,22 +755,19 @@ aliased alike fold and objects aliased otherwise name apart. No depth bound: a w
 term it is expanding names the back-edge by its distance up the expansion stack, and a term is
 memoized per session and reference unless a back-edge in it points above it. A member flip that writes another
 value there, a producer sending another term, a pinned payload of another value, or a term reading a
-location another (or one more) writer may have written is another world; a poll writing the same
-canonical term folds), and whether it wrote any state the
-occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
-holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
-`StaticScopeMap#readLocations`, `#withPlan`, joined to the write by `#storedAt`: the flipped arm
-reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
-the lease map share its answer with one where it did not run; how often varies run to run) — never
-delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies
-to one call arrive in any order; a line that only fed the region, no handoff and no write at the
-guard's locations, once however many members of its class ran it: a poll, a request or a watch
-callback states one line whether it ran k or k' times; a line with handoffs or guard-location writes
-keeps its multiplicity, so hdfs-11741's four keys instead of five re-key), and none that delivered nothing, never run or run to no such
-handoff or write (the corpus finds feeders as sessions land, and such a member's line, the same in
-every session that did not run it, re-keyed every arm of the session; solr-bugs-reindex-cleanup SG1:
-most of its 8,802 re-keyed ids were members that ran and delivered nothing). Known limit (STATUS open
-defect 64): a member's write the recording states at no write site re-keys no arm. Never the session. An arm is
+location another writer of another class may have written is another world; the same canonical
+term written again folds) -- never delivered values, and a function of the session alone: semantic
+counts only, the members, each one's writes and each one's producers as sets (replies to one call
+arrive in any order; a poll, a request or a watch callback that wrote the same value k or k' times,
+or under renumbered ids, delivered one world), a member's own handoffs keeping their multiplicity
+(hdfs-11741's four keys instead of five re-key), and none that delivered the query nothing: no
+handoff, no write at the guard's locations. A member that only wrote state the region reads
+elsewhere is no conjunct of the query, and a world that changed it is reached by nesting from the
+answer's session (§7.5), as an inherited prefix is (solr-adhoc-21 RX4: such lines -- a state watcher
+or a client STATUS that ran in one replay only -- re-keyed half the re-asks). Known limits (STATUS
+open defect 64): a member's write the recording states at no write site re-keys no arm; the
+downstream of a schedule variant (a member that ran in one replay of a world only) is not asked
+again: schedules are not worlds. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer); an `ADMITTED` replay also
 settles its flip (`ObligationFactory#flip`) under whatever id the arm has since: a replay of that flip

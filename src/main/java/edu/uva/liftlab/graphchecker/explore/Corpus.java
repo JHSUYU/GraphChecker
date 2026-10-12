@@ -661,85 +661,63 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * WHAT ONE SESSION'S WORLD DELIVERED TO A TASK, digested: the world part
-     * of an arm's key ({@link ObligationFactory#dependence}). The EFFECT at
-     * the task, never the cause (keying by upstream flips asks one question
-     * per flip combination).
+     * of an arm's key ({@link ObligationFactory#dependence}).  The rule: the
+     * key names what the flip query depends on at the task, the EFFECT, never
+     * the cause (keying by upstream flips asks one question per flip
+     * combination).
      *
      * <p>Covers the occurrence -- whether it ran, and per site how many
      * handoffs from which producers -- and each factor member that FEEDS it
-     * ({@link #feeders}: they write state it reads) by what it delivered
-     * it: the same handoffs, per-site counts of its writes to {@code
-     * locations}, the state the flipped guard reads, and whether it wrote
-     * any state the occurrence's region reads on ANY arm -- a location its
-     * code, folded regions' included, reads where a replay versions it
-     * ({@link StaticScopeMap#readLocations}), not
-     * only what the arm this session took read, since the flipped arm reads
-     * what the taken one never did (a renewer's write of the lease map the
-     * expiry scan iterates only once a lease has expired) --, not how often,
-     * which replays vary; and whether it ran them as an activation.  Their
-     * handoffs whole, not only those the guard names: the arm consumes them
-     * after the flip (hdfs-11741: dn1's expiry scan names only its own
-     * clock, and the witness is that scan flipped in the world whose key
-     * conversion delivered four keys instead of five). A co-reader feeds
-     * nothing (hdfs-17899-bug2: every RPC of the SPS reads the IPC
-     * connection an IPC door reads, and keyed by all of them one door flip
-     * was 11 obligations). Trap: never a member's writes elsewhere (replays
-     * vary them: hdfs-11741's balancer members write SASL and HashMap
-     * internals a different number of times in almost every run), never the
-     * region's own reads or decisions (behaviour, not input), never
-     * delivered VALUES (carried symbolically; clock values differ every
-     * run).</p>
+     * ({@link #feeders}: they write state it reads) and delivered it
+     * something the query states: its handoffs (whole, not only those the
+     * guard names: the arm consumes them after the flip -- hdfs-11741: dn1's
+     * expiry scan names only its own clock, and the witness is that scan
+     * flipped in the world whose key conversion delivered four keys instead
+     * of five), and its writes at {@code locations}, every location a read
+     * the guard and its kept conditions rest on reads ({@code
+     * Independence#locations}), each by what it wrote as the guard reads it,
+     * canonical ({@link #written}): a member flip that writes another value
+     * there, a second writer of another class, or a pinned value another
+     * read of the task observed, re-key.  A member that only wrote state
+     * the region reads elsewhere is no line: it is no conjunct of the query,
+     * and a world that changed it is reached by nesting from the answer's
+     * session (PIPELINE §7.5), as an inherited prefix is (solr-adhoc-21 RX4:
+     * such lines re-keyed half the re-asks, a state watcher or a client
+     * STATUS that ran in one replay only).  Trap: never a member's writes
+     * elsewhere, never the region's own reads or decisions (behaviour, not
+     * input), never delivered VALUES carried symbolically (clock values
+     * differ every run).</p>
      *
-     * <p>A function of the session and the epoch's static map alone,
-     * whatever the corpus has learned since: the members as a set (the
-     * order the corpus lists the factor in moves as sessions land), and
-     * none that delivered nothing, whether the session never ran it or ran
-     * it to no handoff and no write of state the occurrence's region reads
-     * -- its line re-keyed every arm of the session once the corpus found
-     * it a feeder (solr-bugs-reindex-cleanup SG1: 627 arms under 8,868 ids,
-     * most of the re-keyed ones by members that ran and delivered nothing).
-     * A member, and a producer, is named by its class -- node, region and
-     * context shape ({@link #contextShape}), never its exact address, whose
-     * anchor hashes and invocation counts every replay renumbers -- and a
-     * line that only fed the region (no handoff, no write at the guard's
-     * locations) counts once however many members of its class ran it: a
-     * poll, a request or a watch callback states one line whether it ran k
-     * or k' times (solr-adhoc-07/21 IB1: per-request {@code getCore},
-     * {@code SolrCore.close} and watcher occurrences re-keyed every arm).
-     * A line with handoffs or writes at the guard's locations keeps its
-     * multiplicity, and each such write states what it wrote as the guard
-     * reads it, canonical ({@link #written}): hdfs-11741's four keys instead of
-     * five, a second writer of what the guard reads, or a member flip that
-     * writes another value at the same site, re-key.  LIMITS: a member's
-     * write the recording states at no write site (unwoven) re-keys no arm;
-     * a fed-only line loses its multiplicity, so how many members of one
-     * class wrote state the region reads elsewhere than the guard's
-     * locations no longer re-keys.  A run's handle for an object is
-     * numbered by where the key first meets it ({@link #numbered}).</p>
+     * <p>A function of the session alone, whatever the corpus has learned
+     * since: the members as a set (the order the corpus lists the factor in
+     * moves as sessions land).  Semantic counts only: a member is named by
+     * its class -- node, region and context shape ({@link #contextShape}),
+     * never its exact address, whose anchor hashes and invocation counts
+     * every replay renumbers -- a member's writes are a set of (site, what it
+     * wrote), and identical lines count once: a poll or a watch callback
+     * that wrote the same value k or k' times, or under renumbered ids,
+     * delivered one world (solr-adhoc-07/21 IB1).  A member's own handoffs
+     * keep their multiplicity (hdfs-11741's four keys against five).  A
+     * run's handle for an object is numbered by where the key first meets
+     * it ({@link #numbered}).  LIMITS: a member's write the recording states
+     * at no write site (unwoven) re-keys no arm; the downstream of a
+     * schedule variant -- a member that ran in one replay of a world only --
+     * is not asked again: schedules are not worlds.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
-                             Set<String> locations, StaticScopeMap scope) {
-        Set<String> readable = scope.readLocations(occurrence.regionId());
-        List<String> members = new ArrayList<String>();
-        Set<String> fedOnly = new TreeSet<String>();
+                             Set<String> locations) {
+        Set<String> members = new TreeSet<String>(BY_SHAPE);
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
             List<String> handoffs = attachSites(sessionId, member);
-            List<String> writes = writeSites(sessionId, member, locations);
-            boolean fed = feeds(sessionId, member, readable, scope);
-            if (handoffs.isEmpty() && writes.isEmpty() && !fed) continue;
-            boolean ran = activation(sessionId, member) != null;
-            String line = classOf(member) + ':' + ran + handoffs
-                    + producers(sessionId, member) + writes + fed;
-            if (handoffs.isEmpty() && writes.isEmpty()) {
-                fedOnly.add(line);
-            } else {
-                members.add(line);
-            }
+            Set<String> writes = writeSites(sessionId, member, occurrence,
+                    locations);
+            if (handoffs.isEmpty() && writes.isEmpty()) continue;
+            members.add(classOf(member) + ':'
+                    + (activation(sessionId, member) != null) + handoffs
+                    + producers(sessionId, member) + writes);
         }
-        members.addAll(fedOnly);
-        members.sort(BY_SHAPE);
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
@@ -748,22 +726,6 @@ public final class Corpus implements Arms.Rows {
         for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(numbered(text.toString(),
                 new LinkedHashMap<String, String>()), 16);
-    }
-
-    /** Whether one member's writes in one session store a location of
-     *  {@code readable} ({@link StaticScopeMap#storedAt}); an INITIAL row
-     *  is no write. */
-    private boolean feeds(String sessionId, OccurrenceAddress member,
-                          Set<String> readable, StaticScopeMap scope) {
-        if (readable.isEmpty()) return false;
-        for (WriteRow write : writesOn.of(member.id(), sessionId)) {
-            if (!write.initial() && !Collections.disjoint(readable,
-                    scope.storedAt(write.endpoint().site(),
-                            write.javaType(), write.location().kind()))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -882,25 +844,24 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, String> classes =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 
-    /** Per-site counts of the writes to {@code locations}, each with what
+    /** A member's writes to {@code locations}, each by its site and what
      *  it wrote as the guard reads it, canonical ({@link #written}): a
      *  member flip that writes another value at the same site is another
      *  world (a request writing 5 or 7, an arm writing {@code M_A+10} or
-     *  {@code M_A-1}), and a poll writing the same term folds; an INITIAL
-     *  row is no write. */
-    private List<String> writeSites(String sessionId,
-                                    OccurrenceAddress occurrence,
-                                    Set<String> locations) {
-        List<String> sites = new ArrayList<String>();
-        for (WriteRow write : writesOn.of(occurrence.id(), sessionId)) {
+     *  {@code M_A-1}), the same value written again is not (a set); an
+     *  INITIAL row is no write. */
+    private Set<String> writeSites(String sessionId, OccurrenceAddress member,
+                                   OccurrenceAddress task,
+                                   Set<String> locations) {
+        Set<String> sites = new TreeSet<String>(BY_SHAPE);
+        for (WriteRow write : writesOn.of(member.id(), sessionId)) {
             if (write.initial() || !locations.contains(
                     SmtLowering.locationKey(write.location()))) {
                 continue;
             }
             sites.add(write.endpoint().site() + "="
-                    + written(sessionId, write));
+                    + written(sessionId, write, task));
         }
-        sites.sort(BY_SHAPE);
         return sites;
     }
 
@@ -909,27 +870,25 @@ public final class Corpus implements Arms.Rows {
      * names everything its flip query depends on at the task, modulo the
      * run's own names): its term canonical ({@link #term}), or, where the
      * query binds nothing in particular through it -- it states nothing, or
-     * holds an unsupported subterm's free name -- the values the session's
-     * reads of that version observed.
+     * holds an unsupported subterm's free name -- the values the TASK's own
+     * reads of that version observed, the only reads the query pins to a
+     * value through it ({@code FlipQuery#stated}); none observed it: {@code
+     * ?}, an alternative the query takes no value from.  What other
+     * occurrences' reads observed is no input of the query.
      */
-    private String written(String sessionId, WriteRow write) {
+    private String written(String sessionId, WriteRow write,
+                           OccurrenceAddress task) {
         String term = term(sessionId, write.expressionRef(), new Naming());
-        return term != null && !UNSUPPORTED.equals(term) ? term
-                : "?" + observedValues(sessionId,
-                SmtLowering.locationKey(write.location()), write.version());
-    }
-
-    /** The values a session's reads of one version observed, sorted, each
-     *  in its nodes' names ({@link #observed}). */
-    private Set<String> observedValues(String sessionId, String locationKey,
-                                       long version) {
+        if (term != null && !UNSUPPORTED.equals(term)) return term;
+        String location = SmtLowering.locationKey(write.location());
         Set<String> values = new TreeSet<String>(BY_SHAPE);
-        for (ReadRow read : readsOf(sessionId, locationKey)) {
-            if (read.observedVersion() == version) {
+        for (ReadRow read : readsOn.of(task.id(), sessionId)) {
+            if (read.observedVersion() == write.version() && location.equals(
+                    SmtLowering.locationKey(read.location()))) {
                 values.add(observed(sessionId, read.concreteValue()));
             }
         }
-        return values;
+        return values.isEmpty() ? UNSUPPORTED : UNSUPPORTED + values;
     }
 
     /**
@@ -1040,6 +999,35 @@ public final class Corpus implements Arms.Rows {
         final List<String> stack = new ArrayList<String>();
         int reach = Integer.MAX_VALUE;
         boolean unsupported;
+    }
+
+    /**
+     * One decision's condition as its occurrence decided it, within its
+     * session: the term the flip query states ({@code FlipQuery#statedTerm})
+     * with each read named by its location, each root by its id and each
+     * handoff by its port.  A poll deciding the same condition on a fresh
+     * read of the same location names it alike; a loop deciding {@code
+     * (< 0 n)} then {@code (< 1 n)} does not ({@code
+     * ObligationFactory#dependence} counts the different conditions of one
+     * decision site).
+     */
+    String decisionShape(String sessionId, String term) {
+        return SmtNames.substitute(FlipQuery.statedTerm(this, sessionId,
+                term), token -> {
+                    switch (symbolKind(sessionId, token)) {
+                        case ROOT:
+                            return "root:" + rootBySymbol(sessionId, token)
+                                    .rootId();
+                        case HANDOFF:
+                            return "handoff:" + attach(sessionId, token)
+                                    .endpoint().site();
+                        case READ:
+                            return "read:" + SmtLowering.locationKey(
+                                    read(sessionId, token).location());
+                        default:
+                            return null;
+                    }
+                });
     }
 
     /** {@link #term}: a term the flip query states nothing through. */

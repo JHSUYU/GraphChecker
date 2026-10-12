@@ -445,16 +445,22 @@ Correctness:
     half diverged is not asked (an open decider arm whose every ask came back so still ends
     `OPEN_ARM_UNANSWERED`).
 64. An arm's key names a factor member only by its class (node, region, context shape) and what it
-    delivered the task (`gc/explore/Corpus#inputShape`: its handoffs, its writes at the guard's
-    locations, whether it wrote state the task's region reads on any arm, its folded regions'
-    included, `StaticScopeMap#readLocations`; a line that only fed the region once per class), not by
-    having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and delivered
-    nothing). Known limit: a member's write the recording states at no write site (unwoven code, an
-    unrecorded store) re-keys no arm, so an arm settled in one world may stand for another whose
-    member wrote differently there. A line that only fed the region (no handoff, no write at the
-    guard's locations) counts once per class: how many members of one class wrote state the region
-    reads elsewhere than the guard's locations no longer re-keys (a write at the guard's locations
-    states its canonical written term, `Corpus#written`, and keeps its count). A member whose context
+    delivered the query (`gc/explore/Corpus#inputShape`: its handoffs, its writes at the locations
+    the guard and its kept conditions read, each by its canonical written term, `Corpus#written`),
+    not by having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and
+    delivered nothing). Semantic counts only (owner 2026-10-11): a member's writes and the member
+    lines are sets (the same value written k or k' times, or by a member under renumbered ids, is
+    one world); a member's own handoffs keep their multiplicity (hdfs-11741); a kept decision is its
+    site and outcome with how many different conditions it decided there (`Corpus#decisionShape`),
+    never its ordinal. A member that only wrote state the region reads elsewhere is no line (no
+    conjunct of the query; a world that changed it is reached by nesting): LIMIT, the downstream of
+    a schedule variant -- a watcher or a client STATUS that ran in one replay of a world only -- is
+    not asked again (schedules are not worlds; solr-adhoc-21 RX4: such lines re-keyed half the
+    re-asks). An unlowered written term is named by the values the task's own reads of its version
+    observed, `?` where none did (`?[]` decided, 2026-10-12: another occurrence's read is no input
+    of the query). Known limit: a member's write the recording states at no write site (unwoven
+    code, an unrecorded store) re-keys no arm, so an arm settled in one world may stand for another
+    whose member wrote differently there. A member whose context
     shape has a hop no row names keeps its address as its class. The canonical term names a run's
     handle for an object (an object the VM named, `M_L'<class>'_<rid>`; an identity hash, `<Class>@<hex>`,
     also inside a longer string; a name the lowering minted from one, `identity__`, by the object it
@@ -470,9 +476,7 @@ Correctness:
     store key, where an identity hash stays (two objects' paths are two locations) (live
     21: RX1 12.2 asks per arm, every replay's new Solr ports; RX2 6.9, a searcher's name spelling its
     identity hash). A session that did not close states no spellings and keeps them (a re-ask, never
-    a fold). By design the key keeps how many times a member wrote the guard's locations, though
-    that count follows a run's timing (a ZooKeeper state watcher's writes): another count is another
-    world. Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
+    a fold). Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
     raw ids in its name (its roots' guard by root symbol, an id its predicates state), so arms that
     differ only in a run's ids re-key -- a re-ask, never a fold; a root no domain bounds is named by
     its id alone (as before).
