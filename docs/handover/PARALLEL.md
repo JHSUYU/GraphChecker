@@ -36,6 +36,12 @@ host, and it is why isolation must be strict.
 - **Never:** rebuild a tree or snapshot someone's run reads (check `pgrep -f` on every lift first), write into another
   agent's `GC_OUT`, kill by pattern (kill by pid, `stop-run.sh` alone on its command line), install a tree into the
   shared `~/.m2` (`onlift.sh ... env MAVEN_REPO_LOCAL=... cmd`).
+- **The control host stays light** (2026-10-12): the lead's and the agents' sessions all run on one lift (lift11), and
+  every tool call starts a shell there. Their polling (one waiter per agent, from another lift, >= 60 s) and their
+  heavy commands (`onlift.sh` off it) go elsewhere, and while they run there it is out of the campaigns' `LIFTS`; a
+  jam on it stops every agent at once although the cluster and NFS are idle (OPERATIONS §8: `BASH_ENV` and a wedged
+  `/sw`). Distribute through NFS as before: measured from the other lifts, NFS answered in milliseconds under ten
+  campaigns; a git checkout per lift is not needed.
 - **Host-dependent state is a hazard:** what differs between lifts or file systems (a directory's listing order, a
   temp path, a host name) makes a recording on one host and its replay on another disagree. The engine fixes such
   orders in both passes (random draws: `runtime/Randoms`; directory listings: `runtime/Listings`, merged), never by pinning work to

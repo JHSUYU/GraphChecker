@@ -1176,7 +1176,10 @@ or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`camp
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
 CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
 times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
-(`campaign_replay_charge_mb`). An obligation replay peaks near its own seed replay (round HG4:
+(`campaign_replay_charge_mb`). The need sizes a replay's heap; once eight replays after the seed's
+returned, a replay of the stream is CHARGED their 90th percentile times 1.25 (at most the need,
+`campaign_replay_typical`): charged at the largest peak, the lifts' ledgers held 21-22 GB over 8-11 GB
+of real use and admitted nothing more (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB). An obligation replay peaks near its own seed replay (round HG4:
 hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation
 and seven times the recording per CONFIRM held the lifts' ledger at 11-22 GB over 3-7 GB of real
 use (HG5A); one that outgrows the need grows its charge as below and raises the need of every

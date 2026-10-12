@@ -87,6 +87,7 @@ recommendation.
   - a closure deep because it is genuinely large must converge: give it resources (many obligations in parallel over all ten lifts, a longer case budget), never a cut; depth from redundant work (equivalent occurrences, re-asked arms) is an engine defect, fixed by a general rule;
   - the sweep's case time limit is a convenience of a shared cluster, not a verdict: a case cut there (EXPLORATION_CUT) is rerun alone to its fixed point;
   - a generous declared bound (a nesting depth, an obligation cap) may stop exploration as a last resort; such a stop is named in result.json, rare, counted every round, and each one is investigated (large or redundant).
+  - **a genuinely large closure that does not converge may END by a bound** (owner 2026-10-12, Solr: "如果不收敛确实是因为闭包太大。可以给一个bound结束"): once the redundancy is fixed and new distinct arms still keep coming (not re-asks of one arm under many ids, not solves starved behind replays), a declared bound ends the case, BOUNDED and named in result.json; its STATUS row states the bound, where it stopped and what stays unasked, and the case counts as done.
 - **A check is done when its `.smt` is right** ("如果我们确实正确的跑出了.smt。包含必要的因果链，符号变量，符号传播。没有新bug也是
   可以理解的"): the causal chain, the symbols and their propagation read against the system's code; no new bug is then
   an acceptable outcome.
