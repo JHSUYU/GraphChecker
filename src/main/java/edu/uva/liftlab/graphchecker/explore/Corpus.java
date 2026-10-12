@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -913,16 +914,33 @@ public final class Corpus implements Arms.Rows {
                 SmtLowering.locationKey(write.location()), write.version());
     }
 
-    /** The values a session's reads of one version observed, sorted. */
+    /** The values a session's reads of one version observed, sorted, each
+     *  in its nodes' names ({@link #observed}). */
     private Set<String> observedValues(String sessionId, String locationKey,
                                        long version) {
         Set<String> values = new TreeSet<String>();
         for (ReadRow read : readsOf(sessionId, locationKey)) {
             if (read.observedVersion() == version) {
-                values.add(String.valueOf(read.concreteValue()));
+                values.add(observed(sessionId, read.concreteValue()));
             }
         }
         return values;
+    }
+
+    /**
+     * A value one session observed, with each name a node had only in that
+     * run (its host and port, its store session's id) named by the node
+     * ({@link RunSpellings}, as the session states them, {@code
+     * SessionManifest#runSpellings}): one port spelling names {@code node1}
+     * in every run, and a run that states none keeps its spelling (another
+     * world, never a fold).
+     */
+    private String observed(String sessionId, String value) {
+        SessionReader session = sessionById.get(sessionId);
+        RunSpellings spellings = session == null
+                || session.manifest() == null ? RunSpellings.NONE
+                : session.manifest().runSpellings();
+        return spellings.name(String.valueOf(value));
     }
 
     /** One canonical naming walk: the terms and container subterms it is
@@ -948,9 +966,11 @@ public final class Corpus implements Arms.Rows {
      * unsupported subterm.  The digest is of operators, constants, each
      * root by its id, each handoff and each read by what binds it in the
      * query ({@link #handoffName}, {@link #readName}), each container
-     * subterm by its canonical body, and a name the lowering minted from a
-     * run's handle (an identity) by its kind alone.  No depth bound
-     * ({@link #step}).
+     * subterm by its canonical body, a name the lowering minted from a
+     * run's handle (an identity) by its kind alone, and each name a node had
+     * only in the session's run, wherever the text spells it (a string
+     * constant, a long's digits), by the node ({@link #observed}).  No
+     * depth bound ({@link #step}).
      */
     private String term(String sessionId, String expressionRef,
                         Naming naming) {
@@ -1020,7 +1040,7 @@ public final class Corpus implements Arms.Rows {
     /** {@link #term}'s canonical text of one lowered text. */
     private String canonical(String sessionId, String text, Naming naming) {
         SmtLowering lowering = lowering(sessionId);
-        return SmtNames.substitute(text, token -> {
+        return observed(sessionId, SmtNames.substitute(text, token -> {
             if (SmtNames.BUILTIN.contains(token)) return null;
             String body = lowering == null ? null
                     : lowering.sharedBody(token);
@@ -1050,7 +1070,7 @@ public final class Corpus implements Arms.Rows {
                     // A name the lowering minted from a run's handle.
                     return token.replaceAll("__[0-9a-f]+$", "__");
             }
-        });
+        }));
     }
 
     /**
@@ -1078,7 +1098,7 @@ public final class Corpus implements Arms.Rows {
         boolean binds = false;
         for (Arms.Arm arm : eligible) {
             WriteRow write = arm.write();
-            boolean observed = write != null
+            boolean seen = write != null
                     && write.version() == row.observedVersion();
             String who = write == null ? classOf(arm.producer())
                     : write.initial() ? "initial"
@@ -1094,9 +1114,12 @@ public final class Corpus implements Arms.Rows {
             String term = term(arm.sessionId(), arm.expressionRef(), naming);
             binds |= term != null;
             writers.add(who + "=" + (term == null || UNSUPPORTED.equals(term)
-                    ? "?" + (observed ? row.concreteValue() : "") : term));
+                    ? "?" + (seen ? observed(sessionId, row.concreteValue())
+                    : "") : term));
         }
-        if (!binds) return location + "=" + row.concreteValue();
+        if (!binds) {
+            return location + "=" + observed(sessionId, row.concreteValue());
+        }
         Collections.sort(writers);
         return location + "<-" + writers;
     }
@@ -1153,7 +1176,9 @@ public final class Corpus implements Arms.Rows {
             }
             arms().drainRefusals();
         }
-        if (arms.isEmpty()) return port + "=" + attach.arrival();
+        if (arms.isEmpty()) {
+            return port + "=" + observed(attach.sessionId(), attach.arrival());
+        }
         Collections.sort(arms);
         return port + "<-" + arms;
     }

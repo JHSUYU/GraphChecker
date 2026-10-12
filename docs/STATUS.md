@@ -455,7 +455,10 @@ Correctness:
     handles: two writes of the same structure over different objects fold; a handoff or a read inside
     it is named by what binds it in the flip query (its own run's wire arms, every writer the query
     offers, or the pinned value), by the query's own conditions (an arm or value it drops binds
-    nothing), with no depth bound. Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
+    nothing), with no depth bound; a name a node had only in its run (a host and port, a store
+    session's id: the manifest's `runSpellings`) by the node (live 07/21 RX1: every replay's new
+    Solr ports re-keyed every arm whose guard reads node state). A session that did not close states
+    no spellings and keeps them (a re-ask, never a fold). Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
     raw ids in its name (its roots' guard by root symbol, an id its predicates state), so arms that
     differ only in a run's ids re-key -- a re-ask, never a fold; a root no domain bounds is named by
     its id alone (as before).

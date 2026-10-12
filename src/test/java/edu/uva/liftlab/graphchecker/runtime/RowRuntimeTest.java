@@ -310,9 +310,11 @@ public class RowRuntimeTest {
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#2", "119529");
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#3", "");
             RowRuntime.derivedRoot("ROOT.EXPIRY");
+            RunNames.spelled("auto0/node1", "10.0.0.1:8983_solr");
             RowRuntime.closeSession();
         } finally {
             RecordingWindow.reset();
+            RunNames.resetForTests();
         }
         List<String> named = new ArrayList<>();
         for (GapRow gap : RowCodec.readAll(session().gaps(),
@@ -336,6 +338,12 @@ public class RowRuntimeTest {
         SessionManifest manifest = RowCodec.readManifest(session().manifest());
         assertEquals(Collections.singleton("ROOT.EXPIRY"),
                 manifest.derivedRoots());
+        // The names its nodes had only in this run, and the host and port
+        // inside the node name.
+        Map<String, String> spelled = new HashMap<>();
+        spelled.put("10.0.0.1:8983_solr", "auto0/node1");
+        spelled.put("10.0.0.1:8983", "auto0/node1");
+        assertEquals(spelled, manifest.runSpellings().asMap());
         JsonObject older = manifest.toJson();
         older.addProperty("schemaVersion", 1);
         try {

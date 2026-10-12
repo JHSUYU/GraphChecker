@@ -721,7 +721,10 @@ free choice `?` (with the observed value where it is the observed writer) where 
 nothing in particular, no choice `/` where it is a value of another sort; nothing bound: pinned to
 its observed value). A term states nothing where it does not lower or names what the query cannot
 declare (`FlipQuery#undeclared`), and nothing in particular where it holds an unsupported subterm;
-a written term of either kind by the values its readers observed. No depth bound: a walk meeting a
+a written term of either kind by the values its readers observed. A name a node has only in the
+session's run (a host and port, a store session's id: the manifest's `runSpellings`) is named by the
+node wherever a term or an observed value spells it, so a URL at another port names one node
+(`Corpus#observed`). No depth bound: a walk meeting a
 term it is expanding names the back-edge by its distance up the expansion stack, and a term is
 memoized per session and reference unless a back-edge in it points above it. A member flip that writes another
 value there, a producer sending another term, a pinned payload of another value, or a term reading a

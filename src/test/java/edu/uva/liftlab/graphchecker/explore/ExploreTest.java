@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -1981,7 +1982,8 @@ public class ExploreTest {
      * observed; no depth bound, a back-edge by how far up it points.  Each
      * by the query's own conditions: an arm or a writer's value the query
      * drops (a name it cannot declare, a value of another sort) binds
-     * nothing.  Each row: two worlds, and whether they share the arm's key.
+     * nothing; a name a node has only in one run by the node.  Each row: two
+     * worlds, and whether they share the arm's key.
      */
     @Test
     public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
@@ -2018,7 +2020,7 @@ public class ExploreTest {
             "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
             "u-five-again", "u-unstated", "d-one", "d-two", "c-up",
             "c-self", "g-eleven", "g-eleven-minus", "g-twelve", "r-three",
-            "r-four", "b-three", "b-four"};
+            "r-four", "b-three", "b-four", "n-one", "n-one-again", "n-two"};
         for (String name : names) {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
@@ -2067,6 +2069,17 @@ public class ExploreTest {
                         chain[0], 7L, "M_INNER",
                         name.endsWith("three") ? "3" : "4");
                 session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
+            } else if (name.startsWith("n-")) {
+                // A node's URL, at the port this run gave it: node1 at 46805
+                // (n-one) or 36143 (n-one-again), node2 at 41111 (n-two).
+                session.spelled("auto0/node1", name.equals("n-one")
+                        ? "127.0.0.1:46805_solr" : "127.0.0.1:36143_solr");
+                session.spelled("auto0/node2", "127.0.0.1:41111_solr");
+                session.expression("EXPR.00000000000000f2",
+                        VmExpressionIr.stringConstant("http://127.0.0.1:"
+                                + (name.equals("n-one") ? "46805"
+                                : name.equals("n-two") ? "41111" : "36143")
+                                + "/solr"));
             } else if (name.startsWith("c-")) {
                 // A cycle of two writers of one class and site: the second
                 // one's read takes the first one's write (c-up) or its own
@@ -2178,6 +2191,9 @@ public class ExploreTest {
                     "a writer's value naming what no row declares"},
             {"b-three", "b-four", false,
                     "a writer's value of another sort than the read"},
+            {"n-one", "n-one-again", true,
+                    "one node's URL at the port each run gave it"},
+            {"n-one", "n-two", false, "another node's URL"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], dependence(corpus, task,
@@ -6825,6 +6841,10 @@ public class ExploreTest {
         private final List<ObligationResult> answered = new ArrayList<>();
         /** A FORCE run's session ({@code SessionManifest.Role#FORCED}). */
         private boolean forced;
+        /** The names its nodes had only in this run, spelling -> node
+         *  ({@code SessionManifest#runSpellings}). */
+        private final Map<String, String> spelled =
+                new LinkedHashMap<String, String>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -6852,6 +6872,11 @@ public class ExploreTest {
             activations.add(ActivationRow.of(sessionId, occurrence,
                     "task-" + occurrence.regionId(), focused, instrumented,
                     thread));
+        }
+
+        /** {@code spelling} is node {@code node}'s in this run. */
+        private void spelled(String node, String spelling) {
+            spelled.put(spelling, node);
         }
 
         private void decision(OccurrenceAddress occurrence, String site,
@@ -7020,7 +7045,8 @@ public class ExploreTest {
                             forced ? ran : focused
                                     ? Collections.singletonList(
                                     "OBL." + sessionId)
-                                    : Collections.<String>emptyList()));
+                                    : Collections.<String>emptyList())
+                            .atClose(null, null, null, spelled));
         }
     }
 }
