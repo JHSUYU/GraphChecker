@@ -1121,11 +1121,15 @@ CONFIRM it is a confirmation that did not confirm.
 One pool for the whole exploration. An obligation is two starts: its SOLVE
 (`campaign_obligation_worker`: its question answered by its host's solver, §7.5) and, when the
 solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
-worker directory, on the model's focus row the solve left there), which the head queues first the
+worker directory, on the model's focus row the solve left there), which the head queues the
 moment the solve returns (`campaign_stream_ended`; between two starts of a dispatch too,
-`campaign_stream_collect_jobs`), not at the next step -- behind only a witness's `CONFIRM` and GROW's
-`RERUN`s queued first (`campaign_stream_queue_replay`; hdfs-11741 AR1: 473 replays of later solves
-started ahead of the witness's confirmation, four hours) -- on the class tree and
+`campaign_stream_collect_jobs`), not at the next step -- the queue by kind
+(`campaign_stream_enqueue`): a witness's `CONFIRM` and GROW's `RERUN`s lead it (hdfs-11741 AR1: 473
+replays of later solves started ahead of the witness's confirmation, four hours), the solves follow
+(seconds each, and each decides whether a replay is owed: solr-adhoc-21 RX4 left 1075 of 1158 in
+flight as solves never started behind replays), the REPLAYs last, the newest first; dispatch starts
+the first entry a host admits, and an entry queued past `campaign_stream_wait_bound_s` goes first
+and alone -- on the class tree and
 plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
 since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
 `--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
