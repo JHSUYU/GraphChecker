@@ -27,8 +27,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * with the version, the first decode that reaches an object keeping it (a
  * later product holding an older object shares it, it does not re-make it:
  * stated, never a silent re-pin, as a DIAGNOSTIC row and in {@link
- * #summary}, as are a holder built from two decodes and a member the walk
- * could not read).  What a decode reaches but did not make is no product of it:
+ * #summary}, as are a holder built from two decodes, a member the walk
+ * could not read, and every object it skips as no product of the decode).  What a decode reaches but did not make is no product of it:
  * a class's constant (an object a static field of its own class holds,
  * Solr's {@code DocRouter.DEFAULT} behind every collection's router) and
  * what a supplier holds (code that makes state on demand, Solr's {@code
@@ -82,6 +82,7 @@ final class Provenance {
     private static final AtomicLong BOUNDED = new AtomicLong();
     private static final AtomicLong SHARED = new AtomicLong();
     private static final AtomicLong UNREGISTERED = new AtomicLong();
+    private static final AtomicLong SKIPPED = new AtomicLong();
     /** Provenance sites whose read of an unregistered object is stated. */
     private static final java.util.Set<String> UNREGISTERED_SITES =
             ConcurrentHashMap.newKeySet();
@@ -211,14 +212,26 @@ final class Provenance {
                     }
                     continue;
                 }
-                // A lambda, a synthetic class or a supplier is code the
-                // product holds (a supplier capturing the store's client),
-                // no data of it; a class's constant no decode made.
+                // A lambda or a synthetic class is code the product holds
+                // (a supplier capturing the store's client), no data of it.
                 if (jdk(type.getName()) || type.isSynthetic()
                         || type.getName().contains("$$Lambda$")
-                        || EnginePlumbing.site(type.getName())
-                        || value instanceof java.util.function.Supplier
-                        || constant(value)) {
+                        || EnginePlumbing.site(type.getName())) {
+                    continue;
+                }
+                // A supplier (state made on demand: PrsSupplier's per-replica
+                // states) and a class's constant are no product of this
+                // decode: skipped, and stated with all they hold.
+                String skipped = value instanceof java.util.function.Supplier
+                        ? "a supplier, which makes its state on demand"
+                        : constant(value) ? "a constant its class holds"
+                        : "";
+                if (!skipped.isEmpty()) {
+                    SKIPPED.incrementAndGet();
+                    stateOnce(type, version, version, "the decode reached a "
+                            + type.getName() + ", " + skipped + ": no"
+                            + " decode makes it, so it and what it holds"
+                            + " hold no version");
                     continue;
                 }
                 // An object an earlier decode made is that decode's, and so
@@ -260,6 +273,12 @@ final class Provenance {
     private static void state(Class<?> type, Version held, Version version,
                               String detail) {
         SHARED.incrementAndGet();
+        stateOnce(type, held, version, detail);
+    }
+
+    /** One DIAGNOSTIC row per class, pair and kind of what a decode left. */
+    private static void stateOnce(Class<?> type, Version held,
+                                  Version version, String detail) {
         if (!STATED.add(type.getName() + "|" + held + "|" + version + "|"
                 + detail.substring(0, Math.min(24, detail.length())))) {
             return;
@@ -269,13 +288,16 @@ final class Provenance {
     }
 
     /** Whether a static field of {@code value}'s own class or one of its
-     *  application superclasses holds it: a class's constant. */
+     *  application superclasses holds it, itself or as an element of a
+     *  map, collection or array it holds: a class's constant (Solr's
+     *  {@code DocRouter.DEFAULT}, and the routers {@code DocRouter.routerMap}
+     *  holds as values). */
     private static boolean constant(Object value) {
         for (Class<?> at = value.getClass(); at != null
                 && !jdk(at.getName()); at = at.getSuperclass()) {
             for (Field field : statics(at)) {
                 try {
-                    if (field.get(null) == value) return true;
+                    if (holds(field.get(null), value)) return true;
                 } catch (ReflectiveOperationException | RuntimeException
                         unreadable) {
                     // Not one it can read.
@@ -284,6 +306,28 @@ final class Provenance {
         }
         return false;
     }
+
+    /** Whether {@code held} is {@code value}, or a map's value, a
+     *  collection's or an array's element that is, among its first
+     *  {@link #MAX_CONSTANTS}. */
+    private static boolean holds(Object held, Object value) {
+        if (held == value) return true;
+        Iterable<?> elements = held instanceof Map ? ((Map<?, ?>) held)
+                .values() : held instanceof Collection ? (Collection<?>) held
+                : held instanceof Object[] ? java.util.Arrays.asList(
+                (Object[]) held) : null;
+        if (elements == null) return false;
+        int seen = 0;
+        for (Object element : elements) {
+            if (element == value) return true;
+            if (++seen >= MAX_CONSTANTS) break;
+        }
+        return false;
+    }
+
+    /** The most elements of one static container a constant is looked for
+     *  among: a class's table of constants, not a cache. */
+    private static final int MAX_CONSTANTS = 1024;
 
     /** The static reference fields of {@code type}, once per class. */
     private static Field[] statics(Class<?> type) {
@@ -378,6 +422,8 @@ final class Provenance {
                 + String.format("%.2f", MAX_NANOS.get() / 1e6) + " ms, "
                 + BOUNDED.get() + " at the bound, " + SHARED.get()
                 + " object(s) another version holds or unreadable, "
+                + SKIPPED.get() + " skipped as no decode's (a constant, a"
+                + " supplier), "
                 + UNREGISTERED.get() + " provenance read(s) of an object no"
                 + " decode registered";
     }
@@ -398,6 +444,12 @@ final class Provenance {
         STATED.clear();
         UNREGISTERED.set(0L);
         UNREGISTERED_SITES.clear();
+        SKIPPED.set(0L);
+    }
+
+    /** Objects decodes skipped as no product of theirs (tests). */
+    static long skipped() {
+        return SKIPPED.get();
     }
 
     /** Provenance reads of an object no decode registered (tests). */

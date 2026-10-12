@@ -29,10 +29,20 @@ public final class Decoded {
         }
     }
 
-    /** A router: its class's constant stands behind every collection. */
+    /** A router: its class's constants stand behind every collection, one
+     *  as a field, the others as a table's values. */
     public static class Router {
         public static final Router DEFAULT = new Router();
+        public static final Map<String, Router> ROUTERS =
+                new LinkedHashMap<>();
+        static {
+            ROUTERS.put("implicit", new Implicit());
+        }
         public final String name = "compositeId";
+    }
+
+    /** A router the table holds. */
+    public static final class Implicit extends Router {
     }
 
     /** States another fetch made, handed over by a supplier. */

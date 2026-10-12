@@ -601,6 +601,11 @@ public final class MessageDoors {
     public static void decoded(String transport, String key, Object product) {
         long version = version(key);
         if (version < 0L || product == null) return;
+        // A write in flight at the path may have made this version, its
+        // hook not yet run (a create's version 0 opening a new life): the
+        // decode waits for it to file, bounded and named (#filed), so it
+        // names the life the version was made in.
+        filed(trimmed(transport), trimmed(key));
         String path = life(transport, location(key), version, false);
         List<Object> registered = Provenance.register(new Provenance.Version(
                 storeLocation(transport, path), path, version), product);
@@ -625,8 +630,8 @@ public final class MessageDoors {
      * versions at 0 when the path is created again after its delete, so a
      * version 0 written once the path stood at a version is a new life --
      * without it, writeOf(location, v) could pick the other life's v.  A
-     * decode names the life it read and starts none (its v0 may land
-     * before its creator's write is observed).
+     * decode names the life it read and starts none: it first waits for a
+     * write in flight at the path to file ({@link #decoded}).
      */
     private static String life(String transport, String path,
                                long version, boolean write) {

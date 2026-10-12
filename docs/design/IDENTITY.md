@@ -548,8 +548,11 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   the version, the first decode keeping it (another version's decode reaching it states a DIAGNOSTIC
   row, counted in `Causynth decoded walks:`, never a re-pin, as are a constructor's holder built from two
   decodes, which keeps the first, and a member the walk could not read); a class's constant (an object a static
-  field of its own class holds: `DocRouter.DEFAULT`) and what a supplier holds (`PrsSupplier`'s
-  per-replica states) are no product of the decode, which cannot tell what it allocated. A guard that reads a construction-only field of a
+  field of its own class holds, itself or as a value of a table it holds: `DocRouter.DEFAULT`, the
+  routers of `DocRouter.routerMap`) and a supplier with what it holds (`PrsSupplier`'s per-replica
+  states) are no product of the decode, which cannot tell what it allocated: each skip is stated and
+  counted. A decode first waits for a write in flight at its path to file (`MessageDoors#filed`,
+  bounded and named), so a create's version 0 names the life it opened. A guard that reads a construction-only field of a
   registered object at a `PROVENANCE_SITE` (SYMBOL-SCOPE §5.7) reads that version: a STORE read row
   at the reading occurrence, its symbol naming the version (`RowRuntime#storeRead`); a path rests on each such read its closure made before its cutoff, though no term names it, and CONFIRM holds it to the version the session read (a STATE row, `compose/RestsOn#storeLocations`: a run whose reader read another version does not confirm), compared and ordered by nothing: the store's own turn orders its reads and writes, and a native run's weave states no store write's activation (`explore/ConfirmMain#stateEdges`). The recording
   states each decode's objects by identity (`STORE_DECODED`), which PLAN joins with the objects an

@@ -79,6 +79,16 @@ public class ProvenanceTest {
                 collection);
         assertNull("the supplier's states", Provenance.of(fetched));
         assertEquals("nothing shared yet", 0L, Provenance.shared());
+        assertEquals("the supplier and the constant router: skipped, stated",
+                2L, Provenance.skipped());
+        // A router a static table holds as a value is a constant too.
+        Decoded.Collection implicit = new Decoded.Collection(
+                new Decoded.Client(), new Decoded.Slice("shard9", "active"));
+        implicit.router = Decoded.Router.ROUTERS.get("implicit");
+        Provenance.register(new Provenance.Version(STATE, PATH, 6L),
+                implicit);
+        assertNull("the table's router", Provenance.of(implicit.router));
+        assertEquals("skipped, stated", 3L, Provenance.skipped());
         LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
                 "/aliases.json");
         Decoded.Collection again = new Decoded.Collection(
@@ -94,6 +104,45 @@ public class ProvenanceTest {
         Provenance.unregistered("Guard#u3", new Object());
         Provenance.unregistered("Guard#u3", null);
         assertEquals("unregistered reads", 2L, Provenance.unregistered());
+    }
+
+    /**
+     * A decode waits for a write in flight at its path to file before it
+     * names the version's life (review M5): a create's version 0 decoded
+     * before its creator's hook ran names the new life, not the old one.
+     */
+    @Test
+    public void aDecodeWaitsForTheCreateInFlightToNameItsLife()
+            throws Exception {
+        Object owner = new Object();
+        MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner);
+        MessageDoors.stored("SOLR_ZK", "/m5/race@1", owner);
+        java.util.concurrent.CountDownLatch open =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch file =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread creator = new Thread(() -> {
+            long store = MessageDoors.storing("SOLR_ZK", "/m5/race");
+            open.countDown();
+            try {
+                file.await();
+            } catch (InterruptedException ignored) {
+                return;
+            }
+            MessageDoors.stored("SOLR_ZK", "/m5/race@0", owner);
+            MessageDoors.storeEnded("SOLR_ZK", store);
+        });
+        creator.start();
+        open.await();
+        Decoded.Slice parsed = new Decoded.Slice("shard1", "active");
+        Thread decoder = new Thread(() ->
+                MessageDoors.decoded("SOLR_ZK", "/m5/race@0", parsed));
+        decoder.start();
+        Thread.sleep(200L);
+        file.countDown();
+        decoder.join();
+        creator.join();
+        assertEquals("/m5/race#2", Provenance.of(parsed).location.slot());
     }
 
     /**
