@@ -298,22 +298,30 @@ public final class ObligationFactory {
      * Frontier}, which must agree.
      *
      * <ul>
-     *   <li><b>Its path condition</b>: the conjuncts {@link FlipQuery}
-     *       asserts with it (the path's earlier decisions and the inherited
-     *       flips' prefixes) that share a variable with the guard, directly or
-     *       through one another ({@link Independence#ofGuard}), each as its
-     *       occurrence and {@code siteId#ordinal=outcome}. Any other conjunct
-     *       holds at its recorded values whatever the flip's model is, so two
-     *       paths differing only there ask the same question.</li>
-     *   <li><b>Its world</b>: what the world delivered to the task and to
-     *       the factor members that feed it ({@link Corpus#inputShape}), the
-     *       writes counted at the locations the guard reads.</li>
+     *   <li><b>Its own path condition</b>: the task's earlier decisions on
+     *       the path that share a variable with the guard, directly or
+     *       through one another or the task's own reads ({@link
+     *       Independence#ofGuard}), each as its occurrence and {@code
+     *       siteId#ordinal=outcome}. Any other conjunct holds at its
+     *       recorded values whatever the flip's model is, so two paths
+     *       differing only there ask the same question.</li>
+     *   <li><b>Its world, by its effect at the task</b>: what the world
+     *       delivered to the task and to the factor members that feed it
+     *       ({@link Corpus#inputShape}), the writes counted at the locations
+     *       the guard and its kept conditions read.</li>
      * </ul>
      *
-     * <p>Never the session, and never the decision being flipped as an
-     * inherited flip: a flip cut back from the world that took it would
-     * otherwise be owed again. Trap: the world stays even where the guard
-     * names none of it (hdfs-11741's witness, see {@link
+     * <p>Never the session, and never the inherited flips' prefixes, which
+     * {@link FlipQuery} still asserts: a prefix only adds conjuncts to the
+     * query, so a world's arm whose own path and input shape equal another's
+     * is UNSAT where that one is, and where that one was admitted the joint
+     * world stays reachable by nesting from its session (solr-adhoc-07 IB1:
+     * a fault at the task's own {@code makePath} later in the occurrence
+     * kept 13 decisions after the arm and re-asked 979 seed arms).  LIMIT:
+     * a NOT_ADMITTED answer in the reduced world stands for the parent
+     * world's arm too (an open decider arm whose every ask came back so
+     * still ends {@code OPEN_ARM_UNANSWERED}).  Trap: the world stays even
+     * where the guard names none of it (hdfs-11741's witness, see {@link
      * Corpus#inputShape}).</p>
      */
     public static String dependence(Corpus corpus, StaticScopeMap scope,
@@ -328,39 +336,13 @@ public final class ObligationFactory {
                                 Task task,
                                 Corpus.RecordedPath path, int index) {
         DecisionRow flipped = path.decisions.get(index);
-        List<DecisionRow> conditions =
-                new ArrayList<DecisionRow>(path.decisions.subList(0, index));
-        List<ReadRow> reads = new ArrayList<ReadRow>(
-                corpus.readsOn(path.sessionId, task.focused()));
-        for (Corpus.Flip inherited : corpus.world(path.sessionId).flips) {
-            OccurrenceAddress at =
-                    corpus.occurrence(inherited.focusedOccurrenceId);
-            if (at == null) continue;
-            List<DecisionRow> decisions =
-                    corpus.decisionsOf(path.sessionId, at);
-            long through = -1L;
-            for (DecisionRow decision : decisions) {
-                if (decision.siteId().equals(inherited.siteId)
-                        && decision.ordinal() == inherited.ordinal) {
-                    through = decision.seq();
-                }
-            }
-            for (DecisionRow decision : decisions) {
-                if (decision.seq() <= through
-                        && decision.seq() != flipped.seq()) {
-                    conditions.add(decision);
-                }
-            }
-            if (!at.equals(task.focused())) {
-                reads.addAll(corpus.readsOn(path.sessionId, at));
-            }
-        }
         List<DecisionRow> predicates = new ArrayList<DecisionRow>();
-        for (DecisionRow condition : conditions) {
+        for (DecisionRow condition : path.decisions.subList(0, index)) {
             if (Arms.predicate(condition.term())) predicates.add(condition);
         }
         Independence rests = Independence.ofGuard(corpus, path.sessionId,
-                flipped.term(), predicates, reads);
+                flipped.term(), predicates,
+                corpus.readsOn(path.sessionId, task.focused()));
         Set<String> kept = new TreeSet<String>();
         // The domain of every integral configuration the guard or a kept
         // condition names: a corpus that widens it owes the arm again

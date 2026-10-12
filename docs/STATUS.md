@@ -432,10 +432,15 @@ Correctness:
     world came UNSAT as 0affd746, round 8) and a flip settled under one id can be proposed again
     under the next. The open-arm judgment reads answers by flip; on the proposal side an ADMITTED
     answer settles its flip under any id (`Frontier#settled(Candidate)`), while an UNSAT or
-    NOT_ADMITTED one settles only its own id.
-64. An arm's key names a factor member only by what it delivered the task (`gc/explore/Corpus#inputShape`:
-    its handoffs, its writes at the guard's locations, whether it wrote state the task's region reads
-    on any arm, its folded regions' included, `StaticScopeMap#readLocations`), not by
+    NOT_ADMITTED one settles only its own id. An arm is keyed by its effect at the task (its own
+    path and input shape, never the inherited flips' prefixes, `ObligationFactory#dependence`), so
+    a reduced world's NOT_ADMITTED stands for the parent world's arm: a joint world whose reduced
+    half diverged is not asked (an open decider arm whose every ask came back so still ends
+    `OPEN_ARM_UNANSWERED`).
+64. An arm's key names a factor member only by its class (node, region, context shape) and what it
+    delivered the task (`gc/explore/Corpus#inputShape`: its handoffs, its writes at the guard's
+    locations, whether it wrote state the task's region reads on any arm, its folded regions'
+    included, `StaticScopeMap#readLocations`; a line that only fed the region once per class), not by
     having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and delivered
     nothing). Known limit: a member's write the recording states at no write site (unwoven code, an
     unrecorded store) re-keys no arm, so an arm settled in one world may stand for another whose

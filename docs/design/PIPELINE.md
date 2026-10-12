@@ -635,10 +635,18 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 ### 7.3 Obligation identity and the ledger: `explore.Frontier`
 
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
-outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
-share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
-(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and each
-factor member that writes state it reads by what it delivered in this session: its handoff sites and
+outcome and `dependence`, the arm's effect at the task: the task's own earlier decisions on the path
+that share a variable with the guard, directly or through the task's own reads
+(`compose.Independence.ofGuard`), plus the input shape (`Corpus.inputShape`). The inherited flips'
+prefixes are no part of it (`FlipQuery` still asserts them): a prefix only adds conjuncts, so a
+world's arm whose own path and input shape equal another's is UNSAT where that one is, and where
+that one was admitted the joint world stays reachable by nesting from its session (solr-adhoc-07 IB1:
+a fault later in the task's own occurrence kept 13 decisions after the arm and re-asked 979 seed
+arms); a reduced world's NOT_ADMITTED stands for the parent world's arm too (STATUS open defect 59;
+an open decider arm whose every ask came back so ends `OPEN_ARM_UNANSWERED`). The input shape:
+whether the task's occurrence ran, its handoff sites and producers, and each factor member that
+writes state it reads, named by its class (node, region, `Corpus#contextShape`; a producer too, never
+an address's anchor hashes or counts), by what it delivered in this session: its handoff sites and
 producers, its write counts at the locations the guard reads, and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
@@ -646,7 +654,10 @@ holds, the code of the regions its occurrences folded in the iteration's frozen 
 reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
 the lease map share its answer with one where it did not run; how often varies run to run) — never
 delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies
-to one call arrive in any order), and none that delivered nothing, never run or run to no such
+to one call arrive in any order; a line that only fed the region, no handoff and no write at the
+guard's locations, once however many members of its class ran it: a poll, a request or a watch
+callback states one line whether it ran k or k' times; a line with handoffs or guard-location writes
+keeps its multiplicity, so hdfs-11741's four keys instead of five re-key), and none that delivered nothing, never run or run to no such
 handoff or write (the corpus finds feeders as sessions land, and such a member's line, the same in
 every session that did not run it, re-keyed every arm of the session; solr-bugs-reindex-cleanup SG1:
 most of its 8,802 re-keyed ids were members that ran and delivered nothing). Known limit (STATUS open

@@ -682,14 +682,25 @@ public final class Corpus implements Arms.Rows {
      * -- its line re-keyed every arm of the session once the corpus found
      * it a feeder (solr-bugs-reindex-cleanup SG1: 627 arms under 8,868 ids,
      * most of the re-keyed ones by members that ran and delivered nothing).
-     * LIMIT: a member's write the recording states at no write site
-     * (unwoven) re-keys no arm.</p>
+     * A member, and a producer, is named by its class -- node, region and
+     * context shape ({@link #contextShape}), never its exact address, whose
+     * anchor hashes and invocation counts every replay renumbers -- and a
+     * line that only fed the region (no handoff, no write at the guard's
+     * locations) counts once however many members of its class ran it: a
+     * poll, a request or a watch callback states one line whether it ran k
+     * or k' times (solr-adhoc-07/21 IB1: per-request {@code getCore},
+     * {@code SolrCore.close} and watcher occurrences re-keyed every arm).
+     * A line with handoffs or writes at the guard's locations keeps its
+     * multiplicity: hdfs-11741's four keys instead of five, or a second
+     * writer of what the guard reads, re-key.  LIMIT: a member's write the
+     * recording states at no write site (unwoven) re-keys no arm.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
                              Set<String> locations, StaticScopeMap scope) {
         Set<String> readable = scope.readLocations(occurrence.regionId());
         List<String> members = new ArrayList<String>();
+        Set<String> fedOnly = new TreeSet<String>();
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
             List<String> handoffs = attachSites(sessionId, member);
@@ -697,9 +708,15 @@ public final class Corpus implements Arms.Rows {
             boolean fed = feeds(sessionId, member, readable, scope);
             if (handoffs.isEmpty() && writes.isEmpty() && !fed) continue;
             boolean ran = activation(sessionId, member) != null;
-            members.add(member.id() + ':' + ran + handoffs
-                    + producers(sessionId, member) + writes + fed);
+            String line = classOf(member) + ':' + ran + handoffs
+                    + producers(sessionId, member) + writes + fed;
+            if (handoffs.isEmpty() && writes.isEmpty()) {
+                fedOnly.add(line);
+            } else {
+                members.add(line);
+            }
         }
+        members.addAll(fedOnly);
         Collections.sort(members);
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
@@ -804,11 +821,12 @@ public final class Corpus implements Arms.Rows {
         return sites;
     }
 
-    /** Which occurrences delivered them: a new producer is new topology.
-     *  A set, sorted: the order replies arrive in is a race, never input
-     *  (hdfs-adhoc-07 CC5: the client's recovery takes the three journal
-     *  nodes' replies in any order, and keyed by that order every arm of
-     *  every client call it feeds was asked once per order). */
+    /** Which occurrences delivered them, by class ({@link #classOf}): a
+     *  new producer class is new topology.  A set, sorted: the order
+     *  replies arrive in is a race, never input (hdfs-adhoc-07 CC5: the
+     *  client's recovery takes the three journal nodes' replies in any
+     *  order, and keyed by that order every arm of every client call it
+     *  feeds was asked once per order). */
     private Set<String> producers(String sessionId,
                                   OccurrenceAddress occurrence) {
         Set<String> from = new TreeSet<String>();
@@ -816,10 +834,24 @@ public final class Corpus implements Arms.Rows {
             Endpoint producer = attach.producer();
             if (producer == null) continue;
             OccurrenceAddress at = producer.occurrence();
-            from.add(at == null ? producer.id() : at.id());
+            from.add(at == null ? producer.id() : classOf(at));
         }
         return from;
     }
+
+    /** An occurrence's class as an arm's key names it: its node, region
+     *  and context shape ({@link #contextShape}), no address's anchor
+     *  hashes or counts. */
+    private String classOf(OccurrenceAddress occurrence) {
+        return classes.computeIfAbsent(occurrence.id(), id ->
+                occurrence.node().render() + "|" + occurrence.regionId()
+                        + "|" + contextShape(occurrence.context()));
+    }
+
+    /** {@link #classOf}, once per occurrence: a corpus does not change once
+     *  read. */
+    private final Map<String, String> classes =
+            new java.util.concurrent.ConcurrentHashMap<String, String>();
 
     /** Per-site counts of the writes to {@code locations} (not values); an
      *  INITIAL row is no write. */

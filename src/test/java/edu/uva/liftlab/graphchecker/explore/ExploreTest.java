@@ -1586,11 +1586,40 @@ public class ExploreTest {
             if ("s-idle".equals(row[0])) session.activation(lateWriter, false);
             session.flush();
         }
+        // A world whose flip stands later in the task's own occurrence (a
+        // fault after the guard: solr-adhoc-07's makePath): its prefix is
+        // asserted, never keyed.
+        Session afterGuard = new Session(iteration, "s-later");
+        afterGuard.activation(TARGET, true);
+        afterGuard.activation(WRITER, false);
+        afterGuard.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                "10", true);
+        afterGuard.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                "10", true);
+        afterGuard.symbolic("e.stored", "M_A");
+        afterGuard.write(STORED, ALL_KEYS, 5L, "e.stored");
+        afterGuard.write(negotiated, qop, 1L, "e.stored");
+        afterGuard.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+        afterGuard.activation(READER, false);
+        afterGuard.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+        afterGuard.decision(TARGET, "Near#u2", 1, true, "(> M_A 1)");
+        afterGuard.decision(TARGET, "Far#u4", 1, true, "(> M_B 1)");
+        afterGuard.decision(TARGET, "Guard#u8", 1, false,
+                "(> (+ M_A M_READ_KEY) 3)");
+        afterGuard.decision(TARGET, "Later#u20", 1, true, "(> M_A 5)");
+        afterGuard.flush();
+        worker(iteration, "obligations-0000", "ob-later", "OBL.later",
+                "s-later", TARGET, "Later#u20",
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap());
         Corpus corpus = Corpus.read(iteration, null);
         Task task = ClosurePlanner.taskOf(corpus,
                 ClosurePlanner.taskId(TARGET));
         assertNotNull(task);
         String seed = dependence(corpus, task, "s-seed", "Guard#u8");
+        assertEquals("a world's flip after the guard is no condition of its"
+                + " arm", seed, dependence(corpus, task, "s-later",
+                "Guard#u8"));
         assertEquals("a prefix decision over a root the guard never names "
                 + "is not what it depends on", seed,
                 dependence(corpus, task, "s-far", "Guard#u8"));
@@ -1840,6 +1869,79 @@ public class ExploreTest {
                         incomplete);
             }
         }
+    }
+
+    /**
+     * A MEMBER IS NAMED BY ITS CLASS ({@link Corpus#inputShape}): node,
+     * region and context shape, never its address, and a line that only fed
+     * the region counts once however many members of its class ran it -- a
+     * poll that ran once, three times or under renumbered indices delivers
+     * one world (solr-adhoc-07/21 IB1: per-request and watcher occurrences
+     * re-keyed every arm).  A line that writes what the guard reads keeps
+     * its multiplicity: a second writer of the guard's location re-keys.
+     */
+    @Test
+    public void aMemberIsNamedByItsClass() throws Exception {
+        Path iteration = tree.newFolder("member-class").toPath();
+        List<OccurrenceAddress> polls = new ArrayList<OccurrenceAddress>();
+        for (int k : new int[] {1, 2, 3, 7}) {
+            polls.add(occurrence("hdfs-case/dn0", "REGION.addkeys",
+                    CausalContext.of(Role.of("POLL"), "", k),
+                    "o.a.h.h.s.d.Poller#poll#" + k));
+        }
+        // Per session: the polls that ran, each writing the map once.
+        Object[][] sessions = {
+            {"s-one", new int[] {0}},
+            {"s-three", new int[] {0, 1, 2}},
+            {"s-renumbered", new int[] {3}},
+            {"s-none", new int[] {}},
+        };
+        for (Object[] row : sessions) {
+            Session session = new Session(iteration, (String) row[0]);
+            session.activation(TARGET, false);
+            session.constant("e.stored", "7");
+            for (int at : (int[]) row[1]) {
+                session.activation(polls.get(at), false);
+                session.write(at(polls.get(at), Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), ALL_KEYS,
+                        5L + at, "e.stored");
+            }
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        StaticScopeMap reads = StaticScopeMap.read(scopeMap(iteration,
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
+                        "BlockTokenSecretManager#u8",
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
+                        "<example.Manager: example.Keys allKeys>",
+                        "<example.Manager: example.Keys allKeys>", "")));
+        Set<String> none = Collections.<String>emptySet();
+        String once = corpus.inputShape("s-one", TARGET, polls, none, reads);
+        assertFalse("a poll that fed the region is part of the world",
+                once.equals(corpus.inputShape("s-none", TARGET, polls, none,
+                        reads)));
+        assertEquals("a poll that only fed the region, three times",
+                once, corpus.inputShape("s-three", TARGET, polls, none,
+                        reads));
+        assertEquals("or under another index", once,
+                corpus.inputShape("s-renumbered", TARGET, polls, none,
+                        reads));
+        Set<String> guard = Collections.singleton(
+                SmtLowering.locationKey(ALL_KEYS));
+        assertFalse("but three writers of what the guard reads are not one",
+                corpus.inputShape("s-one", TARGET, polls, guard, reads)
+                        .equals(corpus.inputShape("s-three", TARGET, polls,
+                                guard, reads)));
+        assertEquals("whichever index each ran under",
+                corpus.inputShape("s-one", TARGET, polls, guard, reads),
+                corpus.inputShape("s-renumbered", TARGET, polls, guard,
+                        reads));
     }
 
     /**
@@ -2209,6 +2311,10 @@ public class ExploreTest {
             // its own world refuted, the arm its id names answered UNSAT by
             // a sibling path's flip
             {helper, Verdict.UNSAT, "UNSAT", "shared", 0},
+            // never asked itself, its id answered NOT_ADMITTED by a sibling
+            // path's flip (an arm keyed by its effect at the task: a
+            // reduced world's answer stands for it) -- still unanswered
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "shared-only", 0},
             {helper, Verdict.NOT_ADMITTED, "PENDING", "unrun-once", 1},
             {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "unrun-twice", 2},
             {"", null, "NOT_FLIPPABLE", null, 0}};
@@ -2247,7 +2353,21 @@ public class ExploreTest {
             }
             JsonObject named = first;
             int unrun = (Integer) row[4];
-            if ("shared".equals(row[3])) {
+            if ("shared-only".equals(row[3])) {
+                Obligation flip = proposed.get(0);
+                ObligationResult sibling = ObligationResult.of(
+                        flip.obligationId(), Verdict.NOT_ADMITTED, "",
+                        "sibling");
+                record(results, sibling);
+                Path worker = iteration.resolve("obligations-0000")
+                        .resolve(flip.obligationId());
+                Files.createDirectories(worker);
+                Files.write(worker.resolve(ObligationDir.QUESTION),
+                        "siblingflip:asked".getBytes(StandardCharsets.UTF_8));
+                record(worker.resolve(ObligationDir.RESULT), sibling);
+                named = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve("obligations-0001"), 1);
+            } else if ("shared".equals(row[3])) {
                 Obligation flip = proposed.get(0);
                 ObligationResult own = ObligationResult.of(
                         flip.obligationId(), Verdict.NOT_ADMITTED, "s-flip",
