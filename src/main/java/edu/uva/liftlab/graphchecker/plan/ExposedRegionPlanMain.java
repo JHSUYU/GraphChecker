@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
@@ -25,15 +26,17 @@ import java.util.UUID;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** Execution-task rows for occurrences a replay EXPOSED in a region the
- *  recording never planned (PIPELINE §7.8): {@code --iteration <dir>
- *  --growth <growth.jsonl> --output <jsonl>}. Each growth row becomes one
- *  region-path task on that exact address, with static inputs only (cut ports,
- *  declared CALL_RETURN sites), sharing the iteration plan's {@code
- *  replayGroupId}. */
+/** GROW's planner (PIPELINE §7.8): the next generation's whole plan, {@code
+ *  --iteration <dir> --plan <the generation's plan> --growth <growth.jsonl>
+ *  --output <jsonl>}.  Its rows are the plan's, each UNPLANNED_INPUT row's
+ *  invocation added to its task as an input of its own ({@link #grown}),
+ *  then one row per EXPOSED_REGION row: a region-path task on that exact
+ *  address, with static inputs only (cut ports, declared CALL_RETURN sites),
+ *  sharing the plan's {@code replayGroupId}. */
 public final class ExposedRegionPlanMain {
-    /** The growth row kind this main answers. */
+    /** The growth row kinds this main answers. */
     public static final String EXPOSED_REGION = "EXPOSED_REGION";
+    public static final String UNPLANNED_INPUT = "UNPLANNED_INPUT";
     /** Prefix of the admission basis of an exposed occurrence's row. */
     public static final String EXPOSED_BY = "EXPOSED_BY:";
 
@@ -44,15 +47,76 @@ public final class ExposedRegionPlanMain {
 
     public static void main(String[] args) throws Exception {
         Map<String, String> values = ConcolicScheduler.parseArgs(args,
-                "iteration", "static-scope-map", "growth", "output");
+                "iteration", "static-scope-map", "plan", "growth", "output");
         Path iteration = ConcolicScheduler.requiredPath(values, "iteration");
         Path scopeMap = ConcolicScheduler.requiredPath(values,
                 "static-scope-map");
+        Path plan = ConcolicScheduler.requiredPath(values, "plan");
         Path growth = ConcolicScheduler.requiredPath(values, "growth");
         Path output = ConcolicScheduler.requiredPath(values, "output");
-        ArtifactIO.replaceJsonl(output, plan(iteration, scopeMap,
-                ArtifactIO.readJsonl(growth)));
+        List<JsonObject> rows = ArtifactIO.readJsonl(growth);
+        List<JsonObject> generation = grown(ArtifactIO.readJsonl(plan), rows);
+        generation.addAll(plan(iteration, scopeMap, rows));
+        ArtifactIO.replaceJsonl(output, generation);
     }
+
+    /**
+     * {@code plan}'s rows with each UNPLANNED_INPUT row's invocation planned
+     * in its task: the input the row names, again, as {@link
+     * UnplannedInput#grown} -- its own symbol and port, its invocation
+     * {@code k}, observed in no recording -- so the k-th call of the marker
+     * in that occurrence is a root of its own.  It is added to the task's
+     * row, never a second row of the occurrence, which would compete for
+     * its claim.  A row naming no task or no input of it is refused.
+     */
+    static List<JsonObject> grown(List<JsonObject> plan,
+                                  List<JsonObject> growth) throws IOException {
+        List<JsonObject> rows = new ArrayList<>();
+        Map<String, JsonObject> tasks = new LinkedHashMap<>();
+        for (JsonObject row : plan) {
+            JsonObject copy = row.deepCopy();
+            rows.add(copy);
+            tasks.put(optionalString(copy, "taskId"), copy);
+        }
+        for (JsonObject row : growth) {
+            if (!UNPLANNED_INPUT.equals(optionalString(row, "kind"))) continue;
+            UnplannedInput input = UnplannedInput.of(
+                    optionalString(row, "taskId"),
+                    optionalString(row, "symbol"),
+                    row.has("k") ? row.get("k").getAsInt() : 0);
+            JsonObject task = tasks.get(input.taskId());
+            JsonArray actions = task == null ? null
+                    : task.getAsJsonArray(InputActionCatalog.FIELD);
+            JsonObject planned = null;
+            boolean present = false;
+            for (int index = 0; actions != null && index < actions.size();
+                 index++) {
+                JsonObject action = actions.get(index).getAsJsonObject();
+                String symbol = optionalString(action, "symbol");
+                if (symbol.equals(input.symbol())) planned = action;
+                present |= symbol.equals(input.grown());
+            }
+            if (planned == null) {
+                throw new IOException("UNPLANNED_INPUT_UNKNOWN: task "
+                        + input.taskId() + " plans no input "
+                        + input.symbol() + ": " + row);
+            }
+            if (present) continue;
+            JsonObject invocation = planned.deepCopy();
+            invocation.addProperty("symbol", input.grown());
+            invocation.addProperty("portId", input.grown());
+            invocation.addProperty("replayOccurrence", input.k());
+            invocation.addProperty("observed", false);
+            for (String recorded : RECORDED) invocation.remove(recorded);
+            actions.add(invocation);
+        }
+        return rows;
+    }
+
+    /** What an input states of the call the recording observed it at: no
+     *  grown invocation was observed. */
+    private static final String[] RECORDED = {
+        "primitiveValue", "eventSeq", "callId"};
 
     /** Growth runs mid-exploration: the scope map is the one the wave
      *  planner read, never the iteration manifest (written only once the
@@ -60,6 +124,11 @@ public final class ExposedRegionPlanMain {
     static List<JsonObject> plan(Path iteration, Path scopeMapFile,
                                  List<JsonObject> growth)
             throws IOException {
+        boolean exposedAny = false;
+        for (JsonObject row : growth) {
+            exposedAny |= EXPOSED_REGION.equals(optionalString(row, "kind"));
+        }
+        if (!exposedAny) return new ArrayList<>();
         StaticScopeMap scopeMap = StaticScopeMap.read(scopeMapFile);
         if (!scopeMap.stated()) {
             throw new IOException("static scope map states no site: "

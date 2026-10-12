@@ -5043,8 +5043,8 @@ campaign_stream_take_round() {
   local -a ids=() rows=()
   name=$(basename "${round_dir}")
   # The planner states both files every round; an empty obligations file is
-  # nothing new to ask, and a growth file with no EXPOSED_REGION row a closed
-  # region set.
+  # nothing new to ask, and a growth file with no exposure (EXPOSED_REGION,
+  # UNPLANNED_INPUT) nothing to grow.
   require_file "round growth rows" "${round_dir}/growth.jsonl"
   require_file "round obligations" "${round_dir}/obligations.jsonl"
   exposures=$(campaign_exposures "${round_dir}/growth.jsonl")
@@ -5067,7 +5067,7 @@ obligation(s), ${exposed} exposure(s), $(grep -c '' \
     stream_stop=REGION_PATH_WAVE_BUDGET_REACHED
     stream_stop_detail="${name} is of wave ${wave}, and the exploration \
 reached its configured budget of region_path_max_waves=${region_path_max_waves} \
-with ${proposed} obligation(s) still open and ${exposed} region exposure(s) \
+with ${proposed} obligation(s) still open and ${exposed} exposure(s) \
 not yet woven"
     campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}"
     stream_cancelled+=("${ids[@]}")
@@ -5914,24 +5914,28 @@ did not stage"
   stream_staged=()
 }
 
-# The EXPOSED_REGION rows of a round's growth.jsonl, one `obligation region
-# session` line each, sorted.
+# The exposures of a round's growth.jsonl, one `obligation grown session`
+# line each, sorted: an EXPOSED_REGION row's region, an UNPLANNED_INPUT
+# row's `<task> <input>#<k>`.
 campaign_exposures() {
-  jq -r 'select(.kind == "EXPOSED_REGION")
-         | [.obligationId, .regionId, .sessionId] | @tsv' "$1" \
+  jq -r 'select(.kind == "EXPOSED_REGION" or .kind == "UNPLANNED_INPUT")
+         | [.obligationId, (.regionId // "\(.taskId) \(.symbol)#\(.k)"),
+            .sessionId] | @tsv' "$1" \
     | LC_ALL=C sort -u
 }
 
-# GROW (PIPELINE §7.8): a region a replay reached without its hooks is
-# planned, woven in, and the replay that exposed it is run again under the
-# same world, so a later round's closure sees the region's decisions and
-# exports.
+# GROW (PIPELINE §7.8): a region a replay reached without its hooks, or a
+# marker invocation only a flipped world made, is planned, woven in, and the
+# replay that exposed it is run again under the same world, so a later
+# round's closure sees the region's decisions and exports, or flips the new
+# root.
 #
 # One GROW is one GENERATION of the plan and the class tree:
-# ExposedRegionPlanMain synthesises the task rows the exposures need
-# (admissionBasis EXPOSED_BY), the generation's plan is the one before it
-# plus those rows, written as a new file -- the iteration's plan and the seed
-# plan are its links from now on -- and INSTRUMENT weaves it into the
+# ExposedRegionPlanMain writes the generation's whole plan -- the one before
+# it, each grown invocation an input of its task's row, plus the task rows
+# the exposed regions need (admissionBasis EXPOSED_BY) -- as a new file, kept
+# beside the round too (grown_plan.jsonl); the iteration's plan and the seed
+# plan are its links from now on, and INSTRUMENT weaves it into the
 # generation's own tree.  A start takes the generation current when it
 # starts (campaign_stream_start), so whatever already runs keeps the plan
 # and the classes it started on.  Each exposing obligation's replay is
@@ -5942,38 +5946,41 @@ campaign_exposures() {
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
   local growth=${2:-${round_dir}/growth.jsonl}
-  local rows="${round_dir}/exposed_region_plan.jsonl"
   local worker file
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
   [[ -z "$(campaign_exposures "${growth}" | awk -F'\t' '$1 == ""')" ]] \
     || campaign_fail EXPLORE ExploreMain "${growth}" \
-      "an EXPOSED_REGION row names no obligation; only a focused replay's \
-exposure can be grown into"
+      "an exposure names no obligation; only a focused replay's exposure \
+can be grown into"
+  stream_generation=$((stream_generation + 1))
+  generation="${iteration_dir}/generations/g${stream_generation}"
+  mkdir -p "${generation}"
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
     --iteration "${iteration_dir}" \
     --static-scope-map "${causynth_static_scope_map}" \
+    --plan "${stream_plan}" \
     --growth "${growth}" \
-    --output "${rows}" \
+    --output "${generation}/execution_task_plan.jsonl" \
     >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
   [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
     "${round_dir}/grow-stderr.log" \
-    "the exposed-region planner failed with exit ${status}: \
+    "GROW's planner failed with exit ${status}: \
 $(campaign_thrown "${round_dir}/grow-stderr.log")"
-  require_nonempty "exposed region plan rows" "${rows}"
-  stream_generation=$((stream_generation + 1))
-  generation="${iteration_dir}/generations/g${stream_generation}"
-  mkdir -p "${generation}"
-  cat -- "${stream_plan}" "${rows}" >"${generation}/execution_task_plan.jsonl"
+  require_nonempty "the grown generation's plan" \
+    "${generation}/execution_task_plan.jsonl"
+  ln -f "${generation}/execution_task_plan.jsonl" \
+    "${round_dir}/grown_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   campaign_log "$(basename "${round_dir}"): grown by \
-$(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
-($(wc -l <"${rows}") task row(s)); weaving generation g${stream_generation}"
+$(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
+  | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
+exposure(s)); weaving generation g${stream_generation}"
   campaign_instrument "${iteration_dir}" "${generation}/instrumented-classes"
   stream_plan="${generation}/execution_task_plan.jsonl"
   stream_classes="${generation}/instrumented-classes"
@@ -6168,6 +6175,7 @@ explore_manifest.json 2>/dev/null) \
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
       | bound($bound)];
     [$last[] | bound("max-paths-per-region")] as $paths
+    | [$last[] | bound("unplanned-input-max")] as $inputs
     | rows("max-world-depth") as $depth
     | rows("loop-body-bound") as $loops
     | ($rounds | last | .truncated // 0) as $truncated
@@ -6192,6 +6200,11 @@ explore_manifest.json 2>/dev/null) \
               + " bound cut before they reached it, before or after they"
               + " left the way to the throw (bodies: " + ($loops | map(.subject
               | sub(".*="; "")) | unique | join(", ")) + ")")}),
+        (select(($inputs | length) > 0)
+         | {by: "unplanned_input_max",
+            detail: ("\($inputs | length) marker invocation(s) past the"
+              + " \($inputs[0].subject | sub(".*="; "")) of one occurrence"
+              + " GROW plans inputs for stayed concrete")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"
