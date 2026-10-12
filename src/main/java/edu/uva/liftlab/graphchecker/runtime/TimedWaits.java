@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.util.ArrayDeque;
 import java.util.IdentityHashMap;
@@ -7,9 +9,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * THE timed waits of the application scope: where a service loop hands its
@@ -682,6 +689,74 @@ public final class TimedWaits {
             Waits waits = WAITS.get(on);
             if (waits != null) waits.sent++;
         }
+    }
+
+    // ---- a planted timeout ------------------------------------------------
+
+    /**
+     * Whether a timed wait's planted timeout (a TIMED_WAIT door's marker
+     * answered true, {@code causynth.DoorWeave#guard}) is one the call could
+     * have reached: not where the real call returns at once -- a latch
+     * already open, a future already done, a queue holding an element, a
+     * lock free or held by this thread, a semaphore with the {@code permits}
+     * -- nor where it throws at once, on an interrupted thread.  A condition
+     * states nothing to look at.  An impossible one is refused by name, so
+     * the world is never run as if reached (solr-adhoc-09: ZkStateReader
+     * waitForState's watcher may count its latch down on this thread before
+     * the await): a native run states its FAULT row unwritten, a replay an
+     * ASSIGNMENT_UNPLANTED row; the call then runs.
+     */
+    public static boolean timesOut(Object waitedOn, int permits,
+                                   String marker) {
+        try {
+            String answered = answeredAtOnce(waitedOn, permits);
+            if (answered == null) return true;
+            if (!RecordingPlant.timeoutRefused(marker, answered)) {
+                ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+                RowRuntime.gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
+                        marker + (active == null ? "" : " at "
+                                + active.address()), "the planted timeout "
+                                + "cannot happen: " + answered + ", so the "
+                                + "call ran");
+            }
+            return false;
+        } catch (RuntimeException unreadable) {
+            // Never thrown into the program: the plant takes, as before.
+            return true;
+        }
+    }
+
+    /** Why the call would return or throw at once, or null. */
+    static String answeredAtOnce(Object waitedOn, int permits) {
+        if (Thread.currentThread().isInterrupted()) {
+            return "the thread is interrupted, so the wait throws at once";
+        }
+        if (waitedOn instanceof CountDownLatch
+                && ((CountDownLatch) waitedOn).getCount() == 0L) {
+            return "the latch is open";
+        }
+        if (waitedOn instanceof Future && ((Future<?>) waitedOn).isDone()) {
+            return "the future is done";
+        }
+        if (waitedOn instanceof BlockingQueue
+                && !((BlockingQueue<?>) waitedOn).isEmpty()) {
+            return "the queue holds an element";
+        }
+        if (waitedOn instanceof ReentrantLock
+                && (((ReentrantLock) waitedOn).isHeldByCurrentThread()
+                || !((ReentrantLock) waitedOn).isLocked())) {
+            return "the lock is free or held by this thread";
+        }
+        if (waitedOn instanceof ReentrantReadWriteLock.WriteLock
+                && ((ReentrantReadWriteLock.WriteLock) waitedOn)
+                .isHeldByCurrentThread()) {
+            return "the write lock is held by this thread";
+        }
+        if (waitedOn instanceof Semaphore
+                && ((Semaphore) waitedOn).availablePermits() >= permits) {
+            return "the semaphore has the permits";
+        }
+        return null;
     }
 
     // ---- BlockingQueue.poll(long, TimeUnit) -------------------------------

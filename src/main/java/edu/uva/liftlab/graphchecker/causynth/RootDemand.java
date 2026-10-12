@@ -47,10 +47,10 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  *       reference, {@code String} or enum field a region stores
  *       (TRACK_IDENTITY), a container's state (TRACK_CONTAINER), a field no
  *       region stores (PRE_WINDOW), a region root's formal (WIRE: the message
- *       or the thread start that hands it over), a file, stream, socket or
- *       native result (IO), a call into the system's own code outside the
- *       scope or a formal whose callers are (SCOPE), any other library
- *       result (LIBRARY).</li>
+ *       or the thread start that hands it over), a file, stream, socket,
+ *       native or demanded door's result (IO), a call into the system's own
+ *       code outside the scope or a formal whose callers are (SCOPE), any
+ *       other library result (LIBRARY).</li>
  * </ul>
  * Receiver edges name which object is read, not the value, and are followed
  * only to a value-like receiver (a box, a {@code String}).
@@ -72,10 +72,13 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * concrete anchor's demand keeps its reads by ({@code
  * explore.ClosurePlanner#concrete}).</p>
  *
- * <p>A local file operation is a fault door only where its result or its
- * failure flows into what the walk demanded ({@link Faults}, a demanded
- * door of the library catalog): (a) an IO boundary whose call returns a
- * failing result ({@code File#renameTo}'s false) into the path; (b) a call
+ * <p>A local file operation or a timed wait is a fault door only where its
+ * result or its failure flows into what the walk demanded ({@link Faults},
+ * a demanded door of the library catalog, whose call's return is an IO
+ * boundary whatever operands the call carries): (a) an IO boundary whose
+ * call returns a failing result
+ * ({@code File#renameTo}'s false, {@code CountDownLatch#await}'s timeout)
+ * into the path; (b) a call
  * whose fault, in the latent model ({@code FaultPropagation#latent}),
  * escapes its method before a demanded store (a writer of a chosen TRACK,
  * TRACK_IDENTITY, TRACK_CONTAINER or READ field), or goes to a handler that
@@ -824,6 +827,10 @@ final class RootDemand {
             if (clocks.containsKey(callee)) return Kind.CLOCK;
             if (config.callees().contains(callee)) return Kind.CONFIG_CALL;
             if (Debug.isBooleanMarkerSignature(callee)) return Kind.FAULT;
+            // A demanded door's outcome is the environment's, whatever its
+            // operands carry (a timed wait's timeout, a rename's target):
+            // checked before them, or every such call is walked through.
+            if (LibraryCatalog.demandedDoor(callee) != null) return Kind.IO;
             // An expanded body, or the call's operand edges, carry it.
             if (into.containsKey(cell) || carried.contains(callee)) {
                 return null;

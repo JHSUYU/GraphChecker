@@ -40,6 +40,7 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -3366,6 +3367,59 @@ public class ExploreTest {
                             Collections.singleton(member.id()), 6).replaced);
         }
 
+        // A member this replay ran under its own context on another node
+        // MOVED (solr-bugs-snapshot-no-active Z2K: a setData fault made node1
+        // the Overseer, and the update node1 had served ran on node0, beside
+        // node1's new autoscaling write at setData's code point): named,
+        // DIAGNOSTIC, never a replacement -- unless all it ran elsewhere is
+        // a Lost context, which names no shape.
+        OccurrenceAddress served = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.CLIENT, "update", 1),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress lost = occurrence("hdfs-case/dn0",
+                "REGION.checksum", CausalContext.of(Role.UNKNOWN),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress movedRequest = occurrence("hdfs-case/dn1",
+                "REGION.checksum", served.context(),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress lostThere = occurrence("hdfs-case/dn1",
+                "REGION.checksum", CausalContext.of(Role.UNKNOWN),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        // what else the replay ran, whether it replaced the member, the
+        // moved rows
+        Object[][] movedRows = {
+                {movedRequest, false, 1},
+                {lostThere, true, 0},
+        };
+        for (Object[] row : movedRows) {
+            Path dir = tree.newFolder("closure-moved-" + ((OccurrenceAddress)
+                    row[0]).node().render().hashCode() + "-" + row[2])
+                    .toPath();
+            Session ranIt = new Session(dir, "s-seed");
+            ranIt.activation(served, false);
+            ranIt.flush();
+            Session ranThere = new Session(dir, "s-flip");
+            ranThere.activation(lost, true);
+            ranThere.activation((OccurrenceAddress) row[0], false);
+            ranThere.answered(ObligationResult.of("OBL.s-flip",
+                    Verdict.ADMITTED, "s-flip",
+                    "the focused prefix reproduced"));
+            ranThere.flush();
+            SlotTable.Reconciliation reconciled = new SlotTable().reconcile(
+                    Corpus.read(dir, null),
+                    Collections.singleton(served.id()), 6);
+            assertEquals(row[0] + " elsewhere", row[1], reconciled.replaced);
+            int named = 0;
+            for (GapRow gap : reconciled.gaps) {
+                if (gap.kind() != GapKind.ADDRESS_UNSTABLE) continue;
+                assertEquals(GapClass.DIAGNOSTIC, gap.cls());
+                assertEquals(served.render(), gap.subject());
+                assertTrue(gap.detail(), gap.detail().contains("hdfs-case/dn1"));
+                named++;
+            }
+            assertEquals(row[0] + " elsewhere", row[2], named);
+        }
+
         // The closure may hold TWO occurrences of one code point: hdfs-17897's
         // dn0 serves the client's SASL handshake and the checksum leader's
         // own at one callback, and the leader's co-reads the key map the
@@ -5219,6 +5273,92 @@ public class ExploreTest {
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()));
+    }
+
+    /**
+     * GROW OF AN INVOCATION (PIPELINE §7.8): a marker call only a flipped
+     * world made (solr-adhoc-09: the second {@code waitForState} after the
+     * first timed out) is exposed by an admitted session that may parent,
+     * once, as an UNPLANNED_INPUT growth row naming the session and its
+     * obligation; the seed and a stopped branch expose none; one past the
+     * declared bound is named, counted as {@code unplanned-input-max}, and
+     * not grown; one the plan already holds grows nothing.
+     */
+    @Test
+    public void aMarkerInvocationOnlyAFlippedWorldMadeIsGrownOnce()
+            throws Exception {
+        Object[][] subjects = {
+            {"TASK.t SYM.m#2", "TASK.t", "SYM.m", 2, "SYM.m#2"},
+            {"TASK.t SYM.m#3#2", "TASK.t", "SYM.m", 2, "SYM.m#2"},
+        };
+        for (Object[] subject : subjects) {
+            UnplannedInput input = UnplannedInput.parse((String) subject[0]);
+            assertEquals(Arrays.asList(subject[1], subject[2], subject[3],
+                    subject[4]), Arrays.asList(input.taskId(), input.symbol(),
+                    input.k(), input.grown()));
+        }
+        Path iteration = tree.newFolder("unplanned").toPath();
+        Object[][] sessions = {
+            // session, focused, its activation, the invocations it names
+            {"s-seed", false, TARGET, "SYM.m#2"},
+            {"s-flip", true, TARGET, "SYM.m#2 SYM.m#5"},
+            {"s-later", true, TARGET, "SYM.m#2"},
+            {"s-stopped", true, WRITER, "SYM.x#2"},
+        };
+        for (Object[] row : sessions) {
+            String sessionId = (String) row[0];
+            Session session = new Session(iteration, sessionId);
+            session.activation((OccurrenceAddress) row[2], (Boolean) row[1]);
+            if ((Boolean) row[1]) {
+                session.answered(ObligationResult.of("OBL." + sessionId,
+                        Verdict.ADMITTED, sessionId, "admitted"));
+            }
+            for (String grown : ((String) row[3]).split(" ")) {
+                session.gap(GapRow.of(sessionId, GapKind.UNPLANNED_INPUT,
+                        GapClass.DIAGNOSTIC, "TASK.t " + grown, "concrete"));
+            }
+            session.flush();
+        }
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u19"));
+        Path out = tree.newFolder("unplanned-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null, results, wave, 0);
+        List<String> grown = new ArrayList<String>();
+        for (JsonObject row : RowCodec.readJsonl(
+                wave.resolve(WaveGraph.GROWTH))) {
+            grown.add(row.get("kind").getAsString() + " "
+                    + row.get("taskId").getAsString() + " "
+                    + row.get("symbol").getAsString() + "#"
+                    + row.get("k").getAsInt() + " "
+                    + row.get("sessionId").getAsString() + " "
+                    + row.get("obligationId").getAsString());
+        }
+        assertEquals(Collections.singletonList(
+                "UNPLANNED_INPUT TASK.t SYM.m#2 s-flip OBL.s-flip"), grown);
+        boolean bounded = false;
+        for (JsonObject gap : RowCodec.readJsonl(wave.resolve("gaps.jsonl"))) {
+            bounded |= gap.get("subject").getAsString().equals(
+                    "TASK.t SYM.m#5 unplanned-input-max="
+                            + UnplannedInput.MAX);
+        }
+        assertTrue("the bound is named, counted", bounded);
+        // Planned (an earlier generation's), it grows nothing.
+        JsonObject planned = new JsonObject();
+        planned.addProperty("taskId", "TASK.t");
+        JsonArray inputs = new JsonArray();
+        JsonObject input = new JsonObject();
+        input.addProperty("symbol", "SYM.m#2");
+        inputs.add(input);
+        planned.add("inputActions", inputs);
+        RowCodec.writeJsonl(iteration.resolve("execution_task_plan.jsonl"),
+                Collections.singletonList(planned));
+        Path next = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null, results, next, 1);
+        assertTrue("a planned invocation grows no row",
+                RowCodec.readJsonl(next.resolve(WaveGraph.GROWTH)).isEmpty());
     }
 
     /**

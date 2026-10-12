@@ -593,7 +593,11 @@ public final class SlotTable {
      * that member, whatever it counted -- a poll's k-th wake is another k in
      * every run (solr-adhoc-05, -21: SolrZkClient#getData under
      * Root:WAKE/ZkDistributedQueue.peekElements#k) -- and
-     * one that ran it under that shape and another too is growth.
+     * one that ran it under that shape and another too is growth.  A member
+     * the session ran under its own shape, at its region and index, on
+     * another node MOVED: the world placed the work there, and what runs at
+     * its code point is other work ({@link #movedTo}) -- named, DIAGNOSTIC,
+     * never a replacement.
      */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {
@@ -624,6 +628,7 @@ public final class SlotTable {
                 }
             }
             Map<String, Boolean> memberRan = new HashMap<String, Boolean>();
+            Set<String> moved = new HashSet<String>();
             for (ActivationRow activation : session.activations()) {
                 OccurrenceAddress occurrence = activation.occurrence();
                 String at = codePoint(occurrence);
@@ -631,6 +636,22 @@ public final class SlotTable {
                 if (members == null || closure.contains(occurrence.id())
                         || memberRan.computeIfAbsent(at, point -> ranMember(
                                 corpus, members, ran.get(point), shapes))) {
+                    continue;
+                }
+                OccurrenceAddress[] elsewhere = movedTo(corpus, members,
+                        session, shapes);
+                if (elsewhere != null) {
+                    if (moved.add(at)) {
+                        gaps.add(GapRow.of(session.sessionId(),
+                                GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC,
+                                elsewhere[0].render(), "this replay ran the "
+                                        + "closure's member under its own "
+                                        + "context on "
+                                        + elsewhere[1].node().render()
+                                        + ": the world placed it there, and "
+                                        + "what ran at its code point here is"
+                                        + " other work"));
+                    }
                     continue;
                 }
                 boolean sameWorld = false;
@@ -657,6 +678,38 @@ public final class SlotTable {
             }
         }
         return replaced;
+    }
+
+    /**
+     * {member, where the session ran it}: a member of one code point the
+     * session ran at its region and index on another node, under a context
+     * of its shape that is no {@code Lost} one (which names no shape to
+     * compare) -- solr-bugs-snapshot-no-active Z2K: a setData fault made
+     * node1 the Overseer, and the client's update node1 had served ran on
+     * node0, beside node1's new autoscaling write at setData's code point;
+     * else null.
+     */
+    private static OccurrenceAddress[] movedTo(Corpus corpus,
+                                               List<OccurrenceAddress> members,
+                                               SessionReader session,
+                                               Map<CausalContext,
+                                                       List<String>> shapes) {
+        for (ActivationRow activation : session.activations()) {
+            OccurrenceAddress ran = activation.occurrence();
+            if (ran.context().isLost()) continue;
+            for (OccurrenceAddress member : members) {
+                if (ran.regionId().equals(member.regionId())
+                        && ran.index().hash().equals(member.index().hash())
+                        && !ran.node().equals(member.node())
+                        && ContextShape.same(shapes.computeIfAbsent(
+                                ran.context(), corpus::contextShape),
+                        shapes.computeIfAbsent(member.context(),
+                                corpus::contextShape))) {
+                    return new OccurrenceAddress[] {member, ran};
+                }
+            }
+        }
+        return null;
     }
 
     /** Whether a session that ran these occurrences at one code point ran a

@@ -82,7 +82,7 @@ public enum GapKind {
      */
     TASK_UNANSWERED,
     /**
-     * An address a run did not reproduce, DIAGNOSTIC, in one of three
+     * An address a run did not reproduce, DIAGNOSTIC, in one of four
      * places.  EXPLORE ({@code explore.ExploreMain}): one planned task
      * answered at two addresses across the corpus, its subject the task id
      * -- arms answered at one address settle nothing at the other; the
@@ -94,6 +94,9 @@ public enum GapKind {
      * runtime.Confirmation#attached}): a delivery into the anchor came from
      * a producer at another address than the model's that answers the
      * model's producer's question, its subject the consumer endpoint.
+     * EXPLORE's reconciliation ({@code explore.SlotTable#contextChanged}):
+     * a closure member a replay ran under its own context on another node,
+     * its subject the member -- moved by the world, never a replacement.
      */
     ADDRESS_UNSTABLE,
     /** The solver gave no answer in the time it was given. */
@@ -146,6 +149,15 @@ public enum GapKind {
      * row or absent {@code manifest.json} reads back as "this run had none".
      */
     SESSION_INCOMPLETE,
+    /**
+     * A planned fault marker of a demanded door called once more in its
+     * occurrence than its task plans inputs for (a call only a flipped world
+     * makes: solr-adhoc-09's second {@code waitForState} after the
+     * first timed out), so it ran concretely.  DIAGNOSTIC, stated by the
+     * replay with an {@link UnplannedInput} subject; an admitted session that
+     * may parent exposes it and GROW plans it (PIPELINE §7.8).
+     */
+    UNPLANNED_INPUT,
     /**
      * An assigned root whose mint RAN in the replay without planting the
      * wave's value (a mint that never ran is NOT_ADMITTED instead).

@@ -60,7 +60,8 @@ guards across methods, threads and the wire.
 - CLOCK reads;
 - FAULT markers at the library catalog's woven doors (Hadoop IPC, HDFS SASL and DataTransfer,
   SolrJ HTTP, ZooKeeper);
-- LOCAL_IO demanded doors (`DemandedDoors`). These are JDK file operations, chosen only where a
+- LOCAL_IO and TIMED_WAIT demanded doors (`DemandedDoors`). These are JDK file operations and
+  timed waits (a wait's marker returns its timeout at once), chosen only where a
   failing result reaches the path, or where a latent fault escapes before a demanded store or is
   caught by a handler that decides a demanded site. At most twelve per case. A door's via chain
   folds into the regions holding its site;

@@ -39,7 +39,7 @@ public class LibraryCatalogTest {
         List<String> transports = new ArrayList<>(LibraryCatalog.transports());
         assertEquals(Arrays.asList("HADOOP_IPC", "HDFS_SASL",
                 "HDFS_DATA_TRANSFER", "SOLR_HTTP", "SOLR_HTTP2", "ZOOKEEPER",
-                "LOCAL_IO"), transports);
+                "LOCAL_IO", "TIMED_WAIT"), transports);
         // A local file operation is a door only at the calls the root
         // demand chose, before the call; it throws the kind the JDK call
         // declares, or returns its failing result.
@@ -54,6 +54,29 @@ public class LibraryCatalogTest {
                         + rename.faults + " " + rename.result);
         assertEquals(null, LibraryCatalog.demandedDoor(
                 "<java.io.File: boolean exists()>"));
+        // A timed wait whose result the slice reads returns its timeout at
+        // once on the fault arm; a future's throws it.
+        String unit = "long,java.util.concurrent.TimeUnit)>";
+        Object[][] waits = {
+            {"<java.util.concurrent.CountDownLatch: boolean await(" + unit,
+                    "FAULT:TIMED_WAIT:AWAIT [] FALSE"},
+            {"<java.util.concurrent.locks.Condition: long awaitNanos(long)>",
+                    "FAULT:TIMED_WAIT:AWAIT [] ZERO"},
+            {"<java.util.concurrent.BlockingQueue: java.lang.Object poll("
+                    + unit, "FAULT:TIMED_WAIT:POLL [] NULL"},
+            {"<java.util.concurrent.Future: java.lang.Object get(" + unit,
+                    "FAULT:TIMED_WAIT:GET "
+                            + "[java.util.concurrent.TimeoutException] NONE"},
+            {"<java.util.concurrent.locks.Lock: boolean tryLock(" + unit,
+                    "FAULT:TIMED_WAIT:ACQUIRE [] FALSE"},
+        };
+        for (Object[] wait : waits) {
+            LibraryCatalog.Door door =
+                    LibraryCatalog.demandedDoor((String) wait[0]);
+            assertEquals(wait[1], door.name() + " " + door.faults + " "
+                    + door.result);
+        }
+        assertTrue(LibraryCatalog.demandedMarker("FAULT:TIMED_WAIT:AWAIT"));
         LinkedHashSet<String> response = new LinkedHashSet<>();
         List<String> dataTransfer = new ArrayList<>();
         for (LibraryCatalog.Door door : LibraryCatalog.doors()) {
@@ -171,7 +194,10 @@ public class LibraryCatalogTest {
             {AT_CALLS + ", \"result\": false}", "a failing result"},
             {AT_CALLS.replace(", \"faults\": [\"java.io.IOException\"]",
                     "") + ", \"sites\": \"DEMANDED\", \"result\": true}",
-                    "result is false or null"},
+                    "result is false, null or 0"},
+            {AT_CALLS.replace(", \"faults\": [\"java.io.IOException\"]",
+                    "") + ", \"sites\": \"DEMANDED\", \"result\": 1}",
+                    "result is false, null or 0"},
         };
         for (String[] row : refused) {
             try {

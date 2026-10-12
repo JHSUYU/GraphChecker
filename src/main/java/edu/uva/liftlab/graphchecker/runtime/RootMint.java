@@ -2,10 +2,12 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.LibraryCatalog;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.RootCategory;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
@@ -234,9 +236,14 @@ final class RootMint {
         }
         int occurrence = active.materializationOccurrences.local(
                 method, unitIndex, local);
+        SymbolizeAction marker = null;
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesLocal(method, unitIndex, local)
-                    || !action.acceptsOccurrence(occurrence)
+            if (!action.matchesLocal(method, unitIndex, local)) continue;
+            if (marker == null
+                    && LibraryCatalog.demandedMarker(action.marker)) {
+                marker = action;
+            }
+            if (!action.acceptsOccurrence(occurrence)
                     || !action.repeatedPrimitiveAccessor()
                     && !active.materialized.add(action.symbol)) {
                 continue;
@@ -244,7 +251,38 @@ final class RootMint {
             return materializePrimitiveValue(active, action, boxedValue,
                     null);
         }
+        if (marker != null) unplanned(active, marker, occurrence);
         return boxedValue;
+    }
+
+    /**
+     * A demanded door's planned marker called at an invocation its task
+     * plans no input for -- a call only this world makes (solr-adhoc-09: the
+     * second {@code waitForState} after the first timed out) -- runs at its
+     * recorded polarity, concretely, and is named ({@link UnplannedInput}),
+     * so an admitted session that may parent grows it into a root of its own
+     * (PIPELINE §7.8).  Any other input's later call keeps its rule: a clock
+     * read again is a later instant of one root, a configuration one root
+     * per key, an accessor's every read its own.
+     */
+    private static void unplanned(ActiveRegion active, SymbolizeAction marker,
+                                  int k) {
+        // Past the bound's next call nothing more is grown or counted.
+        if (k > UnplannedInput.MAX + 1) return;
+        try {
+            UnplannedInput input = UnplannedInput.of(
+                    active.activation.taskId, marker.symbol, k);
+            RowRuntime.gap(GapKind.UNPLANNED_INPUT, GapClass.DIAGNOSTIC,
+                    input.subject(), "the marker " + marker.marker + " at "
+                            + firstNonBlank(marker.siteId, marker.cell)
+                            + " ran its call #" + k + " of this occurrence, "
+                            + "which its task plans no input for, so it ran "
+                            + "concretely; an admitted session that may "
+                            + "parent grows it into the input "
+                            + input.grown());
+        } catch (RuntimeException unnamed) {
+            // Never thrown into the program: the call ran concretely.
+        }
     }
 
     /** Materializes the primitive read by one exact {@code getstatic}. */

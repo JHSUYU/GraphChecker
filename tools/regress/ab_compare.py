@@ -307,11 +307,13 @@ def headline(stage, d, status):
         return drift(d)
     if stage in ("EXPLORE.0", "EXPLORE.N"):
         w = wave_dir(d)
-        grown = [r for r in jsonl(j(w, "growth.jsonl"))
-                 if r.get("kind") == "EXPOSED_REGION"]
-        return "%s obl=%s grow=%d gaps=%s tasks=%s" % (
+        growth = jsonl(j(w, "growth.jsonl"))
+        grown = [r for r in growth if r.get("kind") == "EXPOSED_REGION"]
+        inputs = [r for r in growth if r.get("kind") == "UNPLANNED_INPUT"]
+        return "%s obl=%s grow=%d inputs=%d gaps=%s tasks=%s" % (
             os.path.basename(w)[-4:], rows(j(w, "obligations.jsonl")),
-            len(grown), rows(j(w, "gaps.jsonl")), rows(j(w, "tasks.jsonl")))
+            len(grown), len(inputs), rows(j(w, "gaps.jsonl")),
+            rows(j(w, "tasks.jsonl")))
     if stage == "SOLVE.0":
         verdicts = collections.Counter()
         for name in sorted(os.listdir(d)):

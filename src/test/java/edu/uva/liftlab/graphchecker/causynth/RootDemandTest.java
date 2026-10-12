@@ -295,6 +295,48 @@ public class RootDemandTest {
         }
     }
 
+    /**
+     * A demanded door's result is an IO boundary even where the analyzer's
+     * operand edges carry the call (a timed wait's timeout local reaches its
+     * return through a {@code local_def_use} naming the call, as a rename's
+     * target does): {@code if (!lock.tryLock(t, u))} on the path is a VALUE
+     * door, never walked through.
+     */
+    @Test
+    public void aDoorsResultIsABoundaryWhateverItsOperandsCarry() {
+        scene(new LinkedHashMap<>());
+        String z0 = CHECK + "::$z0";
+        Object[][] rows = {
+            {"<java.util.concurrent.locks.Lock: boolean tryLock(long,"
+                    + "java.util.concurrent.TimeUnit)>"},
+            {"<java.io.File: boolean renameTo(java.io.File)>"},
+        };
+        for (Object[] row : rows) {
+            String callee = (String) row[0];
+            List<Map<String, Object>> edges = Arrays.asList(
+                    edge("exception_guard", z0, CHECK + "#u9#exception:E",
+                            CHECK, 9, null),
+                    edge("call_return", callee + ".return", z0, CHECK, 3,
+                            callee),
+                    edge("local_def_use", CHECK + "::$l1", z0, CHECK, 3,
+                            callee));
+            Faults faults = new Faults();
+            RootDemand demand = RootDemand.of(edges, Collections
+                    .singletonList(region()), Collections.<String,
+                    Clock>emptyMap(), ConfigRoots.of(edges,
+                    new LinkedHashMap<>()), Collections.singleton(CHECK
+                    + "#u9"), field -> SharedFieldFlow.TrackedKind.NONE,
+                    field -> false, owner -> owner.startsWith("t."), faults,
+                    Collections.<DemandedDoors.Site>emptyList());
+            List<String> doors = new ArrayList<>();
+            for (DemandedDoors.Site door : demand.doors()) {
+                doors.add(door.callee + " " + door.reach);
+            }
+            assertEquals(callee, Collections.singletonList(callee
+                    + " VALUE"), doors);
+        }
+    }
+
     private static String kinds(
             Map<String, StaticScopeMap.Demanded> frontier) {
         Map<String, String> kinds = new LinkedHashMap<>();
@@ -334,6 +376,7 @@ public class RootDemandTest {
         @Override
         public RootDemand.Candidate valued(String siteId, String callee) {
             return callee.startsWith("<java.io.File: ")
+                    || callee.startsWith("<java.util.concurrent.locks.Lock: ")
                     ? new RootDemand.Candidate(siteId, callee, CHECK, 0, 0,
                     RootDemand.VALUE, false, Collections.singletonList(
                     CHECK), true) : null;

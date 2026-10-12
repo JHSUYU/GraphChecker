@@ -41,10 +41,14 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * call are the recording weave's region entries on its thread
  * ({@code CausynthTraceRecorder#enclosingOccurrences}).</p>
  * <ul>
- *   <li>{@code ROOT FAULT {rootId, occurrence, siteId, value}}: a marker call
- *   ({@code Debug.makeSymbolicBoolean}) answers the value at that call site
- *   under the occurrence; otherwise, and always without a plant, its
- *   recorded polarity {@code false}.  A {@code true} answer is a door fault
+ *   <li>{@code ROOT FAULT {rootId, occurrence, siteId, invocation, value}}: a
+ *   marker call ({@code Debug.makeSymbolicBoolean}) answers the value at
+ *   that call site under the occurrence, at its {@code invocation}-th call
+ *   there (1 when unstated: a grown root is one invocation of its own,
+ *   PIPELINE §7.8); otherwise, and always without a plant, its recorded
+ *   polarity {@code false}.  A timed wait's planted timeout the program
+ *   could not have reached (its latch already open, ...) is refused there,
+ *   {@link #UNWRITTEN} ({@link #timeoutRefused}).  A {@code true} answer is a door fault
  *   for the thread's identity as in a replay ({@link Identity#doorFaulted}).</li>
  *   <li>{@code ROOT HOOK {rootId, occurrence, value}}: a tree's symbolize
  *   hook of that root writes the value into the field it names
@@ -141,6 +145,8 @@ public final class RecordingPlant {
     public static final String ROOT_ID = "rootId";
     public static final String OCCURRENCE = "occurrence";
     public static final String SITE = "siteId";
+    /** A FAULT row's invocation of its marker call in its occurrence. */
+    public static final String INVOCATION = "invocation";
     public static final String SITES = "sites";
     public static final String CALLEE = "callee";
     public static final String JAVA_TYPE = "javaType";
@@ -168,6 +174,14 @@ public final class RecordingPlant {
     /** Whether an ORDER of either scope was not held in time: from then
      *  on no hold of the run holds ({@link #gaveWay}). */
     private static volatile boolean gaveWay;
+    /** Each marker call site's calls so far per occurrence id: the
+     *  invocation a FAULT row answers. */
+    private static final Map<String, Integer> INVOCATIONS =
+            new ConcurrentHashMap<String, Integer>();
+    /** The FAULT row the thread's last marker call answered true, with its
+     *  name and occurrence ({@link #timeoutRefused}). */
+    private static final ThreadLocal<Object[]> ANSWERED =
+            new ThreadLocal<Object[]>();
 
     private RecordingPlant() {
     }
@@ -176,6 +190,7 @@ public final class RecordingPlant {
         PLACES.set(0L);
         CLOCKED.clear();
         STATED.clear();
+        INVOCATIONS.clear();
         NodeClocks.reset();
         gaveWay = false;
     }
@@ -295,8 +310,9 @@ public final class RecordingPlant {
 
     /** One plant file. */
     static final class Plant {
-        /** FAULT markers: call site, then occurrence id, then the root. */
-        final Map<String, Map<String, Root>> markers;
+        /** FAULT markers: call site, then occurrence id, then the root by
+         *  the invocation it answers. */
+        final Map<String, Map<String, Map<Integer, Root>>> markers;
         /** HOOK roots, by root id. */
         final Map<String, Root> hooks;
         /** The calls whose returns it reads, by site id. */
@@ -309,7 +325,7 @@ public final class RecordingPlant {
         /** The claim's anchor, by occurrence id. */
         final String anchor;
 
-        Plant(Map<String, Map<String, Root>> markers,
+        Plant(Map<String, Map<String, Map<Integer, Root>>> markers,
               Map<String, Root> hooks, Map<String, Call> calls,
               Set<String> focused, Map<String, Boolean> fatalArms,
               String anchor) {
@@ -328,16 +344,41 @@ public final class RecordingPlant {
         CausynthTraceRecorder.ActiveCallSiteContext site =
                 CausynthTraceRecorder.currentCallSiteContext();
         if (site == null) return false;
-        Map<String, Root> rows = plant().markers.get(site.siteId());
+        Map<String, Map<Integer, Root>> rows =
+                plant().markers.get(site.siteId());
         String occurrence = plantedOccurrence(rows,
                 CausynthTraceRecorder.enclosingOccurrences());
         if (occurrence == null) return false;
-        Root root = rows.get(OccurrenceAddress.parse(occurrence).id());
+        String id = OccurrenceAddress.parse(occurrence).id();
+        int invocation = INVOCATIONS.merge(site.siteId() + "|" + id, 1,
+                Integer::sum);
+        Root root = rows.get(id).get(invocation);
+        if (root == null) return false;
         boolean value = Boolean.parseBoolean(root.value);
         CausynthTraceRecorder.plantRoot(APPLIED, root.row, name, occurrence,
                 String.valueOf(value));
-        if (value) Identity.doorFaulted(name);
+        if (value) {
+            ANSWERED.set(new Object[] {root, name, occurrence});
+            Identity.doorFaulted(name);
+        }
         return value;
+    }
+
+    /**
+     * A planted timed-wait timeout the program could not have reached at the
+     * call it was planted for ({@code TimedWaits#timesOut}, {@code why}):
+     * the FAULT row the thread's marker call just answered is stated
+     * {@link #UNWRITTEN}, so the run plants no model -- the world is
+     * impossible.  False outside a plant, where a replay names it instead.
+     */
+    static boolean timeoutRefused(String name, String why) {
+        if (!PLANTING) return false;
+        Object[] answered = ANSWERED.get();
+        ANSWERED.remove();
+        if (answered == null || !name.equals(answered[1])) return true;
+        CausynthTraceRecorder.plantRoot(UNWRITTEN, ((Root) answered[0]).row,
+                name + ": " + why, (String) answered[2], "true");
+        return true;
     }
 
     /** A tree's symbolize hook of {@code rootId} on {@code owner}'s field:
@@ -685,8 +726,8 @@ public final class RecordingPlant {
      * ScheduleLog}'s.
      */
     static Plant read(Path file) throws IOException {
-        Map<String, Map<String, Root>> markers =
-                new LinkedHashMap<String, Map<String, Root>>();
+        Map<String, Map<String, Map<Integer, Root>>> markers =
+                new LinkedHashMap<String, Map<String, Map<Integer, Root>>>();
         Map<String, Root> hooks = new LinkedHashMap<String, Root>();
         Map<String, Call> calls = new LinkedHashMap<String, Call>();
         Set<String> focused = new LinkedHashSet<String>();
@@ -752,7 +793,8 @@ public final class RecordingPlant {
     /** One ROOT row into what plants it; returns the occurrence it is
      *  minted at.  A root stated twice is refused. */
     private static String root(JsonObject row, int number,
-                               Map<String, Map<String, Root>> markers,
+                               Map<String, Map<String, Map<Integer, Root>>>
+                                       markers,
                                Map<String, Root> hooks,
                                Map<String, Call> calls) throws IOException {
         String category = optionalString(row, CATEGORY);
@@ -786,9 +828,17 @@ public final class RecordingPlant {
                     || "false".equals(value))) {
                 throw new IOException("not a fault root row: " + row);
             }
-            markers.computeIfAbsent(site,
-                    key -> new LinkedHashMap<String, Root>())
-                    .put(occurrence, root);
+            int invocation = row.has(INVOCATION)
+                    ? row.get(INVOCATION).getAsInt() : 1;
+            if (invocation < 1 || markers.computeIfAbsent(site,
+                    key -> new LinkedHashMap<String, Map<Integer, Root>>())
+                    .computeIfAbsent(occurrence,
+                            key -> new LinkedHashMap<Integer, Root>())
+                    .put(invocation, root) != null) {
+                throw new IOException("the plant states two fault roots, or "
+                        + "none, at " + site + " in " + occurrence
+                        + " invocation " + invocation + ": " + row);
+            }
         } else if (RootCategory.HOOK.name().equals(category)) {
             if (hooks.put(rootId, root) != null) {
                 throw new IOException("the plant states root " + rootId

@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.io.IOException;
@@ -157,26 +158,44 @@ final class WaveGraph {
     }
 
     /** Writes {@code growth.jsonl}: one EXPOSED_REGION row per occurrence the
-     *  closure grows ({@link ClosurePlanner.Plan#exposed}), naming the session
-     *  whose replay is re-run and its obligation; returns the row count. */
+     *  closure grows ({@link ClosurePlanner.Plan#exposed}) and one
+     *  UNPLANNED_INPUT row per marker invocation a flipped world added
+     *  ({@link ClosurePlanner#unplanned}), each naming the session whose
+     *  replay is re-run and its obligation; returns the row count. */
     static int writeGrowth(Corpus corpus,
                            Map<OccurrenceAddress, String> exposed,
+                           Map<UnplannedInput, String> inputs,
                            Path roundDir) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<OccurrenceAddress, String> grown : exposed.entrySet()) {
             OccurrenceAddress occurrence = grown.getKey();
-            SessionReader session = corpus.session(grown.getValue());
-            JsonObject row = new JsonObject();
+            JsonObject row = exposing(corpus, grown.getValue());
             row.addProperty("kind", "EXPOSED_REGION");
             row.addProperty("regionId", occurrence.regionId());
             row.addProperty("node", occurrence.node().render());
             row.addProperty("occurrence", occurrence.render());
-            row.addProperty("sessionId", session.sessionId());
-            row.addProperty("obligationId",
-                    session.obligations().get(0).obligationId());
+            rows.add(row);
+        }
+        for (Map.Entry<UnplannedInput, String> grown : inputs.entrySet()) {
+            UnplannedInput input = grown.getKey();
+            JsonObject row = exposing(corpus, grown.getValue());
+            row.addProperty("kind", "UNPLANNED_INPUT");
+            row.addProperty("taskId", input.taskId());
+            row.addProperty("symbol", input.symbol());
+            row.addProperty("k", input.k());
             rows.add(row);
         }
         RowCodec.writeJsonl(roundDir.resolve(GROWTH), rows);
         return rows.size();
+    }
+
+    /** A growth row's exposing session and its obligation. */
+    private static JsonObject exposing(Corpus corpus, String sessionId) {
+        SessionReader session = corpus.session(sessionId);
+        JsonObject row = new JsonObject();
+        row.addProperty("sessionId", session.sessionId());
+        row.addProperty("obligationId",
+                session.obligations().get(0).obligationId());
+        return row;
     }
 }

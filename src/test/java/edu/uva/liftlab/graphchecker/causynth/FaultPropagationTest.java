@@ -7,6 +7,7 @@ import soot.BooleanType;
 import soot.G;
 import soot.IntType;
 import soot.Local;
+import soot.LongType;
 import soot.Modifier;
 import soot.RefType;
 import soot.Scene;
@@ -332,14 +333,17 @@ public class FaultPropagationTest {
      * demand chooses its call -- a file open's kind, a throw on a failing
      * rename's arm, a call into the system outside the scope declaring a
      * checked exception -- and is then woven at that call alone, before
-     * it, and raises from its marker; a door asked again at a call that
-     * holds one is refused by name.
+     * it, and raises from its marker, a failing result as the call's own
+     * type (a timed wait's {@code awaitNanos} returns {@code 0L}); a door
+     * asked again at a call that holds one is refused by name.
      */
     @Test
     public void aDemandedDoorStandsOnlyAtTheCallChosenForIt()
             throws Exception {
         String open = "<java.io.FileOutputStream: void <init>(java.io.File)>";
         String rename = "<java.io.File: boolean renameTo(java.io.File)>";
+        String await = "<java.util.concurrent.locks.Condition: long "
+                + "awaitNanos(long)>";
         SootMethod save = store();
         String method = save.getSignature();
         FaultPropagation latent = FaultPropagation.latent(
@@ -358,6 +362,8 @@ public class FaultPropagationTest {
                 new DemandedDoors.Site(method, open, 0, 2, "ESCAPE",
                         Collections.singletonList(method)),
                 new DemandedDoors.Site(method, rename, 0, 2, "ESCAPE",
+                        Collections.singletonList(method)),
+                new DemandedDoors.Site(method, await, 0, 2, "VALUE",
                         Collections.singletonList(method))));
         System.setProperty(DemandedDoors.PROPERTY, doors.toString());
         String refused = "";
@@ -373,14 +379,27 @@ public class FaultPropagationTest {
             java.nio.file.Files.delete(doors);
         }
         List<String> woven = new ArrayList<>();
+        List<String> guards = new ArrayList<>();
         int calls = 0;
         for (Unit unit : save.getActiveBody().getUnits()) {
+            if (unit instanceof soot.jimple.Stmt
+                    && ((soot.jimple.Stmt) unit).containsInvokeExpr()
+                    && ((soot.jimple.Stmt) unit).getInvokeExpr()
+                    .getMethodRef().getName().equals("timesOut")) {
+                guards.add(((soot.jimple.Stmt) unit).getInvokeExpr()
+                        .getArgs().toString());
+            }
             DoorWeave.Fault thrown = DoorWeave.woven(save.getActiveBody(),
                     unit);
             DoorWeave.Fault failing = DoorWeave.wovenResult(
                     save.getActiveBody(), unit);
             if (thrown != null) woven.add(thrown.name);
-            if (failing != null) woven.add(failing.name + " -> false");
+            if (failing != null) {
+                Unit value = save.getActiveBody().getUnits().getPredOf(
+                        save.getActiveBody().getUnits().getPredOf(unit));
+                woven.add(failing.name + " -> " + ((soot.jimple.AssignStmt)
+                        value).getRightOp());
+            }
             if (unit instanceof soot.jimple.Stmt
                     && ((soot.jimple.Stmt) unit).containsInvokeExpr()) {
                 String callee = ((soot.jimple.Stmt) unit).getInvokeExpr()
@@ -395,8 +414,12 @@ public class FaultPropagationTest {
                 latentAt},
             {"woven at the chosen calls, the program's calls kept",
                 "[FAULT:LOCAL_IO:OPEN:FileNotFoundException, "
-                        + "FAULT:LOCAL_IO:NAMESPACE -> false] 2",
+                        + "FAULT:LOCAL_IO:NAMESPACE -> 0, "
+                        + "FAULT:TIMED_WAIT:AWAIT -> 0L] 2",
                 woven + " " + calls},
+            {"a timed wait's planted timeout guarded by its receiver, the "
+                    + "permits and the marker; a file operation's not",
+                "[[$r5, 1, \"FAULT:TIMED_WAIT:AWAIT\"]]", guards.toString()},
             {"both escape from their markers",
                 2, markers(FaultPropagation.current().escapes(method))
                         .split(",").length},
@@ -410,8 +433,8 @@ public class FaultPropagationTest {
     /**
      * {@code g.Store.save(File f, File g)}: opens {@code f} for writing,
      * renames it to {@code g} and throws when that fails, flushes through
-     * the system's {@code g.Lib} (outside the scope), then stores {@code
-     * ok}.
+     * the system's {@code g.Lib} (outside the scope), waits on a condition
+     * ({@code awaitNanos}, a timed wait's door), then stores {@code ok}.
      */
     private static SootMethod store() {
         G.reset();
@@ -439,6 +462,11 @@ public class FaultPropagationTest {
         SootMethod init = method(stream, "<init>",
                 Collections.<Type>singletonList(file.getType()),
                 VoidType.v(), Modifier.NATIVE);
+        SootClass condition = library("java.util.concurrent.locks.Condition",
+                object, Modifier.INTERFACE);
+        SootMethod awaitNanos = method(condition, "awaitNanos",
+                Collections.<Type>singletonList(LongType.v()), LongType.v(),
+                Modifier.ABSTRACT);
         SootClass lib = library("g.Lib", object, 0);
         SootMethod flush = method(lib, "flush",
                 Collections.<Type>emptyList(), VoidType.v(),
@@ -456,6 +484,8 @@ public class FaultPropagationTest {
         Local out = local(save, "$r3", stream.getType());
         Local renamed = local(save, "$z0", BooleanType.v());
         Local thrown = local(save, "$r4", ioe.getType());
+        Local waits = local(save, "$r5", condition.getType());
+        Local left = local(save, "$l0", LongType.v());
         Unit flushed = J.newInvokeStmt(J.newStaticInvokeExpr(
                 flush.makeRef()));
         body(save, J.newIdentityStmt(r0, J.newThisRef(owner.getType())),
@@ -472,6 +502,9 @@ public class FaultPropagationTest {
                         .getMethodByName("<init>").makeRef(),
                         StringConstant.v("rename"))),
                 J.newThrowStmt(thrown), flushed,
+                J.newAssignStmt(waits, soot.jimple.NullConstant.v()),
+                J.newAssignStmt(left, J.newInterfaceInvokeExpr(waits,
+                        awaitNanos.makeRef(), soot.jimple.LongConstant.v(5L))),
                 J.newAssignStmt(J.newInstanceFieldRef(r0, ok.makeRef()),
                         IntConstant.v(1)), J.newReturnVoidStmt());
         return save;

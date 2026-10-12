@@ -1008,6 +1008,56 @@ public class ManualMintStatesItsValueTest {
                 + " what its validation admits [6, ] by a.B#u3"));
     }
 
+    /**
+     * A demanded door's marker called at an invocation its task plans no
+     * input for -- a call only a flipped world made -- runs concretely and is
+     * named, so GROW can plan it (PIPELINE §7.8); another input's later
+     * call keeps its rule, unnamed: a clock read again is a later instant of
+     * its one root.
+     */
+    @Test
+    public void anUnplannedMarkerInvocationIsNamed() throws Exception {
+        openSession();
+        Object[][] rows = {
+            // the action's marker, the row its call #1 names
+            {"FAULT:TIMED_WAIT:AWAIT", "TASK.1 SYM.marker#1"},
+            {"", ""},
+            {"FAULT:ZOOKEEPER:WRITE", ""},
+        };
+        for (Object[] row : rows) {
+            RowRuntime.resetForTests();
+            openSession();
+            JsonObject action = action("SYM.marker");
+            action.addProperty("bindingMode", "LOCAL_DEFINITION");
+            action.addProperty("method", METHOD);
+            action.addProperty("unitIndex", UNIT);
+            action.addProperty("local", "$z0");
+            action.addProperty("javaType", "Z");
+            action.addProperty("marker", (String) row[0]);
+            // It plans the call's second invocation, never its first.
+            action.addProperty("replayOccurrence", 2);
+            JsonObject task = task(MANUAL_REGION, MANUAL_SOURCE,
+                    MANUAL_SOURCE + "/region/" + MANUAL_REGION + "#1");
+            task.getAsJsonArray("inputActions").add(action);
+            ActiveRegion active = open(task);
+            entered(active);
+            try {
+                assertEquals(Boolean.FALSE, RootMint.materializePrimitive(
+                        METHOD, UNIT, "$z0", Boolean.FALSE));
+                if (row[1].equals("")) {
+                    assertNull("named only for a demanded door's marker: "
+                            + row[0], gap());
+                } else {
+                    assertEquals(GapKind.UNPLANNED_INPUT, gap().kind());
+                    assertFalse(gap().blocking());
+                    assertEquals(row[1], gap().subject());
+                }
+            } finally {
+                left(active);
+            }
+        }
+    }
+
     /** One expression naming one VM symbol, as a mint publishes it. */
     private static JsonObject symbolExpression(String symbol) {
         JsonObject expression = new JsonObject();
