@@ -208,6 +208,53 @@ final class FlipQuery {
         return lowered.isEmpty() ? term : lowered;
     }
 
+    /** Whether a lowered conjunct is unusable: blank, or an application
+     *  with missing arguments ({@code (not )}), which z3 answers with an
+     *  error and no verdict.  {@link Builder#arm} drops such an arm, and
+     *  such a conjunct of one, and {@code Corpus#handoffName} names it so. */
+    static boolean malformed(String term) {
+        if (term == null || term.trim().isEmpty()) return true;
+        for (int at = term.indexOf('('); at >= 0;
+                at = term.indexOf('(', at + 1)) {
+            int index = at + 1;
+            while (index < term.length()
+                    && !Character.isWhitespace(term.charAt(index))
+                    && term.charAt(index) != '('
+                    && term.charAt(index) != ')') {
+                index++;
+            }
+            if (index == at + 1) continue;
+            while (index < term.length()
+                    && Character.isWhitespace(term.charAt(index))) {
+                index++;
+            }
+            if (index < term.length() && term.charAt(index) == ')') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The first name of one session's lowered term a flip query cannot
+     * declare, or null: {@link Builder#rename}'s refusal -- a name that is
+     * no builtin, no preamble name, no name the lowering minted and no
+     * symbol of the corpus (a let-bound text is not checked, {@link
+     * SmtNames#rename}).  {@link Builder#arm} drops an arm, and {@link
+     * Builder#delivered} a writer's value, that names one; {@code
+     * Corpus#term} names such a term as stating nothing.
+     */
+    static String undeclared(Corpus corpus, String sessionId, String text) {
+        SmtLowering lowering = corpus.lowering(sessionId);
+        Set<String> unknown = new LinkedHashSet<String>();
+        SmtNames.rename(text, Collections.<String, String>emptyMap(),
+                name -> SmtNames.preambleNames().contains(name)
+                        || lowering != null && lowering.minted(name)
+                        || corpus.symbolKind(sessionId, name)
+                        != Corpus.SymbolKind.UNKNOWN, unknown);
+        return unknown.isEmpty() ? null : unknown.iterator().next();
+    }
+
     static Built build(Corpus corpus, Task task, Corpus.RecordedPath path,
                        int flipIndex) {
         return new Builder(corpus, task, path).build(flipIndex);
@@ -381,32 +428,6 @@ final class FlipQuery {
             this.corpus = corpus;
             this.task = task;
             this.path = path;
-        }
-
-        /** Whether a lowered conjunct is unusable: blank, or an application
-         *  with missing arguments ({@code (not )}), which z3 answers with an
-         *  error and no verdict. */
-        private static boolean malformed(String term) {
-            if (term == null || term.trim().isEmpty()) return true;
-            for (int at = term.indexOf('('); at >= 0;
-                    at = term.indexOf('(', at + 1)) {
-                int index = at + 1;
-                while (index < term.length()
-                        && !Character.isWhitespace(term.charAt(index))
-                        && term.charAt(index) != '('
-                        && term.charAt(index) != ')') {
-                    index++;
-                }
-                if (index == at + 1) continue;
-                while (index < term.length()
-                        && Character.isWhitespace(term.charAt(index))) {
-                    index++;
-                }
-                if (index < term.length() && term.charAt(index) == ')') {
-                    return true;
-                }
-            }
-            return false;
         }
 
         /** A forced flip's demanded conjunct ({@link #buildForced}), or

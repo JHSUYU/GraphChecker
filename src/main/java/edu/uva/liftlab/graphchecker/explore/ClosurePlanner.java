@@ -699,8 +699,11 @@ public final class ClosurePlanner {
         }
 
         /**
-         * Folds another reason to demand this occurrence; {@code
-         * CLOSURE_MEMBER} wins over static reasons.
+         * Folds another reason to demand this occurrence: {@code
+         * CLOSURE_MEMBER} wins over every other reason, and any reason the
+         * rows connect over a static one -- a static candidate later
+         * reached as a control producer is one, never cut with the static
+         * candidates at the ceiling.
          *
          * @return whether this demand grew
          */
@@ -711,8 +714,10 @@ public final class ClosurePlanner {
             }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
-                    && !CLOSURE_MEMBER.equals(why)) {
-                why = CLOSURE_MEMBER;
+                    ? !CLOSURE_MEMBER.equals(why)
+                    : Candidates.staticCandidate(this)
+                    && !Candidates.staticCandidate(other)) {
+                why = other.why;
                 grew = true;
             }
             return grew;

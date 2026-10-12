@@ -1622,14 +1622,8 @@ public class ExploreTest {
         OccurrenceAddress innerB = occurrence("hdfs-case/dn0",
                 "REGION.innerB", CausalContext.of(Role.of("INNER_B"), "", 1),
                 "o.a.h.h.s.d.InnerB#run#1");
-        JsonObject symbolA = new JsonObject();
-        symbolA.addProperty("_type", "SymbolExpression");
-        symbolA.addProperty("_exp", "M_A");
-        symbolA.addProperty("_java_type", "I");
-        JsonObject innerRead = new JsonObject();
-        innerRead.addProperty("_type", "SymbolExpression");
-        innerRead.addProperty("_exp", "M_INNER");
-        innerRead.addProperty("_java_type", "I");
+        JsonObject symbolA = leaf("M_A", "I");
+        JsonObject innerRead = leaf("M_INNER", "I");
         // session, written term, the inner location's writer (or none)
         Object[][] writtenRows = {
             {"s-plus", binary("+", symbolA, literal(10)), null},
@@ -1984,17 +1978,16 @@ public class ExploreTest {
      * run's wire arms (the producer's class, export site, canonical term),
      * else by its arrival; a read inside its term by every writer the query
      * offers it, else by its value; a term that does not lower by the values
-     * observed; no depth bound.  Each row: two worlds, and whether they
-     * share the arm's key.
+     * observed; no depth bound, a back-edge by how far up it points.  Each
+     * by the query's own conditions: an arm or a writer's value the query
+     * drops (a name it cannot declare, a value of another sort) binds
+     * nothing.  Each row: two worlds, and whether they share the arm's key.
      */
     @Test
     public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
             throws Exception {
         Path iteration = tree.newFolder("written-binds").toPath();
-        JsonObject symbolA = new JsonObject();
-        symbolA.addProperty("_type", "SymbolExpression");
-        symbolA.addProperty("_exp", "M_A");
-        symbolA.addProperty("_java_type", "I");
+        JsonObject symbolA = leaf("M_A", "I");
         LocationId[] chain = new LocationId[4];
         OccurrenceAddress[] writers = new OccurrenceAddress[4];
         for (int at = 0; at < 4; at++) {
@@ -2012,10 +2005,20 @@ public class ExploreTest {
         JsonObject mystery = new JsonObject();
         mystery.addProperty("_type", "NoSuchExpression");
         mystery.addProperty("_java_type", "I");
+        LocationId cycledOne = LocationId.of(LocationKind.INSTANCE, "60", "1");
+        LocationId cycledTwo = LocationId.of(LocationKind.INSTANCE, "60", "2");
+        OccurrenceAddress[] cycled = new OccurrenceAddress[2];
+        for (int at = 0; at < 2; at++) {
+            cycled[at] = occurrence("hdfs-case/dn0", "REGION.cycle",
+                    CausalContext.of(Role.of("CYCLE"), "", at + 1),
+                    "o.a.h.h.s.d.Cycle#run#" + (at + 1));
+        }
         // session -> what WRITER writes at the guard's location
         String[] names = {"s-seed", "h-plus", "h-minus", "h-plus-again",
             "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
-            "u-five-again", "u-unstated", "d-one", "d-two"};
+            "u-five-again", "u-unstated", "d-one", "d-two", "c-up",
+            "c-self", "g-eleven", "g-eleven-minus", "g-twelve", "r-three",
+            "r-four", "b-three", "b-four"};
         for (String name : names) {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
@@ -2025,12 +2028,70 @@ public class ExploreTest {
             String guardValue = "0";
             if (name.startsWith("h-")) {
                 session.activation(PRODUCER, false);
+                // Its path decided on an unsupported subterm first: that
+                // conjunct marks no delivered term unsupported.
+                session.expression("EXPR.00000000000000f5", mystery);
+                session.decision(PRODUCER, "Rotate#u3", 1, true,
+                        "(> (+ M_A EXPR.00000000000000f5) 0)");
                 session.expression("EXPR.00000000000000f1", binary(
                         name.equals("h-minus") ? "-" : "+", symbolA,
                         literal(name.equals("h-minus") ? 1 : 10)));
                 session.export(ROTATED, "EXPR.00000000000000f1", 11L, "11");
                 session.attach(DELIVERED, "M_HOFF_KEY", "11", ROTATED);
                 session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("g-")) {
+                // A producer arm naming what no row declares: the query
+                // drops it and pins the handoff to its arrival.
+                session.activation(PRODUCER, false);
+                session.expression("EXPR.00000000000000f1", binary(
+                        name.endsWith("minus") ? "-" : "+", leaf("M_GHOST", "I"),
+                        literal(name.endsWith("minus") ? 1 : 10)));
+                String arrival = name.equals("g-twelve") ? "12" : "11";
+                session.export(ROTATED, "EXPR.00000000000000f1", 11L,
+                        arrival);
+                session.attach(DELIVERED, "M_HOFF_KEY", arrival, ROTATED);
+                session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("r-") || name.startsWith("b-")) {
+                // An inner read whose one writer the query takes nothing
+                // from -- its value names what no row declares, or is a
+                // Bool where the read is an int -- is pinned to its value.
+                session.activation(innerReader, false, true, "inner");
+                session.activation(writers[0], false, true, "chain0");
+                session.expression("EXPR.00000000000000f3",
+                        name.startsWith("r-") ? binary("+",
+                                leaf("M_GHOST", "I"), literal(1))
+                                : binary(">", symbolA, literal(3)));
+                session.write(at(writers[0], "Chain0#u1:WRITE", "Chain0#u1"),
+                        chain[0], 7L, "EXPR.00000000000000f3");
+                session.read(at(innerReader, "Inner#u2:READ", "Inner#u2"),
+                        chain[0], 7L, "M_INNER",
+                        name.endsWith("three") ? "3" : "4");
+                session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
+            } else if (name.startsWith("c-")) {
+                // A cycle of two writers of one class and site: the second
+                // one's read takes the first one's write (c-up) or its own
+                // (c-self).
+                for (OccurrenceAddress writer : cycled) {
+                    session.activation(writer, false);
+                }
+                session.expression("EXPR.00000000000000c1",
+                        binary("+", leaf("M_CYCLE_A", "I"), literal(1)));
+                session.expression("EXPR.00000000000000c2",
+                        binary("+", leaf("M_CYCLE_B", "I"), literal(1)));
+                session.write(at(cycled[0], "Cycle#u1:WRITE", "Cycle#u1"),
+                        cycledOne, 7L, "EXPR.00000000000000c1");
+                session.write(at(cycled[1], "Cycle#u1:WRITE", "Cycle#u1"),
+                        cycledTwo, 8L, "EXPR.00000000000000c2");
+                session.write(at(cycled[1], "Cycle#u1:WRITE", "Cycle#u1"),
+                        cycledOne, 9L, "EXPR.00000000000000c2");
+                session.read(at(cycled[0], "Cycle#u2:READ", "Cycle#u2"),
+                        cycledTwo, 8L, "M_CYCLE_A", "2");
+                session.read(at(cycled[1], "Cycle#u2:READ", "Cycle#u2"),
+                        cycledOne, name.equals("c-up") ? 7L : 9L,
+                        "M_CYCLE_B", "1");
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
+                        cycledOne, 7L, "M_CYCLED", "3");
+                session.symbolic("EXPR.00000000000000f2", "M_CYCLED", "I");
             } else if (name.startsWith("p-")) {
                 session.attach(DELIVERED, "M_HOFF_KEY",
                         name.equals("p-five") ? "5" : "7", null);
@@ -2107,6 +2168,16 @@ public class ExploreTest {
                     "a read that states no value is another one"},
             {"d-one", "d-two", false,
                     "a constant four writers deep (no depth bound)"},
+            {"c-up", "c-self", false,
+                    "a back-edge to the writer above against to itself"},
+            {"g-eleven", "g-twelve", false,
+                    "an arm the query drops: pinned to 11 against 12"},
+            {"g-eleven", "g-eleven-minus", true,
+                    "whatever the dropped arm delivered"},
+            {"r-three", "r-four", false,
+                    "a writer's value naming what no row declares"},
+            {"b-three", "b-four", false,
+                    "a writer's value of another sort than the read"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], dependence(corpus, task,
@@ -5793,6 +5864,89 @@ public class ExploreTest {
                 siblingB.render(), sibling.render(), siblingC.render(),
                 refresher.render())), new LinkedHashSet<String>(
                 capped.truncated));
+    }
+
+    /**
+     * A static candidate the rows later reach is no longer one ({@code
+     * ClosurePlanner.Demand#absorb}): here {@code door}, planned as a static
+     * writer of the map, sent the message that started the next candidate
+     * and decided a fault of it, so that candidate's expansion reaches it
+     * as a control producer -- and when the third candidate's producer
+     * meets the ceiling, the static candidates leave the plan and the
+     * control producer stays.
+     */
+    @Test
+    public void aStaticCandidateReachedAsAControlProducerIsNoLongerCut()
+            throws Exception {
+        Path iteration = tree.newFolder("candidate-relabel").toPath();
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        OccurrenceAddress door = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 9),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        OccurrenceAddress served = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of("e-door",
+                        "HADOOP_IPC/heartbeat"),
+                "o.a.h.h.s.d.BPServiceActor#offerService#43");
+        OccurrenceAddress guarded = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 11),
+                "o.a.h.h.s.d.BPServiceActor#offerService#44");
+        OccurrenceAddress producer = occurrence("hdfs-case/dn0",
+                "REGION.other", CausalContext.of(Role.of("OTHER"), "", 1),
+                "o.a.h.h.s.d.Other#run#1");
+        Endpoint exported = at(producer, "XCH.req.guard", "Other#send#2");
+        Session seed = new Session(iteration, "s-seed");
+        for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER, door,
+                served, guarded, producer)) {
+            seed.activation(at, false);
+        }
+        seed.root(door, "CASE.DOOR", "M_DOOR", RootKind.MARKER, "false",
+                null, null, true);
+        seed.decision(door, "Client#u7", 1, false, "M_DOOR");
+        seed.constant("e.one", "1");
+        seed.export(exported, "e.one", 21L, "1");
+        seed.attach(at(guarded, "XCH.req.guard", "Other#send#2"), "M_GUARD",
+                "1", exported);
+        seed.decision(guarded, "Keys#u3", 1, true, "(= M_GUARD 1)");
+        seed.constant("e.stored", "7");
+        seed.write(STORED, allKeys, 5L, "e.stored");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
+                allKeys, 5L, "M_READ_KEY", "7");
+        seed.target(TARGET, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.flush();
+        RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                Collections.singletonList(RowCodec.writeScheduleEvent(
+                        ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                                door.node().render() + "|"
+                                        + door.context().render(),
+                                "HADOOP_IPC#REQUEST", 0, door.id(),
+                                "e-door"))));
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "",
+                        "Keys#u3"))));
+        Corpus corpus = Corpus.read(iteration, null);
+        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS, 2, map, Branches.of(corpus,
+                        Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()));
+        Set<String> planned = new LinkedHashSet<String>();
+        for (Task task : plan.tasks) planned.add(task.focused().render());
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
+                WRITER.render(), door.render())), planned);
+        assertEquals(ClosurePlanner.CONTROL_PRODUCER,
+                plan.why.get(ClosurePlanner.taskId(door)));
+        assertEquals(Collections.singleton(producer.render()),
+                plan.ceilingCut);
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(
+                producer.render(), served.render(), guarded.render())),
+                new LinkedHashSet<String>(plan.truncated));
     }
 
     /**

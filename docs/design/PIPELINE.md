@@ -492,7 +492,9 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    cut; its row-connected closure is 252 occurrences, planned whole. The runaway guard: past
    `ClosurePlanner.CLOSURE_CEILING` (1024) occurrences the rows connect are cut too, and so is every
    static candidate (one planned before leaves the plan: a recorded writer is never cut while a static
-   candidate is kept), counted in the manifest's `ceilingCut` and named in result.json `bounded`
+   candidate is kept; a candidate the rows later reach, as a member or a control producer, is no
+   static candidate any more, `ClosurePlanner.Demand#absorb`), counted in the manifest's
+   `ceilingCut` and named in result.json `bounded`
    (`region_path_closure_ceiling`). A
    truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP` (`REGION_PATH_CLOSURE_TRUNCATED: ...`; `PLAN_CLOSURE_CUT` is PLAN's cut at `schedule_max_jobs`, §3) and its
    manifest's `truncated` (the occurrences not planned); whether it blocks a claim is the
@@ -711,13 +713,17 @@ flip query reads it, `Corpus#written` -- the rule: the key names everything the 
 the task, modulo the run's own names. The written term canonical and digested: operators,
 constants, roots by id, container subterms by their canonical bodies kept; an object handle's minted
 digest and a read's event, version and owner dropped; a handoff by what binds it in the query (its
-own run's wire arms: each producer's class, export site, canonical term, path-condition predicates
-and roots' guard, else pinned to its arrival); a read by its location's kind and slot and every
-writer the query offers it (`Arms#stateArms`: each writer's class, write site and canonical term;
-one whose term does not lower a free choice, `?`, with the observed value where it is the observed
-writer; none that lowers: pinned to its observed value); a term that does not lower (an unsupported
-subterm) by the values its readers observed. No depth bound: memoized per session and reference, a
-walk meeting a term it is expanding names it `cycle`, unmemoized. A member flip that writes another
+own run's wire arms the query states, `FlipQuery#arm`: each producer's class, export site, canonical
+term, the path-condition predicates it states and roots' guard; with none, pinned to its arrival); a
+read by its location's kind and slot and every writer the query offers it (`Arms#stateArms`: each
+writer's class, write site and what `FlipQuery#delivered` takes from it -- its canonical term, a
+free choice `?` (with the observed value where it is the observed writer) where the term states
+nothing in particular, no choice `/` where it is a value of another sort; nothing bound: pinned to
+its observed value). A term states nothing where it does not lower or names what the query cannot
+declare (`FlipQuery#undeclared`), and nothing in particular where it holds an unsupported subterm;
+a written term of either kind by the values its readers observed. No depth bound: a walk meeting a
+term it is expanding names the back-edge by its distance up the expansion stack, and a term is
+memoized per session and reference unless a back-edge in it points above it. A member flip that writes another
 value there, a producer sending another term, a pinned payload of another value, or a term reading a
 location another (or one more) writer may have written is another world; a poll writing the same
 canonical term folds), and whether it wrote any state the

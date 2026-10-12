@@ -902,12 +902,14 @@ public final class Corpus implements Arms.Rows {
      * WHAT A WRITE WROTE, AS A FLIP QUERY READS IT (the rule: an arm's key
      * names everything its flip query depends on at the task, modulo the
      * run's own names): its term canonical ({@link #term}), or, where the
-     * term does not lower -- the query then binds nothing through it -- the
-     * values the session's reads of that version observed.
+     * query binds nothing in particular through it -- it states nothing, or
+     * holds an unsupported subterm's free name -- the values the session's
+     * reads of that version observed.
      */
     private String written(String sessionId, WriteRow write) {
         String term = term(sessionId, write.expressionRef(), new Naming());
-        return term != null ? term : "?" + observedValues(sessionId,
+        return term != null && !UNSUPPORTED.equals(term) ? term
+                : "?" + observedValues(sessionId,
                 SmtLowering.locationKey(write.location()), write.version());
     }
 
@@ -923,61 +925,94 @@ public final class Corpus implements Arms.Rows {
         return values;
     }
 
-    /** One canonical naming walk: what it is expanding now, and whether it
-     *  met itself (a cycle through concurrent writers) or an unsupported
-     *  subterm. */
+    /** One canonical naming walk: the terms and container subterms it is
+     *  expanding, outermost first; the outermost of them a back-edge met
+     *  so far points at; and whether it met an unsupported subterm. */
     private static final class Naming {
-        final Set<String> active = new HashSet<String>();
-        boolean cyclic;
+        final List<String> stack = new ArrayList<String>();
+        int reach = Integer.MAX_VALUE;
         boolean unsupported;
     }
 
-    /** A memoized name that does not lower. */
+    /** {@link #term}: a term the flip query states nothing through. */
     private static final String UNLOWERED = "!";
+    /** {@link #term}: a term the query states with an unsupported
+     *  subterm's free name, which binds nothing in particular. */
+    private static final String UNSUPPORTED = "?";
 
     /**
-     * One term, CANONICAL and digested, or null where it does not lower as
-     * a flip query lowers an arm ({@link SmtLowering#lower}; a term holding
-     * an unsupported subterm is one): operators, constants, each root by its
-     * id, each handoff and each read by what binds it in the query ({@link
-     * #handoffName}, {@link #readName}), each container subterm by its
-     * canonical body; a name the lowering minted from a run's handle (an
-     * identity) by its kind alone.  No depth bound: a walk that meets a term
-     * it is expanding names it {@code cycle} and that answer is not
-     * memoized; every other answer is, per session and reference.
+     * One term, CANONICAL and digested, as a flip query states it: null
+     * where it states nothing -- it does not lower ({@link
+     * SmtLowering#lower}) or names what the query cannot declare ({@link
+     * FlipQuery#undeclared}) -- and {@link #UNSUPPORTED} where it holds an
+     * unsupported subterm.  The digest is of operators, constants, each
+     * root by its id, each handoff and each read by what binds it in the
+     * query ({@link #handoffName}, {@link #readName}), each container
+     * subterm by its canonical body, and a name the lowering minted from a
+     * run's handle (an identity) by its kind alone.  No depth bound
+     * ({@link #step}).
      */
     private String term(String sessionId, String expressionRef,
                         Naming naming) {
-        if (expressionRef == null || expressionRef.isEmpty()) return "";
-        String key = "term|" + sessionId + "|" + expressionRef;
+        if (expressionRef == null || expressionRef.isEmpty()) return null;
+        String name = step("term|" + sessionId + "|" + expressionRef, naming,
+                false, () -> {
+                    SmtLowering lowering = lowering(sessionId);
+                    SmtLowering.Lowered lowered = lowering == null ? null
+                            : lowering.lower(expressionRef);
+                    if (lowered == null || !lowered.ok()
+                            || FlipQuery.undeclared(this, sessionId,
+                            lowered.text()) != null) {
+                        return UNLOWERED;
+                    }
+                    String text = canonical(sessionId, lowered.text(),
+                            naming);
+                    return naming.unsupported ? UNSUPPORTED
+                            : ArtifactIO.digest(text, 16);
+                });
+        return UNLOWERED.equals(name) ? null : name;
+    }
+
+    /**
+     * One memoized naming step, a term or a container subterm: the memo's
+     * answer; a BACK-EDGE (a walk through concurrent writers meeting what
+     * it is expanding) named by its distance up the expansion stack, so
+     * chains whose back-edges point at different ancestors name apart;
+     * else {@code body}'s answer, memoized per session and reference unless
+     * a back-edge in it points above it -- its name then depends on where
+     * it was entered.  {@code taints}: whether an unsupported subterm in it
+     * marks the enclosing walk (a container subterm's does; a term answers
+     * {@link #UNSUPPORTED} for itself).
+     */
+    private String step(String key, Naming naming, boolean taints,
+                        Supplier<String> body) {
         String held = canonicalNames.get(key);
-        if (held != null) return UNLOWERED.equals(held) ? null : held;
-        if (!naming.active.add(key)) {
-            naming.cyclic = true;
-            return "cycle";
+        if (held != null) {
+            naming.unsupported |= taints && held.charAt(0) == 'U';
+            return held.substring(1);
         }
-        boolean cyclic = naming.cyclic;
+        int at = naming.stack.indexOf(key);
+        if (at >= 0) {
+            naming.reach = Math.min(naming.reach, at);
+            return "cycle" + (naming.stack.size() - at);
+        }
+        int depth = naming.stack.size();
+        int reach = naming.reach;
         boolean unsupported = naming.unsupported;
-        naming.cyclic = false;
+        naming.reach = Integer.MAX_VALUE;
         naming.unsupported = false;
+        naming.stack.add(key);
         try {
-            SmtLowering lowering = lowering(sessionId);
-            SmtLowering.Lowered lowered = lowering == null ? null
-                    : lowering.lower(expressionRef);
-            String result = null;
-            if (lowered != null && lowered.ok()) {
-                String text = canonical(sessionId, lowered.text(), naming);
-                if (!naming.unsupported) {
-                    result = ArtifactIO.digest(text, 16);
-                }
+            String name = body.get();
+            if (naming.reach >= depth) {
+                canonicalNames.put(key, (naming.unsupported ? "U" : "S")
+                        + name);
             }
-            if (!naming.cyclic) {
-                canonicalNames.put(key, result == null ? UNLOWERED : result);
-            }
-            return result;
+            unsupported |= taints && naming.unsupported;
+            return name;
         } finally {
-            naming.active.remove(key);
-            naming.cyclic |= cyclic;
+            naming.stack.remove(depth);
+            naming.reach = Math.min(reach, naming.reach);
             naming.unsupported = unsupported;
         }
     }
@@ -990,7 +1025,9 @@ public final class Corpus implements Arms.Rows {
             String body = lowering == null ? null
                     : lowering.sharedBody(token);
             if (body != null) {
-                return "dag:" + sharedName(sessionId, token, body, naming);
+                return "dag:" + step("dag|" + sessionId + "|" + token,
+                        naming, true, () -> ArtifactIO.digest(canonical(
+                                sessionId, body, naming), 16));
             }
             switch (symbolKind(sessionId, token)) {
                 case ROOT: {
@@ -1016,52 +1053,21 @@ public final class Corpus implements Arms.Rows {
         });
     }
 
-    /** One container subterm's canonical body, digested; memoized per
-     *  session and name with whether it holds an unsupported subterm. */
-    private String sharedName(String sessionId, String name, String body,
-                              Naming naming) {
-        String key = "dag|" + sessionId + "|" + name;
-        String held = canonicalNames.get(key);
-        if (held != null) {
-            naming.unsupported |= held.startsWith("U");
-            return held.substring(1);
-        }
-        if (!naming.active.add(key)) {
-            naming.cyclic = true;
-            return "cycle";
-        }
-        boolean cyclic = naming.cyclic;
-        boolean unsupported = naming.unsupported;
-        naming.cyclic = false;
-        naming.unsupported = false;
-        try {
-            String digest = ArtifactIO.digest(canonical(sessionId, body,
-                    naming), 16);
-            if (!naming.cyclic) {
-                canonicalNames.put(key, (naming.unsupported ? "U" : "S")
-                        + digest);
-            }
-            unsupported |= naming.unsupported;
-            return digest;
-        } finally {
-            naming.active.remove(key);
-            naming.cyclic |= cyclic;
-            naming.unsupported = unsupported;
-        }
-    }
-
     /**
      * A read as its flip query binds it ({@code FlipQuery#bind}): by its
      * location's kind and slot and the writers it may take its value from
      * ({@link Arms#stateArms}, as the query offers them), each by its
-     * class ({@link #classOf}), write site and canonical term -- one whose
-     * term does not lower binds nothing, a free choice the read may take
-     * ({@code ?}, with the observed value where it is the observed
-     * writer); with none that lowers it is pinned to its observed value.
+     * class ({@link #classOf}), write site and what the query takes from it
+     * ({@code FlipQuery#delivered}): its canonical term; a free choice
+     * ({@code ?}, with the observed value where it is the observed writer)
+     * where the term states nothing or nothing in particular; no choice
+     * ({@code /}) where it is a value of another sort.  With nothing bound
+     * the read is pinned to its observed value.
      */
     private String readName(String sessionId, ReadRow row, Naming naming) {
         String location = "read:" + row.location().kind() + ":"
                 + row.location().slot();
+        String sort = JavaSmtSorts.sortOfJava(row.javaType()).smt;
         List<Arms.Arm> eligible = arms().stateArms(row.endpoint(), sessionId,
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(), !row.unnamedWriter());
@@ -1069,7 +1075,7 @@ public final class Corpus implements Arms.Rows {
         // every arm): this walk files nothing.
         arms().drainRefusals();
         List<String> writers = new ArrayList<String>();
-        boolean lowers = false;
+        boolean binds = false;
         for (Arms.Arm arm : eligible) {
             WriteRow write = arm.write();
             boolean observed = write != null
@@ -1077,16 +1083,20 @@ public final class Corpus implements Arms.Rows {
             String who = write == null ? classOf(arm.producer())
                     : write.initial() ? "initial"
                     : classOf(arm.producer()) + "@" + write.endpoint().site();
-            String term = term(sessionId, arm.expressionRef(), naming);
-            if (term == null) {
-                writers.add(who + "=?" + (observed ? row.concreteValue()
-                        : ""));
+            SmtLowering lowering = lowering(arm.sessionId());
+            SmtLowering.Lowered lowered = lowering == null ? null
+                    : lowering.lower(arm.expressionRef());
+            if (lowered != null && lowered.ok()
+                    && !lowered.value().sort.smt.equals(sort)) {
+                writers.add(who + "=/");
                 continue;
             }
-            lowers = true;
-            writers.add(who + "=" + term);
+            String term = term(arm.sessionId(), arm.expressionRef(), naming);
+            binds |= term != null;
+            writers.add(who + "=" + (term == null || UNSUPPORTED.equals(term)
+                    ? "?" + (observed ? row.concreteValue() : "") : term));
         }
-        if (!lowers) return location + "=" + row.concreteValue();
+        if (!binds) return location + "=" + row.concreteValue();
         Collections.sort(writers);
         return location + "<-" + writers;
     }
@@ -1094,15 +1104,19 @@ public final class Corpus implements Arms.Rows {
     /**
      * A handoff as its flip query binds it ({@code FlipQuery#handoff}): by
      * its port and the arms of its own run that deliver it ({@link
-     * Arms#wireArms}), each by its producer's class, the export's site, its
-     * canonical delivered term, its path condition's predicates and its
-     * roots' guard; with none that lowers it is pinned to its arrival.
+     * Arms#wireArms}) and that the query states ({@code FlipQuery#arm}: an
+     * arm whose term does not lower, names what the query cannot declare or
+     * is malformed is dropped), each by its producer's class, the export's
+     * site, its canonical delivered term, its path condition's predicates
+     * the query states (an unsupported subterm of one marks no term) and
+     * its roots' guard; with none it is pinned to its arrival.
      */
     private String handoffName(AttachRow attach, Naming naming) {
         String port = "handoff:" + attach.endpoint().site();
         List<String> arms = new ArrayList<String>();
         if (attach.producer() != null) {
             String sessionId = attach.sessionId();
+            SmtLowering lowering = lowering(sessionId);
             for (Arms.Arm arm : arms().wireArms(Interaction.of(
                     InteractionKind.WIRE, attach.producer(),
                     attach.endpoint()), attach.symbol(), sessionId)) {
@@ -1111,14 +1125,27 @@ public final class Corpus implements Arms.Rows {
                         && !arm.symbol().equals(attach.symbol())) {
                     continue;
                 }
+                SmtLowering.Lowered lowered = lowering == null ? null
+                        : lowering.lower(arm.expressionRef());
+                if (lowered == null || !lowered.ok()
+                        || FlipQuery.malformed(lowered.text())) {
+                    continue;
+                }
                 String term = term(sessionId, arm.expressionRef(), naming);
                 if (term == null) continue;
+                boolean unsupported = naming.unsupported;
                 List<String> conditions = new ArrayList<String>();
                 for (String conjunct : arm.pi()) {
                     if (!Arms.predicate(conjunct)) continue;
-                    conditions.add(canonical(sessionId, FlipQuery.statedTerm(
-                            this, sessionId, conjunct), naming));
+                    String stated = FlipQuery.statedTerm(this, sessionId,
+                            conjunct);
+                    if (FlipQuery.malformed(stated) || FlipQuery.undeclared(
+                            this, sessionId, stated) != null) {
+                        continue;
+                    }
+                    conditions.add(canonical(sessionId, stated, naming));
                 }
+                naming.unsupported = unsupported;
                 arms.add(classOf(arm.producer()) + "@"
                         + attach.producer().site() + "=" + term + "|"
                         + conditions + "|" + new TreeMap<String, String>(
@@ -1131,8 +1158,7 @@ public final class Corpus implements Arms.Rows {
         return port + "<-" + arms;
     }
 
-    /** {@link #term}, {@link #sharedName}: the canonical names asked so
-     *  far, per session. */
+    /** {@link #step}: the canonical names asked so far, per session. */
     private final Map<String, String> canonicalNames =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 

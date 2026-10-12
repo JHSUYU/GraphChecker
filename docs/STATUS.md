@@ -454,7 +454,11 @@ Correctness:
     shape has a hop no row names keeps its address as its class. The canonical term drops object
     handles: two writes of the same structure over different objects fold; a handoff or a read inside
     it is named by what binds it in the flip query (its own run's wire arms, every writer the query
-    offers, or the pinned value), with no depth bound.
+    offers, or the pinned value), by the query's own conditions (an arm or value it drops binds
+    nothing), with no depth bound. Accepted (review of solr-explore2, 2026-10-12): a handoff arm keeps
+    raw ids in its name (its roots' guard by root symbol, an id its predicates state), so arms that
+    differ only in a run's ids re-key -- a re-ask, never a fold; a root no domain bounds is named by
+    its id alone (as before).
 69. `FlipQuery#inheritedFlips` asserts an inherited flip's occurrence prefix through its flipped
     decision; where that occurrence is the task's own and the inherited flip lies after the arm being
     flipped, the prefix holds the arm's own recorded conjunct beside its negation, so such a re-ask is
