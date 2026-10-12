@@ -24,8 +24,8 @@ is [../STATUS.md](../STATUS.md) "Solr checks".
   Root:WAKE, D1b, admitted reach, lambda deciders), Z1 (ZooKeeper store state and provenance), the native realized order
   (stable names, the claim's cone), the moved-member rule, the timed-wait door with GROW of unplanned invocations, the
   GROW swap fix. Canaries on it pass native 10/10.
-- **Three branches in flight, merge in this order** (TODO Solr §1): `solr-zk-doors` 9f0b81058 (READ doors + R4; reviewed,
-  canaries PASS; left: lock-leak/restore/reindex canaries, then a full 40), `solr-explore2` fe8c7434f (EX; left: a review
+- **Branches in flight, merge in this order** (TODO Solr §1): `solr-zk-doors` 9f0b81058 (READ doors + R4) is MERGED
+  (system/solr edc62b76b, 2026-10-12; canaries Z1W; a full 40 runs as LD1); then `solr-explore2` fe8c7434f (EX; left: a review
   re-check, the offline gate and live 07/21 convergence), `solr-zk2` 7023c526b WIP (Z2; left: 18413 SAT twice, tra's final
   SAT + native, snapshot SAT, a re-check). `solr-sg3` 2ca18a2b5 is a dry-run integration of all three plus
   `seed_replay_time_factor=130`; the final Solr tree `gc/solr-final` 86f762adb1 is merged and built against it (2 of 17
