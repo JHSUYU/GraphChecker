@@ -7,7 +7,6 @@ import soot.Body;
 import soot.Unit;
 import soot.jimple.IfStmt;
 import soot.toolkits.graph.BriefUnitGraph;
-import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.MHGPostDominatorsFinder;
 import soot.toolkits.graph.UnitGraph;
 
@@ -15,6 +14,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -375,8 +375,8 @@ public final class SiteControlDependence {
         /**
          * Whether each arm of {@code branch} reaches one of {@code sites}
          * within one iteration: the branch itself and every backedge -- an
-         * edge into a unit that dominates its source, the loop's header --
-         * are barriers.  An arm that comes back to the way only in the next
+         * edge back into the loop's header ({@link #backedge}) -- are
+         * barriers.  An arm that comes back to the way only in the next
          * iteration of an enclosing loop leaves it in this one ({@code
          * if (first && !isActive) continue; if (!isLeader) continue; throw}:
          * isActive's continue arm reaches the throw only through the
@@ -410,17 +410,59 @@ public final class SiteControlDependence {
             return false;
         }
 
-        /** Whether {@code from -> to} closes a loop: {@code to} dominates
-         *  {@code from}. */
+        /**
+         * Whether {@code from -> to} closes a loop: a retreating edge of a
+         * depth-first walk from the method's entry, into a unit still on the
+         * walk's stack -- the loop's header.  From the entry alone: a
+         * handler's first unit is a head of this CFG too (it has no
+         * exception edges), and dominance over every head would let a
+         * loop's latch, reached from a catch block as well, close no loop
+         * (solr-adhoc-07: ZkController$1.command's loop over descriptors,
+         * whose catch falls through to its {@code hasNext}).
+         */
         private boolean backedge(Unit from, Unit to) {
-            if (dominators == null) {
-                dominators = new MHGDominatorsFinder<Unit>(cfg);
-            }
-            return dominators.isDominatedBy(from, to);
+            if (backedges == null) backedges = retreating();
+            Set<Unit> into = backedges.get(from);
+            return into != null && into.contains(to);
         }
 
-        /** The CFG's dominators, built at the first {@link #backedge}. */
-        private MHGDominatorsFinder<Unit> dominators;
+        /** {@link #backedge}'s edges, by source, built at its first ask. */
+        private Map<Unit, Set<Unit>> backedges;
+
+        private Map<Unit, Set<Unit>> retreating() {
+            Map<Unit, Set<Unit>> found = new LinkedHashMap<Unit, Set<Unit>>();
+            Unit entry = cfg.getBody().getUnits().getFirst();
+            Set<Unit> onStack = new LinkedHashSet<Unit>();
+            Set<Unit> done = new LinkedHashSet<Unit>();
+            Deque<Unit> stack = new ArrayDeque<Unit>();
+            Deque<Iterator<Unit>> next =
+                    new ArrayDeque<Iterator<Unit>>();
+            stack.push(entry);
+            onStack.add(entry);
+            next.push(cfg.getSuccsOf(entry).iterator());
+            while (!stack.isEmpty()) {
+                Unit unit = stack.peek();
+                Iterator<Unit> successors = next.peek();
+                if (!successors.hasNext()) {
+                    stack.pop();
+                    next.pop();
+                    onStack.remove(unit);
+                    done.add(unit);
+                    continue;
+                }
+                Unit successor = successors.next();
+                if (onStack.contains(successor)) {
+                    found.computeIfAbsent(unit,
+                            source -> new LinkedHashSet<Unit>())
+                            .add(successor);
+                } else if (!done.contains(successor)) {
+                    stack.push(successor);
+                    onStack.add(successor);
+                    next.push(cfg.getSuccsOf(successor).iterator());
+                }
+            }
+            return found;
+        }
 
         /** Reachability within one occurrence: the branch is a barrier. */
         private boolean reachesWithoutRevisiting(Unit start, Unit site,

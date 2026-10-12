@@ -278,10 +278,14 @@ public class ForcingTableTest {
      * test); u2 z1 = first; u3 if z1 == 0 goto u6; u4 z2 = active; u5 if z2
      * == 0 goto u10 (continue); u6 z3 = leader; u7 if z3 == 0 goto u10
      * (continue); u8 r1 = new X (the throw); u9 throw r1; u10 i = i + 1; u11
-     * goto u1; u12 return.  isActive's continue arm (u5) comes back to the
-     * throw only through the header, in a turn where {@code first} is false:
-     * it leaves the way in this one, so it is forced; {@code first} (u3)
-     * leads to u6 either way within the turn, so it is passable.
+     * goto u1; u12 return; u13 r2 := @caughtexception; u14 goto u10 (a
+     * catch block falling through to the latch: a head of the CFG, which
+     * has no exception edges, so the header dominates no latch -- the loop
+     * is found from the entry, solr-adhoc-07's ZkController$1.command).
+     * isActive's continue arm (u5) comes back to the throw only through the
+     * header, in a turn where {@code first} is false: it leaves the way in
+     * this one, so it is forced; {@code first} (u3) leads to u6 either way
+     * within the turn, so it is passable.
      */
     @Test
     public void aGuardWhoseArmComesBackOnlyInTheNextIterationIsForced()
@@ -348,7 +352,9 @@ public class ForcingTableTest {
                 j.newLocal("z3", BooleanType.v())};
         RefType thrown = RefType.v("a.X");
         Local r = j.newLocal("r1", thrown);
-        body.getLocals().addAll(Arrays.asList(i, z[0], z[1], z[2], r));
+        Local caught = j.newLocal("r2", RefType.v("java.lang.Throwable"));
+        body.getLocals().addAll(Arrays.asList(i, z[0], z[1], z[2], r,
+                caught));
         Unit end = j.newReturnVoidStmt();
         Unit latch = j.newAssignStmt(i, j.newAddExpr(i, IntConstant.v(1)));
         Unit leader = j.newAssignStmt(z[2],
@@ -367,7 +373,9 @@ public class ForcingTableTest {
                 j.newThrowStmt(r),
                 latch,
                 j.newGotoStmt(head),
-                end));
+                end,
+                j.newIdentityStmt(caught, j.newCaughtExceptionRef()),
+                j.newGotoStmt(latch)));
     }
 
     @Test
