@@ -134,10 +134,17 @@ public class StoreContentTest {
         assertEquals("TypeCastExpression", cast.get("_type").getAsString());
         assertEquals("J", cast.get("targetJavaType").getAsString());
         assertEquals(count, cast.get("_exp"));
-        // A float crosses as the double its decimal text is, not its
-        // binary widening (0.1f is 0.10000000149011612 as a double).
-        JsonObject tenth = StoreContent.widened(text("0.1"), "F", 0.1f, "p");
+        // A constant float crosses as the double its decimal text is, not
+        // its binary widening (0.1f is 0.10000000149011612 as a double); a
+        // symbolic one crosses as nothing, its readers minting their own.
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_exp", "Y_F_0.1");
+        constant.addProperty("_java_type", "F");
+        JsonObject tenth = StoreContent.widened(constant, "F", 0.1f, "p");
         assertEquals("Y_D_0.1", tenth.get("_exp").getAsString());
+        assertNull(StoreContent.widened(symbol("M_F_ratio", "F"), "F", 0.1f,
+                "p"));
     }
 
     @Test

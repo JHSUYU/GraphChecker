@@ -192,6 +192,7 @@ final class StoreContent {
             }
         } else if (kind == Kind.NUM && !wide(javaType).equals(javaType)) {
             crossing = widened(crossing, javaType, leaf.value, port);
+            if (crossing == null) return null;
             javaType = wide(javaType);
         }
         long event = answer.has("exportEvent")
@@ -248,22 +249,23 @@ final class StoreContent {
 
     /**
      * {@code expression} of {@code javaType} as the parser reads it back
-     * ({@link #wide}): an integral one widened; a {@code float}, which the
-     * serializer writes as its decimal text and the parser reads as the
-     * {@code double} that text is, crosses as that double -- a constant,
-     * since no theory here renders a float's decimal text; a symbolic float
-     * is named (DIAGNOSTIC) and crosses as its value.
+     * ({@link #wide}): an integral one widened; a constant {@code float},
+     * which the serializer writes as its decimal text and the parser reads
+     * as the {@code double} that text is, as that double.  A symbolic float
+     * crosses as nothing (null), named DIAGNOSTIC: no theory here renders a
+     * float's decimal text, so its readers pair with no export and mint
+     * their own.
      */
     static JsonObject widened(JsonObject expression, String javaType,
                               Object value, String port) {
         if ("F".equals(javaType)) {
-            if (VmExpressionIr.exactStringLiteral(expression, any -> true)
-                    == null && !"ConstExpr".equals(optionalString(expression,
-                    "_type"))) {
+            if (!"ConstExpr".equals(optionalString(expression, "_type"))) {
                 RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        port, "a float leaf crosses as the double its"
-                                + " decimal text reads back as; its"
-                                + " expression is not carried");
+                        port, "a symbolic float leaf is not exported: its"
+                                + " decimal text, which its readers parse"
+                                + " back as a double, is no term here, so"
+                                + " they pair with no export");
+                return null;
             }
             return constant("D", Double.toString(Double.parseDouble(
                     String.valueOf(value))));

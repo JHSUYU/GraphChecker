@@ -1371,7 +1371,9 @@ queue item and `state.json`). A boolean the writer computed otherwise crosses as
 as does any other String; a number or a boolean leaf crosses as its box's value (`NUM`), a number
 widened as the parser reads it back -- a JSON number has no width, and the parser makes a `long` of
 every integral one and a `double` of every other, so a writer's `int`, `short` or `byte` exports as a
-`long` and its `float` as a `double` (`StoreContent#wide`). The writer's crossing decides the
+`long`, and its constant `float` as the `double` its decimal text reads back as (0.1f as 0.1); a
+symbolic `float` exports nothing, named (DIAGNOSTIC `UNSTATED_VALUE`: no theory here renders a
+float's decimal text), and its readers mint their own (`StoreContent#wide`, `#widened`). The writer's crossing decides the
 reader's, so a leaf's two ends are declared alike; a reader leaf that cannot cross as its writer's
 mints by its own text, unpaired. At most
 1024 leaves and 16 levels of one document are walked; past them a DIAGNOSTIC `UNSTATED_VALUE` names
