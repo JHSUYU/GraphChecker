@@ -4370,13 +4370,48 @@ growth rows and the next generation's plan: $*"
     fi
     printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
     printf 'the exposing replay\n' >"${worker}/replay.log"
+    printf 'Q.exposing\n' >"${worker}/question.txt"
     stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+  }
+  # The worker's inodes as the swap takes them, and after it, theirs and
+  # the aside's.
+  eval "grow_swap_production() $(declare -f campaign_stream_swap \
+    | tail -n +2)"
+  campaign_stream_swap() {
+    local held="${stream_dir}/obligations-0000/OB.x"
+    stat -c %i "${held}/obligation_result.jsonl" "${held}/replay.log" \
+      "${held}/question.txt" >"${stream_dir}/exposing-inodes"
+    grow_swap_production
+    stat -c %i "${held}/before-obligations-0001/obligation_result.jsonl" \
+      "${held}/before-obligations-0001/replay.log" \
+      "${held}/before-obligations-0001/question.txt" \
+      "${held}/obligation_result.jsonl" "${held}/replay.log" \
+      >"${stream_dir}/swapped-inodes"
   }
   campaign_explore "${stream_dir}" iteration-0000
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "the growing exploration did not finish: \
 $(cat "${stream_dir}/explore.log")"
 stream_worker="${stream_dir}/obligations-0000/OB.x"
+# The swap set the exposing replay's files aside as copies and renamed the
+# re-run's over them, or removed one it lacks: none of the inodes a peer's
+# NFS client may have looked up under the worker's names is kept aside or
+# under them (Z2M).  A copy is made while its original lives, and the
+# re-run's files before the swap, so each differs from its own original's
+# inode unless it is that inode.
+[[ "$(paste -d ' ' <(cat "${stream_dir}/exposing-inodes" \
+      "${stream_dir}/exposing-inodes") "${stream_dir}/swapped-inodes" \
+    | awk 'NF == 2 && $1 != $2' | grep -c '')" -eq 5 ]] \
+  || fail "an exposing file was moved aside or kept, not copied and replaced: \
+$(paste -d ' ' "${stream_dir}/exposing-inodes" "${stream_dir}/swapped-inodes")"
+[[ ! -e "${stream_worker}/question.txt" \
+    && "$(cat "${stream_worker}/before-obligations-0001/question.txt")" \
+      == Q.exposing \
+    && "$(jq -r '.sessionId' \
+      "${stream_worker}/before-obligations-0001/obligation_result.jsonl")" \
+      == SESSION.exposing ]] \
+  || fail "the exposing answer is not aside, or a file the re-run lacks is \
+still the worker's"
 grep -q TASK.grown "${stream_dir}/seed-replay/execution_task_plan.jsonl" \
   || fail "the seed plan is not the grown generation's"
 [[ "$(stat -c %i "${stream_dir}/generations/g0/execution_task_plan.jsonl")" \
@@ -4472,6 +4507,110 @@ ${stream_classes} ${stream_plan}"
   || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
 reset_config
 
+
+# GROW-CONFIRM: a witness's confirmation holds GROW's swap (Z2M).  OB.x's
+# session observed the fatal and exposed a region: its attempt claims and
+# queues its confirmation while GROW re-runs OB.x, and the re-run returns
+# before the verdict.  The swap waits for it: confirmed, the exploration
+# ends on the corpus the attempt composed -- the witness in it, the re-run
+# dropped and counted; refuted, the re-run swaps in after it.
+for grow_verdict in confirmed refuted; do
+  stream_fixture "grow-confirm-${grow_verdict}"
+  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+  printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+  cat >"${stream_dir}/replay.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
+  >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+  verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
+  detail: "the grown region refused the flip"}' \
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+EOF
+  chmod +x "${stream_dir}/replay.sh"
+  (
+    stream_stubs
+    concolic_replay_command="${stream_dir}/replay.sh"
+    replay_timeout_s=60
+    schedule_max_jobs=1
+    trace_test=T
+    custom_jdk_home=""
+    workload_work_dir="${stream_dir}"
+    stream_confirm_sleep=4
+    [[ "${grow_verdict}" == confirmed ]] || stream_refute=0000
+    stream_round_plan() {
+      case "$1" in
+        0) stream_propose "$2" OB.x ;;
+        1) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+             >>"$2/growth.jsonl" ;;
+      esac
+    }
+    do_compose() {
+      stream_compose "${composition_manifest}" SAT_CANDIDATE
+    }
+    run_java_main() {
+      [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]] \
+        || fail "the step ran an engine main GROW does not: $1"
+      local args=" $* " output plan
+      plan=${args##* --plan }
+      plan=${plan%% *}
+      output=${args##* --output }
+      output=${output%% *}
+      { cat "${plan}"
+        printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+      } >"${output}"
+    }
+    campaign_instrument() {
+      mkdir -p "$2"
+      : >"$2/woven"
+    }
+    campaign_obligation_worker() {
+      local worker=$4
+      printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
+      stream_answer "${worker}" OB.x ADMITTED SESSION.exposing fatal
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "the ${grow_verdict} witness beside a growth did not finish: \
+$(cat "${stream_dir}/explore.log")"
+  grow_worker="${stream_dir}/obligations-0000/OB.x"
+  grow_ended=$(cut -d. -f1 \
+    "${campaign_root}/witness-confirm/0000/replay-ended-at")
+  [[ -n "$(find "${campaign_root}" -path '*/SESSION.regrown/manifest.json')" ]] \
+    || fail "the ${grow_verdict} case's re-run never returned"
+  if [[ "${grow_verdict}" == confirmed ]]; then
+    # The confirmed witness with a swap pending at the end: the corpus is
+    # exactly the one its attempt composed, and the re-run is dropped,
+    # counted, its directory out of the worker.
+    jq -e '.stop == "WITNESSED" and .rerunsDropped == ["OB.x"]
+      and .reaped == []' "${stream_dir}/exploration.json" >/dev/null \
+      && [[ "$(ls "${stream_dir}/sessions")" \
+          == "$(cat "${stream_dir}/witness-attempts/0000/corpus.txt")" \
+        && -d "${stream_dir}/sessions/SESSION.exposing" \
+        && ! -e "${grow_worker}/before-obligations-0001" \
+        && ! -e "${grow_worker}/grow-obligations-0001/OB.x" \
+        && -s "${campaign_root}/explore-reaped/obligations-0001/OB.x/sessions/SESSION.regrown/manifest.json" ]] \
+      || fail "a confirmed witness's session was swapped out, or its \
+re-run not dropped and counted: $(ls "${stream_dir}/sessions") \
+$(cat "${stream_dir}/exploration.json")"
+  else
+    jq -e '.stop == "FIXED_POINT" and .rerunsDropped == []
+      and ([.witnessAttempts[] | [.attempt, .confirmed]]
+           == [["0000", false]])' \
+      "${stream_dir}/exploration.json" >/dev/null \
+      && [[ -d "${stream_dir}/sessions/SESSION.regrown" \
+        && -d "${grow_worker}/before-obligations-0001/sessions/SESSION.exposing" \
+        && "$(stat -c %Y "${grow_worker}/before-obligations-0001")" \
+          -ge "${grow_ended}" ]] \
+      || fail "the re-run did not swap in after the refutation: \
+$(cat "${stream_dir}/exploration.json")"
+  fi
+done
+reset_config
 
 # CONFIRM-1: a SAT claim, checked by one replay (PIPELINE §10).  ConfirmMain's
 # task and the replay are stubbed -- the first writes the focus row and the

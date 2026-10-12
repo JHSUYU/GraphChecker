@@ -1219,10 +1219,16 @@ links from then on, and the generation before keeps its own inode for whatever r
 INSTRUMENT weaves it into the generation's own tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
-re-run has returned and no obligation's solve runs that started before them, no solve starts and
-no round is planned (a REPLAY reads no corpus and goes on, on its solve's generation); then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
-worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
-worker's, its session lands, and its verdict replaces the obligation's row in
+re-run has returned, no obligation's solve runs that started before them and no witness's
+confirmation is queued, runs or waits for its verdict, no solve starts and no round is planned (a
+REPLAY reads no corpus and goes on, on its solve's generation); a confirmation confirms against the
+corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
+with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
+(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). Then
+each re-run SWAPS in (`campaign_stream_swap`): the exposing session moves to
+`<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
+renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
+through a name it cached), its session lands, and its verdict replaces the obligation's row in
 `obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
 `--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
 HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
@@ -1373,8 +1379,8 @@ cancelled or reaped, by id):
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
 only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations
-cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped from the queue (the
-exposing round's growth and obligations with them), a round due when the budget stopped it
+cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped -- queued, or returned
+and not swapped in (the exposing round's growth and obligations with them) -- a round due when the budget stopped it
 (answers landed since the last round, or re-runs and swaps owed) -- and an end that owed work
 (CAMPAIGN_BUDGET_REACHED or WITNESSED with any of it, PLANNER_HEAP_EXCEEDED always) under a claim
 that is no `SAT_CANDIDATE` is one BLOCKING `EXPLORATION_CUT` row: an UNSAT over a corpus missing

@@ -5389,13 +5389,16 @@ campaign_stream_drop() {
 # every peer -- and moved out of the iteration with what it staged, as is
 # what returned after the last step began, never landed, and an obligation
 # solved whose REPLAY is still queued; a confirmation
-# queued, running or undecided is its attempt's row, reaped.  At a witness
+# queued, running or undecided is its attempt's row, reaped; a GROW re-run
+# queued, or returned and not swapped in, is dropped, its directory with
+# it (a witness's confirmation holds every swap, so the sessions its attempt
+# composed are all still in the corpus).  At a witness
 # the sessions that landed after its attempt composed (not in its
 # corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
 # COMPOSE reads next is exactly the one the accepted attempt read.
 campaign_stream_end() {
   local pid entry kind round id host status session dir
-  local -a dropped=() confirms=() withdrawn=()
+  local -a dropped=() confirms=() withdrawn=() dropped_reruns=()
   for pid in "${!stream_jobs[@]}"; do
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
     dropped+=("${kind} ${round} ${id}")
@@ -5412,10 +5415,25 @@ campaign_stream_end() {
       REPLAY) dropped+=("${kind} ${round} ${id}") ;;
       # A GROW re-run never run: its exposing round's growth and the
       # obligations it holds are owed.
-      RERUN) stream_reruns_dropped+=("${id}") ;;
+      RERUN) dropped_reruns+=("${round} ${id}") ;;
     esac
   done
   stream_queue=()
+  # So is one that returned and never swapped in (a confirmation held it,
+  # campaign_stream_swap_due): the exposing session stays in the corpus.
+  # Either's directory, with what it staged, leaves its worker.
+  for entry in "${stream_swaps[@]}"; do
+    read -r round id _ <<<"${entry}"
+    dropped_reruns+=("${round} ${id}")
+  done
+  stream_swaps=()
+  for entry in "${dropped_reruns[@]}"; do
+    read -r round id <<<"${entry}"
+    stream_reruns_dropped+=("${id}")
+    mkdir -p "${campaign_root}/explore-reaped/${round}"
+    mv -- "$(campaign_stream_rerun_dir "${round}" "${id}")" \
+      "${campaign_root}/explore-reaped/${round}/${id}"
+  done
   campaign_stream_reap
   for entry in "${dropped[@]}"; do
     read -r kind round id <<<"${entry}"
@@ -5875,13 +5893,20 @@ campaign_stream_land() {
   stream_pending=()
 }
 
-# Whether GROW's swaps are due: every re-run it owes has returned, and no
+# Whether GROW's swaps are due: every re-run it owes has returned, no
 # obligation's solve runs that started before them (a solver reads the
-# corpus; a REPLAY reads none).
+# corpus; a REPLAY reads none), and no witness's confirmation is queued,
+# runs or waits for its verdict (stream_confirming): it confirms against the
+# corpus its attempt composed, and a swap would withdraw the session it
+# confirms (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the
+# exposing session, withdrawn a second after its confirmation was queued;
+# its re-run did not take the flip, and in Z2N the confirmed claim's final
+# COMPOSE lost it).  A confirmed one ends the exploration with
+# the swaps owed (campaign_stream_end); a refuted one lets them swap.
 campaign_stream_swap_due() {
   local job
-  (( ${#stream_swaps[@]} > 0 && ${#stream_swaps[@]} == stream_hold )) \
-    || return 1
+  (( ${#stream_swaps[@]} > 0 && ${#stream_swaps[@]} == stream_hold \
+     && ${#stream_confirming[@]} == 0 )) || return 1
   for job in "${stream_jobs[@]}"; do
     [[ "${job}" != OBLIGATION\ * ]] || return 1
   done
@@ -6033,10 +6058,16 @@ campaign_stream_rerun_dir() {
 # again of the re-run's session.
 #
 # One swap: the exposing session leaves the corpus for
-# <worker>/before-<round>/ with what its replay wrote, the re-run's files
-# become the worker's, its session is staged to land with the others
-# (campaign_stream_move), and its verdict replaces the obligation's row in
-# the ledger.
+# <worker>/before-<round>/ with a copy of what its replay wrote, the
+# re-run's files become the worker's, its session is staged to land with
+# the others (campaign_stream_move), and its verdict replaces the
+# obligation's row in the ledger.  A worker file is renamed over or
+# removed, never moved aside: a peer whose NFS client looked its name up
+# lately opens the inode it cached, and one still linked aside reads as
+# current (Z2M: the import gate on lift06, 8 s after the swap, read the
+# exposing session's answer and found no worker stating the re-run's focus
+# row); a deleted one fails stale and the client looks the name up again,
+# as campaign_write_whole relies on.
 campaign_stream_swap() {
   local swap round id session status worker rerun aside file
   for swap in "${stream_swaps[@]}"; do
@@ -6061,8 +6092,12 @@ name obligation ${id}, so it was not withdrawn from the corpus"
         obligation_result.jsonl replay_verdict.jsonl question.txt \
         question.asked stdout.log stderr.log host.txt replay-stdout.log \
         replay-stderr.log replay-host.txt workload_rss_mb; do
-      [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
-      [[ ! -e "${rerun}/${file}" ]] || mv -- "${rerun}/${file}" "${worker}/"
+      [[ ! -e "${worker}/${file}" ]] || cp -p -- "${worker}/${file}" "${aside}/"
+      if [[ -e "${rerun}/${file}" ]]; then
+        mv -f -- "${rerun}/${file}" "${worker}/${file}"
+      else
+        rm -f -- "${worker}/${file}"
+      fi
     done
     session=$(jq -r '.sessionId // ""' "${worker}/obligation_result.jsonl")
     [[ -z "${session}" ]] \
@@ -6119,10 +6154,11 @@ campaign_stream_promote_generation() {
 # exploration.json: how EXPLORE ended, how many rounds and head steps it
 # took, every COMPOSE attempt at a witness (by attempt order), every
 # obligation it dropped -- cancelled from the queue, or reaped before it
-# landed -- by id, the GROW re-runs dropped from the queue and the
-# confirmations reaped, whether a round was due when the budget stopped
-# it, and the sessions that left the corpus after the witness's attempt
-# composed: what EMIT judges a cut by (campaign_exploration_cut).
+# landed -- by id, the GROW re-runs dropped (queued, or returned and not
+# swapped in) and the confirmations reaped, whether a round was due when
+# the budget stopped it, and the sessions that left the corpus after the
+# witness's attempt composed: what EMIT judges a cut by
+# (campaign_exploration_cut).
 campaign_stream_manifest() {
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
