@@ -170,6 +170,7 @@ Merged since the HDFS state:
 - native order-holding: the realized order of the confirmed session (`solr-native-order` 2d9f89f28);
 - a growing round's proposals queued, not re-emitted (`explore-inflight` 345799304);
 - `report.py`'s expected mechanism for all 8 bug checks (b921f8a3e).
+- ZooKeeper store state, Z1 (`solr-zk-state` 184995cdb, agent Z1, reviewed and re-checked): store versions as STORE locations (rows keyed occurrence|seq|location|version, store paths' lives `<path>#<n>`), dynamic provenance (decoded objects hold the version they were parsed from; skipped objects stated; a decode waits for an in-flight write at its path), CAS chains, a batching turn started by every item it took in, door families always placed, (i') turn-wide doors, the witness path's STORE reads as stated rows CONFIRM compares by writer (no ORDER rows), the engine's own output under the VM's pause (`ConcolicVmBroker#asEngineWork`; it never loads the broker), logging calls under the concolic pause; vm-force6's read-out window reverted. Evidence: solr-18413 seed 7 min (was > 40), SAT native 10/10; reindex-cleanup SAT native 10/10 (Solr `gc/solr-zk-next` 22930889c8: the workload's createAlias tolerant); IZ1 overseer-lock-leak and restore-construction SAT native 10/10.
 - the study checks' engine fixes (`solr-study` 01eda3dc0, agent ST, reviewed twice): solr-force2's D1/D2/D3 with the review's fixes (the way guard by the anchor's site, one iteration's passability with handler edges, a throw's own disjuncts by the general rule, every cut of a non-reaching path named, engine defects never loop bounds, one work cap); the Root:WAKE rule (39's seed 3/3, 31's 2/2); D1b (the FORCE run's armed occurrence exempt from K_L); an anchor reached only by an admitted session (`RestsOn#reached`); deciders through a lambda (09); per-loop K_L.
 
 Image: **`/bigtemp/vnr3ne/vm-force5/j2sdk-image`** (OPERATIONS). Canary round SG2c on 9f317aba3: 18406, 18413 and
@@ -179,7 +180,6 @@ migrate-buffer-leak PASS (confirmed, FORCED_TARGET).
 
 | # | branch (GraphChecker) | head | Solr tree branch | what it is | gated? / what is left before the merge |
 | --- | --- | --- | --- | --- | --- |
-| 3 | `solr-zk-state` (Z1) | see `git log solr-zk-state` | `gc/solr-zk-next` e62e4a62fc (+ gc/solr-body 7e51565080; worktree `lucene-solr-zk2`); `gc/solr-zk-next-r` 22930889c8 (+ the reindex workload's tolerant createAlias; worktree `lucene-solr-zk3`) | ZooKeeper store versions as a location kind; dynamic provenance (decoded → (L, v)); the CAS chain; the queue-head tick; the consumed item's RECV; door families always placed; (i') every fault-reading occurrence of a message's sending turn is a control producer (f7080b2e0); read-out stats (a8c8e871b); a logging call runs under the VM's pause | Agent Z1 (2026-10-11, brief `analysis/solr-2026-10-11/brief-z1.md`). The read-out window (c71ab25a3, vm-force6) is reverted: under 20 % saved (§3a); vm-force5 stays the image. 18413's seed under its bound (the engine's own output under the VM's pause, defect 38); review fixes B1-B4, M1-M5 committed, M6 named. Left: reindex confirmed with native ≥ 1/10; the reviewer's re-check. Then merge |
 | 4 | `solr-zk-doors` | d01c330f5 (system/solr 293c8a303 merged) | `gc/solr-zk-doors` eee0e1bd7a (worktree `/bigtemp/vnr3ne/wt/lucene-solr-zkdoors`, built: Solr 92c234a5d1, `GC_TREES=/bigtemp/vnr3ne/wt/zkdoors-trees`) | **ZooKeeper READ doors (owner priority)**, on Z1 d9700c84b + solr-body | A1 (the getData door after the reply; a lost reply removes the local watcher, a Solr-tree workaround) and B2 (a demanded STORE read demands the plan's fetches of its location) committed; gate (b) waits for Z1's read-out decision and the Root:WAKE rule (RD2's seed stalled on both), then 40 re-recorded until its first target runs off the Overseer, gate (d) |
 | 5 | `solr-zk2` (Z2) | see `git log solr-zk2` (solr-zk-state db0382de4 merged) | `gc/solr-zk2` d91a2b0b2b (`GC_TREES=/bigtemp/vnr3ne/wt/pno-trees`) | stale cluster-state views. Content capture at the codec: `Utils.toJSON`/`fromJSON` → `StoreContent`, ports `<transport>#CONTENT:<loc>#<pointer>`, at most 1024 leaves and depth 16; 18413's WIRE_FLOW file deleted. `LocationKind.VIEW` (`<transport>@<node>`) and `SmtLowering#throughView`; the pairing flip (`PairingFlip`), the decode hold (`VIEW_HOLD`, `Confirmation#decoding`, `MessageDoors#refreshing`), the world-pairing claim (ClaimPolicy's observed-elsewhere rule) | Agent Z2 (2026-10-11, `brief-z2.md`). Review fixes B1-B3, (a)-(d) and the re-check's B2-real-shape, (b), (c), (d), LOW committed. Gate 3 open: snapshot-no-active and tra-start-overwrite SAT confirmed with native ≥ 1/10 (round Z2K tra: FORMULA_SAT confirmed, blocked by the view re-decode TOPOLOGY_DIVERGENCE fixed in 0ad7f0480), 18413 without WIRE_FLOW, one run of 40 |
 
@@ -256,14 +256,13 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
   ended on ForceLeaderTest.java:232's assert).
 - **e. Study checks after D1:** 07 (8490 in flight before the explore merge; 64 tasks plus 171 cut by the task bound
   after it), 21 (2023 in flight) and 14 must reach their fixed points; measure the growth on the merged body. 05:
-  FORCE diverged at K_L in `SolrCore.createInstances`; D1b (the FORCE run's armed occurrence takes the work cap
-  alone) is coded on `solr-study`, a live 05 FORCE run pending. 09: its forced
-  condition was `false`, a guard on a lambda's return through `Callable.call`: deciders through a lambda coded on
-  `solr-study` (`BooleanReturns`, `CreatedFrom`), a live 09 FORCE run pending. 10: not yet
+  FORCE reaches its target (D1b, SF3); with createInstances' K_L 16 (SF5) its closure grew past 290 obligations
+  of ZooKeeper write fault doors in 2 h and was stopped (the EX redundancy class): rerun after EX. 09: its forced
+  deciders are concrete, `waitForCoreNodeGone`'s timed waits never expire; the timed-wait door (a FAULT marker
+  at a timed wait whose result is on the traced flow) is approved and in coding. 10: not yet
   run whole (it plans 356 tasks).
 - **e2. EXPLORE redundancy (package EX, agent RD on `solr-explore2`, brief `analysis/solr-2026-10-11/brief-explore-redundancy.md`):** IB1's 07/21 spent ~83 % of their proposals re-asking arms in fault worlds that changed nothing at the task (the obligation key carries inherited prefixes, `ObligationFactory.keyed`, and exact feeder ids, `Corpus.inputShape`), and 07's closure truncation (`ClosurePlanner`, first-come) dropped recorded `create` writers for 59 static `getCore` candidates, against the recorded-writers-first rule. Fixes: key by the effect at the task, feeders by context-shape class, recorded writers first in the cut, an ADMITTED flip settles. Design gate for the key, review before merge.
 - **i. solr-adhoc-13's seed is compute-bound** (diagnosis 2026-10-11 on IS1/IB1-7: ~1300 s compute + ~850 s stalls; the test body covered recorded 10.9-21.5 s of 35 s in 2200 s; the Overseer poll turns `Root:WAKE/ZkDistributedQueue.peekElements` are misnumbered from the first CREATE on: two Overseer threads share the wait's counter and every wake reads /overseer_elect/leader, 1117 reads against 41 recorded -- the clock family). Workarounds (owner: the time family by workarounds), in the final tree `gc/solr-final`: `TimeRoutedAliasUpdateProcessorTest#testPreemptiveCreation` ends after `addOneDocSynchCreation(numShards, alias2)` (:302) -- the declared occurrence is `first` (the doSynchronous call at :301), both aliases' creations and writers stay; ZkStateReader's CacheCleaner sleep bounded by CausynthBounds (it woke 91 times in the replay, never in the recording). Both listed in STATUS "Per-system surface".
-- **h. The realized order and tick indices:** e53e88bae names a message hop by its sender's first send of its site, which took solr-18413's native from 0/10 to 2/10 on IB1; the 8 others hold a client WAKE behind a write of `Root:OVERSEER_STATE_UPDATE#21`, an index the state updater's batching moves. Dropping tick indices too would follow the same principle, but restore-construction's 10/10 rests on state-update ticks: decide on Z1's merged head with restore, 18413 and reindex natively.
 - **f. SG2b's UNSATs of 19 and 21 are void** (D2: their fatal was composed from the wrong throw). SG2-era UNSATs of 07,
   19 and 21 likewise.
 - **g. New-bug candidates:**
@@ -274,17 +273,20 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
 
 ### 4. Then: the final round and the fork
 
-1. Merge §1 in order. Build one Solr tree:
-   - it combines `gc/solr-body` + `gc/solr-zk-next` + `gc/solr-zk-doors` + `gc/solr-zk2`;
-   - it becomes `gc/solr-checks`, the tree `lucene-solr-checks`, built by `experiments/solr/prepare-trees.sh` from the
-     built head;
+1. Merge §1 in order. The one Solr tree is the local branch `gc/solr-final` (`ec89b03ac3`, worktree
+   `/bigtemp/vnr3ne/wt/lucene-solr-final`): `gc/solr-body` + `gc/solr-zk-next-r` + `gc/solr-zk-doors` + `gc/solr-zk2`
+   + solr-adhoc-13's workarounds; every case's workload and target marker checked present there (solr-study2).
+   - It becomes the tree `lucene-solr-checks` (`experiments/solr/trees.tsv`: the fork's `graphchecker/solr-checks`),
+     built by `experiments/solr/prepare-trees.sh` from the merged, built engine head -- not before;
    - never rebuild a tree a run reads.
 2. Round SG3: all 20 at once through the ledger (`tools/adhoc/sweep.sh`, `CASE_TIMEOUT_SECONDS=10800`, 14 needs the
    full budget). Verify with `tools/rounds/round-verify.sh`. Read every `.smt` by hand and write its STATUS row;
    record every FP filtered as "COMPOSE SAT → CONFIRM refute → excluded → UNSAT_CLOSED".
-3. The fork. `~/lucene-solr-8_11` is **unshallowed** (2026-10-09). Push the final tree as `graphchecker/solr-checks`
-   to `https://github.com/JHSUYU/solr.git`, never apache, and only with the owner. Update `experiments/solr/trees.tsv`.
-   Verify REPRODUCE §6 from a fresh clone.
+3. The fork. `~/lucene-solr-8_11` is **unshallowed** (2026-10-09). Push `gc/solr-final` as `graphchecker/solr-checks`
+   to `https://github.com/JHSUYU/solr.git`, never apache, and only with the owner (the lead pushes).
+   `experiments/solr/trees.tsv`, `solr-cases.tsv` (07's budget 21600) and REPRODUCE §6 (GraphChecker `system/solr`,
+   its image, the tree from the fork, the 20 by `run-series.sh`) are written; verify §6 from a fresh clone once the
+   fork and the merged engine are pushed.
 
 ### 5. Where things live
 

@@ -277,20 +277,25 @@ final class ConcolicVmBroker {
      * Pauses the VM's propagation on this thread for engine work the JDK runs
      * on a program thread ({@link InheritedState}), touching no thread-local.
      *
-     * @return false on a JVM without the native (the recording's stock JDK),
-     *         which propagates nothing; true when {@link #resumeEngineWork}
-     *         is owed
+     * Never loads the broker: before anything has asked for the VM no region
+     * has started on it, so no value is symbolic and there is nothing to
+     * pause.
+     *
+     * @return false before the broker is loaded or on a JVM without the
+     *         native (the recording's stock JDK), which propagates nothing;
+     *         true when {@link #resumeEngineWork} is owed
      */
     static boolean pauseEngineWork() {
-        Method pause = engine().pausePathCondition;
+        ConcolicVmBroker loaded = engineApi;
+        Method pause = loaded == null ? null : loaded.pausePathCondition;
         if (pause == null) return false;
         invokeNative(pause);
         return true;
     }
 
-    /** Ends a {@link #pauseEngineWork}. */
+    /** Ends a {@link #pauseEngineWork} that returned true. */
     static void resumeEngineWork() {
-        invokeNative(engine().resumePathCondition);
+        invokeNative(engineApi.resumePathCondition);
     }
 
     /**

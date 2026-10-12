@@ -135,21 +135,59 @@ Wall times vary run to run (replays race); the EX1 rows are in [design/PERFORMAN
 The 20 Solr cases ([`experiments/solr/solr-cases.tsv`](../experiments/solr/solr-cases.tsv): case, branch, budget) run
 on GraphChecker's `system/solr` and one Solr 8.11 tree, the branch `graphchecker/solr-checks` of the public fork
 `https://github.com/JHSUYU/solr.git` (tree `lucene-solr-checks`,
-[`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4) with the
-adapter, every case's target marker and the bug checks' workloads. Besides §0's packages the tree needs Apache Ant
-with Ivy (`ant ivy-bootstrap` once; Ant resolves the tree's libraries into `~/.ivy2`). From a checkout of
-`system/solr` built as in §1 (`~/GraphChecker-solr`), with the image of §2:
+[`experiments/solr/trees.tsv`](../experiments/solr/trees.tsv)): Apache Lucene/Solr `branch_8_11` (8.11.4, `faca81b`)
+with the adapter, every case's target marker and the bug checks' workloads.
 
-```bash
-cd ~/GraphChecker-solr
-tools/onlift.sh -g 8 experiments/solr/prepare-trees.sh > $GC_BULK/prepare-solr.log 2>&1
-(setsid nohup tools/rounds/run-series.sh S1 experiments/solr/solr-cases.tsv system/solr=$HOME/GraphChecker-solr \
-  > $GC_OUT/series-S1.out 2>&1 < /dev/null &)
-```
+1. **GraphChecker.** As §1, on the branch `system/solr`:
 
-`prepare-trees.sh` clones the tree into `$GC_TREES`, builds solr-core and its tests (solrj, the test framework) with
-Ant on Java 8 against the checkout's jar, and runs every case's workload once natively under its seed, one Ant run
-each: a case's classpath is read off its workload's junit4 report. The log has one line per workload, `PASSED`,
-`FAILED` (natively; the report is still its classpath) or `MISSING` (the script fails). A bug check reproduces when it
-ends `SAT_CANDIDATE`; a study check when its `.smt` is right (each case's state: [checks/README.md](checks/README.md)
-"solr" and the bug checks' table; the witness each `.smt` must allow: [handover/TODO.md](handover/TODO.md) "Solr").
+   ```bash
+   git clone -q --no-checkout -b system/solr git@github.com:JHSUYU/GraphChecker.git ~/GraphChecker-solr
+   git -C ~/GraphChecker-solr sparse-checkout set --no-cone '/*' '!/third_party/'
+   git -C ~/GraphChecker-solr checkout -q system/solr
+   (cd ~/GraphChecker-solr && tools/onlift.sh -g 6 mvn -q package -DskipTests)
+   source ~/GraphChecker-solr/tools/lib/gc-env.sh
+   ```
+
+2. **The image.** As §2, from `system/solr` (its VM sources carry the forced replay's native,
+   `System.forceNextConcolicBranch`, which the HDFS image lacks):
+
+   ```bash
+   ssh <host> 'git clone -q -b system/solr git@github.com:JHSUYU/GraphChecker.git /localtmp/$USER/gc-vm-solr &&
+     /localtmp/$USER/gc-vm-solr/tools/vm/build-image.sh <GC_BULK>/vm/solr'
+   ```
+
+   `$GC_BULK/vm/solr/j2sdk-image` is `CAUSYNTH_CUSTOM_JDK_HOME` for every Solr run.
+
+3. **The tree.** Besides §0's packages it needs Apache Ant with Ivy (`ant ivy-bootstrap` once per host; Ant resolves
+   the tree's libraries into `~/.ivy2`, the first build downloads them):
+
+   ```bash
+   cd ~/GraphChecker-solr
+   tools/onlift.sh -g 8 experiments/solr/prepare-trees.sh > $GC_BULK/prepare-solr.log 2>&1
+   ```
+
+   `prepare-trees.sh` clones the fork's `graphchecker/solr-checks` into `$GC_TREES/lucene-solr-checks` (a directory
+   already there is only built), builds solr-core and its tests (solrj, the test framework) with Ant on Java 8 against
+   the checkout's jar (`experiments/solr/build.sh`), and runs every case's workload once natively under its seed
+   (`experiments/solr/system.sh` `solr_seed`), one Ant run each: a case's classpath is read off its workload's junit4
+   report. The log has one line per workload, `PASSED`, `FAILED` (natively; its report is still its classpath) or
+   `MISSING` (the script fails). After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
+   $GC_TREES/lucene-solr-checks F0993D5343E20BA4 '<Class>#<method>'` runs one workload; never build a tree a run
+   reads.
+
+4. **The 20 cases**, each alone on the cluster with its budget (07 takes the longest):
+
+   ```bash
+   export GC_OUT=$GC_BULK/gc-out/repro-solr CAUSYNTH_CUSTOM_JDK_HOME=$GC_BULK/vm/solr/j2sdk-image
+   (setsid nohup tools/rounds/run-series.sh S1 experiments/solr/solr-cases.tsv system/solr=$HOME/GraphChecker-solr \
+     > $GC_OUT/series-S1.out 2>&1 < /dev/null &)
+   ```
+
+   One case alone: `CASE_TIMEOUT_SECONDS=14400 tools/rounds/launch-run.sh ~/GraphChecker-solr solr-18406 S1-18406`
+   (the same `GC_OUT` and image). Many at once: `tools/adhoc/sweep.sh` with `CASE_TIMEOUT_SECONDS=21600`
+   ([handover/OPERATIONS.md](handover/OPERATIONS.md) §4).
+
+5. **Reading them**, as §5: `tools/rounds/round-verify.sh S1`. A bug check reproduces when it ends `SAT_CANDIDATE`
+   (confirmed by a replay, reproduced natively: `final/reproduce.json`); a study check when its `.smt` is right, SAT
+   confirmed or UNSAT at its fixed point with no `BOUNDED`/`UNBOUND` (each case's row: [STATUS.md](STATUS.md) "Solr
+   checks"; the checking method and its traps: [handover/CHECKING.md](handover/CHECKING.md)).
