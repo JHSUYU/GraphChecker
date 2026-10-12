@@ -6125,8 +6125,12 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 campaign_stream_promote_generation() {
   local generation
   (( stream_generation > 0 )) || return 0
-  rm -rf -- "${iteration_dir}/instrumented-classes"
-  mv -- "${stream_classes}" "${iteration_dir}/instrumented-classes"
+  # A generation that only dropped doors-only marks wove nothing: its tree
+  # is still the iteration's.
+  if [[ "${stream_classes}" != "${iteration_dir}/instrumented-classes" ]]; then
+    rm -rf -- "${iteration_dir}/instrumented-classes"
+    mv -- "${stream_classes}" "${iteration_dir}/instrumented-classes"
+  fi
   for generation in "${iteration_dir}"/generations/g*; do
     rm -rf -- "${generation}/instrumented-classes"
   done
