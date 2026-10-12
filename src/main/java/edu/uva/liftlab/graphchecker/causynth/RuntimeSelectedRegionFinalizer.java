@@ -91,6 +91,13 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static final String WIRE_PRODUCER_ADMISSION = "WIRE_PRODUCER_V1";
     /**
+     * {@code admissionBasis} of an activation carried because it made a
+     * version of a shared store the question's target read through an
+     * object a fetch of that version decoded, or an earlier version of its
+     * location ({@link RecordedStore}, {@link #crossStore}).
+     */
+    private static final String STORE_WRITER_ADMISSION = "STORE_WRITER_V1";
+    /**
      * Activation member, in memory only: per field the recording saw it read
      * or write, the objects it did so on ({@code
      * RuntimeRegionPlanner#stampFieldOwners}).  A heap location is one
@@ -237,7 +244,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> branchObservations,
             StaticScopeMap scopeMap, String declaredOccurrence,
-            Collection<ScheduleEvent> recordedSchedule,
+            Collection<ScheduleEvent> recordedSchedule, RecordedStore store,
             RecordedAccesses accesses, RecordedHeap heap)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
@@ -337,7 +344,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 branchOrder);
         applyClosure(program, failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap, cutPorts, declaredOccurrence,
-                new RecordedMessages(recordedSchedule), accesses, heap));
+                new RecordedMessages(recordedSchedule), store, accesses,
+                heap));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -533,6 +541,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
         }
+        // A call out of scope whose receiver a provenance site observes: the
+        // objects it was called on are what its return rests on (crossStore).
+        sites.putAll(scopeMap.provenanceCalls());
         return sites;
     }
 
@@ -837,7 +848,8 @@ public final class RuntimeSelectedRegionFinalizer {
             StaticProgram program, RegionDemandIndex demands, String source,
             StaticScopeMap scopeMap, Map<String, List<CutPort>> cutPorts,
             String declaredOccurrence, RecordedMessages messages,
-            RecordedAccesses accesses, RecordedHeap heap)
+            RecordedStore store, RecordedAccesses accesses,
+            RecordedHeap heap)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -965,6 +977,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         walk.walk(seeds);
+        crossStore(program, walk, scopeMap, messages, store, targets);
         admitRelevantRoots(program, walk, scopeMap, messages);
         walk.stateConfinedWriters(program.planGaps);
         walk.stateUnpairedWires(program.planGaps);
@@ -1073,6 +1086,70 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
+     * {@link #STORE_WRITER_ADMISSION}: what a target of the question read,
+     * before it decided, through an object a fetch of a shared store decoded
+     * -- a construction-only field the root demand chose ({@code
+     * StaticScopeMap#provenanceCells}), read on an object the recording
+     * states that fetch registered ({@link RecordedStore#versionsOf}) --
+     * rests on that version, and on every earlier version of its location
+     * ({@link RecordedStore#writersUpTo}).  Each occurrence that made one is
+     * admitted where it is an activation (a role -- an updater turn that ran
+     * no woven region -- is passed through, never planned), and the doors
+     * of the message each served, the queue item an updater turn took in
+     * ({@code MessageDoors#consumed}), are admitted where they read a fault
+     * marker ({@link #CONTROL_PRODUCER_ADMISSION}): a fault there decides
+     * whether the version was ever written (solr-bugs-restore-construction:
+     * the client's add reads the shards' state its ZkStateReader parsed; the
+     * ACTIVE that state holds was written by the Overseer's state updater
+     * for the item RestoreCmd offered after its RESTORECORE requests).
+     */
+    private static void crossStore(StaticProgram program, DemandWalk walk,
+                                   StaticScopeMap scopeMap,
+                                   RecordedMessages messages,
+                                   RecordedStore store,
+                                   Collection<String> targets) {
+        Set<String> cells = scopeMap.provenanceCells();
+        if (store.isEmpty() || cells.isEmpty()) return;
+        Map<String, String> byId = new HashMap<>();
+        for (String occurrence : program.activations.keySet()) {
+            byId.put(OccurrenceAddress.parse(occurrence).id(), occurrence);
+        }
+        Set<String> crossed = new LinkedHashSet<>();
+        for (String target : targets) {
+            Map<String, Object> activation = program.activations.get(target);
+            Set<Integer> objects = new HashSet<>();
+            for (String cell : cells) {
+                objects.addAll(objectsOf(activation, cell, false));
+            }
+            int depth = walk.depth(target) + 1;
+            for (Map.Entry<String, Long> version
+                    : store.versionsOf(objects).entrySet()) {
+                for (String writer : store.writersUpTo(version.getKey(),
+                        version.getValue())) {
+                    if (!crossed.add(writer)) continue;
+                    if (program.activations.containsKey(writer)
+                            && !walk.reached.contains(writer)
+                            && !walk.excluded.contains(writer)) {
+                        walk.admit(writer, depth, STORE_WRITER_ADMISSION);
+                    }
+                    for (String door : doorsOf(messages, program,
+                            OccurrenceAddress.parse(writer))) {
+                        String held = byId.get(door);
+                        if (held == null || walk.reached.contains(held)
+                                || walk.excluded.contains(held)
+                                || !readsAFault(rootReads(
+                                program.activations.get(held), scopeMap))) {
+                            continue;
+                        }
+                        walk.admit(held, depth + 1,
+                                CONTROL_PRODUCER_ADMISSION);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * Admits each occurrence that read a root the failure can depend on
      * ({@link RootRelevance}), to a fixed point with the demand walk.
      *
@@ -1099,8 +1176,11 @@ public final class RuntimeSelectedRegionFinalizer {
      * DemandWalk#crossMessage}), and seeds the cells on its way.</p>
      *
      * <p>{@link #CONTROL_PRODUCER_ADMISSION}: the occurrence read a fault
-     * marker and holds a door of the message that started an admitted
-     * occurrence; it contributes no value.</p>
+     * marker and holds a door of the message that started an occurrence
+     * admitted on another rule; it contributes no value, so the doors of
+     * the message that started it are not asked in turn (solr-18413 round
+     * Z7: six hops of request and queue-item doors behind the store
+     * writers' items, the plan 86 -> 214 tasks).</p>
      *
      * <p>A root read nothing demanded is left out, its occurrence unplanned
      * unless another rule admits it.</p>
@@ -1179,11 +1259,25 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
-                if (!served.add(occurrence)) continue;
-                stateDoorsOutside(program, walk, messages.sentOutsideRegion(
-                        OccurrenceAddress.parse(occurrence)), occurrence,
-                        reading);
-                for (String door : messages.doorsOf(
+                if (served.contains(occurrence)) continue;
+                // A control producer contributes no value: its own
+                // message's doors are no question of the target's, named
+                // (it is served once a value reaches it, walk#reach).
+                if (CONTROL_PRODUCER_ADMISSION.equals(text(program.activations
+                        .get(occurrence).get(ADMISSION_BASIS)))) {
+                    if (!messages.doorsOf(OccurrenceAddress.parse(occurrence))
+                            .isEmpty()) {
+                        planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                                GapClass.DIAGNOSTIC, occurrence
+                                        + " control producer", "a control"
+                                        + " producer contributes no value:"
+                                        + " the doors of the message that"
+                                        + " started it are not asked");
+                    }
+                    continue;
+                }
+                served.add(occurrence);
+                for (String door : doorsOf(messages, program,
                         OccurrenceAddress.parse(occurrence))) {
                     String held = occurrenceById.get(door);
                     if (held == null || walk.reached.contains(held)
@@ -1202,36 +1296,59 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The message that started {@code occurrence} was sent from {@code
-     * sentFrom} in no region occurrence ({@link
-     * RecordedMessages#sentOutsideRegion}; null: it was not): each
-     * occurrence the walk has not reached that read a fault marker in that
-     * same context is a door {@link #CONTROL_PRODUCER_ADMISSION} cannot
-     * reach, stated {@link GapKind#DOOR_SEND_OUTSIDE_REGION}.
+     * The occurrence ids at the doors of the message that started {@code
+     * occurrence} ({@link RecordedMessages#doorsOf}), and every activation
+     * of the turn that sent it and of another turn that took it in at its
+     * root before any of its regions opened ({@link
+     * RecordedMessages#doorStancesOf}: RestoreCmd's turn, whose RESTORECORE
+     * requests run before its offer; the Overseer queue loop's turn, whose
+     * ZooKeeper door runs in a region of it); the occurrence's own turn is
+     * what the message started.
      */
-    private static void stateDoorsOutside(StaticProgram program,
-            DemandWalk walk, ContextShape.Stance sentFrom, String occurrence,
-            Map<String, List<RootRead>> reading) {
-        if (sentFrom == null) return;
-        String context = sentFrom.render();
-        for (Map.Entry<String, List<RootRead>> door : reading.entrySet()) {
-            if (walk.reached.contains(door.getKey())
-                    || !readsAFault(door.getValue()) || !context.equals(
-                    ContextShape.Stance.of(OccurrenceAddress.parse(
-                            door.getKey())).render())) {
-                continue;
+    private static Set<String> doorsOf(RecordedMessages messages,
+                                       StaticProgram program,
+                                       OccurrenceAddress occurrence) {
+        Set<String> doors = new LinkedHashSet<>(messages.doorsOf(occurrence));
+        Set<String> stances = messages.doorStancesOf(occurrence);
+        Set<String> handlers = messages.handlerStancesOf(occurrence);
+        if (stances.isEmpty() && handlers.isEmpty()) return doors;
+        String own = ContextShape.Stance.of(occurrence).render();
+        int ownTurn = 0;
+        int handling = 0;
+        Map<String, List<String>> byStance = program.activationsByStance();
+        Set<String> asked = new LinkedHashSet<>(stances);
+        asked.addAll(handlers);
+        for (String stance : asked) {
+            for (String activation : byStance.getOrDefault(stance,
+                    Collections.<String>emptyList())) {
+                String id = OccurrenceAddress.parse(activation).id();
+                if (id.equals(occurrence.id())) continue;
+                if (stances.contains(stance) && !stance.equals(own)) {
+                    doors.add(id);
+                } else if (stances.contains(stance)) {
+                    ownTurn++;
+                } else {
+                    handling++;
+                }
             }
-            planGap(program.planGaps, GapKind.DOOR_SEND_OUTSIDE_REGION,
-                    GapClass.DIAGNOSTIC, door.getKey(), "this occurrence read"
-                            + " a fault marker in " + context + ", the context"
-                            + " the message that started " + occurrence
-                            + " was sent from, but that send stood in no"
-                            + " region occurrence: no occurrence is the"
-                            + " message's sender, so no door of it is"
-                            + " admitted as its producer's and its fault is"
-                            + " never planned (a send hook outside the method"
-                            + " that holds the door's call)");
         }
+        // Each narrowing names what it cut (counted, DIAGNOSTIC).
+        if (ownTurn > 0) {
+            planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, occurrence.id() + " own turn",
+                    ownTurn + " other occurrence(s) of this occurrence's own"
+                            + " turn hold no door of the message that started"
+                            + " it: they are what it started too");
+        }
+        if (handling > 0) {
+            planGap(program.planGaps, GapKind.ADMISSION_GAP,
+                    GapClass.DIAGNOSTIC, occurrence.id() + " handlers",
+                    handling + " occurrence(s) of turns standing on the"
+                            + " message that started this occurrence (its"
+                            + " handlers) hold no door of it: it started"
+                            + " them");
+        }
+        return doors;
     }
 
     private static boolean readsAFault(List<RootRead> reads) {
@@ -1508,13 +1625,21 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /** Reaches one occurrence by a demand of the walk: the shortest
-         *  chain is kept, the basis stated once. */
+         *  chain is kept, the basis stated once -- a door reached first as
+         *  a control producer is a value's occurrence once a value reaches
+         *  it. */
         private void reach(String occurrence, int depth, String basis)
                 throws IOException {
             recordDepth(occurrence, depth);
-            if (!reached.add(occurrence)) return;
             Map<String, Object> activation = program.activations.get(
                     occurrence);
+            if (!reached.add(occurrence)) {
+                if (CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
+                        ADMISSION_BASIS)))) {
+                    activation.put(ADMISSION_BASIS, basis);
+                }
+                return;
+            }
             String held = text(activation.get(ADMISSION_BASIS));
             if (!held.isEmpty()) {
                 throw new IOException("conflicting runtime activation "

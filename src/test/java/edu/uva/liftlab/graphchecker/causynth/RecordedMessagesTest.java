@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import org.junit.Test;
@@ -47,27 +46,65 @@ public class RecordedMessagesTest {
         }
     }
 
-    /**
-     * A message sent in no region occurrence names where it was sent from,
-     * the context PLAN states its unreachable doors in
-     * (DOOR_SEND_OUTSIDE_REGION: solr-bugs-migrate-buffer-leak SG2); one an
-     * occurrence sent, or none, names nothing.
-     */
+    /** IDENTITY §7.2: a message has a door in every occurrence of the turn
+     *  that sent it, and of a turn that took it in at its root, no
+     *  occurrence open -- not of a turn standing on it, which it started. */
     @Test
-    public void aMessageSentInNoRegionNamesWhereItWasSent() {
-        RecordedMessages messages = new RecordedMessages(SCHEDULE);
-        String[][] rows = {
-            {"sent by an occurrence", "Anchor:e1@HADOOP_IPC/hb", null},
-            {"sent in no region", "Anchor:e2@HADOOP_IPC/hb",
-                "s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb"},
-            {"started by no message", "Root:CLIENT/hb#1", null},
+    public void aMessageHasItsSendingTurnsDoorsAndThoseOfTurnsThatTookItIn() {
+        RecordedMessages messages = new RecordedMessages(Arrays.asList(
+                SCHEDULE.get(0), SCHEDULE.get(1), SCHEDULE.get(2),
+                ScheduleEvent.of(3, ScheduleEvent.Kind.RECV,
+                        "s/n2#epoch0|Root:QUEUE#4", "SOLR_ZK#REQUEST", 0, "",
+                        "e1"),
+                // a handler's turn stands on the message: no door of it
+                ScheduleEvent.of(4, ScheduleEvent.Kind.RECV,
+                        "s/n3#epoch0|Anchor:e1@HADOOP_IPC/hb",
+                        "HADOOP_IPC#REQUEST", 0, "")));
+        Object[][] rows = {
+            {"sent in an occurrence, taken in at a root",
+                "Anchor:e1@HADOOP_IPC/hb", set("s/n2#epoch0|Root:QUEUE#4",
+                        "s/n0#epoch0|Root:CLIENT/hb#1")},
+            {"sent at a root", "Anchor:e2@HADOOP_IPC/hb",
+                set("s/n1#epoch0|Anchor:e1@HADOOP_IPC/hb")},
+            {"started by no message", "Root:CLIENT/hb#1", set()},
         };
-        for (String[] row : rows) {
-            ContextShape.Stance from = messages.sentOutsideRegion(
-                    OccurrenceAddress.parse("s/n1#epoch0/region/REGION.h/ctx:"
-                            + row[1] + "/idx:"));
-            assertEquals(row[0], row[2], from == null ? null : from.render());
+        for (Object[] row : rows) {
+            OccurrenceAddress occurrence = OccurrenceAddress.parse(
+                    "s/n1#epoch0/region/REGION.h/ctx:" + row[1] + "/idx:");
+            assertEquals((String) row[0], row[2],
+                    messages.doorStancesOf(occurrence));
         }
+        // The handler's turn is what e1 started: no door, a cut its caller
+        // names (review M4).
+        assertEquals(set("s/n3#epoch0|Anchor:e1@HADOOP_IPC/hb"),
+                messages.handlerStancesOf(OccurrenceAddress.parse(
+                        "s/n1#epoch0/region/REGION.h/ctx:Anchor:e1@HADOOP_IPC"
+                                + "/hb/idx:")));
+    }
+
+    /** A batching turn (an Overseer state writer flushing several queue
+     *  items at once) is started by every item it took in: each item's
+     *  sender is a door of its occurrences, not only the first's. */
+    @Test
+    public void aBatchingTurnIsStartedByEveryItemItTookIn() {
+        RecordedMessages messages = new RecordedMessages(Arrays.asList(
+                SCHEDULE.get(0),
+                ScheduleEvent.of(1, ScheduleEvent.Kind.SEND,
+                        "s/n0#epoch0|Root:CLIENT/hb#2", "SOLR_ZK#REQUEST", 0,
+                        "second sender", "e3"),
+                ScheduleEvent.of(2, ScheduleEvent.Kind.RECV,
+                        "s/n2#epoch0|Root:QUEUE#4", "SOLR_ZK#REQUEST", 0,
+                        "", "e1"),
+                ScheduleEvent.of(3, ScheduleEvent.Kind.RECV,
+                        "s/n2#epoch0|Root:QUEUE#4", "SOLR_ZK#REQUEST", 0,
+                        "", "e3")));
+        OccurrenceAddress flush = OccurrenceAddress.parse(
+                "s/n2#epoch0/region/REGION.w/ctx:Root:QUEUE#4/idx:");
+        assertEquals(set("sender", "second sender"), messages.doorsOf(flush));
+        assertEquals(set("s/n2#epoch0|Root:QUEUE#4",
+                "s/n0#epoch0|Root:CLIENT/hb#1",
+                "s/n0#epoch0|Root:CLIENT/hb#2"),
+                messages.doorStancesOf(flush));
     }
 
     @Test

@@ -264,10 +264,14 @@ public class SymbolicRootPolicyTest {
         for (int index = 0; index < sites.size(); index++) {
             observed.put(member(sites, index, "siteId"),
                     member(sites, index, "field") + "/"
-                            + member(sites, index, "container"));
+                            + member(sites, index, "container")
+                            + (member(sites, index, "provenance").isEmpty()
+                            ? "" : "/provenance"));
         }
         Map<String, String> expected = new LinkedHashMap<>();
-        expected.put(GET_NUM + "#u8", "false/true");
+        // The chosen read of a construction-only container: its state, and
+        // the store version its holder was decoded from (SYMBOL-SCOPE §5.7).
+        expected.put(GET_NUM + "#u8", "false/true/provenance");
         // GET_NUM#u11 decides a branch too, but the demand chose no CONTAINER
         // read there: no read site, nothing observed.
         expected.put(DELETE + "#u50", "false/true");
@@ -276,6 +280,66 @@ public class SymbolicRootPolicyTest {
         expected.put(GET_NUM + "#u10", "true/false");
         assertEquals("field/container per observed site", expected,
                 observed);
+    }
+
+    /**
+     * SYMBOL-SCOPE §5.7: a construction-only field's read the root demand
+     * chose (PROVENANCE) is a PROVENANCE_SITE, kept though nothing in the
+     * slice stores it; a replay observes it by its receiver alone, and the
+     * concrete anchor's demand joins a STORE read at that site, and no
+     * other kind of read.
+     */
+    @Test
+    public void aChosenConstructionOnlyReadIsAProvenanceSite()
+            throws Exception {
+        String flag = "<D: java.lang.Boolean flag>";
+        String readOnly = "<D: boolean isReadOnly()>";
+        final String BUILD = "<P: void <init>(D)>";
+        StaticScopeMap map = map(Arrays.asList(read(flag, 7, "$r1"),
+                guard(GET_NUM + "::$r1"), edge("{\"kind\":\"call_return\","
+                        + "\"method\":\"" + GET_NUM + "\",\"unitIndex\":9,"
+                        + "\"invoke\":\"" + readOnly + "\",\"fromCell\":\""
+                        + readOnly + ".return\",\"toCell\":\"" + GET_NUM
+                        + "::$z2\"}"), guard(GET_NUM + "::$z2"),
+                edge("{\"kind\":\"call_return\",\"method\":\"" + BUILD
+                        + "\",\"unitIndex\":4,\"invoke\":\"" + readOnly
+                        + "\",\"fromCell\":\"" + readOnly + ".return\","
+                        + "\"toCell\":\"" + BUILD + "::$z3\"}")),
+                Collections.singletonMap(NN, Collections.singletonList(
+                        GET_NUM)), Collections.<String, Clock>emptyMap(),
+                method -> false, cell -> SharedFieldFlow.TrackedKind.NONE,
+                (demandSite, demandCell) -> (GET_NUM + "#u7").equals(
+                        demandSite) ? new StaticScopeMap.Demanded(
+                        "PROVENANCE", 3, true) : (GET_NUM + "#u9").equals(
+                        demandSite) || (BUILD + "#u4").equals(demandSite)
+                        ? new StaticScopeMap.Demanded("SCOPE", 2, true)
+                        : null);
+        JsonArray observed = map.observedSites();
+        Object[][] rows = {
+            {"the cells a decoded object's guards read: a field, and a call"
+                    + " out of scope on it",
+                new java.util.LinkedHashSet<>(Arrays.asList(flag,
+                        readOnly + ".return")), map.provenanceCells()},
+            {"the calls, by their sites: one in a constructor no region"
+                    + " holds too", "{" + GET_NUM + "#u9=" + readOnly
+                    + ".return, " + BUILD + "#u4=" + readOnly + ".return}",
+                map.provenanceCalls().toString()},
+            {"observed at the call too", readOnly,
+                member(observed, 1, "declaredCallee")},
+            {"observed by its receiver alone", "true/false/false",
+                member(observed, 0, "provenance") + "/"
+                        + member(observed, 0, "field") + "/"
+                        + member(observed, 0, "container")},
+            {"a store read there is demanded", true, map.demandedAt(
+                    GET_NUM + "#u7", "[B",
+                    edu.uva.liftlab.graphchecker.contract.LocationKind.STORE)},
+            {"a heap read there is not", false, map.demandedAt(
+                    GET_NUM + "#u7", "Ljava/lang/Boolean;",
+                    edu.uva.liftlab.graphchecker.contract.LocationKind
+                            .INSTANCE)}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1], row[2]);
+        }
     }
 
     private static Map<String, Object> read(String cell, int unitIndex,

@@ -77,7 +77,8 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
   engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
   program thread (an inheritable thread-local's `childValue` in `Thread.init`,
-  `runtime/InheritedState`). Paused, the interpreter propagates nothing and no model runs
+  `runtime/InheritedState`) -- and every call of a logging API in woven code, which is IO off the
+  traced flow (`CausynthPipeline#pauseAround`). Paused, the interpreter propagates nothing and no model runs
   (`ConcolicMngr::can_do_concolic`), so the engine's lists over program objects shadow none of
   them.
 

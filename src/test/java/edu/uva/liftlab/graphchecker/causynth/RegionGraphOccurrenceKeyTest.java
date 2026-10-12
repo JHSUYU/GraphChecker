@@ -273,6 +273,7 @@ public class RegionGraphOccurrenceKeyTest {
                                         "outcome", Boolean.FALSE)),
                         walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList(),
+                        new RecordedStore(null),
                         new RecordedAccesses.Builder().build(),
                 new RecordedHeap.Builder().build());
         List<String> planned = new ArrayList<>();
@@ -394,6 +395,7 @@ public class RegionGraphOccurrenceKeyTest {
                                 "outcome", Boolean.TRUE)),
                         walkScopeMap(), RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList(),
+                        new RecordedStore(null),
                         new RecordedAccesses.Builder().build(), heap.build());
         List<String> planned = new ArrayList<>();
         for (Map<String, Object> region : closure.regions) {
@@ -534,6 +536,7 @@ public class RegionGraphOccurrenceKeyTest {
                                 LOOP), instances, branches, walkScopeMap(clock),
                         RuntimeWorkflowDiscovery.FIRST,
                         Collections.<ScheduleEvent>emptyList(),
+                        new RecordedStore(null),
                         accesses.build(),
                         new RecordedHeap.Builder().build());
         List<String> planned = new ArrayList<>();

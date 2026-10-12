@@ -515,6 +515,109 @@ public final class RowRuntime {
     }
 
     /**
+     * The seq a row the engine states itself takes (a store row): the VM's
+     * last event id, after every event before it and before every event
+     * after it; 0 -- no VM clock, which no order check reads (a thread with
+     * no VM context; outside a session, where no row is published).
+     */
+    static long currentEvent() {
+        if (publisher == null) return 0L;
+        try {
+            return Math.max(0L, ConcolicVmBroker.engine().currentEventId());
+        } catch (Throwable unavailable) {
+            return 0L;
+        }
+    }
+
+    /**
+     * The occurrence a door's own event runs in: the admitted activation's,
+     * else the one running here (a role, an unselected region), stated as an
+     * unselected activation so its rows are an activation's (as a port
+     * event's, {@code WireExport}).
+     */
+    static OccurrenceAddress doorOccurrence(String nodeKey) {
+        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+        if (active != null && active.d3Address != null) {
+            return active.d3Address;
+        }
+        OccurrenceAddress here = Identity.currentOccurrence(nodeKey);
+        ambientActivation(here);
+        return here;
+    }
+
+    /** The JVM type a store version is stated at: its content, bytes. */
+    static final String STORE_TYPE = "[B";
+
+    /**
+     * One version a shared store's write made (IDENTITY §7.2): a write row
+     * of its {@code STORE} location at the writer's occurrence, under the
+     * store's own site ({@code <transport>#WRITE:<location>}, a message
+     * site's spelling: {@code Endpoint#messageSite}).
+     * It states no expression: the store's content is none, and what a
+     * reader decides on it rests on the version, which the closure follows
+     * to its writer.
+     */
+    public static void storeWrite(OccurrenceAddress occurrence, long seq,
+                                  String site, LocationId location,
+                                  long version) {
+        SessionPublisher session = publisher;
+        if (session == null || occurrence == null || location == null) {
+            return;
+        }
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        WRITTEN.add(Confirmation.key(location, version));
+        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
+                version, "", STORE_TYPE));
+        Confirmation.wrote(location, version, at, false);
+    }
+
+    /**
+     * One read of a shared store's version at a decision site: a guard read
+     * a field of an object a decode of that version made ({@link
+     * Provenance}).  Its symbol names the version ({@link #storeSymbol}),
+     * as one symbol names one heap version; no expression holds it.
+     */
+    public static void storeRead(OccurrenceAddress occurrence, long seq,
+                                 String site, LocationId location,
+                                 long version) {
+        SessionPublisher session = publisher;
+        if (session == null || occurrence == null || location == null) {
+            return;
+        }
+        // A guard that reads several objects of one parse with no VM event
+        // between them (a loop over a collection's slices) reads the version
+        // once.  The seq is the JVM's last event id, which another node's
+        // reader shares: one read per occurrence, event, location and version.
+        if (!STORE_READS.add(occurrence.id() + "|" + seq + "|" + location
+                + "|" + version)) {
+            return;
+        }
+        Endpoint at = Identity.endpointAt(occurrence, site, 0);
+        if (at == null) return;
+        if (version >= 0L) {
+            READERS.computeIfAbsent(Confirmation.key(location, version),
+                    key -> new Readers(at, location, version))
+                    .count.incrementAndGet();
+        }
+        session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
+                version, storeSymbol(location, version), STORE_TYPE, null));
+        Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
+    }
+
+    /** occurrence|seq|location|version of every store read stated: one
+     *  per event (RowInvariants invariant 4 keys a STORE read alike). */
+    private static final Set<String> STORE_READS =
+            ConcurrentHashMap.newKeySet();
+
+
+    /** The symbol of one store version's reads. */
+    static String storeSymbol(LocationId location, long version) {
+        return "S_" + ArtifactIO.digest(location.owner() + "#"
+                + location.slot() + "#" + version, 16);
+    }
+
+    /**
      * Names two events of one site that stand on identical frames in one
      * occurrence.
      *
@@ -1186,6 +1289,14 @@ public final class RowRuntime {
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
+        if (Provenance.walked()) {
+            EngineConsole.println("Causynth decoded walks: "
+                    + Provenance.summary());
+        }
+        if (SharedStateCapture.readOutsTaken()) {
+            EngineConsole.println("Causynth read-outs: "
+                    + SharedStateCapture.readOutSummary());
+        }
         Map<String, Integer> unnamed = new LinkedHashMap<String, Integer>();
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());
@@ -1268,25 +1379,29 @@ public final class RowRuntime {
             rows.append(RowCodec.toLine(
                     RowCodec.writeObligationResult(result))).append('\n');
         }
-        try {
-            Files.write(
-                    Paths.get(worker,
-                            ObligationDir.REPLAY_VERDICT),
-                    rows.toString().getBytes(
-                            StandardCharsets.UTF_8));
-        } catch (IOException unwritable) {
-            EngineConsole.println("Causynth could not write the replay's"
-                    + " obligation verdict: " + unwritable);
-        }
+        ConcolicVmBroker.asEngineWork(() -> {
+            try {
+                Files.write(
+                        Paths.get(worker,
+                                ObligationDir.REPLAY_VERDICT),
+                        rows.toString().getBytes(
+                                StandardCharsets.UTF_8));
+            } catch (IOException unwritable) {
+                EngineConsole.println("Causynth could not write the replay's"
+                        + " obligation verdict: " + unwritable);
+            }
+        });
     }
 
     public static void resetForTests() {
         synchronized (LOCK) {
             AMBIENT.clear();
             CLAIMED_EVENTS.clear();
+            SharedStateCapture.resetForTests();
             ENDPOINTS.clear();
             WRITTEN.clear();
             READERS.clear();
+            STORE_READS.clear();
             OUTSIDE.clear();
             MINT_LABELS.clear();
             UNNAMED.clear();

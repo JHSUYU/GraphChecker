@@ -601,7 +601,11 @@ first test, and the reads of its later tests come after it -- hdfs-adhoc-26's cT
 read rows the anchor made, in each admitted path,
 before that path's deciding event, of the reads the root demand found on the throw's path guards
 (SYMBOL-SCOPE §4.6; `StaticScopeMap#demandedAt`: a READ_SITE or READ placeholder stating its
-`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins).
+`demandDistance`, joined on the method, the location kind and the type as `#carriersAt` joins; a
+STORE read at a `PROVENANCE_SITE`, by its site, SYMBOL-SCOPE §5.7). Every anchor, concrete or not,
+also demands the STORE reads it made at its provenance sites before it decided
+(`ClosurePlanner#storeReads`): a store version's content is no value a term names, so a symbolic
+predicate's demand never reaches it.
 A later read cannot reach a decision already taken; an earlier one off the guards' cone reaches it
 only through a read on it, whose writers the closure then asks. Their symbols are demanded like
 those a symbolic phi names, so their writers become tasks flipped at their own guards and fault
@@ -640,15 +644,26 @@ are counted, never dropped silently: `concreteAnchors` states how many
   a store of a reference among those writes that states a `referentState` adds the writers of each
   state of that container the read could have seen through it (`Corpus#referentStates`, COMPOSE's
   `SmtLowering#statesOf`);
+- a STORE read (a guard's read of an object a store's fetch was parsed into, IDENTITY §7.2): the
+  eligible row writers by the same rule, on any node (a one-JVM cluster's nodes are one session),
+  and the writers of every earlier version of its location (`ClosurePlanner#storeWriters`,
+  `#earlierVersions`: each write modifies the document before it, `RestsOn#closure`'s rule); each
+  writer then names the doors of the queue item it took in (below); no static candidate;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
-- the two doors of the message a demanded occurrence served (sender and receiver of its causal
-  anchor's producer endpoint), each where a session recorded a fault decision of it (its fault
+- the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
+  producer endpoint; every occurrence of the turn that sent it, on any of its threads and whatever
+  its recorded place, a fault of which can stop the turn short of the send -- RestoreCmd's
+  RESTORECORE requests before its ACTIVE offer; and every occurrence of a turn that took it in at
+  its root, no occurrence open; `Corpus#doorsOf`, IDENTITY §7.2), each where a session recorded a
+  fault decision of it (its fault
   point decides whether the message exists; the doors PLAN's `CONTROL_PRODUCER_V1` admits):
   `CONTROL_PRODUCER`, contributing no value. Any other door -- run under no planned task, a role,
   or one that decided no fault (hdfs-adhoc-28/29's heartbeat tick in a scope with no IPC client
   door, HG3: it waited as "only the seed replay ran this occurrence" and blocked the fixed point) --
-  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for.
+  is one DIAGNOSTIC `ADMISSION_GAP` row and never waited for. A control producer contributes no
+  value, so the doors of the message that started it are not asked in turn (solr-18413 round Z7:
+  six hops of request and queue-item doors behind the store writers' items doubled the plan).
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;
@@ -2350,6 +2365,19 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
     natively a wait ends before the world it waited on has got where the confirmed one had;
   - a later count is a loop's (a poll's, a retry's, one send per item), which natively runs
     another number of times.
+
+  Only on the claim's cone: the WAKE's context and the step's (node and causal context, the
+  handoffs left out) are each the context of an occurrence a ROOT row is minted at, of the anchor,
+  or of one CONFIRM's WIRE, STATE or ORDER rows name (`ConfirmMain.Witness#cone`), or, one hop,
+  the context of a SEND one of these received (paired by endpoint: `RealizedOrder#withProducers`;
+  restore's first RESTORE task, whose state-update message the mint's turn applied and whose wait
+  the order holds -- 0/10 without the hop), and the step is
+  in no turn-counted root (a `Root:` of any role but CLIENT: a daemon tick, a timed wait's turn)
+  unless a ROOT row is minted there; a WAKE elsewhere is timing the claim rests on nowhere, and a
+  tick's k counts turns a native run numbers on its own timing (solr-18413 Y8: 56 rows -- the
+  client's REQUESTSTATUS polls, other Overseer task and state-updater turns -- and every native run
+  waited at a queue write of `Root:OVERSEER_STATE_UPDATE#15` it never made at that tick, 0/10; on
+  the cone none is held and Y8 reproduces 10/10, IB1 10/10).
 
   Both events are named by their stable contexts (`contract.StableEventNames`, computed alike by
   the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`), and each message
