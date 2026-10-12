@@ -2,9 +2,9 @@
 # directory name and the branch of the Solr fork (SOLR_FORK, prepare-trees.sh)
 # it is checked out at.  It stands on Apache Lucene/Solr branch_8_11 faca81b
 # (8.11.4, the last Solr line on Java 8).  The fork's branch is the cluster's
-# local gc/solr-final2 (gc/solr-zk-next 22930889c8, which holds gc/solr-body,
+# local gc/solr-final3 (gc/solr-zk-next 22930889c8, which holds gc/solr-body,
 # + gc/solr-zk-doors-r 2346cafecd + gc/solr-zk2-next b2605b6bd7 + solr-adhoc-13's
-# workarounds ec89b03ac3 + overseer-lock-leak's workload a55c3f6d78 + solr-adhoc-38's
-# workload b31103a39d), pushed under this name.
+# workarounds ec89b03ac3 + overseer-lock-leak's workload a55c3f6d78 and 43e956dcf3
+# + solr-adhoc-38's workload b31103a39d), pushed under this name.
 # name	fork branch	what it is
 lucene-solr-checks	graphchecker/solr-checks	every Solr case: the adapter (CausynthSolrCluster; the message, store-write and store-read doors, a store read's lost reply; ZooKeeper store versions and their JSON content; the node's views of cluster state and aliases), the 12 study checks' markers and the eight bug checks' markers and workloads, with the automatic cluster's determinism patches, the per-collection refresh lock, and the workloads of solr-adhoc-13 and -38 cut after their declared occurrence and the CacheCleaner workaround
