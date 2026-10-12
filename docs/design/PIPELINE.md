@@ -897,7 +897,27 @@ solver says so after a minute and every ten minutes after (`campaign_solver_wait
 with no room to start a solver now answers the question in a solver JVM of its own at once
 (`campaign_solve_obligation_alone ... <charged_mb>`, `ObligationSolverMain --obligation-id`),
 under the solve's own charge (what a solver starts at, §7.7), what it grows past that asked of the
-host as it grows. A question the host's solver, or that JVM, could not answer (it ran out of heap on it,
+host as it grows.
+
+**The solve's two lanes.** Every question is first asked at `campaign_solver_first_ms`
+(`campaign_solver_first_tier_ms`, 60 s, never past `solver_timeout_ms`): the host's solver is started
+with that budget, and so is a question asked in a JVM of its own. A question its host's solver has not
+taken within `campaign_solver_busy_patience_s` (30 s) is withdrawn from its queue (the same atomic rename
+`Service` takes one by) and answered in a JVM of its own at once (`campaign_solve_obligation` 5). A
+question undecided at the first budget (`SOLVER_TIMEOUT after <first> ms`) lands nothing: the head moves
+its answer aside (`obligation_result.first.jsonl`), keeps the obligation in flight, and queues it in the
+hard lane (`campaign_stream_ended`, `stream_hard`), which `campaign_stream_dispatch` starts only once no
+other start waits and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
+`solver_timeout_ms` in a solver JVM of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`),
+charged a solver's start, at most `campaign_stream_hard_per_host` (1) per host. Since the obligation
+stays in flight, no fixed point is declared before its hard ask. One undecided at the full budget lands
+NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each a
+`SOLVER_TIMEOUT` ADMISSION_GAP row (`campaign_solver_timeouts`), BLOCKING under any claim but a
+SAT_CANDIDATE: a RUN_DEFECT, counted in `defects[]`. Why (SP4-10, 2026-10-12): the answered questions took
+a median 1 s, p90 4 s, but 12 READ-door and routed-alias flips ran their z3 races 1000-1180 s of the
+1810 s budget inside their hosts' solvers, and the 292 questions queued behind them waited up to 1135 s.
+
+A question the host's solver, or that JVM, could not answer (it ran out of heap on it,
 died, or was ended at what its host could hold) is no answer: it is asked once more of a solver JVM of
 its own at `engine_memory_mb`, placed as any start (`campaign_solve_obligation_placed`): its need is
 what the first measurably held -- its watched peak, or the host's solver's heap -- with the usual

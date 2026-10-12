@@ -39,6 +39,9 @@ The owner (long-term, 2026-10-05): "一定要最大化利用10个server。这10�
    shared read-only; never rebuild a tree or snapshot a run reads; kill by pid only.
 5. **The one limit is memory:** every start is charged on the host ledger and no lift passes 70 %. Shared services must
    not be flooded: offline gates go through `onlift.sh` off `lift11` (the owner's machine), a few cases at a time.
+   **The control host stays light:** the sessions run on lift11 -- `unset BASH_ENV` in every session (a wedged `/sw`
+   stalled every bash there), no polling or builds there, lift11 out of `LIFTS` while they run. The whole recipe as run
+   on 2026-10-12, with commands: [PARALLEL.md](docs/handover/PARALLEL.md) §6.
 6. **At every lull, look at the lifts** (memory and load on each) and fill them with whatever does not wait on a fix.
 7. **Parallelism serves throughput, never itself** (owner 2026-10-06: "你也不要过分并行哈。合理的并行"; "并行你要记住是让吞吐提升。
    而不是单单为了并行"): at ~18 live campaigns every case ran 3-5x slower. Keep about 8-10 live campaigns in all, the

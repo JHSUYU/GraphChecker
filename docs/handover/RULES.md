@@ -226,6 +226,12 @@ recommendation.
 - **Waits end** (2026-10-06): every background wait has a timeout and waits on a pid or a file; never `pgrep -f`
   on a string its own command line contains (it matches itself and never ends: a lead's and an agent's waits ran for
   hours), never a chain of waits on another wait's output.
+- **Never wait blindly on many shells; look for stuck ones** (owner 2026-10-12, long-term: "对于同时跑的多个shell，你也不要盲目等待。
+  合理的去看个别shell别被卡死了啥的"): at every check-in, and whenever a tool call or an agent is unusually slow, look at the
+  shells as well as the runs: D-state processes on the control host and their `/proc/<pid>/wchan` (`autofs_wait`,
+  `nfs_*`), the load, background waiters older than their purpose (a waiter on a stopped run whose summary never gets
+  its verdict row, a file test on another host's `/tmp`). Fix the cause at once and kill the stuck ones by pid (the
+  2026-10-12 `BASH_ENV=/sw` jam cost about an hour of every agent's time; OPERATIONS §8, PARALLEL §6).
 - **Shell under `set -u`: initialize every local** (`local x=""`): an unset one errors the function and its callers
   retry forever (the ledger fix's first version spun the shell test, 2026-10-06).
 - **Offline gates are started off `lift11`, a few cases at a time** (`onlift.sh`): dozens of `offline-ab.sh` waiters on
