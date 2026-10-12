@@ -541,7 +541,10 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   maps, collections and object arrays; no JDK object, value, lambda, synthetic class, engine object
   or inner object's outer one; at most 4096 objects and 16 hops, a walk cut there a DIAGNOSTIC
   `UNSTATED_VALUE` -- with the VM's propagation paused, and each object it meets is registered with
-  the version, the first decode keeping it. A guard that reads a construction-only field of a
+  the version, the first decode keeping it (another version's decode reaching it states a DIAGNOSTIC
+  row, counted in `Causynth decoded walks:`, never a re-pin); a class's constant (an object a static
+  field of its own class holds: `DocRouter.DEFAULT`) and what a supplier holds (`PrsSupplier`'s
+  per-replica states) are no product of the decode, which cannot tell what it allocated. A guard that reads a construction-only field of a
   registered object at a `PROVENANCE_SITE` (SYMBOL-SCOPE §5.7) reads that version: a STORE read row
   at the reading occurrence, its symbol naming the version (`RowRuntime#storeRead`); a path rests on each such read its closure made before its cutoff, though no term names it, and CONFIRM holds it to the version the session read (a STATE row, `compose/RestsOn#storeLocations`: a run whose reader read another version does not confirm). The recording
   states each decode's objects by identity (`STORE_DECODED`), which PLAN joins with the objects an

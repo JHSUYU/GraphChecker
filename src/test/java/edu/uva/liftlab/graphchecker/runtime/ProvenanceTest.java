@@ -58,6 +58,36 @@ public class ProvenanceTest {
         assertNull("a lambda's capture is none", Provenance.of(client));
         assertNull("nor what it holds", Provenance.of(client.connection));
         assertNull("an object no decode made", Provenance.of(new Object()));
+        assertNull("a class's constant is no decode's",
+                Provenance.of(Decoded.Router.DEFAULT));
+        assertEquals("the later product reached the first's slice: stated",
+                1L, Provenance.shared());
+    }
+
+    /**
+     * What a decode reaches but did not make is none of its product: what a
+     * supplier hands over (another fetch's states); an object another
+     * version's decode registered keeps that version, and is stated.
+     */
+    @Test
+    public void aSuppliersStatesAreNoProductAndAnotherVersionsObjectIsStated() {
+        Decoded.Slice fetched = new Decoded.Slice("replica", "active");
+        Decoded.Collection collection = new Decoded.Collection(
+                new Decoded.Client(), new Decoded.Slice("shard1", "active"));
+        collection.states = new Decoded.States(fetched);
+        Provenance.register(new Provenance.Version(STATE, PATH, 5L),
+                collection);
+        assertNull("the supplier's states", Provenance.of(fetched));
+        assertEquals("nothing shared yet", 0L, Provenance.shared());
+        LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/aliases.json");
+        Decoded.Collection again = new Decoded.Collection(
+                new Decoded.Client(), collection.slices.get("shard1"));
+        Provenance.register(new Provenance.Version(aliases, "/aliases.json",
+                2L), again);
+        assertEquals("it keeps its version", 5L,
+                Provenance.of(collection.slices.get("shard1")).version);
+        assertEquals("and is stated", 1L, Provenance.shared());
     }
 
     /**

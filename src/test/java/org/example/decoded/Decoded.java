@@ -11,7 +11,7 @@ import java.util.function.Supplier;
  * the engine's packages (runtime.ProvenanceTest): a collection holding its
  * slices by name and as an array, each slice its state; a supplier lambda
  * capturing the client that fetched it; an inner object holding its outer
- * one.
+ * one; its class's constant router; a supplier of another fetch's states.
  */
 public final class Decoded {
     /** The client a lambda of the product captures: no data of it. */
@@ -29,8 +29,30 @@ public final class Decoded {
         }
     }
 
+    /** A router: its class's constant stands behind every collection. */
+    public static class Router {
+        public static final Router DEFAULT = new Router();
+        public final String name = "compositeId";
+    }
+
+    /** States another fetch made, handed over by a supplier. */
+    public static final class States implements Supplier<Slice> {
+        public final Slice held;
+
+        public States(Slice held) {
+            this.held = held;
+        }
+
+        @Override
+        public Slice get() {
+            return held;
+        }
+    }
+
     public static final class Collection {
         public final Map<String, Slice> slices = new LinkedHashMap<>();
+        public Router router = Router.DEFAULT;
+        public States states;
         public final Slice[] active;
         public final List<Slice> listed;
         public final Supplier<Object> lazy;

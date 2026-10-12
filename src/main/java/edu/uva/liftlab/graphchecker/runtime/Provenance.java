@@ -25,7 +25,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * hands each decode's product to {@link MessageDoors#decoded}; its object
  * graph is walked once and every application object in it is registered
  * with the version, the first decode that reaches an object keeping it (a
- * later product holding an older object shares it, it does not re-make it).
+ * later product holding an older object shares it, it does not re-make it:
+ * stated, never a silent re-pin, as a DIAGNOSTIC row and in {@link
+ * #summary}).  What a decode reaches but did not make is no product of it:
+ * a class's constant (an object a static field of its own class holds,
+ * Solr's {@code DocRouter.DEFAULT} behind every collection's router) and
+ * what a supplier holds (code that makes state on demand, Solr's {@code
+ * PrsSupplier} with the per-replica states of child znodes).
  *
  * <p>The walk follows instance fields of application objects and the
  * contents of maps, collections and object arrays, registering no JDK
@@ -73,6 +79,14 @@ final class Provenance {
     private static final AtomicLong NANOS = new AtomicLong();
     private static final AtomicLong MAX_NANOS = new AtomicLong();
     private static final AtomicLong BOUNDED = new AtomicLong();
+    private static final AtomicLong SHARED = new AtomicLong();
+    /** Class, holding version and reaching version of each shared object
+     *  stated: one row each. */
+    private static final java.util.Set<String> STATED =
+            ConcurrentHashMap.newKeySet();
+    /** Per class, its static reference fields. */
+    private static final Map<Class<?>, Field[]> STATICS =
+            new ConcurrentHashMap<Class<?>, Field[]>();
 
     private Provenance() {
     }
@@ -177,16 +191,26 @@ final class Provenance {
                     }
                     continue;
                 }
-                // A lambda or a synthetic class is code the product holds
-                // (a supplier capturing the store's client), no data of it.
+                // A lambda, a synthetic class or a supplier is code the
+                // product holds (a supplier capturing the store's client),
+                // no data of it; a class's constant no decode made.
                 if (jdk(type.getName()) || type.isSynthetic()
                         || type.getName().contains("$$Lambda$")
-                        || EnginePlumbing.site(type.getName())) {
+                        || EnginePlumbing.site(type.getName())
+                        || value instanceof java.util.function.Supplier
+                        || constant(value)) {
                     continue;
                 }
                 // An object an earlier decode made is that decode's, and so
-                // is what it holds.
-                if (DECODED.putIfAbsent(value, version) != null) continue;
+                // is what it holds; another version's is stated.
+                Version held = DECODED.putIfAbsent(value, version);
+                if (held != null) {
+                    if (!held.location.equals(version.location)
+                            || held.version != version.version) {
+                        shared(type, held, version);
+                    }
+                    continue;
+                }
                 registered.add(value);
                 for (Field field : fields(type)) {
                     queue.add(new Object[] {field.get(value), depth + 1});
@@ -198,6 +222,60 @@ final class Provenance {
             }
         }
         return bounded;
+    }
+
+    /**
+     * One object a decode reached that another version holds: it keeps
+     * that version (a guard reading it reads that version, not this
+     * decode's), counted and stated once per class and pair.
+     */
+    private static void shared(Class<?> type, Version held, Version version) {
+        SHARED.incrementAndGet();
+        if (!STATED.add(type.getName() + "|" + held + "|" + version)) return;
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                version.toString(), "the decode reached a " + type.getName()
+                        + " that the decode of " + held + " registered: it"
+                        + " keeps that version, so a guard reading it reads "
+                        + held + ", not this decode's");
+    }
+
+    /** Whether a static field of {@code value}'s own class or one of its
+     *  application superclasses holds it: a class's constant. */
+    private static boolean constant(Object value) {
+        for (Class<?> at = value.getClass(); at != null
+                && !jdk(at.getName()); at = at.getSuperclass()) {
+            for (Field field : statics(at)) {
+                try {
+                    if (field.get(null) == value) return true;
+                } catch (ReflectiveOperationException | RuntimeException
+                        unreadable) {
+                    // Not one it can read.
+                }
+            }
+        }
+        return false;
+    }
+
+    /** The static reference fields of {@code type}, once per class. */
+    private static Field[] statics(Class<?> type) {
+        Field[] known = STATICS.get(type);
+        if (known != null) return known;
+        List<Field> found = new ArrayList<Field>();
+        for (Field field : type.getDeclaredFields()) {
+            if (!Modifier.isStatic(field.getModifiers())
+                    || field.getType().isPrimitive()) {
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+                found.add(field);
+            } catch (RuntimeException inaccessible) {
+                // Not read.
+            }
+        }
+        known = found.isEmpty() ? NONE : found.toArray(new Field[0]);
+        STATICS.put(type, known);
+        return known;
     }
 
     /** A value is no holder of decoded state: its identity carries none. */
@@ -254,7 +332,8 @@ final class Provenance {
                 + String.format("%.2f", decodes == 0L ? 0.0
                 : NANOS.get() / 1e6 / decodes) + " ms each, longest "
                 + String.format("%.2f", MAX_NANOS.get() / 1e6) + " ms, "
-                + BOUNDED.get() + " at the bound";
+                + BOUNDED.get() + " at the bound, " + SHARED.get()
+                + " object(s) reached that another version holds";
     }
 
     /** Whether any decode was walked (the summary says something). */
@@ -269,5 +348,12 @@ final class Provenance {
         NANOS.set(0L);
         MAX_NANOS.set(0L);
         BOUNDED.set(0L);
+        SHARED.set(0L);
+        STATED.clear();
+    }
+
+    /** Objects decodes reached that another version holds (tests). */
+    static long shared() {
+        return SHARED.get();
     }
 }
