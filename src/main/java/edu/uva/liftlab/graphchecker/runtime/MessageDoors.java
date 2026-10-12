@@ -380,8 +380,13 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
-        turn(ScheduleEvent.Kind.WRITE, transport, location);
-        return inFlight(transport, location);
+        boolean paused = pause();
+        try {
+            turn(ScheduleEvent.Kind.WRITE, transport, location);
+            return inFlight(transport, location);
+        } finally {
+            resume(paused);
+        }
     }
 
     /**
@@ -398,11 +403,16 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storingChild(String transport, String location) {
-        String path = trimmed(location);
-        int slash = path.lastIndexOf('/');
-        turn(ScheduleEvent.Kind.WRITE, transport,
-                slash <= 0 ? "/" : path.substring(0, slash));
-        return inFlight(transport, location);
+        boolean paused = pause();
+        try {
+            String path = trimmed(location);
+            int slash = path.lastIndexOf('/');
+            turn(ScheduleEvent.Kind.WRITE, transport,
+                    slash <= 0 ? "/" : path.substring(0, slash));
+            return inFlight(transport, location);
+        } finally {
+            resume(paused);
+        }
     }
 
     /**
@@ -415,7 +425,54 @@ public final class MessageDoors {
      * went to another node).
      */
     public static void reading(String transport, String location) {
-        turn(ScheduleEvent.Kind.READ, transport, location);
+        boolean paused = pause();
+        try {
+            turn(ScheduleEvent.Kind.READ, transport, location);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    /**
+     * Engine work a system's code called runs with the VM's propagation
+     * paused, as every hook the weave emits does: the engine's plumbing is
+     * never program state (solr-bugs-snapshot-no-active Z2G: a store
+     * write's door, keying a path spelled from a request's values, stated
+     * 1,441 versions of the JDK's UTF-8 encoder arrays as the
+     * CREATESNAPSHOT task's writes).  Only in a replay: elsewhere no VM
+     * propagates.  Pair with {@link #resume} in a finally.
+     */
+    private static boolean pause() {
+        if (!RowRuntime.open()) return false;
+        ConcolicRegionRuntime.pauseObservation();
+        return true;
+    }
+
+    /** Ends what {@link #pause} began. */
+    private static void resume(boolean paused) {
+        if (paused) ConcolicRegionRuntime.resumeObservation();
+    }
+
+    /**
+     * A system's JSON codec serializes a document into bytes: the VM
+     * propagates nothing until {@link #serialized}.  A store's content
+     * crosses leaf by leaf, from the document the codec was handed ({@link
+     * #jsonWritten}), never through its bytes, which are concrete; so is
+     * any other use of the codec's output.  Unpaused, every character of a
+     * symbolic leaf written into the codec's buffers was a version
+     * (solr-bugs-snapshot-no-active Z2G: 2,100 array writes of noggit's
+     * CharArr and ByteUtils.UTF16toUTF8 in the CREATESNAPSHOT task, whose
+     * publication held every region close behind it).
+     *
+     * @return whether it paused, for {@link #serialized}
+     */
+    public static boolean serializing() {
+        return pause();
+    }
+
+    /** The codec's serialization {@link #serializing} paused has ended. */
+    public static void serialized(boolean paused) {
+        resume(paused);
     }
 
     /** A write's or a read's turn at {@code location}, keyed as every run
@@ -556,6 +613,7 @@ public final class MessageDoors {
      */
     public static void stored(String transport, String key, Object owner,
                               byte[] data) {
+        boolean paused = pause();
         // In flight until filed, whatever bracket the adapter opened: the
         // SEND and the producer it mints take the concolic VM milliseconds.
         long store = inFlight(transport, location(key));
@@ -569,6 +627,7 @@ public final class MessageDoors {
             written(transport, key, owner);
         } finally {
             storeEnded(transport, store);
+            resume(paused);
         }
     }
 
@@ -605,6 +664,15 @@ public final class MessageDoors {
      * the objects each occurrence read a field on.
      */
     public static void decoded(String transport, String key, Object product) {
+        boolean paused = pause();
+        try {
+            decode(transport, key, product);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void decode(String transport, String key, Object product) {
         long version = version(key);
         if (version < 0L || product == null) return;
         String path = location(key);
@@ -647,10 +715,19 @@ public final class MessageDoors {
      * An object no decode made states nothing.
      */
     public static void viewed(String transport, String path, Object product) {
-        Provenance.Version version = product == null ? null
-                : Provenance.observe(product, null, new boolean[1]);
+        if (product == null || !RowRuntime.open()) return;
+        boolean paused = pause();
+        try {
+            view(transport, path, product);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void view(String transport, String path, Object product) {
+        Provenance.Version version = Provenance.observe(product, null,
+                new boolean[1]);
         if (version == null) return;
-        if (!RowRuntime.open()) return;
         String node = nodeHere();
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         if (at == null) return;
@@ -765,6 +842,16 @@ public final class MessageDoors {
      */
     public static void fetched(String transport, String key, Object owner,
                                byte[] data) {
+        boolean paused = pause();
+        try {
+            fetch(transport, key, owner, data);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void fetch(String transport, String key, Object owner,
+                              byte[] data) {
         StoreContent.fetched(transport, key, data);
         String kind = NOTIFIED.get();
         if (kind == null) return;
@@ -808,6 +895,15 @@ public final class MessageDoors {
      * of the window filed names nothing.
      */
     public static void consumed(String transport, String key) {
+        boolean paused = pause();
+        try {
+            consume(transport, key);
+        } finally {
+            resume(paused);
+        }
+    }
+
+    private static void consume(String transport, String key) {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         Outbound message = filed(transport, key);

@@ -87,6 +87,8 @@ runtime.MessageDoors notified void string runnable
 runtime.MessageDoors outbound doors.Outbound string string string string object object
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
 runtime.MessageDoors registerNode void object string string string object[]
+runtime.MessageDoors serialized void boolean
+runtime.MessageDoors serializing boolean
 runtime.MessageDoors startRecording void
 runtime.MessageDoors startupWindow boolean
 runtime.MessageDoors stopRecording void
