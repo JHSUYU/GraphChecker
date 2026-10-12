@@ -71,11 +71,14 @@ public final class RestsOn {
     /**
      * THE ADMITTED PATHS, COMPOSE's disjuncts and EXPLORE's demand alike
      * (PIPELINE §7.2, §8), each refusal a row of {@code gaps}: every
-     * session's path that reached the anchor, or, where none did,
-     * every session's path that ran the occurrence and left the way to the
-     * throw (its fatal arm the constant healthy decision).  The declared
-     * occurrence is always the anchor; a corpus without a target row for it
-     * never ran it, a defect, never a reason to elect another occurrence.
+     * admitted session's path that reached the anchor, or, where none did
+     * ({@link #reached}), every admitted session's path that ran the
+     * occurrence (its way guard's other arm its fatal, or the constant
+     * healthy decision).  A session its own rows do not admit is no disjunct
+     * and drops none, even where it reached the anchor or threw there.  The
+     * declared occurrence is always the anchor; a corpus without a target
+     * row for it never ran it, a defect, never a reason to elect another
+     * occurrence.
      */
     public List<Corpus.RecordedPath> admitted(List<GapRow> gaps) {
         List<Corpus.RecordedPath> admitted =
@@ -88,34 +91,45 @@ public final class RestsOn {
                             + "for it");
             return admitted;
         }
-        // Where no session reached the anchor, each that ran the occurrence
-        // and left the way to the throw at a guard is a path: its fatal arm
-        // is the constant healthy decision ({@link #compose}).  Beside a
-        // path that reached it, such a disjunct adds nothing.
-        boolean reached = false;
-        for (TargetRow target : targets) reached |= target.reachedAnchor();
+        // Beside an admitted path that reached the anchor, a path that left
+        // the way to the throw adds no disjunct (its fatal arm is the
+        // constant healthy decision, or the flip of a guard a reaching path
+        // already holds).
+        boolean reached = reached();
         for (TargetRow target : targets) {
-            Corpus.RecordedPath path = corpus.path(target.sessionId(),
-                    anchor);
+            String session = target.sessionId();
+            Corpus.RecordedPath path = corpus.path(session, anchor);
             if (reached && !target.reachedAnchor()) {
                 gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session ran the occurrence "
+                        session, "this session ran the occurrence "
                                 + "and did not reach the anchor");
-                // Beside a path that reached it, its cut still bounds the
-                // search: the worlds it would have run on are not composed.
-                if (path != null) {
-                    cut(gaps, target.sessionId(), decided(target.sessionId(),
-                            target, path.decisions));
+                // Its cut still bounds the search, where its own rows admit
+                // it: the worlds it would have run on are not composed.
+                if (path != null && settled(session, null)) {
+                    cut(gaps, session, decided(session, target,
+                            path.decisions));
                 }
                 continue;
             }
             if (path == null) {
                 gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session ran the occurrence "
-                                + "and published no path at it");
+                        session, "this session ran the occurrence and "
+                                + "published no path at it");
                 continue;
             }
-            if (!settled(target.sessionId(), gaps)) continue;
+            if (!settled(session, gaps)) {
+                if (target.reachedAnchor()) {
+                    gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                            session, "this session reached the anchor"
+                                    + (target.observedFatal()
+                                    ? " and threw the target" : "")
+                                    + " in a replay its own rows do not "
+                                    + "admit: no disjunct, and it drops no "
+                                    + "path (solr-adhoc-19 F2V4: such a "
+                                    + "replay made COMPOSE drop 63)");
+                }
+                continue;
+            }
             admitted.add(path);
         }
         // And each forced path (PIPELINE §7.10): the recording's world with
@@ -125,11 +139,33 @@ public final class RestsOn {
     }
 
     /**
+     * Whether a session whose own rows admit it ({@link #settled}) reached
+     * the anchor at a path it published: THE rule COMPOSE's admission and
+     * EXPLORE's flip sites ({@code ClosurePlanner#plan}) read, once per
+     * corpus.  A replay that refused its own obligation is the recording
+     * again under a valuation it did not take: its reach states nothing.
+     */
+    public boolean reached() {
+        if (reached == null) {
+            boolean any = false;
+            for (TargetRow target : corpus.targetsOn(anchor)) {
+                any |= target.reachedAnchor()
+                        && corpus.path(target.sessionId(), anchor) != null
+                        && settled(target.sessionId(), null);
+            }
+            reached = Boolean.valueOf(any);
+        }
+        return reached.booleanValue();
+    }
+
+    private Boolean reached;
+
+    /**
      * Whether this session's OWN rows admit the obligation it ran (the
      * replay owns the verdict).  A refused obligation's path is the
      * recording again under a valuation the run did not take, so it is no
      * disjunct.  A SEED admits itself; an obligation the manifest names and
-     * no row settles is BLOCKING.
+     * no row settles is BLOCKING.  {@code gaps} null: asked quietly.
      */
     private boolean settled(String session, List<GapRow> gaps) {
         SessionReader reader = corpus.session(session);
@@ -139,7 +175,9 @@ public final class RestsOn {
         boolean admitted = reader.admitted();
         for (ObligationResult result : reader.obligations()) {
             stated.add(result.obligationId());
-            if (result.verdict() == Verdict.ADMITTED) continue;
+            if (result.verdict() == Verdict.ADMITTED || gaps == null) {
+                continue;
+            }
             gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
                     "this replay states " + result.verdict() + " for the "
                             + "obligation it ran (" + result.obligationId()
@@ -151,6 +189,7 @@ public final class RestsOn {
         for (String obligation : asked) {
             if (stated.contains(obligation)) continue;
             admitted = false;
+            if (gaps == null) continue;
             gap(gaps, GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
                     "session " + session + " states it ran this obligation "
                             + "and publishes no verdict for it, so what it "

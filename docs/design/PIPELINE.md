@@ -1448,8 +1448,12 @@ Corpus-level BLOCKING gaps: one solver name for two roots, a session not read wh
 one SEED, an unreadable slot table, one name at two sorts, one name for two identities. Sessions that
 replace a slot (§7.1) give no arms.
 
-**Admission** (`admit`, `settled`): one path per session whose target row at the anchor reached it
-(beside one, a target row that did not reach it is a DIAGNOSTIC gap); where none reached it, one per
+**Admission** (`admit`, `settled`): one path per admitted session whose target row at the anchor reached
+it (beside one, a target row that did not reach it is a DIAGNOSTIC gap); whether the anchor was reached
+is asked of admitted sessions alone, once (`RestsOn#reached`, which EXPLORE's flip sites read too,
+`ClosurePlanner#plan`): a replay its own rows do not admit is no disjunct and drops no path, even where
+it reached the anchor and threw (a DIAGNOSTIC row names it; solr-adhoc-19 F2V4: such a replay made
+COMPOSE drop 63 unreached paths); where none reached it, one per admitted
 session that ran the occurrence and left the way to the throw at a guard (`RestsOn#wayGuard`: the
 last decision at a path site of the anchor's OWN target -- the TARGET_SITE its target row's site
 guards, `StaticScopeMap#ownTarget`, never pooled over every throw -- that took an arm off the way,

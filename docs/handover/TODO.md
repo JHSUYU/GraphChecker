@@ -241,8 +241,8 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
   re-emission, now fixed (`explore-inflight`). Rerun on the merged head with native order-holding. Its witness is a
   SessionExpired at a ZooKeeper create in the REINDEX Overseer task (OVERSEER_TASK#2). SessionExpired chains are
   accepted as the bug's chain; the owner's DELETEALIAS request fault is not required.
-- **c. `RestsOn#admitted` counts "reached" over every session, admitted or not** (F2, F2V4 19: a non-admitted replay
-  made COMPOSE drop 63 unreached paths). A soundness fix; design gate first.
+- **c. "Reached" by admitted sessions only** (coded on `solr-study`: `RestsOn#reached`, read by `RestsOn#admitted` and
+  `ClosurePlanner#plan`; F2V4 19: a non-admitted replay that threw the target made COMPOSE drop 63 unreached paths).
 - **d. The Root:WAKE rule (`solr-study` 7d54eb435; seeds: 39 3 of 3, 31 2 of 2):** an event of a timed-wait loop's turn
   (`Root:WAKE/<wait>#k`) at a slot not yet due is held like a poll past its count (`ScheduleLog#waitsAtLocked`,
   `#timedWaitTurn`), so it never bounds a range give-up, and let go it takes that slot (PIPELINE §5, IDENTITY §8).

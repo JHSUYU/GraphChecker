@@ -2184,6 +2184,38 @@ public class ComposerTest {
         assertTrue("the cut of the one beside it is named: "
                 + besideComposed.gaps(), bounded(besideComposed));
 
+        // A REPLAY ITS OWN ROWS DO NOT ADMIT reached the anchor and threw
+        // there: no disjunct, and it drops no path -- the admitted session
+        // that left the way stays a disjunct (solr-adhoc-19 F2V4: such a
+        // replay made COMPOSE drop 63 unreached paths).
+        Path refusedReach = folder.newFolder("refused-reach").toPath();
+        Session leftWay = new Session(refusedReach, "s0", false);
+        leftWay.marker("false");
+        leftWay.decision(ANCHOR, "way#u3", true, MARKER);
+        leftWay.target("", false, false);
+        leftWay.write();
+        Session threw = new Session(refusedReach, "s1", true);
+        threw.refused("the flip site was never reached in this replay");
+        threw.target(MARKER, true, true);
+        threw.write();
+        Path refusedMap = refusedReach.resolve(StaticScopeMap.FILE);
+        Files.write(refusedMap, Collections.singletonList(
+                Files.readAllLines(besideMap).get(0)),
+                java.nio.charset.StandardCharsets.UTF_8);
+        Composer.Composition refusedComposed = compose(refusedReach, ANCHOR,
+                4, StaticScopeMap.read(refusedMap));
+        assertEquals("the admitted path that left the way is the disjunct: "
+                + refusedComposed.gaps(), 1,
+                refusedComposed.disjuncts().size());
+        boolean named = false;
+        for (GapRow gap : refusedComposed.gaps()) {
+            named |= gap.subject().equals("s1") && gap.detail().contains(
+                    "reached the anchor and threw the target in a replay"
+                            + " its own rows do not admit");
+        }
+        assertTrue("the refused reach is named: " + refusedComposed.gaps(),
+                named);
+
         // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
         // the obligation it ran collected no arm the seed lacks, so its
         // path is not a disjunct -- and where the WAVE's aggregate copy
