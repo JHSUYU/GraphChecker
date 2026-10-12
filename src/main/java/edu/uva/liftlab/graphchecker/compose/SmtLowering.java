@@ -1482,7 +1482,8 @@ public final class SmtLowering {
      * {@link SessionJoin#repaired}), the leaf is the one of whichever decode
      * of that node the view holds -- {@code (ite (= view v_1) leaf_1 ...
      * leaf)} over the view's writes that took the leaf in, defined only
-     * where the view is one of them ({@link #perCandidate}).  The guard read
+     * where the view is one of them ({@link #perCandidate}), lowered once
+     * as a define-fun its uses name ({@link #shared}).  The guard read
      * the run's decode's leaf (Replica.state, four containers below the
      * reader's ClusterState, as the VM states it by value: no projection
      * through an owner reaches it), so the view's read is what moves it.
@@ -1524,8 +1525,11 @@ public final class SmtLowering {
             for (Term answer : answers.values()) {
                 if (!"false".equals(answer.stringNullness)) nullness = "";
             }
-            return Term.of(value, own.sort, own.integralWidth, nullness,
-                    "", "true");
+            // Lowered once and named: every use of the leaf repeats it, and
+            // inlined it was 32 of snapshot-no-active's 44 MB (round Z2K:
+            // 4,200 char-range assertions, each a 9-way ite).
+            return Term.of(shared("view_leaf__", own.sort, value), own.sort,
+                    own.integralWidth, nullness, "", "true");
         } finally {
             viewing.remove(raw);
         }
@@ -3537,20 +3541,30 @@ public final class SmtLowering {
         }
         Sort sort = VmTermLowering.sortOfContainer(value.sort);
         if (sort == Sort.UNKNOWN) return value;
-        // Digest the SCOPED text: recorded symbols are per session, so two
-        // sessions share a name only for the same closed term.
-        String identity = sort.name() + SEPARATOR + scoped(value.text);
+        String name = shared("container_dag__", sort, value.text);
+        return value.nullness.isEmpty() ? new ContainerSmtCodec.Term(
+                name, value.sort, value.integralWidth, value.indexedSize)
+                : ContainerSmtCodec.Term.string(name, value.nullness);
+    }
+
+    /**
+     * The name of one subterm lowered once ({@link SharedTerm}: a
+     * define-fun every use references, emitted with what it names by
+     * {@link #reachedBy}).  Digests the SCOPED text: recorded symbols are
+     * per session, so two sessions share a name only for the same closed
+     * term.
+     */
+    private String shared(String prefix, Sort sort, String text) {
+        String identity = sort.name() + SEPARATOR + scoped(text);
         String digest = ArtifactIO.digest(identity, 0);
         SharedTerm held = sharedTerms.get(digest);
         if (held == null) {
-            held = new SharedTerm(symbols.mint("container_dag__", identity,
-                    24), sort, value.text);
+            held = new SharedTerm(symbols.mint(prefix, identity, 24), sort,
+                    text);
             sharedTerms.put(digest, held);
             sharedByName.put(held.name, held);
         }
-        return value.nullness.isEmpty() ? new ContainerSmtCodec.Term(
-                held.name, value.sort, value.integralWidth, value.indexedSize)
-                : ContainerSmtCodec.Term.string(held.name, value.nullness);
+        return held.name;
     }
 
     // ------------------------------------------------------------------

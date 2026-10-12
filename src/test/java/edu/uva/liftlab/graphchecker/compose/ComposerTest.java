@@ -3940,8 +3940,8 @@ public class ComposerTest {
      * guard over the leaf h5 the view's decode of version 5 minted is,
      * where a read of the view stands that a family may re-pair, the leaf of
      * whichever decode of the node the view holds -- h3 at version 3 --,
-     * defined only where the view is one of them; with no such read it is
-     * h5 alone.
+     * defined only where the view is one of them, lowered once as a
+     * define-fun its uses name; with no such read it is h5 alone.
      */
     @Test
     public void aContentLeafReadsThroughItsNodesView() {
@@ -4040,8 +4040,18 @@ public class ComposerTest {
                             "java/lang/String")),
                     VmTermLowering.Sort.BOOL, "test").text;
             lowering.end();
-            assertEquals(text, mode != 2, text.contains("(ite (= V_r 5) h5 h3)"));
-            assertTrue(text, text.contains("h5"));
+            // The leaf's ite is lowered once, a define-fun its uses name.
+            StringBuilder declarations = new StringBuilder();
+            for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                    Collections.singletonList(text))) {
+                declarations.append(declaration.render()).append('\n');
+            }
+            assertEquals(text, mode != 2, text.contains("view_leaf__"));
+            assertEquals(declarations.toString(), mode != 2, declarations
+                    .toString().contains("(ite (= V_r 5) h5 h3)"));
+            assertFalse(text, text.contains("(ite (= V_r 5) h5 h3)"));
+            assertTrue(text + declarations, (text + declarations)
+                    .contains("h5"));
         }
     }
 
