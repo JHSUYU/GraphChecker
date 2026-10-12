@@ -40,6 +40,7 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -5272,6 +5273,92 @@ public class ExploreTest {
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()));
+    }
+
+    /**
+     * GROW OF AN INVOCATION (PIPELINE §7.8): a marker call only a flipped
+     * world made (solr-adhoc-09: the second {@code waitForState} after the
+     * first timed out) is exposed by an admitted session that may parent,
+     * once, as an UNPLANNED_INPUT growth row naming the session and its
+     * obligation; the seed and a stopped branch expose none; one past the
+     * declared bound is named, counted as {@code unplanned-input-max}, and
+     * not grown; one the plan already holds grows nothing.
+     */
+    @Test
+    public void aMarkerInvocationOnlyAFlippedWorldMadeIsGrownOnce()
+            throws Exception {
+        Object[][] subjects = {
+            {"TASK.t SYM.m#2", "TASK.t", "SYM.m", 2, "SYM.m#2"},
+            {"TASK.t SYM.m#3#2", "TASK.t", "SYM.m", 2, "SYM.m#2"},
+        };
+        for (Object[] subject : subjects) {
+            UnplannedInput input = UnplannedInput.parse((String) subject[0]);
+            assertEquals(Arrays.asList(subject[1], subject[2], subject[3],
+                    subject[4]), Arrays.asList(input.taskId(), input.symbol(),
+                    input.k(), input.grown()));
+        }
+        Path iteration = tree.newFolder("unplanned").toPath();
+        Object[][] sessions = {
+            // session, focused, its activation, the invocations it names
+            {"s-seed", false, TARGET, "SYM.m#2"},
+            {"s-flip", true, TARGET, "SYM.m#2 SYM.m#5"},
+            {"s-later", true, TARGET, "SYM.m#2"},
+            {"s-stopped", true, WRITER, "SYM.x#2"},
+        };
+        for (Object[] row : sessions) {
+            String sessionId = (String) row[0];
+            Session session = new Session(iteration, sessionId);
+            session.activation((OccurrenceAddress) row[2], (Boolean) row[1]);
+            if ((Boolean) row[1]) {
+                session.answered(ObligationResult.of("OBL." + sessionId,
+                        Verdict.ADMITTED, sessionId, "admitted"));
+            }
+            for (String grown : ((String) row[3]).split(" ")) {
+                session.gap(GapRow.of(sessionId, GapKind.UNPLANNED_INPUT,
+                        GapClass.DIAGNOSTIC, "TASK.t " + grown, "concrete"));
+            }
+            session.flush();
+        }
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u19"));
+        Path out = tree.newFolder("unplanned-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null, results, wave, 0);
+        List<String> grown = new ArrayList<String>();
+        for (JsonObject row : RowCodec.readJsonl(
+                wave.resolve(WaveGraph.GROWTH))) {
+            grown.add(row.get("kind").getAsString() + " "
+                    + row.get("taskId").getAsString() + " "
+                    + row.get("symbol").getAsString() + "#"
+                    + row.get("k").getAsInt() + " "
+                    + row.get("sessionId").getAsString() + " "
+                    + row.get("obligationId").getAsString());
+        }
+        assertEquals(Collections.singletonList(
+                "UNPLANNED_INPUT TASK.t SYM.m#2 s-flip OBL.s-flip"), grown);
+        boolean bounded = false;
+        for (JsonObject gap : RowCodec.readJsonl(wave.resolve("gaps.jsonl"))) {
+            bounded |= gap.get("subject").getAsString().equals(
+                    "TASK.t SYM.m#5 unplanned-input-max="
+                            + UnplannedInput.MAX);
+        }
+        assertTrue("the bound is named, counted", bounded);
+        // Planned (an earlier generation's), it grows nothing.
+        JsonObject planned = new JsonObject();
+        planned.addProperty("taskId", "TASK.t");
+        JsonArray inputs = new JsonArray();
+        JsonObject input = new JsonObject();
+        input.addProperty("symbol", "SYM.m#2");
+        inputs.add(input);
+        planned.add("inputActions", inputs);
+        RowCodec.writeJsonl(iteration.resolve("execution_task_plan.jsonl"),
+                Collections.singletonList(planned));
+        Path next = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null, results, next, 1);
+        assertTrue("a planned invocation grows no row",
+                RowCodec.readJsonl(next.resolve(WaveGraph.GROWTH)).isEmpty());
     }
 
     /**

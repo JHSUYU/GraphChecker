@@ -2,9 +2,12 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import soot.Body;
 import soot.BooleanType;
+import soot.IntType;
 import soot.Local;
+import soot.LongType;
 import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
@@ -15,12 +18,15 @@ import soot.Unit;
 import soot.Value;
 import soot.VoidType;
 import soot.jimple.AssignStmt;
+import soot.jimple.InvokeExpr;
+import soot.jimple.InstanceInvokeExpr;
 import soot.jimple.EqExpr;
 import soot.jimple.IfStmt;
 import soot.jimple.GotoStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeStmt;
 import soot.jimple.Jimple;
+import soot.jimple.LongConstant;
 import soot.jimple.NewExpr;
 import soot.jimple.NullConstant;
 import soot.jimple.SpecialInvokeExpr;
@@ -35,6 +41,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -61,10 +68,11 @@ import java.util.regex.Pattern;
  * A door at every call of its anchor ({@link LibraryCatalog.Door#atCalls})
  * is woven in each analysed method that makes the call, at its first; a
  * program that makes none has none.  A demanded door ({@code sites}
- * DEMANDED, a local file operation) is woven only at the calls the root
- * demand chose ({@link DemandedDoors}), before the call: its markers throw
- * its kinds, or, for a failing result, {@code r = marker ? failing :
- * call(..)}, so a failed operation never happens.</p>
+ * DEMANDED, a local file operation or a timed wait) is woven only at the
+ * calls the root demand chose ({@link DemandedDoors}), before the call: its
+ * markers throw its kinds, or, for a failing result, {@code r = marker ?
+ * failing : call(..)}, so a failed operation never happens (a timed wait
+ * returns its timeout at once).</p>
  *
  * <p>A kind is an ENVIRONMENT failure the transport can raise and a caller
  * distinguishes (e.g. {@code RetryPolicies} fails over on
@@ -197,7 +205,8 @@ final class DoorWeave {
     /**
      * A failing result's door: {@code m = marker; if m == 0 goto call; r =
      * failing; goto next; call: r = callee(..); next: ..}, every jump to
-     * the call taken to its marker first.
+     * the call taken to its marker first; a timed wait's with its guard
+     * after the marker's test ({@link #guard}).
      */
     private static void weaveResult(LibraryCatalog.Door door, Body body,
                                     AssignStmt call) {
@@ -213,9 +222,11 @@ final class DoorWeave {
                 makeSymbolic(), StringConstant.v(door.name()))));
         units.add(jimple.newIfStmt(jimple.newEqExpr(chosen,
                 IntConstant.v(0)), call));
+        units.addAll(guard(body, door, door.name(), call, call));
         units.add(jimple.newAssignStmt(call.getLeftOp(),
-                door.result == LibraryCatalog.Result.FALSE
-                        ? IntConstant.v(0) : NullConstant.v()));
+                door.result == LibraryCatalog.Result.NULL ? NullConstant.v()
+                        : call.getLeftOp().getType() instanceof LongType
+                        ? LongConstant.v(0L) : IntConstant.v(0)));
         units.add(jimple.newGotoStmt(next));
         for (Unit unit : units) {
             unit.addTag(WOVEN);
@@ -451,7 +462,7 @@ final class DoorWeave {
         List<String> kinds = new ArrayList<>(door.faults);
         Collections.reverse(kinds);
         for (String kind : kinds) {
-            List<Unit> fault = fault(body, door.name(), kind, next);
+            List<Unit> fault = fault(body, door, kind, next, site);
             faults.addAll(0, fault);
             next = fault.get(0);
         }
@@ -525,7 +536,8 @@ final class DoorWeave {
         soot.util.Chain<Unit> units = body.getUnits();
         Unit jump = units.getPredOf(unit);
         Unit failing = jump == null ? null : units.getPredOf(jump);
-        Unit test = failing == null ? null : units.getPredOf(failing);
+        Unit test = failing == null ? null
+                : markerTest(units, units.getPredOf(failing));
         Unit call = test == null ? null : units.getPredOf(test);
         if (!(jump instanceof GotoStmt) || !(failing instanceof AssignStmt)
                 || !(test instanceof IfStmt)
@@ -547,7 +559,8 @@ final class DoorWeave {
         soot.util.Chain<Unit> units = body.getUnits();
         Unit init = units.getPredOf(unit);
         Unit allocation = init == null ? null : units.getPredOf(init);
-        Unit test = allocation == null ? null : units.getPredOf(allocation);
+        Unit test = allocation == null ? null
+                : markerTest(units, units.getPredOf(allocation));
         Unit call = test == null ? null : units.getPredOf(test);
         if (!(init instanceof InvokeStmt)
                 || !(((InvokeStmt) init).getInvokeExpr()
@@ -590,9 +603,11 @@ final class DoorWeave {
                 name, kind, result) : null;
     }
 
-    /** {@code if (marker) throw new kind("..")}, falling to {@code next}. */
-    private static List<Unit> fault(Body body, String name, String kind,
-                                    Unit next) {
+    /** {@code if (marker) throw new kind("..")}, falling to {@code next};
+     *  a timed wait's with its guard after the marker's test. */
+    private static List<Unit> fault(Body body, LibraryCatalog.Door door,
+                                    String kind, Unit next, Stmt site) {
+        String name = door.name();
         String marker = GENERIC.equals(kind) ? name
                 : name + ":" + kind.substring(kind.lastIndexOf('.') + 1);
         SootMethodRef makeSymbolic = makeSymbolic();
@@ -615,6 +630,7 @@ final class DoorWeave {
                 makeSymbolic, StringConstant.v(marker))));
         units.add(jimple.newIfStmt(jimple.newEqExpr(chosen,
                 IntConstant.v(0)), next));
+        units.addAll(guard(body, door, marker, site, next));
         units.add(jimple.newAssignStmt(failure,
                 jimple.newNewExpr(RefType.v(kind))));
         units.add(jimple.newInvokeStmt(parameters.isEmpty()
@@ -623,6 +639,60 @@ final class DoorWeave {
                 StringConstant.v("symbolic " + marker))));
         units.add(jimple.newThrowStmt(failure));
         return units;
+    }
+
+    /**
+     * A timed wait's planted timeout only where the real call could time out
+     * ({@code runtime.TimedWaits#timesOut}: not a latch already open, a
+     * future already done, a queue holding an element, a lock or permits at
+     * hand, an interrupted thread): {@code g = timesOut(receiver, permits,
+     * marker); if g == 0 goto call}, after the marker's test, so a world the
+     * program cannot reach is refused by name where it is planted (CONFIRM,
+     * a native run) and never taken; none for any other door.
+     */
+    private static List<Unit> guard(Body body, LibraryCatalog.Door door,
+                                    String marker, Stmt call, Unit to) {
+        if (!LibraryCatalog.TIMED_WAIT.equals(door.transport)) {
+            return Collections.emptyList();
+        }
+        InvokeExpr invoke = call.getInvokeExpr();
+        Value receiver = invoke instanceof InstanceInvokeExpr
+                ? ((InstanceInvokeExpr) invoke).getBase() : NullConstant.v();
+        // Semaphore#tryAcquire(int, long, TimeUnit): the permits it asks.
+        Value permits = invoke.getArgCount() > 0
+                && invoke.getMethodRef().getParameterType(0)
+                instanceof IntType ? invoke.getArg(0) : IntConstant.v(1);
+        Local taken = CausynthPipeline.newTraceLocal(body, BooleanType.v(),
+                "$timesOut");
+        Jimple jimple = Jimple.v();
+        List<Unit> units = new ArrayList<Unit>();
+        units.add(jimple.newAssignStmt(taken, jimple.newStaticInvokeExpr(
+                timesOut(), receiver, permits, StringConstant.v(marker))));
+        units.add(jimple.newIfStmt(jimple.newEqExpr(taken, IntConstant.v(0)),
+                to));
+        return units;
+    }
+
+    private static SootMethodRef timesOut() {
+        return Scene.v().makeMethodRef(CausynthPipeline.phantomClass(
+                WorkStartSites.TIMED_WAITS_CLASS), "timesOut", Arrays.asList(
+                RefType.v("java.lang.Object"), IntType.v(),
+                RefType.v("java.lang.String")), BooleanType.v(), true);
+    }
+
+    /** {@code test}, or the marker's test before it where {@code test} is a
+     *  timed wait's guard ({@link #guard}): {@code g = timesOut(..); if g ==
+     *  0}. */
+    private static Unit markerTest(soot.util.Chain<Unit> units, Unit test) {
+        Unit assigned = test == null ? null : units.getPredOf(test);
+        if (!(test instanceof IfStmt) || !(assigned instanceof AssignStmt)
+                || !(((AssignStmt) assigned).getRightOp()
+                instanceof StaticInvokeExpr)
+                || !"timesOut".equals(((StaticInvokeExpr) ((AssignStmt)
+                assigned).getRightOp()).getMethodRef().getName())) {
+            return test;
+        }
+        return units.getPredOf(assigned);
     }
 
     private static SootMethodRef makeSymbolic() {

@@ -247,7 +247,8 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # BOUND-1: every declared bound that cut the search is named in result.json
 # by its configuration key (campaign_bounds), whatever the claim -- a loop
 # bound that cut the anchor's occurrence on the way to the throw too
-# (COMPOSE's loop-body-bound row, RestsOn#decided); a round's
+# (COMPOSE's loop-body-bound row, RestsOn#decided), and the invocations of
+# one marker past those GROW plans inputs for (unplanned-input-max); a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
 # closure an earlier round truncated and the last planned whole, nor paths an
 # earlier round deferred (the path bound counts the last round's).
@@ -278,11 +279,16 @@ for round in 0000:U 0001:T; do
       cls: "DIAGNOSTIC", subject: $subject, detail: "deferred"}' \
     >"${emit_iteration}/obligations-${round%:*}/gaps.jsonl"
 done
+# A marker invocation past the ones GROW plans inputs for, in the last round.
+jq -n -c '{schemaVersion: 1, sessionId: "exploration",
+  kind: "UNPLANNED_INPUT", cls: "DIAGNOSTIC",
+  subject: "TASK.T SYM.marker#5 unplanned-input-max=4", detail: "concrete"}' \
+  >>"${emit_iteration}/obligations-0001/gaps.jsonl"
 run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
-    "loop_body_bound", "region_path_max_tasks", "schedule_max_jobs",
-    "campaign_max_claims"]
+    "loop_body_bound", "unplanned_input_max", "region_path_max_tasks",
+    "schedule_max_jobs", "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 occ"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
@@ -4277,9 +4283,12 @@ grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
 # the worker's and its verdict the ledger's.  What was queued stays first:
 # Q2, queued through the growth, is in flight for the round after it, which
 # proposes Q3 behind it; G1, which the growing round itself proposed, is
-# queued behind the re-run as well and answered once.  The planner, the exposed-region planner and the
-# weave are stubbed; the re-run is the production replay of a script that
-# publishes a session, so everything between is the production code.
+# queued behind the re-run as well and answered once.  The same replay also
+# made a marker invocation its task planned no input for (UNPLANNED_INPUT):
+# one exposure more, one re-run still.  The planner, GROW's planner (which
+# writes the generation's whole plan) and the weave are stubbed; the re-run
+# is the production replay of a script that publishes a session, so
+# everything between is the production code.
 stream_fixture grow
 mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
 printf '1\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
@@ -4316,6 +4325,7 @@ workload_work_dir="${stream_dir}"
       0) stream_propose "$2" OB.x Q1 Q2 ;;
       1) printf '%s\n' \
 '{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+'{"kind":"UNPLANNED_INPUT","taskId":"TASK.seed","symbol":"SYM.marker","k":2,"sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
            >>"$2/growth.jsonl"
          stream_propose "$2" G1 ;;
       2) stream_propose "$2" Q3 ;;
@@ -4324,15 +4334,19 @@ workload_work_dir="${stream_dir}"
   run_java_main() {
     if [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]]
     then
-      local args=" $* " output
+      local args=" $* " output plan
       [[ "${args}" == *" --iteration ${stream_dir} "* \
-          && "${args}" == *" --growth ${stream_dir}/obligations-0001/growth.jsonl "* ]] \
-        || fail "the exposed-region planner was not handed the iteration and \
-the round's growth rows: $*"
+          && "${args}" == *" --growth ${stream_dir}/obligations-0001/growth.jsonl "* \
+          && "${args}" == *" --output ${stream_dir}/generations/g1/execution_task_plan.jsonl "* ]] \
+        || fail "GROW's planner was not handed the iteration, the round's \
+growth rows and the next generation's plan: $*"
+      plan=${args##* --plan }
+      plan=${plan%% *}
       output=${args##* --output }
       output=${output%% *}
-      printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n' \
-        >"${output}"
+      { cat "${plan}"
+        printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+      } >"${output}"
       return 0
     fi
     fail "the step ran an engine main GROW does not: $1"
@@ -4369,8 +4383,9 @@ grep -q TASK.grown "${stream_dir}/seed-replay/execution_task_plan.jsonl" \
     == "${stream_seed_plan_inode}" ]] \
   && ! grep -q TASK.grown "${stream_dir}/generations/g0/execution_task_plan.jsonl" \
   || fail "the generation before the growth was rewritten under what runs on it"
-[[ -s "${stream_dir}/obligations-0001/exposed_region_plan.jsonl" ]] \
-  || fail "the grown rows are not kept beside the round that grew them"
+[[ "$(stat -c %i "${stream_dir}/obligations-0001/grown_plan.jsonl")" \
+    == "$(stat -c %i "${stream_dir}/generations/g1/execution_task_plan.jsonl")" ]] \
+  || fail "the grown plan is not kept beside the round that grew it"
 [[ ! -e "${stream_dir}/sessions/SESSION.exposing" \
     && -f "${stream_worker}/before-obligations-0001/sessions/SESSION.exposing/manifest.json" ]] \
   || fail "the exposing session is not out of the corpus and under its worker"
@@ -4407,7 +4422,8 @@ through the growth"
 [[ -f "${stream_dir}/instrumented-classes/woven" \
     && ! -e "${stream_dir}/generations/g1/instrumented-classes" ]] \
   || fail "the last generation's tree is not the iteration's once nothing runs"
-grep -q 'grown by REGION.grown' "${stream_dir}/explore.log" \
+grep -q 'grown by REGION.grown,TASK.seed SYM.marker#2 (2 exposure(s))' \
+    "${stream_dir}/explore.log" \
   && grep -q 'OB.x: re-run under the grown tree, verdict=NOT_ADMITTED' \
     "${stream_dir}/explore.log" \
   || fail "the step did not say what grew and what the re-run decided"
@@ -4427,6 +4443,33 @@ printf '%s\n' \
   && fail "an exposure with no obligation was grown into"
 grep -q 'names no obligation' "${stream_dir}/refuse.log" \
   || fail "the refusal does not say why: $(cat "${stream_dir}/refuse.log")"
+# A growth of grown inputs only weaves nothing new: the generation's plan,
+# the tree it stood on.
+printf '%s\n' \
+  '{"kind":"UNPLANNED_INPUT","taskId":"TASK.seed","symbol":"SYM.marker","k":3,"sessionId":"SESSION.regrown","obligationId":"OB.x"}' \
+  >"${stream_dir}/obligations-0002/growth.jsonl"
+(
+  iteration_dir=${stream_dir}
+  stream_generation=1
+  stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
+  stream_classes="${stream_dir}/instrumented-classes"
+  stream_queue=()
+  stream_hold=0
+  run_java_main() {
+    local args=" $* " output
+    output=${args##* --output }
+    output=${output%% *}
+    cp "${stream_plan}" "${output}"
+  }
+  campaign_instrument() { fail "grown inputs only were woven again: $*"; }
+  campaign_stream_grow "${stream_dir}/obligations-0002"
+  [[ "${stream_classes}" == "${stream_dir}/instrumented-classes" \
+      && "${stream_plan}" == "${stream_dir}/generations/g2/execution_task_plan.jsonl" \
+      && -s "${stream_plan}" ]] \
+    || fail "grown inputs only did not keep the tree under the new plan: \
+${stream_classes} ${stream_plan}"
+) >"${stream_dir}/inputs-only.log" 2>&1 \
+  || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
 reset_config
 
 

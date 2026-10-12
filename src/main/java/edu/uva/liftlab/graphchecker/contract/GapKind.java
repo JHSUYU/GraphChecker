@@ -150,6 +150,15 @@ public enum GapKind {
      */
     SESSION_INCOMPLETE,
     /**
+     * A planned fault marker of a demanded door called once more in its
+     * occurrence than its task plans inputs for (a call only a flipped world
+     * makes: solr-adhoc-09's second {@code waitForState} after the
+     * first timed out), so it ran concretely.  DIAGNOSTIC, stated by the
+     * replay with an {@link UnplannedInput} subject; an admitted session that
+     * may parent exposes it and GROW plans it (PIPELINE §7.8).
+     */
+    UNPLANNED_INPUT,
+    /**
      * An assigned root whose mint RAN in the replay without planting the
      * wave's value (a mint that never ran is NOT_ADMITTED instead).
      * BLOCKING for that session, stated by the replay.

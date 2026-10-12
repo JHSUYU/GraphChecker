@@ -5043,8 +5043,8 @@ campaign_stream_take_round() {
   local -a ids=() rows=()
   name=$(basename "${round_dir}")
   # The planner states both files every round; an empty obligations file is
-  # nothing new to ask, and a growth file with no EXPOSED_REGION row a closed
-  # region set.
+  # nothing new to ask, and a growth file with no exposure (EXPOSED_REGION,
+  # UNPLANNED_INPUT) nothing to grow.
   require_file "round growth rows" "${round_dir}/growth.jsonl"
   require_file "round obligations" "${round_dir}/obligations.jsonl"
   exposures=$(campaign_exposures "${round_dir}/growth.jsonl")
@@ -5067,7 +5067,7 @@ obligation(s), ${exposed} exposure(s), $(grep -c '' \
     stream_stop=REGION_PATH_WAVE_BUDGET_REACHED
     stream_stop_detail="${name} is of wave ${wave}, and the exploration \
 reached its configured budget of region_path_max_waves=${region_path_max_waves} \
-with ${proposed} obligation(s) still open and ${exposed} region exposure(s) \
+with ${proposed} obligation(s) still open and ${exposed} exposure(s) \
 not yet woven"
     campaign_stream_gap DIAGNOSTIC "${stream_stop}" "${stream_stop_detail}"
     stream_cancelled+=("${ids[@]}")
@@ -5099,7 +5099,8 @@ not yet woven"
 # A round planned while a witness's chain is open: its exposures of the
 # chain's producers (growth-chain.jsonl) grown, each producer once, and its
 # obligations cancelled, named in exploration.json -- the exploration goes
-# on only to close that chain.
+# on only to close that chain; its unplanned inputs wait, counted (a session
+# names them again, and a later round grows them).
 campaign_stream_chain_round() {
   local round_dir=$1 occurrence grow=0
   shift
@@ -5115,7 +5116,8 @@ campaign_stream_chain_round() {
   done < <(jq -r '.occurrence' "${round_dir}/growth-chain.jsonl" | sort -u)
   campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
 ${grow} of its producer(s) exposed here grow, and the round's $# \
-obligation(s) wait"
+obligation(s) and $(jq -c 'select(.kind == "UNPLANNED_INPUT")' \
+"${round_dir}/growth.jsonl" | grep -c '' || true) unplanned input(s) wait"
   (( grow == 0 )) || campaign_stream_grow "${round_dir}" \
     "${round_dir}/growth-chain.jsonl"
 }
@@ -5914,24 +5916,28 @@ did not stage"
   stream_staged=()
 }
 
-# The EXPOSED_REGION rows of a round's growth.jsonl, one `obligation region
-# session` line each, sorted.
+# The exposures of a round's growth.jsonl, one `obligation grown session`
+# line each, sorted: an EXPOSED_REGION row's region, an UNPLANNED_INPUT
+# row's `<task> <input>#<k>`.
 campaign_exposures() {
-  jq -r 'select(.kind == "EXPOSED_REGION")
-         | [.obligationId, .regionId, .sessionId] | @tsv' "$1" \
+  jq -r 'select(.kind == "EXPOSED_REGION" or .kind == "UNPLANNED_INPUT")
+         | [.obligationId, (.regionId // "\(.taskId) \(.symbol)#\(.k)"),
+            .sessionId] | @tsv' "$1" \
     | LC_ALL=C sort -u
 }
 
-# GROW (PIPELINE §7.8): a region a replay reached without its hooks is
-# planned, woven in, and the replay that exposed it is run again under the
-# same world, so a later round's closure sees the region's decisions and
-# exports.
+# GROW (PIPELINE §7.8): a region a replay reached without its hooks, or a
+# marker invocation only a flipped world made, is planned, woven in, and the
+# replay that exposed it is run again under the same world, so a later
+# round's closure sees the region's decisions and exports, or flips the new
+# root.
 #
 # One GROW is one GENERATION of the plan and the class tree:
-# ExposedRegionPlanMain synthesises the task rows the exposures need
-# (admissionBasis EXPOSED_BY), the generation's plan is the one before it
-# plus those rows, written as a new file -- the iteration's plan and the seed
-# plan are its links from now on -- and INSTRUMENT weaves it into the
+# ExposedRegionPlanMain writes the generation's whole plan -- the one before
+# it, each grown invocation an input of its task's row, plus the task rows
+# the exposed regions need (admissionBasis EXPOSED_BY) -- as a new file, kept
+# beside the round too (grown_plan.jsonl); the iteration's plan and the seed
+# plan are its links from now on, and INSTRUMENT weaves it into the
 # generation's own tree.  A start takes the generation current when it
 # starts (campaign_stream_start), so whatever already runs keeps the plan
 # and the classes it started on.  Each exposing obligation's replay is
@@ -5942,41 +5948,56 @@ campaign_exposures() {
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
   local growth=${2:-${round_dir}/growth.jsonl}
-  local rows="${round_dir}/exposed_region_plan.jsonl"
   local worker file
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
   [[ -z "$(campaign_exposures "${growth}" | awk -F'\t' '$1 == ""')" ]] \
     || campaign_fail EXPLORE ExploreMain "${growth}" \
-      "an EXPOSED_REGION row names no obligation; only a focused replay's \
-exposure can be grown into"
+      "an exposure names no obligation; only a focused replay's exposure \
+can be grown into"
+  stream_generation=$((stream_generation + 1))
+  generation="${iteration_dir}/generations/g${stream_generation}"
+  mkdir -p "${generation}"
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
     --iteration "${iteration_dir}" \
     --static-scope-map "${causynth_static_scope_map}" \
+    --plan "${stream_plan}" \
     --growth "${growth}" \
-    --output "${rows}" \
+    --output "${generation}/execution_task_plan.jsonl" \
     >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
   [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
     "${round_dir}/grow-stderr.log" \
-    "the exposed-region planner failed with exit ${status}: \
+    "GROW's planner failed with exit ${status}: \
 $(campaign_thrown "${round_dir}/grow-stderr.log")"
-  require_nonempty "exposed region plan rows" "${rows}"
-  stream_generation=$((stream_generation + 1))
-  generation="${iteration_dir}/generations/g${stream_generation}"
-  mkdir -p "${generation}"
-  cat -- "${stream_plan}" "${rows}" >"${generation}/execution_task_plan.jsonl"
+  require_nonempty "the grown generation's plan" \
+    "${generation}/execution_task_plan.jsonl"
+  ln -f "${generation}/execution_task_plan.jsonl" \
+    "${round_dir}/grown_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  campaign_log "$(basename "${round_dir}"): grown by \
-$(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
-($(wc -l <"${rows}") task row(s)); weaving generation g${stream_generation}"
-  campaign_instrument "${iteration_dir}" "${generation}/instrumented-classes"
   stream_plan="${generation}/execution_task_plan.jsonl"
-  stream_classes="${generation}/instrumented-classes"
+  # A grown input stands at the hook its marker's planned input has (the
+  # weave hooks a local definition by method, unit and local, never by
+  # invocation): only an exposed region weaves a new tree.
+  if jq -e -s 'any(.[]; .kind == "EXPOSED_REGION")' "${growth}" \
+      >/dev/null; then
+    campaign_log "$(basename "${round_dir}"): grown by \
+$(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
+  | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
+exposure(s)); weaving generation g${stream_generation}"
+    campaign_instrument "${iteration_dir}" \
+      "${generation}/instrumented-classes"
+    stream_classes="${generation}/instrumented-classes"
+  else
+    campaign_log "$(basename "${round_dir}"): grown by \
+$(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
+  | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
+exposure(s)); generation g${stream_generation} weaves nothing new"
+  fi
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
       "${obligation_id}") || exit 1
@@ -6085,6 +6106,9 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 campaign_stream_promote_generation() {
   local generation
   (( stream_generation > 0 )) || return 0
+  # Only grown inputs: no generation wove a tree of its own.
+  [[ "${stream_classes}" != "${iteration_dir}/instrumented-classes" ]] \
+    || return 0
   rm -rf -- "${iteration_dir}/instrumented-classes"
   mv -- "${stream_classes}" "${iteration_dir}/instrumented-classes"
   for generation in "${iteration_dir}"/generations/g*; do
@@ -6162,12 +6186,16 @@ explore_manifest.json 2>/dev/null) \
     --slurpfile gaps "${campaign_final}/gaps.json" \
     --slurpfile last <(cat "$(printf '%s\n' "${iteration_dir}"/obligations-* \
       | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
+    --slurpfile inputs <(cat "${iteration_dir}"/obligations-*/gaps.jsonl \
+      2>/dev/null | grep -F 'unplanned-input-max=' || true) \
     --argjson decided "${decided}" --argjson refutes "${refutes}" \
     --argjson maxClaims "${campaign_max_claims}" '
     def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
       | bound($bound)];
     [$last[] | bound("max-paths-per-region")] as $paths
+    | ([$inputs[] | bound("unplanned-input-max") | .subject] | unique)
+      as $inputs
     | rows("max-world-depth") as $depth
     | rows("loop-body-bound") as $loops
     | ($rounds | last | .truncated // 0) as $truncated
@@ -6192,6 +6220,11 @@ explore_manifest.json 2>/dev/null) \
               + " bound cut before they reached it, before or after they"
               + " left the way to the throw (bodies: " + ($loops | map(.subject
               | sub(".*="; "")) | unique | join(", ")) + ")")}),
+        (select(($inputs | length) > 0)
+         | {by: "unplanned_input_max",
+            detail: ("\($inputs | length) marker invocation(s) past the"
+              + " \($inputs[0] | sub(".*="; "")) of one occurrence GROW"
+              + " plans inputs for stayed concrete, in any round")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"
@@ -6919,7 +6952,9 @@ logs are in ${run}"
 # LATE when what it waited for came after all, MISSING when it never came
 # in this run -- its event's identity is not this run's; HOLDING: still
 # waiting when the run ended; UNWRITTEN: a value it could not plant -- a
-# HOOK row's field write, a value the call's type cannot hold; NOT_REACHED),
+# HOOK row's field write, a value the call's type cannot hold, a timed
+# wait's timeout the program could not have reached, at any call of the row
+# even after one applied it; NOT_REACHED),
 # whether it applied every row, every ROOT and ANSWER row (clock jumps,
 # configurations and answers included) and held every ORDER, whether it
 # took the target's fatal arm and at the anchor, and whether it reproduced:
@@ -6954,7 +6989,8 @@ campaign_reproduce_run() {
         then "\(event(.before)) -> \(event(.after))"
         else "\(.before) -> \(.after)" end;
       stated("PLANT_APPLIED") as $applied
-    | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
+    | [$planted[] | . as $p | select((any($applied[]; . == $p.row) | not)
+        or any(stated("PLANT_UNWRITTEN")[]; . == $p.row))
         | {row, kind, planted: (.rootId // .endpoint // ends),
            why: why($p.row)}] as $unapplied
     | ($planted | length) as $count

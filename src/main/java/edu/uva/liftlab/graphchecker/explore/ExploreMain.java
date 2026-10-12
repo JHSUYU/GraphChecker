@@ -18,12 +18,14 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -35,6 +37,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -330,7 +333,30 @@ public final class ExploreMain {
                             + "on timing the replays do not reproduce, and "
                             + "what it delivered stays in the wire arms"));
         }
-        int exposed = WaveGraph.writeGrowth(corpus, grown, out);
+        // An invocation is grown once, up to the declared bound: its input
+        // already planned (an earlier generation's), or past the bound,
+        // named and counted (campaign_bounds).
+        Map<UnplannedInput, String> inputs = ClosurePlanner.unplanned(corpus,
+                branches);
+        Set<String> plannedInputs = plannedInputs(iteration);
+        for (Iterator<Map.Entry<UnplannedInput, String>> unplanned
+                = inputs.entrySet().iterator(); unplanned.hasNext();) {
+            UnplannedInput input = unplanned.next().getKey();
+            if (plannedInputs.contains(input.taskId() + " " + input.grown())) {
+                unplanned.remove();
+            } else if (input.k() > UnplannedInput.MAX) {
+                unplanned.remove();
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.UNPLANNED_INPUT, GapClass.DIAGNOSTIC,
+                        input.subject() + " unplanned-input-max="
+                                + UnplannedInput.MAX,
+                        "a call of this marker past the "
+                                + UnplannedInput.MAX
+                                + " invocations of one occurrence GROW plans"
+                                + " inputs for: it stays concrete"));
+            }
+        }
+        int exposed = WaveGraph.writeGrowth(corpus, grown, inputs, out);
         // What only the seed replay ran waits for a focused replay to expose
         // it -- unless this round is the fixpoint: then none ever will, and
         // the closure is incomplete.
@@ -873,6 +899,29 @@ public final class ExploreMain {
         for (JsonObject row : RowCodec.readJsonl(plan)) {
             if (row.has("occurrenceId")) {
                 planned.add(row.get("occurrenceId").getAsString());
+            }
+        }
+        return planned;
+    }
+
+    /** {@code <taskId> <symbol>} of every input the iteration's plan holds,
+     *  grown inputs included. */
+    private static Set<String> plannedInputs(Path iteration)
+            throws IOException {
+        Set<String> planned = new LinkedHashSet<String>();
+        Path plan = iteration.resolve("execution_task_plan.jsonl");
+        if (!Files.exists(plan)) return planned;
+        for (JsonObject row : RowCodec.readJsonl(plan)) {
+            if (!row.has(InputActionCatalog.FIELD)) continue;
+            String taskId = row.has("taskId")
+                    ? row.get("taskId").getAsString() : "";
+            for (JsonElement action
+                    : row.getAsJsonArray(InputActionCatalog.FIELD)) {
+                JsonObject input = action.getAsJsonObject();
+                if (input.has("symbol")) {
+                    planned.add(taskId + " "
+                            + input.get("symbol").getAsString());
+                }
             }
         }
         return planned;

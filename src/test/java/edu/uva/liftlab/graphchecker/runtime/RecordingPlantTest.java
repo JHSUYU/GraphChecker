@@ -55,13 +55,30 @@ public class RecordingPlantTest {
                 + "\"before\":" + event + ",\"after\":" + event
                 + ",\"row\":5}\n";
         String target = target(ID, "false", 3);
-        Map<String, Map<String, RecordingPlant.Root>> markers =
+        Map<String, Map<String, Map<Integer, RecordingPlant.Root>>> markers =
                 Collections.singletonMap(SITE, Collections.singletonMap(ID,
-                        new RecordingPlant.Root(0, "true")));
+                        Collections.singletonMap(1,
+                                new RecordingPlant.Root(0, "true"))));
+        // A grown root answers its own invocation of the marker's call.
+        String second = marker.replace("\"value\"",
+                "\"invocation\":2,\"value\"");
+        Map<String, Map<String, Map<Integer, RecordingPlant.Root>>> both =
+                Collections.singletonMap(SITE, Collections.singletonMap(ID,
+                        new java.util.LinkedHashMap<Integer,
+                                RecordingPlant.Root>()));
+        both.get(SITE).get(ID).put(1, new RecordingPlant.Root(0, "true"));
+        both.get(SITE).get(ID).put(2, new RecordingPlant.Root(4, "true"));
         Map<String, RecordingPlant.Root> hooks = Collections.singletonMap(
                 "HDFS.X", new RecordingPlant.Root(1, "false"));
         Object[][] files = {
                 {marker + hook + order + target, markers, hooks},
+                {marker + second.replace("\"row\":0", "\"row\":4")
+                        + hook + target, both, hooks},
+                // One invocation stated twice, or a k below 1.
+                {marker + marker.replace("\"row\":0", "\"row\":4")
+                        + target, null, null},
+                {marker.replace("\"value\"", "\"invocation\":0,\"value\"")
+                        + target, null, null},
                 {order + target, Collections.emptyMap(),
                         Collections.emptyMap()},
                 // The confirmed world's realized order, between events.

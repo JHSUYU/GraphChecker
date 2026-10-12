@@ -159,6 +159,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `MESSAGE_CONTEXT_REFUSED` | a message-carried context the receiving side refused to install |
 | `EPOCH_UNMATCHED` | a mint of the right site at the wrong node epoch |
 | `SESSION_INCOMPLETE` | a session no reader could read whole |
+| `UNPLANNED_INPUT` | a demanded door's planned marker called at an invocation its task plans no input for (a call only a flipped world made), run concretely; subject `<taskId> <symbol>#<k>` (`UnplannedInput`); an admitted session that may parent exposes it and GROW plans it (DIAGNOSTIC; past `unplanned-input-max` a counted bound), [PIPELINE.md §7.8](PIPELINE.md) |
 | `ASSIGNMENT_UNPLANTED` | an assigned root whose mint ran without planting the value |
 | `ASSIGNMENT_UNMINTABLE` | an assigned root the recording mints nowhere (the obligation is not run) |
 | `PATH_SELF_CONTRADICTORY` | when every composed path is unsatisfiable with every root free: a path that is so even without its fatal arm, or that observed the fatal arm (DIAGNOSTIC per path, BLOCKING for the composition); a path refuted by its fatal arm alone is no gap ([PIPELINE.md §9](PIPELINE.md)) |

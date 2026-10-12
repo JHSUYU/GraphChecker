@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.contract.UnplannedInput;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -369,6 +370,35 @@ public final class ClosurePlanner {
             }
         }
         return symbols;
+    }
+
+    /**
+     * THE INVOCATIONS A FLIPPED WORLD ADDED (PIPELINE §7.8): each {@link
+     * GapKind#UNPLANNED_INPUT} a session states -- a planned marker of a
+     * demanded door called at an invocation its task plans no input for --
+     * with the session that exposes it, the first in corpus order that may
+     * parent an obligation ({@link Branches#parents}: admitted, focused, its
+     * branch not stopped), as an exposed region is grown.  The seed replay
+     * exposes none: the recording planned its own invocations.  GROW plans
+     * each as the input {@link UnplannedInput#grown} of its task and re-runs
+     * the exposing replay, whose world the new root then flips in.
+     */
+    static Map<UnplannedInput, String> unplanned(Corpus corpus,
+                                                Branches branches) {
+        Map<UnplannedInput, String> exposed =
+                new LinkedHashMap<UnplannedInput, String>();
+        for (SessionReader session : corpus.sessions()) {
+            if (session.seed() || session.obligations().isEmpty()
+                    || !branches.parents(session.sessionId())) {
+                continue;
+            }
+            for (GapRow gap : session.gaps()) {
+                if (gap.kind() != GapKind.UNPLANNED_INPUT) continue;
+                exposed.putIfAbsent(UnplannedInput.parse(gap.subject()),
+                        session.sessionId());
+            }
+        }
+        return exposed;
     }
 
     /**
