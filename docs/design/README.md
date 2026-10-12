@@ -154,7 +154,7 @@ builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
 - `FlipQuery` asks z3 for the nearest world: roots, clock skews, handoff answers, writer choices
   including a location's INITIAL, and the run-as-it-happened arm when reads saw several writes.
 - An obligation is a SOLVE (z3 on a host's warm solver) and, only when SAT, a REPLAY that plants
-  that world, queued first; it stays in flight until its replay lands. The replay is judged
+  that world, queued behind the solves; it stays in flight until its replay lands. The replay is judged
   ADMITTED, NOT_ADMITTED (by name), UNSAT or ADMISSION_GAP.
 - GROW re-runs extend the closure.
 - EXPLORE demands what COMPOSE keeps: the handoffs a fatal condition or a kept writer decision rests on are demanded,
@@ -171,7 +171,10 @@ builders) is never state ([SYMBOL-SCOPE.md](SYMBOL-SCOPE.md) §5.2, §6.3).
   (`unrunWorlds`).
 - An integral configuration's domain also takes every literal a recorded decision compares it with, within what its
   own validation admits (`contract.Validity`), through one reader (`explore.Corpus#domainOf`).
-- A solved obligation's REPLAY is queued first behind any witness CONFIRM or GROW re-run, never ahead of them.
+- The campaign's queue by kind (`campaign_stream_enqueue`): a witness CONFIRM and GROW's re-runs first, then the
+  solves, then the REPLAYs (newest first): a solve takes seconds and decides whether a replay is owed (solr-adhoc-21
+  RX4: 1075 of 1158 obligations in flight were solves never started behind replays). Dispatch starts the first entry a
+  host admits; an entry queued past `campaign_stream_wait_bound_s` (600 s) goes first and alone, so no replay starves.
 - A declared bound that cut the search (wave budget, paths per task round, world depth, task bound, PLAN's closure
   cut, the claim bound) is named in `result.json` `bounded`.
 - The first replay that observes the fatal at the declared occurrence ends the exploration: the

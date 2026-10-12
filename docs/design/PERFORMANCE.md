@@ -45,9 +45,12 @@ running out of memory, and a single case alone takes the whole cluster.
   through the ledger).
 - **An obligation is two starts**: its SOLVE (on a host where its campaign's solver serves, charged its question's z3 run,
   `campaign_question_mb` 512 MB: z3 runs measured a median 1 MB, p90 369 MB, at most 1.8 GB over 118 processes, while
-  1 GB each held 51 GB of the ledger in HI2; on a cold host what a solver starts at, 1 GB) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued first at once (behind only a
-  witness's confirmation and GROW's re-runs, which end the exploration or hold every solve), on the class
-  tree and plan its solve started on. Until the replay lands the obligation is in flight (never re-proposed). Most
+  1 GB each held 51 GB of the ledger in HI2; on a cold host what a solver starts at, 1 GB) and, only when the solver answers SAT_MODEL_READY, its REPLAY, queued behind the solves
+  (a witness's confirmation and GROW's re-runs lead the queue; the solves follow, since a solve takes seconds and
+  decides whether a replay is owed: solr-adhoc-21 RX4 left 1075 of 1158 in flight as solves never started behind
+  replays), on the class tree and plan its solve started on.  Dispatch starts the first entry a host admits (a replay
+  no host has room for holds no solve); an entry queued past `campaign_stream_wait_bound_s` (600 s) goes first and
+  alone, so a stream of solves never starves a replay. Until the replay lands the obligation is in flight (never re-proposed). Most
   obligations end at the solve (UNSAT, refused), so they never wait for replay memory.
 - **The shared pool** (a sweep, `stream_shared_pool=true`): the explorations running at once divide the pool's slots
   (as many replays as fit under the ceiling at the measured charge, at most the cores, per host) by the number of
