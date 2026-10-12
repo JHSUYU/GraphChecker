@@ -8280,7 +8280,8 @@ public class ComposerTest {
                             : Collections.<String>emptyList())
                     .atClose(Collections.<String, Integer>emptyMap(),
                             readings, derived,
-                            Collections.<String, String>emptyMap()));
+                            Collections.<String, String>emptyMap(),
+                            Collections.<String>emptySet()));
             // And the VERDICT, which the replay owns: a focused session
             // that states none settled nothing, and the composition asks
             // the session's own row rather than the wave's copy of it.

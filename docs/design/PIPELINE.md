@@ -237,6 +237,15 @@ otherwise. Only a target depth that does not fit fails the stage. Outputs: `exec
 decodes the membership once into `campaign_member_rows`). The seed replay's plan and every worker's
 plan are hard links of the one task plan file, so a row GROW appends reaches all of them.
 
+A door marker mints where its occurrence is planned (`ConcolicScheduler#declaredPorts`), but a store
+read's door (a `DATA_FLOW` door, SYMBOL-SCOPE.md §4.2) only at the captures the seed's closure states
+on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read, and
+the other fetches, on its node, of a location what it read was decoded from; each such occurrence is
+admitted, `STORE_FETCH_V1`, `RuntimeSelectedRegionFinalizer#askFetches`); its other captures are
+woven but never asked, and the seed's log line counts them (`data-flow doors: N store read(s) in the
+M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never asked; F fetching
+occurrence(s), K admitted only as such`).
+
 ## 4. INSTRUMENT
 
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
@@ -655,7 +664,11 @@ are counted, never dropped silently: `concreteAnchors` states how many
   eligible row writers by the same rule, on any node (a one-JVM cluster's nodes are one session),
   and the writers of every earlier version of its location (`ClosurePlanner#storeWriters`,
   `#earlierVersions`: each write modifies the document before it, `RestsOn#closure`'s rule); each
-  writer then names the doors of the queue item it took in (below); no static candidate;
+  writer then names the doors of the queue item it took in (below); no static candidate; and the
+  fetches of its location on the reader's node that PLAN stated on the target's data flow (the
+  frozen plan's `storeFetches`, `StaticScopeMap#withPlan`, `ClosurePlanner#storeFetches`: a lost
+  reply there registers no watch, so the node reads an older version), `STORE_FETCH`, contributing
+  no value and not followed, flipped at their fault decisions as every task is;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
@@ -741,7 +754,7 @@ location another (or one more) writer may have written is another world; a poll 
 canonical term folds), and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
-`StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm
+`StaticScopeMap#readLocations`, `#withPlan`, joined to the write by `#storedAt`: the flipped arm
 reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
 the lease map share its answer with one where it did not run; how often varies run to run) — never
 delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies
@@ -1233,8 +1246,11 @@ runs its engine JVMs on its own host first, between the obligations every campai
 there, so it reserves room for the next one -- its measured step need (`campaign_head_need_mb`:
 the largest peak any of its engine JVMs reached, each watched where its step runs and folded into
 `<campaign>/engine_peak_mb` by `campaign_engine_jvm`, times 1.25, at least 1 GB, at most the engine
-heap, read again at every heartbeat; before any was measured, what its planner or composer starts
-at), never the case's engine heap; a step its room does not cover is placed by its own charge, as
+heap's JVM footprint, read again at every heartbeat; before any was measured, the footprint of what
+its planner or composer starts at), never the case's engine heap; an engine JVM at a heap of H MB is
+charged, held and watched at its footprint, H + H/16 + 384 MB (`campaign_jvm_footprint_mb`: the
+JVM's own memory beside its heap; charged at H alone, solr-adhoc-07's served planner reached 8375 MB
+at an 8192 MB heap on a host near the ceiling and was ended); a step its room does not cover is placed by its own charge, as
 every head step is -- (`campaign_head_reserve`,
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh
@@ -1274,10 +1290,16 @@ links from then on, and the generation before keeps its own inode for whatever r
 INSTRUMENT weaves it into the generation's own tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
-re-run has returned and no obligation's solve runs that started before them, no solve starts and
-no round is planned (a REPLAY reads no corpus and goes on, on its solve's generation); then each re-run SWAPS in (`campaign_stream_swap`): the exposing session and the
-worker's previous files move to `<worker>/before-<round>/`, the re-run's files become the
-worker's, its session lands, and its verdict replaces the obligation's row in
+re-run has returned, no obligation's solve runs that started before them and no witness's
+confirmation is queued, runs or waits for its verdict, no solve starts and no round is planned (a
+REPLAY reads no corpus and goes on, on its solve's generation); a confirmation confirms against the
+corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
+with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
+(solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). Then
+each re-run SWAPS in (`campaign_stream_swap`): the exposing session moves to
+`<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
+renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
+through a name it cached), its session lands, and its verdict replaces the obligation's row in
 `obligation_results.jsonl`. The queue stays first and in flight: the round after the swap gets it as
 `--in-flight` and proposes only what none of it asks, its new obligations queued behind it (hdfs-11741
 HG3: 342 queued obligations dropped and re-proposed put the witness obligation at 81 of 409). A kept
@@ -1428,8 +1450,8 @@ cancelled or reaped, by id):
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
 only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations
-cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped from the queue (the
-exposing round's growth and obligations with them), a round due when the budget stopped it
+cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped -- queued, or returned
+and not swapped in (the exposing round's growth and obligations with them) -- a round due when the budget stopped it
 (answers landed since the last round, or re-runs and swaps owed) -- and an end that owed work
 (CAMPAIGN_BUDGET_REACHED or WITNESSED with any of it, PLANNER_HEAP_EXCEEDED always) under a claim
 that is no `SAT_CANDIDATE` is one BLOCKING `EXPLORATION_CUT` row: an UNSAT over a corpus missing

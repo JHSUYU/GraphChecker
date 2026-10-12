@@ -114,6 +114,14 @@ final class ActiveRegion {
      * input is symbolic (or inherited from a symbolic caller).
      */
     boolean pathRecordingStarted;
+    /**
+     * A doors-only occurrence's base pause of the path condition stands
+     * ({@code RuntimeTask#doorsOnly}): taken at the end of its entry hook,
+     * and of every hook after a door decision ({@code ConcolicRegionRuntime
+     * #holdBasePause}, {@code #closeDoorWindow}), lifted while a door
+     * decision runs ({@code #openDoorWindow}), released at its close.
+     */
+    boolean basePaused;
 
     ActiveRegion(long token, RuntimeTask activation,
                  Object receiver, Thread thread) {

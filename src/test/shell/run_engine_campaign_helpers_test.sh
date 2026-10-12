@@ -4372,13 +4372,48 @@ growth rows and the next generation's plan: $*"
     fi
     printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
     printf 'the exposing replay\n' >"${worker}/replay.log"
+    printf 'Q.exposing\n' >"${worker}/question.txt"
     stream_answer "${worker}" OB.x ADMITTED SESSION.exposing
+  }
+  # The worker's inodes as the swap takes them, and after it, theirs and
+  # the aside's.
+  eval "grow_swap_production() $(declare -f campaign_stream_swap \
+    | tail -n +2)"
+  campaign_stream_swap() {
+    local held="${stream_dir}/obligations-0000/OB.x"
+    stat -c %i "${held}/obligation_result.jsonl" "${held}/replay.log" \
+      "${held}/question.txt" >"${stream_dir}/exposing-inodes"
+    grow_swap_production
+    stat -c %i "${held}/before-obligations-0001/obligation_result.jsonl" \
+      "${held}/before-obligations-0001/replay.log" \
+      "${held}/before-obligations-0001/question.txt" \
+      "${held}/obligation_result.jsonl" "${held}/replay.log" \
+      >"${stream_dir}/swapped-inodes"
   }
   campaign_explore "${stream_dir}" iteration-0000
 ) >"${stream_dir}/explore.log" 2>&1 \
   || fail "the growing exploration did not finish: \
 $(cat "${stream_dir}/explore.log")"
 stream_worker="${stream_dir}/obligations-0000/OB.x"
+# The swap set the exposing replay's files aside as copies and renamed the
+# re-run's over them, or removed one it lacks: none of the inodes a peer's
+# NFS client may have looked up under the worker's names is kept aside or
+# under them (Z2M).  A copy is made while its original lives, and the
+# re-run's files before the swap, so each differs from its own original's
+# inode unless it is that inode.
+[[ "$(paste -d ' ' <(cat "${stream_dir}/exposing-inodes" \
+      "${stream_dir}/exposing-inodes") "${stream_dir}/swapped-inodes" \
+    | awk 'NF == 2 && $1 != $2' | grep -c '')" -eq 5 ]] \
+  || fail "an exposing file was moved aside or kept, not copied and replaced: \
+$(paste -d ' ' "${stream_dir}/exposing-inodes" "${stream_dir}/swapped-inodes")"
+[[ ! -e "${stream_worker}/question.txt" \
+    && "$(cat "${stream_worker}/before-obligations-0001/question.txt")" \
+      == Q.exposing \
+    && "$(jq -r '.sessionId' \
+      "${stream_worker}/before-obligations-0001/obligation_result.jsonl")" \
+      == SESSION.exposing ]] \
+  || fail "the exposing answer is not aside, or a file the re-run lacks is \
+still the worker's"
 grep -q TASK.grown "${stream_dir}/seed-replay/execution_task_plan.jsonl" \
   || fail "the seed plan is not the grown generation's"
 [[ "$(stat -c %i "${stream_dir}/generations/g0/execution_task_plan.jsonl")" \
@@ -4474,6 +4509,148 @@ ${stream_classes} ${stream_plan}"
   || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
 reset_config
 
+# GROW-2: a doors-only occurrence a value demand reached that no focused
+# replay ran (ClosurePlanner#plan): its generation drops the task row's mark,
+# plans and weaves nothing, re-runs nothing and owes a round; promoting it
+# keeps the iteration's own tree.
+grow2="${test_tmp}/grow2"
+mkdir -p "${grow2}/obligations-0003" "${grow2}/instrumented-classes" \
+  "${grow2}/seed-replay"
+: >"${grow2}/instrumented-classes/woven"
+printf '%s\n' '{"occurrenceId":"W#1","taskId":"T.W","doorsOnly":true}' \
+  '{"occurrenceId":"X#1","taskId":"T.X","doorsOnly":true}' \
+  >"${grow2}/execution_task_plan.jsonl"
+printf '%s\n' \
+  '{"kind":"DOORS_ONLY_UNPAUSED","regionId":"R","node":"nn0","occurrence":"W#1","sessionId":"","obligationId":""}' \
+  >"${grow2}/obligations-0003/growth.jsonl"
+(
+  iteration_dir=${grow2}
+  stream_plan=${grow2}/execution_task_plan.jsonl
+  stream_classes=${grow2}/instrumented-classes
+  stream_generation=0
+  stream_dirty=0
+  stream_hold=0
+  stream_queue=()
+  run_java_main() { fail "the exposed-region planner ran with no exposure"; }
+  campaign_instrument() { fail "a generation that only dropped a mark wove"; }
+  campaign_stream_grow "${grow2}/obligations-0003" >/dev/null
+  jq -e -s 'length == 2 and (.[0].doorsOnly == null)
+    and .[1].doorsOnly == true' \
+    "${grow2}/generations/g1/execution_task_plan.jsonl" >/dev/null \
+    || fail "the generation did not drop the reached occurrence's mark alone"
+  [[ "${stream_classes}" == "${grow2}/instrumented-classes" \
+      && ${#stream_queue[@]} -eq 0 && "${stream_dirty}" == 1 ]] \
+    || fail "a dropped mark wove, queued a re-run, or owed no round"
+  campaign_stream_promote_generation
+  [[ -f "${grow2}/instrumented-classes/woven" ]] \
+    || fail "promoting a generation that wove nothing removed the tree"
+) || fail "GROW-2 failed"
+reset_config
+
+
+# GROW-CONFIRM: a witness's confirmation holds GROW's swap (Z2M).  OB.x's
+# session observed the fatal and exposed a region: its attempt claims and
+# queues its confirmation while GROW re-runs OB.x, and the re-run returns
+# before the verdict.  The swap waits for it: confirmed, the exploration
+# ends on the corpus the attempt composed -- the witness in it, the re-run
+# dropped and counted; refuted, the re-run swaps in after it.
+for grow_verdict in confirmed refuted; do
+  stream_fixture "grow-confirm-${grow_verdict}"
+  mkdir -p "${campaign_host_gate_root}/$(hostname -s)"
+  printf '2\n' >"${campaign_host_gate_root}/$(hostname -s)/cores"
+  cat >"${stream_dir}/replay.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
+  >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+  verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
+  detail: "the grown region refused the flip"}' \
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/replay_verdict.jsonl"
+EOF
+  chmod +x "${stream_dir}/replay.sh"
+  (
+    stream_stubs
+    concolic_replay_command="${stream_dir}/replay.sh"
+    replay_timeout_s=60
+    schedule_max_jobs=1
+    trace_test=T
+    custom_jdk_home=""
+    workload_work_dir="${stream_dir}"
+    stream_confirm_sleep=4
+    [[ "${grow_verdict}" == confirmed ]] || stream_refute=0000
+    stream_round_plan() {
+      case "$1" in
+        0) stream_propose "$2" OB.x ;;
+        1) printf '%s\n' \
+'{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+             >>"$2/growth.jsonl" ;;
+      esac
+    }
+    do_compose() {
+      stream_compose "${composition_manifest}" SAT_CANDIDATE
+    }
+    run_java_main() {
+      [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]] \
+        || fail "the step ran an engine main GROW does not: $1"
+      local args=" $* " output plan
+      plan=${args##* --plan }
+      plan=${plan%% *}
+      output=${args##* --output }
+      output=${output%% *}
+      { cat "${plan}"
+        printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n'
+      } >"${output}"
+    }
+    campaign_instrument() {
+      mkdir -p "$2"
+      : >"$2/woven"
+    }
+    campaign_obligation_worker() {
+      local worker=$4
+      printf '{"taskId":"TASK.seed"}\n' >"${worker}/focused_task.jsonl"
+      stream_answer "${worker}" OB.x ADMITTED SESSION.exposing fatal
+    }
+    campaign_explore "${stream_dir}" iteration-0000
+  ) >"${stream_dir}/explore.log" 2>&1 \
+    || fail "the ${grow_verdict} witness beside a growth did not finish: \
+$(cat "${stream_dir}/explore.log")"
+  grow_worker="${stream_dir}/obligations-0000/OB.x"
+  grow_ended=$(cut -d. -f1 \
+    "${campaign_root}/witness-confirm/0000/replay-ended-at")
+  [[ -n "$(find "${campaign_root}" -path '*/SESSION.regrown/manifest.json')" ]] \
+    || fail "the ${grow_verdict} case's re-run never returned"
+  if [[ "${grow_verdict}" == confirmed ]]; then
+    # The confirmed witness with a swap pending at the end: the corpus is
+    # exactly the one its attempt composed, and the re-run is dropped,
+    # counted, its directory out of the worker.
+    jq -e '.stop == "WITNESSED" and .rerunsDropped == ["OB.x"]
+      and .reaped == []' "${stream_dir}/exploration.json" >/dev/null \
+      && [[ "$(ls "${stream_dir}/sessions")" \
+          == "$(cat "${stream_dir}/witness-attempts/0000/corpus.txt")" \
+        && -d "${stream_dir}/sessions/SESSION.exposing" \
+        && ! -e "${grow_worker}/before-obligations-0001" \
+        && ! -e "${grow_worker}/grow-obligations-0001/OB.x" \
+        && -s "${campaign_root}/explore-reaped/obligations-0001/OB.x/sessions/SESSION.regrown/manifest.json" ]] \
+      || fail "a confirmed witness's session was swapped out, or its \
+re-run not dropped and counted: $(ls "${stream_dir}/sessions") \
+$(cat "${stream_dir}/exploration.json")"
+  else
+    jq -e '.stop == "FIXED_POINT" and .rerunsDropped == []
+      and ([.witnessAttempts[] | [.attempt, .confirmed]]
+           == [["0000", false]])' \
+      "${stream_dir}/exploration.json" >/dev/null \
+      && [[ -d "${stream_dir}/sessions/SESSION.regrown" \
+        && -d "${grow_worker}/before-obligations-0001/sessions/SESSION.exposing" \
+        && "$(stat -c %Y "${grow_worker}/before-obligations-0001")" \
+          -ge "${grow_ended}" ]] \
+      || fail "the re-run did not swap in after the refutation: \
+$(cat "${stream_dir}/exploration.json")"
+  fi
+done
+reset_config
 
 # CONFIRM-1: a SAT claim, checked by one replay (PIPELINE §10).  ConfirmMain's
 # task and the replay are stubbed -- the first writes the focus row and the
@@ -5108,7 +5285,7 @@ reset_config
 
 # MEMORY-4: HEAD ROOM.  A head's host keeps room for the head's next engine
 # JVM against every other start -- what its planner or composer starts at
-# (campaign_head_need_mb), not the case's engine heap: an obligation counts
+# (campaign_head_need_mb: that JVM's footprint), not the case's engine heap: an obligation counts
 # the largest idle, fresh reservation of the host as used, a head's own
 # start counts none, one of its JVMs running (busy) or a reservation gone
 # stale frees it, and the head gives it up when it exits.  The hosts are
@@ -5125,11 +5302,11 @@ engine_memory_mb=12000
 (
   campaign_head_charging=1
   campaign_head_reserve
-  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
   run_capturing_status campaign_host_try_start localhost 6000
-  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"8192 MB held \
+  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"$(campaign_jvm_footprint_mb 8192) MB held \
 for a head"* ]] || fail "an obligation took the room a head reserved: \
 ${campaign_host_wait_reason}"
   campaign_host_try_start lift14 6000 \
@@ -5148,7 +5325,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
     || fail "a subshell of the head gave up the head's room"
   # A head step no host has room for holds its need on the host with the
   # most room (lift14's 39400 MB less the 30000 MB reserve, against the
-  # head's 39300 less its own 8192 held): an obligation lift14 would admit
+  # head's 39300 less its own 9088 held, an 8192 MB heap's footprint): an obligation lift14 would admit
   # is refused while the 9500 MB step waits, the step takes lift14 once it
   # has room, its own hold not held against it, and gives the hold up.
   campaign_worker_hosts="gate-head lift14"
@@ -5177,7 +5354,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   grep -q 'held on lift14' "${memory_dir}/head-place.log" \
     || fail "a waiting head step did not say where it held its need"
   [[ -z "$(ls "${campaign_host_gate_root}/lift14/heads/")" \
-     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
     || fail "a placed head step kept its hold: \
 $(ls "${campaign_host_gate_root}"/*/heads/)"
 ) || exit 1
@@ -5316,7 +5493,8 @@ reset_config
 # (campaign_engine_jvm) and its peak joins the campaign's engine_peak_mb,
 # never lowering it; its status is the JVM's.  The head's held room is that
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
-# heap; before any was measured, what its planner or composer starts at.
+# heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
+# footprint of what its planner or composer starts at.
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
 # file after them, and the held room (engine heap 12000).
 need_dir=${test_tmp}/head-need
@@ -5344,11 +5522,11 @@ while IFS='|' read -r need_peaks need_file need_room; do
     || fail "engine peaks ${need_peaks} left ${need_said}, not \
 ${need_file}|${need_room}"
 done <<'EOF'
-|-|8192
+|-|9088
 700:0|700|1024
 2949:0 1200:3|2949|3712
 9000:0|9000|11264
-20000:0 300:0|20000|12000
+20000:0 300:0|20000|13134
 EOF
 campaign_root=""
 
@@ -5463,7 +5641,9 @@ EOF
 
 # HEADS-2: launch-round.sh weighs a case's head by its engine heap; a sweep
 # admits it for the room it reserves on its host, what its planner or
-# composer starts at (campaign_head_need_mb), never more than that heap:
+# composer starts at with the JVM's own memory beside its heap
+# (campaign_head_need_mb, campaign_jvm_footprint_mb), never more than that
+# heap's footprint:
 # a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
 # while one case's obligations filled the lifts.  Per row: the case's
 # configuration, its weight and its head's room.
@@ -5473,9 +5653,9 @@ while IFS='|' read -r heads_config heads_heap heads_reserve; do
     || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
 and reserves $(case_head_reserve_mb "${heads_config}")"
 done <<'EOF'
-engine_memory_mb=16384|16384|8192
-engine_memory_mb=|8192|8192
-engine_memory_mb=4096|4096|4096
+engine_memory_mb=16384|16384|9088
+engine_memory_mb=|8192|9088
+engine_memory_mb=4096|4096|4736
 EOF
 
 # POOL-SLOTS: the obligation slots a sweep's cases share
@@ -5504,7 +5684,8 @@ $(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
 EOF
 )
 
-# SWEEP-1: sweep.sh launches every case with its head's room as its need,
+# SWEEP-1: sweep.sh launches every case with its head's room as its need (an
+# engine heap of 1 MB: its JVM footprint, 385 MB),
 # in the shared pool, and a measurement sweep's stop stage and pruning on the
 # job's command line (ssh carries no environment); a case id that names no
 # case launches no case.
@@ -5527,7 +5708,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
-  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
+  && grep -q "^ADMIT_MB=385 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room in the \
 shared pool: $(cat "${sweep_dir}/launched" \

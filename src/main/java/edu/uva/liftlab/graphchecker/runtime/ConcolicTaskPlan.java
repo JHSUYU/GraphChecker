@@ -953,6 +953,14 @@ final class ConcolicTaskPlan {
         final boolean capturesTargetReach;
         /** Whether the region reads a tracked cell (SYMBOL-SCOPE F2). */
         final boolean readsTrackedState;
+        /** Whether the occurrence is planned for its doors alone (a control
+         *  producer's or a store fetch's, {@code
+         *  RuntimeSelectedRegionFinalizer#DOORS_ONLY}): it runs its door
+         *  markers' inputs alone ({@link #symbolize}), reads no tracked
+         *  state from entry, and runs with the path condition paused but
+         *  for its door decisions ({@code ConcolicRegionRuntime
+         *  #openDoorWindow}). */
+        final boolean doorsOnly;
         /**
          * Whether this non-loop address has completed its goal, which closes
          * its admission; loop-body roots are governed by K_L alone.
@@ -1066,7 +1074,9 @@ final class ConcolicTaskPlan {
             // An undeclared root loop site inherits the default K_L.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
-            this.readsTrackedState = optionalBool(task.json(),
+            this.doorsOnly = optionalBool(task.json(),
+                    RuntimeSelectedRegionFinalizer.DOORS_ONLY, false);
+            this.readsTrackedState = !doorsOnly && optionalBool(task.json(),
                     ExecutionTask.READS_TRACKED_STATE, false);
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
@@ -1090,7 +1100,8 @@ final class ConcolicTaskPlan {
                 JsonObject encoded = element.getAsJsonObject();
                 SymbolizeAction action = new SymbolizeAction(encoded);
                 if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                        optionalString(encoded, "mode"))) {
+                        optionalString(encoded, "mode"))
+                        && (!doorsOnly || !action.marker.isEmpty())) {
                     this.symbolize.add(action);
                 }
             }

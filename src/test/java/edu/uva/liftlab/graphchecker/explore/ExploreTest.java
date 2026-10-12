@@ -67,6 +67,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -2451,7 +2452,7 @@ public class ExploreTest {
                 StaticScopeMap.read(scopeMap(iteration, write,
                         input.toString())),
                 StaticScopeMap.read(scopeMap(iteration, write, folded))
-                        .withFolds(plan))) {
+                        .withPlan(plan))) {
             assertFalse("an accessor input and a folded region's read feed"
                             + " it too",
                     corpus.inputShape("s-renewed", TARGET, factor, none, map)
@@ -3276,6 +3277,29 @@ public class ExploreTest {
         for (Task task : plan.tasks) focused.add(task.focused().render());
         assertTrue("the writer of the reference that returned the list: "
                 + focused, focused.contains(WRITER.render()));
+        assertTrue(plan.unpaused.isEmpty());
+
+        // The same writer run for its doors alone is no capture of the
+        // value it is demanded for: GROW is asked to run it whole (no
+        // focused replay ran it, so none is re-run), and it is named.
+        seed.doorsOnly.add(WRITER.render());
+        seed.flush();
+        ClosurePlanner.Plan doors = ClosurePlanner.plan(
+                Corpus.read(iteration, null), TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty(),
+                Branches.of(Corpus.read(iteration, null),
+                        Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()),
+                Collections.singleton(WRITER.render()));
+        assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
+        assertEquals("no focused replay ran it: the fixed point names it",
+                Collections.singleton(WRITER), doors.runWhole);
+        boolean named = false;
+        for (GapRow gap : doors.gaps) {
+            named |= gap.subject().equals(WRITER.render())
+                    && gap.detail().contains("doors alone");
+        }
+        assertTrue("the unpaused writer is named", named);
     }
 
     @Test
@@ -3483,7 +3507,8 @@ public class ExploreTest {
             ClosurePlanner.Plan cut = ClosurePlanner.plan(spreadCorpus,
                     target, bound, spreadMap, Branches.of(spreadCorpus,
                             Collections.singletonList(target),
-                            new ArrayList<GapRow>()));
+                            new ArrayList<GapRow>()),
+                Collections.<String>emptySet());
             List<String> kept = new ArrayList<String>();
             for (Task task : cut.tasks) kept.add(task.focused().render());
             List<String> expected = new ArrayList<String>(Arrays.asList(
@@ -5893,7 +5918,8 @@ public class ExploreTest {
         return ClosurePlanner.plan(corpus, anchor,
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
-                        new ArrayList<GapRow>()));
+                        new ArrayList<GapRow>()),
+                Collections.<String>emptySet());
     }
 
     /**
@@ -5965,7 +5991,8 @@ public class ExploreTest {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
                     (Integer) row[0], map, Branches.of(corpus,
                             Collections.singletonList(TARGET),
-                            new ArrayList<GapRow>()));
+                            new ArrayList<GapRow>()),
+                Collections.<String>emptySet());
             Set<String> planned = new LinkedHashSet<String>();
             for (Task task : plan.tasks) planned.add(task.focused().render());
             Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
@@ -5987,7 +6014,8 @@ public class ExploreTest {
         // candidate stays planned whatever the bound.
         ClosurePlanner.Plan capped = ClosurePlanner.plan(corpus, TARGET, 2, 2,
                 map, Branches.of(corpus, Collections.singletonList(TARGET),
-                        new ArrayList<GapRow>()));
+                        new ArrayList<GapRow>()),
+            Collections.<String>emptySet());
         Set<String> kept = new LinkedHashSet<String>();
         for (Task task : capped.tasks) kept.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -6069,7 +6097,8 @@ public class ExploreTest {
         ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
                 ClosurePlanner.DEFAULT_MAX_TASKS, 2, map, Branches.of(corpus,
                         Collections.singletonList(TARGET),
-                        new ArrayList<GapRow>()));
+                        new ArrayList<GapRow>()),
+                    Collections.<String>emptySet());
         Set<String> planned = new LinkedHashSet<String>();
         for (Task task : plan.tasks) planned.add(task.focused().render());
         assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
@@ -6828,6 +6857,81 @@ public class ExploreTest {
     }
 
     /**
+     * SYMBOL-SCOPE §4.2: a store version the anchor read through a decoded
+     * object rests on the fetches of its location PLAN stated on the
+     * target's data flow (the plan's {@code storeFetches}) on the reader's
+     * node: a lost reply there registers no watch, so the node reads an
+     * older version (solr-adhoc-40: node2's aliases watcher).  They join
+     * contributing no value, and their store-read doors are asked.  Rows:
+     * the occurrence the plan states (none, node2's, node1's) and whether
+     * the read is on the anchor's provenance site.
+     */
+    @Test
+    public void aStoreReadRestsOnItsNodesFetchesOfItsLocation()
+            throws Exception {
+        LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/aliases.json");
+        OccurrenceAddress processor = occurrence("solr-case/node2",
+                "REGION.target", CausalContext.of(Role.of("TEST"), "", 1),
+                "Processor#wrap#1");
+        OccurrenceAddress fetched = occurrence("solr-case/node2",
+                "REGION.watch", CausalContext.of(Role.of("WATCH"), "", 1),
+                "Watcher#run#1");
+        OccurrenceAddress elsewhere = occurrence("solr-case/node1",
+                "REGION.watch", CausalContext.of(Role.of("WATCH"), "", 1),
+                "Watcher#run#1");
+        Object[][] cases = {
+            {fetched, true, true},
+            {null, true, false},
+            {elsewhere, true, false},
+            {fetched, false, false},
+        };
+        for (int at = 0; at < cases.length; at++) {
+            OccurrenceAddress stated = (OccurrenceAddress) cases[at][0];
+            boolean provenance = (Boolean) cases[at][1];
+            Path iteration = tree.newFolder("fetch-" + at).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(processor, false);
+            seed.activation(fetched, false, true, "watch2");
+            seed.activation(elsewhere, false, true, "watch1");
+            seed.root(fetched, "CASE.READ2", "M_READ2", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(fetched, "Read#u12", 1, false, "M_READ2");
+            seed.root(elsewhere, "CASE.READ1", "M_READ1", RootKind.MARKER,
+                    "false", null, null, true);
+            seed.decision(elsewhere, "Read#u17", 1, false, "M_READ1");
+            seed.read(at(processor, "Aliases#props#u2", "Aliases#props#2"),
+                    aliases, 1L, "S_aliases1", null);
+            seed.target(processor, "Guard#u8#1", "false");
+            seed.flush();
+            scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                    "Guard#u8"), scopeSite(provenance
+                            ? StaticScopeMap.PROVENANCE_SITE
+                            : StaticScopeMap.READ_SITE, "",
+                    "Aliases#props#u2", "Aliases#props",
+                    "<A: java.util.Map props>", "<A: java.util.Map props>",
+                    ""));
+            Files.write(iteration.resolve(ExploreMain.REGION_PLAN),
+                    (stated == null ? "" : "{\"kind\":\"CONCOLIC_REGION_PLAN\","
+                            + "\"regionId\":\"REGION.watch\",\"occurrenceId\":\""
+                            + stated.render() + "\",\"storeFetches\":[{\"siteId\":"
+                            + "\"Read#u12\",\"ordinal\":1,\"fetch\":\"PROVENANCE\","
+                            + "\"location\":\"SOLR_ZK:/aliases.json\",\"version\":1}]}\n")
+                            .getBytes("UTF-8"));
+            Path out = tree.newFolder("fetch-" + at + "-out").toPath();
+            Path results = out.resolve("obligation_results.jsonl");
+            Files.write(results, new byte[0]);
+            Path wave = out.resolve("obligations-0000");
+            plan(iteration, "solr-case/node2#epoch0/region/REGION.target#1",
+                    null, results, wave, 0);
+            assertEquals("case " + at, cases[at][2],
+                    named(obligations(wave), "Read#u12") != null);
+            assertEquals("case " + at + ": another node's fetch", null,
+                    named(obligations(wave), "Read#u17"));
+        }
+    }
+
+    /**
      * IDENTITY §7.2: a turn that takes a queue item in at its root, before
      * any of its regions opened (the Overseer queue loop's turn), holds a
      * door of that item in every occurrence it runs: the item's other
@@ -7049,6 +7153,8 @@ public class ExploreTest {
          *  ({@code SessionManifest#runSpellings}). */
         private final Map<String, String> spelled =
                 new LinkedHashMap<String, String>();
+        /** The occurrences it ran for their doors alone. */
+        private final Set<String> doorsOnly = new TreeSet<String>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -7250,7 +7356,7 @@ public class ExploreTest {
                                     ? Collections.singletonList(
                                     "OBL." + sessionId)
                                     : Collections.<String>emptyList())
-                            .atClose(null, null, null, spelled));
+                            .atClose(null, null, null, spelled, doorsOnly));
         }
     }
 }

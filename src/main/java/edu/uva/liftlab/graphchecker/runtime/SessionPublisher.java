@@ -180,16 +180,18 @@ public final class SessionPublisher {
      * Restates the manifest at the run's end with what no row can state
      * ({@link SessionManifest}): the region entries unnamed work made, the
      * declared roots read where none was minted, those found derived, and
-     * the names the run's nodes had only in it.
+     * the names the run's nodes had only in it, and the occurrences run
+     * for their doors alone.
      */
     public void atClose(Map<String, Integer> entries,
                         Map<String, Map<String, String>> readings,
-                        Set<String> derived, Map<String, String> spelled) {
+                        Set<String> derived, Map<String, String> spelled,
+                        Set<String> doorsOnly) {
         synchronized (LOCK) {
             if (failed || closed || manifest == null || withdrawn()) return;
             try {
                 manifest = manifest.atClose(entries, readings, derived,
-                        spelled);
+                        spelled, doorsOnly);
                 writeManifest();
             } catch (IOException unwritable) {
                 fail(unwritable);

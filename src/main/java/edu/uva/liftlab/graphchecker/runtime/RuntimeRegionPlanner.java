@@ -81,6 +81,10 @@ public final class RuntimeRegionPlanner {
      *     receiver ({@link RuntimeSelectedRegionFinalizer
      *     #fieldAccessingCalls}): the receiver owns that field ({@link
      *     #stampFieldOwners})
+     * @param receiverReads method -> each field it reads -> whether only on
+     *     its own receiver ({@link RuntimeSelectedRegionFinalizer
+     *     #receiverReads}): a call's receiver holds those for a reader
+     *     ({@link #stampFieldOwners})
      */
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
@@ -88,7 +92,8 @@ public final class RuntimeRegionPlanner {
                                     List<FieldAccessEvent> fieldEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites,
-                                    Map<String, String> fieldCalls) {
+                                    Map<String, String> fieldCalls,
+                                    Map<String, Map<String, Boolean>> receiverReads) {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
@@ -172,7 +177,8 @@ public final class RuntimeRegionPlanner {
         stampActivationContainment(activationByCall, trace);
         stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
                 trace);
-        stampFieldOwners(activationByCall.values(), trace, fieldCalls);
+        stampFieldOwners(activationByCall.values(), trace, fieldCalls,
+                receiverReads);
         stampSignatures(activationByCall.values(), trace);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
@@ -185,7 +191,16 @@ public final class RuntimeRegionPlanner {
      * #FIELD_OWNERS}): each field access's receiver (a static field's
      * names none, {@code 0}) and the receiver of each call at a site that
      * returns a field (an unwoven accessor) or mutates one (an atomic's
-     * value); and apart, the objects a reference field held ({@link
+     * value); apart, a reader's holders the recording may have left out
+     * ({@link RuntimeSelectedRegionFinalizer#RECEIVER_HOLDERS}): the
+     * receiver of each call into a method that reads a field on its own
+     * receiver alone ({@code receiverReads}), whether or not the read's row
+     * was written -- a callback's rows before its occurrence is named are not
+     * ({@code CausynthTraceRecorder#written}; solr-adhoc-40 Z1D4: node2's
+     * aliases callback read its dispatch wrapper's {@code watcher}
+     * unrecorded, and with no holder every wrapper construction on the node
+     * was its writer) -- none for a field one of its methods reads on
+     * another object; and apart, the objects a reference field held ({@link
      * RuntimeSelectedRegionFinalizer#FIELD_REFERENTS}), whose state a
      * mutation through the field writes.  And every object its events name
      * ({@link RuntimeSelectedRegionFinalizer#NAMED_OBJECTS}): the receivers
@@ -194,15 +209,32 @@ public final class RuntimeRegionPlanner {
      */
     private static void stampFieldOwners(
             Collection<Map<String, Object>> activations, TraceIndex trace,
-            Map<String, String> fieldCalls) {
+            Map<String, String> fieldCalls,
+            Map<String, Map<String, Boolean>> receiverReads) {
         for (Map<String, Object> activation : activations) {
             Map<String, Set<Integer>> owners = new HashMap<>();
             Map<String, Set<Integer>> referents = new HashMap<>();
+            Map<String, Set<Integer>> receivers = new HashMap<>();
+            Set<String> elsewhere = new HashSet<>();
             Set<Integer> named = new HashSet<>();
             for (Long call : MapFields.longValues(
                     activation.get("callIds"))) {
                 MethodEvent entered = trace.methodByCall.get(call);
-                if (entered != null) named.add(entered.objectId);
+                if (entered != null) {
+                    named.add(entered.objectId);
+                    for (Map.Entry<String, Boolean> read
+                            : receiverReads.getOrDefault(entered.method,
+                            Collections.<String, Boolean>emptyMap())
+                            .entrySet()) {
+                        if (!read.getValue() || entered.objectId == 0) {
+                            elsewhere.add(read.getKey());
+                        } else {
+                            receivers.computeIfAbsent(read.getKey(),
+                                    ignored -> new HashSet<>())
+                                    .add(entered.objectId);
+                        }
+                    }
+                }
                 for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
                         call, Collections.<FieldAccessEvent>emptyList())) {
                     named.add(event.receiverObjectId);
@@ -236,6 +268,12 @@ public final class RuntimeRegionPlanner {
                 activation.put(
                         RuntimeSelectedRegionFinalizer.FIELD_REFERENTS,
                         referents);
+            }
+            receivers.keySet().removeAll(elsewhere);
+            if (!receivers.isEmpty()) {
+                activation.put(
+                        RuntimeSelectedRegionFinalizer.RECEIVER_HOLDERS,
+                        receivers);
             }
             named.remove(0);
             int[] objects = new int[named.size()];
@@ -1413,12 +1451,16 @@ public final class RuntimeRegionPlanner {
                     plan.put(depth, seed.get(depth));
                 }
             }
-            // The equivalent deciders this occurrence is planned for, and
-            // the writers it did not cross to as confined.
+            // The equivalent deciders this occurrence is planned for, the
+            // writers it did not cross to as confined, the store reads
+            // whose doors it asks, and whether it is planned for its doors
+            // alone.
             for (String stated : new String[] {
                     RuntimeSelectedRegionFinalizer.DECIDER_CLASS,
                     RuntimeSelectedRegionFinalizer.CONFINED_WRITERS,
-                    RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS}) {
+                    RuntimeSelectedRegionFinalizer.ESCAPED_WRITERS,
+                    RuntimeSelectedRegionFinalizer.STORE_FETCHES,
+                    RuntimeSelectedRegionFinalizer.DOORS_ONLY}) {
                 if (seed.containsKey(stated)) {
                     plan.put(stated, seed.get(stated));
                 }

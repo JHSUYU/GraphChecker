@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
@@ -45,6 +46,8 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
 /** Builds executable region state exclusively from a runtime-refined graph. */
 public final class RuntimeSelectedRegionFinalizer {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory
+            .getLogger(RuntimeSelectedRegionFinalizer.class);
     private static final String REFINED_KIND = "RUNTIME_REFINED_DATAFLOW";
 
     /** A boolean returned by the explicit application-side fault marker. */
@@ -83,6 +86,14 @@ public final class RuntimeSelectedRegionFinalizer {
     private static final String CONTROL_PRODUCER_ADMISSION =
             "CONTROL_PRODUCER_V1";
     /**
+     * A plan row's and its task's mark: the occurrence is planned for its
+     * doors alone -- its final basis is {@link #CONTROL_PRODUCER_ADMISSION},
+     * so it contributes no value -- and the replay runs it with the path
+     * condition paused but for its door decisions ({@code
+     * runtime.ConcolicRegionRuntime}; {@link #stateDoorsOnly}).
+     */
+    public static final String DOORS_ONLY = "doorsOnly";
+    /**
      * {@code admissionBasis} of an activation carried because it exported a
      * value the walk demanded on the other side of a message: the recording
      * bound its OUT capture of a port to the exchange leg the demanding
@@ -98,6 +109,28 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static final String STORE_WRITER_ADMISSION = "STORE_WRITER_V1";
     /**
+     * {@code admissionBasis} of an activation carried because it fetched a
+     * version the question's target read through an object that fetch's
+     * decode registered ({@link RecordedStore#fetchesOf}): its store read's
+     * door is on the data flow ({@link #STORE_FETCHES}).
+     */
+    private static final String STORE_FETCH_ADMISSION = "STORE_FETCH_V1";
+    /**
+     * Activation member: the data-flow doors' captures ({@code
+     * LibraryCatalog#dataFlowMarker}, a shared store's read) this occurrence
+     * mints, each {@code siteId}, {@code ordinal}, {@code fetch} (why:
+     * {@value #PROVENANCE_FETCH} or {@value #LOCATION_FETCH}), {@code
+     * location} and {@code version}.  Every other capture of such a door is
+     * woven but never asked: no port is planned for it ({@code
+     * plan.ConcolicScheduler#declaredPorts}), so the read never fails.
+     */
+    public static final String STORE_FETCHES = "storeFetches";
+    /** The fetch whose decode registered an object the target read. */
+    static final String PROVENANCE_FETCH = "PROVENANCE";
+    /** Another fetch, on the target's node, of a location the target read
+     *  through a decoded object. */
+    static final String LOCATION_FETCH = "LOCATION";
+    /**
      * Activation member, in memory only: per field the recording saw it read
      * or write, the objects it did so on ({@code
      * RuntimeRegionPlanner#stampFieldOwners}).  A heap location is one
@@ -106,6 +139,17 @@ public final class RuntimeSelectedRegionFinalizer {
      * demanded on ({@link DemandWalk#holdsOthersOnly}, {@link Demanded}).
      */
     public static final String FIELD_OWNERS = "fieldOwners";
+    /**
+     * Per field, the receiver of each call into a method that reads it on its
+     * own receiver alone ({@link #receiverReads}), whether or not the read's
+     * row was written: a reader's holders where the recording left its rows
+     * out (a watch callback's before {@code MessageDoors#fetched} names its
+     * occurrence).  Stated apart from {@link #FIELD_OWNERS} and asked of a
+     * reader only ({@code DemandWalk#holdsOthersOnly}): a writer's holders are
+     * what it was recorded at, and a field one of the activation's methods
+     * reads on another object too has none here.
+     */
+    public static final String RECEIVER_HOLDERS = "receiverHolders";
     /**
      * Activation member, in memory only: per reference field, the objects
      * the recording saw it hold.  A mutation through the field writes its
@@ -545,6 +589,25 @@ public final class RuntimeSelectedRegionFinalizer {
         // objects it was called on are what its return rests on (crossStore).
         sites.putAll(scopeMap.provenanceCalls());
         return sites;
+    }
+
+    /** Method -> each field it reads -> whether every read of it there is
+     *  on the method's own receiver (the {@code field_read} edges the
+     *  static pass marked {@link SeedBackwardStaticAnalyzer#ON_RECEIVER}),
+     *  false where one is on another object. */
+    public static Map<String, Map<String, Boolean>> receiverReads(
+            Collection<Map<String, Object>> graph) {
+        Map<String, Map<String, Boolean>> reads = new HashMap<>();
+        for (Map<String, Object> edge : graph) {
+            if (!"field_read".equals(text(edge.get("kind")))) continue;
+            boolean onReceiver = Boolean.TRUE.equals(edge.get(
+                    SeedBackwardStaticAnalyzer.ON_RECEIVER));
+            reads.computeIfAbsent(text(edge.get("method")),
+                    ignored -> new HashMap<>())
+                    .merge(text(edge.get("fromCell")), onReceiver,
+                            Boolean::logicalAnd);
+        }
+        return reads;
     }
 
     /** The call sites whose call stores a cell the scope map names: a
@@ -994,7 +1057,44 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         stateShapes(instances, walk.reached, context -> shapes.computeIfAbsent(
                 context, messages::shape));
+        LOG.info("PLAN {}", dataFlowDoors(program, walk.reached, scopeMap));
+        LOG.info("PLAN doors-only: {} of the {} planned occurrence(s)"
+                + " (control producers and store fetches) run paused but for"
+                + " their doors",
+                stateDoorsOnly(instances, walk.reached), walk.reached.size());
         return walk.reached;
+    }
+
+    /**
+     * Marks {@link #DOORS_ONLY} each planned occurrence whose final basis is
+     * a door's ({@link #doorBasis}): admitted for the doors of a message
+     * that started another planned occurrence, or for the read door of a
+     * fetch on the target's data flow, it contributes no value -- a value
+     * rule reaching it moves its basis ({@code DemandWalk#reach}, {@code
+     * #admitValue}) -- and its own guards to the send or the read are no
+     * question of the target's.  How many.
+     */
+    static int stateDoorsOnly(Map<String, Map<String, Object>> instances,
+                              Collection<String> planned) {
+        int doorsOnly = 0;
+        for (String occurrence : planned) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (doorBasis(text(activation.get(ADMISSION_BASIS)))) {
+                activation.put(DOORS_ONLY, true);
+                doorsOnly++;
+            }
+        }
+        return doorsOnly;
+    }
+
+    /** Whether an admission basis is a door's: a control producer's
+     *  ({@link #CONTROL_PRODUCER_ADMISSION}) or a store fetch's ({@link
+     *  #STORE_FETCH_ADMISSION}), one rule with EXPLORE's {@code
+     *  ClosurePlanner#CONTROL_PRODUCER} and {@code #STORE_FETCH}: asked for
+     *  its doors, contributing no value, serving no message of its own. */
+    static boolean doorBasis(String basis) {
+        return CONTROL_PRODUCER_ADMISSION.equals(basis)
+                || STORE_FETCH_ADMISSION.equals(basis);
     }
 
     /**
@@ -1075,6 +1175,13 @@ public final class RuntimeSelectedRegionFinalizer {
                     text(capture.get(SiteId.MEMBER)),
                     text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
                 String kind = site.declared.inputKind;
+                // A store read's door is a root only where its fetch lies
+                // on the data flow (crossStore): read anywhere else -- a
+                // poll, a refresh -- it admits nothing.
+                if (StaticScopeMap.FAULT_INPUT.equals(kind)
+                        && LibraryCatalog.dataFlowMarker(site.declared.marker)) {
+                    continue;
+                }
                 if (StaticScopeMap.CLOCK_INPUT.equals(kind)
                         || StaticScopeMap.FAULT_INPUT.equals(kind)
                         || StaticScopeMap.CONFIG_INPUT.equals(kind)) {
@@ -1122,15 +1229,16 @@ public final class RuntimeSelectedRegionFinalizer {
                 objects.addAll(objectsOf(activation, cell, false));
             }
             int depth = walk.depth(target) + 1;
+            askFetches(program, walk, scopeMap, store, byId, target, objects,
+                    depth);
             for (Map.Entry<String, Long> version
                     : store.versionsOf(objects).entrySet()) {
                 for (String writer : store.writersUpTo(version.getKey(),
                         version.getValue())) {
                     if (!crossed.add(writer)) continue;
                     if (program.activations.containsKey(writer)
-                            && !walk.reached.contains(writer)
                             && !walk.excluded.contains(writer)) {
-                        walk.admit(writer, depth, STORE_WRITER_ADMISSION);
+                        walk.admitValue(writer, depth, STORE_WRITER_ADMISSION);
                     }
                     for (String door : doorsOf(messages, program,
                             OccurrenceAddress.parse(writer))) {
@@ -1147,6 +1255,203 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
             }
         }
+    }
+
+    /**
+     * The store reads on the data flow of what {@code target} read through
+     * {@code objects} (SYMBOL-SCOPE §4.2, a {@code DATA_FLOW} door): the
+     * fetch whose decode registered one of them ({@value #PROVENANCE_FETCH})
+     * and every other fetch, on the target's node, of a location they were
+     * decoded from, at a version up to the one they hold ({@value
+     * #LOCATION_FETCH}): a read that fails registers no watch, so the next
+     * version is never fetched and the node reads the one before (an alias's
+     * watcher whose re-read failed: solr-adhoc-40's "alias must exist"); a
+     * later version's fetch ran after the target read, on no flow of it (Z1D4:
+     * node2's eight re-reads of /aliases.json after the first update).  Each such occurrence is admitted ({@value
+     * #STORE_FETCH_ADMISSION}), its fetch's door is the data-flow door call
+     * it made last before the decode ({@link #fetchDoor}), and those captures
+     * are stated ({@link #STORE_FETCHES}): only they mint, and EXPLORE
+     * demands the occurrences stated so as fetches of a location a demanded
+     * store read names ({@code explore.ClosurePlanner}).
+     */
+    private static void askFetches(StaticProgram program, DemandWalk walk,
+                                   StaticScopeMap scopeMap,
+                                   RecordedStore store,
+                                   Map<String, String> byId, String target,
+                                   Set<Integer> objects, int depth) {
+        for (Map.Entry<RecordedStore.Fetch, String> fetch : dataFlowFetches(
+                store, objects, OccurrenceAddress.parse(target).node())
+                .entrySet()) {
+            admitFetch(program, walk, scopeMap, byId, fetch.getKey(),
+                    fetch.getValue(), depth);
+        }
+    }
+
+    /** {@link #askFetches}'s fetches, each with why, in the order asked. */
+    static Map<RecordedStore.Fetch, String> dataFlowFetches(
+            RecordedStore store, Collection<Integer> objects, NodeId node) {
+        Map<RecordedStore.Fetch, String> fetches = new LinkedHashMap<>();
+        for (RecordedStore.Fetch fetch : store.fetchesOf(objects)) {
+            fetches.putIfAbsent(fetch, PROVENANCE_FETCH);
+        }
+        for (Map.Entry<String, Long> read
+                : store.versionsOf(objects).entrySet()) {
+            for (RecordedStore.Fetch fetch : store.fetchesAt(read.getKey())) {
+                if (fetch.version <= read.getValue() && node.equals(
+                        OccurrenceAddress.parse(fetch.occurrence).node())) {
+                    fetches.putIfAbsent(fetch, LOCATION_FETCH);
+                }
+            }
+        }
+        return fetches;
+    }
+
+    /** States {@code fetch}'s door captures on the activation that made it
+     *  and admits it; nothing where it made none (a fetch outside every
+     *  region, or one no data-flow door is woven into). */
+    @SuppressWarnings("unchecked")
+    private static void admitFetch(StaticProgram program, DemandWalk walk,
+                                   StaticScopeMap scopeMap,
+                                   Map<String, String> byId,
+                                   RecordedStore.Fetch fetch, String why,
+                                   int depth) {
+        String held = byId.get(OccurrenceAddress.parse(fetch.occurrence)
+                .id());
+        if (held == null) return;
+        Map<String, Object> activation = program.activations.get(held);
+        List<Map<String, Object>> door = fetchDoor(activation, scopeMap,
+                fetch.since, fetch.seq);
+        if (door.isEmpty()) return;
+        List<Map<String, Object>> stated = (List<Map<String, Object>>)
+                activation.computeIfAbsent(STORE_FETCHES,
+                        ignored -> new ArrayList<Map<String, Object>>());
+        for (Map<String, Object> capture : door) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put(SiteId.MEMBER, capture.get(SiteId.MEMBER));
+            row.put(DeclaredSiteCapture.ORDINAL,
+                    capture.get(DeclaredSiteCapture.ORDINAL));
+            row.put("fetch", why);
+            row.put("location", fetch.location.replace('\n', ':'));
+            row.put("version", fetch.version);
+            boolean known = false;
+            for (Map<String, Object> each : stated) {
+                known |= each.get(SiteId.MEMBER).equals(row.get(
+                        SiteId.MEMBER)) && each.get(DeclaredSiteCapture
+                        .ORDINAL).equals(row.get(DeclaredSiteCapture.ORDINAL));
+            }
+            if (!known) stated.add(row);
+        }
+        if (!walk.reached.contains(held) && !walk.excluded.contains(held)) {
+            walk.admit(held, depth, STORE_FETCH_ADMISSION);
+        }
+    }
+
+    /**
+     * The captures of the data-flow door call an activation made last
+     * between {@code since} (its store event before the decode) and {@code
+     * seq} (the decode): the door method that latest capture is in, and in
+     * it each of the door's marker sites' latest capture there -- one call
+     * runs every marker of its door.  None where the fetch's own read made
+     * no capture: a door call before {@code since} served an earlier store
+     * event, never this decode.
+     */
+    static List<Map<String, Object>> fetchDoor(
+            Map<String, Object> activation, StaticScopeMap scopeMap,
+            long since, long seq) {
+        Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
+        Map<String, Object> last = null;
+        for (Map<String, Object> capture
+                : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
+            long at = longNumber(capture.get(DeclaredSiteCapture.EVENT_SEQ), 0L);
+            if (at <= since || at >= seq
+                    || !dataFlowCapture(capture, scopeMap)) {
+                continue;
+            }
+            String site = text(capture.get(SiteId.MEMBER));
+            Map<String, Object> held = latest.get(site);
+            if (held == null || longNumber(held.get(
+                    DeclaredSiteCapture.EVENT_SEQ), 0L) < at) {
+                latest.put(site, capture);
+            }
+            if (last == null || longNumber(last.get(
+                    DeclaredSiteCapture.EVENT_SEQ), 0L) < at) {
+                last = capture;
+            }
+        }
+        List<Map<String, Object>> door = new ArrayList<>();
+        if (last == null) return door;
+        String method = SiteId.methodOf(text(last.get(SiteId.MEMBER)));
+        for (Map.Entry<String, Map<String, Object>> site : latest.entrySet()) {
+            if (SiteId.methodOf(site.getKey()).equals(method)) {
+                door.add(site.getValue());
+            }
+        }
+        return door;
+    }
+
+    /** Whether a capture reads a data-flow door's marker. */
+    static boolean dataFlowCapture(Map<String, Object> capture,
+                                   StaticScopeMap scopeMap) {
+        for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
+                text(capture.get(SiteId.MEMBER)),
+                text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
+            if (StaticScopeMap.FAULT_INPUT.equals(site.declared.inputKind)
+                    && LibraryCatalog.dataFlowMarker(site.declared.marker)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The plan log's count of the data-flow doors' calls the planned
+     * occurrences made: those asked, by why, and those woven but never
+     * asked (a poll of a queue, every refresh of a cluster state no target
+     * read); and how many occurrences fetched on the data flow, and of them
+     * how many only that admitted ({@value #STORE_FETCH_ADMISSION}).
+     */
+    static String dataFlowDoors(StaticProgram program, Collection<String> planned,
+                                StaticScopeMap scopeMap) {
+        int calls = 0;
+        int fetching = 0;
+        int admitted = 0;
+        Map<String, Integer> asked = new TreeMap<>();
+        for (String occurrence : planned) {
+            Map<String, Object> activation = program.activations.get(
+                    occurrence);
+            if (activation.containsKey(STORE_FETCHES)) {
+                fetching++;
+                if (STORE_FETCH_ADMISSION.equals(text(activation.get(
+                        ADMISSION_BASIS)))) {
+                    admitted++;
+                }
+            }
+            Set<String> doors = new HashSet<>();
+            for (Map<String, Object> capture : rows(activation.get(
+                    DeclaredSiteCapture.PLAN_FIELD))) {
+                if (dataFlowCapture(capture, scopeMap)) {
+                    doors.add(SiteId.methodOf(text(capture.get(
+                            SiteId.MEMBER))) + "@" + number(capture.get(
+                            DeclaredSiteCapture.ORDINAL), -1));
+                }
+            }
+            calls += doors.size();
+            Set<String> fetched = new HashSet<>();
+            for (Map<String, Object> row : rows(activation.get(
+                    STORE_FETCHES))) {
+                if (fetched.add(SiteId.methodOf(text(row.get(SiteId.MEMBER)))
+                        + "@" + number(row.get(DeclaredSiteCapture.ORDINAL), -1))) {
+                    asked.merge(text(row.get("fetch")), 1, Integer::sum);
+                }
+            }
+        }
+        int total = 0;
+        for (int each : asked.values()) total += each;
+        return "data-flow doors: " + calls + " store read(s) in the "
+                + planned.size() + " planned occurrence(s), " + total
+                + " asked " + asked + ", " + (calls - total)
+                + " woven but never asked; " + fetching + " fetching"
+                + " occurrence(s), " + admitted + " admitted only as such";
     }
 
     /**
@@ -1223,10 +1528,8 @@ public final class RuntimeSelectedRegionFinalizer {
                             walk.demandedOf(occurrence, influence)));
                 }
                 if (through.isEmpty()) continue;
-                if (!walk.reached.contains(occurrence)) {
-                    walk.admit(occurrence, 1, ROOT_RELEVANT_ADMISSION);
-                    progressed = true;
-                }
+                progressed |= walk.admitValue(occurrence, 1,
+                        ROOT_RELEVANT_ADMISSION);
                 for (String cell : through) {
                     Demand demand = new Demand(occurrence, cell);
                     if (!walk.visited.contains(demand)) seeds.add(demand);
@@ -1251,6 +1554,10 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                     if (through.isEmpty()) continue;
                     crossed.add(key);
+                    // It contributes the value it took in: no control
+                    // producer's doors-only plan.
+                    progressed |= walk.admitValue(occurrence, 1,
+                            ROOT_RELEVANT_ADMISSION);
                     walk.crossMessage(occurrence, attach, seeds::add);
                     for (String cell : through) {
                         Demand demand = new Demand(occurrence, cell);
@@ -1260,19 +1567,21 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
                 if (served.contains(occurrence)) continue;
-                // A control producer contributes no value: its own
-                // message's doors are no question of the target's, named
-                // (it is served once a value reaches it, walk#reach).
-                if (CONTROL_PRODUCER_ADMISSION.equals(text(program.activations
-                        .get(occurrence).get(ADMISSION_BASIS)))) {
+                // A control producer or a store fetch contributes no
+                // value: its own message's doors are no question of the
+                // target's, named (it is served once a value reaches it,
+                // walk#reach, #admitValue).
+                if (doorBasis(text(program.activations.get(occurrence)
+                        .get(ADMISSION_BASIS)))) {
                     if (!messages.doorsOf(OccurrenceAddress.parse(occurrence))
                             .isEmpty()) {
                         planGap(program.planGaps, GapKind.ADMISSION_GAP,
                                 GapClass.DIAGNOSTIC, occurrence
-                                        + " control producer", "a control"
-                                        + " producer contributes no value:"
-                                        + " the doors of the message that"
-                                        + " started it are not asked");
+                                        + " door occurrence", "a control"
+                                        + " producer or a store fetch"
+                                        + " contributes no value: the doors"
+                                        + " of the message that started it"
+                                        + " are not asked");
                     }
                     continue;
                 }
@@ -1624,6 +1933,27 @@ public final class RuntimeSelectedRegionFinalizer {
             recordDepth(occurrence, depth);
         }
 
+        /** Admits one occurrence on a value rule (a root its influence
+         *  reaches the demand by, a store version the target rests on): one
+         *  reached only for its doors ({@link #doorBasis}) contributes a
+         *  value now and takes the rule's basis, as {@link #reach} gives it
+         *  a demand's.  Whether it changed the plan. */
+        private boolean admitValue(String occurrence, int depth,
+                                   String basis) {
+            if (!reached.contains(occurrence)) {
+                admit(occurrence, depth, basis);
+                return true;
+            }
+            Map<String, Object> activation = program.activations.get(
+                    occurrence);
+            if (!doorBasis(text(activation.get(ADMISSION_BASIS)))) {
+                return false;
+            }
+            activation.put(ADMISSION_BASIS, basis);
+            recordDepth(occurrence, depth);
+            return true;
+        }
+
         /** Reaches one occurrence by a demand of the walk: the shortest
          *  chain is kept, the basis stated once -- a door reached first as
          *  a control producer is a value's occurrence once a value reaches
@@ -1634,8 +1964,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> activation = program.activations.get(
                     occurrence);
             if (!reached.add(occurrence)) {
-                if (CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
-                        ADMISSION_BASIS)))) {
+                if (doorBasis(text(activation.get(ADMISSION_BASIS)))) {
                     activation.put(ADMISSION_BASIS, basis);
                 }
                 return;
@@ -1835,6 +2164,11 @@ public final class RuntimeSelectedRegionFinalizer {
             boolean mutation = !site.declaredCallee.isEmpty();
             Set<Integer> wroteOn = field(writer, FIELD_OWNERS, cell);
             Set<Integer> readOn = field(reader, FIELD_OWNERS, cell);
+            Set<Integer> receivers = field(reader, RECEIVER_HOLDERS, cell);
+            if (!receivers.isEmpty()) {
+                readOn = new HashSet<>(readOn);
+                readOn.addAll(receivers);
+            }
             Set<Integer> wroteHeld = mutation
                     ? field(writer, FIELD_REFERENTS, cell)
                     : Collections.<Integer>emptySet();
