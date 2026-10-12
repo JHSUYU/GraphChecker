@@ -272,17 +272,20 @@ State of 6cbc40a93 (WIP; unit and shell tests pass):
 
 ### 4. Then: the final round and the fork
 
-1. Merge §1 in order. Build one Solr tree:
-   - it combines `gc/solr-body` + `gc/solr-zk-next` + `gc/solr-zk-doors` + `gc/solr-zk2`;
-   - it becomes `gc/solr-checks`, the tree `lucene-solr-checks`, built by `experiments/solr/prepare-trees.sh` from the
-     built head;
+1. Merge §1 in order. The one Solr tree is the local branch `gc/solr-final` (`ec89b03ac3`, worktree
+   `/bigtemp/vnr3ne/wt/lucene-solr-final`): `gc/solr-body` + `gc/solr-zk-next-r` + `gc/solr-zk-doors` + `gc/solr-zk2`
+   + solr-adhoc-13's workarounds; every case's workload and target marker checked present there (solr-study2).
+   - It becomes the tree `lucene-solr-checks` (`experiments/solr/trees.tsv`: the fork's `graphchecker/solr-checks`),
+     built by `experiments/solr/prepare-trees.sh` from the merged, built engine head -- not before;
    - never rebuild a tree a run reads.
 2. Round SG3: all 20 at once through the ledger (`tools/adhoc/sweep.sh`, `CASE_TIMEOUT_SECONDS=10800`, 14 needs the
    full budget). Verify with `tools/rounds/round-verify.sh`. Read every `.smt` by hand and write its STATUS row;
    record every FP filtered as "COMPOSE SAT → CONFIRM refute → excluded → UNSAT_CLOSED".
-3. The fork. `~/lucene-solr-8_11` is **unshallowed** (2026-10-09). Push the final tree as `graphchecker/solr-checks`
-   to `https://github.com/JHSUYU/solr.git`, never apache, and only with the owner. Update `experiments/solr/trees.tsv`.
-   Verify REPRODUCE §6 from a fresh clone.
+3. The fork. `~/lucene-solr-8_11` is **unshallowed** (2026-10-09). Push `gc/solr-final` as `graphchecker/solr-checks`
+   to `https://github.com/JHSUYU/solr.git`, never apache, and only with the owner (the lead pushes).
+   `experiments/solr/trees.tsv`, `solr-cases.tsv` (07's budget 21600) and REPRODUCE §6 (GraphChecker `system/solr`,
+   its image, the tree from the fork, the 20 by `run-series.sh`) are written; verify §6 from a fresh clone once the
+   fork and the merged engine are pushed.
 
 ### 5. Where things live
 

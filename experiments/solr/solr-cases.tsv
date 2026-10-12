@@ -1,7 +1,8 @@
 # The 20 Solr cases (docs/handover/TODO.md "Solr", docs/STATUS.md "Solr checks"): the GraphChecker branch that runs
 # each and its case budget (CASE_TIMEOUT_SECONDS), for tools/rounds/run-series.sh.  Its tree is its case.sh's repo=
 # (experiments/solr/trees.tsv).  The eight bug checks must end SAT_CANDIDATE; the twelve study checks with a right
-# .smt, SAT confirmed or UNSAT at the fixed point.
+# .smt, SAT confirmed or UNSAT at the fixed point.  solr-adhoc-07's closure needs the longest budget (round IB1: 1256
+# obligations over 215 arms before EXPLORE's redundancy package; agent RD).
 # case	branch	budget_s
 solr-18406	system/solr	14400
 solr-18413	system/solr	14400
@@ -12,7 +13,7 @@ solr-bugs-snapshot-no-active	system/solr	14400
 solr-bugs-restore-construction	system/solr	14400
 solr-bugs-tra-start-overwrite	system/solr	14400
 solr-adhoc-05	system/solr	14400
-solr-adhoc-07	system/solr	14400
+solr-adhoc-07	system/solr	21600
 solr-adhoc-09	system/solr	14400
 solr-adhoc-10	system/solr	14400
 solr-adhoc-13	system/solr	14400
