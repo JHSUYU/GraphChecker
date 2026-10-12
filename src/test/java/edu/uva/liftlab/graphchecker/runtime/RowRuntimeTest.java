@@ -982,6 +982,35 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A path created again after its delete restarts its versions at 0: it
+     * is the path's next life, {@code <path>#<n>} (design Z §1), so its
+     * versions name no other life's.  A decode names the life it read.
+     */
+    @Test
+    public void aPathCreatedAgainIsItsNextLife() throws Exception {
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        Identity.clock(() -> 7L);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        Identity.occurrence(NN.key(), "REGION.lives", true);
+        for (String version : new String[] {"0", "1", "0", "1", "0"}) {
+            MessageDoors.stored("SOLR_ZK", "/m5/life@" + version, owner);
+        }
+        Identity.regionExit(null);
+        RowRuntime.closeSession();
+        List<String> named = new ArrayList<>();
+        for (WriteRow write : SessionReader.read(session()).writes()) {
+            if (write.location().kind() == LocationKind.STORE
+                    && write.location().slot().startsWith("/m5/life")) {
+                named.add(write.location().slot() + "@" + write.version());
+            }
+        }
+        assertEquals(Arrays.asList("/m5/life@0", "/m5/life@1",
+                "/m5/life#2@0", "/m5/life#2@1", "/m5/life#3@0"), named);
+    }
+
+    /**
      * Never silent: an export or attach the VM refused, and a receipt whose
      * sender this run does not hold, each name the occurrence they ran in.
      * An attach no activation ran is the closure's to admit: an

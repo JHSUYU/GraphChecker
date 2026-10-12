@@ -522,7 +522,9 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
 
 - `stored(transport, key, owner)`: a write of `path@version` is a SEND; its staged values are kept
   with the version. It is also a version of the path's `STORE` location (CONTRACT-SPEC §1: owner the
-  transport, slot the path as `RunNames` keys it, version the store's own): a write row at the
+  transport, slot the path as `RunNames` keys it -- `<path>#<n>` from its n-th life on, a version 0
+  written once the path stood at a version being a create after its delete (`MessageDoors#life`) --,
+  version the store's own): a write row at the
   writer's occurrence in a replay (the admitted activation's, else the one running there, stated as
   an unselected activation), site `<transport>#WRITE:<path, dotted>`, no expression, seq one past
   the VM's last event id, where a concrete target stands (`Identity#afterLastEvent`: a closure cuts a
