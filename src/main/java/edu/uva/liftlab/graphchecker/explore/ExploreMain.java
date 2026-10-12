@@ -344,14 +344,14 @@ public final class ExploreMain {
             UnplannedInput input = unplanned.next().getKey();
             if (plannedInputs.contains(input.taskId() + " " + input.grown())) {
                 unplanned.remove();
-            } else if (input.k() > ClosurePlanner.UNPLANNED_INPUT_MAX) {
+            } else if (input.k() > UnplannedInput.MAX) {
                 unplanned.remove();
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.UNPLANNED_INPUT, GapClass.DIAGNOSTIC,
                         input.subject() + " unplanned-input-max="
-                                + ClosurePlanner.UNPLANNED_INPUT_MAX,
+                                + UnplannedInput.MAX,
                         "a call of this marker past the "
-                                + ClosurePlanner.UNPLANNED_INPUT_MAX
+                                + UnplannedInput.MAX
                                 + " invocations of one occurrence GROW plans"
                                 + " inputs for: it stays concrete"));
             }

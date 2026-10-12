@@ -377,8 +377,16 @@ public class FaultPropagationTest {
             java.nio.file.Files.delete(doors);
         }
         List<String> woven = new ArrayList<>();
+        List<String> guards = new ArrayList<>();
         int calls = 0;
         for (Unit unit : save.getActiveBody().getUnits()) {
+            if (unit instanceof soot.jimple.Stmt
+                    && ((soot.jimple.Stmt) unit).containsInvokeExpr()
+                    && ((soot.jimple.Stmt) unit).getInvokeExpr()
+                    .getMethodRef().getName().equals("timesOut")) {
+                guards.add(((soot.jimple.Stmt) unit).getInvokeExpr()
+                        .getArgs().toString());
+            }
             DoorWeave.Fault thrown = DoorWeave.woven(save.getActiveBody(),
                     unit);
             DoorWeave.Fault failing = DoorWeave.wovenResult(
@@ -407,6 +415,9 @@ public class FaultPropagationTest {
                         + "FAULT:LOCAL_IO:NAMESPACE -> 0, "
                         + "FAULT:TIMED_WAIT:AWAIT -> 0L] 2",
                 woven + " " + calls},
+            {"a timed wait's planted timeout guarded by its receiver, the "
+                    + "permits and the marker; a file operation's not",
+                "[[$r5, 1, \"FAULT:TIMED_WAIT:AWAIT\"]]", guards.toString()},
             {"both escape from their markers",
                 2, markers(FaultPropagation.current().escapes(method))
                         .split(",").length},

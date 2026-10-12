@@ -4443,6 +4443,33 @@ printf '%s\n' \
   && fail "an exposure with no obligation was grown into"
 grep -q 'names no obligation' "${stream_dir}/refuse.log" \
   || fail "the refusal does not say why: $(cat "${stream_dir}/refuse.log")"
+# A growth of grown inputs only weaves nothing new: the generation's plan,
+# the tree it stood on.
+printf '%s\n' \
+  '{"kind":"UNPLANNED_INPUT","taskId":"TASK.seed","symbol":"SYM.marker","k":3,"sessionId":"SESSION.regrown","obligationId":"OB.x"}' \
+  >"${stream_dir}/obligations-0002/growth.jsonl"
+(
+  iteration_dir=${stream_dir}
+  stream_generation=1
+  stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
+  stream_classes="${stream_dir}/instrumented-classes"
+  stream_queue=()
+  stream_hold=0
+  run_java_main() {
+    local args=" $* " output
+    output=${args##* --output }
+    output=${output%% *}
+    cp "${stream_plan}" "${output}"
+  }
+  campaign_instrument() { fail "grown inputs only were woven again: $*"; }
+  campaign_stream_grow "${stream_dir}/obligations-0002"
+  [[ "${stream_classes}" == "${stream_dir}/instrumented-classes" \
+      && "${stream_plan}" == "${stream_dir}/generations/g2/execution_task_plan.jsonl" \
+      && -s "${stream_plan}" ]] \
+    || fail "grown inputs only did not keep the tree under the new plan: \
+${stream_classes} ${stream_plan}"
+) >"${stream_dir}/inputs-only.log" 2>&1 \
+  || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
 reset_config
 
 

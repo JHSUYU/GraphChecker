@@ -75,7 +75,8 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
  * <p>A local file operation or a timed wait is a fault door only where its
  * result or its failure flows into what the walk demanded ({@link Faults},
  * a demanded door of the library catalog, whose call's return is an IO
- * boundary): (a) an IO boundary whose call returns a failing result
+ * boundary whatever operands the call carries): (a) an IO boundary whose
+ * call returns a failing result
  * ({@code File#renameTo}'s false, {@code CountDownLatch#await}'s timeout)
  * into the path; (b) a call
  * whose fault, in the latent model ({@code FaultPropagation#latent}),
@@ -826,6 +827,10 @@ final class RootDemand {
             if (clocks.containsKey(callee)) return Kind.CLOCK;
             if (config.callees().contains(callee)) return Kind.CONFIG_CALL;
             if (Debug.isBooleanMarkerSignature(callee)) return Kind.FAULT;
+            // A demanded door's outcome is the environment's, whatever its
+            // operands carry (a timed wait's timeout, a rename's target):
+            // checked before them, or every such call is walked through.
+            if (LibraryCatalog.demandedDoor(callee) != null) return Kind.IO;
             // An expanded body, or the call's operand edges, carry it.
             if (into.containsKey(cell) || carried.contains(callee)) {
                 return null;
@@ -834,7 +839,6 @@ final class RootDemand {
             if (owner.startsWith(ATOMIC)) return Kind.READ;
             SootMethod method = CausynthStaticFacts.method(callee);
             if (IO.matcher(owner).matches()
-                    || LibraryCatalog.demandedDoor(callee) != null
                     || method != null && method.isNative()) {
                 return Kind.IO;
             }

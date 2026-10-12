@@ -372,11 +372,6 @@ public final class ClosurePlanner {
         return symbols;
     }
 
-    /** The most invocations of one planned marker in one occurrence GROW
-     *  plans inputs for ({@link #unplanned}): a declared bound, counted in
-     *  the case's {@code bounded} ({@code unplanned-input-max}). */
-    public static final int UNPLANNED_INPUT_MAX = 4;
-
     /**
      * THE INVOCATIONS A FLIPPED WORLD ADDED (PIPELINE §7.8): each {@link
      * GapKind#UNPLANNED_INPUT} a session states -- a planned marker of a

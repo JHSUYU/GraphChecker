@@ -11,6 +11,12 @@ package edu.uva.liftlab.graphchecker.contract;
  * {@code #}.
  */
 public final class UnplannedInput extends Value {
+    /** The most invocations of one planned marker in one occurrence GROW
+     *  plans inputs for: a declared bound, counted in the case's {@code
+     *  bounded} ({@code unplanned-input-max}); a replay names one more at
+     *  most, so the bound is seen. */
+    public static final int MAX = 4;
+
     private final String taskId;
     private final String symbol;
     private final int k;

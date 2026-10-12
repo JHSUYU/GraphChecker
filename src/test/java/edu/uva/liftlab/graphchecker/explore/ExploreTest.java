@@ -5289,7 +5289,7 @@ public class ExploreTest {
         for (JsonObject gap : RowCodec.readJsonl(wave.resolve("gaps.jsonl"))) {
             bounded |= gap.get("subject").getAsString().equals(
                     "TASK.t SYM.m#5 unplanned-input-max="
-                            + ClosurePlanner.UNPLANNED_INPUT_MAX);
+                            + UnplannedInput.MAX);
         }
         assertTrue("the bound is named, counted", bounded);
         // Planned (an earlier generation's), it grows nothing.

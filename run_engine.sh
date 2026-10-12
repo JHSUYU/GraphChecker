@@ -5099,7 +5099,8 @@ not yet woven"
 # A round planned while a witness's chain is open: its exposures of the
 # chain's producers (growth-chain.jsonl) grown, each producer once, and its
 # obligations cancelled, named in exploration.json -- the exploration goes
-# on only to close that chain.
+# on only to close that chain; its unplanned inputs wait, counted (a session
+# names them again, and a later round grows them).
 campaign_stream_chain_round() {
   local round_dir=$1 occurrence grow=0
   shift
@@ -5115,7 +5116,8 @@ campaign_stream_chain_round() {
   done < <(jq -r '.occurrence' "${round_dir}/growth-chain.jsonl" | sort -u)
   campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
 ${grow} of its producer(s) exposed here grow, and the round's $# \
-obligation(s) wait"
+obligation(s) and $(jq -c 'select(.kind == "UNPLANNED_INPUT")' \
+"${round_dir}/growth.jsonl" | grep -c '' || true) unplanned input(s) wait"
   (( grow == 0 )) || campaign_stream_grow "${round_dir}" \
     "${round_dir}/growth-chain.jsonl"
 }
@@ -5977,13 +5979,25 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
     "${iteration_dir}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  campaign_log "$(basename "${round_dir}"): grown by \
+  stream_plan="${generation}/execution_task_plan.jsonl"
+  # A grown input stands at the hook its marker's planned input has (the
+  # weave hooks a local definition by method, unit and local, never by
+  # invocation): only an exposed region weaves a new tree.
+  if jq -e -s 'any(.[]; .kind == "EXPOSED_REGION")' "${growth}" \
+      >/dev/null; then
+    campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
 exposure(s)); weaving generation g${stream_generation}"
-  campaign_instrument "${iteration_dir}" "${generation}/instrumented-classes"
-  stream_plan="${generation}/execution_task_plan.jsonl"
-  stream_classes="${generation}/instrumented-classes"
+    campaign_instrument "${iteration_dir}" \
+      "${generation}/instrumented-classes"
+    stream_classes="${generation}/instrumented-classes"
+  else
+    campaign_log "$(basename "${round_dir}"): grown by \
+$(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
+  | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
+exposure(s)); generation g${stream_generation} weaves nothing new"
+  fi
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
       "${obligation_id}") || exit 1
@@ -6092,6 +6106,9 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 campaign_stream_promote_generation() {
   local generation
   (( stream_generation > 0 )) || return 0
+  # Only grown inputs: no generation wove a tree of its own.
+  [[ "${stream_classes}" != "${iteration_dir}/instrumented-classes" ]] \
+    || return 0
   rm -rf -- "${iteration_dir}/instrumented-classes"
   mv -- "${stream_classes}" "${iteration_dir}/instrumented-classes"
   for generation in "${iteration_dir}"/generations/g*; do
@@ -6169,13 +6186,16 @@ explore_manifest.json 2>/dev/null) \
     --slurpfile gaps "${campaign_final}/gaps.json" \
     --slurpfile last <(cat "$(printf '%s\n' "${iteration_dir}"/obligations-* \
       | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
+    --slurpfile inputs <(cat "${iteration_dir}"/obligations-*/gaps.jsonl \
+      2>/dev/null | grep -F 'unplanned-input-max=' || true) \
     --argjson decided "${decided}" --argjson refutes "${refutes}" \
     --argjson maxClaims "${campaign_max_claims}" '
     def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
       | bound($bound)];
     [$last[] | bound("max-paths-per-region")] as $paths
-    | [$last[] | bound("unplanned-input-max")] as $inputs
+    | ([$inputs[] | bound("unplanned-input-max") | .subject] | unique)
+      as $inputs
     | rows("max-world-depth") as $depth
     | rows("loop-body-bound") as $loops
     | ($rounds | last | .truncated // 0) as $truncated
@@ -6203,8 +6223,8 @@ explore_manifest.json 2>/dev/null) \
         (select(($inputs | length) > 0)
          | {by: "unplanned_input_max",
             detail: ("\($inputs | length) marker invocation(s) past the"
-              + " \($inputs[0].subject | sub(".*="; "")) of one occurrence"
-              + " GROW plans inputs for stayed concrete")}),
+              + " \($inputs[0] | sub(".*="; "")) of one occurrence GROW"
+              + " plans inputs for stayed concrete, in any round")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"
@@ -6932,7 +6952,9 @@ logs are in ${run}"
 # LATE when what it waited for came after all, MISSING when it never came
 # in this run -- its event's identity is not this run's; HOLDING: still
 # waiting when the run ended; UNWRITTEN: a value it could not plant -- a
-# HOOK row's field write, a value the call's type cannot hold; NOT_REACHED),
+# HOOK row's field write, a value the call's type cannot hold, a timed
+# wait's timeout the program could not have reached, at any call of the row
+# even after one applied it; NOT_REACHED),
 # whether it applied every row, every ROOT and ANSWER row (clock jumps,
 # configurations and answers included) and held every ORDER, whether it
 # took the target's fatal arm and at the anchor, and whether it reproduced:
@@ -6967,7 +6989,8 @@ campaign_reproduce_run() {
         then "\(event(.before)) -> \(event(.after))"
         else "\(.before) -> \(.after)" end;
       stated("PLANT_APPLIED") as $applied
-    | [$planted[] | . as $p | select(any($applied[]; . == $p.row) | not)
+    | [$planted[] | . as $p | select((any($applied[]; . == $p.row) | not)
+        or any(stated("PLANT_UNWRITTEN")[]; . == $p.row))
         | {row, kind, planted: (.rootId // .endpoint // ends),
            why: why($p.row)}] as $unapplied
     | ($planted | length) as $count

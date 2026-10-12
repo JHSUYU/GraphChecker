@@ -602,6 +602,10 @@ Scale and robustness:
     that operation's k-th (`Endpoint#messageSite`, IDENTITY §4; hdfs-adhoc-15: the heartbeat a
     replay's turn sent before the report had taken the report's anchor), on trees whose IPC client
     door passes its request (`outboundRequest`).
+69. A fault marker planned as a declared port's input (`declaredPort`, a static site of no recorded
+    call) answers every call of its site in its occurrence with one symbol: only an observed
+    marker's invocations are roots of their own, and only those GROW plans again
+    (`UNPLANNED_INPUT`, PIPELINE §7.8). Accepted (solr-timed-wait review M4).
 
 Fallbacks and dead code:
 

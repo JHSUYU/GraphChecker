@@ -267,15 +267,22 @@ final class RootMint {
      */
     private static void unplanned(ActiveRegion active, SymbolizeAction marker,
                                   int k) {
-        UnplannedInput input = UnplannedInput.of(active.activation.taskId,
-                marker.symbol, k);
-        RowRuntime.gap(GapKind.UNPLANNED_INPUT, GapClass.DIAGNOSTIC,
-                input.subject(), "the marker " + marker.marker + " at "
-                        + firstNonBlank(marker.siteId, marker.cell)
-                        + " ran its call #" + k + " of this occurrence, "
-                        + "which its task plans no input for, so it ran "
-                        + "concretely; an admitted session that may parent "
-                        + "grows it into the input " + input.grown());
+        // Past the bound's next call nothing more is grown or counted.
+        if (k > UnplannedInput.MAX + 1) return;
+        try {
+            UnplannedInput input = UnplannedInput.of(
+                    active.activation.taskId, marker.symbol, k);
+            RowRuntime.gap(GapKind.UNPLANNED_INPUT, GapClass.DIAGNOSTIC,
+                    input.subject(), "the marker " + marker.marker + " at "
+                            + firstNonBlank(marker.siteId, marker.cell)
+                            + " ran its call #" + k + " of this occurrence, "
+                            + "which its task plans no input for, so it ran "
+                            + "concretely; an admitted session that may "
+                            + "parent grows it into the input "
+                            + input.grown());
+        } catch (RuntimeException unnamed) {
+            // Never thrown into the program: the call ran concretely.
+        }
     }
 
     /** Materializes the primitive read by one exact {@code getstatic}. */

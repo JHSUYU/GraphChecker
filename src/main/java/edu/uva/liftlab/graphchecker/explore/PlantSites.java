@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Clock;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -85,6 +86,10 @@ final class PlantSites {
             new LinkedHashMap<String, Set<String>>();
     private final Map<String, Capture> captures =
             new LinkedHashMap<String, Capture>();
+    /** {@code <port>|<occurrence id>} -> the invocation its input action
+     *  plans there ({@code replayOccurrence}). */
+    private final Map<String, Integer> invocations =
+            new LinkedHashMap<String, Integer>();
 
     private PlantSites() {
     }
@@ -93,10 +98,12 @@ final class PlantSites {
         PlantSites read = new PlantSites();
         for (JsonObject task : ArtifactIO.readJsonl(plan)) {
             String region = optionalString(task, "regionId");
+            String occurrence = optionalString(task, "occurrenceId");
             for (JsonElement element : array(task,
                     InputActionCatalog.FIELD)) {
                 if (element.isJsonObject()) {
                     read.action(element.getAsJsonObject(), region);
+                    read.invocation(element.getAsJsonObject(), occurrence);
                 }
             }
             for (CommunicationHandoffSpec spec
@@ -147,6 +154,24 @@ final class PlantSites {
             calls.computeIfAbsent(port, key -> new ArrayList<Call>())
                     .add(call);
         }
+    }
+
+    private void invocation(JsonObject action, String occurrence) {
+        String port = optionalString(action, "portId");
+        int planned = optionalInteger(action, "replayOccurrence", -1);
+        if (port.isEmpty() || occurrence.isEmpty() || planned < 1) return;
+        try {
+            invocations.put(port + "|" + OccurrenceAddress.parse(occurrence)
+                    .id(), planned);
+        } catch (IllegalArgumentException notAnAddress) {
+            // A task of no occurrence address plans no invocation of one.
+        }
+    }
+
+    /** The invocation a port's input action plans in an occurrence: its
+     *  {@code replayOccurrence} there, else the first. */
+    int invocation(String port, OccurrenceAddress occurrence) {
+        return invocations.getOrDefault(port + "|" + occurrence.id(), 1);
     }
 
     /** The calls a port's value is the return of, one per call. */

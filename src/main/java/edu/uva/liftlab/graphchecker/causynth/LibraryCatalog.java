@@ -80,6 +80,9 @@ public final class LibraryCatalog {
     static final String HOOK = "HOOK";
     /** A door's {@code sites}: only the calls the root demand chose. */
     static final String DEMANDED = "DEMANDED";
+    /** The timed waits' transport: a planted timeout only where the call
+     *  could time out ({@code DoorWeave#guard}). */
+    static final String TIMED_WAIT = "TIMED_WAIT";
 
     private static final Map<String, Set<String>> MEMBERS =
             new LinkedHashMap<>();
