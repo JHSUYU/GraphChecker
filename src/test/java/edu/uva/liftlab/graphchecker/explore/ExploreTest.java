@@ -834,9 +834,14 @@ public class ExploreTest {
         wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
         wye.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         wye.decision(target, "Concrete#u3", 1, false, "");
+        // Two keys, two exports: a key read twice would be one delivery.
+        Endpoint secondKey = Endpoint.of(PRODUCER, "XCH.resp.block-key-id",
+                ExecutionIndex.of(Collections.singletonList(Frame.of(
+                        "PBHelper#convert#9", 1))), 0);
         wye.export(ROTATED, "e.kept", 11L, "119992");
+        wye.export(secondKey, "e.kept", 12L, "119992");
         wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", secondKey);
         wye.write(STORED, ALL_KEYS, 5L, "e.kept");
         wye.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         wye.answered(ObligationResult.of("OBL.world-y", Verdict.ADMITTED,
@@ -2401,6 +2406,68 @@ public class ExploreTest {
                 unknownCorpus.inputShape("s-one", TARGET, unnamed, guard)
                         .equals(unknownCorpus.inputShape("s-two", TARGET,
                                 unnamed, guard)));
+    }
+
+    /**
+     * WHAT FED A MEMBER, BY SEMANTIC COUNTS ({@code Corpus#handoffs}): each
+     * distinct (handoff site, producer) once -- hdfs-11741's five keys
+     * against four are five distinct exports against four, while a content
+     * field read again four or three times is one delivery, and a queue's
+     * first item is one whatever its sequential counter (solr-adhoc-19 SC6:
+     * qn-0000000000 in one world, qn-0000000001 in another); two producers
+     * of one site are two.
+     */
+    @Test
+    public void aMemberIsFedByDistinctSitesAndProducers() throws Exception {
+        Path iteration = tree.newFolder("fed-by").toPath();
+        String queue = "SOLR_ZK#CONTENT:|overseer|queue|qn-000000000";
+        // session, the exports of PRODUCER WRITER takes in (by index; -1 a
+        // SIDECAR one), the content site it reads (null: none) and how often
+        Object[][] sessions = {
+            {"s-five", new int[] {0, 1, 2, 3, 4}, null, 0},
+            {"s-four", new int[] {0, 1, 2, 3}, null, 0},
+            {"s-again-4", new int[] {0, 0, 0, 0}, null, 0},
+            {"s-again-3", new int[] {0, 0, 0}, null, 0},
+            {"s-qn0", new int[] {}, queue + "0#|name", 1},
+            {"s-qn1", new int[] {}, queue + "1#|name", 2},
+            {"s-one", new int[] {0}, null, 0},
+            {"s-two", new int[] {0, -1}, null, 0},
+        };
+        for (Object[] row : sessions) {
+            Session session = new Session(iteration, (String) row[0]);
+            session.activation(TARGET, false);
+            session.activation(WRITER, false);
+            for (int k : (int[]) row[1]) {
+                Endpoint producer = k < 0 ? SENT : Endpoint.of(PRODUCER,
+                        "XCH.resp.block-key-id", ExecutionIndex.of(
+                                Collections.singletonList(Frame.of(
+                                        "PBHelper#convert#9", k))), 0);
+                session.attach(DELIVERED, "M_HOFF_" + k, "1", producer);
+            }
+            for (int read = 0; read < (Integer) row[3]; read++) {
+                session.attach(at(WRITER, (String) row[2], "ZkRead#3"),
+                        "M_CONTENT_" + read, "x", null);
+            }
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
+        Set<String> none = Collections.<String>emptySet();
+        Object[][] rows = {
+            {"s-five", "s-four", false, "five distinct exports against four"},
+            {"s-again-4", "s-again-3", true,
+                    "one export read four times against three"},
+            {"s-again-4", "s-one", true, "read again against read once"},
+            {"s-qn0", "s-qn1", true,
+                    "the first queue item at another counter, read again"},
+            {"s-one", "s-two", false, "two producers of one site"},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[3], row[2], corpus.inputShape(
+                    (String) row[0], TARGET, factor, none).equals(
+                    corpus.inputShape((String) row[1], TARGET, factor,
+                            none)));
+        }
     }
 
     /** What the guard at {@code siteId} depends on in one session's path of

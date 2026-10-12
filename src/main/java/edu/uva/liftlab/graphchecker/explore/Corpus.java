@@ -696,8 +696,8 @@ public final class Corpus implements Arms.Rows {
      * every replay renumbers -- a member's writes are a set of (site, what it
      * wrote), and identical lines count once: a poll or a watch callback
      * that wrote the same value k or k' times, or under renumbered ids,
-     * delivered one world (solr-adhoc-07/21 IB1).  A member's own handoffs
-     * keep their multiplicity (hdfs-11741's four keys against five).  A
+     * delivered one world (solr-adhoc-07/21 IB1).  A member's handoffs are
+     * its distinct (attach site, producer) pairs ({@link #handoffs}).  A
      * run's handle for an object is numbered by where the key first meets
      * it ({@link #numbered}).  LIMITS: a member's write the recording states
      * at no write site (unwoven) re-keys no arm; the downstream of a
@@ -710,19 +710,18 @@ public final class Corpus implements Arms.Rows {
         Set<String> members = new TreeSet<String>(BY_SHAPE);
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
-            List<String> handoffs = attachSites(sessionId, member);
+            Set<String> handoffs = handoffs(sessionId, member);
             Set<String> writes = writeSites(sessionId, member, occurrence,
                     locations);
             if (handoffs.isEmpty() && writes.isEmpty()) continue;
             members.add(classOf(member) + ':'
                     + (activation(sessionId, member) != null) + handoffs
-                    + producers(sessionId, member) + writes);
+                    + writes);
         }
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
-                .append(attachSites(sessionId, occurrence))
-                .append(producers(sessionId, occurrence));
+                .append(handoffs(sessionId, occurrence));
         for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(numbered(text.toString(),
                 new LinkedHashMap<String, String>()), 16);
@@ -795,33 +794,57 @@ public final class Corpus implements Arms.Rows {
         return feeders;
     }
 
-    /** Per-site handoff counts (not values). */
-    private List<String> attachSites(String sessionId,
-                                     OccurrenceAddress occurrence) {
-        List<String> sites = new ArrayList<String>();
-        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
-            sites.add(attach.endpoint().site());
-        }
-        Collections.sort(sites);
-        return sites;
-    }
-
-    /** Which occurrences delivered them, by class ({@link #classOf}): a
-     *  new producer class is new topology.  A set, sorted: the order
-     *  replies arrive in is a race, never input (hdfs-adhoc-07 CC5: the
-     *  client's recovery takes the three journal nodes' replies in any
-     *  order, and keyed by that order every arm of every client call it
-     *  feeds was asked once per order). */
-    private Set<String> producers(String sessionId,
-                                  OccurrenceAddress occurrence) {
-        Set<String> from = new TreeSet<String>();
+    /**
+     * WHAT FED ONE OCCURRENCE -- a member, or the task's own -- as an arm's
+     * key names it: each distinct (handoff site, producer) once.  Which
+     * export of which producer class delivered there is semantic; how many
+     * times it was read again is a timing count (owner 2026-10-11): a store
+     * version re-read three or four times is one, hdfs-11741's five keys
+     * against four are five distinct exports against four.  The producer by
+     * its class and export site, the export itself a handle numbered by
+     * first appearance ({@link #handle}); one no row places, by its endpoint,
+     * a handle too.  A set: the replies to one call arrive in any order
+     * (hdfs-adhoc-07 CC5).  A site's sequential znode suffix is a timing
+     * name ({@link #sequences}).
+     */
+    private Set<String> handoffs(String sessionId,
+                                 OccurrenceAddress occurrence) {
+        Set<String> fed = new TreeSet<String>(BY_SHAPE);
         for (AttachRow attach : attachesOn(sessionId, occurrence)) {
             Endpoint producer = attach.producer();
-            if (producer == null) continue;
-            OccurrenceAddress at = producer.occurrence();
-            from.add(at == null ? producer.id() : classOf(at));
+            String from = producer == null ? ""
+                    : "<-" + (producer.occurrence() == null
+                    ? handle("endpoint", producer.id())
+                    : classOf(producer.occurrence()) + "@"
+                    + sequences(producer.site()) + "#"
+                    + handle("export", producer.id()));
+            fed.add(sequences(attach.endpoint().site()) + from);
         }
-        return from;
+        return fed;
+    }
+
+    /** A ZooKeeper sequential node's name: a name, a dash or underscore,
+     *  and ten digits ({@code qn-0000000003}, {@code n_0000000001}). */
+    private static final Pattern SEQUENCE = Pattern.compile(
+            "([A-Za-z]+[-_])(\\d{10})(?!\\d)");
+
+    /**
+     * {@code text} with each sequential znode's counter as a handle ({@link
+     * #handle}): which item of its parent it is, by where the key first
+     * meets it, not its counter, which shifts with every item an earlier
+     * world or a retry added (solr-adhoc-19 SC6: the first queue item a
+     * member read was qn-0000000000 in one world and qn-0000000001 in
+     * another).
+     */
+    static String sequences(String text) {
+        if (text == null || text.isEmpty()) return "";
+        Matcher counter = SEQUENCE.matcher(text);
+        StringBuffer out = new StringBuffer();
+        while (counter.find()) {
+            counter.appendReplacement(out, Matcher.quoteReplacement(
+                    handle(counter.group(1), "seq:" + counter.group())));
+        }
+        return counter.appendTail(out).toString();
     }
 
     /** An occurrence's class: its node, region and context shape ({@link
@@ -911,15 +934,16 @@ public final class Corpus implements Arms.Rows {
      * session states them, {@code SessionManifest#runSpellings}) -- one port
      * spelling names {@code node1} in every run, and a run that states none
      * keeps its spelling (another world, never a fold) -- and each identity
-     * hash ({@link RunSpellings#IDENTITY}) as a handle.  Never an engine-built
+     * hash ({@link RunSpellings#IDENTITY}) and sequential znode counter
+     * ({@link #sequences}) as a handle.  Never an engine-built
      * name (a hop's {@code site@node#epoch}, a writer's {@code class@site}):
      * a node named like hex would fold two nodes.
      */
     private String programNames(String sessionId, String text) {
         SessionReader session = sessionById.get(sessionId);
-        String named = (session == null || session.manifest() == null
-                ? RunSpellings.NONE : session.manifest().runSpellings())
-                .name(text);
+        String named = sequences((session == null
+                || session.manifest() == null ? RunSpellings.NONE
+                : session.manifest().runSpellings()).name(text));
         if (named.indexOf('@') < 0) return named;
         Matcher hash = RunSpellings.IDENTITY.matcher(named);
         StringBuffer out = new StringBuffer();
@@ -1191,7 +1215,7 @@ public final class Corpus implements Arms.Rows {
      */
     private String readName(String sessionId, ReadRow row, Naming naming) {
         String location = "read:" + row.location().kind() + ":"
-                + row.location().slot();
+                + sequences(row.location().slot());
         String sort = JavaSmtSorts.sortOfJava(row.javaType()).smt;
         List<Arms.Arm> eligible = arms().stateArms(row.endpoint(), sessionId,
                 SmtLowering.locationKey(row.location()),
@@ -1240,7 +1264,7 @@ public final class Corpus implements Arms.Rows {
      * its roots' guard; with none it is pinned to its arrival.
      */
     private String handoffName(AttachRow attach, Naming naming) {
-        String port = "handoff:" + attach.endpoint().site();
+        String port = "handoff:" + sequences(attach.endpoint().site());
         List<String> arms = new ArrayList<String>();
         if (attach.producer() != null) {
             String sessionId = attach.sessionId();

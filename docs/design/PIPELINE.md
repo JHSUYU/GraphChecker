@@ -759,8 +759,10 @@ location another writer of another class may have written is another world; the 
 term written again folds) -- never delivered values, and a function of the session alone: semantic
 counts only, the members, each one's writes and each one's producers as sets (replies to one call
 arrive in any order; a poll, a request or a watch callback that wrote the same value k or k' times,
-or under renumbered ids, delivered one world), a member's own handoffs keeping their multiplicity
-(hdfs-11741's four keys instead of five re-key), and none that delivered the query nothing: no
+or under renumbered ids, delivered one world), a member's handoffs its distinct (attach site,
+producer) pairs (`Corpus#handoffs`: hdfs-11741's distinct exports stay apart, the same field re-read
+four or three times is one world; a ZK sequential node's ten-digit counter is numbered by first
+appearance, `Corpus#sequences`, so `qn-0000000000` and `qn-0000000001` name alike), and none that delivered the query nothing: no
 handoff, no write at the guard's locations. A member that only wrote state the region reads
 elsewhere is no conjunct of the query, and a world that changed it is reached by nesting from the
 answer's session (§7.5), as an inherited prefix is (solr-adhoc-21 RX4: such lines -- a state watcher

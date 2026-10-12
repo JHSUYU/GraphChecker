@@ -456,7 +456,10 @@ Correctness:
     not by having run (solr-bugs-reindex-cleanup SG1: most re-keyed ids were members that ran and
     delivered nothing). Semantic counts only (owner 2026-10-11): a member's writes and the member
     lines are sets (the same value written k or k' times, or by a member under renumbered ids, is
-    one world); a member's own handoffs keep their multiplicity (hdfs-11741); a kept decision is its
+    one world); a member's handoffs are its distinct (attach site, producer) pairs, a ZK sequential
+    node's ten-digit counter numbered by first appearance (`Corpus#handoffs`, `#sequences`; (B),
+    2026-10-12: hdfs-11741's distinct exports stay apart, a field re-read 4 or 3 times or a
+    `qn-0000000000` against `qn-0000000001` is one world); a kept decision is its
     site and outcome with how many different conditions it decided there (`Corpus#decisionShape`),
     never its ordinal. A member that only wrote state the region reads elsewhere is no line (no
     conjunct of the query; a world that changed it is reached by nesting): LIMIT, the downstream of
