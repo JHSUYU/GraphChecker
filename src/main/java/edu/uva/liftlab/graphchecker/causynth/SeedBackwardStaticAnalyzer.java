@@ -2233,26 +2233,14 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** The classes a local's definitions create its object of: a {@code
-     *  new C}, or a static method of a functional class C (its factory). */
+    /** The classes a local's definitions create its object of, that have a
+     *  functional method to enter ({@link CreatedFrom#classes}). */
     private Set<SootClass> creationClasses(String method, Local local) {
+        List<Unit> units = new ArrayList<>();
+        for (Fact fact : factsByMethod.get(method)) units.add(fact.unit);
         Set<SootClass> classes = new LinkedHashSet<>();
-        for (Fact fact : factsByMethod.get(method)) {
-            if (!(fact.unit instanceof AssignStmt)
-                    || ((AssignStmt) fact.unit).getLeftOp() != local) {
-                continue;
-            }
-            Value created = ((AssignStmt) fact.unit).getRightOp();
-            SootClass type = created instanceof NewExpr
-                    ? ((NewExpr) created).getBaseType().getSootClass()
-                    : created instanceof soot.jimple.StaticInvokeExpr
-                    ? ((InvokeExpr) created).getMethodRef()
-                    .getDeclaringClass() : null;
-            // Only the analysed scope's classes have a method to enter.
-            if (type != null && type.isApplicationClass()
-                    && !functionalMethods(type).isEmpty()) {
-                classes.add(type);
-            }
+        for (SootClass type : CreatedFrom.classes(units, local)) {
+            if (!functionalMethods(type).isEmpty()) classes.add(type);
         }
         return classes;
     }
@@ -2283,7 +2271,7 @@ final class SeedBackwardStaticAnalyzer {
                     if (!declared.isAbstract() || declared.isStatic()) {
                         continue;
                     }
-                    SootMethod implementation = implementation(type,
+                    SootMethod implementation = CreatedFrom.implementation(type,
                             declared.getSubSignature());
                     if (implementation != null
                             && !methods.contains(implementation)) {
@@ -2293,19 +2281,6 @@ final class SeedBackwardStaticAnalyzer {
             }
         }
         return methods;
-    }
-
-    /** The concrete method a class runs for one subsignature: its own or
-     *  its nearest superclass's; null when none states one. */
-    private static SootMethod implementation(SootClass type,
-                                             String subSignature) {
-        for (SootClass owner = type; owner != null
-                && owner.resolvingLevel() >= SootClass.SIGNATURES;
-             owner = owner.hasSuperclass() ? owner.getSuperclass() : null) {
-            SootMethod method = owner.getMethodUnsafe(subSignature);
-            if (method != null && method.isConcrete()) return method;
-        }
-        return null;
     }
 
     /**

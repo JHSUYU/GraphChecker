@@ -707,8 +707,14 @@ order:
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
   wait is missed; the methods are installed from the rows the session reads when it opens,
   `GuardedStoreSites#install`, never at a wait, where reading the map held a thread's first wait
-  seconds mid-run and timed out an IPC caller's hand-off to its sender). The watchdog lets held waits go when the order stalls; a released timed wait
-  still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
+  seconds mid-run and timed out an IPC caller's hand-off to its sender). An event of a timed-wait loop's turn
+  (`Root:WAKE/<wait>#k`, `ScheduleLog#timedWaitTurn`) whose slot is not yet due waits at it as such a poll does, held:
+  its k counts the loop's wakes, a timing fact, so the replay's k-th turn is another turn than the recording's and its
+  slot may be another turn's; let go, it takes that slot, a `WRITE` still behind an earlier held write to its
+  location (solr-adhoc-39 MB29s: the recording made 106 turns of the
+  Overseer's `ZkDistributedQueue.peekElements` loop, the replay 512, and a queue write in replayed turn #88 waited at
+  recorded #88's slot and, as the earliest waiter, bounded a give-up of 4251 slots). The watchdog lets held waits go
+  when the order stalls; a released timed wait still waits out its own deadline. A held wait bounds no give-up, at its context's slot or at the line: with only held
   waits waiting it lets them go again, a grace apart (solr-adhoc-13, round MB6: a replica poll held at the cut bounded a
   give-up of the 4560 slots before it). The slot a stall would give up first -- the one write or read a conflicted
   write waits behind, else the frontier -- stands a grace, not a timeout, when it is a `READ` or its context family

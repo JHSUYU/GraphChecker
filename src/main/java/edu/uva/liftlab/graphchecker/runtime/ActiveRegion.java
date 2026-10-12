@@ -13,7 +13,6 @@ import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Validity;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
 import edu.uva.liftlab.graphchecker.runtime.BranchObservation.PreparedBranch;
@@ -58,6 +57,13 @@ final class ActiveRegion {
     private boolean closed;
     /** Loop bodies this activation has charged. */
     volatile long chargedLoopBodies;
+    /** Decisions this activation recorded with a term, on its thread
+     *  ({@code BranchObservation}): what a loop iteration's {@code K_L}
+     *  count asks ({@link #traverseBackedge}). */
+    int termedDecisions;
+    /** Why a loop bound cut this activation's local path, or null
+     *  ({@code LoopAccounting#endAtCut}). */
+    volatile String cut;
     /** Logical sources and request scopes observed while this ran. */
     final Set<String> observedSourceKeys = new LinkedHashSet<>();
     /** Every source the observed context or the receiver's registration
@@ -116,7 +122,7 @@ final class ActiveRegion {
         this.receiver = receiver;
         this.thread = thread;
         this.expressionStore = ConcolicRegionRuntime.workloadExpressionStore;
-        this.loopBackedges = new LoopBackedgeBudget(activation.loopBound);
+        this.loopBackedges = new LoopBackedgeBudget();
     }
 
     /** Counts this activation against its address's set (bounds loop-body
@@ -140,22 +146,24 @@ final class ActiveRegion {
     }
 
     /**
-     * Charges one body of this loop to the replay resource cap, returning
-     * the cut that ends the activation once the cap is spent.
+     * Charges one body of this fixed-count loop, {@code bound} its {@code
+     * K_L}, to the work cap, returning the cut that ends the activation once
+     * the cap is spent ({@link LoopBackedgeBudget#body}).
      */
-    synchronized ReplayLoopResourceCut chargeLoopBody(String loopId) {
-        // Body entries a loop may run before the replay is cut.
-        int maxBodies = LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
+    synchronized ReplayLoopResourceCut chargeLoopBody(String loopId,
+                                                      int bound) {
         chargedLoopBodies++;
-        long entered = loopBackedges.recordBody(inThisCall(loopId));
-        if (entered <= maxBodies) return null;
-        return new ReplayLoopResourceCut(loopId, maxBodies, entered,
-                ReplayLoopResourceCut.REASON);
+        return loopBackedges.body(loopId, inThisCall(loopId), bound);
     }
 
-    /** Counts one traversal of this loop's backedge; returns the attempt. */
-    synchronized long traverseBackedge(String loopId) {
-        return loopBackedges.recordTraversal(inThisCall(loopId));
+    /** Counts one traversal of this loop's backedge, {@code bound} its
+     *  {@code K_L}; returns the cut it takes, or null
+     *  ({@link LoopBackedgeBudget#traverse}: the armed FORCE activation's
+     *  loops take the work cap alone). */
+    synchronized Error traverseBackedge(String loopId, int bound) {
+        chargedLoopBodies++;
+        return loopBackedges.traverse(loopId, inThisCall(loopId),
+                termedDecisions, bound, ForcedArms.armedOn(this));
     }
 
     /**
@@ -180,8 +188,10 @@ final class ActiveRegion {
             String site = SiteId.render(method, unitIndex);
             int occurrence = Identity.nextBranchOrdinal(site);
             // No path condition was added: the row owns an empty range.
-            branchMappings.add(BranchObservation.decisionRow(method,
-                    unitIndex, occurrence, 0L, decision.outcome(), 0, 0));
+            JsonObject row = BranchObservation.decisionRow(method,
+                    unitIndex, occurrence, 0L, decision.outcome(), 0, 0);
+            ForcedArms.statesCaller(this, row);
+            branchMappings.add(row);
             if (activation.targetTest(site)
                     && activation.targetBranchOccurrence == occurrence) {
                 // Concrete: it stands after every event so far, so the path

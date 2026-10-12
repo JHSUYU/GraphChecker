@@ -156,10 +156,13 @@ final class BranchObservation {
                 int reached = permuted
                         ? active.activation.targetBranchOccurrence
                         : prepared.occurrence;
-                active.recordTargetReach(branchSite, reached,
-                        decision.outcome(), vmEventId);
-                ForcedArms.reachedTarget(active, branchSite, reached,
-                        decision.outcome());
+                // A FORCE run's passable test on its healthy arm decides
+                // nothing: the reach is the forced test's.
+                if (ForcedArms.reachedTarget(active, branchSite, reached,
+                        decision.outcome())) {
+                    active.recordTargetReach(branchSite, reached,
+                            decision.outcome(), vmEventId);
+                }
             }
         } catch (Throwable throwable) {
             RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
@@ -275,7 +278,9 @@ final class BranchObservation {
         JsonObject mapping = decisionRow(method, unitIndex, occurrence,
                 vmEventId, observedOutcome, mappingBaseline, mappingLimit);
         ForcedArms.mark(active, mapping, read.event);
+        ForcedArms.statesCaller(active, mapping);
         if (conditionIndex >= 0) {
+            active.termedDecisions++;
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition =
                     VmBranchAttestation.semanticCondition(
@@ -319,6 +324,7 @@ final class BranchObservation {
                 conditionIndices.size() - 1) + 1;
         active.branchMappings.add(decisionRow(method, unitIndex, occurrence,
                 vmEventId, expected.caseArm(), mappingBaseline, mappingLimit));
+        if (!conditionIndices.isEmpty()) active.termedDecisions++;
         for (Integer conditionIndex : conditionIndices) {
             JsonObject predicate = decisionRow(method, unitIndex, occurrence,
                     vmEventId, null, mappingBaseline, mappingLimit);

@@ -143,3 +143,12 @@ python3 tools/analysis/smt-legend.py --repo <the case's tree> <out>/<case>      
     `CLOSURE_CONFINED` row (`scope` `CONTEXT`) and result.json `confinedWriters`; an UNSAT reading looks at the
     anchor's demanded fields among them and, for each one the fatal arm rests on, reads the code for such a
     hand-off before accepting.
+23. **An UNSAT whose fatal arm was composed from a way guard** (solr-adhoc-19/21 SG2b, 2026-10-08): no session
+    reached the anchor, and COMPOSE took each path's last decision on the way to the throw and composed its other
+    arm -- but that decision had taken the arm TOWARD the throw and a loop bound then cut the occurrence, so the
+    "fatal" was another throw (19: create's u9, `!inFlightCreations.add`, the CONFLICT "Already creating"). Fixed
+    (`RestsOn#wayGuard`: the last decision that took an arm off the way, by the anchor's own forcing table, scanned
+    back past decisions that kept it; a loop bound's cut of a path that never reached the anchor, before or after it left
+    the way, makes the case `BOUNDED:loop_body_bound`, a failure of the loop accounting a RUN_DEFECT). Still, for every UNSAT with a `concrete[]` WAY row, the
+    reading names the guard (site, file:line), the arm the path took, and the throw its other arm leads to, read in
+    the code; a WAY row on the anchor itself means the path stopped on the way and says how.

@@ -289,7 +289,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 
 | role | one row per | extra members |
 |---|---|---|
-| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`), then the guards of the calls into its method, three calls up, never into an execution context's entry (a thread's or task's `run`, a `call`, a `main`: its starter runs it) (`StaticScopeMap#targetChain`, `Guards#callsInto`): the decisions its occurrence takes on the way to the throw. The static planner roots a region at the target's method itself (`FAILURE_TARGET_ENTRY`), but its callers' region is the occurrence it folds into at run time. `force`: the forcing table (`plan/ForcingTable`), each branch between the region's entry and the throw with the arm that leads to the throw, keyed by the branch site id the decision marker names: the guards at their fatal arms, the chain at its arms, the deciders (`guardDeciders`, a chain guard's too) at the arm whose verdict the guard wants, else the OPEN arm, nested alike, each with `via`, the method that calls its helper; a switch guard and a fault call are not forced. PLAN copies it -- the table of the task's own TARGET_SITE (`ConcolicScheduler#ownTarget`) -- onto the declared task's `targetBranch.force`, which a forced replay forces (PIPELINE §7.10), less a caller's chain guard where the recording's occurrence entered the throw's method (`ForcingTable#forOccurrence`) |
+| `TARGET_SITE` | the declared throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`), then the guards of the calls into its method, three calls up, never into an execution context's entry (a thread's or task's `run`, a `call`, a `main`: its starter runs it) (`StaticScopeMap#targetChain`, `Guards#callsInto`): the decisions its occurrence takes on the way to the throw. The static planner roots a region at the target's method itself (`FAILURE_TARGET_ENTRY`), but its callers' region is the occurrence it folds into at run time. `force`: the forcing table (`plan/ForcingTable`), each branch between the region's entry and the throw with the arm that leads to the throw, keyed by the branch site id the decision marker names: the guards at their fatal arms, the chain at its arms, the deciders (`guardDeciders`, a chain guard's too) at the arm whose verdict the guard wants, else the OPEN arm, nested alike, each with `via`, the method that calls its helper; a switch guard and a fault call are not forced. PLAN copies it -- the table of the task's own TARGET_SITE (`StaticScopeMap#ownTarget`) -- onto the declared task's `targetBranch.force`, which a forced replay forces (PIPELINE §7.10), less a caller's chain guard where the recording's occurrence entered the throw's method (`ForcingTable#forOccurrence`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a configuration getter, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, `CONFIG`, or absent), `clockNanos` and `clockSource` (a clock's tick and the JVM clock it wraps, `currentTimeMillis` or `nanoTime`, read off the wrapper's body by `causynth.RootCatalog`; absent for a wrapper mixing both), `sourceId`, `domainMin` and `domainMax` (a configuration's root and static domain, §4.3), `marker` (a fault marker's name, §4.2), `demandDistance` (the root demand's distance to this read, §4.6) |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`, `CONTAINER`), `static` (a static field), `demandDistance` (§4.6) |
@@ -321,11 +321,20 @@ constructor calls keep them all. A guard `v ==/!= c` (`c` an int, null or an enu
 a static field its enum declares for a value, `Modifier.ENUM`) on the result of one call of an
 application helper names the helper branch arms that decide it (`causynth/BooleanReturns`,
 `guardDeciders`): both arms of every helper branch with an arm that runs straight (constant stores,
-jumps, at most 16 units) to a return of a constant of `c`'s kind, each with its `verdict` -- whether
+jumps, calls that store nothing, a branch both of whose arms return the same constant -- javac's
+inlined `finally` -- at most 16 units) to a return of a constant of `c`'s kind, each with its `verdict` -- whether
 the guard's condition holds when it runs; none for an OPEN arm, one that runs on to a value no
 constant states -- and the deciders of the nested helper return its branch tests, three helpers
 deep; a branch whose two arms are open, or return constants the guard takes alike, decides
-nothing, a helper with a switch has none. A helper with no branch that returns `h2().equals(c)`
+nothing, a helper with a switch has none. The call may be an interface or virtual call on an
+object the method created -- `new C`, or the `bootstrap$` of Soot's desugared lambda -- whose class
+then names the helper (`causynth/CreatedFrom`, the rule the slice enters a functional argument by);
+a guard on a `Boolean`'s `booleanValue()` is one on the call that returned it, its `Boolean.TRUE`
+and `FALSE` arms 1 and 0; and a helper with no branch that returns one call's result (the lambda
+class's `call()` running `lambda$m$N`) forwards to that call's deciders, one helper deeper
+(solr-adhoc-09: `if (!callable.call())`, DeleteReplicaCmd.java:277, is decided by the lambda's
+`waitForCoreNodeGone` tests; its deciders' `via` is `deleteCore`, since `Identity#callerFrame`
+passes the lambda class's and `lambda$` frames). A helper with no branch that returns `h2().equals(c)`
 (an enum's `equals` is identity) is the guard `h2() == c`, its verdicts read through the boolean it
 returns: hdfs-adhoc-15/17's `isComplete()` is `getBlockUCState().equals(COMPLETE)`, decided by
 `uc == null ? COMPLETE : uc.getBlockUCState()`, whose `uc != null` arm is open; hdfs-adhoc-40's

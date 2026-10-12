@@ -126,7 +126,8 @@ final class RowPublication {
                     written.size() > 0 ? written : null,
                     optionalBool(mapping, "forced", false)
                             ? Boolean.valueOf(optionalBool(mapping,
-                            "concreteOutcome", false)) : null);
+                            "concreteOutcome", false)) : null,
+                    optionalString(mapping, "via"));
         }
     }
 

@@ -161,16 +161,14 @@ public final class ClosurePlanner {
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
         // The anchor flips only the decisions on its way to the throw: the
-        // target's guard set (PIPELINE §7.2) and, when no run of it reached
-        // the throw, the chain its path left by; flipping a chain guard of a
+        // target's guard set (PIPELINE §7.2) and, when no admitted run of it
+        // reached the throw (RestsOn#reached: a refused replay's reach states
+        // nothing), the chain its path left by; flipping a chain guard of a
         // path that went on to the throw only leaves it.  A reached one also
         // asks, of each open decider arm a run left phi without
         // (TargetRow.OpenArm), the one decision whose flip runs it.  The
         // throw itself is no branch.
-        boolean reached = false;
-        for (TargetRow row : corpus.targetsOn(anchor)) {
-            reached |= row.reachedAnchor();
-        }
+        boolean reached = walk.restsOn.reached();
         start.flipSites.addAll(corpus.openArmAsks(anchor));
         for (StaticScopeMap.Site target : scope.targetSites()) {
             start.flipSites.addAll(reached ? target.guards

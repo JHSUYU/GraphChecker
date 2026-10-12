@@ -152,9 +152,30 @@ public final class TargetRow extends Value {
         return occurrence;
     }
 
-    /** The fatal read this anchor is about. */
+    /** The fatal read this anchor is about: the target branch's label,
+     *  {@code site#k} as the runtime states it ({@code
+     *  RowPublication#target}). */
     public String anchorSiteId() {
         return anchorSiteId;
+    }
+
+    /**
+     * The target branch's site: the label without the occurrence ordinal
+     * the runtime appends ({@code <method>#u11#1} -> {@code <method>#u11}),
+     * as a scope map's guards and forcing tables name it; a label with no
+     * ordinal is its own site.
+     */
+    public String site() {
+        int hash = anchorSiteId.lastIndexOf('#');
+        if (hash <= 0 || hash == anchorSiteId.length() - 1) {
+            return anchorSiteId;
+        }
+        for (int at = hash + 1; at < anchorSiteId.length(); at++) {
+            if (!Character.isDigit(anchorSiteId.charAt(at))) {
+                return anchorSiteId;
+            }
+        }
+        return anchorSiteId.substring(0, hash);
     }
 
     /** phi, in the fatal polarity, as published. */

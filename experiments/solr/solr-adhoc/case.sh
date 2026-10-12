@@ -26,3 +26,9 @@ case "${window}" in
   *) echo "check $1: unknown window '${window}' (the Solr adapter opens its window once a cluster is up)" >&2; return 2 ;;
 esac
 read -r -a scope <<<"${classes}"
+# 05's loop bounds (STATUS "Per-system surface"): SolrResourceLoader.inform's
+# loop over a core's SolrInfoBeans runs past the 32-body work cap in the core
+# creation its FORCE run forces.  No other check reads them.
+if [[ "$1" == 05 ]]; then
+  loop_bounds=${here}/loop-bounds-05.jsonl
+fi
