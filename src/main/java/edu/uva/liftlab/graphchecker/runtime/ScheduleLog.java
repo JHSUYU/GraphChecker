@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -737,6 +738,10 @@ public final class ScheduleLog {
         COUNTS.put(pending.key, k + 1);
         madeRealizedLocked(pending, k);
         if (pending.kind == ScheduleEvent.Kind.SEND
+                && !pending.endpoint.isEmpty() && !AWAITED.isEmpty()) {
+            names.sent(pending.context, pending.site, pending.endpoint);
+        }
+        if (pending.kind == ScheduleEvent.Kind.SEND
                 && !pending.endpoint.isEmpty()) {
             ContextShape.Stance stance =
                     ContextShape.Stance.ofSend(pending.context);
@@ -776,6 +781,9 @@ public final class ScheduleLog {
             new HashMap<String, List<Ordered>>();
     /** Per event held, when its hold gives way. */
     private static final Map<String, Long> DUE = new HashMap<String, Long>();
+    /** This run's stable event names, which the realized rows state (fed
+     *  its SENDs while it holds an order). */
+    private static StableEventNames names = new StableEventNames();
 
     /** One realized ORDER row: its number, and its two events. */
     private static final class Ordered {
@@ -790,7 +798,8 @@ public final class ScheduleLog {
         }
     }
 
-    /** One event's identity across runs: kind, context, site and k. */
+    /** One event's identity across runs: kind, context ({@link
+     *  StableEventNames} for a realized row), site and k. */
     static String eventId(String kind, String context, String site, int k) {
         return kind + " " + site + " @ " + context + " #" + k;
     }
@@ -882,8 +891,10 @@ public final class ScheduleLog {
     private static boolean realizedLocked(Pending pending) {
         loadRealizedLocked();
         if (realized.isEmpty() || RecordingPlant.orderGaveWay()) return true;
+        String context = names.context(pending.context);
+        if (context == null) return true;
         Integer made = COUNTS.get(pending.key);
-        String id = eventId(pending.kind.name(), pending.context,
+        String id = eventId(pending.kind.name(), context,
                 pending.site, made == null ? 0 : made);
         List<Ordered> rows = realized.get(id);
         if (rows == null) return true;
@@ -927,8 +938,9 @@ public final class ScheduleLog {
      *  for it gave way states it came late. */
     private static void madeRealizedLocked(Pending pending, int k) {
         if (AWAITED.isEmpty()) return;
-        String id = eventId(pending.kind.name(), pending.context,
-                pending.site, k);
+        String context = names.context(pending.context);
+        if (context == null) return;
+        String id = eventId(pending.kind.name(), context, pending.site, k);
         if (!AWAITED.contains(id) || !MADE_AWAITED.add(id)) return;
         LOCK.notifyAll();
         List<Ordered> late = OVERDUE.remove(id);
@@ -2365,6 +2377,7 @@ public final class ScheduleLog {
             seq = 0L;
             steps = 0L;
             realized = null;
+            names = new StableEventNames();
             AWAITED.clear();
             MADE_AWAITED.clear();
             OVERDUE.clear();
