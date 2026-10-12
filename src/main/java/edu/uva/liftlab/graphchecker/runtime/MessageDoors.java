@@ -77,11 +77,21 @@ public final class MessageDoors {
     private static final AtomicLong STORES = new AtomicLong();
     /**
      * How long a read waits for the writes in flight to file its version,
-     * in ms: they file within milliseconds (SOLR-18413 F2's measured
-     * 0.1-6.5 ms), and a write the schedule holds behind the reader would
+     * in ms, while none of them is filing: a write before its store's call
+     * may be one the schedule holds behind the reader, which would
      * otherwise wait for the watchdog.
      */
     static final long FILED_WAIT_MS = 2000L;
+
+    /**
+     * How long a read waits, in ms, while a write in flight is filing
+     * ({@link #stored} began: past its store's call, it takes no turn before
+     * it files).  Filing exports the document's leaves under the VM, which
+     * takes seconds (solr-18413 Z2V: the Overseer queue item MigrateCmd
+     * wrote, read 2 s into its filing, paired with no write, and the chain
+     * from the clock to the fatal broke there).
+     */
+    static final long FILING_WAIT_MS = 60000L;
 
     /** One write in flight: the thread making it and the location it
      *  writes. */
@@ -91,10 +101,14 @@ public final class MessageDoors {
         /** Whether its version is filed ({@link #filedVersion}): no longer
          *  one more a refresh can reach.  Guarded by {@link #STORING}. */
         private boolean filed;
+        /** Whether {@link #stored} registered it: past its store's call,
+         *  filing ({@link #FILING_WAIT_MS}). */
+        private final boolean filing;
 
-        private Write(Thread thread, String location) {
+        private Write(Thread thread, String location, boolean filing) {
             this.thread = thread;
             this.location = location;
+            this.filing = filing;
         }
 
         /**
@@ -437,8 +451,8 @@ public final class MessageDoors {
      * watchers read the routing rule's version before the Overseer's turn
      * filed it, and their work opened no occurrence).  Until {@link
      * #storeEnded}, a read of a version this write may have made that finds
-     * it unfiled waits for it, at most {@link #FILED_WAIT_MS} ({@link
-     * #filed}).</p>
+     * it unfiled waits for it, at most {@link #FILED_WAIT_MS}, or {@link
+     * #FILING_WAIT_MS} once it is filing ({@link #filed}).</p>
      *
      * @return the write's token, for {@link #storeEnded}
      */
@@ -447,7 +461,7 @@ public final class MessageDoors {
             boolean paused = pause();
             try {
                 turn(ScheduleEvent.Kind.WRITE, transport, location);
-                return inFlight(transport, location);
+                return inFlight(transport, location, false);
             } finally {
                 resume(paused);
             }
@@ -475,7 +489,7 @@ public final class MessageDoors {
                 int slash = path.lastIndexOf('/');
                 turn(ScheduleEvent.Kind.WRITE, transport,
                         slash <= 0 ? "/" : path.substring(0, slash));
-                return inFlight(transport, location);
+                return inFlight(transport, location, false);
             } finally {
                 resume(paused);
             }
@@ -567,13 +581,14 @@ public final class MessageDoors {
     }
 
     /** A write in flight at {@code location} until {@link #storeEnded}. */
-    private static long inFlight(String transport, String location) {
+    private static long inFlight(String transport, String location,
+                                 boolean filing) {
         long store = STORES.incrementAndGet();
         synchronized (STORING) {
             STORING.computeIfAbsent(transport,
                     none -> new HashMap<Long, Write>())
                     .put(store, new Write(Thread.currentThread(),
-                            trimmed(location)));
+                            trimmed(location), filing));
         }
         return store;
     }
@@ -602,7 +617,8 @@ public final class MessageDoors {
      * it: the version was made outside the window or carried nothing, and
      * the read waits for nothing begun after it read; or the writes did not
      * file it within {@link #FILED_WAIT_MS} -- a writer the schedule holds
-     * behind this reader, say -- and a DIAGNOSTIC row names the version and
+     * behind this reader, say -- or, while one of them is filing, within
+     * {@link #FILING_WAIT_MS}, and a DIAGNOSTIC row names the version and
      * the writes still in flight.
      */
     static Outbound filed(String transport, String key) {
@@ -611,13 +627,17 @@ public final class MessageDoors {
         if (message != null) return message;
         String path = location(key);
         Thread reader = Thread.currentThread();
-        long deadline = System.currentTimeMillis() + FILED_WAIT_MS;
+        long began = System.currentTimeMillis();
         Map<Long, Write> pending;
+        boolean filing = false;
         synchronized (STORING) {
             pending = inFlight(transport, path, reader);
             while ((message = STORED.get(filed)) == null
                     && !pending.isEmpty()) {
-                long left = deadline - System.currentTimeMillis();
+                filing = filing(pending,
+                        inFlight(transport, path, reader));
+                long left = began + (filing ? FILING_WAIT_MS
+                        : FILED_WAIT_MS) - System.currentTimeMillis();
                 if (left <= 0L) break;
                 try {
                     STORING.wait(left);
@@ -638,10 +658,37 @@ public final class MessageDoors {
                     transport + " " + key, "this read found its version"
                             + " unfiled and the writes in flight that may"
                             + " have made it (" + String.join(", ", writers)
-                            + ") did not file it within " + FILED_WAIT_MS
+                            + ") did not file it within "
+                            + (filing ? FILING_WAIT_MS : FILED_WAIT_MS)
                             + " ms: the read pairs with no write");
         }
         return message;
+    }
+
+    /**
+     * This thread's write at {@code location} is filing ({@link #stored}):
+     * past its store's call, it takes no turn and waits on nothing a reader
+     * holds before it files -- a reader waiting for it ({@link #filed})
+     * holds only {@link #STORING}, which its wait releases -- so a reader
+     * may wait for it {@link #FILING_WAIT_MS}.  The token, for {@link
+     * #storeEnded}.
+     */
+    static long filingBegins(String transport, String location) {
+        return inFlight(transport, location, true);
+    }
+
+    /** Whether a thread making one of the {@code pending} writes is filing
+     *  a write in flight {@code now} ({@link Write#filing}): one begun
+     *  before its store's call goes on into {@link #stored}. */
+    private static boolean filing(Map<Long, Write> pending,
+                                  Map<Long, Write> now) {
+        for (Write write : now.values()) {
+            if (!write.filing) continue;
+            for (Write waited : pending.values()) {
+                if (waited.thread == write.thread) return true;
+            }
+        }
+        return false;
     }
 
     /** A stored version's location: its key without the version. */
@@ -689,7 +736,7 @@ public final class MessageDoors {
             // In flight until filed, whatever bracket the adapter opened:
             // the SEND and the producer it mints take the concolic VM
             // milliseconds.
-            store = inFlight(transport, location(key));
+            store = filingBegins(transport, location(key));
             // Its place on the session's order before anything files it: a
             // reader released by the filing (#filed) stands after the write
             // (review re-check M8: positioned after the filing, a decode of

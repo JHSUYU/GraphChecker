@@ -119,6 +119,13 @@ public class StoreContentTest {
         assertEquals(attached, parse.getAsJsonArray("_param_list").get(0));
         assertNull(StoreContent.rendered(attached, StoreContent.Kind.BOOL,
                 "true"));
+        // A boolean the writer held as a constant is the VM's 1 or 0.
+        for (String[] row : new String[][] {{"true", "Y_Z_1"},
+                {"false", "Y_Z_0"}}) {
+            assertEquals(row[1], StoreContent.rendered(text(row[0]),
+                    StoreContent.Kind.BOOL, row[0]).get("_exp")
+                    .getAsString());
+        }
     }
 
     /** A number leaf crosses at the width the parser reads it back at. */

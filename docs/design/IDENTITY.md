@@ -625,11 +625,14 @@ role: passed through to its item's doors, never planned, its own decisions not f
   location when it read -- that location, or a sequential prefix of it, never a parent --
   (`MessageDoors#filed`): the one that made the version files it before its bracket ends. A
   version no such write files was made outside the window or carried nothing; its read names
-  nothing and waits for nothing begun after it. The wait is bounded (`FILED_WAIT_MS`, 2 s: the
-  writes file within milliseconds): a writer held behind the reader -- before a replay's cut a
-  writer may be held at its SEND while a reader waits for it -- costs the bound, and the read
-  then names nothing and a DIAGNOSTIC `LINEAGE_LOST` row names the version and the writes still
-  in flight. Writes at other locations, of the same transport or not, order nothing.
+  nothing and waits for nothing begun after it. The wait is bounded: `FILED_WAIT_MS`, 2 s, while no
+  thread making those writes is filing -- a writer held behind the reader before its store's call
+  (before a replay's cut a writer may be held at its SEND while a reader waits for it) costs the
+  bound --, `FILING_WAIT_MS`, 60 s, while one is (`stored` began: past its store's call, it takes no
+  turn before it files, and exporting a document's leaves under the VM takes seconds; solr-18413
+  Z2V: an Overseer queue item read 2 s into its filing paired with no write). Past it the read
+  names nothing and a DIAGNOSTIC `LINEAGE_LOST` row names the version and the writes still in
+  flight. Writes at other locations, of the same transport or not, order nothing.
 - `reading(transport, location)`: a store read outside a callback -- whether a node exists, its data,
   its children (the location is then the parent) -- takes its turn as a write does, a `READ` event at
   the same `<transport>:<location>` key (`RunNames#key`, one spelling with the write's and with the
