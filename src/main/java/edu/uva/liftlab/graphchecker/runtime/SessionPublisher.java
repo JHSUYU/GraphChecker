@@ -222,20 +222,35 @@ public final class SessionPublisher {
         append(file, Collections.singletonList(row));
     }
 
+    /**
+     * The rows, each a line of its file, written under the VM's pause: the
+     * session's files are the engine's plumbing, never program state.  A row
+     * a region thread writes (a store door's, RowRuntime#storeWrite) may name
+     * a symbolic String, and unpaused its encoding stored symbolic bytes into
+     * the file writer's reused encoder buffer, which the VM then tracked by
+     * value: every later row any thread wrote versioned its 8 KB, 64 versions
+     * an element, re-listed at every region close (solr-18413's seed, rounds
+     * Y2/Y5: 99.9 % of a read-out page).
+     */
     private void append(Path file, List<JsonObject> rows) {
-        synchronized (LOCK) {
-            if (failed || closed) return;
-            try {
-                BufferedWriter writer = writer(file);
-                if (writer == null) return;
-                for (JsonObject row : rows) {
-                    writer.write(RowCodec.toLine(row));
-                    writer.newLine();
+        boolean paused = ConcolicVmBroker.pauseEngineWork();
+        try {
+            synchronized (LOCK) {
+                if (failed || closed) return;
+                try {
+                    BufferedWriter writer = writer(file);
+                    if (writer == null) return;
+                    for (JsonObject row : rows) {
+                        writer.write(RowCodec.toLine(row));
+                        writer.newLine();
+                    }
+                    writer.flush();
+                } catch (IOException unwritable) {
+                    fail(unwritable);
                 }
-                writer.flush();
-            } catch (IOException unwritable) {
-                fail(unwritable);
             }
+        } finally {
+            if (paused) ConcolicVmBroker.resumeEngineWork();
         }
     }
 

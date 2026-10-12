@@ -23,13 +23,24 @@ final class EngineConsole {
     private EngineConsole() {
     }
 
-    /** One line to the engine's console. */
+    /** One line to the engine's console, under the VM's pause: its encoder's
+     *  buffer is the engine's, never program state (SessionPublisher#append). */
     static void println(String line) {
-        ERR.println(line);
+        boolean paused = ConcolicVmBroker.pauseEngineWork();
+        try {
+            ERR.println(line);
+        } finally {
+            if (paused) ConcolicVmBroker.resumeEngineWork();
+        }
     }
 
-    /** A throwable's stack to the engine's console. */
+    /** A throwable's stack to the engine's console, as {@link #println}. */
     static void trace(Throwable thrown) {
-        thrown.printStackTrace(ERR);
+        boolean paused = ConcolicVmBroker.pauseEngineWork();
+        try {
+            thrown.printStackTrace(ERR);
+        } finally {
+            if (paused) ConcolicVmBroker.resumeEngineWork();
+        }
     }
 }
