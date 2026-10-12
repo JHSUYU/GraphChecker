@@ -1,4 +1,4 @@
-# State: HDFS finished; Solr stopped for a handover (2026-10-09)
+# State: HDFS finished; Solr stopped for a handover (2026-10-12)
 
 Solr: section S below. The HDFS group is finished: all 46 cases have an exported `.smt` read by hand against the HDFS code, one row each in
 [../STATUS.md](../STATUS.md) "HDFS checks" (07, the last, closed on 2026-10-07: EX1-adhoc-07e on `system/hdfs1`
@@ -11,30 +11,37 @@ file, then [TODO.md](TODO.md) (what is left, in order), [RULES.md](RULES.md), [C
 [../design/](../design/README.md); every check's state is in [../checks/README.md](../checks/README.md); done / partial /
 missing per requirement in [../STATUS.md](../STATUS.md).
 
-## S. Solr at the owner's stop (2026-10-09) -- read this first if you take over Solr
+## S. Solr at the owner's stop (2026-10-12) -- read this first if you take over Solr
 
-The owner stopped the Solr group on 2026-10-09 for a handover to another agent ("停下所有的任务，agent。把我们的todo清晰地
-更新所有文档"). Every agent and run is stopped, every branch committed (unfinished work as `WIP:` commits), nothing
-merged that was not gated and nothing pushed. The plan, in order, is [TODO.md](TODO.md) "Solr"; every case's latest
-evidence is [../STATUS.md](../STATUS.md) "Solr checks".
+The owner stopped the Solr group again on 2026-10-12 (~14:00) for a handover to another agent ("停止所有的agent，任务。
+更新对应的文档。我要让别的coding agent接手"). Every agent and run is stopped (no GraphChecker process on any lift), every
+branch committed (unfinished work as `WIP:`), nothing pushed. The plan, in order, is [TODO.md](TODO.md) "Solr"; the
+agents' own reports are `/bigtemp/vnr3ne/analysis/solr-2026-10-11/HANDOVER-2026-10-12.md`; every case's latest evidence
+is [../STATUS.md](../STATUS.md) "Solr checks".
 
-- **`system/solr` `7abebd846`** (worktree `/bigtemp/vnr3ne/wt/gc-solr`, image `/bigtemp/vnr3ne/vm-force5/j2sdk-image`):
-  everything gated so far (TODO Solr §0). Canaries on it (SG2c): solr-18406, solr-18413, solr-bugs-migrate-buffer-leak
-  SAT, confirmed, native 10/10, FORCED_TARGET.
-- **Branches in flight, merge order** (TODO Solr §1; `solr-body` 873fdaa20 and `solr-study` 01eda3dc0 (force2 + the
-  Root:WAKE rule + D1b + admitted reach + lambda deciders) merged 2026-10-11/12; `solr-zk-state` (Z1) 184995cdb merged 2026-10-12): superseded: `solr-force2` aefd699c2 (loop bound, way guard, passable asserts; canaries PASS), `solr-zk-state` e97464d7d (Z1:
-  ZooKeeper store versions and provenance; not ready: the read-out cost on 18413), `solr-zk-doors` 6cbc40a93 (WIP: the
-  owner-priority ZooKeeper READ doors), `solr-zk2` 17aa4e7ee (Z2: stale cluster-state views; partial).
-- **Bug checks:** 3 done on `system/solr` (18406, 18413, migrate-buffer-leak); 3 SAT and confirmed on Z1 (overseer-lock-
-  leak and restore-construction native 10/10, reindex-cleanup native pending its rerun); 2 wait for Z2
-  (snapshot-no-active, tra-start-overwrite).
-- **Study checks:** none final; seeds of 10, 13, 19, 31, 39, 40 now reach their anchors on `solr-body`; SG2b's UNSATs of
-  07, 19 and 21 are void (cut before the anchor). New-bug candidates: 19's stale cluster property (F2V4), and the
-  external study's lost ZooKeeper watch (TODO Solr §2, the reason for the READ doors).
-- **Solr trees** (`~/lucene-solr-8_11`, now unshallowed): `gc/solr-body` 7e51565080, `gc/solr-zk-next` 53d81b09b1,
-  `gc/solr-zk-doors` eee0e1bd7a (unbuilt), `gc/solr-zk2` 914e56311a; `gc/solr-checks` 3bcca5029f is stale until the
-  final tree combines them (TODO Solr §4). Nothing is pushed to the fork yet.
-- **Agents' briefs and designs:** `/bigtemp/vnr3ne/analysis/solr-2026-10-08/`.
+- **`system/solr` `8bd4a0cfb` + this docs commit** (worktree `/bigtemp/vnr3ne/wt/gc-solr`, image
+  `/bigtemp/vnr3ne/vm-force5/j2sdk-image`): everything gated so far (TODO Solr §0): the study checks' engine fixes (force2,
+  Root:WAKE, D1b, admitted reach, lambda deciders), Z1 (ZooKeeper store state and provenance), the native realized order
+  (stable names, the claim's cone), the moved-member rule, the timed-wait door with GROW of unplanned invocations, the
+  GROW swap fix. Canaries on it pass native 10/10.
+- **Three branches in flight, merge in this order** (TODO Solr §1): `solr-zk-doors` 9f0b81058 (READ doors + R4; reviewed,
+  canaries PASS; left: lock-leak/restore/reindex canaries, then a full 40), `solr-explore2` fe8c7434f (EX; left: a review
+  re-check, the offline gate and live 07/21 convergence), `solr-zk2` 7023c526b WIP (Z2; left: 18413 SAT twice, tra's final
+  SAT + native, snapshot SAT, a re-check). `solr-sg3` 2ca18a2b5 is a dry-run integration of all three plus
+  `seed_replay_time_factor=130`; the final Solr tree `gc/solr-final` 86f762adb1 is merged and built against it (2 of 17
+  workloads run natively).
+- **Bug checks:** 6 of 8 with full evidence (SAT, confirmed, native 10/10, chain read in pre-readings): 18406, 18413,
+  migrate on system/solr; overseer-lock-leak, restore-construction, reindex-cleanup on Z1's code (round IZ1 + Z1's Y11;
+  reindex needed its workload's createAlias made tolerant). tra-start-overwrite: witness claimed live and CONFIRMED on
+  `solr-zk2` (Z2N) before the swap race (fixed) took the final verdict. snapshot-no-active: workload rewritten so a stale
+  Overseer view can exist; not yet SAT.
+- **Study checks:** none final. Their guards mostly read ZooKeeper cluster-state content (Z2), and 07/21/05/31/39 need
+  EX to converge; 09 needs the timed-wait door (merged) and EX; 40 the READ doors; 13 the final tree's workarounds.
+  Expected verdicts per case: `/bigtemp/vnr3ne/analysis/solr-2026-10-11/SG3-reading-checklist.md`.
+- **Solr trees** (`~/lucene-solr-8_11`, unshallowed): `gc/solr-final` 86f762adb1 (the final tree), built from
+  `gc/solr-zk-next` 22930889c8 + `gc/solr-zk-doors-r` 2346cafecd + `gc/solr-zk2-next` b2605b6bd7 + 13's workarounds.
+  Nothing pushed to the fork yet.
+- **Briefs, designs, notes:** `/bigtemp/vnr3ne/analysis/solr-2026-10-11/` (this session), `.../solr-2026-10-08/` (before).
 
 ## 0. The end state: two branches (owner 2026-10-06)
 
