@@ -907,7 +907,7 @@ public final class Corpus implements Arms.Rows {
         Set<String> values = new TreeSet<String>();
         for (ReadRow read : readsOf(sessionId, locationKey)) {
             if (read.observedVersion() == version) {
-                values.add(read.concreteValue());
+                values.add(String.valueOf(read.concreteValue()));
             }
         }
         return values;

@@ -2014,7 +2014,7 @@ public class ExploreTest {
         // session -> what WRITER writes at the guard's location
         String[] names = {"s-seed", "h-plus", "h-minus", "h-plus-again",
             "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
-            "u-five-again", "d-one", "d-two"};
+            "u-five-again", "u-unstated", "d-one", "d-two"};
         for (String name : names) {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
@@ -2054,7 +2054,8 @@ public class ExploreTest {
                 session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
             } else if (name.startsWith("u-")) {
                 session.expression("EXPR.00000000000000f2", mystery);
-                guardValue = name.startsWith("u-five") ? "5" : "7";
+                guardValue = name.startsWith("u-five") ? "5"
+                        : name.equals("u-unstated") ? null : "7";
             } else if (name.equals("s-seed")) {
                 session.constant("EXPR.00000000000000f2", "4");
             } else {
@@ -2101,6 +2102,8 @@ public class ExploreTest {
                     "a term that does not lower, observed 5 against 7"},
             {"u-five", "u-five-again", true,
                     "the same observed value of such a term"},
+            {"u-five", "u-unstated", false,
+                    "a read that states no value is another one"},
             {"d-one", "d-two", false,
                     "a constant four writers deep (no depth bound)"},
         };
