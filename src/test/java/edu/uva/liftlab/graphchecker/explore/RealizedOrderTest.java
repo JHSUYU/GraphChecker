@@ -166,6 +166,41 @@ public class RealizedOrderTest {
         }
     }
 
+    /**
+     * The sender of a message a cone context received joins the cone, one
+     * hop (solr-bugs-restore-construction: the RESTORE task whose
+     * state-update message the mint's turn applied, and whose wait the
+     * confirmed order held); a sender whose message no cone context
+     * received does not.
+     */
+    @Test
+    public void theSenderOfAMessageAConeContextReceivedJoinsTheCone() {
+        String task = "n|Root:OVERSEER_TASK#3";
+        String other = "n|Root:OVERSEER_TASK#9";
+        String tick = "n|Root:OVERSEER_STATE_UPDATE#6";
+        String client = "c|Root:CLIENT/x#1";
+        event(Kind.WAKE, task + "|run@0", "w0", 0, "task"); // running before
+        event(Kind.WAKE, other, "o0", 0, "other");           // running before
+        sent(Kind.SEND, task + "|run@0", "queue", 0, "task", "e7");
+        sent(Kind.SEND, other, "elsewhere", 0, "other", "e8");
+        sent(Kind.RECV, tick, "take", 0, "osu", "e7");       // the mint's input
+        event(Kind.WRITE, tick, "mint", 0, "root");
+        event(Kind.WAKE, task + "|run@0", "w1", 0, "task");
+        sent(Kind.RECV, client, "took", 0, "client", "e8");
+        event(Kind.WRITE, tick, "mint2", 0, "root");
+        event(Kind.WAKE, other, "o1", 0, "other");
+        Object[][] rows = {   // the cone's occurrences, the edges
+            {set(tick), list("mint<w1")},
+            {set(tick, client), list("mint<w1", "mint2<o1")},
+        };
+        for (Object[] row : rows) {
+            @SuppressWarnings("unchecked")
+            Set<String> cone = (Set<String>) row[0];
+            assertEquals(cone.toString(), row[1],
+                    edges(set("root"), set(tick), cone));
+        }
+    }
+
     @Test
     public void aTurnCountedRootIsEveryRoleButTheClients() {
         Object[][] rows = {

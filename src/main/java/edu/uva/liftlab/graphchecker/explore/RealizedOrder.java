@@ -66,8 +66,9 @@ import java.util.Set;
  *   fourteenth SEND, which some native runs never made);</li>
  *   <li>both events in contexts of the claim's cone: the contexts of the
  *   occurrences its moved roots are minted in, of the anchor, and of those
- *   CONFIRM's WIRE, STATE and ORDER rows name.  A WAKE elsewhere is timing
- *   the claim rests on nowhere (solr-18413 Y8: the client's
+ *   CONFIRM's WIRE, STATE and ORDER rows name, and of the senders of the
+ *   messages these received ({@link #withProducers}).  A WAKE elsewhere
+ *   is timing the claim rests on nowhere (solr-18413 Y8: the client's
  *   {@code RequestStatus.waitFor} polls and the other nodes' Overseer
  *   turns, held behind steps some native runs never made);</li>
  *   <li>the step in no turn-counted root ({@link #turnCounted}) but a
@@ -162,18 +163,19 @@ final class RealizedOrder {
      * The edges of {@code schedule}'s realized order from position {@code
      * from} on that a native run holds (class comment): {before, after}
      * pairs in schedule order, one per WAKE held, each event under its stable
-     * context; {@code minted} and {@code onCone} are the {@link #scope}s of
-     * the mints' and the cone's occurrences.
+     * context; {@code minted} and {@code occurrences} are the {@link
+     * #scope}s of the mints' and the cone's occurrences.
      */
     static List<ScheduleEvent[]> edges(List<ScheduleEvent> schedule,
                                        long from, Set<String> minted,
-                                       Set<String> onCone) {
+                                       Set<String> occurrences) {
         StableEventNames names = new StableEventNames();
         for (ScheduleEvent event : schedule) {
             if (event.kind() == ScheduleEvent.Kind.SEND) {
                 names.sent(event.context(), event.site(), event.endpoint());
             }
         }
+        Set<String> onCone = withProducers(schedule, occurrences);
         Set<String> running = new HashSet<String>();
         List<ScheduleEvent[]> edges = new ArrayList<ScheduleEvent[]>();
         Map<String, Integer> held = new HashMap<String, Integer>();
@@ -204,6 +206,34 @@ final class RealizedOrder {
             if (step(event)) latest = at;
         }
         return edges;
+    }
+
+    /**
+     * {@code scopes} and, one hop, the scope of each SEND a context in them
+     * received (paired by endpoint): the work whose message a cone
+     * occurrence took in is the claim's too (solr-bugs-restore-construction:
+     * the first RESTORE task's state-update message is what the mint's
+     * state-updater turn applied, and that task's wait is what the confirmed
+     * order held, natively 0/10 without it).
+     */
+    static Set<String> withProducers(List<ScheduleEvent> schedule,
+                                     Set<String> scopes) {
+        Map<String, String> senders = new HashMap<String, String>();
+        for (ScheduleEvent event : schedule) {
+            if (event.kind() == ScheduleEvent.Kind.SEND
+                    && !event.endpoint().isEmpty()) {
+                senders.putIfAbsent(event.endpoint(), scope(event.context()));
+            }
+        }
+        Set<String> cone = new HashSet<String>(scopes);
+        for (ScheduleEvent event : schedule) {
+            String sender = senders.get(event.endpoint());
+            if (event.kind() == ScheduleEvent.Kind.RECV && sender != null
+                    && scopes.contains(scope(event.context()))) {
+                cone.add(sender);
+            }
+        }
+        return cone;
     }
 
     /** {@code event} under its stable context; null when it has none. */
