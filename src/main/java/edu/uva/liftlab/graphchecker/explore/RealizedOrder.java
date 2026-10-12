@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.runtime.RecordingPlant;
 
 import java.io.IOException;
@@ -61,6 +62,13 @@ import java.util.Set;
  *   point of the world (solr-18413: a request handler's sixth and
  *   fourteenth SEND, which some native runs never made).</li>
  * </ul>
+ * Both events of an edge are named by their stable contexts ({@link
+ * StableEventNames}: without the frames' counts, each message hop its
+ * sender's first send of its site), the names the native run computes
+ * alike; an edge whose events have none is not held, for the same reason
+ * as a later count (solr-18413 IB1: a SPLIT request sent after a
+ * REQUESTSTATUS poll had another endpoint id natively, so a WAKE held behind
+ * the node work it started waited for an event no native run named, 0/10).
  * Each edge held is an {@code ORDER} row of scope {@value #SCOPE}, {@code
  * before} and {@code after} two events, which the native run's ScheduleLog
  * holds at admission.</p>
@@ -126,10 +134,17 @@ final class RealizedOrder {
     /**
      * The edges of {@code schedule}'s realized order from position {@code
      * from} on that a native run holds (class comment): {before, after}
-     * pairs in schedule order, one per WAKE held.
+     * pairs in schedule order, one per WAKE held, each event under its stable
+     * context.
      */
     static List<ScheduleEvent[]> edges(List<ScheduleEvent> schedule,
                                        long from) {
+        StableEventNames names = new StableEventNames();
+        for (ScheduleEvent event : schedule) {
+            if (event.kind() == ScheduleEvent.Kind.SEND) {
+                names.sent(event.context(), event.site(), event.endpoint());
+            }
+        }
         Set<String> running = new HashSet<String>();
         List<ScheduleEvent[]> edges = new ArrayList<ScheduleEvent[]>();
         Map<String, Integer> held = new HashMap<String, Integer>();
@@ -143,16 +158,28 @@ final class RealizedOrder {
             if (event.kind() == ScheduleEvent.Kind.WAKE && latest >= 0
                     && running.contains(event.context())) {
                 ScheduleEvent before = schedule.get(latest);
+                ScheduleEvent stableBefore = stable(before, names);
+                ScheduleEvent stableAfter = stable(event, names);
                 if (!before.context().equals(event.context())
                         && before.k() == 0
+                        && stableBefore != null && stableAfter != null
                         && latest > held.getOrDefault(event.context(), -1)) {
-                    edges.add(new ScheduleEvent[] {before, event});
+                    edges.add(new ScheduleEvent[] {stableBefore, stableAfter});
                     held.put(event.context(), latest);
                 }
             }
             if (step(event)) latest = at;
         }
         return edges;
+    }
+
+    /** {@code event} under its stable context; null when it has none. */
+    private static ScheduleEvent stable(ScheduleEvent event,
+                                        StableEventNames names) {
+        String context = names.context(event.context());
+        return context == null ? null : ScheduleEvent.of(event.seq(),
+                event.kind(), context, event.site(), event.k(),
+                event.occurrence(), event.endpoint());
     }
 
     /** Whether an event is a step: not the clock (a WAKE, a turn's END). */

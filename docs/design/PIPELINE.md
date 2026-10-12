@@ -2264,6 +2264,16 @@ names the call as the task plan does (`explore.PlantSites`: the input action's `
   - a later count is a loop's (a poll's, a retry's, one send per item), which natively runs
     another number of times.
 
+  Both events are named by their stable contexts (`contract.StableEventNames`, computed alike by
+  the plant's ScheduleLog): a context drops its frames' invocation counts (`@n`), and each message
+  hop is named by its sender's stable context and the send's site when that send was the sender's
+  first of its site; a hop of a later send (a loop's) has no stable name and an edge naming one is
+  not held. A producer endpoint id hashes the sender's counts, so a poll before a send renames all
+  the work it starts (solr-18413 IB1: the MIGRATE task polled REQUESTSTATUS three times in the
+  confirmed session and twice natively, its SPLIT request's work had another endpoint id, and a
+  client WAKE held behind that work waited for an event no native run made: 0/10 while every run
+  threw at the anchor).
+
   solr-bugs-restore-construction: a ZooKeeper session fault ends the Overseer, a new one runs the
   second RESTORE, and the client's next update routes on the restored collection while the old
   Overseer's first RESTORE task still waits for its replicas -- in the confirmed session that wait
