@@ -572,6 +572,24 @@ public final class RuntimeSelectedRegionFinalizer {
         return sites;
     }
 
+    /** Method -> the fields it reads on its own receiver: the {@code
+     *  field_read} edges the static pass marked {@link
+     *  SeedBackwardStaticAnalyzer#ON_RECEIVER}. */
+    public static Map<String, Set<String>> receiverReads(
+            Collection<Map<String, Object>> graph) {
+        Map<String, Set<String>> reads = new HashMap<>();
+        for (Map<String, Object> edge : graph) {
+            if ("field_read".equals(text(edge.get("kind")))
+                    && Boolean.TRUE.equals(edge.get(
+                            SeedBackwardStaticAnalyzer.ON_RECEIVER))) {
+                reads.computeIfAbsent(text(edge.get("method")),
+                        ignored -> new HashSet<>())
+                        .add(text(edge.get("fromCell")));
+            }
+        }
+        return reads;
+    }
+
     /** The call sites whose call stores a cell the scope map names: a
      *  WRITE_SITE that stores through a call ({@code declaredCallee}: a
      *  container's or an atomic's mutator), each with its cell. */

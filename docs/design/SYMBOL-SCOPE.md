@@ -761,8 +761,13 @@ reaches, to a fixed point:
     `runtime/RuntimeRegionPlanner#stampFieldOwners`: a field event's receiver, and the receiver of
     a call at a site that returns a field -- an unwoven accessor -- or mutates a field of its
     receiver -- a `WRITE_SITE`'s `declaredCallee` whose cell is not its carrier, an atomic's
-    `value`: `RuntimeSelectedRegionFinalizer#fieldAccessingCalls`), and apart what a reference field
-    held (`FIELD_REFERENTS`). A writer the recording saw access the field on other objects only than
+    `value`: `RuntimeSelectedRegionFinalizer#fieldAccessingCalls`), the receiver of each call into a
+    method that reads a field on its own receiver (the static pass marks such a `field_read` edge
+    `onReceiver`, `SeedBackwardStaticAnalyzer#onReceiver`; `RuntimeSelectedRegionFinalizer#receiverReads`),
+    whether or not the read's row was written -- a watch callback's rows before `MessageDoors#fetched`
+    names its occurrence are not (solr-adhoc-40 Z1D4: node2's aliases callback read its dispatch
+    wrapper's `watcher` unrecorded, so with no holder every wrapper construction on the node was its
+    writer, 97 of them ESCAPED) --, and apart what a reference field held (`FIELD_REFERENTS`). A writer the recording saw access the field on other objects only than
     the reader did is not crossed to (`DemandWalk#holdsOthersOnly`): the holders for a store, the
     holders and what they held for a mutation through the field (a container's or an atomic's
     state); a referent shared by a store's holders is no shared location (Solr: every lambda

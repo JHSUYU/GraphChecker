@@ -33,6 +33,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -303,7 +304,8 @@ public class RegionFoldPlanTest {
                         Collections.<RuntimeRegionPlanner.ProtocolEvent>
                                 emptyList(),
                         Collections.<String>emptySet(),
-                        Collections.<String, String>emptyMap());
+                        Collections.<String, String>emptyMap(),
+                        Collections.<String, Set<String>>emptyMap());
         Map<Object, Map<String, Object>> byRoot = new LinkedHashMap<>();
         for (Map<String, Object> activation : plan.runtimeInstances) {
             byRoot.put(activation.get("rootCallId"), activation);
@@ -319,6 +321,47 @@ public class RegionFoldPlanTest {
                 RuntimeSelectedRegionFinalizer.LAST_SEQ));
     }
 
+    /**
+     * A field a method reads on its own receiver is held by the receiver its
+     * call was recorded with, whether or not the read's row was written (a
+     * callback's rows before its occurrence is named are not): the first
+     * tick's read row names its receiver; the second wrote no row and holds
+     * the field on its call's receiver all the same; a field no method reads
+     * on its receiver gets no holder from a call.
+     */
+    @Test
+    public void aReceiverReadIsHeldByItsCallsReceiver() {
+        String field = "<o.a.h.BlockTokenSecretManager: long serial>";
+        String other = "<o.a.h.BlockTokenSecretManager: long keyUpdateInterval>";
+        List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
+        for (long tick = 1; tick <= 2; tick++) {
+            methods.add(entry(10 * tick, TICK, 0L, "wl/nn0#epoch0/region/"
+                    + TICK_REGION + "/ctx:Root:TICK#" + tick, false));
+        }
+        RuntimeRegionPlanner.Result plan =
+                RuntimeRegionPlanner.planSkeletonGraph(skeletons(), methods,
+                        Collections.<RuntimeRegionPlanner.RuntimeEvent>
+                                emptyList(),
+                        Collections.singletonList(
+                                new RuntimeRegionPlanner.FieldAccessEvent(11L,
+                                        "FIELD_READ", TICK, 10L, 3, "", field,
+                                        1, 0, "7")),
+                        Collections.<RuntimeRegionPlanner.ProtocolEvent>
+                                emptyList(),
+                        Collections.<String>emptySet(),
+                        Collections.<String, String>emptyMap(),
+                        Collections.singletonMap(TICK,
+                                Collections.singleton(field)));
+        for (Map<String, Object> activation : plan.runtimeInstances) {
+            Map<?, ?> owners = (Map<?, ?>) activation.get(
+                    RuntimeSelectedRegionFinalizer.FIELD_OWNERS);
+            assertEquals("tick " + activation.get("rootCallId"),
+                    Collections.singleton(1), owners.get(field));
+            assertFalse(owners.containsKey(other));
+        }
+        assertEquals(2, plan.runtimeInstances.size());
+    }
+
     /** The activations the fixture's recording planned. */
     private static RuntimeRegionPlanner.Result activations(
             List<RuntimeRegionPlanner.MethodEvent> events) {
@@ -327,7 +370,8 @@ public class RegionFoldPlanTest {
                 Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
                 Collections.<String>emptySet(),
-                Collections.<String, String>emptyMap());
+                Collections.<String, String>emptyMap(),
+                        Collections.<String, Set<String>>emptyMap());
     }
 
     /** The fixture's finalized closure over those activations. */
@@ -580,7 +624,8 @@ public class RegionFoldPlanTest {
                 Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
                 Collections.<String>emptySet(),
-                Collections.<String, String>emptyMap());
+                Collections.<String, String>emptyMap(),
+                        Collections.<String, Set<String>>emptyMap());
     }
 
     /**

@@ -81,6 +81,9 @@ public final class RuntimeRegionPlanner {
      *     receiver ({@link RuntimeSelectedRegionFinalizer
      *     #fieldAccessingCalls}): the receiver owns that field ({@link
      *     #stampFieldOwners})
+     * @param receiverReads method -> the fields it reads on its own
+     *     receiver ({@link RuntimeSelectedRegionFinalizer#receiverReads}):
+     *     a call's receiver owns them ({@link #stampFieldOwners})
      */
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
@@ -88,7 +91,8 @@ public final class RuntimeRegionPlanner {
                                     List<FieldAccessEvent> fieldEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites,
-                                    Map<String, String> fieldCalls) {
+                                    Map<String, String> fieldCalls,
+                                    Map<String, Set<String>> receiverReads) {
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
@@ -172,7 +176,8 @@ public final class RuntimeRegionPlanner {
         stampActivationContainment(activationByCall, trace);
         stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
                 trace);
-        stampFieldOwners(activationByCall.values(), trace, fieldCalls);
+        stampFieldOwners(activationByCall.values(), trace, fieldCalls,
+                receiverReads);
         stampSignatures(activationByCall.values(), trace);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
@@ -185,7 +190,14 @@ public final class RuntimeRegionPlanner {
      * #FIELD_OWNERS}): each field access's receiver (a static field's
      * names none, {@code 0}) and the receiver of each call at a site that
      * returns a field (an unwoven accessor) or mutates one (an atomic's
-     * value); and apart, the objects a reference field held ({@link
+     * value), and the receiver of each call into a method that reads a
+     * field on its own receiver ({@code receiverReads}), whether or not its
+     * read's row was written: a callback's rows before its occurrence is
+     * named are not ({@code CausynthTraceRecorder#written}; solr-adhoc-40
+     * Z1D4: node2's aliases callback read its dispatch wrapper's {@code
+     * watcher} unrecorded, and with no holder every wrapper construction on
+     * the node was its writer); and apart, the objects a reference field
+     * held ({@link
      * RuntimeSelectedRegionFinalizer#FIELD_REFERENTS}), whose state a
      * mutation through the field writes.  And every object its events name
      * ({@link RuntimeSelectedRegionFinalizer#NAMED_OBJECTS}): the receivers
@@ -194,7 +206,8 @@ public final class RuntimeRegionPlanner {
      */
     private static void stampFieldOwners(
             Collection<Map<String, Object>> activations, TraceIndex trace,
-            Map<String, String> fieldCalls) {
+            Map<String, String> fieldCalls,
+            Map<String, Set<String>> receiverReads) {
         for (Map<String, Object> activation : activations) {
             Map<String, Set<Integer>> owners = new HashMap<>();
             Map<String, Set<Integer>> referents = new HashMap<>();
@@ -202,7 +215,17 @@ public final class RuntimeRegionPlanner {
             for (Long call : MapFields.longValues(
                     activation.get("callIds"))) {
                 MethodEvent entered = trace.methodByCall.get(call);
-                if (entered != null) named.add(entered.objectId);
+                if (entered != null) {
+                    named.add(entered.objectId);
+                    for (String field : entered.objectId == 0
+                            ? Collections.<String>emptySet()
+                            : receiverReads.getOrDefault(entered.method,
+                                    Collections.<String>emptySet())) {
+                        owners.computeIfAbsent(field,
+                                ignored -> new HashSet<>())
+                                .add(entered.objectId);
+                    }
+                }
                 for (FieldAccessEvent event : trace.fieldsByCall.getOrDefault(
                         call, Collections.<FieldAccessEvent>emptyList())) {
                     named.add(event.receiverObjectId);

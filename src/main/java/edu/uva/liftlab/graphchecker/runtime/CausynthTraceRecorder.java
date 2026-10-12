@@ -1627,7 +1627,8 @@ public final class CausynthTraceRecorder {
                         entries, Collections.emptyList(),
                         Collections.emptyList(), Collections.emptyList(),
                         Collections.<String>emptySet(),
-                        Collections.<String, String>emptyMap());
+                        Collections.<String, String>emptyMap(),
+                        Collections.<String, Set<String>>emptyMap());
         if (exercised.staticRegionCount == 0
                 || exercised.runtimeInstances.isEmpty()) {
             throw new IOException("NO_REGION_ACTIVATION: the recording "
@@ -1658,7 +1659,8 @@ public final class CausynthTraceRecorder {
                 RuntimeRegionPlanner.planSkeletonGraph(
                         skeletons, trace.methods,
                         trace.execution, trace.fields, trace.protocol,
-                        declaredSites(scopeMap), fieldCalls);
+                        declaredSites(scopeMap), fieldCalls,
+                        RuntimeSelectedRegionFinalizer.receiverReads(graph));
         Set<String> observedMethods = new LinkedHashSet<>();
         for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
             observedMethods.add(event.method);
