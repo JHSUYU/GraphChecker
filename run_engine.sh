@@ -6139,7 +6139,9 @@ campaign_stream_manifest() {
 # deferred some -- an earlier round's deferral is work the rounds after it
 # read first, and a fixed point defers none -- and the world depth a round
 # cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
-# bound in their subject; the tasks one anchor's closure plans (region_path_max_tasks:
+# bound in their subject; the older decodes one read of a node's view is offered
+# as pairing flips (pairing_flip_per_read, PairingFlip's pairing-bound rows); the
+# tasks one anchor's closure plans (region_path_max_tasks:
 # the last round's `truncated`, as campaign_stream_truncation judges it, since
 # a later round plans what an earlier one left); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
@@ -6169,6 +6171,7 @@ explore_manifest.json 2>/dev/null) \
       | bound($bound)];
     [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
+    | rows("pairing-bound") as $pairing
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
     | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]
@@ -6185,6 +6188,11 @@ explore_manifest.json 2>/dev/null) \
             detail: ("\($depth | length) task round(s) cut from no path"
               + " in a world deeper than"
               + " \($depth[0].subject | sub(".* "; ""))")}),
+        (select(($pairing | length) > 0)
+         | {by: "pairing_flip_per_read",
+            detail: ("\($pairing | length) read(s) of a node'"'"'s view offered"
+              + " only the \($pairing[0].subject | sub(".*="; "")) newest of"
+              + " the older decodes before it")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"

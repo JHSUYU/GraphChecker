@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.compose.ComposeMain;
 import edu.uva.liftlab.graphchecker.compose.Refutations;
 import edu.uva.liftlab.graphchecker.compose.RestsOn;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
@@ -1647,9 +1648,11 @@ public final class ConfirmMain {
 
     /** The writer a STATE row names: its endpoint as {@link Confirmation#id}
      *  names it, or {@link Confirmation#INITIAL}, which no occurrence
-     *  wrote. */
+     *  wrote, or a view's version ({@link Confirmation#viewWriter}). */
     static String writer(WriteRow write) {
         return write.initial() ? Confirmation.INITIAL
+                : write.location().kind() == LocationKind.VIEW
+                ? Confirmation.viewWriter(write.version())
                 : Confirmation.id(write.endpoint());
     }
 

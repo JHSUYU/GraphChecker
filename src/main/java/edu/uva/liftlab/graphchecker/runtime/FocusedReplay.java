@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -387,6 +388,38 @@ public final class FocusedReplay {
                 + obligation.flippedOutcome());
     }
 
+    /**
+     * A read of a node's view ({@code RowRuntime#viewRead}): a pairing flip
+     * whose read it is ({@link Obligation#pairedReader}, as CONFIRM names
+     * its endpoint) is taken where it observed the version the flip asks,
+     * and refused -- PAIRING_UNTAKEN, the version it saw -- where it observed
+     * another.  Its first read decides.
+     */
+    static void viewRead(Endpoint reader, long version) {
+        load();
+        if (task == null || reader == null) return;
+        String id = Confirmation.id(reader);
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                String asked = trimmed(obligation.obligationId());
+                if (!obligation.pairing()
+                        || !obligation.pairedReader().equals(id)
+                        || REFUSALS.containsKey(asked)
+                        || FLIPPED.contains(asked)) {
+                    continue;
+                }
+                if (version == obligation.ordinal()) {
+                    FLIPPED.add(asked);
+                } else {
+                    REFUSALS.put(asked, PAIRING_UNTAKEN + ": read " + id
+                            + " observed version " + version + " of its"
+                            + " view, the pairing flip asks version "
+                            + obligation.ordinal());
+                }
+            }
+        }
+    }
+
     /** Obligation id -> the occurrence id its flip is addressed at. */
     private static final Map<String, String> FOCUS =
             new LinkedHashMap<String, String>();
@@ -616,7 +649,11 @@ public final class FocusedReplay {
                 }
                 results.add(unstated.isEmpty()
                         ? ObligationResult.of(id, Verdict.ADMITTED,
-                                sessionId, obligation.flips()
+                                sessionId, obligation.pairing()
+                                ? "the focused prefix reproduced and read "
+                                + obligation.pairedReader() + " took version "
+                                + obligation.ordinal() + " of its view"
+                                : obligation.flips()
                                 ? "the focused prefix reproduced and "
                                 + trimmed(obligation.siteId()) + "#"
                                 + obligation.ordinal() + " took "
@@ -980,6 +1017,12 @@ public final class FocusedReplay {
                                     : "ordinal") + ", so this replay cannot"
                                     + " be held to the world it was cut"
                                     + " from");
+                            continue;
+                        }
+                        // A pairing flip the world holds is a pairing of
+                        // this row's, compared as one (Confirmation).
+                        if (Obligation.pairing(optionalString(carried,
+                                "siteId"))) {
                             continue;
                         }
                         String at = optionalString(carried,

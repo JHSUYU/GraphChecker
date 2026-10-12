@@ -113,7 +113,7 @@ final class ForcedFlip {
             // deletion is decided on (PIPELINE §7.10).
             if (flipAnswered && candidate.task.taskId().equals(
                     anchor.taskId()) && seed.equals(candidate.path.sessionId)
-                    && sites.contains(candidate.decision.siteId())
+                    && sites.contains(candidate.siteId())
                     && frontier.settled(candidate.obligationId).isEmpty()
                     && !frontier.flying(candidate)) {
                 after++;

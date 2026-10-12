@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -594,6 +595,9 @@ final class FlipQuery {
         private Built inheritedFlips(DecisionRow flipped) {
             for (Corpus.Flip inherited
                     : corpus.world(path.sessionId).flips) {
+                // A pairing flip is no decision: the world's pairing holds
+                // it (ConfirmMain#holding).
+                if (Obligation.pairing(inherited.siteId)) continue;
                 OccurrenceAddress at =
                         corpus.occurrence(inherited.focusedOccurrenceId);
                 if (at == null) {

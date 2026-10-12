@@ -257,6 +257,24 @@ public final class Confirmation {
                         + chosen.producer + " at another address" : "");
     }
 
+    /**
+     * The writer a STATE row names for a node's decode of {@code version}
+     * of a view (LocationKind.VIEW): decodes in work outside every selected
+     * region share one endpoint, so a view's writer is its version.
+     */
+    public static String viewWriter(long version) {
+        return "VIEW@" + version;
+    }
+
+    /** A node's decode re-pointed its view to {@code version}. */
+    static void wroteView(LocationId view, long version) {
+        if (!expected() || view == null) return;
+        synchronized (LOCK) {
+            ranOn();
+            WROTE.put(key(view, version), viewWriter(version));
+        }
+    }
+
     static void wrote(LocationId location, long version, Endpoint writer,
                       boolean initial) {
         if (!expected() || location == null || writer == null) return;

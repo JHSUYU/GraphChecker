@@ -620,7 +620,7 @@ public final class RowRuntime {
         WRITTEN.add(Confirmation.key(view, version));
         session.write(WriteRow.of(sessionId(), sequence(seq), at, view,
                 version, expressionRef(value), "J"));
-        Confirmation.wrote(view, version, at, false);
+        Confirmation.wroteView(view, version);
     }
 
     /**
@@ -640,6 +640,7 @@ public final class RowRuntime {
                 version, "V_" + ArtifactIO.digest(at.id(), 16), "J",
                 Long.toString(version)));
         Confirmation.read(at, view, version, ReadRow.UNKNOWN_VERSION);
+        FocusedReplay.viewRead(at, version);
     }
 
     /** seq|location of every store read stated, seq|view|version of every

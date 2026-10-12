@@ -6047,6 +6047,65 @@ public class ExploreTest {
 
     /** One session of a synthetic corpus, written in the contract's layout. */
     /**
+     * THE PAIRING FLIP's candidates ({@link PairingFlip}): the anchor's task
+     * offers each older decode of its node's view to its earliest read of
+     * the view -- here one its node made under its causal context in role
+     * work before it opened --, newest first, at most {@link
+     * PairingFlip#PER_READ}, the rest a counted {@code pairing-bound} gap; a
+     * task that is no anchor's and writes no store version offers none.
+     */
+    @Test
+    public void aViewReadIsOfferedEachOlderDecodeOfItsNode()
+            throws Exception {
+        for (boolean anchor : new boolean[] {true, false}) {
+            Path iteration = tree.newFolder("pairing-" + anchor).toPath();
+            LocationId view = LocationId.of(LocationKind.VIEW,
+                    "SOLR_ZK@hdfs-case/dn0#epoch0", "/aliases.json");
+            OccurrenceAddress role = OccurrenceAddress.of(TARGET.node(),
+                    OccurrenceAddress.ROLE_REGION + "DATA_XCEIVER",
+                    TARGET.context(), ExecutionIndex.empty());
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            Endpoint decoder = at(WRITER, "SOLR_ZK#VIEW:.aliases.json",
+                    "decode#1");
+            for (long version = 0L; version <= 10L; version++) {
+                seed.write(decoder, view, version, "", "J");
+            }
+            seed.read(at(role, "SOLR_ZK#VIEWED:|aliases.json#VIEW",
+                    "getAliases#1"), view, 10L, "V_p", "10");
+            seed.read(at(TARGET, "Guard#u3#VIEW",
+                    "o.a.h.h.s.d.DataXceiver#run#12"), view, 10L, "V_t",
+                    "10");
+            seed.decision(TARGET, "Guard#u8", 1, false, "(= M_A 1)");
+            if (anchor) seed.target(TARGET, "Guard#u8", "(= M_A 1)");
+            seed.flush();
+            Corpus corpus = Corpus.read(iteration, null);
+            Task task = Task.of("T", TARGET,
+                    Collections.<OccurrenceAddress>emptyList(), "s-seed");
+            List<GapRow> gaps = new ArrayList<GapRow>();
+            List<ObligationFactory.Candidate> offered =
+                    PairingFlip.candidates(corpus, task,
+                            corpus.pathsOf(TARGET).get(0), gaps);
+            if (!anchor) {
+                assertTrue("no anchor's, no store write: " + offered,
+                        offered.isEmpty());
+                continue;
+            }
+            assertEquals(PairingFlip.PER_READ, offered.size());
+            assertEquals(9, offered.get(0).ordinal());
+            assertEquals(2, offered.get(PairingFlip.PER_READ - 1).ordinal());
+            assertEquals(role, offered.get(0).pairedRead.endpoint()
+                    .occurrence());
+            assertTrue(offered.get(0).pairing()
+                    && offered.get(0).flippedOutcome()
+                    && Obligation.pairing(offered.get(0).siteId()));
+            assertEquals(1, gaps.size());
+            assertEquals("T pairing-bound=" + PairingFlip.PER_READ,
+                    gaps.get(0).subject());
+        }
+    }
+
+    /**
      * A corpus read again (a host's solver, after a landing) takes each
      * session the read before holds and the iteration still lists as it
      * is, unread: a landed session never changes.  A session that landed is

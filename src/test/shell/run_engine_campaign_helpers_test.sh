@@ -265,7 +265,7 @@ echo '{"truncated": 4}' \
 echo '{"truncated": 2}' \
   >"${emit_iteration}/obligations-0001/explore_manifest.json"
 for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
-    'T max-flips-per-path=4'; do
+    'T max-flips-per-path=4' 'T pairing-bound=8'; do
   jq -n -c --arg subject "${subject}" '{schemaVersion: 1,
     sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
     subject: $subject, detail: "cut"}'
@@ -279,7 +279,8 @@ done
 run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
-    "region_path_max_tasks", "schedule_max_jobs", "campaign_max_claims"]
+    "pairing_flip_per_read", "region_path_max_tasks", "schedule_max_jobs",
+    "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 occ"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \

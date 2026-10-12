@@ -733,6 +733,25 @@ each arm once per task round. The planner builds no query;
 an arm in flight is held by its flip (`ObligationFactory#flip`, §7.3), the first half of its
 question.
 
+**The pairing flip** (`explore.PairingFlip`, SYMBOL-SCOPE §6.4): a read of a node's VIEW of a
+store location takes an older decode of that node. A node decides on whichever decode its view held,
+and what a stale view changes is often no value a term names (a key an older document lacks, a
+replica a loop skips), so no decision's flip reaches it. A task offers pairing flips where its
+occurrence writes a STORE version or is the declared anchor's: for each view its occurrence read, or
+its node read under its causal context in role work before it opened (a routed alias captures its
+view in the request's role work and writes it in a store door's region), its earliest read is
+offered each older version the node decoded before it in the session, newest first, at most
+`PairingFlip#PER_READ` (8); past them a `pairing-bound` gap, counted in result.json `bounded`
+(`pairing_flip_per_read`). Its site is `PAIRING:<reader>` (`Obligation#PAIRING`, the read as CONFIRM
+names its endpoint), its ordinal the version, its outcome taken, its dependence constant; it counts
+as a flip of the world (depth) and among a path's owed arms. No query is asked: the path is the one
+its session ran, up to the read, and the world is that session's with the read paired to the decode
+of the asked version (a view's writer is its version, `Confirmation#viewWriter`), held by CONFIRM's
+rows (`ConfirmMain#holding`). The replay takes it where the read observed that version
+(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw, and a read
+that never ran leaves its occurrence unflipped (the prefix abandoned). A child inherits the pairing
+as a pairing of its world, never as a decision to take.
+
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
 The obligations of an exploration that run on one host are answered by ONE solver JVM there
