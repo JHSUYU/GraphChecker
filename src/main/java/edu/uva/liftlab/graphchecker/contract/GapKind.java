@@ -82,7 +82,7 @@ public enum GapKind {
      */
     TASK_UNANSWERED,
     /**
-     * An address a run did not reproduce, DIAGNOSTIC, in one of three
+     * An address a run did not reproduce, DIAGNOSTIC, in one of four
      * places.  EXPLORE ({@code explore.ExploreMain}): one planned task
      * answered at two addresses across the corpus, its subject the task id
      * -- arms answered at one address settle nothing at the other; the
@@ -94,6 +94,9 @@ public enum GapKind {
      * runtime.Confirmation#attached}): a delivery into the anchor came from
      * a producer at another address than the model's that answers the
      * model's producer's question, its subject the consumer endpoint.
+     * EXPLORE's reconciliation ({@code explore.SlotTable#contextChanged}):
+     * a closure member a replay ran under its own context on another node,
+     * its subject the member -- moved by the world, never a replacement.
      */
     ADDRESS_UNSTABLE,
     /** The solver gave no answer in the time it was given. */
