@@ -612,6 +612,85 @@ public class ConfirmationTest {
     }
 
     /**
+     * A watch's refresh is held as a decode of the newest version it can
+     * reach: the newest a write filed at the location, one more per write
+     * in flight there.  None past the paired version: it goes on; a write in
+     * flight that would make one: it waits (round Z2O: held as reaching past
+     * every version, a collection's creation held its node's watch for the
+     * order's timeout).
+     */
+    @Test
+    public void aWatchsRefreshIsHeldOnlyWhereItCanReachPastThePairing()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
+                "auto0/node0", 0);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, node);
+        java.util.concurrent.CountDownLatch held =
+                new java.util.concurrent.CountDownLatch(1);
+        long[] took = new long[2];
+        Thread watch = new Thread(() -> {
+            long scope = RuntimeTraceContext.beginRequest(node, "watch");
+            try {
+                held.await();
+                long started = System.nanoTime();
+                MessageDoors.refreshing("SOLR_ZK", "/reach/state.json");
+                took[0] = System.nanoTime() - started;
+                long write = MessageDoors.storing("SOLR_ZK",
+                        "/reach/state.json");
+                Thread refresh = new Thread(() -> {
+                    long inner = RuntimeTraceContext.beginRequest(node,
+                            "watch2");
+                    long begun = System.nanoTime();
+                    MessageDoors.refreshing("SOLR_ZK", "/reach/state.json");
+                    took[1] = System.nanoTime() - begun;
+                    RuntimeTraceContext.endRequest(inner);
+                });
+                refresh.start();
+                refresh.join(5000L);
+                MessageDoors.storeEnded("SOLR_ZK", write);
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+            } finally {
+                RuntimeTraceContext.endRequest(scope);
+            }
+        });
+        watch.start();
+        for (int version = 0; version <= 3; version++) {
+            MessageDoors.stored("SOLR_ZK", "/reach/state.json@" + version,
+                    owner, null);
+        }
+        long hop = RuntimeTraceContext.beginRequest(node, "read");
+        try {
+            OccurrenceAddress reader = Identity.occurrence(node.key(),
+                    "REGION.reader", true);
+            LocationId view = MessageDoors.viewOf(MessageDoors.storeLocation(
+                    "SOLR_ZK", "/reach/state.json"), reader);
+            Confirmation.resetForTests();
+            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                    + "\"view\":\"" + Confirmation.viewKey(view) + "\","
+                    + "\"above\":3,\"readerContext\":\""
+                    + Confirmation.contextKey(reader) + "\",\"until\":\""
+                    + Endpoint.activation(reader, ExecutionIndex.empty())
+                    + "\"}"));
+            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+            held.countDown();
+            watch.join(5000L);
+            assertTrue("reaching version 3 at most, it went on: " + took[0],
+                    took[0] < 200_000_000L);
+            assertTrue("with a write in flight it could reach 4, and waited: "
+                    + took[1], took[1] >= 250_000_000L);
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+            RuntimeTraceContext.endRequest(hop);
+            Identity.resetForTests();
+        }
+    }
+
+    /**
      * A view hold whose reader read in role work, which no hook closes, ends
      * at the first region that work closes after the read, in the run as it
      * goes: a region of its context closing before the read ends nothing.

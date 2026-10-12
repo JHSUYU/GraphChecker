@@ -967,8 +967,8 @@ decodes run in work no activation hook holds -- watch deliveries, request handle
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
 before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`; an on-demand
 watch's refresh waits at its start, before the adapter's lock, `MessageDoors#refreshing`, as a decode
-of the newest version a write filed at the location, or past every version while a write is in
-flight there, so a refresh that can reach no version past the paired one goes on; the system's own
+of the newest version a write filed at the location and one more per write in flight there, so a
+refresh that can reach no version past the paired one goes on; the system's own
 refresh -- Solr's `forceUpdateCollection`, a lazy collection's fetch, `MessageDoors#refreshStarting`
 -- reads the store as it stands and is never held, since holding one on the program's way holds the
 reader's work too: one that brings a version past the paired one leaves the pairing untaken), until the reader's

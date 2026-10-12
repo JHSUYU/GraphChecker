@@ -739,8 +739,10 @@ public final class MessageDoors {
      * as a decode of the newest version the refresh can reach would ({@code
      * Confirmation#decoding}), so a held refresh never holds a lock the
      * reader's own work may need.  That is the newest version a write filed
-     * there, or past every version while a write is in flight at it; a
-     * refresh that can reach no version past the paired one goes on.
+     * there and one more per write in flight at it (a store's version counts
+     * its writes); a refresh that can reach no version past the paired one
+     * goes on (round Z2O: past every version while a write was in flight, a
+     * collection's creation held its node's watch for the order's timeout).
      */
     public static void refreshing(String transport, String path) {
         boolean paused = pause();
@@ -748,12 +750,14 @@ public final class MessageDoors {
             String node = nodeHere();
             OccurrenceAddress at = Identity.currentOccurrence(node);
             String location = trimmed(path);
+            // Each write of the location makes the next version (a store's
+            // version counts its writes): the newest filed, and one more per
+            // write in flight there.
             long reach;
             synchronized (STORING) {
-                reach = inFlight(transport, location,
-                        Thread.currentThread()).isEmpty()
-                        ? NEWEST.getOrDefault(transport + "\n" + location, -1L)
-                        : Long.MAX_VALUE;
+                reach = NEWEST.getOrDefault(transport + "\n" + location, -1L)
+                        + inFlight(transport, location,
+                        Thread.currentThread()).size();
             }
             Confirmation.decoding(viewOf(storeLocation(transport, location),
                     at), reach, at);

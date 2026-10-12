@@ -570,10 +570,8 @@ public final class Confirmation {
                         // One unrealized hold is the run's answer; the
                         // decodes after it go on.
                         hold.gaveWay = true;
-                        UNREALIZED.add(hold.label() + ": the decode of "
-                                + (version == Long.MAX_VALUE
-                                ? "a version a write in flight makes"
-                                : "version " + version) + " waited " + timeout
+                        UNREALIZED.add(hold.label() + ": the decode of"
+                                + " version " + version + " waited " + timeout
                                 + " ms for " + hold.waitsFor() + " to exit,"
                                 + " which it did not, so this program cannot"
                                 + " realize the pairing");
