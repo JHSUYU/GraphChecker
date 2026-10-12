@@ -182,6 +182,8 @@ public final class ClosurePlanner {
                 }
             }
         }
+        start.predicate.addAll(storeReads(corpus, anchor, start.flipSites,
+                scope));
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
@@ -329,6 +331,44 @@ public final class ClosurePlanner {
         }
         return paths == 0 ? null
                 : new Concrete(paths, decided, reads, offCone);
+    }
+
+    /**
+     * The store versions the anchor read at its provenance sites before it
+     * decided, in each admitted path (SYMBOL-SCOPE §5.7), whether or not
+     * the anchor is concrete: a version's content is no value any term
+     * names, so a symbolic predicate's demand never reaches it, and what
+     * the guard read of a decoded object rests on that version all the
+     * same (solr-bugs-reindex-cleanup: the alias check reads the aliases a
+     * fetch parsed, beside the values it decides symbolically on).
+     */
+    private static Set<String> storeReads(Corpus corpus,
+                                          OccurrenceAddress anchor,
+                                          Set<String> flipSites,
+                                          StaticScopeMap scope) {
+        Set<String> symbols = new LinkedHashSet<String>();
+        for (TargetRow row : corpus.targetsOn(anchor)) {
+            SessionReader session = corpus.session(row.sessionId());
+            if (session == null || !session.admitted()) continue;
+            long at = row.reachedAnchor() ? row.seq() : 0L;
+            if (!row.reachedAnchor()) {
+                for (DecisionRow decision
+                        : corpus.decisionsOf(row.sessionId(), anchor)) {
+                    if (FlipQuery.asks(flipSites, decision)) {
+                        at = Math.max(at, decision.seq());
+                    }
+                }
+            }
+            for (ReadRow read : corpus.readsOn(row.sessionId(), anchor)) {
+                if (read.location().kind() == LocationKind.STORE
+                        && read.seq() < at && scope.demandedAt(
+                        read.endpoint().site(), read.javaType(),
+                        LocationKind.STORE)) {
+                    symbols.add(read.symbol());
+                }
+            }
+        }
+        return symbols;
     }
 
     /**
@@ -584,6 +624,12 @@ public final class ClosurePlanner {
         /** Doors said to decide no fault, once each ({@link
          *  #controlProducer}). */
         private final Set<String> faultless = new LinkedHashSet<String>();
+        /** The narrowings' cuts already named (occurrence, message, kind). */
+        private final Set<String> cut = new LinkedHashSet<String>();
+        /** session|store location -> the highest version whose earlier
+         *  versions' writers are demanded ({@link #earlierVersions}). */
+        private final Map<String, Long> storeExpanded =
+                new HashMap<String, Long>();
         /** occurrence id -> its group (it and its state-connected factor)
          *  and the group's reads: a demand is walked again each time it
          *  grows (hdfs-adhoc-07 EX1: 93 walks of 31 demands). */
@@ -752,7 +798,20 @@ public final class ClosurePlanner {
             }
         }
         statedReads(walk, demand, next);
-        controlProducer(walk, demand, next);
+        // A control producer contributes no value: whether its own message
+        // exists is no question of the anchor's (solr-18413 round Z7: the
+        // doors of every request and queue item behind the store writers'
+        // items, six hops deep, doubled the plan).
+        if (!CONTROL_PRODUCER.equals(demand.why)) {
+            controlProducer(walk, demand, next);
+        } else if (!walk.corpus.startedBy(demand.occurrence).isEmpty()
+                && walk.cut.add(demand.occurrence.id() + "|producer")) {
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    demand.occurrence.render(), "a control producer "
+                            + "contributes no value: the doors of the message"
+                            + " that started it are not asked"));
+        }
         return next;
     }
 
@@ -764,24 +823,51 @@ public final class ClosurePlanner {
     }
 
     /** A door of the message a demanded occurrence served -- its sender or
-     *  its receiver, paired via the message that started the served
-     *  occurrence ({@link Corpus#startedBy}: its ANCHOR, or what its turn
-     *  took in) -- joins as a control producer where a session recorded a
-     *  fault decision of it: it contributes no value, but that fault point
-     *  decides whether the message exists (IDENTITY §7.3), the door PLAN's
-     *  CONTROL_PRODUCER rule admits (it read a fault marker).  Any other
-     *  door -- run under no planned task (hdfs-adhoc-28's heartbeat tick, in
-     *  a scope with no IPC client door: it reads no marker), a role, or a
-     *  captured one that decided no fault -- has nothing that decides the
-     *  message: one DIAGNOSTIC row, never a member, never waited for. */
+     *  its receiver ({@link Corpus#doorsOf}), paired via the message that
+     *  started the served occurrence ({@link Corpus#startedBy}: its ANCHOR,
+     *  or each item its turn took in) -- joins as a control producer where a
+     *  session recorded a fault decision of it: it contributes no value,
+     *  but that fault point decides whether the message exists (IDENTITY
+     *  §7.3), the door PLAN's CONTROL_PRODUCER rule admits (it read a
+     *  fault marker).  Any other door -- run under no planned task
+     *  (hdfs-adhoc-28's heartbeat tick, in a scope with no IPC client door:
+     *  it reads no marker), a role, or a captured one that decided no
+     *  fault -- has nothing that decides the message: one DIAGNOSTIC row,
+     *  never a member, never waited for.  Only a value's occurrence asks:
+     *  a control producer's own message is not followed. */
     private static void controlProducer(Walk walk, Demand demand,
                                         List<Demand> next) {
         Corpus corpus = walk.corpus;
-        String endpoint = corpus.startedBy(demand.occurrence);
-        if (endpoint.isEmpty()) return;
-        for (OccurrenceAddress door : new OccurrenceAddress[] {
-                corpus.senderOf(endpoint), corpus.receiverOf(endpoint)}) {
-            if (door == null || door.equals(demand.occurrence)) continue;
+        for (String endpoint : corpus.startedBy(demand.occurrence)) {
+            doorsOf(walk, demand, endpoint, next);
+        }
+    }
+
+    /** {@link #controlProducer} over the doors of one message that started
+     *  the demanded occurrence. */
+    private static void doorsOf(Walk walk, Demand demand, String endpoint,
+                                List<Demand> next) {
+        Corpus corpus = walk.corpus;
+        Map<String, Integer> cut = new LinkedHashMap<String, Integer>();
+        List<OccurrenceAddress> doors = corpus.doorsOf(endpoint,
+                demand.occurrence, cut);
+        // Each narrowing names what it cut (counted, DIAGNOSTIC).
+        for (Map.Entry<String, Integer> each : cut.entrySet()) {
+            if (!walk.cut.add(demand.occurrence.id() + "|" + endpoint + "|"
+                    + each.getKey())) {
+                continue;
+            }
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    demand.occurrence.render(), each.getValue()
+                            + " occurrence(s) of " + (Corpus.OWN_TURN.equals(
+                            each.getKey()) ? "this occurrence's own turn"
+                            : "turns standing on the message (its handlers)")
+                            + " hold no door of message " + endpoint
+                            + " that started it: they are what it started"));
+        }
+        for (OccurrenceAddress door : doors) {
+            if (door.equals(demand.occurrence)) continue;
             if (walk.faulted(door)) {
                 next.add(new Demand(door, CONTROL_PRODUCER, false));
             } else if (walk.faultless.add(door.id())) {
@@ -1061,6 +1147,10 @@ public final class ClosurePlanner {
      * object, SYMBOL-SCOPE §5.5).</p>
      */
     private static void writers(Walk walk, ReadRow row, List<Demand> into) {
+        if (row.location().kind() == LocationKind.STORE) {
+            storeWriters(walk, row, into);
+            return;
+        }
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
                 row.location(), row.observedVersion(),
                 walk.map.carriersAt(row.endpoint().site(), row.javaType(),
@@ -1128,17 +1218,72 @@ public final class ClosurePlanner {
         }
     }
 
+    /**
+     * Who made the store version a demanded read observed (IDENTITY §7.2):
+     * the eligible row writers, as for any read -- a one-JVM cluster's nodes
+     * are one session, whose happens-before spans them, so no node limits
+     * them -- each with the earlier versions of the location it rests on
+     * ({@link #wrote}).  No static candidate: a store location is a path,
+     * which no site of the map stores.
+     */
+    private static void storeWriters(Walk walk, ReadRow row,
+                                     List<Demand> into) {
+        for (WriteRow write : walk.corpus.eligibleWrites(row.sessionId(),
+                SmtLowering.locationKey(row.location()),
+                row.observedVersion(), row.endpoint().occurrence())) {
+            wrote(walk, write, into);
+        }
+    }
+
+    /**
+     * The earlier versions of a store location a demanded version rests on:
+     * a store keeps one document per location, and each write modifies the
+     * one before it (Solr's state writer, its aliases, every compare-and-set
+     * write), the rule {@code RestsOn#closure} applies to every location.
+     * The writers are demanded once per session and location, below the
+     * first version asked ({@link Walk#storeExpanded}): every later one asked
+     * there is among them or above them.
+     */
+    private static void earlierVersions(Walk walk, WriteRow write,
+                                        List<Demand> into) {
+        String key = SmtLowering.locationKey(write.location());
+        Long first = walk.storeExpanded.putIfAbsent(write.sessionId() + "|"
+                + key, write.version());
+        if (first != null && first >= write.version()) return;
+        for (WriteRow earlier : walk.corpus.writesOf(write.sessionId(), key)) {
+            if (earlier.initial() || earlier.version() >= write.version()
+                    || first != null && earlier.version() < first) {
+                continue;
+            }
+            into.add(writer(walk, earlier));
+        }
+        if (first != null) {
+            walk.storeExpanded.put(write.sessionId() + "|" + key,
+                    write.version());
+        }
+    }
+
     /** One recorded write a demanded value may rest on: its writer, flipped
      *  at the guards of its method's write sites, contributing what it
-     *  wrote.  An INITIAL has no writer: no run decided it. */
+     *  wrote; a store version also rests on its location's earlier ones
+     *  ({@link #earlierVersions}).  An INITIAL has no writer: no run
+     *  decided it. */
     private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
         if (write.initial()) return;
+        into.add(writer(walk, write));
+        if (write.location().kind() == LocationKind.STORE) {
+            earlierVersions(walk, write, into);
+        }
+    }
+
+    /** The demand of one write's writer. */
+    private static Demand writer(Walk walk, WriteRow write) {
         Demand paired = new Demand(write.endpoint().occurrence(),
                 CLOSURE_MEMBER, false);
         paired.contributes(write.sessionId(), write.expressionRef(),
                 write.seq());
         paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
-        into.add(paired);
+        return paired;
     }
 
     /**

@@ -101,6 +101,15 @@ public final class StaticScopeMap {
     public static final String ROOT_SITE = "ROOT_SITE";
     public static final String DECLARED_SITE = "DECLARED_SITE";
     public static final String READ_SITE = "READ_SITE";
+    /**
+     * A read of a construction-only field the root demand chose ({@code
+     * causynth.RootDemand} PROVENANCE), or a call into the system out of
+     * scope it chose (SCOPE) on a receiver: no replay versions it; a replay
+     * observes which version of a shared store the object read or called
+     * was decoded from, and states that read (runtime.Provenance, IDENTITY
+     * §7.2).
+     */
+    public static final String PROVENANCE_SITE = "PROVENANCE_SITE";
 
     /** {@code declaredKind}: a field accessor's return; its cell is the field.
      */
@@ -739,6 +748,21 @@ public final class StaticScopeMap {
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
                     unitIndex, clocks, configCalls, demand, regionRoots);
+            // A call into the system out of the scope the demand chose rests
+            // on its receiver's state: a decoded object's is the store
+            // version it was parsed from, observed at the call.
+            if (CALL_RETURN_KIND.equals(kind) && chosen(demand.at(
+                    SiteId.of(method, unitIndex), text(edge.get("fromCell"))),
+                    SCOPE_DEMAND) && !text(edge.get("invoke")).isEmpty()) {
+                addProvenance(found, seen, retained, new Site(PROVENANCE_SITE, "",
+                        SiteId.of(method, unitIndex), vmSite(method),
+                        text(edge.get("fromCell")), "", "",
+                        text(edge.get("invoke")), "", null, NO_GUARDS,
+                        NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS, "",
+                        false, false, "", distance(demand.at(SiteId.of(
+                                method, unitIndex), text(edge.get(
+                                "fromCell")))), false));
+            }
             String field = field(edge);
             if (READ_KINDS.contains(kind)) {
                 SharedFieldFlow.TrackedKind tracked =
@@ -754,6 +778,33 @@ public final class StaticScopeMap {
                 // Configuration.CACHE_CLASSES and REGISTRY, WeakHashMaps no
                 // model knows, took the DataNode startup region from 13 to
                 // 262 recorded decisions).
+                // A construction-only field the demand chose: the read of a
+                // decoded object's, observed by which store version the
+                // object holds, at the read's own site.
+                if (chosen(mark, PROVENANCE_DEMAND)) {
+                    addProvenance(found, seen, retained, new Site(PROVENANCE_SITE, "",
+                            siteId, vmSite(method), field, field, "",
+                            ACCESSOR_READ.equals(kind)
+                                    ? text(edge.get("invoke")) : "", "",
+                            null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
+                            NO_CHAIN, NO_CALLERS, "", staticField.test(field),
+                            false, "", distance(mark), false));
+                    continue;
+                }
+                // A decoded object's container, or a construction-only
+                // field a region stores: tracked by its state, and observed
+                // for the store version its holder was parsed from.
+                if ((tracked == SharedFieldFlow.TrackedKind.CONTAINER
+                        || constructionOnly.test(field))
+                        && chosen(mark, TRACKED_DEMAND)) {
+                    addProvenance(found, seen, retained, new Site(
+                            PROVENANCE_SITE, "", siteId, vmSite(method),
+                            field, field, "", ACCESSOR_READ.equals(kind)
+                                    ? text(edge.get("invoke")) : "", "",
+                            null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS,
+                            NO_CHAIN, NO_CALLERS, "", staticField.test(field),
+                            false, "", distance(mark), false));
+                }
                 if (tracked != SharedFieldFlow.TrackedKind.NONE
                         && (tracked != SharedFieldFlow.TrackedKind.CONTAINER
                         && deciding.contains(text(edge.get("toCell")))
@@ -893,6 +944,15 @@ public final class StaticScopeMap {
      *  chosen read of one is a {@link #READ_SITE}. */
     private static final Set<String> TRACKED_DEMAND = new LinkedHashSet<>(
             Arrays.asList("TRACK", "TRACK_IDENTITY", "TRACK_CONTAINER"));
+    /** The root demand's class of a construction-only field: a chosen read
+     *  of one is a {@link #PROVENANCE_SITE}. */
+    private static final Set<String> PROVENANCE_DEMAND =
+            Collections.singleton("PROVENANCE");
+    /** The root demand's class of a call into the system out of scope: a
+     *  chosen one's receiver is observed (a PROVENANCE_SITE at the call). */
+    private static final Set<String> SCOPE_DEMAND =
+            Collections.singleton("SCOPE");
+    private static final String CALL_RETURN_KIND = "call_return";
 
     private static boolean chosen(Demanded mark, Collection<String> kinds) {
         return mark != null && mark.chosen && kinds.contains(mark.kind);
@@ -1345,6 +1405,21 @@ public final class StaticScopeMap {
         }
     }
 
+    /**
+     * A {@link #PROVENANCE_SITE}, in every region holding its method, else
+     * once in none: a constructor no region holds still copies what it reads
+     * of a decoded object into the object it builds (SYMBOL-SCOPE §5.7).
+     */
+    private static void addProvenance(List<Site> into, Set<String> seen,
+                                      List<Region> retained, Site site) {
+        if (!holders(retained, SiteId.methodOf(site.siteId)).isEmpty()) {
+            add(into, seen, retained, site);
+        } else if (seen.add(site.role + "||" + site.siteId + "|"
+                + site.carrier)) {
+            into.add(site);
+        }
+    }
+
     /** The field a read or a store of the slice names, or "". */
     static String field(Map<String, Object> edge) {
         String kind = text(edge.get("kind"));
@@ -1679,6 +1754,14 @@ public final class StaticScopeMap {
                               LocationKind kind) {
         String site = recordedSite == null ? "" : recordedSite;
         for (Site named : sites) {
+            // A store read a guard made through a decoded object is stated
+            // at the provenance site itself.
+            if (PROVENANCE_SITE.equals(named.role)) {
+                if (kind == LocationKind.STORE && site.equals(named.siteId)) {
+                    return true;
+                }
+                continue;
+            }
             if (named.demandDistance < 0 || named.vmSite.isEmpty()
                     || !site.startsWith(named.vmSite + "#")
                     || !sameType(descriptorOfCellType(named.cell),
@@ -1831,7 +1914,7 @@ public final class StaticScopeMap {
             tracked.putIfAbsent(site.cell, site);
         }
         JsonArray found = new JsonArray();
-        Set<String> seen = new LinkedHashSet<String>();
+        Map<String, JsonObject> seen = new LinkedHashMap<String, JsonObject>();
         for (Site site : sites) {
             boolean read = READ_SITE.equals(site.role);
             Site cell = tracked.get(site.cell);
@@ -1847,7 +1930,9 @@ public final class StaticScopeMap {
                     ? !SharedFieldFlow.TrackedKind.CONTAINER.name()
                             .equals(cell.trackedKind)
                     : atomic;
-            if (!field && !container || !seen.add(site.siteId)) continue;
+            if (!field && !container || seen.containsKey(site.siteId)) {
+                continue;
+            }
             JsonObject row = new JsonObject();
             row.addProperty("method", SiteId.methodOf(site.siteId));
             row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
@@ -1859,6 +1944,29 @@ public final class StaticScopeMap {
             row.addProperty("container", container);
             row.addProperty("trackedKind", cell.trackedKind);
             if (cell.staticField) row.addProperty("static", true);
+            seen.put(site.siteId, row);
+            found.add(row);
+        }
+        // A provenance read is observed by its receiver, before the read:
+        // which store version the object holds; at a tracked read's site
+        // (a decoded object's container), as well as that read's.
+        for (Site site : ofRole(PROVENANCE_SITE, read -> !read.staticField)) {
+            JsonObject held = seen.get(site.siteId);
+            if (held != null) {
+                held.addProperty("provenance", true);
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("method", SiteId.methodOf(site.siteId));
+            row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
+            row.addProperty("siteId", site.siteId);
+            row.addProperty("declaredCallee", site.declaredCallee);
+            row.addProperty("cell", site.cell);
+            row.addProperty("read", true);
+            row.addProperty("field", false);
+            row.addProperty("container", false);
+            row.addProperty("provenance", true);
+            seen.put(site.siteId, row);
             found.add(row);
         }
         return found;
@@ -1919,6 +2027,32 @@ public final class StaticScopeMap {
             reads.add(readKey(site.siteId, site.cell));
         }
         return reads;
+    }
+
+    /** Every {@link #PROVENANCE_SITE}. */
+    public List<Site> provenanceSites() {
+        return ofRole(PROVENANCE_SITE, read -> true);
+    }
+
+    /** The {@link #PROVENANCE_SITE} calls, each site with its return cell:
+     *  the call's receiver is the object observed. */
+    public Map<String, String> provenanceCalls() {
+        Map<String, String> calls = new LinkedHashMap<String, String>();
+        for (Site site : ofRole(PROVENANCE_SITE,
+                read -> !read.declaredCallee.isEmpty())) {
+            calls.put(site.siteId, site.cell);
+        }
+        return calls;
+    }
+
+    /** The cells of the {@link #PROVENANCE_SITE} reads: what a guard reads
+     *  of an object a store's fetch decoded. */
+    public Set<String> provenanceCells() {
+        Set<String> cells = new LinkedHashSet<String>();
+        for (Site site : ofRole(PROVENANCE_SITE, read -> true)) {
+            cells.add(site.cell);
+        }
+        return cells;
     }
 
     /** The cells a replay versions its reads of ({@link #READ_SITE}): a

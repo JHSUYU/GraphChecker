@@ -1129,7 +1129,8 @@ final class FlipQuery {
                     path.occurrence)) {
                 if (row.observedVersion() < 0L || row.symbol() == null
                         || row.symbol().isEmpty()
-                        || row.mintVersion() != ReadRow.UNKNOWN_VERSION) {
+                        || row.mintVersion() != ReadRow.UNKNOWN_VERSION
+                        || row.location().kind() == LocationKind.STORE) {
                     continue;
                 }
                 ownReads.putIfAbsent(row.symbol(), row);

@@ -266,20 +266,42 @@ final class ConcolicVmBroker {
      * Pauses the VM's propagation on this thread for engine work the JDK runs
      * on a program thread ({@link InheritedState}), touching no thread-local.
      *
-     * @return false on a JVM without the native (the recording's stock JDK),
-     *         which propagates nothing; true when {@link #resumeEngineWork}
-     *         is owed
+     * Never loads the broker: before anything has asked for the VM no region
+     * has started on it, so no value is symbolic and there is nothing to
+     * pause.
+     *
+     * @return false before the broker is loaded or on a JVM without the
+     *         native (the recording's stock JDK), which propagates nothing;
+     *         true when {@link #resumeEngineWork} is owed
      */
     static boolean pauseEngineWork() {
-        Method pause = engine().pausePathCondition;
+        ConcolicVmBroker loaded = engineApi;
+        Method pause = loaded == null ? null : loaded.pausePathCondition;
         if (pause == null) return false;
         invokeNative(pause);
         return true;
     }
 
-    /** Ends a {@link #pauseEngineWork}. */
+    /** Ends a {@link #pauseEngineWork} that returned true. */
     static void resumeEngineWork() {
-        invokeNative(engine().resumePathCondition);
+        invokeNative(engineApi.resumePathCondition);
+    }
+
+    /**
+     * Runs the engine's own output -- its session files, its console, its
+     * verdict file -- under the VM's pause: the engine's plumbing is never
+     * program state.  Unpaused on a region thread, a row naming a symbolic
+     * String stored symbolic bytes into its writer's reused encoder buffer,
+     * which the VM then tracked by value and versioned at every later write
+     * (solr-18413's seed under Z1, STATUS defect 38).
+     */
+    static void asEngineWork(Runnable work) {
+        boolean paused = pauseEngineWork();
+        try {
+            work.run();
+        } finally {
+            if (paused) resumeEngineWork();
+        }
     }
 
     private static void invokeNative(Method method) {

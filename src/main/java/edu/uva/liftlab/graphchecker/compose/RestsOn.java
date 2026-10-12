@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -494,17 +495,45 @@ public final class RestsOn {
             }
         }
         // Then the anchor, then reached occurrences in closure order (P3);
-        // a symbol is stated by the first row met.
+        // a symbol is stated by the first row met.  A store version's read
+        // states no value a symbol of a path may be (IDENTITY §7.2): it is
+        // the closure's, which the path rests on ({@link #storeLocations}).
         for (String occurrenceId : occurrences) {
             OccurrenceAddress at = corpus.occurrence(occurrenceId);
             if (at == null) continue;
             for (ReadRow read : corpus.readsOn(session, at)) {
+                if (read.location().kind() == LocationKind.STORE) continue;
                 if (read.symbol() == null || stated.add(read.symbol())) {
                     rows.add(read);
                 }
             }
         }
         return rows;
+    }
+
+    /**
+     * The store locations this path's guards read a version of through a
+     * decode (IDENTITY §7.2): every STORE read a reached occurrence made
+     * before its cutoff.  No formula term names a store version, so
+     * constraint independence keeps none; the witness rests on each all the
+     * same -- the guard decided on what that version's decode held -- and
+     * CONFIRM holds each read to the version the session read (a STATE row:
+     * a run whose reader read another version, a lagging watch, does not
+     * confirm it).
+     */
+    Set<String> storeLocations(String session, Map<String, Long> reached) {
+        Set<String> locations = new LinkedHashSet<String>();
+        for (Map.Entry<String, Long> each : reached.entrySet()) {
+            OccurrenceAddress at = corpus.occurrence(each.getKey());
+            if (at == null) continue;
+            for (ReadRow read : corpus.readsOn(session, at)) {
+                if (read.location().kind() == LocationKind.STORE
+                        && read.seq() < each.getValue()) {
+                    locations.add(SmtLowering.locationKey(read.location()));
+                }
+            }
+        }
+        return locations;
     }
 
     /**

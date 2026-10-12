@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -99,7 +100,8 @@ final class RootDemand {
      *  edges out, no boundary: named, never chosen. */
     enum Kind {
         CLOCK, FAULT, CONFIG_CALL, CONFIG_FIELD, READ, TRACK, TRACK_IDENTITY,
-        TRACK_CONTAINER, PRE_WINDOW, WIRE, IO, SCOPE, LIBRARY, CUT
+        TRACK_CONTAINER, PROVENANCE, PRE_WINDOW, WIRE, IO, SCOPE, LIBRARY,
+        CUT
     }
 
     /** Why a boundary is not chosen: past the {@value #WIDTH} nearest of
@@ -278,6 +280,8 @@ final class RootDemand {
      * @param pathSites   the TARGET_SITE's guards, its chain and the chain's
      *                    deciders ({@code StaticScopeMap.Site#pathSites})
      * @param trackedKind how a replay versions a field
+     * @param constructionOnly whether only its class's construction stores
+     *                    a field (a PROVENANCE boundary, walked through)
      * @param systemClass whether a class is the system's own
      * @param faults      where a local file fault could stand
      * @param woven       the demanded doors this pass wove
@@ -288,6 +292,7 @@ final class RootDemand {
                          Set<String> pathSites,
                          Function<String, SharedFieldFlow.TrackedKind>
                                  trackedKind,
+                         Predicate<String> constructionOnly,
                          Predicate<String> systemClass, Faults faults,
                          List<DemandedDoors.Site> woven) {
         Map<String, List<Map<String, Object>>> into = new HashMap<>();
@@ -320,7 +325,8 @@ final class RootDemand {
             roots.add(text(region.get("rootMethod")));
         }
         Classifier classes = new Classifier(into, carried, regionMethods,
-                roots, clocks, config, trackedKind, systemClass);
+                roots, clocks, config, trackedKind, constructionOnly,
+                systemClass);
         Map<String, Integer> demanded = new HashMap<>();
         List<Boundary> found = walk(into, starts, classes, demanded);
         choose(found);
@@ -484,8 +490,9 @@ final class RootDemand {
 
     /** The frontier signatures scope growth takes first, each with its
      *  class and distance: of the chosen boundaries, the callee of each
-     *  SCOPE return, the method of each SCOPE formal, each PRE_WINDOW field
-     *  (its writers may be out of scope), each IO frontier callee. */
+     *  SCOPE return, the method of each SCOPE formal, each PRE_WINDOW or
+     *  PROVENANCE field (its writers may be out of scope: a decode's
+     *  constructor), each IO frontier callee. */
     Map<String, StaticScopeMap.Demanded> frontier() {
         Map<String, StaticScopeMap.Demanded> frontier = new LinkedHashMap<>();
         for (Boundary boundary : boundaries) {
@@ -493,7 +500,7 @@ final class RootDemand {
             Matcher returned = RETURN.matcher(boundary.cell);
             Matcher formal = FORMAL.matcher(boundary.cell);
             String signature = boundary.kind == Kind.PRE_WINDOW
-                    ? boundary.cell
+                    || boundary.kind == Kind.PROVENANCE ? boundary.cell
                     : boundary.kind != Kind.SCOPE ? null
                     : returned.matches() ? returned.group(1)
                     : formal.matches() ? formal.group(1) : null;
@@ -518,6 +525,9 @@ final class RootDemand {
         Map<String, Integer> distance = new HashMap<>();
         Map<String, Boundary> found = new LinkedHashMap<>();
         Deque<String> queue = new ArrayDeque<>();
+        // Cells first reached past a PROVENANCE boundary: what a
+        // construction copied.
+        Set<String> copied = new HashSet<>();
         for (String start : starts) {
             distance.put(start, 0);
             queue.add(start);
@@ -525,6 +535,7 @@ final class RootDemand {
         while (!queue.isEmpty()) {
             String cell = queue.removeFirst();
             int next = distance.get(cell) + 1;
+            boolean beyond = copied.contains(cell);
             for (Map<String, Object> edge : into.getOrDefault(cell,
                     Collections.<Map<String, Object>>emptyList())) {
                 if (!classes.follows(edge)) continue;
@@ -538,15 +549,25 @@ final class RootDemand {
                 String site = text(edge.get("siteId"));
                 if (!site.isEmpty()) demanded.merge(site, next, Math::min);
                 Kind kind = classes.of(from, edge);
+                // A container field a construction copied in holds what
+                // the copy's version holds (runtime.Provenance): no log of
+                // its own (solr-18413 Z3: ZkNodeProps.propMap, tracked in
+                // every parsed state object, held one makePath close 440 s).
+                boolean holds = beyond && kind == Kind.TRACK_CONTAINER
+                        && !RETURN.matcher(from).matches();
+                if (holds) kind = Kind.PROVENANCE;
                 if (kind != null) {
                     String siteId = text(edge.get("siteId"));
                     found.putIfAbsent(kind + "\n" + from + "\n" + siteId,
                             new Boundary(kind, from, siteId,
                                     text(edge.get("kind")), next));
-                    continue;
+                    // A construction-only field is a copy its constructor
+                    // made: the walk goes on to what that stored.
+                    if (kind != Kind.PROVENANCE || holds) continue;
                 }
                 if (distance.putIfAbsent(from, next) == null) {
                     queue.addLast(from);
+                    if (beyond || kind == Kind.PROVENANCE) copied.add(from);
                 }
             }
         }
@@ -754,6 +775,7 @@ final class RootDemand {
         private final ConfigRoots config;
         private final Function<String, SharedFieldFlow.TrackedKind>
                 trackedKind;
+        private final Predicate<String> constructionOnly;
         private final Predicate<String> systemClass;
 
         Classifier(Map<String, List<Map<String, Object>>> into,
@@ -761,6 +783,7 @@ final class RootDemand {
                    Set<String> roots, Map<String, Clock> clocks,
                    ConfigRoots config,
                    Function<String, SharedFieldFlow.TrackedKind> trackedKind,
+                   Predicate<String> constructionOnly,
                    Predicate<String> systemClass) {
             this.into = into;
             this.carried = carried;
@@ -769,6 +792,7 @@ final class RootDemand {
             this.clocks = clocks;
             this.config = config;
             this.trackedKind = trackedKind;
+            this.constructionOnly = constructionOnly;
             this.systemClass = systemClass;
         }
 
@@ -843,12 +867,23 @@ final class RootDemand {
             for (String writer : writers) {
                 stored |= regionMethods.contains(writer);
             }
-            if (!stored) return Kind.PRE_WINDOW;
-            if (JavaContainerTypes.shape(type)
-                    != JavaContainerTypes.Shape.NONE) {
-                return Kind.TRACK_CONTAINER;
+            boolean container = JavaContainerTypes.shape(type)
+                    != JavaContainerTypes.Shape.NONE;
+            SharedFieldFlow.TrackedKind tracked = trackedKind.apply(cell);
+            // Only its construction stores it, it holds no container, and
+            // no region's store of it is versioned: nothing re-pairs it,
+            // and an object a store's fetch was parsed into holds that
+            // version (runtime.Provenance).  One a region stores and a
+            // replay versions stays tracked (solr-18413: RoutingRule.expireAt,
+            // the Overseer's clock through its constructor), its read
+            // observed for the version too (StaticScopeMap).
+            if (constructionOnly.test(cell) && !container && (!stored
+                    || tracked == SharedFieldFlow.TrackedKind.NONE)) {
+                return Kind.PROVENANCE;
             }
-            return trackedKind.apply(cell) == SharedFieldFlow.TrackedKind.VALUE
+            if (!stored) return Kind.PRE_WINDOW;
+            if (container) return Kind.TRACK_CONTAINER;
+            return tracked == SharedFieldFlow.TrackedKind.VALUE
                     ? Kind.TRACK : Kind.TRACK_IDENTITY;
         }
 

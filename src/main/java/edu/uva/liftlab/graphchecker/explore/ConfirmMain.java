@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -1616,7 +1617,15 @@ public final class ConfirmMain {
             if (!held.initial()) {
                 holding.cone.add(held.endpoint().occurrence());
             }
-            if (mint) continue;
+            // A store's version is compared, not ordered: the store's own
+            // turn at the location orders its reads and writes (ScheduleLog's
+            // WRITE and READ events, runtime.MessageDoors#turn; a native run's
+            // realized order), and an ORDER naming a store write's activation
+            // is no event a native run's weave states (solr-18413 Y8: 84 of
+            // 96 plant rows unheld, native 0/10).
+            if (mint || held.location().kind() == LocationKind.STORE) {
+                continue;
+            }
             if (!held.initial()) {
                 closure.order(holding, closure.exit(held.endpoint(),
                         held.seq()), read.endpoint(), read.seq());
