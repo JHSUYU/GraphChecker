@@ -156,7 +156,8 @@ Merged since the HDFS state:
 - the forced fatal arm, plus the VM's `Collectors.toMap` and enum models;
 - confirm-first;
 - the owner's FP rule (3ce1ddd08);
-- the Solr body: the HTTP send in `executeMethod`, the stall rules, `DOOR_SEND_OUTSIDE_REGION` (`solr-body` 3d0bd661b);
+- the Solr body: the HTTP send in `executeMethod`, the stall rules (`solr-body` 3d0bd661b; its `DOOR_SEND_OUTSIDE_REGION`
+  rule is replaced on `solr-zk-state` by the sending turn's doors, f7080b2e0);
 - the store READ turn: a SolrZkClient read of a written location takes its turn at the location (key `MessageDoors#turn`),
   never blocks the frontier, and yields to a model's order past the cut (`solr-body` 873fdaa20, Solr `gc/solr-body`
   7e51565080; gated on `~/gc-run/sbm23`: 39 and 19 seeds match their anchors, 18406 native 10/10, 18413 and migrate PASS);

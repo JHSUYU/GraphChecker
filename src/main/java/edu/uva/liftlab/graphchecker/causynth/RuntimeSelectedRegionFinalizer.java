@@ -1315,16 +1315,21 @@ public final class RuntimeSelectedRegionFinalizer {
         String own = ContextShape.Stance.of(occurrence).render();
         int ownTurn = 0;
         int handling = 0;
-        for (String activation : program.activations.keySet()) {
-            OccurrenceAddress at = OccurrenceAddress.parse(activation);
-            String stance = ContextShape.Stance.of(at).render();
-            if (at.id().equals(occurrence.id())) continue;
-            if (stances.contains(stance) && !stance.equals(own)) {
-                doors.add(at.id());
-            } else if (stances.contains(stance)) {
-                ownTurn++;
-            } else if (handlers.contains(stance)) {
-                handling++;
+        Map<String, List<String>> byStance = program.activationsByStance();
+        Set<String> asked = new LinkedHashSet<>(stances);
+        asked.addAll(handlers);
+        for (String stance : asked) {
+            for (String activation : byStance.getOrDefault(stance,
+                    Collections.<String>emptyList())) {
+                String id = OccurrenceAddress.parse(activation).id();
+                if (id.equals(occurrence.id())) continue;
+                if (stances.contains(stance) && !stance.equals(own)) {
+                    doors.add(id);
+                } else if (stances.contains(stance)) {
+                    ownTurn++;
+                } else {
+                    handling++;
+                }
             }
         }
         // Each narrowing names what it cut (counted, DIAGNOSTIC).
