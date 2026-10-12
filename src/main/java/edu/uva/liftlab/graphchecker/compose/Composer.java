@@ -758,6 +758,12 @@ public final class Composer {
             return asserted(observedReads.get(pathId));
         }
 
+        /** The arms that are the path {@code selector}'s own session's
+         *  deliveries ({@code ComposedFamilies#ownArms}), asserted. */
+        public List<String> ownDeliveries(String selector) {
+            return asserted(ownArms.get(selector));
+        }
+
         /**
          * The arms {@code taken} under the path {@code selector} names that
          * are no pairing its own run had ({@link #ownRun}: its own

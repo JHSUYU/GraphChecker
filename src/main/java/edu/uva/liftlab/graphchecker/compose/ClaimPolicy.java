@@ -699,29 +699,38 @@ public final class ClaimPolicy {
          * Composition#takenPairings}), STATE_PAIRING_FLIPPED -- the pairing
          * is what the world moved, though no term of the path names the read
          * (a node's view at a version lacking an alias decides nothing the
-         * VM states: Map#get of a key the older document never had), and
-         * the witness names it ({@code Composition#repaired}); or null,
-         * named, where none fires.
+         * VM states: Map#get of a key the older document never had) --, its
+         * witness the session's own run with that pairing (its own
+         * deliveries and the plants, so an arm whose producer ran
+         * concretely is no obstacle: nothing moves in it), which names the
+         * pairing ({@code Composition#repaired}); or null, named, where none
+         * fires.
          */
         Decision observedElsewhere() {
             if (recorded == null || !recorded.witness()
-                    || !recorded.selected().fatalObserved()
-                    || !attestedArms(composition, recorded)
+                    || !recorded.selected().fatalObserved()) {
+                return null;
+            }
+            boolean attested = attestedArms(composition, recorded);
+            boolean planted = !composition.takenPairings(recorded.selected())
+                    .isEmpty();
+            if (!attested && !planted
                     || !seedDisjunctUnsat(composition, asks)) {
                 return null;
             }
-            ClaimKind kind = mechanism(composition, asks, recorded,
-                    clockDriven);
+            ClaimKind kind = attested ? mechanism(composition, asks,
+                    recorded, clockDriven) : ClaimKind.NO_SUPPORTED_WITNESS;
             Outcome witness = recorded;
-            if (kind == ClaimKind.NO_SUPPORTED_WITNESS && !composition
-                    .takenPairings(recorded.selected()).isEmpty()) {
-                // The witness is asked on its path with the families held
-                // to the plants its session took, so the arms it names are
-                // the world's pairing.
-                List<String> plants = composition.worldPlants(
-                        recorded.selected());
-                witness = plants.isEmpty() ? recorded : outcome(composition,
-                        asks, recorded.valuation(), plants, false, recorded);
+            if (kind == ClaimKind.NO_SUPPORTED_WITNESS && planted) {
+                // The witness is the session's own run with its world's
+                // pairing: its own deliveries, the families held to the
+                // plants it took, so no arm moved where nothing attests it
+                // and the arms it names are the world's pairing.
+                List<String> held = new ArrayList<String>(composition
+                        .ownDeliveries(recorded.selected().selector()));
+                held.addAll(composition.worldPlants(recorded.selected()));
+                witness = held.isEmpty() ? recorded : outcome(composition,
+                        asks, recorded.valuation(), held, false, recorded);
                 if (witness.witness()) {
                     kind = ClaimKind.STATE_PAIRING_FLIPPED;
                     outcomes.set(0, witness);

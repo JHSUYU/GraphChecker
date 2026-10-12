@@ -2101,9 +2101,11 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      read observed the planted writer's version and could have seen another writer),
      `STATE_PAIRING_FLIPPED` -- the world's pairing is what moved, though no term of the path names
      the read (a node's view at a version lacking an alias decides nothing the VM states) --, its
-     witness asked with the path's families held to the plants (`Composition#worldPlants`) and the
-     pairing named in `repairedArms`, by its arm, else `PAIRING:<reader>=<writer>` where no family
-     states the read;
+     witness the session's own run with that pairing, asked with the path's own deliveries
+     (`Composition#ownDeliveries`) and its families held to the plants (`Composition#worldPlants`),
+     so this rule needs no attested arm (nothing moves in one: solr-bugs-tra-start-overwrite Z2K,
+     whose request arms' producers ran concretely), and the pairing named in `repairedArms`, by its
+     arm, else `PAIRING:<reader>=<writer>` where no family states the read;
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
      root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer
      is the verdict; the enumeration of single and pair moves above only picks a witness's
