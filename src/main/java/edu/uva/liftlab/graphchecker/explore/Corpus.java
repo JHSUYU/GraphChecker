@@ -302,10 +302,15 @@ public final class Corpus implements Arms.Rows {
      *  at their root, no occurrence open ({@link #doorsOf}). */
     private final Map<String, Set<String>> receivingStances =
             new LinkedHashMap<String, Set<String>>();
-    /** Where a context anchored on nothing stands -> the message it took
-     *  into itself (a DataNode's turn and its DataTransfer op). */
-    private final Map<String, String> takenInByStance =
-            new HashMap<String, String>();
+    /** Producer endpoint id -> the stances of the turns standing on it, its
+     *  handlers: what it started, no doors of it ({@link #doorsOf}). */
+    private final Map<String, Set<String>> handlerStances =
+            new LinkedHashMap<String, Set<String>>();
+    /** Where a context anchored on nothing stands -> the messages it took
+     *  into itself (a DataNode's turn and its DataTransfer op; a batching
+     *  Overseer turn, every item it flushed at once). */
+    private final Map<String, Set<String>> takenInByStance =
+            new HashMap<String, Set<String>>();
 
     private final Arms arms;
 
@@ -369,7 +374,7 @@ public final class Corpus implements Arms.Rows {
      *  sent from, sent by, or received by. */
     private static final class Fact {
         enum Kind { TAKEN_IN, SENDER_STANCE, SENDER, RECEIVER,
-            RECEIVING_STANCE }
+            RECEIVING_STANCE, HANDLER_STANCE }
 
         final Kind kind;
         final String key;
@@ -867,16 +872,18 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * The message that started {@code occurrence}: its context's anchor,
-     * else the message that context took into itself (a DataNode's turn
-     * received its DataTransfer op without standing on it), or "".
+     * The messages that started {@code occurrence}: its context's anchor,
+     * else every message that context took into itself (a DataNode's turn
+     * received its DataTransfer op without standing on it; a batching
+     * Overseer turn is started by each item it took in), or none.
      */
-    public String startedBy(OccurrenceAddress occurrence) {
+    public Set<String> startedBy(OccurrenceAddress occurrence) {
         return occurrence.context() instanceof CausalContext.Anchor
-                ? ((CausalContext.Anchor) occurrence.context())
-                        .producerEndpointId()
+                ? Collections.singleton(((CausalContext.Anchor)
+                        occurrence.context()).producerEndpointId())
                 : takenInByStance.getOrDefault(
-                        ContextShape.Stance.of(occurrence).render(), "");
+                        ContextShape.Stance.of(occurrence).render(),
+                        Collections.<String>emptySet());
     }
 
     /** The occurrence that TOOK IN the message served under {@code
@@ -902,7 +909,8 @@ public final class Corpus implements Arms.Rows {
      * update's turn).
      */
     public List<OccurrenceAddress> doorsOf(String producerEndpointId,
-                                           OccurrenceAddress served) {
+                                           OccurrenceAddress served,
+                                           Map<String, Integer> cut) {
         List<OccurrenceAddress> doors = new ArrayList<OccurrenceAddress>();
         for (OccurrenceAddress door : new OccurrenceAddress[] {
                 senderOf(producerEndpointId),
@@ -915,17 +923,28 @@ public final class Corpus implements Arms.Rows {
         ContextShape.Stance sentFrom =
                 senderStanceByEndpoint.get(producerEndpointId);
         if (sentFrom != null) stances.add(sentFrom.render());
-        if (stances.isEmpty()) return doors;
+        Set<String> handlers = handlerStances.getOrDefault(
+                producerEndpointId, Collections.<String>emptySet());
+        if (stances.isEmpty() && handlers.isEmpty()) return doors;
         String own = ContextShape.Stance.of(served).render();
         for (OccurrenceAddress occurrence : occurrenceById.values()) {
+            if (occurrence.equals(served)) continue;
             String stance = ContextShape.Stance.of(occurrence).render();
-            if (stances.contains(stance) && !stance.equals(own)
-                    && !doors.contains(occurrence)) {
-                doors.add(occurrence);
+            if (stances.contains(stance) && !stance.equals(own)) {
+                if (!doors.contains(occurrence)) doors.add(occurrence);
+            } else if (stances.contains(stance)) {
+                cut.merge(OWN_TURN, 1, Integer::sum);
+            } else if (handlers.contains(stance)) {
+                cut.merge(HANDLER_TURN, 1, Integer::sum);
             }
         }
         return doors;
     }
+
+    /** What {@link #doorsOf} cut, by narrowing: the served occurrence's own
+     *  turn, and turns standing on the message (its handlers). */
+    public static final String OWN_TURN = "own turn";
+    public static final String HANDLER_TURN = "handlers";
 
     /** One session's schedule as the corpus indexes it, read once. */
     private static List<Fact> facts(SessionReader session) {
@@ -967,10 +986,11 @@ public final class Corpus implements Arms.Rows {
                 // of it.
                 ContextShape.Stance at =
                         ContextShape.Stance.ofSend(event.context());
-                if (!event.received().isEmpty() && at != null
-                        && !(at.context() instanceof CausalContext.Anchor)) {
-                    facts.add(new Fact(Fact.Kind.RECEIVING_STANCE,
-                            event.received(), "", at));
+                if (!event.received().isEmpty() && at != null) {
+                    facts.add(new Fact(at.context() instanceof
+                            CausalContext.Anchor ? Fact.Kind.HANDLER_STANCE
+                            : Fact.Kind.RECEIVING_STANCE, event.received(),
+                            "", at));
                 }
                 continue;
             }
@@ -990,7 +1010,9 @@ public final class Corpus implements Arms.Rows {
         for (Fact fact : facts) {
             switch (fact.kind) {
                 case TAKEN_IN:
-                    takenInByStance.putIfAbsent(fact.key, fact.occurrence);
+                    takenInByStance.computeIfAbsent(fact.key,
+                            key -> new LinkedHashSet<String>())
+                            .add(fact.occurrence);
                     break;
                 case SENDER_STANCE:
                     senderStanceByEndpoint.put(fact.key, fact.stance);
@@ -1001,6 +1023,11 @@ public final class Corpus implements Arms.Rows {
                     break;
                 case RECEIVING_STANCE:
                     receivingStances.computeIfAbsent(fact.key,
+                            key -> new LinkedHashSet<String>())
+                            .add(fact.stance.render());
+                    break;
+                case HANDLER_STANCE:
+                    handlerStances.computeIfAbsent(fact.key,
                             key -> new LinkedHashSet<String>())
                             .add(fact.stance.render());
                     break;

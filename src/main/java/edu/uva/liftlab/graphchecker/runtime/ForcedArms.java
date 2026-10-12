@@ -11,6 +11,7 @@ import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * THE FORCED REPLAY (PIPELINE §7.10): in a FORCE run, the declared
@@ -84,6 +85,14 @@ final class ForcedArms {
         active.pathRecordingStarted = true;
     }
 
+    /** Whether {@code active} is the armed activation of this FORCE run,
+     *  on its way to its target: its loops are bounded by the work cap
+     *  alone ({@code LoopAccounting.LoopBackedgeBudget#traverse}). */
+    static boolean armedOn(ActiveRegion active) {
+        long token = armed;
+        return token != 0L && active.token == token;
+    }
+
     /**
      * Asks the VM to force the branch the woven prefix marks next, when the
      * armed activation reaches a site of its table; called just before the
@@ -98,7 +107,8 @@ final class ForcedArms {
         if (armed == 0L || active.token != armed) return "";
         Map<String, ForcingTable.Arm> table = active.activation.forcedArms;
         ForcingTable.Arm arm = table.get(SiteId.render(method, unitIndex));
-        if (arm == null || !arm.via.isEmpty() && !calledFrom(arm.via)) {
+        if (arm == null || arm.passable
+                || !arm.via.isEmpty() && !calledFrom(arm.via)) {
             return "";
         }
         String refused;
@@ -117,6 +127,22 @@ final class ForcedArms {
             disarmed = armed;
             armed = 0L;
             return diverged;
+        }
+    }
+
+    /**
+     * States on a decision row the frame that called its method, where the
+     * occurrence's forcing table names its site with a {@code via} ({@code
+     * DecisionRow#via}): COMPOSE counts a decider on the way only in a call
+     * of its helper from there ({@code compose.RestsOn#wayGuard}), as a
+     * FORCE run forces it only there ({@link #direct}).  In every run, not
+     * only a FORCE run: each task carries its target's table.
+     */
+    static void statesCaller(ActiveRegion active, JsonObject mapping) {
+        ForcingTable.Arm arm = active.activation.forcedArms.get(
+                optionalString(mapping, "siteId"));
+        if (arm != null && !arm.via.isEmpty()) {
+            mapping.addProperty("via", Identity.callerFrame());
         }
     }
 
@@ -163,21 +189,34 @@ final class ForcedArms {
     private static long disarmed;
 
     /**
-     * The armed activation reached its target decision: on its fatal arm
-     * (forced, or as its operands decided), the forced path ends there;
-     * on its healthy one (a branch the VM could not force: no marker owned
-     * it), the run is FORCE_DIVERGED.  Nothing it decides from here is
-     * forced.
+     * The armed activation reached a test of its target: on its fatal arm
+     * (forced, or as its operands decided), the forced path ends there.  On
+     * its healthy arm, a passable test -- one whose healthy arm runs on to
+     * another test of the same throw, the first of {@code if (a || b)},
+     * left to its operands -- decides nothing: the run goes on to the test
+     * that is forced (solr-18406 F2V3: getAndSaveCommitPoint's u11).  Any
+     * other test on its healthy arm (a branch the VM could not force: no
+     * marker owned it) makes the run FORCE_DIVERGED.  Once decided, nothing
+     * the activation decides is forced.
+     *
+     * @return whether this test's reach is the target row's: false for the
+     *         passable test that decided nothing, so the row stands at the
+     *         forced test and states the forced path condition up to it
+     *         (solr-18406 SC1: a row left at u11, before the forced world
+     *         opened at u12, stated the plain disjunction as its phi)
      */
-    static void reachedTarget(ActiveRegion active, String site, int ordinal,
-                              boolean outcome) {
+    static boolean reachedTarget(ActiveRegion active, String site,
+                                 int ordinal, boolean outcome) {
         synchronized (LOCK) {
-            if (active.token != armed) return;
+            if (active.token != armed) return true;
             Boolean fatal = site.equals(active.activation.targetBranchSite)
                     ? Boolean.valueOf(
                     active.activation.targetBranchRequiredOutcome)
                     : active.activation.targetGuards.get(site);
-            if (fatal != null && fatal.booleanValue() == outcome) {
+            boolean healthy = fatal == null || fatal.booleanValue() != outcome;
+            ForcingTable.Arm arm = active.activation.forcedArms.get(site);
+            if (healthy && arm != null && arm.passable) return false;
+            if (!healthy) {
                 target = site + "#" + ordinal;
             } else {
                 diverged = FORCE_DIVERGED + ": the target decision " + site
@@ -186,6 +225,7 @@ final class ForcedArms {
             }
             disarmed = armed;
             armed = 0L;
+            return true;
         }
     }
 
@@ -230,6 +270,7 @@ final class ForcedArms {
                 diverged = FORCE_DIVERGED + ": the declared occurrence closed"
                         + " (" + exitKind + (exceptionType == null
                         || exceptionType.isEmpty() ? "" : " " + exceptionType)
+                        + (active.cut == null ? "" : ": " + active.cut)
                         + ") before its target decision was forced"
                         + (forcedFrom == 0L ? ", no branch forced against"
                         + " its concrete arm" : "; forced from event "

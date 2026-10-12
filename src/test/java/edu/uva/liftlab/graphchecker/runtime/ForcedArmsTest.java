@@ -69,6 +69,12 @@ public class ForcedArmsTest {
     /** The declared occurrence's activation, its table forcing the guard
      *  and the target to jump. */
     private static ActiveRegion declared(long token, String at) {
+        return declared(token, at, "", "");
+    }
+
+    /** The same, with more {@code targetBranch} guards and table rows. */
+    private static ActiveRegion declared(long token, String at,
+                                         String guards, String force) {
         JsonObject encoded = new JsonParser().parse(
                 "{'taskId':'TASK.1','goalId':'GOAL.1','regionId':'REGION.1',"
                 + "'goalKind':'TARGET_REACH_CLOSURE','relationKey':'REL.1',"
@@ -81,7 +87,8 @@ public class ForcedArmsTest {
                 + "{'sourceKey':'n1#epoch0','kind':'REGISTERED_SOURCE'}},"
                 + "'branchMethods':['" + METHOD + "'],'inputActions':[],"
                 + "'targetBranch':{'siteId':'" + TARGET + "','occurrence':1,"
-                + "'requiredOutcome':true,'force':[{'siteId':'" + GUARD
+                + "'requiredOutcome':true,'guards':[" + guards + "],"
+                + "'force':[" + force + "{'siteId':'" + GUARD
                 + "','arm':true},{'siteId':'" + TARGET + "','arm':true}]}}")
                 .getAsJsonObject();
         ActiveRegion active = new ActiveRegion(token,
@@ -211,9 +218,45 @@ public class ForcedArmsTest {
                 ForcedArms.unreached().contains("never closed"));
     }
 
+    /**
+     * {@code if (a || b) throw}: the first test is passable (its healthy arm
+     * runs on to the second), left to its operands; on its healthy arm it
+     * decides nothing -- its reach is not the target row's -- and the run
+     * reaches its target at the second, forced (solr-18406 F2V3:
+     * getAndSaveCommitPoint's u11).  A test that is not
+     * passable diverges on its healthy arm.
+     */
+    @Test
+    public void aPassableTargetTestOnItsHealthyArmDecidesNothing()
+            throws Exception {
+        String first = METHOD + "#u3";
+        Object[][] rows = {
+                // {is the first test passable, the verdict's detail}
+                {true, "FORCED_TARGET"},
+                {false, "FORCE_DIVERGED: the target decision " + first}};
+        for (Object[] row : rows) {
+            reset();
+            forcing();
+            ActiveRegion active = declared(7L, FOCUS, "{'siteId':'" + first
+                    + "','requiredOutcome':true},{'siteId':'" + TARGET
+                    + "','requiredOutcome':true}", "{'siteId':'" + first
+                    + "','arm':true" + ((Boolean) row[0] ? ",'passable':true"
+                    : "") + "},");
+            ForcedArms.arm(active);
+            assertEquals(row[0] + ": the first test's reach is the row's"
+                    + " only where it decided", !(Boolean) row[0],
+                    ForcedArms.reachedTarget(active, first, 1, false));
+            ForcedArms.reachedTarget(active, TARGET, 1, true);
+            String detail = FocusedReplay.results("s").get(0).detail();
+            assertTrue(row[0] + ": " + detail, detail.startsWith(
+                    (String) row[1]));
+        }
+    }
+
     /** A decider is forced only in a call of its helper from {@code via}:
      *  the frame one level out, as the weave enters it -- a lambda's
-     *  run-minted class name compared by its stable spelling. */
+     *  run-minted class name compared by its stable spelling, javac's
+     *  synthetic {@code access$NNN} and {@code lambda$} hops passed. */
     @Test
     public void aDeciderIsForcedOnlyInACallFromItsVia() {
         String caller = "<a.Caller$$Lambda$12/1830908236: void run()>";
@@ -224,7 +267,11 @@ public class ForcedArmsTest {
                         "<a.Caller$$Lambda$40/99: void run()>", true},
                 {new String[] {caller, "<a.Other: void go()>", helper},
                         caller, false},
-                {new String[] {helper}, caller, false}};
+                {new String[] {helper}, caller, false},
+                {new String[] {caller, "<a.Caller: boolean access$000("
+                        + "a.Caller)>", helper}, caller, true},
+                {new String[] {caller, "<a.Caller: void lambda$run$0()>",
+                        helper}, caller, true}};
         for (Object[] row : rows) {
             String[] frames = (String[]) row[0];
             long[] tokens = new long[frames.length];

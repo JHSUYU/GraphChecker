@@ -25,8 +25,13 @@ public class RealizedOrderTest {
 
     private void event(Kind kind, String context, String site, int k,
                        String occurrence) {
+        sent(kind, context, site, k, occurrence, "");
+    }
+
+    private void sent(Kind kind, String context, String site, int k,
+                      String occurrence, String endpoint) {
         schedule.add(ScheduleEvent.of(schedule.size(), kind, context, site,
-                k, occurrence, ""));
+                k, occurrence, endpoint));
     }
 
     private List<String> edges(String... mints) {
@@ -69,6 +74,28 @@ public class RealizedOrderTest {
         assertEquals(Arrays.asList("after-mint<w"), edges("root"));
         marks.put("root", 2L);                           // no step since
         assertEquals(Collections.<String>emptyList(), edges("root"));
+    }
+
+    /** A step in the work a loop's later send started has no name a native
+     *  run makes alike: no edge; the first send's work keeps its edge, named
+     *  without the endpoint's hash. */
+    @Test
+    public void aStepNamedByALoopsLaterSendHoldsNothing() {
+        event(Kind.WAKE, "c", "poll", 0, "o0");             // c runs before
+        event(Kind.WRITE, "t", "mint", 0, "root");
+        sent(Kind.SEND, "t|x@1", "status", 0, "root", "e1");
+        sent(Kind.SEND, "t|x@2", "status", 1, "root", "e2");
+        event(Kind.START, "n|Anchor:e2@rpc", "late-work", 0, "o2");
+        event(Kind.WAKE, "c", "poll", 1, "o0");             // after e2's work
+        sent(Kind.SEND, "t|x@3", "split", 0, "root", "e3");
+        event(Kind.START, "n|Anchor:e3@rpc", "split-work", 0, "o3");
+        event(Kind.WAKE, "c", "poll", 2, "o0");
+        List<ScheduleEvent[]> edges = RealizedOrder.edges(schedule,
+                RealizedOrder.from(schedule, marks,
+                        new HashSet<String>(Arrays.asList("root"))));
+        assertEquals(1, edges.size());
+        assertEquals("split-work", edges.get(0)[0].site());
+        assertEquals("n|Anchor:{t|x >split}@rpc", edges.get(0)[0].context());
     }
 
     @Test

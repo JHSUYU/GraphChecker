@@ -245,7 +245,9 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
   || fail "the confined drops are not DIAGNOSTIC rows of gaps.json"
 
 # BOUND-1: every declared bound that cut the search is named in result.json
-# by its configuration key (campaign_bounds), whatever the claim; a round's
+# by its configuration key (campaign_bounds), whatever the claim -- a loop
+# bound that cut the anchor's occurrence on the way to the throw too
+# (COMPOSE's loop-body-bound row, RestsOn#decided); a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
 # closure an earlier round truncated and the last planned whole, nor paths an
 # earlier round deferred (the path bound counts the last round's).
@@ -265,7 +267,7 @@ echo '{"truncated": 4}' \
 echo '{"truncated": 2}' \
   >"${emit_iteration}/obligations-0001/explore_manifest.json"
 for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
-    'T max-flips-per-path=4' 'T pairing-bound=8'; do
+    'T max-flips-per-path=4' 'T pairing-bound=8' 'REGION.T#1 loop-body-bound=8'; do
   jq -n -c --arg subject "${subject}" '{schemaVersion: 1,
     sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
     subject: $subject, detail: "cut"}'
@@ -279,7 +281,7 @@ done
 run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
-    "pairing_flip_per_read", "region_path_max_tasks", "schedule_max_jobs",
+    "pairing_flip_per_read", "loop_body_bound", "region_path_max_tasks", "schedule_max_jobs",
     "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 occ"))' \
   "${campaign_final}/result.json" >/dev/null \

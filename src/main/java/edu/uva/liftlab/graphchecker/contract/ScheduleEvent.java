@@ -99,10 +99,12 @@ public final class ScheduleEvent extends Value {
      */
     private final String endpoint;
     /**
-     * The VM's last event id when the run made it (0: none stated), the
-     * order rows state their {@code seq} in: where a prefix is cut before a
-     * row's event ({@code explore.SchedulePrefix#write}).  Not part of what
-     * two runs compare.
+     * Where the run made it among the VM's events: a position after every
+     * VM event so far ({@code runtime.Identity#afterLastEvent}; 0: none
+     * stated), the scale the engine's own rows state their {@code seq} on (a
+     * store's write, a node's decode): where a prefix is cut before such a
+     * row ({@code explore.SchedulePrefix#write}).  Not part of what two runs
+     * compare.
      */
     private final long vmEvent;
 
@@ -192,7 +194,7 @@ public final class ScheduleEvent extends Value {
         return endpoint;
     }
 
-    /** The VM's last event id when the run made it, or 0. */
+    /** Where the run made it among the VM's events ({@link #vmEvent}), or 0. */
     public long vmEvent() {
         return vmEvent;
     }

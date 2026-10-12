@@ -282,22 +282,16 @@ public final class Confirmation {
                 ? viewWriter(write.version()) : id(write.endpoint());
     }
 
-    /** A node's decode re-pointed its view to {@code version}. */
-    static void wroteView(LocationId view, long version) {
-        if (!expected() || view == null) return;
-        synchronized (LOCK) {
-            ranOn();
-            WROTE.put(key(view, version), viewWriter(version));
-        }
-    }
-
+    /** One write row's version, by the writer {@link #writer} spells: a
+     *  node's decode re-pointing its view is {@link #viewWriter}. */
     static void wrote(LocationId location, long version, Endpoint writer,
                       boolean initial) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
             ranOn();
             WROTE.put(key(location, version), initial ? INITIAL
-                    : id(writer));
+                    : location.kind() == LocationKind.VIEW
+                    ? viewWriter(version) : id(writer));
         }
     }
 

@@ -1300,13 +1300,35 @@ public final class Identity {
     /**
      * The method that called the innermost one -- the frame one level out,
      * as its level was entered ({@code JvmNames#stable} of the method's
-     * signature) -- or {@code ""} at the thread's root: which call of a
-     * helper a forced replay forces a decider in ({@code ForcedArms}).
+     * signature), past synthetic hops ({@link #synthetic}: a helper a nested
+     * class or a lambda calls is called from the method that wrote the
+     * call; solr-adhoc-09: DeleteReplicaCmd.deleteCore -> its lambda class's
+     * call() -> lambda$deleteCore$0, whose deciders' via is deleteCore) --
+     * or {@code ""} at the
+     * thread's root: which call of a helper a forced replay forces a decider
+     * in, and which a decision row states ({@code ForcedArms}).
      */
     static String callerFrame() {
         State state = state();
-        return state.depth() < 2 ? ""
-                : state.frame(state.depth() - 2).callSite();
+        for (int depth = state.depth() - 2; depth >= 0; depth--) {
+            String caller = state.frame(depth).callSite();
+            if (!synthetic(caller)) return caller;
+        }
+        return "";
+    }
+
+    /** Whether a frame is a synthetic hop: javac's {@code access$NNN} or
+     *  lambda body {@code lambda$m$N}, or a method of Soot's desugared
+     *  lambda class ({@code X$lambda_m_N__k}, whose {@code call()} or
+     *  {@code run()} forwards to the lambda's body). */
+    private static boolean synthetic(String frame) {
+        int colon = frame.indexOf(':');
+        int paren = frame.indexOf('(', colon + 1);
+        if (colon < 0 || paren < 0) return false;
+        if (frame.substring(0, colon).contains("$lambda_")) return true;
+        String head = frame.substring(colon + 1, paren).trim();
+        String name = head.substring(head.lastIndexOf(' ') + 1);
+        return name.startsWith("access$") || name.startsWith("lambda$");
     }
 
     /** The innermost frame's call site, for a report, or {@code ""}. */

@@ -25,7 +25,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * hands each decode's product to {@link MessageDoors#decoded}; its object
  * graph is walked once and every application object in it is registered
  * with the version, the first decode that reaches an object keeping it (a
- * later product holding an older object shares it, it does not re-make it).
+ * later product holding an older object shares it, it does not re-make it:
+ * stated, never a silent re-pin, as a DIAGNOSTIC row and in {@link
+ * #summary}, as are a holder built from two decodes, a member the walk
+ * could not read, and every object it skips as no product of the decode).  What a decode reaches but did not make is no product of it:
+ * a class's constant (an object a static field of its own class holds,
+ * Solr's {@code DocRouter.DEFAULT} behind every collection's router) and
+ * what a supplier holds (code that makes state on demand, Solr's {@code
+ * PrsSupplier} with the per-replica states of child znodes).
  *
  * <p>The walk follows instance fields of application objects and the
  * contents of maps, collections and object arrays, registering no JDK
@@ -73,6 +80,19 @@ final class Provenance {
     private static final AtomicLong NANOS = new AtomicLong();
     private static final AtomicLong MAX_NANOS = new AtomicLong();
     private static final AtomicLong BOUNDED = new AtomicLong();
+    private static final AtomicLong SHARED = new AtomicLong();
+    private static final AtomicLong UNREGISTERED = new AtomicLong();
+    private static final AtomicLong SKIPPED = new AtomicLong();
+    /** Provenance sites whose read of an unregistered object is stated. */
+    private static final java.util.Set<String> UNREGISTERED_SITES =
+            ConcurrentHashMap.newKeySet();
+    /** Class, holding version and reaching version of each shared object
+     *  stated: one row each. */
+    private static final java.util.Set<String> STATED =
+            ConcurrentHashMap.newKeySet();
+    /** Per class, its static reference fields. */
+    private static final Map<Class<?>, Field[]> STATICS =
+            new ConcurrentHashMap<Class<?>, Field[]>();
 
     private Provenance() {
     }
@@ -94,9 +114,24 @@ final class Provenance {
     static Version observe(Object receiver, Object holder, boolean[] derived) {
         Version version = of(receiver);
         if (version != null && holder != null && holder != receiver) {
-            derived[0] = DECODED.putIfAbsent(holder, version) == null;
+            Version held = DECODED.putIfAbsent(holder, version);
+            derived[0] = held == null;
+            // Built from two decodes: it keeps the first, stated.
+            if (held != null && !same(held, version)) {
+                state(holder.getClass(), held, version, "a "
+                        + holder.getClass().getName() + " built from the"
+                        + " decodes of " + held + " and " + version
+                        + " keeps the first, so a guard reading it reads "
+                        + held);
+            }
         }
         return version;
+    }
+
+    /** Whether two versions name one location's one version. */
+    private static boolean same(Version one, Version other) {
+        return one.location.equals(other.location)
+                && one.version == other.version;
     }
 
     /**
@@ -184,9 +219,34 @@ final class Provenance {
                         || EnginePlumbing.site(type.getName())) {
                     continue;
                 }
+                // A supplier (state made on demand: PrsSupplier's per-replica
+                // states) and a class's constant are no product of this
+                // decode: skipped, and stated with all they hold.
+                String skipped = value instanceof java.util.function.Supplier
+                        ? "a supplier, which makes its state on demand"
+                        : constant(value) ? "a constant its class holds"
+                        : "";
+                if (!skipped.isEmpty()) {
+                    SKIPPED.incrementAndGet();
+                    stateOnce(type, version, version, "the decode reached a "
+                            + type.getName() + ", " + skipped + ": no"
+                            + " decode makes it, so it and what it holds"
+                            + " hold no version");
+                    continue;
+                }
                 // An object an earlier decode made is that decode's, and so
-                // is what it holds.
-                if (DECODED.putIfAbsent(value, version) != null) continue;
+                // is what it holds; another version's is stated.
+                Version held = DECODED.putIfAbsent(value, version);
+                if (held != null) {
+                    if (!same(held, version)) {
+                        state(type, held, version, "the decode reached a "
+                                + type.getName() + " that the decode of "
+                                + held + " registered: it keeps that version,"
+                                + " so a guard reading it reads " + held
+                                + ", not this decode's");
+                    }
+                    continue;
+                }
                 registered.add(value);
                 for (Field field : fields(type)) {
                     queue.add(new Object[] {field.get(value), depth + 1});
@@ -194,10 +254,116 @@ final class Provenance {
             } catch (ReflectiveOperationException | RuntimeException
                     unreadable) {
                 // A member it cannot read (a concurrent map moving under a
-                // shared object) registers nothing below it.
+                // shared object) registers nothing below it: stated.
+                state(type, version, version, "the decoded walk could not"
+                        + " read a " + type.getName() + " (" + unreadable
+                        .getClass().getSimpleName() + "): nothing below it"
+                        + " holds " + version);
             }
         }
         return bounded;
+    }
+
+    /**
+     * What a decode left unregistered or registered under another version
+     * (a shared object, a holder built from two decodes, an unreadable
+     * member): counted, stated once per class, pair and kind (DIAGNOSTIC),
+     * never a silent re-pin or skip.
+     */
+    private static void state(Class<?> type, Version held, Version version,
+                              String detail) {
+        SHARED.incrementAndGet();
+        stateOnce(type, held, version, detail);
+    }
+
+    /** One DIAGNOSTIC row per class, pair and kind of what a decode left. */
+    private static void stateOnce(Class<?> type, Version held,
+                                  Version version, String detail) {
+        if (!STATED.add(type.getName() + "|" + held + "|" + version + "|"
+                + detail.substring(0, Math.min(24, detail.length())))) {
+            return;
+        }
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                version.toString(), detail);
+    }
+
+    /** Whether a static field of {@code value}'s own class or one of its
+     *  application superclasses holds it, itself or as an element of a
+     *  map, collection or array it holds: a class's constant (Solr's
+     *  {@code DocRouter.DEFAULT}, and the routers {@code DocRouter.routerMap}
+     *  holds as values). */
+    private static boolean constant(Object value) {
+        for (Class<?> at = value.getClass(); at != null
+                && !jdk(at.getName()); at = at.getSuperclass()) {
+            for (Field field : statics(at)) {
+                try {
+                    if (holds(field.get(null), value)) return true;
+                } catch (ReflectiveOperationException | RuntimeException
+                        unreadable) {
+                    // Not one it can read.
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether {@code held} is {@code value}, or a map's value, a
+     *  collection's or an array's element that is, among its first
+     *  {@link #MAX_CONSTANTS}. */
+    private static boolean holds(Object held, Object value) {
+        if (held == value) return true;
+        Iterable<?> elements = held instanceof Map ? ((Map<?, ?>) held)
+                .values() : held instanceof Collection ? (Collection<?>) held
+                : held instanceof Object[] ? java.util.Arrays.asList(
+                (Object[]) held) : null;
+        if (elements == null) return false;
+        int seen = 0;
+        for (Object element : elements) {
+            if (element == value) return true;
+            if (++seen >= MAX_CONSTANTS) break;
+        }
+        return false;
+    }
+
+    /** The most elements of one static container a constant is looked for
+     *  among: a class's table of constants, not a cache. */
+    private static final int MAX_CONSTANTS = 1024;
+
+    /** The static reference fields of {@code type}, once per class. */
+    private static Field[] statics(Class<?> type) {
+        Field[] known = STATICS.get(type);
+        if (known != null) return known;
+        List<Field> found = new ArrayList<Field>();
+        for (Field field : type.getDeclaredFields()) {
+            if (!Modifier.isStatic(field.getModifiers())
+                    || field.getType().isPrimitive()) {
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+                found.add(field);
+            } catch (RuntimeException inaccessible) {
+                // Not read.
+            }
+        }
+        known = found.isEmpty() ? NONE : found.toArray(new Field[0]);
+        STATICS.put(type, known);
+        return known;
+    }
+
+    /**
+     * A provenance site in a region read an object no decode registered: its
+     * guard reads no store version, so no closure crosses to a writer of
+     * one.  Counted, stated once per site (DIAGNOSTIC), never silent.
+     */
+    static void unregistered(String siteId, Object receiver) {
+        if (receiver == null) return;
+        UNREGISTERED.incrementAndGet();
+        if (!UNREGISTERED_SITES.add(siteId)) return;
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, siteId,
+                "this provenance site read a " + receiver.getClass().getName()
+                        + " no decode registered, so its guard reads no store"
+                        + " version and no closure crosses to a writer of one");
     }
 
     /** A value is no holder of decoded state: its identity carries none. */
@@ -254,7 +420,12 @@ final class Provenance {
                 + String.format("%.2f", decodes == 0L ? 0.0
                 : NANOS.get() / 1e6 / decodes) + " ms each, longest "
                 + String.format("%.2f", MAX_NANOS.get() / 1e6) + " ms, "
-                + BOUNDED.get() + " at the bound";
+                + BOUNDED.get() + " at the bound, " + SHARED.get()
+                + " object(s) another version holds or unreadable, "
+                + SKIPPED.get() + " skipped as no decode's (a constant, a"
+                + " supplier), "
+                + UNREGISTERED.get() + " provenance read(s) of an object no"
+                + " decode registered";
     }
 
     /** Whether any decode was walked (the summary says something). */
@@ -269,5 +440,26 @@ final class Provenance {
         NANOS.set(0L);
         MAX_NANOS.set(0L);
         BOUNDED.set(0L);
+        SHARED.set(0L);
+        STATED.clear();
+        UNREGISTERED.set(0L);
+        UNREGISTERED_SITES.clear();
+        SKIPPED.set(0L);
+    }
+
+    /** Objects decodes skipped as no product of theirs (tests). */
+    static long skipped() {
+        return SKIPPED.get();
+    }
+
+    /** Provenance reads of an object no decode registered (tests). */
+    static long unregistered() {
+        return UNREGISTERED.get();
+    }
+
+    /** Objects a decode reached that another version holds, holders built
+     *  from two decodes, members it could not read (tests). */
+    static long shared() {
+        return SHARED.get();
     }
 }

@@ -490,8 +490,9 @@ final class RootDemand {
 
     /** The frontier signatures scope growth takes first, each with its
      *  class and distance: of the chosen boundaries, the callee of each
-     *  SCOPE return, the method of each SCOPE formal, each PRE_WINDOW field
-     *  (its writers may be out of scope), each IO frontier callee. */
+     *  SCOPE return, the method of each SCOPE formal, each PRE_WINDOW or
+     *  PROVENANCE field (its writers may be out of scope: a decode's
+     *  constructor), each IO frontier callee. */
     Map<String, StaticScopeMap.Demanded> frontier() {
         Map<String, StaticScopeMap.Demanded> frontier = new LinkedHashMap<>();
         for (Boundary boundary : boundaries) {
@@ -499,7 +500,7 @@ final class RootDemand {
             Matcher returned = RETURN.matcher(boundary.cell);
             Matcher formal = FORMAL.matcher(boundary.cell);
             String signature = boundary.kind == Kind.PRE_WINDOW
-                    ? boundary.cell
+                    || boundary.kind == Kind.PROVENANCE ? boundary.cell
                     : boundary.kind != Kind.SCOPE ? null
                     : returned.matches() ? returned.group(1)
                     : formal.matches() ? formal.group(1) : null;

@@ -6,10 +6,12 @@ import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
+import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.StableEventNames;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -54,7 +56,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
  * While the prefix stands a WAKE with no slot is held too: at the
  * cut when the recording never made it, and past its recorded count -- a
  * loop polling longer than recorded -- once per move of the order, unless
- * its loop reads a CLOCK root ({@link #waitsAtLocked}).  A WRITE never
+ * its loop reads a CLOCK root ({@link #waitsAtLocked}).  An event of a
+ * timed-wait loop's turn ({@code Root:WAKE/<wait>#k}, whose k counts the
+ * loop's wakes) held at its slot is held so too: it bounds no give-up, and
+ * let go it takes that slot.  A WRITE never
  * passes an earlier held write to its location: one the order lacks, or
  * one whose slot holds nothing (past the cut), waits for it until it is
  * taken or given up.  An order cut at its
@@ -177,10 +182,12 @@ public final class ScheduleLog {
     private static final Map<Thread, Long> ARRIVED =
             new HashMap<Thread, Long>();
     /**
-     * The waiters the order holds without a slot, each with the WAKE it
-     * waits to make: one the recording never made (AT THE CUT), or a poll
-     * past its recorded count ({@link #waitsAtLocked}).  Only these can be
-     * let go.  A subset of {@link #WAITERS}.
+     * The waiters the order holds for no slot's event, each with the event
+     * it waits to make: a WAKE the recording never made (AT THE CUT), a poll
+     * past its recorded count, a read behind a write to its location, or an
+     * event of a timed-wait loop's turn at a slot its k may have taken from
+     * another turn ({@link #waitsAtLocked}).  Only these can be let go, and
+     * none bounds a give-up.  A subset of {@link #WAITERS}.
      */
     private static final Map<Thread, Pending> HELD =
             new HashMap<Thread, Pending>();
@@ -731,6 +738,10 @@ public final class ScheduleLog {
         COUNTS.put(pending.key, k + 1);
         madeRealizedLocked(pending, k);
         if (pending.kind == ScheduleEvent.Kind.SEND
+                && !pending.endpoint.isEmpty() && !AWAITED.isEmpty()) {
+            names.sent(pending.context, pending.site, pending.endpoint);
+        }
+        if (pending.kind == ScheduleEvent.Kind.SEND
                 && !pending.endpoint.isEmpty()) {
             ContextShape.Stance stance =
                     ContextShape.Stance.ofSend(pending.context);
@@ -747,7 +758,7 @@ public final class ScheduleLog {
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
-                pending.endpoint, RowRuntime.currentEvent());
+                pending.endpoint, Identity.afterLastEvent());
         writeLocked(RowCodec.writeScheduleEvent(event));
     }
 
@@ -770,6 +781,9 @@ public final class ScheduleLog {
             new HashMap<String, List<Ordered>>();
     /** Per event held, when its hold gives way. */
     private static final Map<String, Long> DUE = new HashMap<String, Long>();
+    /** This run's stable event names, which the realized rows state (fed
+     *  its SENDs while it holds an order). */
+    private static StableEventNames names = new StableEventNames();
 
     /** One realized ORDER row: its number, and its two events. */
     private static final class Ordered {
@@ -784,7 +798,8 @@ public final class ScheduleLog {
         }
     }
 
-    /** One event's identity across runs: kind, context, site and k. */
+    /** One event's identity across runs: kind, context ({@link
+     *  StableEventNames} for a realized row), site and k. */
     static String eventId(String kind, String context, String site, int k) {
         return kind + " " + site + " @ " + context + " #" + k;
     }
@@ -876,8 +891,10 @@ public final class ScheduleLog {
     private static boolean realizedLocked(Pending pending) {
         loadRealizedLocked();
         if (realized.isEmpty() || RecordingPlant.orderGaveWay()) return true;
+        String context = names.context(pending.context);
+        if (context == null) return true;
         Integer made = COUNTS.get(pending.key);
-        String id = eventId(pending.kind.name(), pending.context,
+        String id = eventId(pending.kind.name(), context,
                 pending.site, made == null ? 0 : made);
         List<Ordered> rows = realized.get(id);
         if (rows == null) return true;
@@ -921,8 +938,9 @@ public final class ScheduleLog {
      *  for it gave way states it came late. */
     private static void madeRealizedLocked(Pending pending, int k) {
         if (AWAITED.isEmpty()) return;
-        String id = eventId(pending.kind.name(), pending.context,
-                pending.site, k);
+        String context = names.context(pending.context);
+        if (context == null) return;
+        String id = eventId(pending.kind.name(), context, pending.site, k);
         if (!AWAITED.contains(id) || !MADE_AWAITED.add(id)) return;
         LOCK.notifyAll();
         List<Ordered> late = OVERDUE.remove(id);
@@ -1260,6 +1278,10 @@ public final class ScheduleLog {
      *       context left, it waits at the line.</li>
      * </ul>
      *
+     * An event of a timed-wait loop's turn ({@link #timedWaitTurn}) whose
+     * slot is not due is held at it the same way: its k is a count of
+     * wakes, so the slot may be another turn's; let go, it takes it.
+     *
      * A WRITE never passes an earlier held write to its location: a slot
      * that holds is due only past it, and one that holds nothing (past the
      * cut) or no slot at all waits for it ({@link #conflictLocked}).
@@ -1292,7 +1314,20 @@ public final class ScheduleLog {
             HELD.put(self, event);
             return write + 1;
         }
-        if (slot >= 0 && heldKind(slot) && !dueLocked(slot)) return slot;
+        boolean turn = timedWaitTurn(event.context);
+        if (slot >= 0 && heldKind(slot) && !dueLocked(slot)
+                && !(turn && LET_GO.contains(self))) {
+            if (!turn) return slot;
+            // A timed-wait loop's turn: its k counts the loop's wakes, which
+            // the replay's timing moves, so its slot may be another turn's.
+            // Held like a poll past its count: it bounds no give-up, and let
+            // go it takes the slot its key found -- a WRITE still behind an
+            // earlier held write to its location, below (solr-adhoc-39
+            // MB29s: a queue write in replayed turn #88 waited at recorded
+            // #88's slot and bounded a give-up of 4251 slots).
+            HELD.put(self, event);
+            return slot;
+        }
         if (slot < 0 && deadLocked(event)) return GO;
         if (event.kind == ScheduleEvent.Kind.WRITE) {
             int conflict = conflictLocked(event, slot);
@@ -1500,6 +1535,21 @@ public final class ScheduleLog {
      *  frontier of theirs stands a grace, not a timeout ({@link
      *  #watchdogLocked}). */
     private static final Set<String> FAILED = new HashSet<String>();
+
+    /** How a timed-wait loop's turn renders ({@code
+     *  RuntimeTraceContext#beginWake}): {@code Root:WAKE/<wait>#k}. */
+    private static final String TIMED_WAIT_TURN =
+            "Root:" + Role.WAKE.name() + "/";
+
+    /**
+     * Whether an event context stands in a timed-wait loop's turn: its
+     * causal context, after the node, is {@code Root:WAKE/<wait>#k}, whose k
+     * counts the loop's wakes -- a timing fact, so the k-th turn of a replay
+     * is another turn than the recording's k-th.
+     */
+    static boolean timedWaitTurn(String context) {
+        return context.startsWith(TIMED_WAIT_TURN, context.indexOf('|') + 1);
+    }
 
     private static final java.util.regex.Pattern TURN_OR_ANCHOR =
             java.util.regex.Pattern.compile("#[0-9]+|Anchor:[0-9a-f]+");
@@ -1926,6 +1976,11 @@ public final class ScheduleLog {
         if (held.kind == ScheduleEvent.Kind.READ) {
             return held.render() + " behind a write to its location";
         }
+        Integer at = WAITERS.get(thread);
+        if (held.kind != ScheduleEvent.Kind.WAKE && at != null && at >= 0
+                && timedWaitTurn(held.context)) {
+            return held.render() + " in a timed wait's turn, at slot " + at;
+        }
         return SLOTS.containsKey(held.key)
                 ? held.render() + " past its recorded count"
                 : "the unrecorded " + held.render();
@@ -2324,6 +2379,7 @@ public final class ScheduleLog {
             seq = 0L;
             steps = 0L;
             realized = null;
+            names = new StableEventNames();
             AWAITED.clear();
             MADE_AWAITED.clear();
             OVERDUE.clear();

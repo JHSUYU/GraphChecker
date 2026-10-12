@@ -6172,6 +6172,7 @@ explore_manifest.json 2>/dev/null) \
     [$last[] | bound("max-paths-per-region")] as $paths
     | rows("max-world-depth") as $depth
     | rows("pairing-bound") as $pairing
+    | rows("loop-body-bound") as $loops
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
     | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]
@@ -6193,6 +6194,12 @@ explore_manifest.json 2>/dev/null) \
             detail: ("\($pairing | length) read(s) of a node'"'"'s view offered"
               + " only the \($pairing[0].subject | sub(".*="; "")) newest of"
               + " the older decodes before it")}),
+        (select(($loops | length) > 0)
+         | {by: "loop_body_bound",
+            detail: ("\($loops | length) path(s) at the anchor a loop"
+              + " bound cut before they reached it, before or after they"
+              + " left the way to the throw (bodies: " + ($loops | map(.subject
+              | sub(".*="; "")) | unique | join(", ")) + ")")}),
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"

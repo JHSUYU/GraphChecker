@@ -77,7 +77,8 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   `pauseConcolicPathCondition` / `resumeConcolicPathCondition` (nestable) mute recording around the
   engine's own code: every hook call the weave emits, and the engine code the JDK runs on a
   program thread (an inheritable thread-local's `childValue` in `Thread.init`,
-  `runtime/InheritedState`). Paused, the interpreter propagates nothing and no model runs
+  `runtime/InheritedState`) -- and every call of a logging API in woven code, which is IO off the
+  traced flow (`CausynthPipeline#pauseAround`). Paused, the interpreter propagates nothing and no model runs
   (`ConcolicMngr::can_do_concolic`), so the engine's lists over program objects shadow none of
   them.
 
@@ -593,13 +594,7 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   serializer); the engine keeps them in each session's `expressions.jsonl` (CONTRACT-SPEC.md).
 - `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
   location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
-  resume neither repeats nor skips a location (`SFV`). `afterEventId` is also the read-out's
-  window: a selected location's versions and reads at or after it come whole, an earlier version
-  as metadata only, `beforeWindow: true`, no `expression` or `pathGuard` (unless a read of the
-  window observed it), an earlier read flagged the same (`write_versions_envelope`'s `window`;
-  0, the single-location answer, is the whole log). A whole log re-sent every value of a hot
-  location with every region close: solr-18413's seed replay spent 3-10 times MB7's 485 s parsing
-  them (round ZA). A page is cut only between locations, once
+  resume neither repeats nor skips a location (`SFV`). A page is cut only between locations, once
   its text and table reach `maxBytes` (its first location goes whatever its size), and carries the
   expression table of what its locations name, last: every page repeats the closure its locations
   share. The engine hands each page to its publication thread as it is read, once fewer than four
