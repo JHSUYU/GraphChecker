@@ -592,7 +592,11 @@ public final class Composer {
                            List<JsonObject> open) {
             for (String symbol : cone().unbound(path.selector(),
                     path.path().pathId, arms, concrete)) {
-                Endpoint producer = openArrivals.get(symbol);
+                // By the body's spelling, whichever the formula's text
+                // names it by (a raw M_L'String'_... and its bar-quoted
+                // form are one symbol).
+                Endpoint producer = openArrivals.get(
+                        SmtNames.legalSymbols(symbol));
                 JsonObject row = new JsonObject();
                 row.addProperty("symbol", symbol);
                 row.addProperty("pathId", path.path().pathId);

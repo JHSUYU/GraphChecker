@@ -229,7 +229,10 @@ final class StoreContent {
         String type = bool ? "Z" : "J";
         if (VmExpressionIr.exactStringLiteral(expression,
                 any -> true) != null) {
-            return constant(type, text);
+            // The VM spells a boolean constant 1 or 0 (Y_Z_1), never its
+            // text: Y_Z_false lowered to nothing (solr-18413 Z2U).
+            return constant(type, !bool ? text : "true".equals(text) ? "1"
+                    : "0");
         }
         if (bool) return null;
         JsonArray params = new JsonArray();

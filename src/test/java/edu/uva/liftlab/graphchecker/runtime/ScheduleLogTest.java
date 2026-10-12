@@ -1137,6 +1137,46 @@ public class ScheduleLogTest {
     }
 
     /**
+     * How long a read waits for the write in flight that made its version,
+     * per row: one still before its store's call holds it {@link
+     * MessageDoors#FILED_WAIT_MS} (a writer the schedule may hold behind the
+     * reader), and the read pairs with no write; one filing ({@code
+     * stored} began, solr-18413 Z2V: exporting the document's leaves under
+     * the VM takes seconds) holds it past that bound, up to {@link
+     * MessageDoors#FILING_WAIT_MS}, and the read pairs with the write once
+     * it files.
+     */
+    @Test(timeout = 30000L)
+    public void aReadWaitsLongerForAWriteThatIsFiling() throws Exception {
+        final Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        long hold = MessageDoors.FILED_WAIT_MS + 1500L;
+        for (boolean filing : new boolean[] {false, true}) {
+            String location = "/q" + filing;
+            final List<Boolean> named = Collections.synchronizedList(
+                    new ArrayList<Boolean>());
+            long bracket = MessageDoors.storing("STORE", location);
+            long filed = filing
+                    ? MessageDoors.filingBegins("STORE", location) : -1L;
+            long began = System.currentTimeMillis();
+            Thread callback = reading(owner, location + "@1", named);
+            callback.join(hold);
+            assertEquals("filing " + filing + ": still waiting past "
+                    + MessageDoors.FILED_WAIT_MS + " ms", filing,
+                    callback.isAlive());
+            MessageDoors.stored("STORE", location + "@1", owner, null);
+            if (filing) MessageDoors.storeEnded("STORE", filed);
+            MessageDoors.storeEnded("STORE", bracket);
+            callback.join(5000L);
+            long waited = System.currentTimeMillis() - began;
+            assertEquals("filing " + filing + ": paired with the write",
+                    Arrays.asList(filing), named);
+            assertTrue("filing " + filing + ": " + waited, filing
+                    ? waited >= hold : waited < hold);
+        }
+    }
+
+    /**
      * A WRITE takes its turn before the store's call, and never passes an
      * earlier held write to its location -- until that write is taken or
      * the watchdog gives it up, as any slot: no wait is unbounded.  Per row:
