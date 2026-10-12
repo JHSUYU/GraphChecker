@@ -779,10 +779,14 @@ public final class ClaimPolicy {
         private Outcome worldPairing(Composer.Disjunct selected) {
             String selector = selected.selector();
             List<String> held = composition.worldRun(selected);
-            if (held.isEmpty()) {
+            // Nothing to hold where no family offers the path an arm: its
+            // own run is then the only one asked (solr-bugs-tra-start-
+            // overwrite Z2S: the paired view read stated by no family).
+            if (held.isEmpty() && composition.offersArms(selector)) {
                 return unclaimed(selected, "nothing holds the path to its "
-                        + "session's run: no delivery of its own, no observed"
-                        + " writer arm, no plant");
+                        + "session's run while a family offers it arms: no "
+                        + "delivery of its own, no observed writer arm, no "
+                        + "plant");
             }
             Map<String, ReadRow> taken = composition.takenPairings(selected);
             Map<String, Composer.Composition.FatalPath> clauses =

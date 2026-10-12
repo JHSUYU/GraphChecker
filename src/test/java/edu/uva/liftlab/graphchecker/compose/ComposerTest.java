@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -851,15 +852,29 @@ public class ComposerTest {
         // leaves, |M_L'String'_...|, named no producer).
         for (String vh : new String[] {"M_Z_field_HOFF.key",
                 "M_Z_field_HOFF.k'ey"}) {
-            judgedOnItsPaths(vh);
+            judgedOnItsPaths(vh, "PORT.key", PRODUCER);
         }
+        // A store content leaf whose unattested producer the closure refuses
+        // by rule (a role: no weave captures it) is a constant of its
+        // version, named, and no open link (lead's rule (a)); the same leaf
+        // of a region producer a round could plan stays an open link.
+        String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
+        judgedOnItsPaths("M_Z_field_HOFF.leaf", content, PRODUCER);
+        judgedOnItsPaths("M_Z_field_HOFF.leaf2", content,
+                OccurrenceAddress.of(PRODUCER.node(),
+                        OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
+                        PRODUCER.context(), ExecutionIndex.empty()));
     }
 
-    private void judgedOnItsPaths(String vh) throws Exception {
-        Path iteration = folder.newFolder("judged-" + vh.length()).toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+    /** How many {@link #judgedOnItsPaths} built: each its own folder. */
+    private int judged;
+
+    private void judgedOnItsPaths(String vh, String site,
+                                  OccurrenceAddress heldBy) throws Exception {
+        Path iteration = folder.newFolder("judged-" + judged++).toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, site,
                 at("export#1", 0), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+        Endpoint consumer = Endpoint.of(ANCHOR, site,
                 at("attach#1", 0), 0);
         session(iteration, "s0", false, "false", producer, consumer, vh,
                 "false", null, true, false, "EXPR.v1.marker");
@@ -867,8 +882,9 @@ public class ComposerTest {
                 "true", null, true, true, "EXPR.v1.marker");
         // A replay paired with another export of the producer, which no
         // session attests (it ran concretely): its arrival is held.
-        Endpoint unattested = Endpoint.of(PRODUCER, "PORT.key",
+        Endpoint unattested = Endpoint.of(heldBy, site,
                 at("export#2", 0), 0);
+        boolean refused = heldBy.role();
         session(iteration, "s2", true, "false", unattested, consumer, vh,
                 "false", null, false, false, "EXPR.v1.marker");
         Composer.Composition composition = compose(iteration, 8);
@@ -880,9 +896,12 @@ public class ComposerTest {
         assertFalse("the witness's own chain is closed: " + sat,
                 sat.has("openChain"));
         JsonArray off = sat.getAsJsonArray("unboundOffWitness");
-        assertEquals("s2's open link is stated: " + sat, 1, off.size());
-        assertEquals(SmtNames.legalSymbols(vh), off.get(0).getAsJsonObject()
-                .get("symbol").getAsString());
+        assertEquals("s2's open link is stated: " + sat, refused ? 0 : 1,
+                off == null ? 0 : off.size());
+        if (!refused) {
+            assertEquals(SmtNames.legalSymbols(vh), off.get(0)
+                    .getAsJsonObject().get("symbol").getAsString());
+        }
 
         // The witness's model refuted: the formula is unsat, and rests on
         // s2's path too, whose fatal condition names the held arrival.
@@ -908,6 +927,17 @@ public class ComposerTest {
         ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
         JsonObject unsat = ComposeMain.campaignClaim(next, again);
+        if (refused) {
+            assertFalse("a constant of its version is no open link: "
+                    + unsat, unsat.has("openChain"));
+            boolean named = false;
+            for (GapRow gap : next.gaps()) {
+                named |= gap.detail().contains("constantByRefusedProducer")
+                        && gap.subject().equals(heldBy.render());
+            }
+            assertTrue("named per producer and rule: " + next.gaps(), named);
+            return;
+        }
         assertEquals(unsat.toString(), "RUN_DEFECT",
                 unsat.get("claim").getAsString());
         JsonObject link = unsat.getAsJsonArray("openChain").get(0)

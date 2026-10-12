@@ -3934,10 +3934,17 @@ public final class SmtLowering {
         public static final String FREE = "FREE";
         /** A value held at what the recording states. */
         public static final String HELD = "HELD";
+        /**
+         * A store content leaf held at the value its version holds because
+         * the closure refuses its producer by rule: a constant of the version,
+         * as the read was before capture, and no open link of the chain
+         * ({@code Composer#arrival}, cone.json's constantByRefusedProducer).
+         */
+        public static final String CONSTANT = "CONSTANT";
         /** Why a HELD value is held. */
         public static final String PRODUCER_UNSTATED = "producer unstated";
 
-        /** {@link #FREE} or {@link #HELD}. */
+        /** {@link #FREE}, {@link #HELD} or {@link #CONSTANT}. */
         public final String kind;
         public final String subject;
         /** A HELD value's recorded value; "" for a FREE one. */
@@ -3975,6 +3982,14 @@ public final class SmtLowering {
     public void held(String subject, String value, String why) {
         top().unbound.add(new Unbound(Unbound.HELD, subject, value,
                 Unbound.PRODUCER_UNSTATED + ": " + why,
+                Collections.<String>emptyList(), arm));
+    }
+
+    /** A store content leaf held at its version's value because its
+     *  producer is refused by {@code rule} ({@link Unbound#CONSTANT}). */
+    public void constantByRefusedProducer(String subject, String value,
+                                          String rule) {
+        top().unbound.add(new Unbound(Unbound.CONSTANT, subject, value, rule,
                 Collections.<String>emptyList(), arm));
     }
 

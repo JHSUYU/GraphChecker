@@ -1417,7 +1417,11 @@ float's decimal text), and its readers mint their own (`StoreContent#wide`, `#wi
 reader's, so a leaf's two ends are declared alike; a reader leaf that cannot cross as its writer's
 mints by its own text, unpaired. At most
 1024 leaves and 16 levels of one document are walked; past them a DIAGNOSTIC `UNSTATED_VALUE` names
-`CONTENT_BOUND:<port>` and the rest crosses as constants. A wave's answer for a leaf's attach is
+`CONTENT_BOUND:<port>` and the rest crosses as constants. A writer's export of a leaf is the VM's
+expression of it imported through the VM's expression store (`StoreContent#export`, as `WireExport`
+imports a message field's), never its raw answer, whose nodes are references. A leaf whose producer
+the closure refuses by rule is a constant of its version in COMPOSE (PIPELINE §8, `CONSTANT`). A
+wave's answer for a leaf's attach is
 written into the parsed tree before the mint, as the parser would hold it.
 
 What reads a leaf reads the objects the system builds from the tree: Solr's `ZkNodeProps` keeps the

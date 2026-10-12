@@ -1638,9 +1638,16 @@ forced world's and asserting them in another world could make a real witness UNS
   an attach no session attests the producer of (or with no producer named) has a producer no row
   states: HELD at the value its row states it received, conjoined with the path (inside an arm: with
   the arm's body) and named (`Composer.Concrete` HELD, "producer unstated", its `arm` the arm whose
-  body holds it, none on the path's own); one whose producer is attested and no export of
-  it lowers, or whose row states a value the lowering places nowhere, is FREE, named: nothing pins
-  it, and a path is never dropped for it;
+  body holds it, none on the path's own) -- a String arrival held at its text (`Composer#arrived`)
+  --, except a store content leaf (`contract.ContentPort`) whose producer the closure refuses by
+  rule (a role, which no weave captures; a daemon tick past the recording's last,
+  `Corpus#tickPastRecording`): that one is a constant of its version, as the read was before
+  capture, held the same way but named `CONSTANT` (`Composer#refusedByRule`,
+  `SmtLowering#constantByRefusedProducer`; one DIAGNOSTIC per producer and rule with its leaf count),
+  and no open link of a chain (`Cone`, `cone.py`'s `constantByRefusedProducer`) -- a leaf with no
+  producer, or one a round could plan, stays HELD and open; one whose producer is attested and no
+  export of it lowers, or whose row states a value the lowering places nowhere, is FREE, named:
+  nothing pins it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it
   rests on, where its stated producer rests on what can move; HELD at its recorded value, named
   "producer unstated", where no row states its producer; never free by default, never a silent
@@ -2156,7 +2163,8 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      fault and clock the world planted besides the pairing; it needs no attested arm (nothing moves in
      one: solr-bugs-tra-start-overwrite Z2K, whose request arms' producers ran concretely), and the
      pairing is named in `repairedArms`, by its arm, else `PAIRING:<reader>=<writer>` where no family
-     states the read. It stands only where something holds the path, each taken pairing lies on the
+     states the read. It stands only where something holds the path (or no family offers the path an
+     arm, `Composition#offersArms`: its own run is then the only one asked), each taken pairing lies on the
      fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, `CONE`, or -- a read
      no term names -- its occurrence is the anchor's, `ANCHOR`, or wrote a version a read in the cone
      observed, `WROTE`; the clause of each pairing is named in the claim's gaps, and an `ANCHOR` or

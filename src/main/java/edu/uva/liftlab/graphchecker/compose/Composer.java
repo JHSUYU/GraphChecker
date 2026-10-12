@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.Moved;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -1157,6 +1158,19 @@ public final class Composer {
             return new ArrayList<String>(armChoices.keySet());
         }
 
+        /**
+         * Whether a family offers the path {@code selector} names an arm to
+         * choose: where none does, the path's own run is the only one the
+         * formula asks of it ({@code ClaimPolicy#worldPairing}).
+         */
+        public boolean offersArms(String selector) {
+            String ordinal = Refutations.ordinal(selector);
+            for (String arm : armChoices.keySet()) {
+                if (Refutations.ordinal(arm).equals(ordinal)) return true;
+            }
+            return false;
+        }
+
         /** The delivery one arm selector stands for, or null. */
         public ComposedFamilies.ArmChoice arm(String selector) {
             return armChoices.get(selector);
@@ -1268,6 +1282,10 @@ public final class Composer {
     private final int maxValuations;
     private final SmtLowering lowering;
     private final List<GapRow> gaps = new ArrayList<GapRow>();
+    /** "producer occurrence\nrule" -> how many store content leaves it wrote
+     *  are held as constants ({@link #refusedByRule}). */
+    private final Map<String, Integer> refusedProducerLeaves =
+            new LinkedHashMap<String, Integer>();
     private final Map<String, Family> families =
             new LinkedHashMap<String, Family>();
     /** Root id -> the domain the case and the recording give it. */
@@ -1533,6 +1551,17 @@ public final class Composer {
                 : lowering.diagnostics().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     named.getKey(), named.getValue());
+        }
+        // Every store content leaf held as its version's constant, named per
+        // producer and rule (#refusedByRule): never silent.
+        for (Map.Entry<String, Integer> refused
+                : refusedProducerLeaves.entrySet()) {
+            String[] parts = refused.getKey().split("\n", 2);
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, parts[0],
+                    refused.getValue() + " store content leaf(s) this "
+                            + "producer wrote are constants of their versions"
+                            + " (constantByRefusedProducer), since the closure"
+                            + " never plans it: " + parts[1]);
         }
 
         // Valuations before the body: the body declares what pins reach.
@@ -2229,10 +2258,44 @@ public final class Composer {
         }
         lowering.declareStated(attach.symbol(), value.sort);
         holds.add("(= " + attach.symbol() + " " + value.text + ")");
+        String rule = refusedByRule(attach);
+        if (!rule.isEmpty()) {
+            lowering.constantByRefusedProducer(attach.symbol(), received,
+                    rule);
+            refusedProducerLeaves.merge(attach.producer().occurrence()
+                    .render() + "\n" + rule, 1, Integer::sum);
+            return;
+        }
         lowering.held(attach.symbol(), received, attach.producer() == null
                 ? "the attach names no producer"
                 : "no export row of this corpus attests its producer "
                 + attach.producer().id());
+    }
+
+    /**
+     * Why the closure refuses, by a rule, ever to plan the producer of a
+     * store content leaf no attested export binds, or "": a daemon tick past
+     * the recording's last ({@code Corpus#tickPastRecording}: only a replay
+     * slower than the recording ran it), or a role, which no weave captures.
+     * Such a leaf is a constant of its version, as the read was before
+     * capture ({@link SmtLowering#constantByRefusedProducer}): nothing in
+     * the explored space can move it, and no GROW can attest it.  A leaf
+     * with no producer at all, or one a later round could plan, stays HELD,
+     * an open link (lead's rule (a), 2026-10-12).
+     */
+    private String refusedByRule(AttachRow attach) {
+        if (attach.producer() == null
+                || ContentPort.parse(attach.endpoint().site()) == null) {
+            return "";
+        }
+        OccurrenceAddress producer = attach.producer().occurrence();
+        if (producer.role()) {
+            return "ROLE: " + producer.regionId() + " is a role, no region a "
+                    + "weave captures";
+        }
+        String tick = corpus.tickPastRecording(producer);
+        return tick == null ? "" : "TICK_BOUND: begun by the daemon tick "
+                + tick;
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */

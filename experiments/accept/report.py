@@ -584,7 +584,8 @@ concrete = result.get("concrete") or []
 # (hdfs-11741 PS1: 12 HELD rows of arms the witness did not take).
 CONCRETE_SHOWN = 20
 WORDS = {"FREE": "free (over-approximated)",
-         "HELD": "held at its recorded value"}
+         "HELD": "held at its recorded value",
+         "CONSTANT": "a constant of its version (its producer refused by rule)"}
 witness = next((row for row in result.get("valuations") or []
                 if row.get("ordinal") == valuation_ordinal), {})
 witness_path = witness.get("selectedPathId") or ""
