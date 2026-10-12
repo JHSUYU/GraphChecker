@@ -277,8 +277,7 @@ BLOCKING at the fixed point.
 - Snapshots worth keeping: `~/gc-run/ib1`, `ib2`, `z1d-8`, `rx7`, `z2-13`, `st20`; the rest of this session's
   (`z1-*`, `z1d-1..7`, `rx0..6`, `z2-1..12`, `st1..19`, `ib1n`) can go after a pgrep on all lifts.
 - Gotchas (this session): pass a sha to tools/lib/worktree-add.sh (it resolves in ~/GraphChecker); never `git worktree
-  add` without it (a full checkout writes third_party to NFS); `launch-round.sh` does not pass CASE_TIMEOUT_SECONDS over
-  ssh (launch-run.sh with the variables on the command line); stop-run.sh alone on its command line, by round suffix,
+  add` without it (a full checkout writes third_party to NFS); stop-run.sh alone on its command line, by round suffix,
   with the run's GC_OUT; an agent listed as running may be idle (compare last commits); the account's usage limit can
   stop agents mid-edit (resume each with SendMessage).
 

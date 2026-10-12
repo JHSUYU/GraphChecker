@@ -40,7 +40,7 @@ host, and it is why isolation must be strict.
   every tool call starts a shell there. Their polling (one waiter per agent, from another lift, >= 60 s) and their
   heavy commands (`onlift.sh` off it) go elsewhere, and while they run there it is out of the campaigns' `LIFTS`; a
   jam on it stops every agent at once although the cluster and NFS are idle (OPERATIONS §8: `BASH_ENV` and a wedged
-  `/sw`). Distribute through NFS as before: measured from the other lifts, NFS answered in milliseconds under ten
+  `/sw`; the recipe: §6). Distribute through NFS as before: measured from the other lifts, NFS answered in milliseconds under ten
   campaigns; a git checkout per lift is not needed.
 - **Host-dependent state is a hazard:** what differs between lifts or file systems (a directory's listing order, a
   temp path, a host name) makes a recording on one host and its replay on another disagree. The engine fixes such
@@ -117,3 +117,65 @@ HG9B (the 10 named bugs, 3 h budget), six 3 h reruns (HG9L-*) and SW1 (the three
 DO2 + offline A/B), D1 (frontier depth FD2/FD3 + container writers CW5); review agents on the time model, (b2) and the
 decider. 14 merges into `system/hdfs` that day, each validated beside the others. The cost of that load: lift11's NFS
 jam (fixed) and budget cuts (rerun at 3 h).
+
+## 6. The recipe as run on 2026-10-12 (Solr): copy it
+
+What one lead and four coding agents did to keep ten lifts busy without NFS or the control host becoming the
+bottleneck. Every command here is current; the numbers are measured.
+
+**1. The control host (lift11) stays light.** Claude Code sessions -- the lead and every agent -- run on lift11, and
+every tool call starts a shell there.
+- First thing in a session: make sure no shell carries `BASH_ENV`. The login environment exports
+  `BASH_ENV=/sw/ubuntu/custom/lmod/lmod/init/bash` (`/etc/profile.d/modules.sh`), so every non-interactive bash reads
+  `/sw`; when `/sw`'s automount hangs on lift11 (2026-10-12: lift11 only, every other lift answered in ms) each
+  `bash` waits minutes (`bash -c true`: 30 s+ with it, 6 ms without) and the sessions' shells pile up in D state (60 at
+  load 65). No GraphChecker tool needs lmod. Append once per session:
+  `printf '\nunset BASH_ENV\n' >> "$(ls -t ~/.claude/shell-snapshots/snapshot-zsh-*.sh | head -1)"`, check with
+  `echo ${BASH_ENV:-unset}`; a long-lived shell started before runs `env -u BASH_ENV bash ...`. Put the same line in
+  every agent brief.
+- Shells already stuck in `autofs_wait` (`cat /proc/<pid>/wchan`) take `kill -9` (the automount wait is killable); kill
+  by pid only those older than ~10 min, never by pattern.
+- Diagnose before blaming NFS: `timeout 20 stat <path>` for each mount (`/u/vnr3ne`, `/bigtemp`, `/sw`) on the slow host
+  and on two others. On 2026-10-12 NFS answered in 2-9 ms from every other lift under ten campaigns; a git checkout
+  per lift was not needed.
+- Nothing heavy and no polling on lift11: builds, tests and offline gates go through `tools/onlift.sh` (it picks
+  another lift); each agent keeps at most ONE background waiter, polling from another lift at >= 60 s; campaigns
+  launched while sessions run on lift11 leave it out of `LIFTS` (below).
+
+**2. Launching.** One command per batch of cases; heads are chosen by room, never lift11, every obligation spread over
+`LIFTS`:
+```bash
+cd ~/gc-run/<snap> && env -u BASH_ENV \
+  LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15" \
+  CASES="solr-18406 solr-18413" CASE_TIMEOUT_SECONDS=10800 PRUNE=0 GC_OUT=/bigtemp/vnr3ne/gc-out/<agent or round> \
+  CAUSYNTH_CUSTOM_JDK_HOME=/bigtemp/vnr3ne/vm-force5/j2sdk-image tools/rounds/launch-round.sh ~/gc-run/<snap> <ROUND>
+```
+`CASE_TIMEOUT_SECONDS`, `PRUNE` and `CAUSYNTH_CAMPAIGN_STOP_AFTER` reach the heads on the command line (ssh carries no
+environment). A case that needs another Solr tree: its `case.sh` `repo=` lines edited in the snapshot only, or a
+`GC_TREES` directory whose `lucene-solr-checks` links to the tree (`sg3-trees`, `ib-trees`).
+
+**3. Memory, the one limit.** No lift past 70 % (the ledger). Two charge rules keep the ledger close to real use:
+- an engine JVM at heap H is charged its footprint H + H/16 + 384 MB (`campaign_jvm_footprint_mb`): charged at H, a
+  served planner that filled its heap was ended for 183 MB on a full host and its campaign failed (07, 21);
+- a stream replay is charged the 90th percentile of the returned replays' peaks times 1.25 once eight returned
+  (`campaign_replay_typical`), its heap still the largest peak times 1.5: charged at the largest, ledgers held 21-22 GB
+  over 8-11 GB of real use and no host admitted a start (21: peaks p50 918, p90 1242, max 2234 MB, each charged 3456).
+  After both: 18406 757 s (1000-1750 before), migrate 604 s, 18413 PASS, all native 10/10 (round LD2).
+- Judge a host by real use and live charges (`$CAUSYNTH_HOST_LEDGER/<lift>/charges/`, mtime < 120 s), not by load.
+
+**4. Agents and trees.** At most four coding agents, each with its own branch, worktree (`tools/lib/worktree-add.sh`,
+a sha), frozen snapshots `~/gc-run/<prefix><n>`, `GC_OUT` and at most two live runs; read-only reviewers beside the
+runs, not after them. Each Solr tree has ONE owner who builds it; anyone else only reads it. Before any build: `pgrep
+-fc '[l]ucene-solr-<name>'` on every lift. When a tree is read by others' runs and needs a change, build a second
+tree (a new worktree and branch) and point the new runs at it rather than waiting for a quiet window. Agents cannot
+message each other by name: the lead relays.
+
+**5. Watching without polling the control host.** One Monitor per session, its loop on another lift:
+```bash
+ssh lift06 env -u BASH_ENV bash /bigtemp/vnr3ne/analysis/solr-2026-10-12/watch-remote.sh \
+  /bigtemp/vnr3ne/analysis/solr-2026-10-12/live.txt solr-explore2 solr-zk2 system/solr
+```
+(every 60 s: a run of the list -- one `accept-*` directory per line -- once its verdict row is written, and each
+branch head that moved; as a Monitor's command it notifies the session per event, re-armed every 30 min). Agents report at their
+gates; at every check-in compare each agent's last commit time and newest run (AGENTS.md: an agent listed as running
+may be idle).

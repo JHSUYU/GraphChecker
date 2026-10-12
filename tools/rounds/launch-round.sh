@@ -26,7 +26,11 @@
 # worker, and a host whose memory cannot be read heads nothing either.
 #
 # CAUSYNTH_CUSTOM_JDK_HOME is the VM image every campaign runs; a launch
-# must name it.  DRY=1 prints the heads chosen and launches nothing.
+# must name it.  CASE_TIMEOUT_SECONDS, PRUNE and CAUSYNTH_CAMPAIGN_STOP_AFTER,
+# when set, reach every head.  LIFTS (tools/lib/gc-env.sh) is the pool: while
+# the sessions that drive the work run on lift11, leave it out
+# (docs/handover/PARALLEL.md §2).  DRY=1 prints the heads chosen and launches
+# nothing.
 # Outputs: $GC_OUT/accept-<round>-<case without hdfs->/, launcher logs
 # $GC_OUT/launch-<round>-<case without hdfs->.log.  One campaign is stopped
 # with tools/rounds/stop-run.sh <round>-<case without hdfs->: a campaign is
@@ -79,11 +83,14 @@ mapfile -t launches < <(for case_id in "${cases[@]}"; do
   done | heads_choose "${heads[@]}")
 
 mkdir -p "${out}"
-# A measurement run (CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT) reaches a head on
-# another host only on the command line: ssh carries no environment.
-stop_after=
-[[ -z "${CAUSYNTH_CAMPAIGN_STOP_AFTER+x}" ]] \
-  || stop_after="CAUSYNTH_CAMPAIGN_STOP_AFTER='${CAUSYNTH_CAMPAIGN_STOP_AFTER}'"
+# What a run's caller sets reaches a head on another host only on the
+# command line (ssh carries no environment): a measurement run's stop stage
+# (CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT), the case budget
+# (CASE_TIMEOUT_SECONDS, which a deep closure needs raised) and the pruning.
+passed=
+for name in CAUSYNTH_CAMPAIGN_STOP_AFTER CASE_TIMEOUT_SECONDS PRUNE; do
+  [[ -z "${!name+x}" ]] || passed+="${name}=$(printf '%q' "${!name}") "
+done
 for launch in "${launches[@]}"; do
   read -r case_id head <<<"${launch}"
   if [[ -n "${DRY:-}" ]]; then
@@ -92,7 +99,7 @@ for launch in "${launches[@]}"; do
   fi
   suffix="${round}-${case_id#hdfs-}"
   command="setsid nohup env CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' $(gc_env_words)\
-CAUSYNTH_CUSTOM_JDK_HOME=${vm} ${stop_after} \
+CAUSYNTH_CUSTOM_JDK_HOME=${vm} ${passed}\
 bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} ${case_id} ${suffix} \
 > ${out}/launch-${suffix}.log 2>&1 < /dev/null &"
   if campaign_host_is_local "${head}"; then
