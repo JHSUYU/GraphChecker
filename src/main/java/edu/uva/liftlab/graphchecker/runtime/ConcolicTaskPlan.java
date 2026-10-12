@@ -954,9 +954,12 @@ final class ConcolicTaskPlan {
         /** Whether the region reads a tracked cell (SYMBOL-SCOPE F2). */
         final boolean readsTrackedState;
         /** Whether the occurrence is planned for its doors alone (a control
-         *  producer's, {@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}):
-         *  it runs with the path condition paused but for its door
-         *  decisions ({@code ConcolicRegionRuntime#openDoorWindow}). */
+         *  producer's or a store fetch's, {@code
+         *  RuntimeSelectedRegionFinalizer#DOORS_ONLY}): it runs its door
+         *  markers' inputs alone ({@link #symbolize}), reads no tracked
+         *  state from entry, and runs with the path condition paused but
+         *  for its door decisions ({@code ConcolicRegionRuntime
+         *  #openDoorWindow}). */
         final boolean doorsOnly;
         /**
          * Whether this non-loop address has completed its goal, which closes
@@ -1071,10 +1074,10 @@ final class ConcolicTaskPlan {
             // An undeclared root loop site inherits the default K_L.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
-            this.readsTrackedState = optionalBool(task.json(),
-                    ExecutionTask.READS_TRACKED_STATE, false);
             this.doorsOnly = optionalBool(task.json(),
                     RuntimeSelectedRegionFinalizer.DOORS_ONLY, false);
+            this.readsTrackedState = !doorsOnly && optionalBool(task.json(),
+                    ExecutionTask.READS_TRACKED_STATE, false);
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
             // Already validated when the plan row was decoded.
@@ -1097,7 +1100,8 @@ final class ConcolicTaskPlan {
                 JsonObject encoded = element.getAsJsonObject();
                 SymbolizeAction action = new SymbolizeAction(encoded);
                 if (InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                        optionalString(encoded, "mode"))) {
+                        optionalString(encoded, "mode"))
+                        && (!doorsOnly || !action.marker.isEmpty())) {
                     this.symbolize.add(action);
                 }
             }

@@ -140,6 +140,17 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String FIELD_OWNERS = "fieldOwners";
     /**
+     * Per field, the receiver of each call into a method that reads it on its
+     * own receiver alone ({@link #receiverReads}), whether or not the read's
+     * row was written: a reader's holders where the recording left its rows
+     * out (a watch callback's before {@code MessageDoors#fetched} names its
+     * occurrence).  Stated apart from {@link #FIELD_OWNERS} and asked of a
+     * reader only ({@code DemandWalk#holdsOthersOnly}): a writer's holders are
+     * what it was recorded at, and a field one of the activation's methods
+     * reads on another object too has none here.
+     */
+    public static final String RECEIVER_HOLDERS = "receiverHolders";
+    /**
      * Activation member, in memory only: per reference field, the objects
      * the recording saw it hold.  A mutation through the field writes its
      * referent's state, so there a shared referent is a shared location; a
@@ -580,20 +591,21 @@ public final class RuntimeSelectedRegionFinalizer {
         return sites;
     }
 
-    /** Method -> the fields it reads on its own receiver: the {@code
-     *  field_read} edges the static pass marked {@link
-     *  SeedBackwardStaticAnalyzer#ON_RECEIVER}. */
-    public static Map<String, Set<String>> receiverReads(
+    /** Method -> each field it reads -> whether every read of it there is
+     *  on the method's own receiver (the {@code field_read} edges the
+     *  static pass marked {@link SeedBackwardStaticAnalyzer#ON_RECEIVER}),
+     *  false where one is on another object. */
+    public static Map<String, Map<String, Boolean>> receiverReads(
             Collection<Map<String, Object>> graph) {
-        Map<String, Set<String>> reads = new HashMap<>();
+        Map<String, Map<String, Boolean>> reads = new HashMap<>();
         for (Map<String, Object> edge : graph) {
-            if ("field_read".equals(text(edge.get("kind")))
-                    && Boolean.TRUE.equals(edge.get(
-                            SeedBackwardStaticAnalyzer.ON_RECEIVER))) {
-                reads.computeIfAbsent(text(edge.get("method")),
-                        ignored -> new HashSet<>())
-                        .add(text(edge.get("fromCell")));
-            }
+            if (!"field_read".equals(text(edge.get("kind")))) continue;
+            boolean onReceiver = Boolean.TRUE.equals(edge.get(
+                    SeedBackwardStaticAnalyzer.ON_RECEIVER));
+            reads.computeIfAbsent(text(edge.get("method")),
+                    ignored -> new HashMap<>())
+                    .merge(text(edge.get("fromCell")), onReceiver,
+                            Boolean::logicalAnd);
         }
         return reads;
     }
@@ -1046,32 +1058,43 @@ public final class RuntimeSelectedRegionFinalizer {
         stateShapes(instances, walk.reached, context -> shapes.computeIfAbsent(
                 context, messages::shape));
         LOG.info("PLAN {}", dataFlowDoors(program, walk.reached, scopeMap));
-        LOG.info("PLAN doors-only: {} control producer(s) of the {} planned"
-                + " occurrence(s) run paused but for their doors",
+        LOG.info("PLAN doors-only: {} of the {} planned occurrence(s)"
+                + " (control producers and store fetches) run paused but for"
+                + " their doors",
                 stateDoorsOnly(instances, walk.reached), walk.reached.size());
         return walk.reached;
     }
 
     /**
      * Marks {@link #DOORS_ONLY} each planned occurrence whose final basis is
-     * {@link #CONTROL_PRODUCER_ADMISSION}: admitted for the doors of a
-     * message that started another planned occurrence, it contributes no
-     * value -- a value rule reaching it moves its basis ({@code
-     * DemandWalk#reach}, {@code #admitValue}) -- and its own guards to the
-     * send are no question of the target's.  How many.
+     * a door's ({@link #doorBasis}): admitted for the doors of a message
+     * that started another planned occurrence, or for the read door of a
+     * fetch on the target's data flow, it contributes no value -- a value
+     * rule reaching it moves its basis ({@code DemandWalk#reach}, {@code
+     * #admitValue}) -- and its own guards to the send or the read are no
+     * question of the target's.  How many.
      */
     static int stateDoorsOnly(Map<String, Map<String, Object>> instances,
                               Collection<String> planned) {
         int doorsOnly = 0;
         for (String occurrence : planned) {
             Map<String, Object> activation = instances.get(occurrence);
-            if (CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
-                    ADMISSION_BASIS)))) {
+            if (doorBasis(text(activation.get(ADMISSION_BASIS)))) {
                 activation.put(DOORS_ONLY, true);
                 doorsOnly++;
             }
         }
         return doorsOnly;
+    }
+
+    /** Whether an admission basis is a door's: a control producer's
+     *  ({@link #CONTROL_PRODUCER_ADMISSION}) or a store fetch's ({@link
+     *  #STORE_FETCH_ADMISSION}), one rule with EXPLORE's {@code
+     *  ClosurePlanner#CONTROL_PRODUCER} and {@code #STORE_FETCH}: asked for
+     *  its doors, contributing no value, serving no message of its own. */
+    static boolean doorBasis(String basis) {
+        return CONTROL_PRODUCER_ADMISSION.equals(basis)
+                || STORE_FETCH_ADMISSION.equals(basis);
     }
 
     /**
@@ -1544,19 +1567,21 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             for (String occurrence : new ArrayList<>(walk.reached)) {
                 if (served.contains(occurrence)) continue;
-                // A control producer contributes no value: its own
-                // message's doors are no question of the target's, named
-                // (it is served once a value reaches it, walk#reach).
-                if (CONTROL_PRODUCER_ADMISSION.equals(text(program.activations
-                        .get(occurrence).get(ADMISSION_BASIS)))) {
+                // A control producer or a store fetch contributes no
+                // value: its own message's doors are no question of the
+                // target's, named (it is served once a value reaches it,
+                // walk#reach, #admitValue).
+                if (doorBasis(text(program.activations.get(occurrence)
+                        .get(ADMISSION_BASIS)))) {
                     if (!messages.doorsOf(OccurrenceAddress.parse(occurrence))
                             .isEmpty()) {
                         planGap(program.planGaps, GapKind.ADMISSION_GAP,
                                 GapClass.DIAGNOSTIC, occurrence
-                                        + " control producer", "a control"
-                                        + " producer contributes no value:"
-                                        + " the doors of the message that"
-                                        + " started it are not asked");
+                                        + " door occurrence", "a control"
+                                        + " producer or a store fetch"
+                                        + " contributes no value: the doors"
+                                        + " of the message that started it"
+                                        + " are not asked");
                     }
                     continue;
                 }
@@ -1910,9 +1935,9 @@ public final class RuntimeSelectedRegionFinalizer {
 
         /** Admits one occurrence on a value rule (a root its influence
          *  reaches the demand by, a store version the target rests on): one
-         *  reached only as a control producer contributes a value now and
-         *  takes the rule's basis, as {@link #reach} gives it a demand's.
-         *  Whether it changed the plan. */
+         *  reached only for its doors ({@link #doorBasis}) contributes a
+         *  value now and takes the rule's basis, as {@link #reach} gives it
+         *  a demand's.  Whether it changed the plan. */
         private boolean admitValue(String occurrence, int depth,
                                    String basis) {
             if (!reached.contains(occurrence)) {
@@ -1921,8 +1946,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             Map<String, Object> activation = program.activations.get(
                     occurrence);
-            if (!CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
-                    ADMISSION_BASIS)))) {
+            if (!doorBasis(text(activation.get(ADMISSION_BASIS)))) {
                 return false;
             }
             activation.put(ADMISSION_BASIS, basis);
@@ -1940,8 +1964,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> activation = program.activations.get(
                     occurrence);
             if (!reached.add(occurrence)) {
-                if (CONTROL_PRODUCER_ADMISSION.equals(text(activation.get(
-                        ADMISSION_BASIS)))) {
+                if (doorBasis(text(activation.get(ADMISSION_BASIS)))) {
                     activation.put(ADMISSION_BASIS, basis);
                 }
                 return;
@@ -2141,6 +2164,11 @@ public final class RuntimeSelectedRegionFinalizer {
             boolean mutation = !site.declaredCallee.isEmpty();
             Set<Integer> wroteOn = field(writer, FIELD_OWNERS, cell);
             Set<Integer> readOn = field(reader, FIELD_OWNERS, cell);
+            Set<Integer> receivers = field(reader, RECEIVER_HOLDERS, cell);
+            if (!receivers.isEmpty()) {
+                readOn = new HashSet<>(readOn);
+                readOn.addAll(receivers);
+            }
             Set<Integer> wroteHeld = mutation
                     ? field(writer, FIELD_REFERENTS, cell)
                     : Collections.<Integer>emptySet();

@@ -114,6 +114,12 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /** {@link #observeTrackedContainer}'s phases: before a mutation of the
+     *  container, just after one, and after a read that returned it. */
+    public static final int CONTAINER_BEFORE_MUTATION = 0;
+    public static final int CONTAINER_AFTER_MUTATION = 1;
+    public static final int CONTAINER_READ = 2;
+
     /**
      * The doors-only occurrence whose door decision runs unpaused on this
      * thread, until its next hook ({@link #openDoorWindow}); null for none.
@@ -963,7 +969,8 @@ public final class ConcolicRegionRuntime {
     public static void observeTrackedContainer(String siteId,
                                                String fieldSignature,
                                                Object container,
-                                               boolean afterMutation) {
+                                               int phase) {
+        boolean afterMutation = phase == CONTAINER_AFTER_MUTATION;
         // A region thread starts the log before; one outside every region
         // marks it after.
         ActiveRegion active = activeRegion();
@@ -972,8 +979,12 @@ public final class ConcolicRegionRuntime {
         }
         // A doors-only occurrence's mutation here runs hooked, as a planned
         // one's (#openDoorWindow until the hook after it): paused it would
-        // be unhooked, and a region thread marks no log incomplete.
-        if (active.activation.doorsOnly) openDoorWindow(active);
+        // be unhooked, and a region thread marks no log incomplete.  A read
+        // stays paused.
+        if (active != null && phase == CONTAINER_BEFORE_MUTATION
+                && active.activation.doorsOnly) {
+            openDoorWindow(active);
+        }
         try {
             if (engine().observeContainer(container, afterMutation)
                     == ConcolicVmBroker.UNSUPPORTED_TARGET) {

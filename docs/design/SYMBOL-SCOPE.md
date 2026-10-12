@@ -761,13 +761,16 @@ reaches, to a fixed point:
     `runtime/RuntimeRegionPlanner#stampFieldOwners`: a field event's receiver, and the receiver of
     a call at a site that returns a field -- an unwoven accessor -- or mutates a field of its
     receiver -- a `WRITE_SITE`'s `declaredCallee` whose cell is not its carrier, an atomic's
-    `value`: `RuntimeSelectedRegionFinalizer#fieldAccessingCalls`), the receiver of each call into a
-    method that reads a field on its own receiver (the static pass marks such a `field_read` edge
-    `onReceiver`, `SeedBackwardStaticAnalyzer#onReceiver`; `RuntimeSelectedRegionFinalizer#receiverReads`),
-    whether or not the read's row was written -- a watch callback's rows before `MessageDoors#fetched`
-    names its occurrence are not (solr-adhoc-40 Z1D4: node2's aliases callback read its dispatch
-    wrapper's `watcher` unrecorded, so with no holder every wrapper construction on the node was its
-    writer, 97 of them ESCAPED) --, and apart what a reference field held (`FIELD_REFERENTS`). A writer the recording saw access the field on other objects only than
+    `value`: `RuntimeSelectedRegionFinalizer#fieldAccessingCalls`), and apart what a reference field
+    held (`FIELD_REFERENTS`) and a reader's holders the recording may have left out
+    (`RECEIVER_HOLDERS`): the receiver of each call into a method that reads a field on its own
+    receiver alone (the static pass marks such a `field_read` edge `onReceiver`,
+    `SeedBackwardStaticAnalyzer#onReceiver`; `RuntimeSelectedRegionFinalizer#receiverReads`), whether
+    or not the read's row was written -- a watch callback's rows before `MessageDoors#fetched` names
+    its occurrence are not (solr-adhoc-40 Z1D4: node2's aliases callback read its dispatch wrapper's
+    `watcher` unrecorded, so with no holder every wrapper construction on the node was its writer, 97
+    of them ESCAPED) --, none for a field one of its methods reads on another object, and asked of a
+    reader only: a writer's holders are what its rows say. A writer the recording saw access the field on other objects only than
     the reader did is not crossed to (`DemandWalk#holdsOthersOnly`): the holders for a store, the
     holders and what they held for a mutation through the field (a container's or an atomic's
     state); a referent shared by a store's holders is no shared location (Solr: every lambda
@@ -875,14 +878,17 @@ reaches, to a fixed point:
   proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS `MARKER_FLIPPED` witnesses
   move such an IPC door. A value rule that reaches one moves its basis -- a demand (`DemandWalk#reach`),
   a root or an attached value whose influence reaches the demand, a store version the target rests on
-  (`#admitValue`) -- and one that keeps it is planned **doors-only** (`DOORS_ONLY`, `#stateDoorsOnly`;
-  PLAN's log and result.json `doorsOnlyOccurrences` count them): its task declares its door markers
-  alone (`plan.ConcolicScheduler#doorMarkers`), and the replay runs it with the path condition paused
-  from its start to its close (`runtime.ConcolicRegionRuntime#openDoorWindow`) but for each door
-  decision -- the marker's mint lifts the pause, the woven test records the decision, the next hook
-  restores it -- and each mutation of a tracked container at a site the scope map names, which so
-  runs hooked. COMPOSE reads from it its door roots and decisions and the schedule's events of its
-  send; CONFIRM no state row of it. A field it writes runs unhooked, as an unplanned occurrence's: a
+  (`#admitValue`) -- and one that keeps it, or a store fetch's (`STORE_FETCH_V1`, one rule with
+  EXPLORE's: `#doorBasis`), is planned **doors-only** (`DOORS_ONLY`, `#stateDoorsOnly`; PLAN's log and
+  result.json `doorsOnlyOccurrences` count them): its task keeps its whole plan and weave, and the
+  replay runs its door markers' inputs alone (`runtime.ConcolicTaskPlan.RuntimeTask#doorsOnly`) with
+  the path condition paused from its start to its close (`runtime.ConcolicRegionRuntime#openDoorWindow`)
+  but for each door decision -- the marker's mint lifts the pause, the woven test records the decision,
+  the next hook restores it -- and each mutation of a tracked container at a site the scope map names
+  (never a read), which so runs hooked. COMPOSE reads from it its door roots and decisions and the
+  schedule's events of its send; CONFIRM no state row of it. EXPLORE re-plans one a value demand
+  reaches (`explore.ClosurePlanner#plan`, `#valueDemand`): a `DOORS_ONLY_UNPAUSED` growth row, and
+  GROW's next generation drops the mark and re-runs the replay that ran it. A field it writes runs unhooked, as an unplanned occurrence's: a
   later read of the word is stated as changed by an unhooked write (VM.md §10), where a planned writer's
   version was named before -- a reader of a location it writes that is no demand of the walk, or one
   another node's demand reads through an object the JVM shares (a static: MiniSolrCloudCluster's

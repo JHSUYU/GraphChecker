@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import edu.uva.liftlab.graphchecker.plan.ScopeFrontier;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
@@ -2365,13 +2366,15 @@ public final class CausynthPipeline {
                 refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
                         StringConstant.v(target.siteId),
                         StringConstant.v(target.cell), receiver,
-                        IntConstant.v(0));
+                        IntConstant.v(ConcolicRegionRuntime
+                                .CONTAINER_BEFORE_MUTATION));
                 insertBeforeSequence(body, selected, observation);
                 List<Unit> after = new ArrayList<>();
                 refs.bracket(after, Hook.OBSERVE_TRACKED_CONTAINER,
                         StringConstant.v(target.siteId),
                         StringConstant.v(target.cell), receiver,
-                        IntConstant.v(1));
+                        IntConstant.v(ConcolicRegionRuntime
+                                .CONTAINER_AFTER_MUTATION));
                 insertAfterSequence(body, selected, after);
             } else if (selected instanceof AssignStmt) {
                 refs.bracket(observation, Hook.OBSERVE_TRACKED_CONTAINER,
@@ -2379,7 +2382,7 @@ public final class CausynthPipeline {
                         StringConstant.v(target.cell),
                         objectArg(body, ((AssignStmt) selected).getLeftOp(),
                                 observation),
-                        IntConstant.v(0));
+                        IntConstant.v(ConcolicRegionRuntime.CONTAINER_READ));
                 insertAfterSequence(body, selected, observation);
             } else {
                 unobserved++;
@@ -4033,7 +4036,7 @@ public final class CausynthPipeline {
                             string, object)
                     .add(Hook.OBSERVE_TRACKED_CONTAINER, runtime,
                             "observeTrackedContainer", VoidType.v(), string,
-                            string, object, BooleanType.v())
+                            string, object, IntType.v())
                     .add(Hook.OBSERVE_PROVENANCE, runtime,
                             "observeProvenance", VoidType.v(), string, object,
                             object)

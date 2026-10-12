@@ -5047,7 +5047,10 @@ campaign_stream_take_round() {
   # region set.
   require_file "round growth rows" "${round_dir}/growth.jsonl"
   require_file "round obligations" "${round_dir}/obligations.jsonl"
-  exposures=$(campaign_exposures "${round_dir}/growth.jsonl")
+  # A doors-only occurrence a value demand reached grows the plan as an
+  # exposure does (campaign_stream_grow).
+  exposures=$(campaign_exposures "${round_dir}/growth.jsonl"; \
+    campaign_unpauses "${round_dir}/growth.jsonl")
   exposed=$(printf '%s' "${exposures}" | grep -c '' || true)
   mapfile -t rows < "${round_dir}/obligations.jsonl"
   mapfile -t ids < <(jq -r '.obligationId' "${round_dir}/obligations.jsonl")
@@ -5922,6 +5925,16 @@ campaign_exposures() {
     | LC_ALL=C sort -u
 }
 
+# The DOORS_ONLY_UNPAUSED rows of a round's growth.jsonl (a doors-only
+# occurrence a value demand reached, ClosurePlanner#plan), one `obligation
+# occurrence session` line each, sorted; the obligation and session are ""
+# where no admitted focused replay ran it.
+campaign_unpauses() {
+  jq -r 'select(.kind == "DOORS_ONLY_UNPAUSED")
+         | [.obligationId, .occurrence, .sessionId] | @tsv' "$1" \
+    | LC_ALL=C sort -u
+}
+
 # GROW (PIPELINE §7.8): a region a replay reached without its hooks is
 # planned, woven in, and the replay that exposed it is run again under the
 # same world, so a later round's closure sees the region's decisions and
@@ -5951,32 +5964,47 @@ campaign_stream_grow() {
     || campaign_fail EXPLORE ExploreMain "${growth}" \
       "an EXPOSED_REGION row names no obligation; only a focused replay's \
 exposure can be grown into"
-  run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
-    --iteration "${iteration_dir}" \
-    --static-scope-map "${causynth_static_scope_map}" \
-    --growth "${growth}" \
-    --output "${rows}" \
-    >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
-  [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
-    "${round_dir}/grow-stderr.log" \
-    "the exposed-region planner failed with exit ${status}: \
+  : >"${rows}"
+  if [[ -n "$(campaign_exposures "${growth}")" ]]; then
+    run_capturing_status run_java_main \
+      edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
+      --iteration "${iteration_dir}" \
+      --static-scope-map "${causynth_static_scope_map}" \
+      --growth "${growth}" \
+      --output "${rows}" \
+      >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
+    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
+      "${round_dir}/grow-stderr.log" \
+      "the exposed-region planner failed with exit ${status}: \
 $(campaign_thrown "${round_dir}/grow-stderr.log")"
-  require_nonempty "exposed region plan rows" "${rows}"
+    require_nonempty "exposed region plan rows" "${rows}"
+  fi
+  # A doors-only occurrence a value demand reached runs whole from this
+  # generation on: its task row, planned and woven whole, loses the mark.
+  local unpaused
+  unpaused=$(campaign_unpauses "${growth}" | cut -f2 | jq -R . | jq -s -c .)
   stream_generation=$((stream_generation + 1))
   generation="${iteration_dir}/generations/g${stream_generation}"
   mkdir -p "${generation}"
-  cat -- "${stream_plan}" "${rows}" >"${generation}/execution_task_plan.jsonl"
+  { jq -c --argjson unpaused "${unpaused}" \
+      'if .doorsOnly == true and (.occurrenceId as $at
+         | any($unpaused[]; . == $at)) then del(.doorsOnly) else . end' \
+      "${stream_plan}"
+    cat -- "${rows}"; } >"${generation}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   campaign_log "$(basename "${round_dir}"): grown by \
 $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
-($(wc -l <"${rows}") task row(s)); weaving generation g${stream_generation}"
-  campaign_instrument "${iteration_dir}" "${generation}/instrumented-classes"
+($(wc -l <"${rows}") task row(s)), $(jq 'length' <<<"${unpaused}") doors-only \
+occurrence(s) run whole; generation g${stream_generation}"
   stream_plan="${generation}/execution_task_plan.jsonl"
-  stream_classes="${generation}/instrumented-classes"
+  # Only new task rows are new weaving: dropping the mark weaves nothing.
+  if [[ -s "${rows}" ]]; then
+    campaign_instrument "${iteration_dir}" "${generation}/instrumented-classes"
+    stream_classes="${generation}/instrumented-classes"
+  fi
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
       "${obligation_id}") || exit 1
@@ -5993,7 +6021,8 @@ $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
     stream_queue=("RERUN $(basename "${round_dir}") ${obligation_id} \
 ${session}" "${stream_queue[@]}")
     stream_hold=$((stream_hold + 1))
-  done < <(campaign_exposures "${growth}" | cut -f1,3 | LC_ALL=C sort -u)
+  done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
+    | awk -F'\t' '$1 != ""' | cut -f1,3 | LC_ALL=C sort -u)
 }
 
 # The directory one exposing obligation's re-run for <round> runs in.

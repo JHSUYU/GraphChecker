@@ -1628,7 +1628,7 @@ public final class CausynthTraceRecorder {
                         Collections.emptyList(), Collections.emptyList(),
                         Collections.<String>emptySet(),
                         Collections.<String, String>emptyMap(),
-                        Collections.<String, Set<String>>emptyMap());
+                        Collections.<String, Map<String, Boolean>>emptyMap());
         if (exercised.staticRegionCount == 0
                 || exercised.runtimeInstances.isEmpty()) {
             throw new IOException("NO_REGION_ACTIVATION: the recording "

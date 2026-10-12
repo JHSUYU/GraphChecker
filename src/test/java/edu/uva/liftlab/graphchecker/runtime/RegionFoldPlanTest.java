@@ -305,7 +305,7 @@ public class RegionFoldPlanTest {
                                 emptyList(),
                         Collections.<String>emptySet(),
                         Collections.<String, String>emptyMap(),
-                        Collections.<String, Set<String>>emptyMap());
+                        Collections.<String, Map<String, Boolean>>emptyMap());
         Map<Object, Map<String, Object>> byRoot = new LinkedHashMap<>();
         for (Map<String, Object> activation : plan.runtimeInstances) {
             byRoot.put(activation.get("rootCallId"), activation);
@@ -322,12 +322,13 @@ public class RegionFoldPlanTest {
     }
 
     /**
-     * A field a method reads on its own receiver is held by the receiver its
-     * call was recorded with, whether or not the read's row was written (a
-     * callback's rows before its occurrence is named are not): the first
-     * tick's read row names its receiver; the second wrote no row and holds
-     * the field on its call's receiver all the same; a field no method reads
-     * on its receiver gets no holder from a call.
+     * A field a method reads on its own receiver alone is held, for a
+     * reader, by the receiver its call was recorded with, whether or not the
+     * read's row was written (a callback's rows before its occurrence is
+     * named are not): apart from the recorded owners, which keep what the
+     * rows say -- the first tick's read row names its receiver, the second
+     * wrote none.  A field the method also reads on another object gets no
+     * such holder.
      */
     @Test
     public void aReceiverReadIsHeldByItsCallsReceiver() {
@@ -338,6 +339,9 @@ public class RegionFoldPlanTest {
             methods.add(entry(10 * tick, TICK, 0L, "wl/nn0#epoch0/region/"
                     + TICK_REGION + "/ctx:Root:TICK#" + tick, false));
         }
+        Map<String, Boolean> reads = new LinkedHashMap<>();
+        reads.put(field, true);
+        reads.put(other, false);
         RuntimeRegionPlanner.Result plan =
                 RuntimeRegionPlanner.planSkeletonGraph(skeletons(), methods,
                         Collections.<RuntimeRegionPlanner.RuntimeEvent>
@@ -350,16 +354,21 @@ public class RegionFoldPlanTest {
                                 emptyList(),
                         Collections.<String>emptySet(),
                         Collections.<String, String>emptyMap(),
-                        Collections.singletonMap(TICK,
-                                Collections.singleton(field)));
+                        Collections.singletonMap(TICK, reads));
+        assertEquals(2, plan.runtimeInstances.size());
         for (Map<String, Object> activation : plan.runtimeInstances) {
+            Object tick = activation.get("rootCallId");
+            Map<?, ?> holders = (Map<?, ?>) activation.get(
+                    RuntimeSelectedRegionFinalizer.RECEIVER_HOLDERS);
+            assertEquals("tick " + tick, Collections.singleton(1),
+                    holders.get(field));
+            assertFalse(holders.containsKey(other));
             Map<?, ?> owners = (Map<?, ?>) activation.get(
                     RuntimeSelectedRegionFinalizer.FIELD_OWNERS);
-            assertEquals("tick " + activation.get("rootCallId"),
-                    Collections.singleton(1), owners.get(field));
-            assertFalse(owners.containsKey(other));
+            assertEquals("tick " + tick + "'s recorded owners",
+                    Long.valueOf(10L).equals(tick), owners != null
+                            && owners.containsKey(field));
         }
-        assertEquals(2, plan.runtimeInstances.size());
     }
 
     /** The activations the fixture's recording planned. */
@@ -371,7 +380,7 @@ public class RegionFoldPlanTest {
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
                 Collections.<String>emptySet(),
                 Collections.<String, String>emptyMap(),
-                        Collections.<String, Set<String>>emptyMap());
+                        Collections.<String, Map<String, Boolean>>emptyMap());
     }
 
     /** The fixture's finalized closure over those activations. */
@@ -625,7 +634,7 @@ public class RegionFoldPlanTest {
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
                 Collections.<String>emptySet(),
                 Collections.<String, String>emptyMap(),
-                        Collections.<String, Set<String>>emptyMap());
+                        Collections.<String, Map<String, Boolean>>emptyMap());
     }
 
     /**

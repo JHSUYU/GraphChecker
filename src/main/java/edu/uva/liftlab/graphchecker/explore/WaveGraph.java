@@ -158,25 +158,44 @@ final class WaveGraph {
 
     /** Writes {@code growth.jsonl}: one EXPOSED_REGION row per occurrence the
      *  closure grows ({@link ClosurePlanner.Plan#exposed}), naming the session
-     *  whose replay is re-run and its obligation; returns the row count. */
+     *  whose replay is re-run and its obligation, and one DOORS_ONLY_UNPAUSED
+     *  row per doors-only occurrence a value demand reached ({@link
+     *  ClosurePlanner.Plan#unpaused}): GROW drops its mark, and re-runs the
+     *  replay it names, if any; returns the row count. */
     static int writeGrowth(Corpus corpus,
                            Map<OccurrenceAddress, String> exposed,
+                           Map<OccurrenceAddress, String> unpaused,
                            Path roundDir) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<OccurrenceAddress, String> grown : exposed.entrySet()) {
-            OccurrenceAddress occurrence = grown.getKey();
-            SessionReader session = corpus.session(grown.getValue());
-            JsonObject row = new JsonObject();
-            row.addProperty("kind", "EXPOSED_REGION");
-            row.addProperty("regionId", occurrence.regionId());
-            row.addProperty("node", occurrence.node().render());
-            row.addProperty("occurrence", occurrence.render());
-            row.addProperty("sessionId", session.sessionId());
-            row.addProperty("obligationId",
-                    session.obligations().get(0).obligationId());
-            rows.add(row);
+            rows.add(growthRow("EXPOSED_REGION", corpus, grown.getKey(),
+                    grown.getValue()));
+        }
+        for (Map.Entry<OccurrenceAddress, String> door : unpaused.entrySet()) {
+            rows.add(growthRow(DOORS_ONLY_UNPAUSED, corpus, door.getKey(),
+                    door.getValue()));
         }
         RowCodec.writeJsonl(roundDir.resolve(GROWTH), rows);
         return rows.size();
+    }
+
+    /** A growth row's kind for a doors-only occurrence a value demand
+     *  reached. */
+    static final String DOORS_ONLY_UNPAUSED = "DOORS_ONLY_UNPAUSED";
+
+    /** One growth row; a session "" names no replay to re-run. */
+    private static JsonObject growthRow(String kind, Corpus corpus,
+                                        OccurrenceAddress occurrence,
+                                        String sessionId) {
+        JsonObject row = new JsonObject();
+        row.addProperty("kind", kind);
+        row.addProperty("regionId", occurrence.regionId());
+        row.addProperty("node", occurrence.node().render());
+        row.addProperty("occurrence", occurrence.render());
+        row.addProperty("sessionId", sessionId);
+        row.addProperty("obligationId", sessionId.isEmpty() ? ""
+                : corpus.session(sessionId).obligations().get(0)
+                .obligationId());
+        return row;
     }
 }

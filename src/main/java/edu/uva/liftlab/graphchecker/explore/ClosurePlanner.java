@@ -107,6 +107,12 @@ public final class ClosurePlanner {
         /** Demanded past the task bound, so not planned: the closure is
          *  incomplete, which only {@link ExploreMain} can weigh. */
         public final Set<String> truncated;
+        /** A demanded occurrence the current plan runs for its doors alone
+         *  ({@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}) that a value
+         *  demand reached -> the admitted focused session whose replay is
+         *  re-run once GROW has dropped the mark, or "" for none: it is no
+         *  value's capture until a replay ran it whole. */
+        public final Map<OccurrenceAddress, String> unpaused;
         /** What every admitted path decided the anchor on, when that is no
          *  symbol ({@link ClosurePlanner#concrete}): no root reaches it yet,
          *  which only {@link ExploreMain} can weigh.  Null for any other
@@ -118,7 +124,9 @@ public final class ClosurePlanner {
                      Map<String, Set<String>> flipSites,
                      Map<OccurrenceAddress, String> exposed,
                      Set<OccurrenceAddress> waiting, Set<String> truncated,
+                     Map<OccurrenceAddress, String> unpaused,
                      Concrete concrete) {
+            this.unpaused = Collections.unmodifiableMap(unpaused);
             this.tasks = Collections.unmodifiableList(tasks);
             this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
@@ -155,10 +163,11 @@ public final class ClosurePlanner {
     }
 
     /** The closure of one anchor; {@code branches} says which sessions may
-     *  expose a region for growth. */
+     *  expose a region for growth, {@code doorsOnly} which occurrences the
+     *  current plan runs for their doors alone (rendered addresses). */
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
-                            Branches branches) {
+                            Branches branches, Set<String> doorsOnly) {
         Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -218,12 +227,28 @@ public final class ClosurePlanner {
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> waiting =
                 new LinkedHashSet<OccurrenceAddress>();
+        Map<OccurrenceAddress, String> unpaused =
+                new LinkedHashMap<OccurrenceAddress, String>();
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
                 uncaptured(corpus, branches, demand, scope, exposed, waiting,
                         walk.gaps);
                 continue;
+            }
+            if (valueDemand(demand.why)
+                    && doorsOnly.contains(demand.occurrence.render())) {
+                unpaused.put(demand.occurrence, exposing(corpus, branches,
+                        demand.occurrence, exposed.values())[0]);
+                walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        demand.occurrence.render(), "planned for its doors"
+                                + " alone (a control producer or a store"
+                                + " fetch), it is demanded as a value ("
+                                + demand.why + "): GROW drops the mark and its"
+                                + " replays run it whole from then on; until"
+                                + " one has, its guards and roots ran paused"
+                                + " and have no term to flip"));
             }
             String taskId = taskId(demand.occurrence);
             tasks.add(Task.of(taskId, demand.occurrence,
@@ -236,7 +261,7 @@ public final class ClosurePlanner {
             flips.put(taskId, sites);
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
-                exposed, waiting, truncated, concrete);
+                exposed, waiting, truncated, unpaused, concrete);
     }
 
     /**
@@ -433,24 +458,10 @@ public final class ClosurePlanner {
             return;
         }
         String seed = corpus.seedSessionId();
-        String exposing = "";
-        String stopped = "";
-        for (String sessionId : corpus.namedBy(occurrence)) {
-            SessionReader session = corpus.session(sessionId);
-            if (sessionId.equals(seed) || !session.admitted()
-                    || session.obligations().isEmpty()) {
-                continue;
-            }
-            if (!branches.parents(sessionId)) {
-                stopped = sessionId;
-                continue;
-            }
-            if (exposing.isEmpty()) exposing = sessionId;
-            if (exposed.containsValue(sessionId)) {
-                exposing = sessionId;
-                break;
-            }
-        }
+        String[] chosen = exposing(corpus, branches, occurrence,
+                exposed.values());
+        String exposing = chosen[0];
+        String stopped = chosen[1];
         if (!exposing.isEmpty()) {
             exposed.put(occurrence, exposing);
             return;
@@ -471,6 +482,46 @@ public final class ClosurePlanner {
                 GapClass.BLOCKING, occurrence.render(),
                 "no session of this corpus ran this occurrence, so no replay "
                         + "can be focused on it and it is not a task"));
+    }
+
+    /** Whether a demand wants a value of its occurrence -- a member's, a
+     *  static candidate's -- not only the doors of a message or a fetch. */
+    static boolean valueDemand(String why) {
+        return CLOSURE_MEMBER.equals(why)
+                || STATIC_CANDIDATE_WRITER.equals(why)
+                || STATIC_CANDIDATE_PRODUCER.equals(why);
+    }
+
+    /**
+     * The admitted focused session whose replay re-runs {@code occurrence}
+     * grown (one that may parent an obligation, {@link Branches#parents};
+     * one already re-run for another first), and the last one that ran it
+     * but whose branch stopped; "" for none.  Never the seed: it is not
+     * re-run.
+     */
+    private static String[] exposing(Corpus corpus, Branches branches,
+                                     OccurrenceAddress occurrence,
+                                     Collection<String> rerun) {
+        String seed = corpus.seedSessionId();
+        String exposing = "";
+        String stopped = "";
+        for (String sessionId : corpus.namedBy(occurrence)) {
+            SessionReader session = corpus.session(sessionId);
+            if (sessionId.equals(seed) || !session.admitted()
+                    || session.obligations().isEmpty()) {
+                continue;
+            }
+            if (!branches.parents(sessionId)) {
+                stopped = sessionId;
+                continue;
+            }
+            if (exposing.isEmpty()) exposing = sessionId;
+            if (rerun.contains(sessionId)) {
+                exposing = sessionId;
+                break;
+            }
+        }
+        return new String[] {exposing, stopped};
     }
 
     /**
@@ -554,8 +605,9 @@ public final class ClosurePlanner {
             }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
-                    && !CLOSURE_MEMBER.equals(why)) {
-                why = CLOSURE_MEMBER;
+                    && !CLOSURE_MEMBER.equals(why)
+                    || valueDemand(other.why) && !valueDemand(why)) {
+                why = other.why;
                 grew = true;
             }
             return grew;
@@ -1254,12 +1306,28 @@ public final class ClosurePlanner {
     private static void storeFetches(Walk walk, ReadRow row,
                                      List<Demand> into) {
         NodeId reader = row.endpoint().occurrence().node();
+        boolean asked = false;
         for (String fetch : walk.map.storeFetches(row.location().owner(),
                 row.location().slot())) {
             OccurrenceAddress occurrence = OccurrenceAddress.parse(fetch);
             if (reader.equals(occurrence.node())) {
                 into.add(new Demand(occurrence, STORE_FETCH, false));
+                asked = true;
             }
+        }
+        // PLAN asked the fetches of what its targets read; one EXPLORE
+        // demands beyond them has none asked, named once per location and
+        // node: no read door on its flow is flippable.
+        String location = SmtLowering.locationKey(row.location());
+        if (!asked && walk.cut.add(location + "|" + reader.render()
+                + "|fetch")) {
+            walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    location + " @ " + reader.render(), "a demanded store"
+                            + " read of this location on this node rests on"
+                            + " no fetch PLAN asked (it asks the fetches of"
+                            + " what its targets read), so no read door on"
+                            + " its flow is flippable"));
         }
     }
 

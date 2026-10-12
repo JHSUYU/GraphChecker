@@ -2722,6 +2722,25 @@ public class ExploreTest {
         for (Task task : plan.tasks) focused.add(task.focused().render());
         assertTrue("the writer of the reference that returned the list: "
                 + focused, focused.contains(WRITER.render()));
+        assertTrue(plan.unpaused.isEmpty());
+
+        // The same writer planned for its doors alone is no capture of the
+        // value it is demanded for: GROW is asked to run it whole (no
+        // focused replay ran it, so none is re-run), and it is named.
+        ClosurePlanner.Plan doors = ClosurePlanner.plan(
+                Corpus.read(iteration, null), TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty(),
+                Branches.of(Corpus.read(iteration, null),
+                        Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()),
+                Collections.singleton(WRITER.render()));
+        assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
+        boolean named = false;
+        for (GapRow gap : doors.gaps) {
+            named |= gap.subject().equals(WRITER.render())
+                    && gap.detail().contains("doors alone");
+        }
+        assertTrue("the unpaused writer is named", named);
     }
 
     @Test
@@ -5218,7 +5237,8 @@ public class ExploreTest {
         return ClosurePlanner.plan(corpus, anchor,
                 ClosurePlanner.DEFAULT_MAX_TASKS, map,
                 Branches.of(corpus, Collections.singletonList(anchor),
-                        new ArrayList<GapRow>()));
+                        new ArrayList<GapRow>()),
+                Collections.<String>emptySet());
     }
 
     /**
