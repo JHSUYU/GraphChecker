@@ -3149,6 +3149,12 @@ public final class SmtLowering {
         return name;
     }
 
+    /** The recorded value a name {@link #opaque} minted stands for, or
+     *  null for any other name. */
+    public String identityOf(String name) {
+        return opaqueIdentities.get(name);
+    }
+
     /** "Different rids, different objects", once per session. */
     public void assertIdentitiesDistinct() {
         for (Map.Entry<String, Map<Long, String>> session

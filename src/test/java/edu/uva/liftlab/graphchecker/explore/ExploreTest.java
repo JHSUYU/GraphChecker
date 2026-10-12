@@ -61,6 +61,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1984,8 +1985,9 @@ public class ExploreTest {
      * by the query's own conditions: an arm or a writer's value the query
      * drops (a name it cannot declare, a value of another sort) binds
      * nothing; a name a node has only in one run by the node, an identity
-     * hash and an object the VM named by its class.  Each row: two worlds,
-     * and whether they share the arm's key.
+     * hash and an object the VM named by its class and where the key first
+     * meets it (two values aliased otherwise name apart).  Each row: two
+     * worlds, and whether they share the arm's key.
      */
     @Test
     public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
@@ -2024,7 +2026,7 @@ public class ExploreTest {
             "c-self", "g-eleven", "g-eleven-minus", "g-twelve", "r-three",
             "r-four", "b-three", "b-four", "n-one", "n-one-again", "n-two",
             "y-hash", "y-hash-again", "y-other", "v-doc", "v-doc-again",
-            "v-other"};
+            "v-other", "w-alias", "w-alias-again", "w-apart"};
         for (String name : names) {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
@@ -2081,6 +2083,14 @@ public class ExploreTest {
                                 : "2a3146e9") + "["
                                 + (name.equals("y-other") ? "other" : "core")
                                 + "] main"));
+            } else if (name.startsWith("w-")) {
+                // Two searchers' names: one searcher twice, or two.
+                String first = name.equals("w-alias-again") ? "11aa22bb"
+                        : "4d4eeaac";
+                session.expression("EXPR.00000000000000f2",
+                        VmExpressionIr.stringConstant("Searcher@" + first
+                                + " Searcher@" + (name.equals("w-apart")
+                                ? "2a3146e9" : first)));
             } else if (name.startsWith("v-")) {
                 // A term that does not lower, whose reader observed an
                 // object the VM named, by its run's rid.
@@ -2219,11 +2229,41 @@ public class ExploreTest {
             {"v-doc", "v-doc-again", true,
                     "an observed object of one class at another rid"},
             {"v-doc", "v-other", false, "an object of another class"},
+            {"w-alias", "w-alias-again", true,
+                    "one object twice, at another identity hash"},
+            {"w-alias", "w-apart", false, "one object twice against two"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], dependence(corpus, task,
                     (String) row[0], "Guard#u8").equals(dependence(corpus,
                     task, (String) row[1], "Guard#u8")));
+        }
+    }
+
+    /**
+     * A RUN'S HANDLE IS NUMBERED BY WHERE THE KEY FIRST MEETS IT ({@code
+     * Corpus#numbered}): an object at another rid in every place names
+     * alike, an object that two places shared in one world and not in the
+     * other names apart, whatever spelling (an observed rid, a minted
+     * identity) names it.
+     */
+    @Test
+    public void aRunsHandleIsNumberedByWhereTheKeyFirstMeetsIt() {
+        String[][] rows = {
+            // three handles' rids, the numbered text
+            {"5 7 5", "f(M_L'Doc'_1 M_L'Doc'_2 identity__1)"},
+            {"9 3 9", "f(M_L'Doc'_1 M_L'Doc'_2 identity__1)"},
+            {"5 5 7", "f(M_L'Doc'_1 M_L'Doc'_1 identity__2)"},
+        };
+        for (String[] row : rows) {
+            String[] rid = row[0].split(" ");
+            String text = "f(" + Corpus.handle("M_L'Doc'_", "rid:" + rid[0])
+                    + " " + Corpus.handle("M_L'Doc'_", "rid:" + rid[1]) + " "
+                    + Corpus.handle("identity__", "rid:" + rid[2]) + ")";
+            Map<String, String> order = new LinkedHashMap<String, String>();
+            assertEquals(row[0], row[1], Corpus.numbered(text, order));
+            assertEquals(row[0], new HashSet<String>(Arrays.asList(rid))
+                    .size(), order.size());
         }
     }
 

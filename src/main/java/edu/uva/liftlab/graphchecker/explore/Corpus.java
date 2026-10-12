@@ -51,6 +51,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -63,6 +64,8 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** One iteration's sessions, indexed: the ONE corpus view both stages read.
  *  Identity is the contract's: an interaction by both endpoints, a location by
@@ -711,7 +714,8 @@ public final class Corpus implements Arms.Rows {
      * write the recording states at no write site (unwoven) re-keys no arm;
      * a fed-only line loses its multiplicity, so how many members of one
      * class wrote state the region reads elsewhere than the guard's
-     * locations no longer re-keys.</p>
+     * locations no longer re-keys.  A run's handle for an object is
+     * numbered by where the key first meets it ({@link #numbered}).</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
@@ -735,14 +739,15 @@ public final class Corpus implements Arms.Rows {
             }
         }
         members.addAll(fedOnly);
-        Collections.sort(members);
+        members.sort(BY_SHAPE);
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
                 .append(attachSites(sessionId, occurrence))
                 .append(producers(sessionId, occurrence));
         for (String member : members) text.append('\n').append(member);
-        return ArtifactIO.digest(text.toString(), 16);
+        return ArtifactIO.digest(numbered(text.toString(),
+                new LinkedHashMap<String, String>()), 16);
     }
 
     /** Whether one member's writes in one session store a location of
@@ -895,7 +900,7 @@ public final class Corpus implements Arms.Rows {
             sites.add(write.endpoint().site() + "="
                     + written(sessionId, write));
         }
-        Collections.sort(sites);
+        sites.sort(BY_SHAPE);
         return sites;
     }
 
@@ -918,7 +923,7 @@ public final class Corpus implements Arms.Rows {
      *  in its nodes' names ({@link #observed}). */
     private Set<String> observedValues(String sessionId, String locationKey,
                                        long version) {
-        Set<String> values = new TreeSet<String>();
+        Set<String> values = new TreeSet<String>(BY_SHAPE);
         for (ReadRow read : readsOf(sessionId, locationKey)) {
             if (read.observedVersion() == version) {
                 values.add(observed(sessionId, read.concreteValue()));
@@ -929,21 +934,103 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * A value one session observed, with the names its run alone had named
-     * by what they stand for: each name a node had only in that run (its
-     * host and port, its store session's id) by the node ({@link
-     * RunSpellings}, as the session states them, {@code
-     * SessionManifest#runSpellings}), an identity hash by its class ({@link
-     * RunSpellings#IDENTITY}), and an object the VM named by its class
-     * ({@link VmRows#byClass}, as the canonical walk names a minted handle):
-     * one port spelling names {@code node1} in every run, and a run that
-     * states none keeps its spelling (another world, never a fold).
+     * by what they stand for: an object the VM named as a handle ({@link
+     * VmRows#objectHandle}), else the value's program names ({@link
+     * #programNames}).
      */
     private String observed(String sessionId, String value) {
+        String text = String.valueOf(value);
+        String[] object = VmRows.objectHandle(text);
+        return object != null ? handle(object[0], "rid:" + object[1])
+                : programNames(sessionId, text);
+    }
+
+    /**
+     * What a program spelled (an observed value, a term's constants), with
+     * each name a node had only in the session's run (its host and port,
+     * its store session's id) by the node ({@link RunSpellings}, as the
+     * session states them, {@code SessionManifest#runSpellings}) -- one port
+     * spelling names {@code node1} in every run, and a run that states none
+     * keeps its spelling (another world, never a fold) -- and each identity
+     * hash ({@link RunSpellings#IDENTITY}) as a handle.  Never an engine-built
+     * name (a hop's {@code site@node#epoch}, a writer's {@code class@site}):
+     * a node named like hex would fold two nodes.
+     */
+    private String programNames(String sessionId, String text) {
         SessionReader session = sessionById.get(sessionId);
-        RunSpellings spellings = session == null
-                || session.manifest() == null ? RunSpellings.NONE
-                : session.manifest().runSpellings();
-        return spellings.name(VmRows.byClass(String.valueOf(value)));
+        String named = (session == null || session.manifest() == null
+                ? RunSpellings.NONE : session.manifest().runSpellings())
+                .name(text);
+        if (named.indexOf('@') < 0) return named;
+        Matcher hash = RunSpellings.IDENTITY.matcher(named);
+        StringBuffer out = new StringBuffer();
+        while (hash.find()) {
+            hash.appendReplacement(out, Matcher.quoteReplacement(
+                    handle(hash.group(1) + "@", hash.group())));
+        }
+        return hash.appendTail(out).toString();
+    }
+
+    /** A handle's mark ({@link #handle}). */
+    private static final char MARK = '\u0001';
+    private static final char HANDLE = '\u0002';
+    private static final Pattern MARKED = Pattern.compile(
+            "\u0001([^\u0001\u0002]*)\u0002([^\u0001]*)\u0001");
+
+    /**
+     * A RUN'S HANDLE for one program value -- an object the VM named (its
+     * rid), an identity hash, a name the lowering minted from a run's
+     * handle -- marked in a name: its prefix (the class, or the minted
+     * name's kind) and the handle.  An arm's key names it by the prefix and
+     * the order the key first meets it in ({@link #numbered}): two worlds
+     * whose values are other objects aliased alike name alike (a replay
+     * renumbers every rid), and two whose values alias differently name
+     * apart, as their flip queries do ({@code
+     * SmtLowering#assertIdentitiesDistinct}: distinct rids are distinct).
+     */
+    static String handle(String prefix, String handle) {
+        return MARK + prefix + HANDLE + handle + MARK;
+    }
+
+    /** {@code text} with each handle ({@link #handle}) named by its prefix
+     *  and the number of its first appearance (1, 2, ...); {@code order}
+     *  takes each handle's mark, in that order. */
+    static String numbered(String text, Map<String, String> order) {
+        if (text.indexOf(MARK) < 0) return text;
+        Map<String, Integer> number = new HashMap<String, Integer>();
+        Matcher handle = MARKED.matcher(text);
+        StringBuffer out = new StringBuffer();
+        while (handle.find()) {
+            order.putIfAbsent(handle.group(2), handle.group());
+            int at = number.computeIfAbsent(handle.group(2),
+                    key -> number.size() + 1);
+            handle.appendReplacement(out, Matcher.quoteReplacement(
+                    handle.group(1) + at));
+        }
+        return handle.appendTail(out).toString();
+    }
+
+    /** {@code text} with each handle by its prefix alone. */
+    private static String unmarked(String text) {
+        return text.indexOf(MARK) < 0 ? text
+                : MARKED.matcher(text).replaceAll("$1");
+    }
+
+    /** How the names of one set are ordered: by what they say without
+     *  their handles first, so a run's handles do not reorder them (then
+     *  by the text itself). */
+    private static final Comparator<String> BY_SHAPE = Comparator
+            .comparing(Corpus::unmarked)
+            .thenComparing(Comparator.<String>naturalOrder());
+
+    /** One naming unit's name ({@link #step}): the digest of its text, its
+     *  handles numbered ({@link #numbered}), then their marks in that
+     *  order, so a text that holds it numbers them again with its own and
+     *  keeps which of them are one object. */
+    private static String unit(String text) {
+        Map<String, String> order = new LinkedHashMap<String, String>();
+        String digest = ArtifactIO.digest(numbered(text, order), 16);
+        return order.isEmpty() ? digest : digest + order.values();
     }
 
     /** One canonical naming walk: the terms and container subterms it is
@@ -970,10 +1057,10 @@ public final class Corpus implements Arms.Rows {
      * root by its id, each handoff and each read by what binds it in the
      * query ({@link #handoffName}, {@link #readName}), each container
      * subterm by its canonical body, a name the lowering minted from a
-     * run's handle (an identity) by its kind alone, and each name a node had
-     * only in the session's run, wherever the text spells it (a string
-     * constant, a long's digits), by the node ({@link #observed}).  No
-     * depth bound ({@link #step}).
+     * run's handle (an identity, by the object it stands for) as a handle
+     * ({@link #handle}), and what the program spelled, its string constants
+     * and a long's digits, by its program names ({@link #programNames}).
+     * No depth bound ({@link #step}).
      */
     private String term(String sessionId, String expressionRef,
                         Naming naming) {
@@ -990,8 +1077,7 @@ public final class Corpus implements Arms.Rows {
                     }
                     String text = canonical(sessionId, lowered.text(),
                             naming);
-                    return naming.unsupported ? UNSUPPORTED
-                            : ArtifactIO.digest(text, 16);
+                    return naming.unsupported ? UNSUPPORTED : unit(text);
                 });
         return UNLOWERED.equals(name) ? null : name;
     }
@@ -1040,40 +1126,68 @@ public final class Corpus implements Arms.Rows {
         }
     }
 
-    /** {@link #term}'s canonical text of one lowered text. */
+    /** {@link #canonical}: where a name stands while the program's own
+     *  spelling around it is named. */
+    private static final char PLACE = '\u0003';
+
+    /** {@link #term}'s canonical text of one lowered text: each name it
+     *  holds by {@link #tokenName}, and what the program spelled around
+     *  them by {@link #programNames} -- never the names themselves. */
     private String canonical(String sessionId, String text, Naming naming) {
         SmtLowering lowering = lowering(sessionId);
-        return observed(sessionId, SmtNames.substitute(text, token -> {
-            if (SmtNames.BUILTIN.contains(token)) return null;
-            String body = lowering == null ? null
-                    : lowering.sharedBody(token);
-            if (body != null) {
-                return "dag:" + step("dag|" + sessionId + "|" + token,
-                        naming, true, () -> ArtifactIO.digest(canonical(
-                                sessionId, body, naming), 16));
-            }
-            switch (symbolKind(sessionId, token)) {
-                case ROOT: {
-                    RootMintRow root = rootBySymbol(sessionId, token);
-                    return (root.kind() == RootKind.CLOCK ? "clock:"
-                            : "root:") + root.rootId();
-                }
-                case HANDOFF:
-                    return handoffName(attach(sessionId, token), naming);
-                case READ:
-                    return readName(sessionId, read(sessionId, token),
+        List<String> names = new ArrayList<String>();
+        String program = programNames(sessionId, SmtNames.substitute(text,
+                token -> {
+                    String name = tokenName(sessionId, lowering, token,
                             naming);
-                default:
-                    if (lowering == null || !lowering.minted(token)) {
-                        return null;
-                    }
-                    if (token.startsWith("unsupported__")) {
-                        naming.unsupported = true;
-                    }
-                    // A name the lowering minted from a run's handle.
-                    return token.replaceAll("__[0-9a-f]+$", "__");
+                    if (name == null) return null;
+                    names.add(name);
+                    return PLACE + String.valueOf(names.size() - 1) + PLACE;
+                }));
+        StringBuilder out = new StringBuilder();
+        int at = 0;
+        for (int open = program.indexOf(PLACE); open >= 0;
+             open = program.indexOf(PLACE, at)) {
+            int close = program.indexOf(PLACE, open + 1);
+            out.append(program, at, open).append(names.get(
+                    Integer.parseInt(program.substring(open + 1, close))));
+            at = close + 1;
+        }
+        return out.append(program.substring(at)).toString();
+    }
+
+    /** One name of a lowered text, canonical ({@link #term}), or null to
+     *  keep it as spelled. */
+    private String tokenName(String sessionId, SmtLowering lowering,
+                             String token, Naming naming) {
+        if (SmtNames.BUILTIN.contains(token)) return null;
+        String body = lowering == null ? null : lowering.sharedBody(token);
+        if (body != null) {
+            return "dag:" + step("dag|" + sessionId + "|" + token, naming,
+                    true, () -> unit(canonical(sessionId, body, naming)));
+        }
+        switch (symbolKind(sessionId, token)) {
+            case ROOT: {
+                RootMintRow root = rootBySymbol(sessionId, token);
+                return (root.kind() == RootKind.CLOCK ? "clock:" : "root:")
+                        + root.rootId();
             }
-        }));
+            case HANDOFF:
+                return handoffName(attach(sessionId, token), naming);
+            case READ:
+                return readName(sessionId, read(sessionId, token), naming);
+            default:
+                if (lowering == null || !lowering.minted(token)) return null;
+                if (token.startsWith("unsupported__")) {
+                    naming.unsupported = true;
+                }
+                // A name the lowering minted from a run's handle: by its
+                // kind and which handle it is, an identity by its object.
+                String[] object = VmRows.objectHandle(
+                        lowering.identityOf(token));
+                return handle(token.replaceAll("__[0-9a-f]+$", "__"),
+                        object == null ? token : "rid:" + object[1]);
+        }
     }
 
     /**
@@ -1123,7 +1237,7 @@ public final class Corpus implements Arms.Rows {
         if (!binds) {
             return location + "=" + observed(sessionId, row.concreteValue());
         }
-        Collections.sort(writers);
+        writers.sort(BY_SHAPE);
         return location + "<-" + writers;
     }
 
@@ -1182,7 +1296,7 @@ public final class Corpus implements Arms.Rows {
         if (arms.isEmpty()) {
             return port + "=" + observed(attach.sessionId(), attach.arrival());
         }
-        Collections.sort(arms);
+        arms.sort(BY_SHAPE);
         return port + "<-" + arms;
     }
 

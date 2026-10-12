@@ -133,23 +133,27 @@ public final class VmRows {
                 ? symbol.substring(0, symbol.lastIndexOf('-')) : symbol;
     }
 
-    /** An instance the VM named ({@code M_L'class'_rid}, a placeholder's
-     *  {@code P_L'class'_rid}). */
+    /** An instance the VM named, {@code M_L'class'_rid} (a placeholder,
+     *  {@code P_L'class'_}, names no rid: {@link #placedObject}). */
     private static final Pattern INSTANCE_IDENTITY =
-            Pattern.compile("([MP]_L'[^']*'_)\\d+");
+            Pattern.compile("(M_L'[^']*'_)(\\d+)");
 
     /**
-     * One object the VM named, by its class alone: {@code M_L'class'_}
-     * (and a placeholder's), {@code A<type>_} for an array; any other value
-     * as it is.  The rid is the run's own name for the object, as a minted
-     * handle's digest is ({@code explore.Corpus#observed}).
+     * One object the VM named, as its class part and its rid: an
+     * instance's {@code M_L'class'_} and rid, an array's {@code A<type>_}
+     * and rid (one object at every version); null for any other value.  The
+     * rid is the run's own name for the object ({@code
+     * explore.Corpus#handle}).
      */
-    public static String byClass(String value) {
+    public static String[] objectHandle(String value) {
         if (value == null) return null;
         Matcher instance = INSTANCE_IDENTITY.matcher(value);
-        if (instance.matches()) return instance.group(1);
+        if (instance.matches()) {
+            return new String[] {instance.group(1), instance.group(2)};
+        }
         Matcher array = ARRAY_IDENTITY.matcher(value);
-        return array.matches() ? value.substring(0, array.start(1)) : value;
+        return array.matches() ? new String[] {
+                value.substring(0, array.start(1)), array.group(1)} : null;
     }
 
     /**

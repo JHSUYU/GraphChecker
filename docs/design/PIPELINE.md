@@ -717,7 +717,7 @@ producers, its writes at the locations the guard reads (per site, each with what
 flip query reads it, `Corpus#written` -- the rule: the key names everything the query depends on at
 the task, modulo the run's own names. The written term canonical and digested: operators,
 constants, roots by id, container subterms by their canonical bodies kept; an object handle's minted
-digest and a read's event, version and owner dropped; a handoff by what binds it in the query (its
+digest numbered (below) and a read's event, version and owner dropped; a handoff by what binds it in the query (its
 own run's wire arms the query states, `FlipQuery#arm`: each producer's class, export site, canonical
 term, the path-condition predicates it states and roots' guard; with none, pinned to its arrival); a
 read by its location's kind and slot and every writer the query offers it (`Arms#stateArms`: each
@@ -728,9 +728,12 @@ its observed value). A term states nothing where it does not lower or names what
 declare (`FlipQuery#undeclared`), and nothing in particular where it holds an unsupported subterm;
 a written term of either kind by the values its readers observed. A name a node has only in the
 session's run (a host and port, a store session's id: the manifest's `runSpellings`) is named by the
-node wherever a term or an observed value spells it, so a URL at another port names one node; an
-identity hash (`<Class>@<hex>`, `RunSpellings#IDENTITY`) and an object the VM named (`M_L'<class>'_<rid>`,
-`VmRows#byClass`) by its class (`Corpus#observed`). No depth bound: a walk meeting a
+node wherever the program spelled it (an observed value, a term's constants; never an engine-built
+name), so a URL at another port names one node; a run's handle for an object -- an identity hash
+(`<Class>@<hex>`, `RunSpellings#IDENTITY`), an object the VM named (`M_L'<class>'_<rid>`,
+`VmRows#objectHandle`), a name the lowering minted from one (`identity__`, by its object) -- by its
+class or kind and the order the key first meets it (`Corpus#handle`, `#numbered`), so objects
+aliased alike fold and objects aliased otherwise name apart. No depth bound: a walk meeting a
 term it is expanding names the back-edge by its distance up the expansion stack, and a term is
 memoized per session and reference unless a back-edge in it points above it. A member flip that writes another
 value there, a producer sending another term, a pinned payload of another value, or a term reading a

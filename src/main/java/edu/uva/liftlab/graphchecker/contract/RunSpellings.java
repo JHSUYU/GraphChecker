@@ -17,11 +17,13 @@ import java.util.regex.Pattern;
  * recording and every replay: the runtime keys a store location so ({@code
  * runtime.RunNames}), each session states them at its close ({@link
  * SessionManifest#runSpellings}), and an arm's key names a written term's
- * constants and observed values so ({@code explore.Corpus#term}).  An
- * object's identity hash, as the JDK's default {@code toString} spells it
- * ({@code <Class>@<hex>}, also inside a longer string: {@code
- * Searcher@1a2b3c[core] main}), is a run's own name too, named {@code
- * <Class>@#} ({@link #IDENTITY}).
+ * constants and observed values so ({@code explore.Corpus#programNames}).
+ * An object's identity hash, as the JDK's default {@code toString} spells
+ * it ({@code <Class>@<hex>}, also inside a longer string: {@code
+ * Searcher@1a2b3c[core] main}), is a run's own name too ({@link
+ * #IDENTITY}), but of an object, not a node: only an arm's key names it,
+ * by its first appearance there ({@code explore.Corpus#handle}); a store
+ * key keeps it, so two objects' paths stay two locations.
  */
 public final class RunSpellings {
     /** What spells a run's own name: a long number (a session id, a time)
@@ -77,16 +79,14 @@ public final class RunSpellings {
         return new RunSpellings(next);
     }
 
-    /** {@code text} with each spelling named by its node, {@code {node}},
-     *  and each identity hash by its class, {@code <Class>@#}. */
+    /** {@code text} with each spelling named by its node, {@code {node}}. */
     public String name(String text) {
         if (text == null) return null;
         String named = text;
         for (String[] spelling : spellings) {
             named = named.replace(spelling[0], "{" + spelling[1] + "}");
         }
-        return named.indexOf('@') < 0 ? named
-                : IDENTITY.matcher(named).replaceAll("$1@#");
+        return named;
     }
 
     /** The first run-only name {@code named} still spells, or "". */

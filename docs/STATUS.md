@@ -451,13 +451,19 @@ Correctness:
     guard's locations) counts once per class: how many members of one class wrote state the region
     reads elsewhere than the guard's locations no longer re-keys (a write at the guard's locations
     states its canonical written term, `Corpus#written`, and keeps its count). A member whose context
-    shape has a hop no row names keeps its address as its class. The canonical term drops object
-    handles: two writes of the same structure over different objects fold; a handoff or a read inside
+    shape has a hop no row names keeps its address as its class. The canonical term names a run's
+    handle for an object (an object the VM named, `M_L'<class>'_<rid>`; an identity hash, `<Class>@<hex>`,
+    also inside a longer string; a name the lowering minted from one, `identity__`, by the object it
+    stands for) by its class or kind and the order the key first meets it (`Corpus#handle`,
+    `#numbered`: `Class@1`, `Class@2`): two writes of the same structure over other objects aliased
+    alike fold, two whose objects alias differently name apart, as their flip queries do (distinct
+    rids are distinct, `SmtLowering#assertIdentitiesDistinct`); a handoff or a read inside
     it is named by what binds it in the flip query (its own run's wire arms, every writer the query
     offers, or the pinned value), by the query's own conditions (an arm or value it drops binds
     nothing), with no depth bound; a name a node had only in its run (a host and port, a store
-    session's id: the manifest's `runSpellings`) by the node, an identity hash (`<Class>@<hex>`, also
-    inside a longer string) and an object the VM named (`M_L'<class>'_<rid>`) by the class (live
+    session's id: the manifest's `runSpellings`) by the node, in what the program spelled only (an
+    observed value, a term's constants; never an engine-built hop or writer name), and never in a
+    store key, where an identity hash stays (two objects' paths are two locations) (live
     21: RX1 12.2 asks per arm, every replay's new Solr ports; RX2 6.9, a searcher's name spelling its
     identity hash). A session that did not close states no spellings and keeps them (a re-ask, never
     a fold). By design the key keeps how many times a member wrote the guard's locations, though

@@ -602,9 +602,10 @@ role: passed through to its item's doors, never planned, its own decisions not f
   such name inside it, as a node name's host and port a URL spells bare; stated again on a node's
   restart) becomes the node's name. The session states them at its close (the manifest's
   `runSpellings`), and an arm's key names a written term's constants and observed values by them
-  (`explore.Corpus#observed`), so a port spelling names its node in every run; an object's identity
-  hash as the JDK's default `toString` spells it (`<Class>@<hex>`) is named `<Class>@#`
-  (`RunSpellings#IDENTITY`); a
+  (`explore.Corpus#programNames`), so a port spelling names its node in every run; an object's
+  identity hash as the JDK's default `toString` spells it (`<Class>@<hex>`, `RunSpellings#IDENTITY`)
+  stays in the location (two objects' paths are two locations; only an arm's key numbers it,
+  `explore.Corpus#handle`); a
   location still spelling a long number or a host and port takes no turn, and is named once
   (DIAGNOSTIC `DECLARATION_MISSING`). Past the cut no slot holds: writes there are ordered only behind
   the prefix's. The store applies a write,
