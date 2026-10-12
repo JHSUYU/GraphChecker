@@ -783,8 +783,9 @@ store location takes an older decode of that node. A node decides on whichever d
 and what a stale view changes is often no value a term names (a key an older document lacks, a
 replica a loop skips), so no decision's flip reaches it. A task offers pairing flips where its
 occurrence writes a STORE version or is the declared anchor's: for each view its occurrence read, or
-its node read under its causal context in role work before it opened (a routed alias captures its
-view in the request's role work and writes it in a store door's region), its earliest read is
+its node read under its causal context in role work before it opened -- before its first row on the
+session's one order, a tie at one seq included (a routed alias captures its view in the request's
+role work and writes it in a store door's region, often with no VM event between) --, its earliest read is
 offered each older version the node decoded before it in the session (on the session's one order,
 `contract.RowOrder`: a decode and a read stated with no VM event between them in the order the engine
 stated them; the view's INITIAL -- what the node held when the window opened, a decode before it,

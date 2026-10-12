@@ -1492,7 +1492,7 @@ public final class ConfirmMain {
                         }
                         if (held == null || write.version()
                                 == read.observedVersion()
-                                || write.seq() > held.seq()) {
+                                || RowOrder.compare(write, held) > 0) {
                             held = write;
                         }
                     }
@@ -1696,7 +1696,7 @@ public final class ConfirmMain {
                         || other.initial()) {
                     continue;
                 }
-                if (!held.initial() && other.seq() < held.seq()) {
+                if (!held.initial() && RowOrder.compare(other, held) < 0) {
                     closure.order(holding, closure.exit(
                             other.endpoint(), other.seq()), held.endpoint(),
                             held.seq());
@@ -1774,7 +1774,7 @@ public final class ConfirmMain {
                     continue;
                 }
                 if (held == null || write.version() == read.observedVersion()
-                        || write.seq() > held.seq()) {
+                        || RowOrder.compare(write, held) > 0) {
                     held = write;
                 }
             }

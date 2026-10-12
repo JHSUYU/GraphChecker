@@ -474,7 +474,7 @@ public final class Arms {
             WriteRow held = armOf.get(key);
             if (held == null || held.version() != observedVersion
                     && (write.version() == observedVersion
-                    || held.seq() < write.seq())) {
+                    || RowOrder.compare(held, write) < 0)) {
                 armOf.put(key, write);
             }
         }

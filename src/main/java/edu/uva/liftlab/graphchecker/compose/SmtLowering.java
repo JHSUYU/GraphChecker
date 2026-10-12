@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
@@ -3233,14 +3234,15 @@ public final class SmtLowering {
         for (WriteRow version : writes) {
             if (version.version() >= state.version()) versions.add(version);
         }
-        versions.sort(Comparator.comparingLong(WriteRow::seq));
+        versions.sort(RowOrder::compare);
         if (versions.isEmpty()
                 || versions.get(0).version() != state.version()) {
             return Collections.<WriteRow>emptyList();
         }
         int live = 0;
-        while (live + 1 < versions.size()
-                && versions.get(live + 1).seq() < read.seq()) {
+        while (live + 1 < versions.size() && RowOrder.beforeCut(
+                versions.get(live + 1).seq(), versions.get(live + 1).tie(),
+                read.seq(), read.tie())) {
             live++;
         }
         List<WriteRow> seen = new ArrayList<WriteRow>();

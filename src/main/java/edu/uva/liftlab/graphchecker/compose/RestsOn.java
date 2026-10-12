@@ -698,8 +698,8 @@ public final class RestsOn {
          *  whether it moved. */
         boolean extend(String occurrence, WriteRow write) {
             Long held = get(occurrence);
-            if (held != null && !later(write.seq(), write.tie(), held,
-                    ties.getOrDefault(occurrence, 0))) {
+            if (held != null && RowOrder.compare(write.seq(), write.tie(),
+                    held, ties.getOrDefault(occurrence, 0)) <= 0) {
                 return false;
             }
             put(occurrence, write.seq());
@@ -709,17 +709,6 @@ public final class RestsOn {
                 ties.remove(occurrence);
             }
             return true;
-        }
-
-        /** Whether the cut at ({@code seq}, {@code tie}) is past the one at
-         *  ({@code heldSeq}, {@code heldTie}): a VM event's cut (tie 0) is
-         *  past every engine row of its seq ({@link RowOrder}). */
-        private static boolean later(long seq, int tie, long heldSeq,
-                                     int heldTie) {
-            if (seq != heldSeq) return seq > heldSeq;
-            int at = tie == 0 ? Integer.MAX_VALUE : tie;
-            int was = heldTie == 0 ? Integer.MAX_VALUE : heldTie;
-            return at > was;
         }
 
         /** Whether {@code read} stands before {@code occurrence}'s cut. */

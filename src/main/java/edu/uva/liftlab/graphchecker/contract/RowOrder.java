@@ -62,6 +62,24 @@ public final class RowOrder {
                 && (cutTie == 0 || tie < cutTie);
     }
 
+    /**
+     * The one order as a comparison, for picking the last of several rows
+     * or sorting them: seq, then at one seq the engine's rows by tie, then
+     * its VM event (tie 0).  Seq 0 -- no clock, an INITIAL -- sorts first,
+     * as a comparison of seqs alone sorts it.
+     */
+    public static int compare(long seq, int tie, long otherSeq,
+                              int otherTie) {
+        if (seq != otherSeq) return Long.compare(seq, otherSeq);
+        return Integer.compare(tie == 0 ? Integer.MAX_VALUE : tie,
+                otherTie == 0 ? Integer.MAX_VALUE : otherTie);
+    }
+
+    /** {@link #compare} of two writes. */
+    public static int compare(WriteRow write, WriteRow other) {
+        return compare(write.seq(), write.tie(), other.seq(), other.tie());
+    }
+
     /** Whether this read stands before this write. */
     public static boolean before(ReadRow read, WriteRow write) {
         return before(read.seq(), read.tie(), write.seq(), write.tie());
