@@ -242,6 +242,16 @@ breaks a campaign's time down by stage.
 
 ## 8. Traps the last leads fell into
 
+- **A wedged `/sw` on the control host stalls every bash** (2026-10-12, lift11): the login environment exports
+  `BASH_ENV=/sw/ubuntu/custom/lmod/lmod/init/bash` (`/etc/profile.d/modules.sh`), so every non-interactive bash sources
+  a file on `/sw`; when `/sw`'s automount hangs on one host (lift11 only; every other lift answered in ms) each `bash`
+  there waits in `autofs_wait` (`bash -c true`: 30 s+ with it, 6 ms without), the sessions' shells and wait loops pile
+  up in D state (60 at load 65) and every tool call takes minutes. NFS itself was not slow. Fix: no GraphChecker tool
+  needs lmod -- `unset BASH_ENV` in the session's shell snapshot (`~/.claude/shell-snapshots/<current>.sh`, appended
+  once per session) or `env -u BASH_ENV bash ...`. Diagnose a slow host with `cat /proc/<pid>/wchan` of a D-state
+  process (`autofs_wait`: an automount; `nfs_*`/`rpc_*`: the server) and `timeout 20 stat <path>` per mount, before
+  blaming NFS. Keep the control host light: wait loops poll from another lift (`ssh lift06 'until ...; sleep 60'`), at
+  most one per agent, and campaigns launched while sessions run there leave it out of `LIFTS`.
 - **pkill can kill your own shell.** `pkill -f <pattern>` matches every process whose command line
   contains the pattern, including the shell that runs it, and a heredoc counts as part of that command
   line. The lead session runs on `lift11`, which is also a worker. Use `[x]`-style patterns, kill by pid,
