@@ -538,6 +538,80 @@ public class ConfirmationTest {
     }
 
     /**
+     * The system's own refresh reads the store as it stands
+     * (MessageDoors#refreshStarting): a pairing's hold does not wait on its
+     * decode, while a watch's decode of the same version waits for the
+     * reader's region (round Z2N: holding the Overseer's refresh held the
+     * reader's work too, and every pairing gave way at the timeout).
+     */
+    @Test
+    public void aSystemsOwnRefreshIsNotHeldWhileAWatchsDecodeIs()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
+                "auto0/node0", 0);
+        LocationId[] view = new LocationId[1];
+        java.util.concurrent.CountDownLatch held =
+                new java.util.concurrent.CountDownLatch(1);
+        long[] took = new long[2];
+        // The decoding thread starts before the reader's request, so its
+        // work is its own, under its own request.
+        Thread refresh = new Thread(() -> {
+            long watch = RuntimeTraceContext.beginRequest(node, "refresh");
+            try {
+                held.await();
+                long token = MessageDoors.refreshStarting();
+                long started = System.nanoTime();
+                try {
+                    MessageDoors.decoded("SOLR_ZK", "/refresh/aliases.json@2",
+                            new Object());
+                } finally {
+                    MessageDoors.refreshEnded(token);
+                }
+                took[0] = System.nanoTime() - started;
+                started = System.nanoTime();
+                MessageDoors.decoded("SOLR_ZK", "/refresh/aliases.json@3",
+                        new Object());
+                took[1] = System.nanoTime() - started;
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+            } finally {
+                RuntimeTraceContext.endRequest(watch);
+            }
+        });
+        refresh.start();
+        long hop = RuntimeTraceContext.beginRequest(node, "read");
+        try {
+            OccurrenceAddress reader = Identity.occurrence(node.key(),
+                    "REGION.reader", true);
+            view[0] = MessageDoors.viewOf(MessageDoors.storeLocation(
+                    "SOLR_ZK", "/refresh/aliases.json"), reader);
+            Confirmation.resetForTests();
+            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                    + "\"view\":\"" + Confirmation.viewKey(view[0]) + "\","
+                    + "\"above\":1,\"readerContext\":\""
+                    + Confirmation.contextKey(reader) + "\",\"until\":\""
+                    + Endpoint.activation(reader, ExecutionIndex.empty())
+                    + "\"}"));
+            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+            held.countDown();
+            refresh.join(5000L);
+            assertTrue("the refresh's decode went on at once: " + took[0],
+                    took[0] < 200_000_000L);
+            assertTrue("the watch's decode waited for the reader's region: "
+                    + took[1], took[1] >= 250_000_000L);
+            List<String> mismatches = Confirmation.close();
+            assertEquals(mismatches.toString(), 1, mismatches.size());
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+            RuntimeTraceContext.endRequest(hop);
+            Identity.resetForTests();
+        }
+    }
+
+    /**
      * A view hold whose reader read in role work, which no hook closes, ends
      * at the first region that work closes after the read, in the run as it
      * goes: a region of its context closing before the read ends nothing.

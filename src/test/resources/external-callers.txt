@@ -86,6 +86,8 @@ runtime.MessageDoors jsonWritten void byte[] object
 runtime.MessageDoors notified void string runnable
 runtime.MessageDoors outbound doors.Outbound string string string string object object
 runtime.MessageDoors outbound doors.Outbound string string string string object object object
+runtime.MessageDoors refreshEnded void long
+runtime.MessageDoors refreshStarting long
 runtime.MessageDoors refreshing void string string
 runtime.MessageDoors registerNode void object string string string object[]
 runtime.MessageDoors serialized void boolean

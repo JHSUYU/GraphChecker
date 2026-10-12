@@ -961,9 +961,12 @@ the flipped world may read it again, CONFIRM's for the read's activation; for a 
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
 before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`; an on-demand
-refresh waits at its start, before the adapter's locks, `MessageDoors#refreshing`, as a decode of
-the newest version a write filed at the location, or past every version while a write is in flight
-there, so a refresh that can reach no version past the paired one goes on), until the reader's
+watch's refresh waits at its start, before the adapter's lock, `MessageDoors#refreshing`, as a decode
+of the newest version a write filed at the location, or past every version while a write is in
+flight there, so a refresh that can reach no version past the paired one goes on; the system's own
+refresh -- Solr's `forceUpdateCollection`, a lazy collection's fetch, `MessageDoors#refreshStarting`
+-- reads the store as it stands and is never held, since holding one on the program's way holds the
+reader's work too: one that brings a version past the paired one leaves the pairing untaken), until the reader's
 work is done -- the reader's occurrence exits, or, for a read in role work which no hook closes, the
 first region that work closes after the read in the run as it goes, a named region's exit or a hop's
 close (`Confirmation#regionClosed`: a routed alias captures its view in the request's role work and

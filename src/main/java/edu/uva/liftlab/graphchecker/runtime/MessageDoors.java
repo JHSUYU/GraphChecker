@@ -705,14 +705,18 @@ public final class MessageDoors {
         // re-points nothing: one write of a view per version, the first.
         String node = nodeHere();
         OccurrenceAddress here = Identity.currentOccurrence(node);
-        LocationId view = viewOf(store, here);
         // The node: the running occurrence's, else the thread's scope's (a
-        // decode before the window, which opened no occurrence).
+        // decode before the window, or on a thread no occurrence runs on).
         String decoder = here != null ? here.node().render() : node;
+        LocationId view = viewOf(store, decoder);
         boolean repoints = !decoder.isEmpty() && REPOINTED.add(
                 trimmed(transport) + "\n" + path + "\n" + decoder + "@"
                         + version);
-        if (repoints) Confirmation.decoding(view, version, here);
+        // A system's own refresh reads the store as it stands
+        // (#refreshStarting): no hold waits on it.
+        if (repoints && REFRESHING.get() == 0) {
+            Confirmation.decoding(view, version, here);
+        }
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
@@ -728,13 +732,11 @@ public final class MessageDoors {
     }
 
     /**
-     * The adapter's on-demand refresh of one node's view of {@code path}
-     * begins, before it takes its own locks (Solr's {@code
-     * ZkStateReader#forceUpdateCollection}, {@code
-     * #forciblyRefreshAllClusterStateSlow}, {@code LazyCollectionRef#get},
-     * {@code StatefulCollectionWatch#refresh}, each of which decodes under a
-     * lock): a pairing's hold of that view waits here, as a decode of the
-     * newest version the refresh can reach would ({@code
+     * A watch's refresh of one node's view of {@code path} begins, before it
+     * takes its own lock (Solr's {@code StatefulCollectionWatch#refreshAndWatch}
+     * and {@code #refreshAndWatchChildren}, which decode under the
+     * collection's refresh lock): a pairing's hold of that view waits here,
+     * as a decode of the newest version the refresh can reach would ({@code
      * Confirmation#decoding}), so a held refresh never holds a lock the
      * reader's own work may need.  That is the newest version a write filed
      * there, or past every version while a write is in flight at it; a
@@ -760,7 +762,41 @@ public final class MessageDoors {
         }
     }
 
-    /** The node the running thread's work is attributed to, or "". */
+    /**
+     * The system's own refresh of a view begins (Solr's {@code
+     * ZkStateReader#forceUpdateCollection}, {@code
+     * #forciblyRefreshAllClusterStateSlow}, a lazy collection's {@code
+     * LazyCollectionRef#get}): it reads the store as it stands, as its
+     * caller asked, so no pairing's hold waits on its decodes -- a refresh
+     * on the program's way (the Overseer applying a RefreshCollectionMessage,
+     * a leader's prep-recovery) held for the reader's work would hold that
+     * work too (round Z2N: every snapshot-no-active pairing gave way at the
+     * timeout); a refresh that brings a version past the paired one leaves
+     * the pairing untaken.  Ends at {@link #refreshEnded}.
+     *
+     * @return the token {@link #refreshEnded} takes
+     */
+    public static long refreshStarting() {
+        int depth = REFRESHING.get();
+        REFRESHING.set(depth + 1);
+        return depth;
+    }
+
+    /** Ends the refresh {@link #refreshStarting} began. */
+    public static void refreshEnded(long token) {
+        if (token <= 0L) {
+            REFRESHING.remove();
+        } else {
+            REFRESHING.set((int) token);
+        }
+    }
+
+    /** How many system refreshes run on this thread ({@link
+     *  #refreshStarting}). */
+    private static final ThreadLocal<Integer> REFRESHING =
+            ThreadLocal.withInitial(() -> 0);
+
+    /** The node the running thread's work is attributed to, or "". */    /** The node the running thread's work is attributed to, or "". */
     private static String nodeHere() {
         RuntimeTraceContext.View view = RuntimeTraceContext.current();
         return view.source == null ? "" : view.source.key();
@@ -844,7 +880,11 @@ public final class MessageDoors {
      * it; null for no registered node, whose view is no node's.
      */
     static LocationId viewOf(LocationId store, OccurrenceAddress at) {
-        String node = at == null ? "" : at.node().render();
+        return viewOf(store, at == null ? "" : at.node().render());
+    }
+
+    /** The same, of the node {@code node} names. */
+    private static LocationId viewOf(LocationId store, String node) {
         if (store == null || node.isEmpty() || node.startsWith(
                 OccurrenceBinding.UNREGISTERED_SOURCE_KEY)) {
             return null;
