@@ -39,5 +39,20 @@ public class RowOrderTest {
                     RowOrder.beforeEvent((Long) row[0], (Integer) row[1],
                             (Long) row[2]));
         }
+        Object[][] cuts = {
+                // seq, tie, the cut's seq and tie, before it?
+                {42L, 1, 42L, 2, true},   // read, then the engine's write
+                {42L, 3, 42L, 2, false},  // stated after that write: past
+                {42L, 2, 42L, 2, false},
+                {42L, 0, 42L, 2, false},  // VM event 42 follows its ties
+                {41L, 0, 42L, 2, true},
+                {42L, 3, 42L, 0, true},   // a VM event's cut: beforeEvent
+                {0L, 0, 42L, 2, true},
+        };
+        for (Object[] row : cuts) {
+            assertEquals(java.util.Arrays.toString(row), row[4],
+                    RowOrder.beforeCut((Long) row[0], (Integer) row[1],
+                            (Long) row[2], (Integer) row[3]));
+        }
     }
 }

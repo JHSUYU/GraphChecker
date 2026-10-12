@@ -7216,6 +7216,57 @@ public class ExploreTest {
     }
 
     /**
+     * A role's view read is the occurrence's prefix when it stands before
+     * the occurrence's first row by the one order ({@link RowOrder}), a tie
+     * at one seq included (round SG3A tra: the seed's read at (538, 12), its
+     * alias update's store write at (538, 24); by seq alone the seed offered
+     * no pairing flip).  Tied after that row, it is none.
+     */
+    @Test
+    public void aRolesReadTiedBeforeTheOccurrenceOpensIsItsPrefix()
+            throws Exception {
+        for (int readTie : new int[] {2, 4}) {
+            Path iteration = tree.newFolder("pairing-prefix-" + readTie)
+                    .toPath();
+            LocationId view = LocationId.of(LocationKind.VIEW,
+                    "SOLR_ZK@hdfs-case/dn0#epoch0", "/aliases.json");
+            LocationId store = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                    "/aliases.json");
+            OccurrenceAddress role = OccurrenceAddress.of(TARGET.node(),
+                    OccurrenceAddress.ROLE_REGION + "SOLR_HTTP",
+                    TARGET.context(), ExecutionIndex.empty());
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            Endpoint decoder = at(WRITER, "SOLR_ZK#VIEW:.aliases.json",
+                    "decode#1");
+            seed.writes.add(WriteRow.of("s-seed", 5L, decoder, view, 1L, "",
+                    "J").withTie(1));
+            seed.writes.add(WriteRow.of("s-seed", 8L, decoder, view, 2L, "",
+                    "J").withTie(1));
+            seed.reads.add(ReadRow.of("s-seed", 8L, at(role,
+                    "SOLR_ZK#VIEWED:|aliases.json#VIEW", "getAliases#1"),
+                    view, 2L, "V_p", "J", "2").withTie(readTie));
+            // The occurrence opens with its store write, tied at 3.
+            seed.writes.add(WriteRow.of("s-seed", 8L, at(TARGET,
+                    "SOLR_ZK#STORE:/aliases.json", "setData#1"), store, 3L,
+                    "", "[B").withTie(3));
+            seed.flush();
+            Corpus corpus = Corpus.read(iteration, null);
+            Task task = Task.of("T", TARGET,
+                    Collections.<OccurrenceAddress>emptyList(), "s-seed");
+            List<Long> versions = new ArrayList<Long>();
+            for (ObligationFactory.Candidate offered : PairingFlip.candidates(
+                    corpus, task, corpus.pathsOf(TARGET).get(0),
+                    new ArrayList<GapRow>())) {
+                versions.add(offered.pairedVersion);
+            }
+            assertEquals("read tied " + readTie, readTie < 3
+                    ? Collections.singletonList(1L)
+                    : Collections.<Long>emptyList(), versions);
+        }
+    }
+
+    /**
      * A corpus read again (a host's solver, after a landing) takes each
      * session the read before holds and the iteration still lists as it
      * is, unread: a landed session never changes.  A session that landed is

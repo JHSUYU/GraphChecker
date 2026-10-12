@@ -165,6 +165,7 @@ The producer states the class on the row; EMIT reads a row with no class as BLOC
 | `MESSAGE_CONTEXT_REFUSED` | a message-carried context the receiving side refused to install |
 | `EPOCH_UNMATCHED` | a mint of the right site at the wrong node epoch |
 | `SESSION_INCOMPLETE` | a session no reader could read whole |
+| `ENGINE_FAULT` | an engine fault in a door or hook the system's code calls, named instead of thrown into the system (`runtime.MessageDoors#doorFault`); the rows that door states are missing (BLOCKING) |
 | `UNPLANNED_INPUT` | a demanded door's planned marker called at an invocation its task plans no input for (a call only a flipped world made), run concretely; subject `<taskId> <symbol>#<k>` (`UnplannedInput`); an admitted session that may parent exposes it and GROW plans it (DIAGNOSTIC; past `unplanned-input-max` a counted bound), [PIPELINE.md §7.8](PIPELINE.md) |
 | `ASSIGNMENT_UNPLANTED` | an assigned root whose mint ran without planting the value |
 | `ASSIGNMENT_UNMINTABLE` | an assigned root the recording mints nowhere (the obligation is not run) |

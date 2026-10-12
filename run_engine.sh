@@ -6355,8 +6355,12 @@ campaign_stream_manifest() {
 # rows connect past the closure ceiling (region_path_closure_ceiling,
 # ClosurePlanner#CLOSURE_CEILING: the runaway guard, never a silently unlimited
 # plan); the occurrences PLAN plans
-# (schedule_max_jobs, the schedule index's `closureCut`); and the claims
-# decided again after CONFIRM refuted one (campaign_max_claims).  A round's
+# (schedule_max_jobs, the schedule index's `closureCut`); the paths a loop
+# bound cut at the anchor (loop_body_bound, RestsOn's loop-body-bound rows);
+# the store content leaves held past the daemon tick bound (daemon_tick_bound,
+# COMPOSE's daemon-tick-bound rows: their producers, begun by a tick past the
+# recording's last, are never grown); and the claims decided again after
+# CONFIRM refuted one (campaign_max_claims).  A round's
 # max-flips-per-path is no such bound -- the next round asks the decisions it
 # left -- nor is the time budget (campaign_exploration_cut).
 campaign_bounds() {
@@ -6388,6 +6392,7 @@ explore_manifest.json 2>/dev/null) \
     | rows("max-world-depth") as $depth
     | rows("pairing-bound") as $pairing
     | rows("loop-body-bound") as $loops
+    | rows("daemon-tick-bound") as $ticks
     | ($rounds | last | .ceilingCut // 0) as $ceiling
     | (($rounds | last | .truncated // 0) - $ceiling) as $truncated
     | ($index[0].closureCut // null) as $cut
@@ -6416,6 +6421,13 @@ explore_manifest.json 2>/dev/null) \
               + " bound cut before they reached it, before or after they"
               + " left the way to the throw (bodies: " + ($loops | map(.subject
               | sub(".*="; "")) | unique | join(", ")) + ")")}),
+        (select(($ticks | length) > 0)
+         | {by: "daemon_tick_bound",
+            detail: ("\($ticks | length) producer(s) begun by a daemon tick"
+              + " past the recording'"'"'s last hold the store content"
+              + " leaves they wrote at their versions'"'"' values (" + ($ticks
+              | map(.subject | sub(" daemon-tick-bound=.*"; "")) | unique
+              | join(", ")) + ")")}),
         (select(($inputs | length) > 0)
          | {by: "unplanned_input_max",
             detail: ("\($inputs | length) marker invocation(s) past the"

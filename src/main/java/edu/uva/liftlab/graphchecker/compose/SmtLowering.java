@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
@@ -3248,14 +3249,15 @@ public final class SmtLowering {
         for (WriteRow version : writes) {
             if (version.version() >= state.version()) versions.add(version);
         }
-        versions.sort(Comparator.comparingLong(WriteRow::seq));
+        versions.sort(RowOrder::compare);
         if (versions.isEmpty()
                 || versions.get(0).version() != state.version()) {
             return Collections.<WriteRow>emptyList();
         }
         int live = 0;
-        while (live + 1 < versions.size()
-                && versions.get(live + 1).seq() < read.seq()) {
+        while (live + 1 < versions.size() && RowOrder.beforeCut(
+                versions.get(live + 1).seq(), versions.get(live + 1).tie(),
+                read.seq(), read.tie())) {
             live++;
         }
         List<WriteRow> seen = new ArrayList<WriteRow>();
@@ -3963,16 +3965,34 @@ public final class SmtLowering {
         /** A value held at what the recording states. */
         public static final String HELD = "HELD";
         /**
-         * A store content leaf held at the value its version holds because
-         * the closure refuses its producer by rule: a constant of the version,
-         * as the read was before capture, and no open link of the chain
-         * ({@code Composer#arrival}, cone.json's constantByRefusedProducer).
+         * A store content leaf whose producer the closure refuses by rule
+         * (a role), held at its version's value because that producer's own
+         * export at the port is a constant expression: a constant of the
+         * version, and no open link of the chain ({@code Composer#arrival},
+         * cone.json's constantByRefusedProducer).
          */
         public static final String CONSTANT = "CONSTANT";
+        /**
+         * A store content leaf whose producer the closure refuses by rule,
+         * bound by that producer's own export at the port: its expression
+         * without the producer's path condition, an over-approximation
+         * CONFIRM filters, and no open link ({@code Composer#arrival},
+         * cone.json's exportedByRefusedProducer).
+         */
+        public static final String EXPORTED = "EXPORTED";
+        /**
+         * A store content leaf held at its version's value because its
+         * producer lies past the daemon tick bound and exports a constant:
+         * no open link, and a named bound the case's verdict rests on
+         * ({@code Composer#arrival}, run_engine.sh campaign_bounds:
+         * daemon_tick_bound; cone.json's boundedByTick).
+         */
+        public static final String BOUNDED = "BOUNDED";
         /** Why a HELD value is held. */
         public static final String PRODUCER_UNSTATED = "producer unstated";
 
-        /** {@link #FREE}, {@link #HELD} or {@link #CONSTANT}. */
+        /** {@link #FREE}, {@link #HELD}, {@link #CONSTANT}, {@link
+         *  #EXPORTED} or {@link #BOUNDED}. */
         public final String kind;
         public final String subject;
         /** A HELD value's recorded value; "" for a FREE one. */
@@ -4013,12 +4033,22 @@ public final class SmtLowering {
                 Collections.<String>emptyList(), arm));
     }
 
-    /** A store content leaf held at its version's value because its
-     *  producer is refused by {@code rule} ({@link Unbound#CONSTANT}). */
-    public void constantByRefusedProducer(String subject, String value,
-                                          String rule) {
-        top().unbound.add(new Unbound(Unbound.CONSTANT, subject, value, rule,
+    /**
+     * A store content leaf its producer, refused by {@code rule}, settles
+     * ({@code Composer#arrival}): {@link Unbound#CONSTANT}, {@link
+     * Unbound#EXPORTED} or {@link Unbound#BOUNDED}, never an open link.
+     */
+    public void settledByRefusedProducer(String kind, String subject,
+                                         String value, String rule) {
+        top().unbound.add(new Unbound(kind, subject, value, rule,
                 Collections.<String>emptyList(), arm));
+    }
+
+    /** Whether a value of this kind is settled, no open link of a chain
+     *  ({@link #settledByRefusedProducer}; {@code Cone}, cone.py). */
+    public static boolean settled(String kind) {
+        return Unbound.CONSTANT.equals(kind) || Unbound.EXPORTED.equals(kind)
+                || Unbound.BOUNDED.equals(kind);
     }
 
     /**

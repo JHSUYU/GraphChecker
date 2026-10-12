@@ -20,7 +20,9 @@ import java.util.TreeSet;
  * a handoff's {@code v_H}, {@code _field_HOFF.} -- the path's fatal condition
  * names (through define-funs; let-bound and quantified names, and a
  * define-fun's parameters, are no constants) that no message family
- * asserted under the path's selector names, and a boundary value an arm the
+ * asserted under the path's selector names and no producer refused by rule
+ * settles on the path ({@code concrete[]}: CONSTANT, EXPORTED, BOUNDED,
+ * {@link SmtLowering#settled}), and a boundary value an arm the
  * witness chose holds FREE or HELD ({@code concrete[]}, its arm).  Each is a
  * value the witness rests on that no producer the corpus attests made.
  *
@@ -69,11 +71,11 @@ final class Cone {
         for (Node family : families) {
             bound.addAll(names(family, Collections.<String>emptySet()));
         }
-        // A store content leaf held as its version's constant, its producer
-        // refused by rule (SmtLowering.Unbound#CONSTANT): no open link.
+        // A store content leaf its producer, refused by rule, settles
+        // (SmtLowering#settled: a constant, its export, a named bound): no
+        // open link.
         for (Composer.Concrete row : concrete) {
-            if (SmtLowering.Unbound.CONSTANT.equals(row.kind)
-                    && pathId.equals(row.pathId)) {
+            if (SmtLowering.settled(row.kind) && pathId.equals(row.pathId)) {
                 bound.add(row.subject);
                 bound.add(SmtNames.legalSymbols(row.subject));
             }

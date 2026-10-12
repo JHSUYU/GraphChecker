@@ -1282,10 +1282,11 @@ public final class Composer {
     private final int maxValuations;
     private final SmtLowering lowering;
     private final List<GapRow> gaps = new ArrayList<GapRow>();
-    /** "producer occurrence\nrule" -> how many store content leaves it wrote
-     *  are held as constants ({@link #refusedByRule}). */
-    private final Map<String, Integer> refusedProducerLeaves =
-            new LinkedHashMap<String, Integer>();
+    /** Each store content leaf a producer refused by rule settles, by its
+     *  symbol ({@link #arrival}): named per producer at the end, counted
+     *  over the paths kept ({@link #compose}). */
+    private final Map<String, Refused> settledLeaves =
+            new LinkedHashMap<String, Refused>();
     private final Map<String, Family> families =
             new LinkedHashMap<String, Family>();
     /** Root id -> the domain the case and the recording give it. */
@@ -1552,16 +1553,45 @@ public final class Composer {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     named.getKey(), named.getValue());
         }
-        // Every store content leaf held as its version's constant, named per
-        // producer and rule (#refusedByRule): never silent.
-        for (Map.Entry<String, Integer> refused
-                : refusedProducerLeaves.entrySet()) {
-            String[] parts = refused.getKey().split("\n", 2);
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, parts[0],
-                    refused.getValue() + " store content leaf(s) this "
-                            + "producer wrote are constants of their versions"
-                            + " (constantByRefusedProducer), since the closure"
-                            + " never plans it: " + parts[1]);
+        // Every store content leaf a producer refused by rule settles on a
+        // path kept, named per producer, rule and kind (#arrival): never
+        // silent.  One held past the daemon tick bound is that bound, by
+        // name (run_engine.sh campaign_bounds: daemon_tick_bound).
+        Map<String, Set<String>> settled =
+                new LinkedHashMap<String, Set<String>>();
+        Map<String, Refused> settledBy = new LinkedHashMap<String, Refused>();
+        for (Concrete row : concrete.values()) {
+            Refused refused = settledLeaves.get(row.subject);
+            if (refused == null || !SmtLowering.settled(row.kind)) continue;
+            String key = refused.producer + "\n" + refused.rule + "\n"
+                    + row.kind;
+            settled.computeIfAbsent(key, k -> new LinkedHashSet<String>())
+                    .add(row.subject);
+            settledBy.put(key, refused);
+        }
+        for (Map.Entry<String, Set<String>> leaves : settled.entrySet()) {
+            Refused refused = settledBy.get(leaves.getKey());
+            String kind = leaves.getKey().substring(
+                    leaves.getKey().lastIndexOf('\n') + 1);
+            String count = leaves.getValue().size() + " store content leaf(s)"
+                    + " this producer wrote ";
+            if (SmtLowering.Unbound.BOUNDED.equals(kind)) {
+                gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                        refused.producer + " " + DAEMON_TICK_BOUND + "="
+                                + refused.bound, count + "are held at their"
+                                + " versions' values past the bound (boundedBy"
+                                + "Tick): " + refused.why);
+            } else {
+                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        refused.producer, count + (SmtLowering.Unbound
+                                .EXPORTED.equals(kind) ? "are bound by its"
+                                + " export without its path condition"
+                                + " (exportedByRefusedProducer)"
+                                : "are constants of their versions"
+                                + " (constantByRefusedProducer)") + ", since"
+                                + " the closure never plans it: "
+                                + refused.why);
+            }
         }
 
         // Valuations before the body: the body declares what pins reach.
@@ -1601,7 +1631,7 @@ public final class Composer {
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
-        Map<String, Long> reached = restsOn.closure(session, anchor, cutoff,
+        RestsOn.Reached reached = restsOn.closure(session, anchor, cutoff,
                 null);
         // What a family may move is no constant anywhere in this path: not
         // a pin after a refused join, not a variable independence leaves
@@ -1778,6 +1808,7 @@ public final class Composer {
         //      phi), by the same rule as (2).
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
+        reaching.addAll(holds);
         reachedHandoffs(session, lowering.reachedSymbols(reaching), handoffs,
                 holds, bound, refusals, "");
         terms.addAll(holds);
@@ -2179,12 +2210,19 @@ public final class Composer {
                          Set<String> handoffs, List<String> holds,
                          List<AttachRow> bound, List<GapRow> refusals,
                          String arm) {
-        for (String name : names) {
+        List<String> pending = new ArrayList<String>(names);
+        for (int at = 0; at < pending.size(); at++) {
+            String name = pending.get(at);
             if (handoffs.contains(name)) continue;
             AttachRow attach = corpus.attach(session, name);
             if (attach != null) {
                 handoffs.add(name);
+                int held = holds.size();
                 arrival(session, attach, holds, bound);
+                // A leaf an export binds names what that export read: each
+                // handoff of it by the same rule.
+                pending.addAll(lowering.reachedSymbols(
+                        holds.subList(held, holds.size())));
             } else if (corpus.handoffSymbol(name) && handoffs.add(name)) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, name, (arm.isEmpty()
@@ -2248,7 +2286,18 @@ public final class Composer {
         // No producer the corpus attests delivered it.
         String received = JsonFields.firstNonBlank(attach.answeredValue(),
                 attach.arrival());
-        Term value = arrived(received, attach.javaType());
+        Refused refused = refusedByRule(attach);
+        Delivery delivery = refused == null ? null : delivery(attach);
+        if (delivery != null && !delivery.constant) {
+            // Its producer's own export carries an expression: bound by it.
+            lowering.declareStated(attach.symbol(), sort);
+            holds.add(delivery.binding);
+            lowering.settledByRefusedProducer(SmtLowering.Unbound.EXPORTED,
+                    attach.symbol(), received, refused.why);
+            settledLeaves.put(attach.symbol(), refused);
+            return;
+        }
+        Term value = arrived(attach);
         if (value == null) {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "no producer is attested "
@@ -2258,44 +2307,119 @@ public final class Composer {
         }
         lowering.declareStated(attach.symbol(), value.sort);
         holds.add("(= " + attach.symbol() + " " + value.text + ")");
-        String rule = refusedByRule(attach);
-        if (!rule.isEmpty()) {
-            lowering.constantByRefusedProducer(attach.symbol(), received,
-                    rule);
-            refusedProducerLeaves.merge(attach.producer().occurrence()
-                    .render() + "\n" + rule, 1, Integer::sum);
+        if (delivery != null) {
+            // A constant export: the version's constant, or the tick bound.
+            lowering.settledByRefusedProducer(refused.bound < 0
+                    ? SmtLowering.Unbound.CONSTANT
+                    : SmtLowering.Unbound.BOUNDED, attach.symbol(), received,
+                    refused.why);
+            settledLeaves.put(attach.symbol(), refused);
             return;
         }
         lowering.held(attach.symbol(), received, attach.producer() == null
                 ? "the attach names no producer"
                 : "no export row of this corpus attests its producer "
-                + attach.producer().id());
+                + attach.producer().id() + (refused == null ? ""
+                : ", and its own run's export at the port lowers to"
+                + " nothing (" + refused.why + ")"));
     }
 
     /**
-     * Why the closure refuses, by a rule, ever to plan the producer of a
-     * store content leaf no attested export binds, or "": a daemon tick past
-     * the recording's last ({@code Corpus#tickPastRecording}: only a replay
-     * slower than the recording ran it), or a role, which no weave captures.
-     * Such a leaf is a constant of its version, as the read was before
-     * capture ({@link SmtLowering#constantByRefusedProducer}): nothing in
-     * the explored space can move it, and no GROW can attest it.  A leaf
-     * with no producer at all, or one a later round could plan, stays HELD,
-     * an open link (lead's rule (a), 2026-10-12).
+     * The rule by which the closure refuses ever to plan the producer of a
+     * store content leaf no attested export binds, or null: a role, which no
+     * weave captures, or a daemon tick past the recording's last ({@code
+     * Corpus#tickPastRecording}: only a replay slower than the recording ran
+     * it).  No GROW can attest such a producer, so its own run's export at
+     * the port settles the leaf (lead's rule (a), B-a, 2026-10-12): an
+     * expression binds it ({@link SmtLowering.Unbound#EXPORTED}); a constant
+     * expression holds it at its version's value, a constant ({@link
+     * SmtLowering.Unbound#CONSTANT}) or past the tick bound that bound by
+     * name ({@link SmtLowering.Unbound#BOUNDED}); no export that lowers
+     * leaves it HELD, an open link, as a leaf with no producer at all or
+     * one a later round could plan.
      */
-    private String refusedByRule(AttachRow attach) {
+    private Refused refusedByRule(AttachRow attach) {
         if (attach.producer() == null
                 || ContentPort.parse(attach.endpoint().site()) == null) {
-            return "";
+            return null;
         }
         OccurrenceAddress producer = attach.producer().occurrence();
         if (producer.role()) {
-            return "ROLE: " + producer.regionId() + " is a role, no region a "
-                    + "weave captures";
+            return new Refused(producer.render(), "ROLE", producer.regionId()
+                    + " is a role, no region a weave captures", -1);
         }
-        String tick = corpus.tickPastRecording(producer);
-        return tick == null ? "" : "TICK_BOUND: begun by the daemon tick "
-                + tick;
+        Corpus.TickPast tick = corpus.tickPastRecording(producer);
+        return tick == null ? null : new Refused(producer.render(),
+                "TICK_BOUND", "begun by the daemon tick " + tick, tick.last);
+    }
+
+    /** A store content leaf's producer the closure refuses by rule
+     *  ({@link #refusedByRule}). */
+    private static final class Refused {
+        final String producer;
+        final String rule;
+        /** The rule and why, in words. */
+        final String why;
+        /** TICK_BOUND: the recording's last tick, the bound; else -1. */
+        final int bound;
+
+        Refused(String producer, String rule, String why, int bound) {
+            this.producer = producer;
+            this.rule = rule;
+            this.why = rule + ": " + why;
+            this.bound = bound;
+        }
+    }
+
+    /** What a refused producer's own run exported at a leaf's port
+     *  ({@link #delivery}). */
+    private static final class Delivery {
+        /** The leaf stated as one of the exports, with what their lowering
+         *  requires of them. */
+        final String binding;
+        /** Whether every export is a constant expression. */
+        final boolean constant;
+
+        Delivery(String binding, boolean constant) {
+            this.binding = binding;
+            this.constant = constant;
+        }
+    }
+
+    /**
+     * What the leaf's producer exported at its port in the leaf's own run --
+     * the delivery the read received ({@link Arms#armsAt}'s selection) --
+     * or null where no such export lowers.  Several are its alternatives,
+     * each with its lowering's requirements; a constant expression is one
+     * that names no symbol.
+     */
+    private Delivery delivery(AttachRow attach) {
+        List<ExportRow> own = new ArrayList<ExportRow>();
+        for (ExportRow export : corpus.exportsOf(attach.producer())) {
+            if (export.sessionId().equals(attach.sessionId())) own.add(export);
+        }
+        own.addAll(corpus.ownExportsOf(attach.sessionId(),
+                attach.producer()));
+        Sort sort = JavaSmtSorts.sortOfJava(attach.javaType());
+        List<String> alternatives = new ArrayList<String>();
+        boolean constant = true;
+        for (ExportRow export : own) {
+            List<String> conditions = new ArrayList<String>();
+            Term delivered = composedFamilies.lower(export.sessionId(),
+                    export.expressionRef(), "refused-producer-export",
+                    conditions);
+            if (delivered == null || delivered.sort != sort) continue;
+            SessionReader reader = corpus.session(export.sessionId());
+            Set<String> symbols = new LinkedHashSet<String>();
+            Arms.symbolsIn(reader.expressions().expression(
+                    export.expressionRef()), symbols);
+            constant &= symbols.isEmpty();
+            conditions.add("(= " + attach.symbol() + " " + delivered.text
+                    + ")");
+            alternatives.add(VmTermLowering.and(conditions));
+        }
+        return alternatives.isEmpty() ? null : new Delivery(
+                VmTermLowering.or(alternatives), constant);
     }
 
     /** The sort a root's symbol has: a MARKER is a flag, any other a number. */
@@ -2327,20 +2451,29 @@ public final class Composer {
     }
 
     /**
-     * What an attach row states it received, as a term: a String's arrival
-     * is its text (the mint states the value itself, {@code
-     * HandoffMint#publishAttachRow}, {@code StoreContent#attach}), not a
-     * JSON literal -- read as one, every String arrival held nowhere and
-     * went FREE (solr-18413 Z2R: a state.json leaf "active"); "" says
-     * nothing (an empty String or none).  Any other as the row spells it
-     * ({@link SmtLowering#statedValue}).
+     * What an attach row states it received, as a term, or null.  An
+     * answered value as the wave spells it, a String the solver's literal
+     * ({@code runtime.ModelValues#coerce} decodes it so); else the arrival,
+     * a String its text whatever it begins with (the mint states the value
+     * itself, {@code HandoffMint#publishAttachRow}, {@code
+     * StoreContent#attach}: String.valueOf) -- read as a literal, every
+     * String arrival held nowhere and went FREE (solr-18413 Z2R: a
+     * state.json leaf "active"), and one that begins with a quote was
+     * another value.  An empty arrival says nothing.  Any other as the row
+     * spells it ({@link SmtLowering#statedValue}).
      */
-    private Term arrived(String received, String javaType) {
-        if (JavaSmtSorts.sortOfJava(javaType) == Sort.STRING
-                && !received.isEmpty() && !received.startsWith("\"")) {
-            return Term.nonNullString(VmExpressionIr.quote(received), "true");
+    private Term arrived(AttachRow attach) {
+        String answered = attach.answeredValue() == null ? ""
+                : attach.answeredValue().trim();
+        if (!answered.isEmpty()) {
+            return lowering.statedValue(answered, attach.javaType());
         }
-        return lowering.statedValue(received, javaType);
+        String arrival = attach.arrival() == null ? "" : attach.arrival();
+        if (JavaSmtSorts.sortOfJava(attach.javaType()) == Sort.STRING
+                && !arrival.isEmpty()) {
+            return Term.nonNullString(VmExpressionIr.quote(arrival), "true");
+        }
+        return lowering.statedValue(arrival, attach.javaType());
     }
 
     /**
@@ -3025,20 +3158,19 @@ public final class Composer {
     }
 
     /**
-     * What this session received at these attaches, one term per symbol.
-     * Kept beside the path, not in it: an arrival is a consequence of its
-     * producer's roots, so pinning it would pin them.
+     * What this session received at these attaches, one term per symbol, as
+     * {@link #arrived} reads a row (a String arrival its text).  Kept beside
+     * the path, not in it: an arrival is a consequence of its producer's
+     * roots, so pinning it would pin them.
      */
     private List<String> arrivals(List<AttachRow> attaches) {
         List<String> stated = new ArrayList<String>();
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : attaches) {
             if (!seen.add(attach.symbol())) continue;
-            String literal = smtLiteral(JsonFields.firstNonBlank(
-                    attach.answeredValue(), attach.arrival()),
-                    JavaSmtSorts.sortOfJava(attach.javaType()));
-            if (literal.isEmpty()) continue;
-            stated.add("(= " + attach.symbol() + " " + literal + ")");
+            Term received = arrived(attach);
+            if (received == null) continue;
+            stated.add("(= " + attach.symbol() + " " + received.text + ")");
         }
         return stated;
     }
@@ -3830,6 +3962,11 @@ public final class Composer {
     /** The bound a path stopped on the way to the throw rests on (its
      *  gap's subject suffix, run_engine.sh campaign_bounds). */
     static final String LOOP_BODY_BOUND = "loop-body-bound";
+
+    /** The bound a store content leaf of a producer past the recording's
+     *  last daemon tick rests on (its gap's subject suffix, run_engine.sh
+     *  campaign_bounds: daemon_tick_bound). */
+    static final String DAEMON_TICK_BOUND = "daemon-tick-bound";
 
     /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";

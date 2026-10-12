@@ -514,7 +514,7 @@ public final class Corpus implements Arms.Rows {
      * recorded, were grown in every wave).  Null too when the iteration
      * states no recorded schedule.
      */
-    public String tickPastRecording(OccurrenceAddress occurrence) {
+    public TickPast tickPastRecording(OccurrenceAddress occurrence) {
         if (recordedTicks == null) return null;
         String node = occurrence.node().render();
         CausalContext context = occurrence.context();
@@ -531,8 +531,28 @@ public final class Corpus implements Arms.Rows {
         if (tick == null) return null;
         int last = recordedTicks.getOrDefault(node + "|" + tick.role().name(),
                 0);
-        return tick.windowIndex() <= last ? null : node + " "
-                + tick.render() + ", the recording's last being #" + last;
+        return tick.windowIndex() <= last ? null
+                : new TickPast(node + " " + tick.render(), last);
+    }
+
+    /** A daemon tick past the recording's last ({@link #tickPastRecording}),
+     *  read as its words. */
+    public static final class TickPast {
+        /** The node and the tick, as a context renders it. */
+        public final String tick;
+        /** The last tick of that role on that node the recording ran: the
+         *  bound the closure stops at. */
+        public final int last;
+
+        TickPast(String tick, int last) {
+            this.tick = tick;
+            this.last = last;
+        }
+
+        @Override
+        public String toString() {
+            return tick + ", the recording's last being #" + last;
+        }
     }
 
     /**

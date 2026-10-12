@@ -840,8 +840,9 @@ store location takes an older decode of that node. A node decides on whichever d
 and what a stale view changes is often no value a term names (a key an older document lacks, a
 replica a loop skips), so no decision's flip reaches it. A task offers pairing flips where its
 occurrence writes a STORE version or is the declared anchor's: for each view its occurrence read, or
-its node read under its causal context in role work before it opened (a routed alias captures its
-view in the request's role work and writes it in a store door's region), its earliest read is
+its node read under its causal context in role work before it opened -- before its first row on the
+session's one order, a tie at one seq included (a routed alias captures its view in the request's
+role work and writes it in a store door's region, often with no VM event between) --, its earliest read is
 offered each older version the node decoded before it in the session (on the session's one order,
 `contract.RowOrder`: a decode and a read stated with no VM event between them in the order the engine
 stated them; the view's INITIAL -- what the node held when the window opened, a decode before it,
@@ -1721,11 +1722,17 @@ forced world's and asserting them in another world could make a real witness UNS
   body holds it, none on the path's own) -- a String arrival held at its text (`Composer#arrived`)
   --, except a store content leaf (`contract.ContentPort`) whose producer the closure refuses by
   rule (a role, which no weave captures; a daemon tick past the recording's last,
-  `Corpus#tickPastRecording`): that one is a constant of its version, as the read was before
-  capture, held the same way but named `CONSTANT` (`Composer#refusedByRule`,
-  `SmtLowering#constantByRefusedProducer`; one DIAGNOSTIC per producer and rule with its leaf count),
-  and no open link of a chain (`Cone`, `cone.py`'s `constantByRefusedProducer`) -- a leaf with no
-  producer, or one a round could plan, stays HELD and open; one whose producer is attested and no
+  `Corpus#tickPastRecording`; `Composer#refusedByRule`): that producer's own export at the port in
+  the leaf's run (`Composer#delivery`) settles it. An expression binds it, the leaf stated as the
+  export (several: one of them) with what its lowering requires and each handoff it names taken by
+  this same rule -- the producer's path condition is not stated, an over-approximation CONFIRM
+  filters -- named `EXPORTED`; a constant expression holds it at its received value, named
+  `CONSTANT` for a role, and `BOUNDED` past the tick bound, a named bound the case rests on (a
+  DIAGNOSTIC `<producer> daemon-tick-bound=<last>` row, `run_engine.sh campaign_bounds`:
+  `daemon_tick_bound`). These three are no open link of a chain (`SmtLowering#settled`, `Cone`;
+  `cone.py`'s `exportedByRefusedProducer`, `constantByRefusedProducer`, `boundedByTick`), one
+  DIAGNOSTIC per producer, rule and kind counts the leaves on the paths kept. No export that lowers
+  leaves it HELD and open, as a leaf with no producer, or one a round could plan; one whose producer is attested and no
   export of it lowers, or whose row states a value the lowering places nowhere, is FREE, named:
   nothing pins it, and a path is never dropped for it;
 - THE ONE RULE for a value COMPOSE cannot bind (`SmtLowering#unbound`): FREE, named with what it

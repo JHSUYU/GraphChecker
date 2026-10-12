@@ -45,7 +45,39 @@ public final class RowOrder {
      * reads it.
      */
     public static boolean beforeEvent(long seq, int tie, long event) {
-        return seq < event || seq == event && tie > 0;
+        return beforeCut(seq, tie, event, 0);
+    }
+
+    /**
+     * Whether the row at ({@code seq}, {@code tie}) stands before a cut at
+     * ({@code cutSeq}, {@code cutTie}): a VM event's ({@code cutTie} 0,
+     * {@link #beforeEvent}) or an engine row's -- a writer reached through
+     * its engine-stated store write is cut there, so its reads stated after
+     * that write at the same seq are past it.  A row with no clock (seq 0)
+     * stands before every cut, as {@code seq < cut} reads it.
+     */
+    public static boolean beforeCut(long seq, int tie, long cutSeq,
+                                    int cutTie) {
+        return seq < cutSeq || seq == cutSeq && tie > 0
+                && (cutTie == 0 || tie < cutTie);
+    }
+
+    /**
+     * The one order as a comparison, for picking the last of several rows
+     * or sorting them: seq, then at one seq the engine's rows by tie, then
+     * its VM event (tie 0).  Seq 0 -- no clock, an INITIAL -- sorts first,
+     * as a comparison of seqs alone sorts it.
+     */
+    public static int compare(long seq, int tie, long otherSeq,
+                              int otherTie) {
+        if (seq != otherSeq) return Long.compare(seq, otherSeq);
+        return Integer.compare(tie == 0 ? Integer.MAX_VALUE : tie,
+                otherTie == 0 ? Integer.MAX_VALUE : otherTie);
+    }
+
+    /** {@link #compare} of two writes. */
+    public static int compare(WriteRow write, WriteRow other) {
+        return compare(write.seq(), write.tie(), other.seq(), other.tie());
     }
 
     /** Whether this read stands before this write. */

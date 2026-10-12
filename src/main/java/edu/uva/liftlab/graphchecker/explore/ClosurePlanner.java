@@ -660,7 +660,7 @@ public final class ClosurePlanner {
             }
             return;
         }
-        String tick = corpus.tickPastRecording(occurrence);
+        Corpus.TickPast tick = corpus.tickPastRecording(occurrence);
         if (tick != null) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
