@@ -71,8 +71,8 @@ final class LoopAccounting {
         if (active == null) return;
         String loop = nonNull(loopId);
         // Instrumented under a different policy: loop ids untrusted.
-        account(active, () -> loop.isEmpty() || instrumentedMaxTraversals
-                != active.activation.loopBound.maxBackedgeTraversals()
+        account(active, () -> loop.isEmpty() || !active.activation.loopBound
+                .acceptsInstrumentedBound(instrumentedMaxTraversals)
                 ? new ReplayLoopResourceCut(loop, 0, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH")
                 : active.chargeLoopBody(loop, instrumentedMaxTraversals),
