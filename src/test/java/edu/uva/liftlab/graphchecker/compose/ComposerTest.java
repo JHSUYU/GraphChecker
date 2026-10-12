@@ -3734,7 +3734,9 @@ public class ComposerTest {
         final List<WriteRow> decodes = Arrays.asList(
                 WriteRow.of("t", 2L, at, view, 3L, "", "J"),
                 WriteRow.of("t", 6L, at, view, 5L, "", "J"));
-        for (final boolean movable : new boolean[] {true, false}) {
+        // 0: a family re-pairs the read; 1: a flip query marks it movable
+        // (FlipQuery#movableReads); 2: neither.
+        for (final int mode : new int[] {0, 1, 2}) {
             final SmtLowering.SessionJoin none = SmtLowering.NO_JOIN;
             SmtLowering.SessionJoin join = new SmtLowering.SessionJoin() {
                 @Override
@@ -3774,7 +3776,7 @@ public class ComposerTest {
 
                 @Override
                 public boolean repaired(String location, long readEvent) {
-                    return movable && key.equals(location)
+                    return mode == 0 && key.equals(location)
                             && readEvent == 9L;
                 }
 
@@ -3808,13 +3810,14 @@ public class ComposerTest {
             declared.put("V_r", VmTermLowering.Sort.INT);
             SmtLowering lowering = new SmtLowering(declared);
             lowering.begin("t", join, ExpressionTable.empty());
+            if (mode == 1) lowering.movable(read);
             String text = lowering.dispatch(vmString("equals",
                     vmLeaf("SymbolExpression", "h5", "Ljava/lang/String;"),
                     vmLeaf("ConStringSymbolExp", "Y_L'String'_down",
                             "java/lang/String")),
                     VmTermLowering.Sort.BOOL, "test").text;
             lowering.end();
-            assertEquals(text, movable, text.contains("(ite (= V_r 5) h5 h3)"));
+            assertEquals(text, mode != 2, text.contains("(ite (= V_r 5) h5 h3)"));
             assertTrue(text, text.contains("h5"));
         }
     }

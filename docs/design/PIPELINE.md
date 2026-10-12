@@ -821,7 +821,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   eligible writer is its own symbol, as COMPOSE keeps the anchor's
   (`FlipQuery#movableReads`, `SmtLowering#rowSymbol`): inlined, the VM's guarded read is the
   written value, a constant no selector moves (hdfs-bugs-slowdisk-zero: the detector turn's
-  `maxSlowDisksToExclude <= 0` over the reconfiguration's 0 and its INITIAL 1).
+  `maxSlowDisksToExclude <= 0` over the reconfiguration's 0 and its INITIAL 1). A read of a node's
+  VIEW (SYMBOL-SCOPE §6.4) with more than one eligible decode is marked movable too
+  (`SmtLowering#movable`), so a content leaf the path read through it lowers as the leaf of
+  whichever decode its selectors pick (`SmtLowering#throughView`): a flip on such a leaf moves the
+  view's pairing, which a model plants as any writer choice.
   Only reads the text names are variables: a container state behind a guard is inlined by its join
   (the closure demands its writers, §7.2), so the query declares nothing for it — a variable bound
   to each writer's state would constrain nothing, and its equalities over states built by removals

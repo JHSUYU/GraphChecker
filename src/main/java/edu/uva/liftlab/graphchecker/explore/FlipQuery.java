@@ -1118,7 +1118,9 @@ final class FlipQuery {
          * constant no writer choice moves (hdfs-bugs-slowdisk-zero: the
          * detector turn's {@code maxSlowDisksToExclude <= 0}, the
          * reconfiguration's 0, its INITIAL 1).  The text then names each,
-         * and its {@code wchoice_*} selectors bind it ({@link #bind}).  A
+         * and its {@code wchoice_*} selectors bind it ({@link #bind}); a
+         * read of a node's VIEW is movable too, so what the path read
+         * through the view follows the decode they pick.  A
          * container's state, and a query of one, stays inlined (see {@link
          * #rename}); a placeholder's mint is a root's.
          */
@@ -1145,6 +1147,13 @@ final class FlipQuery {
                     continue;
                 }
                 lowering.state(row.symbol(), sort);
+                // A node's view: the content leaves the path read through it
+                // are the leaves of whichever decode its selectors pick
+                // (SmtLowering#throughView), as a STATE family's re-paired
+                // read is in COMPOSE.
+                if (row.location().kind() == LocationKind.VIEW) {
+                    lowering.movable(row);
+                }
             }
         }
 
