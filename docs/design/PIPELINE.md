@@ -2047,7 +2047,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    roots (by root id) plus every clock cell (by cell symbol) where the model's clock jumped (its skew
    differs from the cell's before it), at the model's instant. A jump back is a jump: a cell the
    witness needs short of where its clock ran on to must be planted, or a replay runs it on ahead; it
-   is named at its model instant, which can be its own reading.
+   is named at its model instant, which can be its own reading. A pairing claim
+   (`STATE_PAIRING_FLIPPED`, `MESSAGE_PAIRING_FLIPPED`) also names each arm its witness re-paired
+   (`Composition#repaired`), by its selector: what such a witness moves where no root moves.
 7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
    (`smt.Z3` drops z3's `WARNING:` lines before reading an answer).
 
