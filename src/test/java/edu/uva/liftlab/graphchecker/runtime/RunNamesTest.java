@@ -8,8 +8,10 @@ import org.junit.Test;
 /**
  * A store location keyed in names every run spells alike: the run-only
  * names an adapter stated as a node's become the node's name, the longest
- * first; one no adapter stated is left, and named; a spelling that holds no
- * run-only name is no statement.
+ * first, the host and port inside a stated node name too; an identity hash
+ * stays (it names an object, and two objects' paths are two locations); one
+ * no adapter stated is left, and named; a spelling that holds no run-only
+ * name is no statement.
  */
 public class RunNamesTest {
     @After
@@ -24,6 +26,7 @@ public class RunNamesTest {
         RunNames.spelled("auto0/node0", "72088256043548677");
         RunNames.spelled("auto0/node0", "72088256043548677");
         RunNames.spelled("auto0/node2", "0");
+        RunNames.spelled("auto0/node3", "10.0.0.3:9000_solr");
         String[][] rows = {
             // location, key, the run-only name left unstated
             {"/live_nodes/10.0.0.1:8983_solr", "/live_nodes/{auto0/node1}", ""},
@@ -33,6 +36,9 @@ public class RunNamesTest {
             {"/live_nodes/10.0.0.2:7000_solr", "/live_nodes/10.0.0.2:7000_solr",
                 "10.0.0.2:7000"},
             {"/a/0/b", "/a/0/b", ""},
+            {"/u/http://10.0.0.3:9000/solr", "/u/http://{auto0/node3}/solr", ""},
+            {"/q/Task@1a2b", "/q/Task@1a2b", ""},
+            {"/q/Task@3c4d", "/q/Task@3c4d", ""},
         };
         for (String[] row : rows) {
             RunNames.Keyed keyed = RunNames.key(row[0]);

@@ -4453,7 +4453,7 @@ campaign_explore() {
   local -A stream_job_tree=() stream_flying=() stream_pool_slots=()
   local -A stream_host_jobs=() stream_host_cores=() stream_host_unread=()
   local -A stream_host_solves=()
-  local -A stream_solver_seen=() stream_confirming=()
+  local -A stream_solver_seen=() stream_confirming=() stream_queued_at=()
   # An open witness chain (campaign_stream_attempt): the producers it names,
   # those already grown, and the witnesses attempted again once they are.
   local -A stream_chain=() stream_chain_grown=()
@@ -5021,7 +5021,7 @@ campaign_stream_step_done() {
     id=$(cat "${dir}/confirm")
     stream_confirming[${id}]=$(cat \
       "${iteration_dir}/witness-attempts/${id}/model")
-    stream_queue=("CONFIRM - ${id}" "${stream_queue[@]}")
+    campaign_stream_enqueue "CONFIRM - ${id}"
   fi
   [[ ! -s "${dir}/chain" ]] || campaign_stream_open "${dir}"
   [[ ! -s "${dir}/deferred" ]] || mapfile -t -O "${#stream_deferred[@]}" \
@@ -5148,7 +5148,7 @@ not yet woven"
   for ((index = 0; index < proposed; index++)); do
     mkdir -p "${round_dir}/${ids[${index}]}"
     stream_flying[${ids[${index}]}]=${rows[${index}]}
-    stream_queue+=("OBLIGATION ${name} ${ids[${index}]}")
+    campaign_stream_enqueue "OBLIGATION ${name} ${ids[${index}]}"
   done
 }
 
@@ -5238,8 +5238,9 @@ deeper occurrence(s) were not planned, so a claim over it misses their arms \
   (( truncated > 0 )) || return 0
   campaign_stream_gap BLOCKING REGION_PATH_CLOSURE_TRUNCATED "the \
 exploration ended (${stream_stop}) on $(basename "${last}")'s closure, \
-truncated at its task bound: ${truncated} occurrence(s) were not planned \
-(its gaps.jsonl names them), so a claim over it misses their arms"
+truncated: ${truncated} occurrence(s) were not planned, static candidates past \
+its task bound and occurrences the rows connect past the closure ceiling (its \
+gaps.jsonl names them), so a claim over it misses their arms"
 }
 
 # One COMPOSE over the corpus as it stands -- the stage's own entry,
@@ -5439,7 +5440,7 @@ campaign_stream_drop() {
       continue
     fi
     stream_cancelled+=("${id}")
-    unset 'stream_flying[$id]'
+    unset 'stream_flying[$id]' 'stream_queued_at[$entry]'
     rmdir -- "${iteration_dir}/${round}/${id}"
   done
   stream_queue=("${kept[@]}")
@@ -5480,6 +5481,7 @@ campaign_stream_end() {
     esac
   done
   stream_queue=()
+  stream_queued_at=()
   # So is one that returned and never swapped in (a confirmation held it,
   # campaign_stream_swap_due): the exposing session stays in the corpus.
   # Either's directory, with what it staged, leaves its worker.
@@ -5574,23 +5576,55 @@ campaign_process_tree() {
   printf '%s\n' "$1"
 }
 
-# Starts what the queue holds, first first, while this exploration runs
-# fewer than its share of the pool (campaign_stream_has_slot)
-# and a host admits it: an obligation's solve, an obligation's REPLAY, a
-# GROW re-run or a confirmation on the next host of the pool, round-robin,
-# whose memory ledger admits one more start and that runs fewer of this
-# campaign's than it has cores (campaign_stream_admit_host).  While GROW
-# owes re-runs or swaps, no obligation's solve starts: a replay and a
-# confirmation read no corpus.
+# Starts what the queue holds (campaign_stream_enqueue's order) while this
+# exploration runs fewer than its share of the pool
+# (campaign_stream_has_slot): the first entry a host admits -- an
+# obligation's solve, an obligation's REPLAY, a GROW re-run or a
+# confirmation on the next host of the pool, round-robin, whose memory
+# ledger admits one more start and that runs fewer of this campaign's than
+# it has cores (campaign_stream_admit_host) -- so a replay no host has room
+# for holds no solve behind it.  An entry queued longer than
+# campaign_stream_wait_bound_s goes first and alone: nothing behind it
+# starts until it does, so a stream of small solves never starves a large
+# replay.  While GROW owes re-runs or swaps, no obligation's solve starts
+# (a replay and a confirmation read no corpus).
+campaign_stream_wait_bound_s=600
 campaign_stream_dispatch() {
-  local entry
+  local entry kind at first started now refused
   while (( ${#stream_queue[@]} > 0 )); do
     campaign_stream_collect_jobs
-    entry=${stream_queue[0]}
-    [[ "${entry}" != OBLIGATION\ * ]] || (( stream_hold == 0 )) || return 0
     campaign_stream_has_slot || return 0
-    campaign_stream_admit_host "${entry%% *}" || return 0
-    stream_queue=("${stream_queue[@]:1}")
+    now=$(date +%s)
+    first=-1
+    for at in "${!stream_queue[@]}"; do
+      entry=${stream_queue[at]}
+      [[ "${entry}" != OBLIGATION\ * ]] || (( stream_hold == 0 )) \
+        || continue
+      if (( now - ${stream_queued_at[${entry}]:-${now}} \
+          >= campaign_stream_wait_bound_s )); then
+        first=${at}
+        break
+      fi
+    done
+    started=-1
+    refused=" "
+    for at in "${!stream_queue[@]}"; do
+      (( first < 0 || at == first )) || continue
+      entry=${stream_queue[at]}
+      kind=${entry%% *}
+      [[ "${kind}" != OBLIGATION ]] || (( stream_hold == 0 )) || continue
+      [[ "${refused}" != *" ${kind} "* ]] || continue
+      if campaign_stream_admit_host "${kind}"; then
+        started=${at}
+        break
+      fi
+      refused+="${kind} "
+    done
+    (( started >= 0 )) || return 0
+    entry=${stream_queue[started]}
+    stream_queue=("${stream_queue[@]:0:started}" \
+      "${stream_queue[@]:started+1}")
+    unset 'stream_queued_at[$entry]'
     campaign_stream_start "${entry}" "${stream_admitted_host}"
   done
 }
@@ -5906,7 +5940,7 @@ campaign_stream_ended() {
         '.verdict // ""' "${worker}/obligation_result.jsonl" 2>/dev/null)" \
         == SAT_MODEL_READY ]]; then
       campaign_log "obligation ${id}: solved on ${host}, its replay queued"
-      campaign_stream_queue_replay \
+      campaign_stream_enqueue \
         "REPLAY ${round} ${id} ${stream_job_tree[${pid}]}"
     else
       stream_pending+=("${kind} ${round} ${id} ${host} ${status} ${session}")
@@ -5915,16 +5949,27 @@ campaign_stream_ended() {
   fi
 }
 
-# Puts one REPLAY first in the queue, behind the CONFIRM and RERUN entries
-# that lead it (campaign_stream_ended).
-campaign_stream_queue_replay() {
-  local at=0
-  while (( at < ${#stream_queue[@]} )) \
-      && [[ "${stream_queue[at]}" == CONFIRM\ * \
-         || "${stream_queue[at]}" == RERUN\ * ]]; do
-    at=$((at + 1))
-  done
-  stream_queue=("${stream_queue[@]:0:at}" "$1" "${stream_queue[@]:at}")
+# campaign_stream_enqueue <entry>: one start queued, by its kind: a
+# witness's confirmation and a GROW re-run first (they lead the queue,
+# hdfs-11741 AR1: 473 later replays started ahead of the confirmation), then
+# the solves in the order their rounds proposed them, then the replays, the
+# newest first.  A solve takes seconds and decides whether a replay is owed
+# at all (solr-adhoc-21 RX4: 1075 of 1158 obligations in flight were solves
+# never started, queued behind replays at every host's ceiling).  When it
+# was queued is kept for campaign_stream_dispatch's wait bound.
+campaign_stream_enqueue() {
+  local entry=$1 at=0
+  case "${entry%% *}" in
+    CONFIRM|RERUN) stream_queue=("${entry}" "${stream_queue[@]}") ;;
+    *)
+      while (( at < ${#stream_queue[@]} )) \
+          && [[ "${stream_queue[at]}" != REPLAY\ * ]]; do
+        at=$((at + 1))
+      done
+      stream_queue=("${stream_queue[@]:0:at}" "${entry}" \
+        "${stream_queue[@]:at}") ;;
+  esac
+  stream_queued_at[${entry}]=$(date +%s)
 }
 
 # What returned since the last step began, landed: each obligation's
@@ -6131,8 +6176,8 @@ whole; generation g${stream_generation} weaves nothing new"
         schedule_suffix.jsonl expected_edges.jsonl; do
       [[ ! -e "${worker}/${file}" ]] || ln "${worker}/${file}" "${rerun}/"
     done
-    stream_queue=("RERUN $(basename "${round_dir}") ${obligation_id} \
-${session}" "${stream_queue[@]}")
+    campaign_stream_enqueue "RERUN $(basename "${round_dir}") \
+${obligation_id} ${session}"
     stream_hold=$((stream_hold + 1))
     rerun_count=$((rerun_count + 1))
   done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
@@ -6302,9 +6347,12 @@ campaign_stream_manifest() {
 # deferred some -- an earlier round's deferral is work the rounds after it
 # read first, and a fixed point defers none -- and the world depth a round
 # cuts from (region_path_max_world_depth), ObligationFactory's rows naming the
-# bound in their subject; the tasks one anchor's closure plans (region_path_max_tasks:
-# the last round's `truncated`, as campaign_stream_truncation judges it, since
-# a later round plans what an earlier one left); the occurrences PLAN plans
+# bound in their subject; the static candidates one anchor's closure plans
+# (region_path_max_tasks: the last round's `truncated` less its `ceilingCut`,
+# as campaign_stream_truncation judges it, since a later round plans what an
+# earlier one left) and the occurrences the rows connect past the closure
+# ceiling (region_path_closure_ceiling, ClosurePlanner#CLOSURE_CEILING: the
+# runaway guard, never a silently unlimited plan); the occurrences PLAN plans
 # (schedule_max_jobs, the schedule index's `closureCut`); and the claims
 # decided again after CONFIRM refuted one (campaign_max_claims).  A round's
 # max-flips-per-path is no such bound -- the next round asks the decisions it
@@ -6337,7 +6385,8 @@ explore_manifest.json 2>/dev/null) \
       as $inputs
     | rows("max-world-depth") as $depth
     | rows("loop-body-bound") as $loops
-    | ($rounds | last | .truncated // 0) as $truncated
+    | ($rounds | last | .ceilingCut // 0) as $ceiling
+    | (($rounds | last | .truncated // 0) - $ceiling) as $truncated
     | ($index[0].closureCut // null) as $cut
     | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]
       as $armsBounded
@@ -6367,7 +6416,12 @@ explore_manifest.json 2>/dev/null) \
         (select($truncated > 0)
          | {by: "region_path_max_tasks",
             detail: ("the last round planned its closure without"
-              + " \($truncated) occurrence(s), at the task bound")}),
+              + " \($truncated) static candidate(s), at the task bound")}),
+        (select($ceiling > 0)
+         | {by: "region_path_closure_ceiling",
+            detail: ("the last round planned its closure without"
+              + " \($ceiling) occurrence(s) the rows connect, past the"
+              + " closure ceiling")}),
         (select(($armsBounded | length) > 0)
          | {by: "open_arm_max_refuted_worlds",
             detail: ("\($armsBounded | length) open decider arm(s) asked no"

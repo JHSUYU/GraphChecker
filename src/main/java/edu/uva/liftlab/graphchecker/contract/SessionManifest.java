@@ -23,7 +23,8 @@ import java.util.TreeSet;
  * row of the session states what ran there; and it states what a declared
  * root was read at where the replay minted none ({@link #concreteReadings})
  * and which declared roots held a value computed from others where it read
- * them ({@link #derivedRoots}), and the occurrences it ran for their doors
+ * them ({@link #derivedRoots}), the names its nodes had only in this
+ * run ({@link #runSpellings}), and the occurrences it ran for their doors
  * alone ({@link #doorsOnly}).  Schema 2; a manifest of another schema is
  * refused.
  */
@@ -44,13 +45,15 @@ public final class SessionManifest {
     private final Map<String, Integer> unnamedEntries;
     private final Map<String, Map<String, String>> concreteReadings;
     private final Set<String> derivedRoots;
+    private final RunSpellings runSpellings;
     private final Set<String> doorsOnly;
 
     private SessionManifest(String sessionId, Role role,
                             List<String> obligationIds,
                             Map<String, Integer> unnamedEntries,
                             Map<String, Map<String, String>> readings,
-                            Set<String> derived, Set<String> doorsOnly) {
+                            Set<String> derived, Map<String, String> spelled,
+                            Set<String> doorsOnly) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
@@ -66,6 +69,7 @@ public final class SessionManifest {
         this.concreteReadings = Collections.unmodifiableMap(sorted);
         this.derivedRoots = Collections.unmodifiableSet(
                 new TreeSet<String>(derived));
+        this.runSpellings = RunSpellings.of(spelled);
         this.doorsOnly = Collections.unmodifiableSet(
                 new TreeSet<String>(doorsOnly));
     }
@@ -85,6 +89,7 @@ public final class SessionManifest {
                 Collections.<String, Integer>emptyMap(),
                 Collections.<String, Map<String, String>>emptyMap(),
                 Collections.<String>emptySet(),
+                Collections.<String, String>emptyMap(),
                 Collections.<String>emptySet());
     }
 
@@ -92,6 +97,7 @@ public final class SessionManifest {
     public SessionManifest atClose(Map<String, Integer> entries,
                                    Map<String, Map<String, String>> readings,
                                    Set<String> derived,
+                                   Map<String, String> spelled,
                                    Set<String> doorsOnly) {
         return new SessionManifest(sessionId, role, obligationIds,
                 entries == null ? Collections.<String, Integer>emptyMap()
@@ -100,6 +106,8 @@ public final class SessionManifest {
                         ? Collections.<String, Map<String, String>>emptyMap()
                         : readings,
                 derived == null ? Collections.<String>emptySet() : derived,
+                spelled == null ? Collections.<String, String>emptyMap()
+                        : spelled,
                 doorsOnly == null ? Collections.<String>emptySet()
                         : doorsOnly);
     }
@@ -133,6 +141,12 @@ public final class SessionManifest {
      */
     public Set<String> derivedRoots() {
         return derivedRoots;
+    }
+
+    /** The names this run's nodes had only in it, each standing for its
+     *  node ({@link RunSpellings}); none where the run did not close. */
+    public RunSpellings runSpellings() {
+        return runSpellings;
     }
 
     /** Whether this session states it is the recording. */
@@ -182,6 +196,12 @@ public final class SessionManifest {
             derived.add(rootId);
         }
         json.add("derivedRoots", derived);
+        JsonObject spelled = new JsonObject();
+        for (Map.Entry<String, String> spelling
+                : runSpellings.asMap().entrySet()) {
+            spelled.addProperty(spelling.getKey(), spelling.getValue());
+        }
+        json.add("runSpellings", spelled);
         JsonArray doors = new JsonArray();
         for (String occurrence : doorsOnly) {
             doors.add(occurrence);
@@ -231,12 +251,22 @@ public final class SessionManifest {
                 readings.put(root.getKey(), at);
             }
         }
+        Map<String, String> spelled = new TreeMap<String, String>();
+        if (json.has("runSpellings")
+                && json.get("runSpellings").isJsonObject()) {
+            for (Map.Entry<String, com.google.gson.JsonElement> spelling
+                    : json.getAsJsonObject("runSpellings").entrySet()) {
+                spelled.put(spelling.getKey(),
+                        spelling.getValue().getAsString());
+            }
+        }
         SessionManifest manifest = of(
                 JsonFields.optionalString(json, "sessionId"), parsed,
                 JsonFields.strings(json, "obligationIds"));
         return new SessionManifest(manifest.sessionId, manifest.role,
                 manifest.obligationIds, unnamed, readings,
                 new TreeSet<String>(JsonFields.strings(json, "derivedRoots")),
+                spelled,
                 new TreeSet<String>(JsonFields.strings(json, "doorsOnly")));
     }
 

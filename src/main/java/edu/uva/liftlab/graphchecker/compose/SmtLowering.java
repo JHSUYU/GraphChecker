@@ -3149,6 +3149,12 @@ public final class SmtLowering {
         return name;
     }
 
+    /** The recorded value a name {@link #opaque} minted stands for, or
+     *  null for any other name. */
+    public String identityOf(String name) {
+        return opaqueIdentities.get(name);
+    }
+
     /** "Different rids, different objects", once per session. */
     public void assertIdentitiesDistinct() {
         for (Map.Entry<String, Map<Long, String>> session
@@ -3510,6 +3516,13 @@ public final class SmtLowering {
     public boolean declared(String name) {
         Declared held = declarations.get(name);
         return held != null && held.inQuery;
+    }
+
+    /** The body of one container subterm this lowering named ({@code
+     *  container_dag__...}), or null for any other name. */
+    public String sharedBody(String name) {
+        SharedTerm held = sharedByName.get(name);
+        return held == null ? null : held.body;
     }
 
     /**

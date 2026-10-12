@@ -596,9 +596,16 @@ role: passed through to its item's doors, never planned, its own decisions not f
   that takes or frees a number of its location's parent -- a sequential create (the prefix), a delete
   (the path) -- whose turn is keyed by the parent: every participant of one leader election, every
   writer of one queue, takes its sequence number in the recorded order. The location is keyed as
-  every run spells it (`runtime/RunNames`): a name a node has only in this run -- its store session's
-  id, its host and port -- that its adapter stated (`MessageDoors#spelledAs(sourceId, spellings...)`,
-  only a spelling holding such a name, stated again on a node's restart) becomes the node's name; a
+  every run spells it (`runtime/RunNames`, `contract/RunSpellings`): a name a node has only in this
+  run -- its store session's id, its host and port -- that its adapter stated
+  (`MessageDoors#spelledAs(sourceId, spellings...)`, only a spelling holding such a name, and each
+  such name inside it, as a node name's host and port a URL spells bare; stated again on a node's
+  restart) becomes the node's name. The session states them at its close (the manifest's
+  `runSpellings`), and an arm's key names a written term's constants and observed values by them
+  (`explore.Corpus#programNames`), so a port spelling names its node in every run; an object's
+  identity hash as the JDK's default `toString` spells it (`<Class>@<hex>`, `RunSpellings#IDENTITY`)
+  stays in the location (two objects' paths are two locations; only an arm's key numbers it,
+  `explore.Corpus#handle`); a
   location still spelling a long number or a host and port takes no turn, and is named once
   (DIAGNOSTIC `DECLARATION_MISSING`). Past the cut no slot holds: writes there are ordered only behind
   the prefix's. The store applies a write,

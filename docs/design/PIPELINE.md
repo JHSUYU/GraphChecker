@@ -492,9 +492,22 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    no single SEED session, an unresolved selector, or an address the seed never activated is a
    BLOCKING gap and leaves the round with no root.
 3. Stops the branches that cannot answer the question (`explore.Branches`, §7.4) and plans the
-   anchor's closure (§7.2). A closure truncated at `--max-tasks` is the round's DIAGNOSTIC
-   `ADMISSION_GAP` and its manifest's `truncated` (the occurrences not planned); whether it blocks
-   a claim is the exploration's end's to say (§7.9).
+   anchor's closure (§7.2). Every occurrence the rows connect (a recorded writer or producer, a
+   control producer, the anchor) is planned as the walk finds it and never counts against the task
+   bound; static candidate writers and producers wait until none is left and are then planned
+   round-robin over their (node, region, context shape) class, at most `--max-tasks`
+   (`region_path_max_tasks`, default 64) of them (`ClosurePlanner.Candidates`). solr-adhoc-07 IB1:
+   59 of its 64 tasks were `CoreContainer.getCore` candidates while two recorded `create` writers were
+   cut; its row-connected closure is 252 occurrences, planned whole. The runaway guard: past
+   `ClosurePlanner.CLOSURE_CEILING` (1024) occurrences the rows connect are cut too, and so is every
+   static candidate (one planned before leaves the plan: a recorded writer is never cut while a static
+   candidate is kept; a candidate the rows later reach, as a member or a control producer, is no
+   static candidate any more, `ClosurePlanner.Demand#absorb`), counted in the manifest's
+   `ceilingCut` and named in result.json `bounded`
+   (`region_path_closure_ceiling`). A
+   truncated closure is the round's DIAGNOSTIC `ADMISSION_GAP` (`REGION_PATH_CLOSURE_TRUNCATED: ...`; `PLAN_CLOSURE_CUT` is PLAN's cut at `schedule_max_jobs`, §3) and its
+   manifest's `truncated` (the occurrences not planned); whether it blocks a claim is the
+   exploration's end's to say (§7.9).
 4. Reconciles the slot table (`explore.SlotTable`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
    world is a replacement, and a read whose observed write the run orders after it (the two rows'
@@ -700,24 +713,67 @@ the plan that no replay ran again is a DIAGNOSTIC gap and neither grown nor wait
 ### 7.3 Obligation identity and the ledger: `explore.Frontier`
 
 An obligation id is `ObligationFactory.obligationId` = digest of task id, site, ordinal, flipped
-outcome and `dependence`: the earlier decisions of the path and of the inherited flips' prefixes that
-share a variable with the guard (`compose.Independence.ofGuard`), plus the input shape
-(`Corpus.inputShape`): whether the task's occurrence ran, its handoff sites and producers, and each
-factor member that writes state it reads by what it delivered in this session: its handoff sites and
-producers, its write counts at the locations the guard reads, and whether it wrote any state the
-occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
-holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
-`StaticScopeMap#readLocations`, `#withPlan`, joined to the write by `#storedAt`: the flipped arm
-reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
-the lease map share its answer with one where it did not run; how often varies run to run) — never
-delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies
-to one call arrive in any order), and none that delivered nothing, never run or run to no such
-handoff or write (the corpus finds feeders as sessions land, and such a member's line, the same in
-every session that did not run it, re-keyed every arm of the session; solr-bugs-reindex-cleanup SG1:
-most of its 8,802 re-keyed ids were members that ran and delivered nothing). Known limit (STATUS open
-defect 64): a member's write the recording states at no write site re-keys no arm. Never the session. An arm is
+outcome and `dependence`, the arm's effect at the task: the task's own earlier decisions on the path
+that share a variable with the guard, directly or through the task's own reads
+(`compose.Independence.ofGuard`), each by its occurrence, site and outcome with how many different
+conditions it decided there (`Corpus#decisionShape`: the stated term, reads by location; a poll
+deciding the same condition again is one, a loop's iterations over another bound are not; never the
+ordinal, which shifts with every earlier poll), plus the input shape (`Corpus.inputShape`). The inherited flips'
+prefixes are no part of it (`FlipQuery` still asserts them): a prefix only adds conjuncts, so a
+world's arm whose own path and input shape equal another's -- the input shape stating what each
+member wrote at the guard's locations as the guard reads it -- is UNSAT where that one is
+(solr-adhoc-07 IB1: a fault later in the task's own occurrence kept 13 decisions after the arm and
+re-asked 979 seed arms); a reduced world's NOT_ADMITTED stands for the parent world's arm too
+(STATUS open defect 59; an open decider arm whose every ask came back so ends
+`OPEN_ARM_UNANSWERED`). The input shape:
+whether the task's occurrence ran, its handoff sites and producers, and each factor member that
+writes state it reads, named by its class (node, region, `Corpus#contextShape`; a producer too, never
+an address's anchor hashes or counts), by what it delivered in this session: its handoff sites and
+producers, its writes at the locations the guard reads (per site, each with what it wrote as the
+flip query reads it, `Corpus#written` -- the rule: the key names everything the query depends on at
+the task, modulo the run's own names. The written term canonical and digested: operators,
+constants, roots by id, container subterms by their canonical bodies kept; an object handle's minted
+digest numbered (below) and a read's event, version and owner dropped; a handoff by what binds it in the query (its
+own run's wire arms the query states, `FlipQuery#arm`: each producer's class, export site, canonical
+term, the path-condition predicates it states and roots' guard; with none, pinned to its arrival); a
+read by its location's kind and slot and every writer the query offers it (`Arms#stateArms`: each
+writer's class, write site and what `FlipQuery#delivered` takes from it -- its canonical term, a
+free choice `?` (with the observed value where it is the observed writer) where the term states
+nothing in particular, no choice `/` where it is a value of another sort; nothing bound: pinned to
+its observed value). A term states nothing where it does not lower or names what the query cannot
+declare (`FlipQuery#undeclared`), and nothing in particular where it holds an unsupported subterm;
+a written term of either kind by the values the task's own reads of its version observed, the only
+reads the query pins to a value through it (`FlipQuery#stated`), `?` where none did (an alternative
+the query takes no value from; what another occurrence's read observed is no input of the query). A name a node has only in the
+session's run (a host and port, a store session's id: the manifest's `runSpellings`) is named by the
+node wherever the program spelled it (an observed value, a term's constants; never an engine-built
+name), so a URL at another port names one node; a run's handle for an object -- an identity hash
+(`<Class>@<hex>`, `RunSpellings#IDENTITY`), an object the VM named (`M_L'<class>'_<rid>`,
+`VmRows#objectHandle`), a name the lowering minted from one (`identity__`, by its object) -- by its
+class or kind and the order the key first meets it (`Corpus#handle`, `#numbered`), so objects
+aliased alike fold and objects aliased otherwise name apart. No depth bound: a walk meeting a
+term it is expanding names the back-edge by its distance up the expansion stack, and a term is
+memoized per session and reference unless a back-edge in it points above it. A member flip that writes another
+value there, a producer sending another term, a pinned payload of another value, or a term reading a
+location another writer of another class may have written is another world; the same canonical
+term written again folds) -- never delivered values, and a function of the session alone: semantic
+counts only, the members, each one's writes and each one's producers as sets (replies to one call
+arrive in any order; a poll, a request or a watch callback that wrote the same value k or k' times,
+or under renumbered ids, delivered one world), a member's own handoffs keeping their multiplicity
+(hdfs-11741's four keys instead of five re-key), and none that delivered the query nothing: no
+handoff, no write at the guard's locations. A member that only wrote state the region reads
+elsewhere is no conjunct of the query, and a world that changed it is reached by nesting from the
+answer's session (§7.5), as an inherited prefix is (solr-adhoc-21 RX4: such lines -- a state watcher
+or a client STATUS that ran in one replay only -- re-keyed half the re-asks). Known limits (STATUS
+open defect 64): a member's write the recording states at no write site re-keys no arm; the
+downstream of a schedule variant (a member that ran in one replay of a world only) is not asked
+again: schedules are not worlds. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). An arm in flight is not
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer); an `ADMITTED` replay also
+settles its flip (`ObligationFactory#flip`) under whatever id the arm has since: a replay of that flip
+of that path already took the arm in the path's world, and only the sessions landed since moved its
+key (`Frontier#settled(Candidate)`; solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of them
+ADMITTED). An UNSAT or NOT_ADMITTED answer settles its own id only. An arm in flight is not
 proposed again, by its id or by its flip (`ObligationFactory#flip`: task, path, site, ordinal,
 flipped outcome), since its id may move while it flies: sessions landing since its round grow the
 dependence.
@@ -763,7 +819,8 @@ difference. Each stop is a DIAGNOSTIC `BRANCH_STOPPED` gap and counts in
 the manifest's `branchesStopped`. COMPOSE and the claim stay on the exact declared address. A flip
 candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's flip sites, fault
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
-`--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
+`--max-tasks` 64 (static candidates; occurrences the rows connect are never counted, up to the
+closure ceiling of 1024), `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32 owed
 arms per path, `--max-world-depth` 3 (flips a cut path's world may already hold). Every path is
 keyed, and the path bound counts only the paths that offer an OWED arm -- one no ledger settles, no
 round has in flight and no path before it offers: a path whose arms are all settled, in flight or
@@ -1064,11 +1121,15 @@ CONFIRM it is a confirmation that did not confirm.
 One pool for the whole exploration. An obligation is two starts: its SOLVE
 (`campaign_obligation_worker`: its question answered by its host's solver, §7.5) and, when the
 solver answers `SAT_MODEL_READY`, its REPLAY (`campaign_obligation_replay` in the obligation's
-worker directory, on the model's focus row the solve left there), which the head queues first the
+worker directory, on the model's focus row the solve left there), which the head queues the
 moment the solve returns (`campaign_stream_ended`; between two starts of a dispatch too,
-`campaign_stream_collect_jobs`), not at the next step -- behind only a witness's `CONFIRM` and GROW's
-`RERUN`s queued first (`campaign_stream_queue_replay`; hdfs-11741 AR1: 473 replays of later solves
-started ahead of the witness's confirmation, four hours) -- on the class tree and
+`campaign_stream_collect_jobs`), not at the next step -- the queue by kind
+(`campaign_stream_enqueue`): a witness's `CONFIRM` and GROW's `RERUN`s lead it (hdfs-11741 AR1: 473
+replays of later solves started ahead of the witness's confirmation, four hours), the solves follow
+(seconds each, and each decides whether a replay is owed: solr-adhoc-21 RX4 left 1075 of 1158 in
+flight as solves never started behind replays), the REPLAYs last, the newest first; dispatch starts
+the first entry a host admits, and an entry queued past `campaign_stream_wait_bound_s` goes first
+and alone -- on the class tree and
 plan the solve started on (carried by its queue entry, even when a GROW wove a newer generation
 since). Until its REPLAY lands, the obligation is in flight (`stream_flying`, the planner's
 `--in-flight`): solving, queued as a REPLAY or replaying, it is never proposed again; only the
@@ -2542,8 +2603,9 @@ recording's own is not kept apart.
    search -- the wave budget (`region_path_max_waves`, the stop REGION_PATH_WAVE_BUDGET_REACHED),
    `region_path_max_paths_per_region` (the LAST round's deferral rows: an earlier round's the rounds
    after it read, §7.4) and `region_path_max_world_depth` (ObligationFactory's DIAGNOSTIC rows, the
-   bound in their subject), `region_path_max_tasks` (the last round's
-   `truncated`), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
+   bound in their subject), `region_path_max_tasks` (the static candidates the last round's closure
+   cut: `truncated` less `ceilingCut`), `region_path_closure_ceiling` (occurrences the rows connect cut
+   past `ClosurePlanner.CLOSURE_CEILING`, 1024), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
    (an open arm the last round left BOUNDED, §7.1), `unplanned_input_max` (the last round's rows
    of a marker invocation past those GROW plans inputs for, §7.8) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks

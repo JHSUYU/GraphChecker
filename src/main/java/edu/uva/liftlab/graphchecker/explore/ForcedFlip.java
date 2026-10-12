@@ -93,7 +93,7 @@ final class ForcedFlip {
             manifest.addProperty("sessionId", result.sessionId());
         }
         List<ObligationFactory.Candidate> forced =
-                ObligationFactory.forced(corpus, scope, anchor);
+                ObligationFactory.forced(corpus, anchor);
         boolean flipAnswered = false;
         for (ObligationFactory.Candidate flip : forced) {
             Verdict verdict = answer(answers.get(ObligationFactory.flip(flip)));
@@ -114,7 +114,7 @@ final class ForcedFlip {
             if (flipAnswered && candidate.task.taskId().equals(
                     anchor.taskId()) && seed.equals(candidate.path.sessionId)
                     && sites.contains(candidate.decision.siteId())
-                    && frontier.settled(candidate.obligationId).isEmpty()
+                    && frontier.settled(candidate).isEmpty()
                     && !frontier.flying(candidate)) {
                 after++;
             }

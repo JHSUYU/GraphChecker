@@ -70,8 +70,18 @@ import java.util.TreeSet;
  * session activated is named (PIPELINE §7.2), not a task.</p>
  */
 public final class ClosurePlanner {
-    /** How many tasks one anchor may open, before the closure is truncated. */
+    /** How many static candidate writers and producers one anchor's closure
+     *  plans before the rest are cut ({@code region_path_max_tasks}); the
+     *  occurrences the rows connect are never counted ({@link Candidates}). */
     public static final int DEFAULT_MAX_TASKS = 64;
+
+    /** The runaway guard: past this many occurrences the rows connect
+     *  (static candidates not counted), the rest of them are cut too, and so
+     *  is every static candidate (a recorded writer is never cut while one
+     *  is kept); the cut is a declared bound (result.json {@code bounded},
+     *  {@code region_path_closure_ceiling}), never a silently unlimited plan
+     *  (solr-adhoc-07's whole row-connected closure is 252). */
+    public static final int CLOSURE_CEILING = 1024;
 
     /** Connected by rows. */
     public static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
@@ -108,6 +118,10 @@ public final class ClosurePlanner {
         /** Demanded past the task bound, so not planned: the closure is
          *  incomplete, which only {@link ExploreMain} can weigh. */
         public final Set<String> truncated;
+        /** Of them, those the rows connect, cut past {@link
+         *  #CLOSURE_CEILING}; the rest are static candidates cut past the
+         *  task bound. */
+        public final Set<String> ceilingCut;
         /** A demanded occurrence every session ran for its doors alone
          *  ({@code SessionManifest#doorsOnly}) that a value demand reached ->
          *  the admitted focused session whose replay is re-run once GROW has
@@ -129,6 +143,7 @@ public final class ClosurePlanner {
                      Map<String, Set<String>> flipSites,
                      Map<OccurrenceAddress, String> exposed,
                      Set<OccurrenceAddress> waiting, Set<String> truncated,
+                     Set<String> ceilingCut,
                      Map<OccurrenceAddress, String> unpaused,
                      Set<OccurrenceAddress> runWhole, Concrete concrete) {
             this.unpaused = Collections.unmodifiableMap(unpaused);
@@ -140,6 +155,7 @@ public final class ClosurePlanner {
             this.exposed = Collections.unmodifiableMap(exposed);
             this.waiting = Collections.unmodifiableSet(waiting);
             this.truncated = Collections.unmodifiableSet(truncated);
+            this.ceilingCut = Collections.unmodifiableSet(ceilingCut);
             this.concrete = concrete;
         }
     }
@@ -174,6 +190,14 @@ public final class ClosurePlanner {
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope,
                             Branches branches, Set<String> doorsOnly) {
+        return plan(corpus, anchor, maxTasks, CLOSURE_CEILING, scope,
+                branches, doorsOnly);
+    }
+
+    /** {@link #plan} under another closure ceiling (a test's). */
+    static Plan plan(Corpus corpus, OccurrenceAddress anchor, int maxTasks,
+                     int ceiling, StaticScopeMap scope, Branches branches,
+                     Set<String> doorsOnly) {
         Walk walk = new Walk(corpus, scope, anchor);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -205,25 +229,65 @@ public final class ClosurePlanner {
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
-        while (!pending.isEmpty()) {
-            Demand demand = demands.get(pending.remove());
-            demand.dirty = false;
-            for (Demand next : successors(walk, demand)) {
-                Demand held = demands.get(next.occurrence.id());
-                if (held != null) {
-                    if (held.absorb(next) && !held.dirty) {
-                        held.dirty = true;
-                        pending.add(held.occurrence.id());
+        Set<String> ceilingCut = new LinkedHashSet<String>();
+        Candidates candidates = new Candidates(corpus);
+        // The anchor is the first occurrence the rows connect.
+        int connectedPlanned = 1;
+        int candidatesPlanned = 0;
+        // The static candidates planned so far, and whether the rows'
+        // demand reached the ceiling: then no candidate stays planned.
+        Set<String> plannedCandidates = new LinkedHashSet<String>();
+        boolean ceilingReached = false;
+        while (true) {
+            while (!pending.isEmpty()) {
+                Demand demand = demands.get(pending.remove());
+                demand.dirty = false;
+                for (Demand next : successors(walk, demand)) {
+                    Demand held = demands.get(next.occurrence.id());
+                    if (held != null) {
+                        if (held.absorb(next) && !held.dirty) {
+                            held.dirty = true;
+                            pending.add(held.occurrence.id());
+                        }
+                        continue;
                     }
-                    continue;
+                    Demand queued = candidates.take(next);
+                    if (queued == null) continue;
+                    if (connectedPlanned >= ceiling) {
+                        truncated.add(queued.occurrence.render());
+                        ceilingCut.add(queued.occurrence.render());
+                        // A recorded writer is never cut while a static
+                        // candidate is kept: the candidates planned so far
+                        // leave the plan.
+                        for (String id : plannedCandidates) {
+                            Demand planned = demands.get(id);
+                            if (planned == null
+                                    || !Candidates.staticCandidate(planned)) {
+                                continue;
+                            }
+                            demands.remove(id);
+                            pending.remove(id);
+                            truncated.add(planned.occurrence.render());
+                        }
+                        plannedCandidates.clear();
+                        ceilingReached = true;
+                        continue;
+                    }
+                    connectedPlanned++;
+                    admit(queued, demands, pending);
                 }
-                if (demands.size() >= maxTasks) {
-                    truncated.add(next.occurrence.render());
-                    continue;
-                }
-                demands.put(next.occurrence.id(), next);
-                pending.add(next.occurrence.id());
             }
+            // Row-connected demand is exhausted: the next static candidate,
+            // while the bound has room.
+            Demand candidate = candidates.next();
+            if (candidate == null) break;
+            if (ceilingReached || candidatesPlanned >= maxTasks) {
+                truncated.add(candidate.occurrence.render());
+                continue;
+            }
+            candidatesPlanned++;
+            plannedCandidates.add(candidate.occurrence.id());
+            admit(candidate, demands, pending);
         }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
@@ -249,8 +313,7 @@ public final class ClosurePlanner {
             // drops the mark (doorsOnly: the current plan's) and re-runs the
             // focused replay that ran it, else none is -- the seed is not
             // re-run -- and the fixed point names it (ExploreMain).
-            if (valueDemand(demand.why)
-                    && !ranWhole(corpus, demand.occurrence)) {
+            if (demand.value && !ranWhole(corpus, demand.occurrence)) {
                 String rerun = exposing(corpus, branches, demand.occurrence,
                         exposed.values())[0];
                 if (!rerun.isEmpty()
@@ -280,7 +343,106 @@ public final class ClosurePlanner {
             flips.put(taskId, sites);
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
-                exposed, waiting, truncated, unpaused, runWhole, concrete);
+                exposed, waiting, truncated, ceilingCut, unpaused, runWhole,
+                concrete);
+    }
+
+    /** Plans one demand. */
+    private static void admit(Demand demand, Map<String, Demand> demands,
+                              Deque<String> pending) {
+        demands.put(demand.occurrence.id(), demand);
+        pending.add(demand.occurrence.id());
+    }
+
+    /**
+     * THE TASK BOUND COUNTS STATIC CANDIDATES ONLY (owner: a genuinely large
+     * closure converges; over budget, recorded writers first, the rest cut and
+     * named: REGION_PATH_CLOSURE_TRUNCATED).  A demand the rows connect -- a recorded
+     * writer or producer, a control producer, the anchor's own -- is planned
+     * as it is found, never counted against the bound (only {@link
+     * #CLOSURE_CEILING} stops it, a declared bound); a static candidate
+     * writer or producer waits until no row-connected demand is left, and
+     * then the candidates are planned round-robin over their (node, region,
+     * context shape) class ({@link Corpus#classOf}), at most {@code
+     * maxTasks} of them, so one class's
+     * many occurrences never crowd out the rest (solr-adhoc-07 IB1: 59 of 64
+     * tasks were {@code CoreContainer.getCore} candidates of {@code
+     * SolrCores.cores} while two recorded {@code create} writers were cut;
+     * its row-connected closure is 252 occurrences).  A candidate the rows
+     * later connect is planned at once.
+     */
+    private static final class Candidates {
+        private final Corpus corpus;
+        /** occurrence id -> its waiting demand. */
+        private final Map<String, Demand> waiting =
+                new HashMap<String, Demand>();
+        /** class -> its waiting candidates, in the order found. */
+        private final Map<String, Deque<Demand>> byClass =
+                new HashMap<String, Deque<Demand>>();
+        /** The classes with a waiting candidate, the next one first. */
+        private final Deque<String> turn = new ArrayDeque<String>();
+
+        private Candidates(Corpus corpus) {
+            this.corpus = corpus;
+        }
+
+        /** The demand to plan now, or null: a static candidate waits (and
+         *  absorbs another reason to demand it); a row-connected demand of
+         *  a waiting one takes it out of the wait. */
+        private Demand take(Demand next) {
+            String id = next.occurrence.id();
+            Demand held = waiting.get(id);
+            boolean candidate = staticCandidate(next);
+            if (held == null) {
+                if (!candidate) return next;
+                waiting.put(id, next);
+                String key = classOf(next.occurrence);
+                Deque<Demand> queue = byClass.get(key);
+                if (queue == null) {
+                    queue = new ArrayDeque<Demand>();
+                    byClass.put(key, queue);
+                    if (!turn.contains(key)) turn.add(key);
+                }
+                queue.add(next);
+                return null;
+            }
+            held.absorb(next);
+            if (candidate) return null;
+            waiting.remove(id);
+            byClass.get(classOf(held.occurrence)).remove(held);
+            return held;
+        }
+
+        /** The next waiting candidate, round-robin over the classes, or
+         *  null when none waits. */
+        private Demand next() {
+            while (!turn.isEmpty()) {
+                String key = turn.remove();
+                Deque<Demand> queue = byClass.get(key);
+                Demand next = queue.poll();
+                if (next == null) {
+                    byClass.remove(key);
+                    continue;
+                }
+                if (queue.isEmpty()) {
+                    byClass.remove(key);
+                } else {
+                    turn.add(key);
+                }
+                waiting.remove(next.occurrence.id());
+                return next;
+            }
+            return null;
+        }
+
+        private String classOf(OccurrenceAddress occurrence) {
+            return corpus.classOf(occurrence);
+        }
+
+        private static boolean staticCandidate(Demand demand) {
+            return STATIC_CANDIDATE_WRITER.equals(demand.why)
+                    || STATIC_CANDIDATE_PRODUCER.equals(demand.why);
+        }
     }
 
     /**
@@ -646,18 +808,29 @@ public final class ClosurePlanner {
         private final Set<String> predicate = new LinkedHashSet<String>();
         private final boolean anchor;
         private String why;
+        /** Whether a reason it was demanded for wants its value ({@link
+         *  #valueDemand}), not only its doors: kept apart from {@link #why},
+         *  which says whether the rows connect it. */
+        private boolean value;
         private boolean dirty;
 
         private Demand(OccurrenceAddress occurrence, String why,
                        boolean anchor) {
             this.occurrence = occurrence;
             this.why = why;
+            this.value = valueDemand(why);
             this.anchor = anchor;
         }
 
         /**
-         * Folds another reason to demand this occurrence; {@code
-         * CLOSURE_MEMBER} wins over static reasons.
+         * Folds another reason to demand this occurrence: {@code
+         * CLOSURE_MEMBER} wins over every other reason, and any reason the
+         * rows connect over a static one -- a static candidate later
+         * reached as a control producer is one, never cut with the static
+         * candidates at the ceiling; and a reason that wants its value makes
+         * it a value demand whatever its reason (a control producer also
+         * demanded as a static writer wants its own producer, and is run
+         * whole once GROW drops a doors-only mark).
          *
          * @return whether this demand grew
          */
@@ -668,9 +841,14 @@ public final class ClosurePlanner {
             }
             grew |= flipSites.addAll(other.flipSites);
             if (CLOSURE_MEMBER.equals(other.why)
-                    && !CLOSURE_MEMBER.equals(why)
-                    || valueDemand(other.why) && !valueDemand(why)) {
+                    ? !CLOSURE_MEMBER.equals(why)
+                    : Candidates.staticCandidate(this)
+                    && !Candidates.staticCandidate(other)) {
                 why = other.why;
+                grew = true;
+            }
+            if (other.value && !value) {
+                value = true;
                 grew = true;
             }
             return grew;
@@ -920,8 +1098,7 @@ public final class ClosurePlanner {
         // exists is no question of the anchor's (solr-18413 round Z7: the
         // doors of every request and queue item behind the store writers'
         // items, six hops deep, doubled the plan).  Nor does a store fetch.
-        if (!CONTROL_PRODUCER.equals(demand.why)
-                && !STORE_FETCH.equals(demand.why)) {
+        if (demand.value) {
             controlProducer(walk, demand, next);
         } else if (CONTROL_PRODUCER.equals(demand.why)
                 && !walk.corpus.startedBy(demand.occurrence).isEmpty()

@@ -216,9 +216,8 @@ public final class ExploreMain {
                 ? ArtifactIO.sha256(scopeMap) : "";
         if (scope == null || !digest.equals(scopeDigest)) {
             // With what the plan PLAN froze for this iteration states: the
-            // folds (what an occurrence may read is its folded regions' too:
-            // an arm's key, Corpus#inputShape) and the store fetches on a
-            // target's data flow (ClosurePlanner#storeFetches).
+            // store fetches on a target's data flow
+            // (ClosurePlanner#storeFetches).
             scope = StaticScopeMap.read(scopeMap).withPlan(
                     iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
@@ -238,6 +237,7 @@ public final class ExploreMain {
                 new LinkedHashSet<OccurrenceAddress>();
         List<String> witnesses = witnesses(corpus, roots);
         int truncated = 0;
+        int ceilingCut = 0;
         Map<OccurrenceAddress, ClosurePlanner.Concrete> concrete =
                 new LinkedHashMap<OccurrenceAddress,
                         ClosurePlanner.Concrete>();
@@ -258,10 +258,17 @@ public final class ExploreMain {
                 // (the manifest's `truncated`, PIPELINE §7.9).  This round's
                 // own is its record.
                 truncated += plan.truncated.size();
+                ceilingCut += plan.ceilingCut.size();
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        root.render(), "closure truncated at " + maxTasks
-                                + " tasks; " + plan.truncated.size()
+                        root.render(), "REGION_PATH_CLOSURE_TRUNCATED: closure "
+                                + "truncated: static candidates past "
+                                + maxTasks + (plan.ceilingCut.isEmpty() ? ""
+                                : ", and " + plan.ceilingCut.size()
+                                + " occurrence(s) the rows connect past the"
+                                + " closure ceiling of "
+                                + ClosurePlanner.CLOSURE_CEILING)
+                                + "; " + plan.truncated.size()
                                 + " occurrences were not planned, so this "
                                 + "anchor's closure is incomplete: "
                                 + plan.truncated));
@@ -298,10 +305,11 @@ public final class ExploreMain {
         gaps.addAll(skeleton.gaps);
 
         // The one ledger of owed arms (Frontier).
-        Frontier frontier = new Frontier(corpus, scope, tasks, flipSites);
+        Frontier frontier = new Frontier(corpus, tasks, flipSites);
         List<ObligationResult> answers = RowCodec.readAll(results,
                 RowCodec::readObligationResult);
-        frontier.consume(answers);
+        Map<String, List<ObligationResult>> byFlip = answersByFlip(iteration);
+        frontier.consume(answers, byFlip);
         if (inFlight != null) {
             frontier.inFlight(RowCodec.readAll(inFlight,
                     ExploreCodec::readObligation));
@@ -309,12 +317,11 @@ public final class ExploreMain {
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
-            candidates.addAll(ObligationFactory.candidates(corpus, scope, task,
+            candidates.addAll(ObligationFactory.candidates(corpus, task,
                     flipSites.get(task.taskId()), bounds, branches, frontier,
                     gaps));
         }
         // The forced replay of the anchor first (PIPELINE §7.10).
-        Map<String, List<ObligationResult>> byFlip = answersByFlip(iteration);
         ForcedFlip.Round forced = ForcedFlip.plan(corpus,
                 anchorTask(tasks, roots), scope, frontier, answers, byFlip,
                 candidates);
@@ -409,9 +416,10 @@ public final class ExploreMain {
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, truncated,
-                witnesses, wave(iteration, corpus), branches, concrete);
-        manifest.add("openArms", openArms(corpus, scope, roots, tasks,
-                frontier, open, byFlip));
+                ceilingCut, witnesses, wave(iteration, corpus), branches,
+                concrete);
+        manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
+                open, byFlip));
         manifest.add("force", forced.manifest);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
@@ -454,8 +462,7 @@ public final class ExploreMain {
      * (result.json concrete[] OPEN_ARM): an UNSAT closes over none but an
      * UNSAT one, and an UNANSWERED one leaves no verdict.
      */
-    static JsonArray openArms(Corpus corpus, StaticScopeMap scope,
-                              List<OccurrenceAddress> roots,
+    static JsonArray openArms(Corpus corpus, List<OccurrenceAddress> roots,
                               List<Task> tasks, Frontier frontier,
                               Frontier.Round open,
                               Map<String, List<ObligationResult>> answers) {
@@ -494,8 +501,7 @@ public final class ExploreMain {
                 String key = arm.siteId() + "=" + arm.outcome();
                 Map<String, JsonObject> worlds = refuted.computeIfAbsent(key,
                         k -> new LinkedHashMap<String, JsonObject>());
-                String state = openArmState(corpus, scope, task, root, row,
-                        arm,
+                String state = openArmState(corpus, task, root, row, arm,
                         frontier, proposed, answers, worlds,
                         unrun.computeIfAbsent(key,
                                 k -> new LinkedHashSet<String>()));
@@ -573,8 +579,7 @@ public final class ExploreMain {
      * ObligationResult#worldUnrefuted}: asked once more, {@link
      * Frontier#consume}) to {@code unrun}, as obligation@session.
      */
-    private static String openArmState(Corpus corpus, StaticScopeMap scope,
-                                       Task task,
+    private static String openArmState(Corpus corpus, Task task,
                                        OccurrenceAddress root, TargetRow row,
                                        TargetRow.OpenArm arm,
                                        Frontier frontier,
@@ -603,7 +608,7 @@ public final class ExploreMain {
                 String id = ObligationFactory.obligationId(task.taskId(),
                         decision.siteId(), decision.ordinal(),
                         !decision.outcome(), ObligationFactory.dependence(
-                                corpus, scope, task, path, index));
+                                corpus, task, path, index));
                 Verdict shared = frontier.verdict(id);
                 if (frontier.recorded(id) || shared == Verdict.ADMITTED) {
                     return "TAKEN";
@@ -993,6 +998,7 @@ public final class ExploreMain {
                                        List<GapRow> gaps, SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
                                        int exposed, int truncated,
+                                       int ceilingCut,
                                        List<String> witnesses,
                                        int wave, Branches branches,
                                        Map<OccurrenceAddress,
@@ -1022,8 +1028,11 @@ public final class ExploreMain {
         manifest.addProperty("heldInFlight", open.heldInFlight);
         manifest.addProperty("branchesStopped", branches.stopped());
         manifest.addProperty("exposedRegions", exposed);
-        // Occurrences this round's closure did not plan (--max-tasks).
+        // Occurrences this round's closure did not plan: static candidates
+        // past --max-tasks, and of them those the rows connect past the
+        // closure ceiling (ClosurePlanner#CLOSURE_CEILING).
         manifest.addProperty("truncated", truncated);
+        manifest.addProperty("ceilingCut", ceilingCut);
         JsonObject skeletonRow = new JsonObject();
         skeletonRow.addProperty("slots", slots.size());
         skeletonRow.addProperty("opened", skeleton.opened.size());

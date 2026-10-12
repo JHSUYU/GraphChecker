@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -35,7 +34,12 @@ import java.util.Set;
  *       instead of five).</li>
  *   <li><b>a round answered it</b>: ADMITTED, UNSAT or NOT_ADMITTED.
  *       {@link Verdict#SAT_MODEL_READY} is NOT an answer (replay not
- *       run).</li>
+ *       run).  An ADMITTED replay also settles its flip ({@link
+ *       ObligationFactory#flip}: task, path, site, ordinal, outcome) whatever
+ *       id the arm has since: a replay of that flip of that path already took
+ *       the arm in the path's world, and only the sessions landed after it
+ *       moved the dependence (solr-adhoc-07 IB1: 59 answered flips re-keyed,
+ *       25 of them already ADMITTED).</li>
  * </ul>
  *
  * <p>An arm queued or running ({@link #inFlight}) is not settled and not
@@ -84,6 +88,8 @@ public final class Frontier {
     /** arm key -> proposing task, this round. */
     private final Map<String, String> proposedBy =
             new LinkedHashMap<String, String>();
+    /** The flips a round's replay ADMITTED, whatever id their arm has. */
+    private final Set<String> admittedFlips = new LinkedHashSet<String>();
     /** The ids, and the flips, of the arms queued or running. */
     private final Set<String> inFlightIds = new LinkedHashSet<String>();
     private final Set<String> inFlightFlips = new LinkedHashSet<String>();
@@ -94,7 +100,7 @@ public final class Frontier {
      *  ObligationFactory#candidates}): no candidate is keyed anywhere else.
      *
      *  @param flipSites task id -> the site ids its demand names */
-    public Frontier(Corpus corpus, StaticScopeMap scope, List<Task> tasks,
+    public Frontier(Corpus corpus, List<Task> tasks,
                     Map<String, Set<String>> flipSites) {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
         for (Task task : this.tasks) {
@@ -110,7 +116,7 @@ public final class Frontier {
                     String arm = ObligationFactory.obligationId(
                             task.taskId(), decision.siteId(),
                             decision.ordinal(), decision.outcome(),
-                            ObligationFactory.dependence(corpus, scope, task,
+                            ObligationFactory.dependence(corpus, task,
                                     path, index));
                     recorded.add(arm);
                     settle(arm,
@@ -126,13 +132,23 @@ public final class Frontier {
         }
     }
 
-    /** Takes earlier rounds' verdicts; a recording, if any, stays the stated
-     *  reason.  A replay that refuted its world (an open decider arm's flip,
-     *  {@code ObligationResult#refutation}) answers nothing of the arm: it
-     *  stays owed, asked again without that world.  One that did not run its
-     *  world ({@code ObligationResult#worldUnrefuted}) answers nothing
-     *  either: asked once more, and settled by a second such run. */
-    public void consume(Collection<ObligationResult> results) {
+    /** Takes earlier rounds' verdicts, and each answer by the flip it asked
+     *  ({@code ExploreMain#answersByFlip}); a recording, if any, stays the
+     *  stated reason.  A replay that refuted its world (an open decider
+     *  arm's flip, {@code ObligationResult#refutation}) answers nothing of
+     *  the arm: it stays owed, asked again without that world.  One that did
+     *  not run its world ({@code ObligationResult#worldUnrefuted}) answers
+     *  nothing either: asked once more, and settled by a second such run. */
+    public void consume(Collection<ObligationResult> results,
+                        Map<String, List<ObligationResult>> byFlip) {
+        for (Map.Entry<String, List<ObligationResult>> flip
+                : byFlip.entrySet()) {
+            for (ObligationResult result : flip.getValue()) {
+                if (result.verdict() == Verdict.ADMITTED) {
+                    admittedFlips.add(flip.getKey());
+                }
+            }
+        }
         Map<String, Integer> unrun = new HashMap<String, Integer>();
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
@@ -201,6 +217,20 @@ public final class Frontier {
         return settled.getOrDefault(obligationId, "");
     }
 
+    /** {@link #settled(String)} of a candidate's arm, or its flip already
+     *  ADMITTED under another id; {@code ""} while it is owed. */
+    public String settled(ObligationFactory.Candidate candidate) {
+        String reason = settled(candidate.obligationId);
+        if (!reason.isEmpty()
+                || !admittedFlips.contains(ObligationFactory.flip(candidate))) {
+            return reason;
+        }
+        return "flip already ADMITTED by an earlier round under another "
+                + "dependence: a replay of this flip of this path took the "
+                + "arm in the path's world, and only the sessions landed "
+                + "since moved its key";
+    }
+
     private void settle(String obligationId, String reason) {
         settled.putIfAbsent(obligationId, reason);
     }
@@ -223,7 +253,7 @@ public final class Frontier {
             }
         }
         for (ObligationFactory.Candidate candidate : candidates) {
-            if (settled.containsKey(candidate.obligationId)) continue;
+            if (!settled(candidate).isEmpty()) continue;
             if (flying(candidate)) {
                 held++;
                 continue;

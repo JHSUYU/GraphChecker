@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
@@ -19,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -49,6 +51,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -57,9 +60,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** One iteration's sessions, indexed: the ONE corpus view both stages read.
  *  Identity is the contract's: an interaction by both endpoints, a location by
@@ -655,85 +661,71 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * WHAT ONE SESSION'S WORLD DELIVERED TO A TASK, digested: the world part
-     * of an arm's key ({@link ObligationFactory#dependence}). The EFFECT at
-     * the task, never the cause (keying by upstream flips asks one question
-     * per flip combination).
+     * of an arm's key ({@link ObligationFactory#dependence}).  The rule: the
+     * key names what the flip query depends on at the task, the EFFECT, never
+     * the cause (keying by upstream flips asks one question per flip
+     * combination).
      *
      * <p>Covers the occurrence -- whether it ran, and per site how many
      * handoffs from which producers -- and each factor member that FEEDS it
-     * ({@link #feeders}: they write state it reads) by what it delivered
-     * it: the same handoffs, per-site counts of its writes to {@code
-     * locations}, the state the flipped guard reads, and whether it wrote
-     * any state the occurrence's region reads on ANY arm -- a location its
-     * code, folded regions' included, reads where a replay versions it
-     * ({@link StaticScopeMap#readLocations}), not
-     * only what the arm this session took read, since the flipped arm reads
-     * what the taken one never did (a renewer's write of the lease map the
-     * expiry scan iterates only once a lease has expired) --, not how often,
-     * which replays vary; and whether it ran them as an activation.  Their
-     * handoffs whole, not only those the guard names: the arm consumes them
-     * after the flip (hdfs-11741: dn1's expiry scan names only its own
-     * clock, and the witness is that scan flipped in the world whose key
-     * conversion delivered four keys instead of five). A co-reader feeds
-     * nothing (hdfs-17899-bug2: every RPC of the SPS reads the IPC
-     * connection an IPC door reads, and keyed by all of them one door flip
-     * was 11 obligations). Trap: never a member's writes elsewhere (replays
-     * vary them: hdfs-11741's balancer members write SASL and HashMap
-     * internals a different number of times in almost every run), never the
-     * region's own reads or decisions (behaviour, not input), never
-     * delivered VALUES (carried symbolically; clock values differ every
-     * run).</p>
+     * ({@link #feeders}: they write state it reads) and delivered it
+     * something the query states: its handoffs (whole, not only those the
+     * guard names: the arm consumes them after the flip -- hdfs-11741: dn1's
+     * expiry scan names only its own clock, and the witness is that scan
+     * flipped in the world whose key conversion delivered four keys instead
+     * of five), and its writes at {@code locations}, every location a read
+     * the guard and its kept conditions rest on reads ({@code
+     * Independence#locations}), each by what it wrote as the guard reads it,
+     * canonical ({@link #written}): a member flip that writes another value
+     * there, a second writer of another class, or a pinned value another
+     * read of the task observed, re-key.  A member that only wrote state
+     * the region reads elsewhere is no line: it is no conjunct of the query,
+     * and a world that changed it is reached by nesting from the answer's
+     * session (PIPELINE §7.5), as an inherited prefix is (solr-adhoc-21 RX4:
+     * such lines re-keyed half the re-asks, a state watcher or a client
+     * STATUS that ran in one replay only).  Trap: never a member's writes
+     * elsewhere, never the region's own reads or decisions (behaviour, not
+     * input), never delivered VALUES carried symbolically (clock values
+     * differ every run).</p>
      *
-     * <p>A function of the session and the epoch's static map alone,
-     * whatever the corpus has learned since: the members as a set (the
-     * order the corpus lists the factor in moves as sessions land), and
-     * none that delivered nothing, whether the session never ran it or ran
-     * it to no handoff and no write of state the occurrence's region reads
-     * -- its line re-keyed every arm of the session once the corpus found
-     * it a feeder (solr-bugs-reindex-cleanup SG1: 627 arms under 8,868 ids,
-     * most of the re-keyed ones by members that ran and delivered nothing).
-     * LIMIT: a member's write the recording states at no write site
-     * (unwoven) re-keys no arm.</p>
+     * <p>A function of the session alone, whatever the corpus has learned
+     * since: the members as a set (the order the corpus lists the factor in
+     * moves as sessions land).  Semantic counts only: a member is named by
+     * its class -- node, region and context shape ({@link #contextShape}),
+     * never its exact address, whose anchor hashes and invocation counts
+     * every replay renumbers -- a member's writes are a set of (site, what it
+     * wrote), and identical lines count once: a poll or a watch callback
+     * that wrote the same value k or k' times, or under renumbered ids,
+     * delivered one world (solr-adhoc-07/21 IB1).  A member's own handoffs
+     * keep their multiplicity (hdfs-11741's four keys against five).  A
+     * run's handle for an object is numbered by where the key first meets
+     * it ({@link #numbered}).  LIMITS: a member's write the recording states
+     * at no write site (unwoven) re-keys no arm; the downstream of a
+     * schedule variant -- a member that ran in one replay of a world only --
+     * is not asked again: schedules are not worlds.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
-                             Set<String> locations, StaticScopeMap scope) {
-        Set<String> readable = scope.readLocations(occurrence.regionId());
-        List<String> members = new ArrayList<String>();
+                             Set<String> locations) {
+        Set<String> members = new TreeSet<String>(BY_SHAPE);
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
             List<String> handoffs = attachSites(sessionId, member);
-            List<String> writes = writeSites(sessionId, member, locations);
-            boolean fed = feeds(sessionId, member, readable, scope);
-            if (handoffs.isEmpty() && writes.isEmpty() && !fed) continue;
-            boolean ran = activation(sessionId, member) != null;
-            members.add(member.id() + ':' + ran + handoffs
-                    + producers(sessionId, member) + writes + fed);
+            Set<String> writes = writeSites(sessionId, member, occurrence,
+                    locations);
+            if (handoffs.isEmpty() && writes.isEmpty()) continue;
+            members.add(classOf(member) + ':'
+                    + (activation(sessionId, member) != null) + handoffs
+                    + producers(sessionId, member) + writes);
         }
-        Collections.sort(members);
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
                 .append(attachSites(sessionId, occurrence))
                 .append(producers(sessionId, occurrence));
         for (String member : members) text.append('\n').append(member);
-        return ArtifactIO.digest(text.toString(), 16);
-    }
-
-    /** Whether one member's writes in one session store a location of
-     *  {@code readable} ({@link StaticScopeMap#storedAt}); an INITIAL row
-     *  is no write. */
-    private boolean feeds(String sessionId, OccurrenceAddress member,
-                          Set<String> readable, StaticScopeMap scope) {
-        if (readable.isEmpty()) return false;
-        for (WriteRow write : writesOn.of(member.id(), sessionId)) {
-            if (!write.initial() && !Collections.disjoint(readable,
-                    scope.storedAt(write.endpoint().site(),
-                            write.javaType(), write.location().kind()))) {
-                return true;
-            }
-        }
-        return false;
+        return ArtifactIO.digest(numbered(text.toString(),
+                new LinkedHashMap<String, String>()), 16);
     }
 
     /**
@@ -814,11 +806,12 @@ public final class Corpus implements Arms.Rows {
         return sites;
     }
 
-    /** Which occurrences delivered them: a new producer is new topology.
-     *  A set, sorted: the order replies arrive in is a race, never input
-     *  (hdfs-adhoc-07 CC5: the client's recovery takes the three journal
-     *  nodes' replies in any order, and keyed by that order every arm of
-     *  every client call it feeds was asked once per order). */
+    /** Which occurrences delivered them, by class ({@link #classOf}): a
+     *  new producer class is new topology.  A set, sorted: the order
+     *  replies arrive in is a race, never input (hdfs-adhoc-07 CC5: the
+     *  client's recovery takes the three journal nodes' replies in any
+     *  order, and keyed by that order every arm of every client call it
+     *  feeds was asked once per order). */
     private Set<String> producers(String sessionId,
                                   OccurrenceAddress occurrence) {
         Set<String> from = new TreeSet<String>();
@@ -826,27 +819,478 @@ public final class Corpus implements Arms.Rows {
             Endpoint producer = attach.producer();
             if (producer == null) continue;
             OccurrenceAddress at = producer.occurrence();
-            from.add(at == null ? producer.id() : at.id());
+            from.add(at == null ? producer.id() : classOf(at));
         }
         return from;
     }
 
-    /** Per-site counts of the writes to {@code locations} (not values); an
+    /** An occurrence's class: its node, region and context shape ({@link
+     *  #contextShape}), no address's anchor hashes or counts -- an arm's key
+     *  names a member by it, and the closure's static candidates take their
+     *  turns by it ({@code ClosurePlanner}).  A shape with a hop no row names
+     *  ({@link ContextShape#UNKNOWN_HOP}) tells nothing apart: such an
+     *  occurrence is its own class, by its address. */
+    String classOf(OccurrenceAddress occurrence) {
+        return classes.computeIfAbsent(occurrence.id(), id -> {
+            List<String> shape = contextShape(occurrence.context());
+            return shape.contains(ContextShape.UNKNOWN_HOP) ? id
+                    : occurrence.node().render() + "|"
+                            + occurrence.regionId() + "|" + shape;
+        });
+    }
+
+    /** {@link #classOf}, once per occurrence: a corpus does not change once
+     *  read. */
+    private final Map<String, String> classes =
+            new java.util.concurrent.ConcurrentHashMap<String, String>();
+
+    /** A member's writes to {@code locations}, each by its site and what
+     *  it wrote as the guard reads it, canonical ({@link #written}): a
+     *  member flip that writes another value at the same site is another
+     *  world (a request writing 5 or 7, an arm writing {@code M_A+10} or
+     *  {@code M_A-1}), the same value written again is not (a set); an
      *  INITIAL row is no write. */
-    private List<String> writeSites(String sessionId,
-                                    OccurrenceAddress occurrence,
-                                    Set<String> locations) {
-        List<String> sites = new ArrayList<String>();
-        for (WriteRow write : writesOn.of(occurrence.id(), sessionId)) {
+    private Set<String> writeSites(String sessionId, OccurrenceAddress member,
+                                   OccurrenceAddress task,
+                                   Set<String> locations) {
+        Set<String> sites = new TreeSet<String>(BY_SHAPE);
+        for (WriteRow write : writesOn.of(member.id(), sessionId)) {
             if (write.initial() || !locations.contains(
                     SmtLowering.locationKey(write.location()))) {
                 continue;
             }
-            sites.add(write.endpoint().site());
+            sites.add(write.endpoint().site() + "="
+                    + written(sessionId, write, task));
         }
-        Collections.sort(sites);
         return sites;
     }
+
+    /**
+     * WHAT A WRITE WROTE, AS A FLIP QUERY READS IT (the rule: an arm's key
+     * names everything its flip query depends on at the task, modulo the
+     * run's own names): its term canonical ({@link #term}), or, where the
+     * query binds nothing in particular through it -- it states nothing, or
+     * holds an unsupported subterm's free name -- the values the TASK's own
+     * reads of that version observed, the only reads the query pins to a
+     * value through it ({@code FlipQuery#stated}); none observed it: {@code
+     * ?}, an alternative the query takes no value from.  What other
+     * occurrences' reads observed is no input of the query.
+     */
+    private String written(String sessionId, WriteRow write,
+                           OccurrenceAddress task) {
+        String term = term(sessionId, write.expressionRef(), new Naming());
+        if (term != null && !UNSUPPORTED.equals(term)) return term;
+        String location = SmtLowering.locationKey(write.location());
+        Set<String> values = new TreeSet<String>(BY_SHAPE);
+        for (ReadRow read : readsOn.of(task.id(), sessionId)) {
+            if (read.observedVersion() == write.version() && location.equals(
+                    SmtLowering.locationKey(read.location()))) {
+                values.add(observed(sessionId, read.concreteValue()));
+            }
+        }
+        return values.isEmpty() ? UNSUPPORTED : UNSUPPORTED + values;
+    }
+
+    /**
+     * A value one session observed, with the names its run alone had named
+     * by what they stand for: an object the VM named as a handle ({@link
+     * VmRows#objectHandle}), else the value's program names ({@link
+     * #programNames}).
+     */
+    private String observed(String sessionId, String value) {
+        String text = String.valueOf(value);
+        String[] object = VmRows.objectHandle(text);
+        return object != null ? handle(object[0], "rid:" + object[1])
+                : programNames(sessionId, text);
+    }
+
+    /**
+     * What a program spelled (an observed value, a term's constants), with
+     * each name a node had only in the session's run (its host and port,
+     * its store session's id) by the node ({@link RunSpellings}, as the
+     * session states them, {@code SessionManifest#runSpellings}) -- one port
+     * spelling names {@code node1} in every run, and a run that states none
+     * keeps its spelling (another world, never a fold) -- and each identity
+     * hash ({@link RunSpellings#IDENTITY}) as a handle.  Never an engine-built
+     * name (a hop's {@code site@node#epoch}, a writer's {@code class@site}):
+     * a node named like hex would fold two nodes.
+     */
+    private String programNames(String sessionId, String text) {
+        SessionReader session = sessionById.get(sessionId);
+        String named = (session == null || session.manifest() == null
+                ? RunSpellings.NONE : session.manifest().runSpellings())
+                .name(text);
+        if (named.indexOf('@') < 0) return named;
+        Matcher hash = RunSpellings.IDENTITY.matcher(named);
+        StringBuffer out = new StringBuffer();
+        while (hash.find()) {
+            hash.appendReplacement(out, Matcher.quoteReplacement(
+                    handle(hash.group(1) + "@", hash.group())));
+        }
+        return hash.appendTail(out).toString();
+    }
+
+    /** A handle's mark ({@link #handle}). */
+    private static final char MARK = '\u0001';
+    private static final char HANDLE = '\u0002';
+    private static final Pattern MARKED = Pattern.compile(
+            "\u0001([^\u0001\u0002]*)\u0002([^\u0001]*)\u0001");
+
+    /**
+     * A RUN'S HANDLE for one program value -- an object the VM named (its
+     * rid), an identity hash, a name the lowering minted from a run's
+     * handle -- marked in a name: its prefix (the class, or the minted
+     * name's kind) and the handle.  An arm's key names it by the prefix and
+     * the order the key first meets it in ({@link #numbered}): two worlds
+     * whose values are other objects aliased alike name alike (a replay
+     * renumbers every rid), and two whose values alias differently name
+     * apart, as their flip queries do ({@code
+     * SmtLowering#assertIdentitiesDistinct}: distinct rids are distinct).
+     */
+    static String handle(String prefix, String handle) {
+        return MARK + prefix + HANDLE + handle + MARK;
+    }
+
+    /** {@code text} with each handle ({@link #handle}) named by its prefix
+     *  and the number of its first appearance (1, 2, ...); {@code order}
+     *  takes each handle's mark, in that order. */
+    static String numbered(String text, Map<String, String> order) {
+        if (text.indexOf(MARK) < 0) return text;
+        Map<String, Integer> number = new HashMap<String, Integer>();
+        Matcher handle = MARKED.matcher(text);
+        StringBuffer out = new StringBuffer();
+        while (handle.find()) {
+            order.putIfAbsent(handle.group(2), handle.group());
+            int at = number.computeIfAbsent(handle.group(2),
+                    key -> number.size() + 1);
+            handle.appendReplacement(out, Matcher.quoteReplacement(
+                    handle.group(1) + at));
+        }
+        return handle.appendTail(out).toString();
+    }
+
+    /** {@code text} with each handle by its prefix alone. */
+    private static String unmarked(String text) {
+        return text.indexOf(MARK) < 0 ? text
+                : MARKED.matcher(text).replaceAll("$1");
+    }
+
+    /** How the names of one set are ordered: by what they say without
+     *  their handles first, so a run's handles do not reorder them (then
+     *  by the text itself). */
+    private static final Comparator<String> BY_SHAPE = Comparator
+            .comparing(Corpus::unmarked)
+            .thenComparing(Comparator.<String>naturalOrder());
+
+    /** One naming unit's name ({@link #step}): the digest of its text, its
+     *  handles numbered ({@link #numbered}), then their marks in that
+     *  order, so a text that holds it numbers them again with its own and
+     *  keeps which of them are one object. */
+    private static String unit(String text) {
+        Map<String, String> order = new LinkedHashMap<String, String>();
+        String digest = ArtifactIO.digest(numbered(text, order), 16);
+        return order.isEmpty() ? digest : digest + order.values();
+    }
+
+    /** One canonical naming walk: the terms and container subterms it is
+     *  expanding, outermost first; the outermost of them a back-edge met
+     *  so far points at; and whether it met an unsupported subterm. */
+    private static final class Naming {
+        final List<String> stack = new ArrayList<String>();
+        int reach = Integer.MAX_VALUE;
+        boolean unsupported;
+    }
+
+    /**
+     * One decision's condition as its occurrence decided it, within its
+     * session: the term the flip query states ({@code FlipQuery#statedTerm})
+     * with each read named by its location, each root by its id and each
+     * handoff by its port.  A poll deciding the same condition on a fresh
+     * read of the same location names it alike; a loop deciding {@code
+     * (< 0 n)} then {@code (< 1 n)} does not ({@code
+     * ObligationFactory#dependence} counts the different conditions of one
+     * decision site).
+     */
+    String decisionShape(String sessionId, String term) {
+        return SmtNames.substitute(FlipQuery.statedTerm(this, sessionId,
+                term), token -> {
+                    switch (symbolKind(sessionId, token)) {
+                        case ROOT:
+                            return "root:" + rootBySymbol(sessionId, token)
+                                    .rootId();
+                        case HANDOFF:
+                            return "handoff:" + attach(sessionId, token)
+                                    .endpoint().site();
+                        case READ:
+                            return "read:" + SmtLowering.locationKey(
+                                    read(sessionId, token).location());
+                        default:
+                            return null;
+                    }
+                });
+    }
+
+    /** {@link #term}: a term the flip query states nothing through. */
+    private static final String UNLOWERED = "!";
+    /** {@link #term}: a term the query states with an unsupported
+     *  subterm's free name, which binds nothing in particular. */
+    private static final String UNSUPPORTED = "?";
+
+    /**
+     * One term, CANONICAL and digested, as a flip query states it: null
+     * where it states nothing -- it does not lower ({@link
+     * SmtLowering#lower}) or names what the query cannot declare ({@link
+     * FlipQuery#undeclared}) -- and {@link #UNSUPPORTED} where it holds an
+     * unsupported subterm.  The digest is of operators, constants, each
+     * root by its id, each handoff and each read by what binds it in the
+     * query ({@link #handoffName}, {@link #readName}), each container
+     * subterm by its canonical body, a name the lowering minted from a
+     * run's handle (an identity, by the object it stands for) as a handle
+     * ({@link #handle}), and what the program spelled, its string constants
+     * and a long's digits, by its program names ({@link #programNames}).
+     * No depth bound ({@link #step}).
+     */
+    private String term(String sessionId, String expressionRef,
+                        Naming naming) {
+        if (expressionRef == null || expressionRef.isEmpty()) return null;
+        String name = step("term|" + sessionId + "|" + expressionRef, naming,
+                false, () -> {
+                    SmtLowering lowering = lowering(sessionId);
+                    SmtLowering.Lowered lowered = lowering == null ? null
+                            : lowering.lower(expressionRef);
+                    if (lowered == null || !lowered.ok()
+                            || FlipQuery.undeclared(this, sessionId,
+                            lowered.text()) != null) {
+                        return UNLOWERED;
+                    }
+                    String text = canonical(sessionId, lowered.text(),
+                            naming);
+                    return naming.unsupported ? UNSUPPORTED : unit(text);
+                });
+        return UNLOWERED.equals(name) ? null : name;
+    }
+
+    /**
+     * One memoized naming step, a term or a container subterm: the memo's
+     * answer; a BACK-EDGE (a walk through concurrent writers meeting what
+     * it is expanding) named by its distance up the expansion stack, so
+     * chains whose back-edges point at different ancestors name apart;
+     * else {@code body}'s answer, memoized per session and reference unless
+     * a back-edge in it points above it -- its name then depends on where
+     * it was entered.  {@code taints}: whether an unsupported subterm in it
+     * marks the enclosing walk (a container subterm's does; a term answers
+     * {@link #UNSUPPORTED} for itself).
+     */
+    private String step(String key, Naming naming, boolean taints,
+                        Supplier<String> body) {
+        String held = canonicalNames.get(key);
+        if (held != null) {
+            naming.unsupported |= taints && held.charAt(0) == 'U';
+            return held.substring(1);
+        }
+        int at = naming.stack.indexOf(key);
+        if (at >= 0) {
+            naming.reach = Math.min(naming.reach, at);
+            return "cycle" + (naming.stack.size() - at);
+        }
+        int depth = naming.stack.size();
+        int reach = naming.reach;
+        boolean unsupported = naming.unsupported;
+        naming.reach = Integer.MAX_VALUE;
+        naming.unsupported = false;
+        naming.stack.add(key);
+        try {
+            String name = body.get();
+            if (naming.reach >= depth) {
+                canonicalNames.put(key, (naming.unsupported ? "U" : "S")
+                        + name);
+            }
+            unsupported |= taints && naming.unsupported;
+            return name;
+        } finally {
+            naming.stack.remove(depth);
+            naming.reach = Math.min(reach, naming.reach);
+            naming.unsupported = unsupported;
+        }
+    }
+
+    /** {@link #canonical}: where a name stands while the program's own
+     *  spelling around it is named. */
+    private static final char PLACE = '\u0003';
+
+    /** {@link #term}'s canonical text of one lowered text: each name it
+     *  holds by {@link #tokenName}, and what the program spelled around
+     *  them by {@link #programNames} -- never the names themselves. */
+    private String canonical(String sessionId, String text, Naming naming) {
+        SmtLowering lowering = lowering(sessionId);
+        List<String> names = new ArrayList<String>();
+        String program = programNames(sessionId, SmtNames.substitute(text,
+                token -> {
+                    String name = tokenName(sessionId, lowering, token,
+                            naming);
+                    if (name == null) return null;
+                    names.add(name);
+                    return PLACE + String.valueOf(names.size() - 1) + PLACE;
+                }));
+        StringBuilder out = new StringBuilder();
+        int at = 0;
+        for (int open = program.indexOf(PLACE); open >= 0;
+             open = program.indexOf(PLACE, at)) {
+            int close = program.indexOf(PLACE, open + 1);
+            out.append(program, at, open).append(names.get(
+                    Integer.parseInt(program.substring(open + 1, close))));
+            at = close + 1;
+        }
+        return out.append(program.substring(at)).toString();
+    }
+
+    /** One name of a lowered text, canonical ({@link #term}), or null to
+     *  keep it as spelled. */
+    private String tokenName(String sessionId, SmtLowering lowering,
+                             String token, Naming naming) {
+        if (SmtNames.BUILTIN.contains(token)) return null;
+        String body = lowering == null ? null : lowering.sharedBody(token);
+        if (body != null) {
+            return "dag:" + step("dag|" + sessionId + "|" + token, naming,
+                    true, () -> unit(canonical(sessionId, body, naming)));
+        }
+        switch (symbolKind(sessionId, token)) {
+            case ROOT: {
+                RootMintRow root = rootBySymbol(sessionId, token);
+                return (root.kind() == RootKind.CLOCK ? "clock:" : "root:")
+                        + root.rootId();
+            }
+            case HANDOFF:
+                return handoffName(attach(sessionId, token), naming);
+            case READ:
+                return readName(sessionId, read(sessionId, token), naming);
+            default:
+                if (lowering == null || !lowering.minted(token)) return null;
+                if (token.startsWith("unsupported__")) {
+                    naming.unsupported = true;
+                }
+                // A name the lowering minted from a run's handle: by its
+                // kind and which handle it is, an identity by its object.
+                String[] object = VmRows.objectHandle(
+                        lowering.identityOf(token));
+                return handle(token.replaceAll("__[0-9a-f]+$", "__"),
+                        object == null ? token : "rid:" + object[1]);
+        }
+    }
+
+    /**
+     * A read as its flip query binds it ({@code FlipQuery#bind}): by its
+     * location's kind and slot and the writers it may take its value from
+     * ({@link Arms#stateArms}, as the query offers them), each by its
+     * class ({@link #classOf}), write site and what the query takes from it
+     * ({@code FlipQuery#delivered}): its canonical term; a free choice
+     * ({@code ?}, with the observed value where it is the observed writer)
+     * where the term states nothing or nothing in particular; no choice
+     * ({@code /}) where it is a value of another sort.  With nothing bound
+     * the read is pinned to its observed value.
+     */
+    private String readName(String sessionId, ReadRow row, Naming naming) {
+        String location = "read:" + row.location().kind() + ":"
+                + row.location().slot();
+        String sort = JavaSmtSorts.sortOfJava(row.javaType()).smt;
+        List<Arms.Arm> eligible = arms().stateArms(row.endpoint(), sessionId,
+                SmtLowering.locationKey(row.location()),
+                row.observedVersion(), !row.unnamedWriter());
+        // Asked again by the flip query that states them (Arms recomputes
+        // every arm): this walk files nothing.
+        arms().drainRefusals();
+        List<String> writers = new ArrayList<String>();
+        boolean binds = false;
+        for (Arms.Arm arm : eligible) {
+            WriteRow write = arm.write();
+            boolean seen = write != null
+                    && write.version() == row.observedVersion();
+            String who = write == null ? classOf(arm.producer())
+                    : write.initial() ? "initial"
+                    : classOf(arm.producer()) + "@" + write.endpoint().site();
+            SmtLowering lowering = lowering(arm.sessionId());
+            SmtLowering.Lowered lowered = lowering == null ? null
+                    : lowering.lower(arm.expressionRef());
+            if (lowered != null && lowered.ok()
+                    && !lowered.value().sort.smt.equals(sort)) {
+                writers.add(who + "=/");
+                continue;
+            }
+            String term = term(arm.sessionId(), arm.expressionRef(), naming);
+            binds |= term != null;
+            writers.add(who + "=" + (term == null || UNSUPPORTED.equals(term)
+                    ? "?" + (seen ? observed(sessionId, row.concreteValue())
+                    : "") : term));
+        }
+        if (!binds) {
+            return location + "=" + observed(sessionId, row.concreteValue());
+        }
+        writers.sort(BY_SHAPE);
+        return location + "<-" + writers;
+    }
+
+    /**
+     * A handoff as its flip query binds it ({@code FlipQuery#handoff}): by
+     * its port and the arms of its own run that deliver it ({@link
+     * Arms#wireArms}) and that the query states ({@code FlipQuery#arm}: an
+     * arm whose term does not lower, names what the query cannot declare or
+     * is malformed is dropped), each by its producer's class, the export's
+     * site, its canonical delivered term, its path condition's predicates
+     * the query states (an unsupported subterm of one marks no term) and
+     * its roots' guard; with none it is pinned to its arrival.
+     */
+    private String handoffName(AttachRow attach, Naming naming) {
+        String port = "handoff:" + attach.endpoint().site();
+        List<String> arms = new ArrayList<String>();
+        if (attach.producer() != null) {
+            String sessionId = attach.sessionId();
+            SmtLowering lowering = lowering(sessionId);
+            for (Arms.Arm arm : arms().wireArms(Interaction.of(
+                    InteractionKind.WIRE, attach.producer(),
+                    attach.endpoint()), attach.symbol(), sessionId)) {
+                if (!arm.sessionId().equals(sessionId)
+                        || !arm.symbol().isEmpty()
+                        && !arm.symbol().equals(attach.symbol())) {
+                    continue;
+                }
+                SmtLowering.Lowered lowered = lowering == null ? null
+                        : lowering.lower(arm.expressionRef());
+                if (lowered == null || !lowered.ok()
+                        || FlipQuery.malformed(lowered.text())) {
+                    continue;
+                }
+                String term = term(sessionId, arm.expressionRef(), naming);
+                if (term == null) continue;
+                boolean unsupported = naming.unsupported;
+                List<String> conditions = new ArrayList<String>();
+                for (String conjunct : arm.pi()) {
+                    if (!Arms.predicate(conjunct)) continue;
+                    String stated = FlipQuery.statedTerm(this, sessionId,
+                            conjunct);
+                    if (FlipQuery.malformed(stated) || FlipQuery.undeclared(
+                            this, sessionId, stated) != null) {
+                        continue;
+                    }
+                    conditions.add(canonical(sessionId, stated, naming));
+                }
+                naming.unsupported = unsupported;
+                arms.add(classOf(arm.producer()) + "@"
+                        + attach.producer().site() + "=" + term + "|"
+                        + conditions + "|" + new TreeMap<String, String>(
+                        arm.guard()));
+            }
+            arms().drainRefusals();
+        }
+        if (arms.isEmpty()) {
+            return port + "=" + observed(attach.sessionId(), attach.arrival());
+        }
+        arms.sort(BY_SHAPE);
+        return port + "<-" + arms;
+    }
+
+    /** {@link #step}: the canonical names asked so far, per session. */
+    private final Map<String, String> canonicalNames =
+            new java.util.concurrent.ConcurrentHashMap<String, String>();
 
     /** The verdict the WAVE's file states for one obligation, or null. Only a
      *  cross-check: the SESSION's row is the verdict, and a corpus stating two

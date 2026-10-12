@@ -247,8 +247,10 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # BOUND-1: every declared bound that cut the search is named in result.json
 # by its configuration key (campaign_bounds), whatever the claim -- a loop
 # bound that cut the anchor's occurrence on the way to the throw too
-# (COMPOSE's loop-body-bound row, RestsOn#decided), and the invocations of
-# one marker past those GROW plans inputs for (unplanned-input-max); a round's
+# (COMPOSE's loop-body-bound row, RestsOn#decided), the invocations of one
+# marker past those GROW plans inputs for (unplanned-input-max), the task
+# bound by the static candidates it cut, the closure ceiling by the
+# occurrences the rows connect cut past it; a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
 # closure an earlier round truncated and the last planned whole, nor paths an
 # earlier round deferred (the path bound counts the last round's).
@@ -265,7 +267,7 @@ jq -n '{closureCut: {occurrences: 5, keptDepth: 1}}' \
   >"${emit_iteration}/runtime_workflow_schedule_index.json"
 echo '{"truncated": 4}' \
   >"${emit_iteration}/obligations-0000/explore_manifest.json"
-echo '{"truncated": 2}' \
+echo '{"truncated": 3, "ceilingCut": 1}' \
   >"${emit_iteration}/obligations-0001/explore_manifest.json"
 for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
     'T max-flips-per-path=4' 'REGION.T#1 loop-body-bound=8'; do
@@ -288,8 +290,8 @@ run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
     "loop_body_bound", "unplanned_input_max", "region_path_max_tasks",
-    "schedule_max_jobs", "campaign_max_claims"]
-  and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 occ"))' \
+    "region_path_closure_ceiling", "schedule_max_jobs", "campaign_max_claims"]
+  and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 static.*without 1 occ"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
 $(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"
@@ -3588,11 +3590,12 @@ $(cat "${stream_dir}/obligation_results.jsonl")"
 reset_config
 
 # STREAM-SPLIT-QUEUE: what a solve's return does to the queue.  An answer
-# SAT_MODEL_READY of a solve that finished puts its REPLAY first, carrying
+# SAT_MODEL_READY of a solve that finished queues its REPLAY behind the
+# solves (here last), carrying
 # the class tree and plan the solve started on even when a GROW wove a newer
 # generation since (g1 here), and the REPLAY starts on them, charged the
 # replay's charge; any other answer, or a solve that did not finish, waits
-# to land.  Per row: the solve's verdict, its exit, the queue's first entry
+# to land.  Per row: the solve's verdict, its exit, the queue's last entry
 # after it, and what waits to land (- nothing).
 split_dir="${test_tmp}/split-queue"
 while IFS='|' read -r split_verdict split_status split_first split_pending; do
@@ -3608,6 +3611,7 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
     declare -A stream_jobs=() stream_job_charge=() stream_job_worker=() \
       stream_job_tree=() stream_host_jobs=() stream_solver_seen=() \
       stream_host_solves=()
+    declare -A stream_queued_at=()
     stream_queue=("OBLIGATION obligations-0000 B")
     stream_pending=()
     stream_ticker=""
@@ -3627,12 +3631,12 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
     stream_classes=g1/classes
     stream_plan=g1/plan.jsonl
     campaign_stream_ended "${split_pid}" "${split_rc}"
-    if [[ "${stream_queue[0]}" == REPLAY\ * ]]; then
+    if [[ "${stream_queue[-1]}" == REPLAY\ * ]]; then
       stream_admitted_mb=2048
-      campaign_stream_start "${stream_queue[0]}" lift13
+      campaign_stream_start "${stream_queue[-1]}" lift13
       wait "$!" || true
     fi
-    printf '%s|%s' "${stream_queue[0]}" "${stream_pending[*]:--}"
+    printf '%s|%s' "${stream_queue[-1]}" "${stream_pending[*]:--}"
   )
   [[ "${split_said% }" == "${split_first}|${split_pending}" ]] \
     || fail "a ${split_verdict} solve that exited ${split_status} left \
@@ -3745,27 +3749,75 @@ reopened=0
 again=W1 open=0" ]] || fail "the open witness chain was handled as: \
 ${chain_said}"
 
-# STREAM-CONFIRM-FIRST: a solve's REPLAY goes first in the queue, behind only
-# the witness's confirmation and GROW's re-runs that lead it (hdfs-11741 AR1:
-# 473 later replays started ahead of the confirmation).  Per row: the queue's
-# kinds before, and after.
-while IFS='|' read -r confirm_before confirm_after; do
+# STREAM-QUEUE-ORDER: the queue by kind (campaign_stream_enqueue): the
+# witness's confirmation and GROW's re-runs lead it (hdfs-11741 AR1: 473
+# later replays started ahead of the confirmation), the solves follow in
+# their rounds' order, the replays last, the newest first (solr-adhoc-21
+# RX4: solves starved behind replays).  Per row: the queue's kinds before,
+# the entry queued, and the kinds after.
+while IFS='|' read -r confirm_before confirm_kind confirm_after; do
   confirm_said=$(
+    declare -A stream_queued_at=()
     stream_queue=()
-    for confirm_kind in ${confirm_before}; do
-      stream_queue+=("${confirm_kind} r q")
+    for kind in ${confirm_before}; do
+      stream_queue+=("${kind} r q")
     done
-    campaign_stream_queue_replay "REPLAY obligations-0004 A g0/c g0/p"
+    campaign_stream_enqueue "${confirm_kind} obligations-0004 A g0/c g0/p"
     printf '%s,' "${stream_queue[@]%% *}"
+    [[ -n "${stream_queued_at[${confirm_kind} obligations-0004 A g0/c \
+g0/p]:-}" ]] || printf 'unstamped'
   )
   [[ "${confirm_said}" == "${confirm_after}" ]] \
-    || fail "a REPLAY queued over [${confirm_before}] gave ${confirm_said}, \
-not ${confirm_after}"
+    || fail "a ${confirm_kind} queued over [${confirm_before}] gave \
+${confirm_said}, not ${confirm_after}"
 done <<'ROWS'
-CONFIRM RERUN OBLIGATION|CONFIRM,RERUN,REPLAY,OBLIGATION,
-OBLIGATION REPLAY|REPLAY,OBLIGATION,REPLAY,
-CONFIRM|CONFIRM,REPLAY,
-|REPLAY,
+CONFIRM RERUN OBLIGATION|REPLAY|CONFIRM,RERUN,OBLIGATION,REPLAY,
+OBLIGATION REPLAY|REPLAY|OBLIGATION,REPLAY,REPLAY,
+CONFIRM|REPLAY|CONFIRM,REPLAY,
+|REPLAY|REPLAY,
+RERUN OBLIGATION REPLAY|OBLIGATION|RERUN,OBLIGATION,OBLIGATION,REPLAY,
+OBLIGATION REPLAY|CONFIRM|CONFIRM,OBLIGATION,REPLAY,
+ROWS
+
+# STREAM-DISPATCH: the first entry a host admits starts, a kind no host
+# admits holding nothing behind it; an entry queued past the wait bound goes
+# first and alone; no solve starts while GROW owes re-runs.  Per row: the
+# queue (kind:age in s), the kinds hosts admit, GROW's hold, and the entries
+# started, in order.
+while IFS='|' read -r dispatch_queue dispatch_admits dispatch_hold \
+    dispatch_expect; do
+  dispatch_said=$(
+    declare -A stream_queued_at=()
+    stream_queue=()
+    now=$(date +%s)
+    index=0
+    for item in ${dispatch_queue}; do
+      index=$((index + 1))
+      stream_queue+=("${item%%:*} r q${index}")
+      stream_queued_at["${item%%:*} r q${index}"]=$((now - ${item##*:}))
+    done
+    stream_hold=${dispatch_hold}
+    campaign_stream_collect_jobs() { :; }
+    campaign_stream_has_slot() { return 0; }
+    campaign_stream_admit_host() {
+      [[ " ${dispatch_admits} " == *" $1 "* ]] || return 1
+      stream_admitted_host=lift06
+    }
+    campaign_stream_start() { printf '%s,' "${1%% *}:${1##* }"; }
+    campaign_stream_dispatch
+  )
+  [[ "${dispatch_said}" == "${dispatch_expect}" ]] \
+    || fail "dispatching [${dispatch_queue}] with hosts admitting \
+[${dispatch_admits}], hold ${dispatch_hold}, started ${dispatch_said}, not \
+${dispatch_expect}"
+done <<'ROWS'
+OBLIGATION:5 OBLIGATION:5 REPLAY:5|OBLIGATION REPLAY|0|OBLIGATION:q1,OBLIGATION:q2,REPLAY:q3,
+REPLAY:5 OBLIGATION:5|OBLIGATION|0|OBLIGATION:q2,
+OBLIGATION:5 REPLAY:5|REPLAY|0|REPLAY:q2,
+OBLIGATION:5 REPLAY:900 OBLIGATION:5|OBLIGATION|0|
+OBLIGATION:5 REPLAY:900 OBLIGATION:5|OBLIGATION REPLAY|0|REPLAY:q2,OBLIGATION:q1,OBLIGATION:q3,
+OBLIGATION:900 REPLAY:5|REPLAY|1|REPLAY:q2,
+CONFIRM:5 OBLIGATION:5|CONFIRM OBLIGATION|0|CONFIRM:q1,OBLIGATION:q2,
 ROWS
 
 # HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
@@ -4520,6 +4572,7 @@ printf '%s\n' \
   stream_plan="${stream_dir}/generations/g1/execution_task_plan.jsonl"
   stream_classes="${stream_dir}/instrumented-classes"
   stream_queue=()
+  declare -A stream_queued_at=()
   stream_hold=0
   run_java_main() {
     local args=" $* " output
@@ -4560,6 +4613,7 @@ printf '%s\n' \
   stream_dirty=0
   stream_hold=0
   stream_queue=()
+  declare -A stream_queued_at=()
   run_java_main() { fail "the exposed-region planner ran with no exposure"; }
   campaign_instrument() { fail "a generation that only dropped a mark wove"; }
   campaign_stream_grow "${grow2}/obligations-0003" >/dev/null

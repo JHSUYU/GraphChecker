@@ -1311,7 +1311,8 @@ public final class RowRuntime {
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());
         }
-        session.atClose(unnamed, CONCRETE, DERIVED, DOORS_ONLY);
+        session.atClose(unnamed, CONCRETE, DERIVED, RunNames.stated(),
+                DOORS_ONLY);
         unattributedStores();
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.

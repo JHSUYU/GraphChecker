@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -60,6 +61,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -811,9 +813,11 @@ public class ExploreTest {
 
         // Y: nn0's rotation flipped.  Its rows AT THE TARGET are the seed's,
         // letter for letter; what its world changed is the STRUCTURE of what
-        // addKeys received -- one handoff fewer, because the rotation it was
-        // held to delivered one key less -- and addKeys writes what the
-        // target reads.  (11741: four attaches instead of five.)
+        // addKeys received -- one handoff more, because the rotation it was
+        // held to delivered one key more -- and addKeys writes what the
+        // target reads.  (11741: four attaches instead of five.  A member
+        // that received nothing at all and wrote nothing the guard reads is
+        // no line: it is no conjunct of the guard's query.)
         Session wye = new Session(iteration, "s-world-y");
         wye.activation(PRODUCER, true);
         wye.activation(target, false);
@@ -829,8 +833,9 @@ public class ExploreTest {
         wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
         wye.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         wye.decision(target, "Concrete#u3", 1, false, "");
-        // No attach here at all: the rotation it was held to delivered
-        // nothing, so addKeys stored what it already had.
+        wye.export(ROTATED, "e.kept", 11L, "119992");
+        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
         wye.write(STORED, ALL_KEYS, 5L, "e.kept");
         wye.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         wye.answered(ObligationResult.of("OBL.world-y", Verdict.ADMITTED,
@@ -890,8 +895,8 @@ public class ExploreTest {
                 worlds.decisionsOf("s-seed", target).size(),
                 worlds.decisionsOf("s-world-y", target).size());
         assertEquals("what its world changed is the STRUCTURE of what the "
-                        + "factor member received: one handoff fewer",
-                worlds.attachesOn("s-seed", WRITER).size() - 1,
+                        + "factor member received: one handoff more",
+                worlds.attachesOn("s-seed", WRITER).size() + 1,
                 worlds.attachesOn("s-world-y", WRITER).size());
         String seedInputs = dependence(worlds, anchored, "s-seed",
                 "Guard#u8");
@@ -1533,7 +1538,7 @@ public class ExploreTest {
      * ObligationFactory#dependence}): a prefix decision sharing no variable
      * with the guard, and a factor member's writes to state the guard does
      * not read, never split one question in two; a prefix decision over the
-     * guard's own root, and one more write to the state it reads, do.
+     * guard's own root, and another value written where it reads, do.
      * (hdfs-11741 v79: 4984 candidates, 2422 keys by the whole prefix and
      * every write of the factor, 499 by what the guard depends on.)
      */
@@ -1589,11 +1594,140 @@ public class ExploreTest {
             if ("s-idle".equals(row[0])) session.activation(lateWriter, false);
             session.flush();
         }
+        // A world whose flip stands later in the task's own occurrence (a
+        // fault after the guard: solr-adhoc-07's makePath): its prefix is
+        // asserted, never keyed.
+        Session afterGuard = new Session(iteration, "s-later");
+        afterGuard.activation(TARGET, true);
+        afterGuard.activation(WRITER, false);
+        afterGuard.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                "10", true);
+        afterGuard.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                "10", true);
+        afterGuard.symbolic("e.stored", "M_A");
+        afterGuard.write(STORED, ALL_KEYS, 5L, "e.stored");
+        afterGuard.write(negotiated, qop, 1L, "e.stored");
+        afterGuard.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+        afterGuard.activation(READER, false);
+        afterGuard.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+        afterGuard.decision(TARGET, "Near#u2", 1, true, "(> M_A 1)");
+        afterGuard.decision(TARGET, "Far#u4", 1, true, "(> M_B 1)");
+        afterGuard.decision(TARGET, "Guard#u8", 1, false,
+                "(> (+ M_A M_READ_KEY) 3)");
+        afterGuard.decision(TARGET, "Later#u20", 1, true, "(> M_A 5)");
+        afterGuard.flush();
+        // Feeders that wrote other terms where the guard reads (a member
+        // flip writing M_A-1 where the seed wrote M_A+10; requests writing
+        // 5 or 7; a term reading a location another writer wrote).
+        LocationId inner = LocationId.of(LocationKind.INSTANCE, "40", "7");
+        OccurrenceAddress innerA = occurrence("hdfs-case/dn0",
+                "REGION.innerA", CausalContext.of(Role.of("INNER_A"), "", 1),
+                "o.a.h.h.s.d.InnerA#run#1");
+        OccurrenceAddress innerA2 = occurrence("hdfs-case/dn0",
+                "REGION.innerA", CausalContext.of(Role.of("INNER_A"), "", 2),
+                "o.a.h.h.s.d.InnerA#run#2");
+        OccurrenceAddress innerB = occurrence("hdfs-case/dn0",
+                "REGION.innerB", CausalContext.of(Role.of("INNER_B"), "", 1),
+                "o.a.h.h.s.d.InnerB#run#1");
+        JsonObject symbolA = leaf("M_A", "I");
+        JsonObject innerRead = leaf("M_INNER", "I");
+        // session, written term, the inner location's writer (or none)
+        Object[][] writtenRows = {
+            {"s-plus", binary("+", symbolA, literal(10)), null},
+            {"s-minus", binary("-", symbolA, literal(1)), null},
+            {"s-plus-again", binary("+", symbolA, literal(10)), null},
+            {"s-inner-a", innerRead, innerA},
+            {"s-inner-a2", innerRead, innerA2},
+            {"s-inner-b", innerRead, innerB},
+        };
+        for (Object[] row : writtenRows) {
+            Session session = new Session(iteration, (String) row[0]);
+            session.activation(TARGET, true);
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.symbolic("e.stored", "M_A");
+            session.expression("EXPR.00000000000000e2", (JsonObject) row[1]);
+            session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000e2");
+            if (row[2] != null) {
+                OccurrenceAddress writer = (OccurrenceAddress) row[2];
+                session.constant("EXPR.00000000000000e3", "3");
+                session.write(at(writer, writer.regionId() + "#u1:WRITE",
+                        writer.regionId() + "#u1"), inner, 7L,
+                        "EXPR.00000000000000e3");
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"), inner,
+                        7L, "M_INNER", "3");
+            }
+            session.write(negotiated, qop, 1L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.activation(READER, false);
+            session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+            session.decision(TARGET, "Near#u2", 1, true, "(> M_A 1)");
+            session.decision(TARGET, "Far#u4", 1, true, "(> M_B 1)");
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
+        for (String[] written : new String[][] {{"s-five", "5"},
+                {"s-seven", "7"}, {"s-seven-again", "7"}}) {
+            Session session = new Session(iteration, written[0]);
+            session.activation(TARGET, true);
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            session.symbolic("e.stored", "M_A");
+            session.constant("EXPR.00000000000000e1", written[1]);
+            session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000e1");
+            session.write(negotiated, qop, 1L, "e.stored");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.activation(READER, false);
+            session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+            session.decision(TARGET, "Near#u2", 1, true, "(> M_A 1)");
+            session.decision(TARGET, "Far#u4", 1, true, "(> M_B 1)");
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
+        worker(iteration, "obligations-0000", "ob-later", "OBL.later",
+                "s-later", TARGET, "Later#u20",
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap());
         Corpus corpus = Corpus.read(iteration, null);
         Task task = ClosurePlanner.taskOf(corpus,
                 ClosurePlanner.taskId(TARGET));
         assertNotNull(task);
         String seed = dependence(corpus, task, "s-seed", "Guard#u8");
+        assertEquals("a world's flip after the guard is no condition of its"
+                + " arm", seed, dependence(corpus, task, "s-later",
+                "Guard#u8"));
+        assertFalse("a feeder that wrote another term where the guard reads"
+                        + " is another world (M_A against 7)",
+                seed.equals(dependence(corpus, task, "s-seven", "Guard#u8")));
+        assertFalse("and another constant too (5 against 7)",
+                dependence(corpus, task, "s-five", "Guard#u8").equals(
+                        dependence(corpus, task, "s-seven", "Guard#u8")));
+        assertEquals("the same term written again is the same world",
+                dependence(corpus, task, "s-seven", "Guard#u8"),
+                dependence(corpus, task, "s-seven-again", "Guard#u8"));
+        assertFalse("M_A+10 against M_A-1 at one site re-keys (the review's"
+                        + " scenario)",
+                dependence(corpus, task, "s-plus", "Guard#u8").equals(
+                        dependence(corpus, task, "s-minus", "Guard#u8")));
+        assertEquals("the same canonical term in another session folds",
+                dependence(corpus, task, "s-plus", "Guard#u8"),
+                dependence(corpus, task, "s-plus-again", "Guard#u8"));
+        assertFalse("a term reading a location another writer wrote "
+                        + "re-keys",
+                dependence(corpus, task, "s-inner-a", "Guard#u8").equals(
+                        dependence(corpus, task, "s-inner-b", "Guard#u8")));
+        assertEquals("a writer of the same class and site, the same value,"
+                        + " folds",
+                dependence(corpus, task, "s-inner-a", "Guard#u8"),
+                dependence(corpus, task, "s-inner-a2", "Guard#u8"));
         assertEquals("a prefix decision over a root the guard never names "
                 + "is not what it depends on", seed,
                 dependence(corpus, task, "s-far", "Guard#u8"));
@@ -1607,8 +1741,9 @@ public class ExploreTest {
                 dependence(corpus, task, "s-coreader", "Guard#u8"));
         assertFalse("a prefix decision over the guard's own root is",
                 seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
-        assertFalse("and so is one more write to the state it reads",
-                seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
+        assertEquals("but not the same value written again where it reads"
+                + " (semantic counts only)", seed,
+                dependence(corpus, task, "s-more", "Guard#u8"));
         List<OccurrenceAddress> reversed =
                 new ArrayList<OccurrenceAddress>(task.factor());
         Collections.reverse(reversed);
@@ -1616,10 +1751,8 @@ public class ExploreTest {
                 SmtLowering.locationKey(qop));
         assertEquals("the factor is a set: the order the corpus lists it in "
                         + "moves as sessions land",
-                corpus.inputShape("s-more", TARGET, task.factor(), qopKey,
-                        StaticScopeMap.empty()),
-                corpus.inputShape("s-more", TARGET, reversed, qopKey,
-                        StaticScopeMap.empty()));
+                corpus.inputShape("s-more", TARGET, task.factor(), qopKey),
+                corpus.inputShape("s-more", TARGET, reversed, qopKey));
         // A member's replies from two producers, in either arrival order.
         Path raced = tree.newFolder("raced").toPath();
         for (String order : new String[] {"s-ab", "s-ba"}) {
@@ -1639,11 +1772,9 @@ public class ExploreTest {
         assertEquals("who delivered is a set: the order replies arrive in "
                         + "is a race",
                 racedCorpus.inputShape("s-ab", TARGET,
-                        Collections.singletonList(WRITER), qopKey,
-                        StaticScopeMap.empty()),
+                        Collections.singletonList(WRITER), qopKey),
                 racedCorpus.inputShape("s-ba", TARGET,
-                        Collections.singletonList(WRITER), qopKey,
-                        StaticScopeMap.empty()));
+                        Collections.singletonList(WRITER), qopKey));
         // A session that runs a feeder no earlier session ran: the seed never
         // ran it, so what the seed's guard depends on is unmoved.
         Session late = new Session(iteration, "s-late");
@@ -1846,91 +1977,429 @@ public class ExploreTest {
     }
 
     /**
-     * A MEMBER FEEDS WHAT THE REGION READS ON ANY ARM ({@link
-     * Corpus#inputShape}): a renewer that wrote the lease map in one session
-     * and did not run in another delivered different worlds, though the
-     * arm each session took never read the map -- the flipped arm (the
-     * expiry scan) does.  Judged by the region's static reads (a READ_SITE,
-     * a READ input, a folded region's), never by what one session's arm
-     * read: two such sessions share no answer.
+     * WHAT A FEEDER WROTE WHERE THE GUARD READS is named by what binds it in
+     * the flip query ({@code Corpus#written}): a handoff it wrote by its own
+     * run's wire arms (the producer's class, export site, canonical term),
+     * else by its arrival; a read inside its term by every writer the query
+     * offers it, else by its value; a term that does not lower by the values
+     * observed; no depth bound, a back-edge by how far up it points.  Each
+     * by the query's own conditions: an arm or a writer's value the query
+     * drops (a name it cannot declare, a value of another sort) binds
+     * nothing; a name a node has only in one run by the node, an identity
+     * hash and an object the VM named by its class and where the key first
+     * meets it (two values aliased otherwise name apart).  Each row: two
+     * worlds, and whether they share the arm's key.
      */
     @Test
-    public void aMemberFeedsWhatTheRegionReadsOnAnyArm() throws Exception {
-        Path iteration = tree.newFolder("fed-any-arm").toPath();
-        for (String id : new String[] {"s-renewed", "s-quiet"}) {
-            Session session = new Session(iteration, id);
+    public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
+            throws Exception {
+        Path iteration = tree.newFolder("written-binds").toPath();
+        JsonObject symbolA = leaf("M_A", "I");
+        LocationId[] chain = new LocationId[4];
+        OccurrenceAddress[] writers = new OccurrenceAddress[4];
+        for (int at = 0; at < 4; at++) {
+            chain[at] = LocationId.of(LocationKind.INSTANCE, "50", "" + at);
+            writers[at] = occurrence("hdfs-case/dn0", "REGION.chain" + at,
+                    CausalContext.of(Role.of("CHAIN" + at), "", 1),
+                    "o.a.h.h.s.d.Chain" + at + "#run#1");
+        }
+        OccurrenceAddress concurrent = occurrence("hdfs-case/dn0",
+                "REGION.extra", CausalContext.of(Role.of("EXTRA"), "", 1),
+                "o.a.h.h.s.d.Extra#run#1");
+        OccurrenceAddress innerReader = occurrence("hdfs-case/dn0",
+                "REGION.innerReader", CausalContext.of(Role.of("INNER"), "",
+                        1), "o.a.h.h.s.d.InnerReader#run#1");
+        JsonObject mystery = new JsonObject();
+        mystery.addProperty("_type", "NoSuchExpression");
+        mystery.addProperty("_java_type", "I");
+        LocationId cycledOne = LocationId.of(LocationKind.INSTANCE, "60", "1");
+        LocationId cycledTwo = LocationId.of(LocationKind.INSTANCE, "60", "2");
+        OccurrenceAddress[] cycled = new OccurrenceAddress[2];
+        for (int at = 0; at < 2; at++) {
+            cycled[at] = occurrence("hdfs-case/dn0", "REGION.cycle",
+                    CausalContext.of(Role.of("CYCLE"), "", at + 1),
+                    "o.a.h.h.s.d.Cycle#run#" + (at + 1));
+        }
+        // session -> what WRITER writes at the guard's location
+        String[] names = {"s-seed", "h-plus", "h-minus", "h-plus-again",
+            "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
+            "u-five-again", "u-unstated", "d-one", "d-two", "c-up",
+            "c-self", "g-eleven", "g-eleven-minus", "g-twelve", "r-three",
+            "r-four", "b-three", "b-four", "n-one", "n-one-again", "n-two",
+            "y-hash", "y-hash-again", "y-other", "v-doc", "v-doc-again",
+            "v-other", "w-alias", "w-alias-again", "w-apart"};
+        for (String name : names) {
+            Session session = new Session(iteration, name);
+            session.activation(TARGET, !name.equals("s-seed"));
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0", "0",
+                    "10", true);
+            String guardValue = "0";
+            if (name.startsWith("h-")) {
+                session.activation(PRODUCER, false);
+                // Its path decided on an unsupported subterm first: that
+                // conjunct marks no delivered term unsupported.
+                session.expression("EXPR.00000000000000f5", mystery);
+                session.decision(PRODUCER, "Rotate#u3", 1, true,
+                        "(> (+ M_A EXPR.00000000000000f5) 0)");
+                session.expression("EXPR.00000000000000f1", binary(
+                        name.equals("h-minus") ? "-" : "+", symbolA,
+                        literal(name.equals("h-minus") ? 1 : 10)));
+                session.export(ROTATED, "EXPR.00000000000000f1", 11L, "11");
+                session.attach(DELIVERED, "M_HOFF_KEY", "11", ROTATED);
+                session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("g-")) {
+                // A producer arm naming what no row declares: the query
+                // drops it and pins the handoff to its arrival.
+                session.activation(PRODUCER, false);
+                session.expression("EXPR.00000000000000f1", binary(
+                        name.endsWith("minus") ? "-" : "+", leaf("M_GHOST", "I"),
+                        literal(name.endsWith("minus") ? 1 : 10)));
+                String arrival = name.equals("g-twelve") ? "12" : "11";
+                session.export(ROTATED, "EXPR.00000000000000f1", 11L,
+                        arrival);
+                session.attach(DELIVERED, "M_HOFF_KEY", arrival, ROTATED);
+                session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("r-") || name.startsWith("b-")) {
+                // An inner read whose one writer the query takes nothing
+                // from -- its value names what no row declares, or is a
+                // Bool where the read is an int -- is pinned to its value.
+                session.activation(innerReader, false, true, "inner");
+                session.activation(writers[0], false, true, "chain0");
+                session.expression("EXPR.00000000000000f3",
+                        name.startsWith("r-") ? binary("+",
+                                leaf("M_GHOST", "I"), literal(1))
+                                : binary(">", symbolA, literal(3)));
+                session.write(at(writers[0], "Chain0#u1:WRITE", "Chain0#u1"),
+                        chain[0], 7L, "EXPR.00000000000000f3");
+                session.read(at(innerReader, "Inner#u2:READ", "Inner#u2"),
+                        chain[0], 7L, "M_INNER",
+                        name.endsWith("three") ? "3" : "4");
+                session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
+            } else if (name.startsWith("y-")) {
+                // A searcher's name, which spells its identity hash.
+                session.expression("EXPR.00000000000000f2",
+                        VmExpressionIr.stringConstant("Searcher@"
+                                + (name.equals("y-hash") ? "4d4eeaac"
+                                : "2a3146e9") + "["
+                                + (name.equals("y-other") ? "other" : "core")
+                                + "] main"));
+            } else if (name.startsWith("w-")) {
+                // Two searchers' names: one searcher twice, or two.
+                String first = name.equals("w-alias-again") ? "11aa22bb"
+                        : "4d4eeaac";
+                session.expression("EXPR.00000000000000f2",
+                        VmExpressionIr.stringConstant("Searcher@" + first
+                                + " Searcher@" + (name.equals("w-apart")
+                                ? "2a3146e9" : first)));
+            } else if (name.startsWith("v-")) {
+                // A term that does not lower, whose reader observed an
+                // object the VM named, by its run's rid.
+                session.expression("EXPR.00000000000000f2", mystery);
+                guardValue = name.equals("v-doc") ? "M_L'org/x/Doc'_6574"
+                        : name.equals("v-doc-again") ? "M_L'org/x/Doc'_6601"
+                        : "M_L'org/x/Other'_6574";
+            } else if (name.startsWith("n-")) {
+                // A node's URL, at the port this run gave it: node1 at 46805
+                // (n-one) or 36143 (n-one-again), node2 at 41111 (n-two).
+                session.spelled("auto0/node1", name.equals("n-one")
+                        ? "127.0.0.1:46805_solr" : "127.0.0.1:36143_solr");
+                session.spelled("auto0/node2", "127.0.0.1:41111_solr");
+                session.expression("EXPR.00000000000000f2",
+                        VmExpressionIr.stringConstant("http://127.0.0.1:"
+                                + (name.equals("n-one") ? "46805"
+                                : name.equals("n-two") ? "41111" : "36143")
+                                + "/solr"));
+            } else if (name.startsWith("c-")) {
+                // A cycle of two writers of one class and site: the second
+                // one's read takes the first one's write (c-up) or its own
+                // (c-self).
+                for (OccurrenceAddress writer : cycled) {
+                    session.activation(writer, false);
+                }
+                session.expression("EXPR.00000000000000c1",
+                        binary("+", leaf("M_CYCLE_A", "I"), literal(1)));
+                session.expression("EXPR.00000000000000c2",
+                        binary("+", leaf("M_CYCLE_B", "I"), literal(1)));
+                session.write(at(cycled[0], "Cycle#u1:WRITE", "Cycle#u1"),
+                        cycledOne, 7L, "EXPR.00000000000000c1");
+                session.write(at(cycled[1], "Cycle#u1:WRITE", "Cycle#u1"),
+                        cycledTwo, 8L, "EXPR.00000000000000c2");
+                session.write(at(cycled[1], "Cycle#u1:WRITE", "Cycle#u1"),
+                        cycledOne, 9L, "EXPR.00000000000000c2");
+                session.read(at(cycled[0], "Cycle#u2:READ", "Cycle#u2"),
+                        cycledTwo, 8L, "M_CYCLE_A", "2");
+                session.read(at(cycled[1], "Cycle#u2:READ", "Cycle#u2"),
+                        cycledOne, name.equals("c-up") ? 7L : 9L,
+                        "M_CYCLE_B", "1");
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
+                        cycledOne, 7L, "M_CYCLED", "3");
+                session.symbolic("EXPR.00000000000000f2", "M_CYCLED", "I");
+            } else if (name.startsWith("p-")) {
+                session.attach(DELIVERED, "M_HOFF_KEY",
+                        name.equals("p-five") ? "5" : "7", null);
+                session.symbolic("EXPR.00000000000000f2", "M_HOFF_KEY", "I");
+            } else if (name.startsWith("i-")) {
+                // An inner read by a turn of its own, which a concurrent
+                // writer (its own thread, instrumented) may have fed.
+                session.activation(innerReader, false, true, "inner");
+                session.activation(writers[0], false, true, "chain0");
+                session.constant("EXPR.00000000000000f3", "3");
+                session.write(at(writers[0], "Chain0#u1:WRITE", "Chain0#u1"),
+                        chain[0], 7L, "EXPR.00000000000000f3");
+                if (name.equals("i-two")) {
+                    session.activation(concurrent, false, true, "extra");
+                    session.constant("EXPR.00000000000000f4", "9");
+                    session.write(at(concurrent, "Extra#u1:WRITE",
+                            "Extra#u1"), chain[0], 8L,
+                            "EXPR.00000000000000f4");
+                }
+                session.read(at(innerReader, "Inner#u2:READ", "Inner#u2"),
+                        chain[0], 7L, "M_INNER", "3");
+                session.symbolic("EXPR.00000000000000f2", "M_INNER", "I");
+            } else if (name.startsWith("u-")) {
+                session.expression("EXPR.00000000000000f2", mystery);
+                guardValue = name.startsWith("u-five") ? "5"
+                        : name.equals("u-unstated") ? null : "7";
+            } else if (name.equals("s-seed")) {
+                session.constant("EXPR.00000000000000f2", "4");
+            } else {
+                // A chain four writers deep: WRITER's term reads chain[0],
+                // written by writers[0] from chain[1], ... chain[3] holds
+                // a constant, 1 or 2.
+                for (int at = 0; at < 4; at++) {
+                    session.activation(writers[at], false);
+                    String ref = String.format("EXPR.00000000000000%02x",
+                            0xa0 + at);
+                    if (at == 3) {
+                        session.constant(ref, name.equals("d-one") ? "1"
+                                : "2");
+                    } else {
+                        session.symbolic(ref, "M_CHAIN" + (at + 1), "I");
+                        session.read(at(writers[at], "Chain" + at
+                                        + "#u2:READ", "Chain" + at + "#u2"),
+                                chain[at + 1], 5L, "M_CHAIN" + (at + 1), "1");
+                    }
+                    session.write(at(writers[at], "Chain" + at + "#u1:WRITE",
+                            "Chain" + at + "#u1"), chain[at], 5L, ref);
+                }
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
+                        chain[0], 5L, "M_CHAIN0", "1");
+                session.symbolic("EXPR.00000000000000f2", "M_CHAIN0", "I");
+            }
+            session.write(STORED, ALL_KEYS, 5L, "EXPR.00000000000000f2");
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", guardValue);
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = ClosurePlanner.taskOf(corpus,
+                ClosurePlanner.taskId(TARGET));
+        Object[][] rows = {
+            {"h-plus", "h-minus", false,
+                    "a producer sending M_A-1 after its flip, not M_A+10"},
+            {"h-plus", "h-plus-again", true, "the same arm in another run"},
+            {"p-five", "p-seven", false, "a pinned payload 5 against 7"},
+            {"i-one", "i-two", false,
+                    "a concurrent writer the inner read may take"},
+            {"u-five", "u-seven", false,
+                    "a term that does not lower, observed 5 against 7"},
+            {"u-five", "u-five-again", true,
+                    "the same observed value of such a term"},
+            {"u-five", "u-unstated", false,
+                    "a read that states no value is another one"},
+            {"d-one", "d-two", false,
+                    "a constant four writers deep (no depth bound)"},
+            {"c-up", "c-self", false,
+                    "a back-edge to the writer above against to itself"},
+            {"g-eleven", "g-twelve", false,
+                    "an arm the query drops: pinned to 11 against 12"},
+            {"g-eleven", "g-eleven-minus", true,
+                    "whatever the dropped arm delivered"},
+            {"r-three", "r-four", false,
+                    "a writer's value naming what no row declares"},
+            {"b-three", "b-four", false,
+                    "a writer's value of another sort than the read"},
+            {"n-one", "n-one-again", true,
+                    "one node's URL at the port each run gave it"},
+            {"n-one", "n-two", false, "another node's URL"},
+            {"y-hash", "y-hash-again", true,
+                    "one name at another identity hash"},
+            {"y-hash", "y-other", false, "another name"},
+            {"v-doc", "v-doc-again", true,
+                    "an observed object of one class at another rid"},
+            {"v-doc", "v-other", false, "an object of another class"},
+            {"w-alias", "w-alias-again", true,
+                    "one object twice, at another identity hash"},
+            {"w-alias", "w-apart", false, "one object twice against two"},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[3], row[2], dependence(corpus, task,
+                    (String) row[0], "Guard#u8").equals(dependence(corpus,
+                    task, (String) row[1], "Guard#u8")));
+        }
+    }
+
+    /**
+     * A RUN'S HANDLE IS NUMBERED BY WHERE THE KEY FIRST MEETS IT ({@code
+     * Corpus#numbered}): an object at another rid in every place names
+     * alike, an object that two places shared in one world and not in the
+     * other names apart, whatever spelling (an observed rid, a minted
+     * identity) names it.
+     */
+    @Test
+    public void aRunsHandleIsNumberedByWhereTheKeyFirstMeetsIt() {
+        String[][] rows = {
+            // three handles' rids, the numbered text
+            {"5 7 5", "f(M_L'Doc'_1 M_L'Doc'_2 identity__1)"},
+            {"9 3 9", "f(M_L'Doc'_1 M_L'Doc'_2 identity__1)"},
+            {"5 5 7", "f(M_L'Doc'_1 M_L'Doc'_1 identity__2)"},
+        };
+        for (String[] row : rows) {
+            String[] rid = row[0].split(" ");
+            String text = "f(" + Corpus.handle("M_L'Doc'_", "rid:" + rid[0])
+                    + " " + Corpus.handle("M_L'Doc'_", "rid:" + rid[1]) + " "
+                    + Corpus.handle("identity__", "rid:" + rid[2]) + ")";
+            Map<String, String> order = new LinkedHashMap<String, String>();
+            assertEquals(row[0], row[1], Corpus.numbered(text, order));
+            assertEquals(row[0], new HashSet<String>(Arrays.asList(rid))
+                    .size(), order.size());
+        }
+    }
+
+    /**
+     * A MEMBER IS NAMED BY ITS CLASS AND WHAT THE QUERY READS OF IT ({@link
+     * Corpus#inputShape}): node, region and context shape, never its
+     * address; semantic counts only -- the same value written k or k' times,
+     * or by a member under renumbered ids, is one world (solr-adhoc-07/21:
+     * polls and watcher callbacks re-keyed every arm) -- while another value
+     * written where a read of the task looks, or another pinned value its
+     * read observed of a write the query cannot state, is another; and a
+     * member that wrote only state the region reads elsewhere is no line
+     * (no conjunct of the query: solr-adhoc-21 RX4).  What another
+     * occurrence's read observed is no input of the task's query.
+     */
+    @Test
+    public void aMemberIsNamedByItsClassAndWhatTheQueryReads()
+            throws Exception {
+        Path iteration = tree.newFolder("member-class").toPath();
+        List<OccurrenceAddress> polls = new ArrayList<OccurrenceAddress>();
+        for (int k : new int[] {1, 2, 3, 7}) {
+            polls.add(occurrence("hdfs-case/dn0", "REGION.addkeys",
+                    CausalContext.of(Role.of("POLL"), "", k),
+                    "o.a.h.h.s.d.Poller#poll#" + k));
+        }
+        JsonObject mystery = new JsonObject();
+        mystery.addProperty("_type", "NoSuchExpression");
+        mystery.addProperty("_java_type", "I");
+        // session, the polls that ran (each writing the map once), what they
+        // wrote (a constant, or "?" a term that does not lower), what the
+        // task's read of the first write observed ("-": none read it), and
+        // whether another occurrence's read observed it
+        Object[][] sessions = {
+            {"s-one", new int[] {0}, "7", "7", false},
+            {"s-three", new int[] {0, 1, 2}, "7", "7", false},
+            {"s-renumbered", new int[] {3}, "7", "7", false},
+            {"s-nine", new int[] {0}, "9", "9", false},
+            {"s-none", new int[] {}, "7", "-", false},
+            {"s-u7", new int[] {0}, "?", "7", false},
+            {"s-u9", new int[] {0}, "?", "9", false},
+            {"s-u-other", new int[] {0}, "?", "-", true},
+            {"s-u-unread", new int[] {0}, "?", "-", false},
+        };
+        for (Object[] row : sessions) {
+            Session session = new Session(iteration, (String) row[0]);
             session.activation(TARGET, false);
-            if ("s-renewed".equals(id)) {
-                session.activation(WRITER, false);
-                session.constant("e.stored", "7");
-                session.write(STORED, ALL_KEYS, 5L, "e.stored");
+            if ("?".equals(row[2])) {
+                session.expression("EXPR.00000000000000e7", mystery);
+            } else {
+                session.constant("EXPR.00000000000000e7", (String) row[2]);
+            }
+            for (int at : (int[]) row[1]) {
+                session.activation(polls.get(at), false);
+                session.write(at(polls.get(at), Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), ALL_KEYS,
+                        5L + at, "EXPR.00000000000000e7");
+            }
+            if (!"-".equals(row[3])) {
+                session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY",
+                        (String) row[3]);
+            }
+            if ((Boolean) row[4]) {
+                session.activation(READER, false);
+                session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "7");
             }
             session.flush();
         }
         Corpus corpus = Corpus.read(iteration, null);
-        StaticScopeMap reads = StaticScopeMap.read(scopeMap(iteration,
-                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
-                        "BlockTokenSecretManager#u12",
-                        "BlockTokenSecretManager#addKeys",
-                        "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")),
-                scopeSite(StaticScopeMap.READ_SITE, "REGION.target",
-                        "BlockTokenSecretManager#u8",
-                        "BlockTokenSecretManager#retrieveDataEncryptionKey",
-                        "<example.Manager: example.Keys allKeys>",
-                        "<example.Manager: example.Keys allKeys>", "")));
-        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
+        Set<String> guard = Collections.singleton(
+                SmtLowering.locationKey(ALL_KEYS));
         Set<String> none = Collections.<String>emptySet();
-        assertFalse("the renewer's write is part of the world",
-                corpus.inputShape("s-renewed", TARGET, factor, none, reads)
-                        .equals(corpus.inputShape("s-quiet", TARGET, factor,
-                                none, reads)));
-        assertEquals("a region that reads no carrier it wrote is fed nothing",
-                corpus.inputShape("s-renewed", TARGET, factor, none,
-                        StaticScopeMap.empty()),
-                corpus.inputShape("s-quiet", TARGET, factor, none,
-                        StaticScopeMap.empty()));
-        // The same read as an accessor input (an atomic's get(), a READ
-        // input) of the target's region, and as a READ_SITE of a region the
-        // target's occurrences folded in the iteration's plan.
-        String write = put(scopeSite(StaticScopeMap.WRITE_SITE,
-                "REGION.addkeys", "BlockTokenSecretManager#u12",
-                "BlockTokenSecretManager#addKeys",
-                "<example.Keys: int value>",
-                "<example.Manager: example.Keys allKeys>", ""));
-        JsonObject input = com.google.gson.JsonParser.parseString(scopeSite(
-                StaticScopeMap.DECLARED_SITE, "REGION.target",
-                "BlockTokenSecretManager#u8",
-                "BlockTokenSecretManager#retrieveDataEncryptionKey",
-                "<example.Keys: int value>", "", "")).getAsJsonObject();
-        input.addProperty("declaredKind", StaticScopeMap.ACCESSOR_RETURN);
-        input.addProperty("inputKind", StaticScopeMap.READ_INPUT);
-        String folded = scopeSite(StaticScopeMap.READ_SITE, "REGION.expiry",
-                "Expiry#u3", "Expiry#scan",
-                "<example.Manager: example.Keys allKeys>",
-                "<example.Manager: example.Keys allKeys>", "");
-        Path plan = iteration.resolve(ExploreMain.REGION_PLAN);
-        Files.write(plan, ("{\"kind\":\"CONCOLIC_REGION_PLAN\","
-                + "\"regionId\":\"REGION.target\",\"foldedRegionIds\":"
-                + "[\"REGION.expiry\"]}\n").getBytes("UTF-8"));
-        for (StaticScopeMap map : Arrays.asList(
-                StaticScopeMap.read(scopeMap(iteration, write,
-                        input.toString())),
-                StaticScopeMap.read(scopeMap(iteration, write, folded))
-                        .withPlan(plan))) {
-            assertFalse("an accessor input and a folded region's read feed"
-                            + " it too",
-                    corpus.inputShape("s-renewed", TARGET, factor, none, map)
-                            .equals(corpus.inputShape("s-quiet", TARGET,
-                                    factor, none, map)));
+        String once = corpus.inputShape("s-one", TARGET, polls, guard);
+        Object[][] rows = {
+            // session, with location set, same key as s-one under it, why
+            {"s-three", guard, true, "the same value three times"},
+            {"s-renumbered", guard, true, "under another index"},
+            {"s-nine", guard, false,
+                    "another value a read of the task observed"},
+            {"s-none", guard, false, "no writer of what the guard reads"},
+            {"s-none", none, true,
+                    "a member that only fed the region is no line"},
+        };
+        for (Object[] row : rows) {
+            @SuppressWarnings("unchecked")
+            Set<String> locations = (Set<String>) row[1];
+            assertEquals((String) row[3], row[2], corpus.inputShape(
+                    "s-one", TARGET, polls, locations).equals(
+                    corpus.inputShape((String) row[0], TARGET, polls,
+                            locations)));
         }
-        assertEquals("the folded region's read without the plan's folds",
-                corpus.inputShape("s-renewed", TARGET, factor, none,
-                        StaticScopeMap.read(scopeMap(iteration, write,
-                                folded))),
-                corpus.inputShape("s-quiet", TARGET, factor, none,
-                        StaticScopeMap.read(scopeMap(iteration, write,
-                                folded))));
+        assertEquals("the polls of s-one as s-one", once,
+                corpus.inputShape("s-one", TARGET, polls, guard));
+        Object[][] unlowered = {
+            {"s-u7", "s-u9", false,
+                    "a term the query cannot state, pinned to 7 against 9"},
+            {"s-u7", "s-u-other", false,
+                    "pinned by the task's read against read by no one's"},
+            {"s-u-other", "s-u-unread", true,
+                    "another occurrence's read is no input of the query"},
+        };
+        for (Object[] row : unlowered) {
+            assertEquals((String) row[3], row[2], corpus.inputShape(
+                    (String) row[0], TARGET, polls, guard).equals(
+                    corpus.inputShape((String) row[1], TARGET, polls,
+                            guard)));
+        }
+        // Members started by messages no row names: their shape has an
+        // unknown hop, which tells nothing apart, so each keeps its address.
+        Path unknown = tree.newFolder("member-unknown-hop").toPath();
+        List<OccurrenceAddress> unnamed = new ArrayList<OccurrenceAddress>();
+        for (int k : new int[] {1, 2}) {
+            unnamed.add(occurrence("hdfs-case/dn0", "REGION.addkeys",
+                    CausalContext.of("E-unnamed-" + k, "Poller#poll"),
+                    "o.a.h.h.s.d.Poller#poll#" + k));
+        }
+        for (Object[] row : new Object[][] {{"s-one", new int[] {0}},
+                {"s-two", new int[] {0, 1}}}) {
+            Session session = new Session(unknown, (String) row[0]);
+            session.activation(TARGET, false);
+            session.constant("e.stored", "7");
+            for (int at : (int[]) row[1]) {
+                session.activation(unnamed.get(at), false);
+                session.write(at(unnamed.get(at), Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), ALL_KEYS,
+                        5L + at, "e.stored");
+            }
+            session.flush();
+        }
+        Corpus unknownCorpus = Corpus.read(unknown, null);
+        assertFalse("two members of an unknown hop are not one class",
+                unknownCorpus.inputShape("s-one", TARGET, unnamed, guard)
+                        .equals(unknownCorpus.inputShape("s-two", TARGET,
+                                unnamed, guard)));
     }
 
     /** What the guard at {@code siteId} depends on in one session's path of
@@ -1942,9 +2411,8 @@ public class ExploreTest {
             if (!path.sessionId.equals(sessionId)) continue;
             for (int index = 0; index < path.decisions.size(); index++) {
                 if (path.decisions.get(index).siteId().equals(siteId)) {
-                    return ObligationFactory.dependence(corpus,
-                            StaticScopeMap.read(corpus.iteration().resolve(
-                                    StaticScopeMap.FILE)), task, path, index);
+                    return ObligationFactory.dependence(corpus, task, path,
+                            index);
                 }
             }
         }
@@ -2212,6 +2680,10 @@ public class ExploreTest {
             // its own world refuted, the arm its id names answered UNSAT by
             // a sibling path's flip
             {helper, Verdict.UNSAT, "UNSAT", "shared", 0},
+            // never asked itself, its id answered NOT_ADMITTED by a sibling
+            // path's flip (an arm keyed by its effect at the task: a
+            // reduced world's answer stands for it) -- still unanswered
+            {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "shared-only", 0},
             {helper, Verdict.NOT_ADMITTED, "PENDING", "unrun-once", 1},
             {helper, Verdict.NOT_ADMITTED, "UNANSWERED", "unrun-twice", 2},
             {"", null, "NOT_FLIPPABLE", null, 0}};
@@ -2250,7 +2722,21 @@ public class ExploreTest {
             }
             JsonObject named = first;
             int unrun = (Integer) row[4];
-            if ("shared".equals(row[3])) {
+            if ("shared-only".equals(row[3])) {
+                Obligation flip = proposed.get(0);
+                ObligationResult sibling = ObligationResult.of(
+                        flip.obligationId(), Verdict.NOT_ADMITTED, "",
+                        "sibling");
+                record(results, sibling);
+                Path worker = iteration.resolve("obligations-0000")
+                        .resolve(flip.obligationId());
+                Files.createDirectories(worker);
+                Files.write(worker.resolve(ObligationDir.QUESTION),
+                        "siblingflip:asked".getBytes(StandardCharsets.UTF_8));
+                record(worker.resolve(ObligationDir.RESULT), sibling);
+                named = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve("obligations-0001"), 1);
+            } else if ("shared".equals(row[3])) {
                 Obligation flip = proposed.get(0);
                 ObligationResult own = ObligationResult.of(
                         flip.obligationId(), Verdict.NOT_ADMITTED, "s-flip",
@@ -2944,6 +3430,48 @@ public class ExploreTest {
                         + "node other than the PAIRED producer's: "
                         + scopedWhy,
                 scopedWhy.containsKey(foreignExporter.render()));
+        // The task bound counts static candidates only: whatever it is, the
+        // occurrences the rows connect are planned, however late the walk
+        // finds them (the sibling is found with the writer, the producer
+        // only through the writer's attach); past it a candidate is cut
+        // (REGION_PATH_CLOSURE_TRUNCATED, ClosurePlanner#Candidates).
+        Corpus spreadCorpus = Corpus.read(perNode, null);
+        for (int bound : new int[] {0, 1}) {
+            ClosurePlanner.Plan cut = ClosurePlanner.plan(spreadCorpus,
+                    target, bound, spreadMap, Branches.of(spreadCorpus,
+                            Collections.singletonList(target),
+                            new ArrayList<GapRow>()),
+                Collections.<String>emptySet());
+            List<String> kept = new ArrayList<String>();
+            for (Task task : cut.tasks) kept.add(task.focused().render());
+            List<String> expected = new ArrayList<String>(Arrays.asList(
+                    target.render(), writer.render(), producer.render()));
+            if (bound > 0) expected.add(sibling.render());
+            assertEquals("bound " + bound + ": " + kept, expected, kept);
+            assertEquals(bound > 0 ? Collections.<String>emptySet()
+                    : Collections.singleton(sibling.render()), cut.truncated);
+            assertTrue(cut.ceilingCut.isEmpty());
+        }
+        // The round says how much it did not plan, and its own truncation
+        // row is DIAGNOSTIC: whether it blocks a claim is the exploration's
+        // end's to say (PIPELINE §7.9).
+        Path cutWave = tree.newFolder("spread-cut").toPath();
+        JsonObject truncated = ExploreMain.plan(perNode, TARGET_SELECTOR,
+                null, perNode.resolve("results.jsonl"), null,
+                perNode.resolve(StaticScopeMap.FILE), cutWave, 0, "epoch0", 0,
+                DEFAULT_BOUNDS);
+        assertEquals(1, truncated.get("truncated").getAsInt());
+        assertEquals(0, truncated.get("ceilingCut").getAsInt());
+        boolean recorded = false;
+        for (GapRow gap : RowCodec.readAll(cutWave.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            if (!gap.detail().startsWith("REGION_PATH_CLOSURE_TRUNCATED")) {
+                continue;
+            }
+            assertEquals(GapClass.DIAGNOSTIC, gap.cls());
+            recorded = true;
+        }
+        assertTrue("the round records its truncation", recorded);
         assertEquals("while the producer the rows paired stays a member: "
                         + scopedWhy, ClosurePlanner.CLOSURE_MEMBER,
                 scopedWhy.get(producer.render()));
@@ -4054,23 +4582,18 @@ public class ExploreTest {
                 manifest.get("tasks").getAsInt() >= 2);
         assertFalse("and a run's own address is not a second root: " + anchors,
                 anchors.contains(ran.render()));
-        // Cut at one task, the round says how much it did not plan, and its
-        // own truncation row is DIAGNOSTIC: whether it blocks a claim is the
-        // exploration's end's to say (PIPELINE §7.9).
+        // A task bound of none cuts nothing the rows connect: the writer and
+        // the producer are planned whatever --max-tasks says, and the round
+        // records no truncation.
         Path cut = tree.newFolder("roots-cut").toPath();
-        JsonObject truncated = ExploreMain.plan(iteration, TARGET_SELECTOR,
+        JsonObject uncut = ExploreMain.plan(iteration, TARGET_SELECTOR,
                 null, iteration.resolve("results.jsonl"), null,
-                iteration.resolve(StaticScopeMap.FILE), cut, 0, "epoch0", 1,
+                iteration.resolve(StaticScopeMap.FILE), cut, 0, "epoch0", 0,
                 DEFAULT_BOUNDS);
-        assertTrue(truncated.get("truncated").getAsInt() >= 1);
-        boolean recorded = false;
-        for (GapRow gap : RowCodec.readAll(cut.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
-            if (!gap.detail().startsWith("closure truncated")) continue;
-            assertEquals(GapClass.DIAGNOSTIC, gap.cls());
-            recorded = true;
-        }
-        assertTrue("the round records its truncation", recorded);
+        assertEquals(manifest.get("tasks").getAsInt(),
+                uncut.get("tasks").getAsInt());
+        assertEquals(0, uncut.get("truncated").getAsInt());
+        assertEquals(0, uncut.get("ceilingCut").getAsInt());
 
         // A declared anchor the seed session never ran: BLOCKING, and the
         // refusal names the address rather than leaving "no tasks".
@@ -4500,6 +5023,38 @@ public class ExploreTest {
         assertFalse("a reuse settles nothing itself: its source does",
                 Files.exists(settled.directory.resolve(
                         ObligationDir.QUESTION)));
+    }
+
+    /**
+     * An ADMITTED replay settles its flip whatever id the arm has since
+     * ({@link Frontier#consume}): sessions landing after it move the
+     * dependence, and the same flip of the same path would plant the same
+     * world again (solr-adhoc-07 IB1: 59 answered flips re-keyed, 25 of them
+     * ADMITTED).  A NOT_ADMITTED or UNSAT answer under another id stays
+     * owed: it answered another question.
+     */
+    @Test
+    public void anAdmittedFlipIsSettledUnderAnyId() throws Exception {
+        for (Verdict verdict : new Verdict[] {Verdict.ADMITTED,
+                Verdict.NOT_ADMITTED, Verdict.UNSAT}) {
+            Path iteration = twoWriters("flip-" + verdict, "(= M_READ_KEY 2)",
+                    null);
+            Path out = tree.newFolder("flip-" + verdict + "-out").toPath();
+            Path wave0 = out.resolve("obligations-0000");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave0, 0);
+            Obligation lookup = named(obligations(wave0), "Lookup#u8");
+            answer(iteration, "OB.rekeyed", ObligationDir.QUESTION,
+                    ObligationFactory.flip(lookup.taskId(), lookup.pathId(),
+                            lookup.siteId(), lookup.ordinal(),
+                            lookup.flippedOutcome()) + ":content", verdict,
+                    "", "answered");
+            Path wave1 = out.resolve("obligations-0001");
+            plan(iteration, TARGET_SELECTOR, null,
+                    out.resolve("results.jsonl"), wave1, 1);
+            assertEquals(verdict.name(), verdict != Verdict.ADMITTED,
+                    named(obligations(wave1), "Lookup#u8") != null);
+        }
     }
 
     /** One earlier worker of this iteration: its question file and the
@@ -5298,6 +5853,196 @@ public class ExploreTest {
                 Branches.of(corpus, Collections.singletonList(anchor),
                         new ArrayList<GapRow>()),
                 Collections.<String>emptySet());
+    }
+
+    /**
+     * The task bound counts static candidates only ({@code
+     * ClosurePlanner.Candidates}): a candidate the rows later connect -- here
+     * the producer of what the anchor's writer attached, found first as a
+     * static writer of the map -- is planned whatever the bound, and the
+     * candidates left take turns by class, so a bound of two plans one of
+     * each class before a second of either.
+     */
+    @Test
+    public void aConnectedCandidateIsPlannedAndCandidatesTakeTurnsByClass()
+            throws Exception {
+        Path iteration = tree.newFolder("candidate-turns").toPath();
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        OccurrenceAddress sibling = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 9),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        OccurrenceAddress siblingB = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 11),
+                "o.a.h.h.s.d.BPServiceActor#offerService#43");
+        OccurrenceAddress siblingC = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 12),
+                "o.a.h.h.s.d.BPServiceActor#offerService#44");
+        OccurrenceAddress refresher = occurrence("hdfs-case/dn0",
+                "REGION.refresh", CausalContext.of(Role.of("KEY_REFRESH"), "",
+                        1), "o.a.h.h.s.d.KeyRefresh#run#1");
+        Endpoint exported = at(siblingB, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Endpoint attached = at(WRITER, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Session seed = new Session(iteration, "s-seed");
+        for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER, sibling,
+                siblingB, siblingC, refresher)) {
+            seed.activation(at, false);
+        }
+        seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.export(exported, "e.119992", 11L, "119992");
+        seed.attach(attached, "M_HOFF_KEY", "119992", exported);
+        seed.write(STORED, allKeys, 5L, "e.stored");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
+                allKeys, 5L, "M_READ_KEY", "119992");
+        seed.target(TARGET, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.flush();
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "KeyManager#u4", "KeyManager#refresh",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""))));
+        Corpus corpus = Corpus.read(iteration, null);
+        // Per bound: the static candidates planned, and those cut.
+        Object[][] rows = {
+            {0, Collections.<OccurrenceAddress>emptyList(),
+                    Arrays.asList(sibling, siblingC, refresher)},
+            {2, Arrays.asList(sibling, refresher),
+                    Collections.singletonList(siblingC)},
+        };
+        for (Object[] row : rows) {
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
+                    (Integer) row[0], map, Branches.of(corpus,
+                            Collections.singletonList(TARGET),
+                            new ArrayList<GapRow>()),
+                Collections.<String>emptySet());
+            Set<String> planned = new LinkedHashSet<String>();
+            for (Task task : plan.tasks) planned.add(task.focused().render());
+            Set<String> expected = new LinkedHashSet<String>(Arrays.asList(
+                    TARGET.render(), WRITER.render(), siblingB.render()));
+            for (Object at : (List<?>) row[1]) {
+                expected.add(((OccurrenceAddress) at).render());
+            }
+            assertEquals("bound " + row[0] + ": " + planned, expected,
+                    planned);
+            Set<String> cut = new LinkedHashSet<String>();
+            for (Object at : (List<?>) row[2]) {
+                cut.add(((OccurrenceAddress) at).render());
+            }
+            assertEquals("bound " + row[0], cut, plan.truncated);
+            assertTrue(plan.ceilingCut.isEmpty());
+        }
+        // Past a ceiling of two occurrences the rows connect, the producer
+        // the writer's attach names is cut and named, and no static
+        // candidate stays planned whatever the bound.
+        ClosurePlanner.Plan capped = ClosurePlanner.plan(corpus, TARGET, 2, 2,
+                map, Branches.of(corpus, Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()),
+            Collections.<String>emptySet());
+        Set<String> kept = new LinkedHashSet<String>();
+        for (Task task : capped.tasks) kept.add(task.focused().render());
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
+                WRITER.render())), kept);
+        assertEquals(Collections.singleton(siblingB.render()),
+                capped.ceilingCut);
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(
+                siblingB.render(), sibling.render(), siblingC.render(),
+                refresher.render())), new LinkedHashSet<String>(
+                capped.truncated));
+    }
+
+    /**
+     * A static candidate the rows later reach is no longer one ({@code
+     * ClosurePlanner.Demand#absorb}): here {@code door}, planned as a static
+     * writer of the map, sent the message that started the next candidate
+     * and decided a fault of it, so that candidate's expansion reaches it
+     * as a control producer -- and when the third candidate's producer
+     * meets the ceiling, the static candidates leave the plan and the
+     * control producer stays.
+     */
+    @Test
+    public void aStaticCandidateReachedAsAControlProducerIsNoLongerCut()
+            throws Exception {
+        Path iteration = tree.newFolder("candidate-relabel").toPath();
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        OccurrenceAddress door = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 9),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        OccurrenceAddress served = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of("e-door",
+                        "HADOOP_IPC/heartbeat"),
+                "o.a.h.h.s.d.BPServiceActor#offerService#43");
+        OccurrenceAddress guarded = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 11),
+                "o.a.h.h.s.d.BPServiceActor#offerService#44");
+        OccurrenceAddress producer = occurrence("hdfs-case/dn0",
+                "REGION.other", CausalContext.of(Role.of("OTHER"), "", 1),
+                "o.a.h.h.s.d.Other#run#1");
+        Endpoint exported = at(producer, "XCH.req.guard", "Other#send#2");
+        Session seed = new Session(iteration, "s-seed");
+        for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER, door,
+                served, guarded, producer)) {
+            seed.activation(at, false);
+        }
+        seed.root(door, "CASE.DOOR", "M_DOOR", RootKind.MARKER, "false",
+                null, null, true);
+        seed.decision(door, "Client#u7", 1, false, "M_DOOR");
+        seed.constant("e.one", "1");
+        seed.export(exported, "e.one", 21L, "1");
+        seed.attach(at(guarded, "XCH.req.guard", "Other#send#2"), "M_GUARD",
+                "1", exported);
+        seed.decision(guarded, "Keys#u3", 1, true, "(= M_GUARD 1)");
+        seed.constant("e.stored", "7");
+        seed.write(STORED, allKeys, 5L, "e.stored");
+        seed.read(at(TARGET, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager#retrieveDataEncryptionKey#8"),
+                allKeys, 5L, "M_READ_KEY", "7");
+        seed.target(TARGET, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.flush();
+        RowCodec.writeJsonl(SessionDir.of(iteration, "s-seed").schedule(),
+                Collections.singletonList(RowCodec.writeScheduleEvent(
+                        ScheduleEvent.of(0L, ScheduleEvent.Kind.SEND,
+                                door.node().render() + "|"
+                                        + door.context().render(),
+                                "HADOOP_IPC#REQUEST", 0, door.id(),
+                                "e-door"))));
+        StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "",
+                        "Keys#u3"))));
+        Corpus corpus = Corpus.read(iteration, null);
+        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS, 2, map, Branches.of(corpus,
+                        Collections.singletonList(TARGET),
+                        new ArrayList<GapRow>()),
+                    Collections.<String>emptySet());
+        Set<String> planned = new LinkedHashSet<String>();
+        for (Task task : plan.tasks) planned.add(task.focused().render());
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(TARGET.render(),
+                WRITER.render(), door.render())), planned);
+        assertEquals(ClosurePlanner.CONTROL_PRODUCER,
+                plan.why.get(ClosurePlanner.taskId(door)));
+        assertEquals(Collections.singleton(producer.render()),
+                plan.ceilingCut);
+        assertEquals(new LinkedHashSet<String>(Arrays.asList(
+                producer.render(), served.render(), guarded.render())),
+                new LinkedHashSet<String>(plan.truncated));
     }
 
     /**
@@ -6337,6 +7082,10 @@ public class ExploreTest {
         private final List<ObligationResult> answered = new ArrayList<>();
         /** A FORCE run's session ({@code SessionManifest.Role#FORCED}). */
         private boolean forced;
+        /** The names its nodes had only in this run, spelling -> node
+         *  ({@code SessionManifest#runSpellings}). */
+        private final Map<String, String> spelled =
+                new LinkedHashMap<String, String>();
         /** The occurrences it ran for their doors alone. */
         private final Set<String> doorsOnly = new TreeSet<String>();
         private final Map<String, JsonObject> expressions =
@@ -6366,6 +7115,11 @@ public class ExploreTest {
             activations.add(ActivationRow.of(sessionId, occurrence,
                     "task-" + occurrence.regionId(), focused, instrumented,
                     thread));
+        }
+
+        /** {@code spelling} is node {@code node}'s in this run. */
+        private void spelled(String node, String spelling) {
+            spelled.put(spelling, node);
         }
 
         private void decision(OccurrenceAddress occurrence, String site,
@@ -6535,7 +7289,7 @@ public class ExploreTest {
                                     ? Collections.singletonList(
                                     "OBL." + sessionId)
                                     : Collections.<String>emptyList())
-                            .atClose(null, null, null, doorsOnly));
+                            .atClose(null, null, null, spelled, doorsOnly));
         }
     }
 }
