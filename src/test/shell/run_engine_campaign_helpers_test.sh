@@ -1820,6 +1820,37 @@ done <<'EOF'
 171 - 300 400|512 512 512 640|2
 - 238|512 512|1
 EOF
+# MEASURED-TYPICAL: once eight replays after the seed's returned, a replay of
+# the stream is charged their 90th percentile times 1.25 (rounded up to 128
+# MB, at least 512, at most the need), its heap still the need; before that,
+# the need.  Per row: the seed's peak, the later peaks, the need and the
+# stream's replay charge after them.
+while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge; do
+  rm -rf -- "${measured_dir}"
+  mkdir -p "${measured_dir}"
+  typical_got=$(
+    campaign_replay_peak_mb=0
+    campaign_replay_peaks=()
+    campaign_replay_typical_mb=0
+    typical_n=0
+    for typical_peak in ${typical_seed} ${typical_peaks}; do
+      typical_n=$((typical_n + 1))
+      mkdir -p "${measured_dir}/${typical_n}"
+      echo "${typical_peak}" >"${measured_dir}/${typical_n}/workload_rss_mb"
+      campaign_replay_measured "${measured_dir}/${typical_n}" >/dev/null 2>&1
+    done
+    printf '%s|%s' "$(campaign_replay_need_mb)" \
+      "$(campaign_stream_charge_mb REPLAY)"
+  )
+  [[ "${typical_got}" == "${typical_need}|${typical_charge}" ]] \
+    || fail "seed ${typical_seed} and peaks ${typical_peaks} gave \
+${typical_got}, not ${typical_need}|${typical_charge}"
+done <<'EOF'
+2234|918 900 950 1000 880 1242 920 910|3456|1664
+3454|1583 1600 1500|5248|5248
+2234|300 310 320 330 340 350 360 370|3456|512
+1000|900 950 1000 1100 1200 1300 1400 3000|4608|3840
+EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
 printf '{"taskId":"TASK.1"}\n' >"${need_dir}/plan.jsonl"

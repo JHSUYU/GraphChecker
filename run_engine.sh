@@ -2614,6 +2614,14 @@ resident memory (workload_rss_mb): no replay after it has a measured need"
 campaign_replay_peak_mb=0
 # The least measured need, in MB.
 campaign_replay_min_need_mb=512
+# The resident peaks of the replays after the seed's (an obligation's, a GROW
+# re-run's, a CONFIRM's) as they returned, and what a replay of the stream
+# is charged at its start once enough of them did (campaign_replay_typical).
+campaign_replay_peaks=()
+campaign_replay_typical_mb=0
+# How many replays after the seed's must have returned before the stream
+# charges the typical replay instead of the largest.
+campaign_replay_typical_after=8
 
 # The memory, in MB, one replay of this campaign needs once one was measured
 # -- an obligation's, a GROW re-run's, a CONFIRM's: the largest peak its
@@ -2651,14 +2659,44 @@ campaign_need_of_peak_mb() {
 campaign_replay_measured() {
   local peak first=$(( campaign_replay_peak_mb == 0 )) before
   read -r peak 2>/dev/null <"$1/workload_rss_mb" || return 0
-  [[ "${peak}" =~ ^[0-9]+$ ]] && (( peak > campaign_replay_peak_mb )) \
-    || return 0
+  [[ "${peak}" =~ ^[0-9]+$ ]] || return 0
+  (( first )) || campaign_replay_typical "${peak}"
+  (( peak > campaign_replay_peak_mb )) || return 0
   before=$(campaign_replay_need_mb)
   campaign_replay_peak_mb=${peak}
   (( first )) || [[ "$(campaign_replay_need_mb)" != "${before}" ]] || return 0
   campaign_log "a replay peaked at ${peak} MB (${1}): every replay from now \
 on needs $(campaign_replay_need_mb) MB and is charged \
 $(campaign_replay_charge_mb "$(campaign_replay_need_mb)") MB"
+}
+
+# campaign_replay_typical <peak_mb>: one more replay after the seed's
+# returned at <peak_mb>.  Once campaign_replay_typical_after of them have,
+# the stream charges a replay at their 90th percentile times 1.25, rounded up
+# to 128 MB, at least campaign_replay_min_need_mb and at most the need
+# (campaign_stream_charge_mb), while its heap stays sized by the need: one
+# replay that outgrows its charge grows it while its host has real room
+# (campaign_watch_workload).  Charged at the largest peak times 1.5, the
+# lifts' ledgers held 21-22 GB over 8-11 GB of real use and no host admitted
+# one more start (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB,
+# each replay charged 3456 MB; solr-adhoc-40 LD1: p50 1583, max 3454 MB, the
+# seed's).  Said when it moves.
+campaign_replay_typical() {
+  local p90 typical
+  campaign_replay_peaks+=("$1")
+  (( ${#campaign_replay_peaks[@]} >= campaign_replay_typical_after )) \
+    || return 0
+  p90=$(printf '%s\n' "${campaign_replay_peaks[@]}" | LC_ALL=C sort -n \
+    | awk '{ peak[NR] = $1 } END { i = int(NR * 0.9); if (i < NR) i++;
+             print peak[i] }')
+  typical=$(( (p90 * 5 + 511) / 512 * 128 ))
+  (( typical >= campaign_replay_min_need_mb )) \
+    || typical=${campaign_replay_min_need_mb}
+  (( typical != campaign_replay_typical_mb )) || return 0
+  campaign_replay_typical_mb=${typical}
+  campaign_log "the replays after the seed's peaked at ${p90} MB or less \
+in 9 of 10 (${#campaign_replay_peaks[@]} returned): a replay of the stream is \
+charged $(campaign_stream_charge_mb REPLAY) MB at its start"
 }
 
 # campaign_replay_charge_mb <need>: what a replay of that need is charged at
@@ -5663,7 +5701,8 @@ campaign_stream_warm() {
 # has no room for its solver); either grows as its JVM does
 # (campaign_watch_workload); a replay -- a
 # REPLAY, a RERUN, a CONFIRM, and the pool's slots (campaign_stream_has_slot)
-# -- the campaign's measured replay need (campaign_replay_need_mb), at most
+# -- the campaign's measured replay need (campaign_replay_need_mb), or the
+# typical replay's once enough returned (campaign_replay_typical), at most
 # half a host's ceiling (campaign_replay_charge_mb).  A solve charged a
 # replay waited for room it never used (HG5A-11, hdfs-adhoc-19: its eight
 # obligations waited 12 of EXPLORE's 13 minutes for room for a 2500 MB
@@ -5674,7 +5713,12 @@ campaign_stream_charge_mb() {
   elif [[ "${1:-}" == OBLIGATION ]]; then
     printf '%s\n' "${campaign_solver_start_mb}"
   else
-    campaign_replay_charge_mb "$(campaign_replay_need_mb)"
+    local need
+    need=$(campaign_replay_need_mb)
+    (( campaign_replay_typical_mb == 0 \
+       || campaign_replay_typical_mb >= need )) \
+      || need=${campaign_replay_typical_mb}
+    campaign_replay_charge_mb "${need}"
   fi
 }
 
