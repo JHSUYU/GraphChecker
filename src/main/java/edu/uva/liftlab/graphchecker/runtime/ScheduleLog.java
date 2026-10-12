@@ -747,7 +747,7 @@ public final class ScheduleLog {
         }
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
-                pending.endpoint);
+                pending.endpoint, RowRuntime.currentEvent());
         writeLocked(RowCodec.writeScheduleEvent(event));
     }
 

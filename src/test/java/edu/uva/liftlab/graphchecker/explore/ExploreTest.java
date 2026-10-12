@@ -6053,6 +6053,8 @@ public class ExploreTest {
      * work before it opened --, newest first, at most {@link
      * PairingFlip#PER_READ}, the rest a counted {@code pairing-bound} gap; a
      * task that is no anchor's and writes no store version offers none.
+     * Solved, the world holds the read to the decode, and the schedule
+     * prefix ends before the later decode recorded before the read.
      */
     @Test
     public void aViewReadIsOfferedEachOlderDecodeOfItsNode()
@@ -6119,12 +6121,56 @@ public class ExploreTest {
                 kinds.add(edge.get("kind").getAsString());
             }
             assertEquals(Arrays.asList("STATE", "VIEW_HOLD"), kinds);
+            // The schedule cut stops before the decode the hold reorders
+            // (version 10, before the read), not before its occurrence.
+            assertEquals(corpus.writeOf("s-seed", view, 10L).seq(),
+                    outcome.holding.cutBefore);
+            assertTrue(outcome.holding.reordered.isEmpty());
             ObligationFactory.Candidate located = PairingFlip.locate(corpus,
                     task, corpus.pathsOf(TARGET).get(0),
                     outcome.obligation);
             assertEquals(9L, located.pairedVersion);
             assertEquals(newest.siteId(), located.siteId());
         }
+    }
+
+    /**
+     * A pairing flip never asks a version older than a decode the reader's
+     * own work made before the read: the hold never holds that work's own
+     * decodes, so its view is at least that one's ({@link PairingFlip}).
+     */
+    @Test
+    public void aViewReadIsOfferedNoDecodeOlderThanItsOwnWorksLast()
+            throws Exception {
+        Path iteration = tree.newFolder("pairing-own").toPath();
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs-case/dn0#epoch0", "/aliases.json");
+        OccurrenceAddress role = OccurrenceAddress.of(TARGET.node(),
+                OccurrenceAddress.ROLE_REGION + "DATA_XCEIVER",
+                TARGET.context(), ExecutionIndex.empty());
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        Endpoint decoder = at(WRITER, "SOLR_ZK#VIEW:.aliases.json",
+                "decode#1");
+        Endpoint own = at(role, "SOLR_ZK#VIEW:.aliases.json", "decode#2");
+        for (long version = 0L; version <= 5L; version++) {
+            seed.write(version == 2L ? own : decoder, view, version, "", "J");
+        }
+        seed.read(at(TARGET, "Guard#u3#VIEW",
+                "o.a.h.h.s.d.DataXceiver#run#12"), view, 5L, "V_t", "5");
+        seed.decision(TARGET, "Guard#u8", 1, false, "(= M_A 1)");
+        seed.target(TARGET, "Guard#u8", "(= M_A 1)");
+        seed.flush();
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = Task.of("T", TARGET,
+                Collections.<OccurrenceAddress>emptyList(), "s-seed");
+        List<Long> versions = new ArrayList<Long>();
+        for (ObligationFactory.Candidate offered : PairingFlip.candidates(
+                corpus, task, corpus.pathsOf(TARGET).get(0),
+                new ArrayList<GapRow>())) {
+            versions.add(offered.pairedVersion);
+        }
+        assertEquals(Arrays.asList(4L, 3L, 2L), versions);
     }
 
     /**

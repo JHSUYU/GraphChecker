@@ -554,8 +554,12 @@ public final class RowCodec {
         if (!event.endpoint().isEmpty()) {
             json.addProperty(ENDPOINT, event.endpoint());
         }
+        if (event.vmEvent() > 0L) json.addProperty(VM_EVENT, event.vmEvent());
         return json;
     }
+
+    /** A schedule event's VM event id ({@code ScheduleEvent#vmEvent}). */
+    private static final String VM_EVENT = "vmEvent";
 
     /**
      * A schedule mark: where occurrence {@code id} opened, or
@@ -594,7 +598,8 @@ public final class RowCodec {
                 json.has(CONTEXT) ? string(json, CONTEXT) : "",
                 string(json, "site"), integer(json, "k"),
                 optionalString(json, OCCURRENCE),
-                optionalString(json, ENDPOINT));
+                optionalString(json, ENDPOINT),
+                json.has(VM_EVENT) ? number(json, VM_EVENT) : 0L);
     }
 
     // ---- files ---------------------------------------------------------

@@ -1583,6 +1583,7 @@ public final class Identity {
             if (Confirmation.ordering()) {
                 Confirmation.exited(Confirmation.activation(
                         region.occurrence, ExecutionIndex.empty()));
+                Confirmation.regionClosed(region.occurrence);
             }
             region.unname();
             return;

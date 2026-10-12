@@ -75,7 +75,9 @@ final class PairingFlip {
     /**
      * The pairing flips one path of {@code task} offers, newest version
      * first per read; a read offered more than {@link #PER_READ} files the
-     * bound's gap.
+     * bound's gap.  None older than a decode the reader's own work made
+     * before the read: the hold never holds the reader's own decodes
+     * ({@code Confirmation#decoding}), so the view is at least that one's.
      */
     static List<ObligationFactory.Candidate> candidates(Corpus corpus,
             Task task, Corpus.RecordedPath path, List<GapRow> gaps) {
@@ -87,9 +89,18 @@ final class PairingFlip {
         }
         for (ReadRow read : reads(corpus, task, session)) {
             String view = SmtLowering.locationKey(read.location());
+            String reader = Confirmation.contextKey(
+                    read.endpoint().occurrence());
+            long floor = -1L;
+            for (WriteRow decode : corpus.writesOf(path.sessionId, view)) {
+                if (decode.seq() < read.seq() && reader.equals(Confirmation
+                        .contextKey(decode.endpoint().occurrence()))) {
+                    floor = Math.max(floor, decode.version());
+                }
+            }
             Set<Long> older = new TreeSet<Long>(Collections.reverseOrder());
             for (WriteRow decode : corpus.writesOf(path.sessionId, view)) {
-                if (decode.seq() < read.seq()
+                if (decode.seq() < read.seq() && decode.version() >= floor
                         && decode.version() < read.observedVersion()) {
                     older.add(decode.version());
                 }

@@ -576,8 +576,10 @@ public final class Confirmation {
                         // One unrealized hold is the run's answer; the
                         // decodes after it go on.
                         hold.gaveWay = true;
-                        UNREALIZED.add(hold.label() + ": the decode of"
-                                + " version " + version + " waited " + timeout
+                        UNREALIZED.add(hold.label() + ": the decode of "
+                                + (version == Long.MAX_VALUE
+                                ? "a version a write in flight makes"
+                                : "version " + version) + " waited " + timeout
                                 + " ms for " + hold.waitsFor() + " to exit,"
                                 + " which it did not, so this program cannot"
                                 + " realize the pairing");
@@ -600,9 +602,9 @@ public final class Confirmation {
     }
 
     /**
-     * A region closed ({@code Identity#regionExit}): a view hold whose
-     * reader read in role work ends at the first region its work closes
-     * after that read.
+     * A region closed ({@code Identity#regionExit}, {@code #hopClosed}): a
+     * view hold whose reader read in role work ends at the first region its
+     * work closes after that read.
      */
     static void regionClosed(OccurrenceAddress occurrence) {
         if (occurrence == null || occurrence.role()) return;

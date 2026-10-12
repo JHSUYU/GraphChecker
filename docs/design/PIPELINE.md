@@ -740,7 +740,9 @@ replica a loop skips), so no decision's flip reaches it. A task offers pairing f
 occurrence writes a STORE version or is the declared anchor's: for each view its occurrence read, or
 its node read under its causal context in role work before it opened (a routed alias captures its
 view in the request's role work and writes it in a store door's region), its earliest read is
-offered each older version the node decoded before it in the session, newest first, at most
+offered each older version the node decoded before it in the session, newest first, none older than
+a decode the reader's own work (its node and causal context) made before the read -- the hold never
+holds that work's own decodes, so its view is at least that one's --, at most
 `PairingFlip#PER_READ` (8); past them a `pairing-bound` gap, counted in result.json `bounded`
 (`pairing_flip_per_read`). Its site is `PAIRING:<reader>` (`Obligation#PAIRING`, the read as CONFIRM
 names its endpoint), its ordinal the version plus one (an ordinal is 1-based), its outcome taken, its
@@ -932,11 +934,13 @@ the flipped world may read it again, CONFIRM's for the read's activation; for a 
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
 before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`; an on-demand
-refresh waits at its start, before the adapter's locks, `MessageDoors#refreshing`), until the reader's
+refresh waits at its start, before the adapter's locks, `MessageDoors#refreshing`, as a decode of
+the newest version a write filed at the location, or past every version while a write is in flight
+there, so a refresh that can reach no version past the paired one goes on), until the reader's
 work is done -- the reader's occurrence exits, or, for a read in role work which no hook closes, the
-first region that work closes after the read in the run as it goes (`Confirmation#regionClosed`: a
-routed alias captures its view in the request's role work and writes it in a store door's region) --,
-never the
+first region that work closes after the read in the run as it goes, a named region's exit or a hop's
+close (`Confirmation#regionClosed`: a routed alias captures its view in the request's role work and
+writes it in a store door's region) --, never the
 decodes of the reader's own work (its node and causal context), at most the order's timeout (300 s), past which
 the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
@@ -946,8 +950,11 @@ states no read or write of refuses (`PAIRING_UNSTATED`). The worker writes `obli
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's
 schedule up to the first event or mark of the flip occurrence, the focused occurrence, a factor
 member, or an occurrence an `ORDER` moves after another's that the session ran first (the
-prefix is followed only up to the first event the pairings reorder) goes to
-`schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
+prefix is followed only up to the first event the pairings reorder), and before the first event made
+at or after a decode a `VIEW_HOLD` reorders (`Holding#cutBefore`; each schedule event states the VM
+event it was made after, `ScheduleEvent#vmEvent`, the order a row's seq is in: a decode in a
+watcher's or the Overseer's role work, which runs on, is cut before itself and not before its
+occurrence's first event) goes to `schedule_prefix.jsonl`, the rest to `schedule_suffix.jsonl`.
 
 ### 7.6 The obligation replay
 

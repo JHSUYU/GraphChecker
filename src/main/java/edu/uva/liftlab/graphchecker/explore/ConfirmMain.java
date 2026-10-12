@@ -1525,6 +1525,11 @@ public final class ConfirmMain {
     static final class Holding {
         final List<JsonObject> edges = new ArrayList<JsonObject>();
         final Set<String> reordered = new LinkedHashSet<String>();
+        /** The first row (by its seq, a VM event) the order the session ran
+         *  moves where it is no occurrence's start: a node's decode a view
+         *  hold waits, which the schedule cut stops before
+         *  ({@code SchedulePrefix#write}). */
+        long cutBefore = Long.MAX_VALUE;
         /** Each ORDER as "before\nafter", once. */
         private final Set<String> orders = new LinkedHashSet<String>();
     }
@@ -1620,14 +1625,15 @@ public final class ConfirmMain {
                         ExecutionIndex.empty()));
                 holding.edges.add(hold);
                 // The node's decodes past the paired version that came
-                // before the read: the schedule cut stops before them, or
+                // before the read: the schedule cut stops before the first
+                // of them -- the decode itself, in work that runs on -- or
                 // its prefix replays the recorded order against the hold.
                 for (WriteRow decode : closure.byLocation.getOrDefault(
                         location, Collections.<WriteRow>emptyList())) {
                     if (decode.version() > held.version()
                             && decode.seq() < read.seq()) {
-                        holding.reordered.add(
-                                decode.endpoint().occurrence().id());
+                        holding.cutBefore = Math.min(holding.cutBefore,
+                                decode.seq());
                     }
                 }
                 continue;

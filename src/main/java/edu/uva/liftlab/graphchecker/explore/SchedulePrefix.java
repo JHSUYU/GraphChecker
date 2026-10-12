@@ -79,6 +79,21 @@ final class SchedulePrefix {
     static Cut write(Path iteration, String sessionId,
                      Collection<String> occurrenceIds, boolean held, Path out)
             throws IOException {
+        return write(iteration, sessionId, occurrenceIds, Long.MAX_VALUE,
+                held, out);
+    }
+
+    /**
+     * The same, the prefix also ending before the first event the run made
+     * at or after VM event {@code beforeEvent} ({@code
+     * ScheduleEvent#vmEvent}, the order a row's {@code seq} is in): a row
+     * of work that runs on (a node's decode in its watcher's or the
+     * Overseer's role occurrence) is cut before itself, not before the
+     * first event its occurrence made.
+     */
+    static Cut write(Path iteration, String sessionId,
+                     Collection<String> occurrenceIds, long beforeEvent,
+                     boolean held, Path out) throws IOException {
         if (iteration == null || sessionId == null || sessionId.isEmpty()) {
             return null;
         }
@@ -103,6 +118,14 @@ final class SchedulePrefix {
                     found = true;
                     break;
                 }
+            }
+        }
+        for (int index = 0; held && index < cut; index++) {
+            long made = events.get(index).vmEvent();
+            if (made > 0L && made >= beforeEvent) {
+                cut = index;
+                found = true;
+                break;
             }
         }
         List<JsonObject> rows = new ArrayList<JsonObject>(cut);

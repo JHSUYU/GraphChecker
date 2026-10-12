@@ -54,6 +54,11 @@ public final class MessageDoors {
      */
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
+    /** The newest version of each location a write filed ({@link
+     *  #stored}), by transport and location: how far a refresh can reach
+     *  ({@link #refreshing}). */
+    private static final Map<String, Long> NEWEST =
+            new ConcurrentHashMap<String, Long>();
     /**
      * The writes to a shared store in flight ({@link #storing}), by
      * transport and token.  Guarded by itself; every {@link #storeEnded}
@@ -624,6 +629,8 @@ public final class MessageDoors {
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
+            NEWEST.merge(transport + "\n" + location(key), version(key),
+                    Math::max);
             written(transport, key, owner);
         } finally {
             storeEnded(transport, store);
@@ -700,18 +707,31 @@ public final class MessageDoors {
     /**
      * The adapter's on-demand refresh of one node's view of {@code path}
      * begins, before it takes its own locks (Solr's {@code
-     * ZkStateReader#forceUpdateCollection}, which decodes under its update
-     * lock): a pairing's hold of that view waits here, as a decode would
-     * ({@code Confirmation#decoding}), so a held refresh never holds a lock
-     * the reader's own work may need.
+     * ZkStateReader#forceUpdateCollection}, {@code
+     * #forciblyRefreshAllClusterStateSlow}, {@code LazyCollectionRef#get},
+     * {@code StatefulCollectionWatch#refresh}, each of which decodes under a
+     * lock): a pairing's hold of that view waits here, as a decode of the
+     * newest version the refresh can reach would ({@code
+     * Confirmation#decoding}), so a held refresh never holds a lock the
+     * reader's own work may need.  That is the newest version a write filed
+     * there, or past every version while a write is in flight at it; a
+     * refresh that can reach no version past the paired one goes on.
      */
     public static void refreshing(String transport, String path) {
         boolean paused = pause();
         try {
             String node = nodeHere();
             OccurrenceAddress at = Identity.currentOccurrence(node);
-            Confirmation.decoding(viewOf(storeLocation(transport, path), at),
-                    Long.MAX_VALUE, at);
+            String location = trimmed(path);
+            long reach;
+            synchronized (STORING) {
+                reach = inFlight(transport, location,
+                        Thread.currentThread()).isEmpty()
+                        ? NEWEST.getOrDefault(transport + "\n" + location, -1L)
+                        : Long.MAX_VALUE;
+            }
+            Confirmation.decoding(viewOf(storeLocation(transport, location),
+                    at), reach, at);
         } finally {
             resume(paused);
         }

@@ -212,7 +212,8 @@ public final class ObligationSolverMain {
         List<String> cutAt = targetOccurrences(candidate);
         cutAt.addAll(outcome.holding.reordered);
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
-                candidate.path.sessionId, cutAt, true, out);
+                candidate.path.sessionId, cutAt, outcome.holding.cutBefore,
+                true, out);
         // The pairings, held and compared as CONFIRM's edges are
         // (runtime.Confirmation).
         if (!outcome.holding.edges.isEmpty()) {
