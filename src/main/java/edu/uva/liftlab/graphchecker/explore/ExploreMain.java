@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -214,10 +215,11 @@ public final class ExploreMain {
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";
         if (scope == null || !digest.equals(scopeDigest)) {
-            // With the folds of the plan PLAN froze for this iteration: what
-            // an occurrence may read is its folded regions' too (an arm's
-            // key, Corpus#inputShape).
-            scope = StaticScopeMap.read(scopeMap).withFolds(
+            // With what the plan PLAN froze for this iteration states: the
+            // folds (what an occurrence may read is its folded regions' too:
+            // an arm's key, Corpus#inputShape) and the store fetches on a
+            // target's data flow (ClosurePlanner#storeFetches).
+            scope = StaticScopeMap.read(scopeMap).withPlan(
                     iteration.resolve(REGION_PLAN));
             scopeDigest = digest;
         }
@@ -239,9 +241,14 @@ public final class ExploreMain {
         Map<OccurrenceAddress, ClosurePlanner.Concrete> concrete =
                 new LinkedHashMap<OccurrenceAddress,
                         ClosurePlanner.Concrete>();
+        Set<String> doorsOnly = doorsOnlyOccurrences(iteration);
+        Map<OccurrenceAddress, String> unpaused =
+                new LinkedHashMap<OccurrenceAddress, String>();
+        Set<OccurrenceAddress> runWhole =
+                new LinkedHashSet<OccurrenceAddress>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
-                    maxTasks, scope, branches);
+                    maxTasks, scope, branches, doorsOnly);
             gaps.addAll(plan.gaps);
             if (plan.concrete != null) concrete.put(root, plan.concrete);
             if (!plan.truncated.isEmpty()) {
@@ -264,6 +271,11 @@ public final class ExploreMain {
                 grown.putIfAbsent(exposure.getKey(), exposure.getValue());
             }
             waiting.addAll(plan.waiting);
+            for (Map.Entry<OccurrenceAddress, String> door
+                    : plan.unpaused.entrySet()) {
+                unpaused.putIfAbsent(door.getKey(), door.getValue());
+            }
+            runWhole.addAll(plan.runWhole);
             for (Task task : plan.tasks) {
                 if (!opened.add(task.taskId())) continue;
                 tasks.add(task);
@@ -356,12 +368,27 @@ public final class ExploreMain {
                                 + " inputs for: it stays concrete"));
             }
         }
-        int exposed = WaveGraph.writeGrowth(corpus, grown, inputs, out);
+        int exposed = WaveGraph.writeGrowth(corpus, grown, unpaused, inputs,
+                out);
         // What only the seed replay ran waits for a focused replay to expose
         // it -- unless this round is the fixpoint: then none ever will, and
         // the closure is incomplete.
         boolean fixpoint = open.empty() && exposed == 0
                 && frontier.inFlightCount() == 0 && witnesses.isEmpty();
+        // A doors-only occurrence demanded as a value that no replay ran
+        // whole, and none GROW can re-run (the seed is not): at the fixed
+        // point no replay ever will.
+        if (fixpoint) {
+            for (OccurrenceAddress paused : runWhole) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+                        paused.render(), "demanded as a value and run for"
+                                + " its doors alone by every session that"
+                                + " captured it, and the exploration ends"
+                                + " here: no replay ran it whole, so its"
+                                + " guards and roots were never flippable"));
+            }
+        }
         for (OccurrenceAddress unexposed : waiting) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, fixpoint ? GapClass.BLOCKING
@@ -925,6 +952,24 @@ public final class ExploreMain {
             }
         }
         return planned;
+    }
+
+    /** The occurrences the current plan runs for their doors alone
+     *  ({@code RuntimeSelectedRegionFinalizer#DOORS_ONLY} on their task row;
+     *  GROW drops it from one a value demand reaches). */
+    private static Set<String> doorsOnlyOccurrences(Path iteration)
+            throws IOException {
+        Set<String> doorsOnly = new LinkedHashSet<String>();
+        Path plan = iteration.resolve("execution_task_plan.jsonl");
+        if (!Files.exists(plan)) return doorsOnly;
+        for (JsonObject row : RowCodec.readJsonl(plan)) {
+            if (row.has(RuntimeSelectedRegionFinalizer.DOORS_ONLY)
+                    && row.get(RuntimeSelectedRegionFinalizer.DOORS_ONLY)
+                    .getAsBoolean() && row.has("occurrenceId")) {
+                doorsOnly.add(row.get("occurrenceId").getAsString());
+            }
+        }
+        return doorsOnly;
     }
 
     /** Every occurrence this round's tasks hold: focused, and their factors. */

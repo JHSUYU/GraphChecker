@@ -20,8 +20,8 @@
 #
 #   case_head_reserve_mb <config>
 #       the room the case's head reserves on its host from its launch on, at
-#       that heap (run_engine.sh campaign_head_need_mb: what its planner or
-#       composer starts at): every other step it runs is charged where it is
+#       that heap (run_engine.sh campaign_head_need_mb: the JVM footprint
+#       of what its planner or composer starts at): every other step it runs is charged where it is
 #       placed, so this is what a sweep's head is admitted for (fanout.sh
 #       ADMIT_MB, tools/adhoc/sweep.sh) -- admitted, not charged for life:
 #       its campaign reserves the room itself (run_engine.sh

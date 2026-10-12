@@ -237,6 +237,15 @@ otherwise. Only a target depth that does not fit fails the stage. Outputs: `exec
 decodes the membership once into `campaign_member_rows`). The seed replay's plan and every worker's
 plan are hard links of the one task plan file, so a row GROW appends reaches all of them.
 
+A door marker mints where its occurrence is planned (`ConcolicScheduler#declaredPorts`), but a store
+read's door (a `DATA_FLOW` door, SYMBOL-SCOPE.md §4.2) only at the captures the seed's closure states
+on the occurrence's row (`storeFetches`: the fetch whose decode registered what the target read, and
+the other fetches, on its node, of a location what it read was decoded from; each such occurrence is
+admitted, `STORE_FETCH_V1`, `RuntimeSelectedRegionFinalizer#askFetches`); its other captures are
+woven but never asked, and the seed's log line counts them (`data-flow doors: N store read(s) in the
+M planned occurrence(s), A asked {LOCATION=.., PROVENANCE=..}, R woven but never asked; F fetching
+occurrence(s), K admitted only as such`).
+
 ## 4. INSTRUMENT
 
 `campaign_instrument` clears `iteration-0000/instrumented-classes/` and runs `do_analyze` with
@@ -642,7 +651,11 @@ are counted, never dropped silently: `concreteAnchors` states how many
   eligible row writers by the same rule, on any node (a one-JVM cluster's nodes are one session),
   and the writers of every earlier version of its location (`ClosurePlanner#storeWriters`,
   `#earlierVersions`: each write modifies the document before it, `RestsOn#closure`'s rule); each
-  writer then names the doors of the queue item it took in (below); no static candidate;
+  writer then names the doors of the queue item it took in (below); no static candidate; and the
+  fetches of its location on the reader's node that PLAN stated on the target's data flow (the
+  frozen plan's `storeFetches`, `StaticScopeMap#withPlan`, `ClosurePlanner#storeFetches`: a lost
+  reply there registers no watch, so the node reads an older version), `STORE_FETCH`, contributing
+  no value and not followed, flipped at their fault decisions as every task is;
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the doors of the message a demanded occurrence served (sender and receiver of its causal anchor's
@@ -694,7 +707,7 @@ factor member that writes state it reads by what it delivered in this session: i
 producers, its write counts at the locations the guard reads, and whether it wrote any state the
 occurrence's region reads on any arm (a cell or carrier of a READ_SITE or a READ input its code
 holds, the code of the regions its occurrences folded in the iteration's frozen plan included,
-`StaticScopeMap#readLocations`, `#withFolds`, joined to the write by `#storedAt`: the flipped arm
+`StaticScopeMap#readLocations`, `#withPlan`, joined to the write by `#storedAt`: the flipped arm
 reads what the taken one never did, so a session's own reads would let a world where a renewer wrote
 the lease map share its answer with one where it did not run; how often varies run to run) — never
 delivered values, and a function of the session, the epoch's map and its plan alone: the members and each one's producers as sets (replies
@@ -1165,7 +1178,10 @@ or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`camp
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
 CONFIRM replay's as it returns (`campaign_replay_measured`, read in `campaign_stream_ended`) --
 times 1.5, rounded up to 128 MB, at least 512 MB, and charged at most half a host's ceiling
-(`campaign_replay_charge_mb`). An obligation replay peaks near its own seed replay (round HG4:
+(`campaign_replay_charge_mb`). The need sizes a replay's heap; once eight replays after the seed's
+returned, a replay of the stream is CHARGED their 90th percentile times 1.25 (at most the need,
+`campaign_replay_typical`): charged at the largest peak, the lifts' ledgers held 21-22 GB over 8-11 GB
+of real use and admitted nothing more (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB). An obligation replay peaks near its own seed replay (round HG4:
 hdfs-11741 674 / 662-715 MB, hdfs-17897 552 / 540-555), while the static 2500 MB per obligation
 and seven times the recording per CONFIRM held the lifts' ledger at 11-22 GB over 3-7 GB of real
 use (HG5A); one that outgrows the need grows its charge as below and raises the need of every
@@ -1241,8 +1257,11 @@ runs its engine JVMs on its own host first, between the obligations every campai
 there, so it reserves room for the next one -- its measured step need (`campaign_head_need_mb`:
 the largest peak any of its engine JVMs reached, each watched where its step runs and folded into
 `<campaign>/engine_peak_mb` by `campaign_engine_jvm`, times 1.25, at least 1 GB, at most the engine
-heap, read again at every heartbeat; before any was measured, what its planner or composer starts
-at), never the case's engine heap; a step its room does not cover is placed by its own charge, as
+heap's JVM footprint, read again at every heartbeat; before any was measured, the footprint of what
+its planner or composer starts at), never the case's engine heap; an engine JVM at a heap of H MB is
+charged, held and watched at its footprint, H + H/16 + 384 MB (`campaign_jvm_footprint_mb`: the
+JVM's own memory beside its heap; charged at H alone, solr-adhoc-07's served planner reached 8375 MB
+at an 8192 MB heap on a host near the ceiling and was ended); a step its room does not cover is placed by its own charge, as
 every head step is -- (`campaign_head_reserve`,
 `<host>/heads/<id>` stating its need, fresh while the head lives, idle unless one of its JVMs
 runs): a start that is no head's own counts the largest idle fresh

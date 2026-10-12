@@ -37,7 +37,13 @@ import java.util.regex.Pattern;
  *   <li>{@code DOOR} ({@code transport, direction, method?, before | after,
  *       faults | result, sites?}): a transport's fault point ({@link
  *       DoorWeave}), at the first call of {@code before} or {@code after} in
- *       {@code method}, one marker per fault kind in order.  Rows of one
+ *       {@code method}, one marker per fault kind in order.  A door with
+ *       {@code sites} {@value #DATA_FLOW} (a shared store's read: ZooKeeper's
+ *       {@code getData}, {@code exists}, {@code getChildren}) is woven as
+ *       any door at a method, but roots no region and is asked only where
+ *       the fetch lies on the traced data flow (PLAN: {@code
+ *       RuntimeSelectedRegionFinalizer#crossStore}); every cluster-state
+ *       read and every poll of a queue would be one.  Rows of one
  *       door method (its transport, direction, class and name) are that
  *       method's signatures on different library lines (Hadoop IPC's
  *       response wait is a {@code CompletableFuture} on trunk, a monitor on
@@ -83,6 +89,9 @@ public final class LibraryCatalog {
     /** The timed waits' transport: a planted timeout only where the call
      *  could time out ({@code DoorWeave#guard}). */
     static final String TIMED_WAIT = "TIMED_WAIT";
+    /** A door's {@code sites}: woven at its method, asked only where the
+     *  fetch lies on the traced data flow. */
+    static final String DATA_FLOW = "DATA_FLOW";
 
     private static final Map<String, Set<String>> MEMBERS =
             new LinkedHashMap<>();
@@ -94,7 +103,7 @@ public final class LibraryCatalog {
         MEMBERS.put(CONFIG_FIELD_OWNER, names("class"));
         MEMBERS.put(CODEC, names("codec", "classes"));
         MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
-                "after"));
+                "before", "after"));
     }
 
     /** A transport or direction name. */
@@ -168,6 +177,9 @@ public final class LibraryCatalog {
         /** Woven only at the calls the root demand chose ({@value
          *  #DEMANDED}). */
         public final boolean demanded;
+        /** Woven at its method, asked only on the traced data flow
+         *  ({@value #DATA_FLOW}). */
+        public final boolean dataFlow;
         /** The failing result, or {@link Result#NONE}. */
         public final Result result;
         /**
@@ -180,7 +192,8 @@ public final class LibraryCatalog {
 
         private Door(String transport, String direction, String method,
                      String anchor, boolean after, List<String> faults,
-                     boolean demanded, Result result, String relocated) {
+                     boolean demanded, boolean dataFlow, Result result,
+                     String relocated) {
             this.transport = transport;
             this.direction = direction;
             this.method = method;
@@ -188,6 +201,7 @@ public final class LibraryCatalog {
             this.after = after;
             this.faults = Collections.unmodifiableList(faults);
             this.demanded = demanded;
+            this.dataFlow = dataFlow;
             this.result = result;
             this.relocated = relocated;
         }
@@ -296,30 +310,37 @@ public final class LibraryCatalog {
     /**
      * One system's HOOK row: the catalog door ({@code transport},
      * {@code direction}, {@code door}, its method) is woven in {@code method}
-     * after the first call of {@code after}, the system's own message or
-     * store hook, instead of at its library anchor -- and, in every other
-     * method of {@code method}'s class family, after the first call of
-     * {@code after} that follows a call of the door method there (Solr's
-     * {@code SolrZkClient#makePath} creates each node itself, its retry
-     * lambda included; with the door moved out of {@code ZooKeeper#create},
-     * those creates had none, and solr-bugs-overseer-lock-leak's {@code
+     * after the first call of {@code after} -- or before the first call of
+     * {@code before} -- the system's own message or store hook, instead of
+     * at its library anchor; and, in every other method of {@code method}'s
+     * class family, at the call of the hook that a call of the door method
+     * there reaches by control flow, after it or before it (Solr's {@code
+     * SolrZkClient#makePath} creates each node itself, its retry lambda
+     * included; with the door moved out of {@code ZooKeeper#create}, those
+     * creates had none, and solr-bugs-overseer-lock-leak's {@code
      * OperationTimeout} at {@code DistributedMap#put} could not be flipped).
-     * It states where the hook sits, nothing else: the door's kinds are the
-     * catalog's, and a door no hook names keeps its anchor.
+     * A store read's door goes before its hook: a read that fails never
+     * reaches the server, so it registers no watch.  It states where the
+     * hook sits, nothing else: the door's kinds are the catalog's, and a
+     * door no hook names keeps its anchor.
      */
     static final class Hook {
         final String transport;
         final String direction;
         final String door;
         final String method;
-        final String after;
+        /** The hook call. */
+        final String anchor;
+        /** Whether the door goes after the hook call, else before it. */
+        final boolean after;
 
         private Hook(String transport, String direction, String door,
-                     String method, String after) {
+                     String method, String anchor, boolean after) {
             this.transport = transport;
             this.direction = direction;
             this.door = door;
             this.method = method;
+            this.anchor = anchor;
             this.after = after;
         }
 
@@ -331,10 +352,12 @@ public final class LibraryCatalog {
     }
 
     /**
-     * The catalog's doors, each a system hook names placed after that hook,
-     * so the fault keeps the pairing the hook files (Solr's ZooKeeper writes
-     * after {@code SolrZkClient#causynthWrote}).  A hook naming no catalog
-     * door is refused by name.
+     * The catalog's doors, each a system hook names placed at that hook, so
+     * the fault keeps the pairing the hook files (Solr's ZooKeeper writes
+     * after {@code SolrZkClient#causynthWrote}, its reads before {@code
+     * SolrZkClient#causynthReading}, a data read's before {@code
+     * #causynthReplied}).  A hook naming no catalog door is
+     * refused by name.
      */
     static List<Door> placed(List<Door> catalog, List<Hook> hooks) {
         List<Door> doors = new ArrayList<>();
@@ -344,8 +367,9 @@ public final class LibraryCatalog {
             for (Hook hook : hooks) {
                 if (!hook.places(door)) continue;
                 placed = new Door(door.transport, door.direction,
-                        hook.method, hook.after, true, door.faults,
-                        door.demanded, door.result, door.method);
+                        hook.method, hook.anchor, hook.after, door.faults,
+                        door.demanded, door.dataFlow, door.result,
+                        door.method);
                 used.add(hook);
             }
             doors.add(placed);
@@ -370,12 +394,19 @@ public final class LibraryCatalog {
                     throw new IllegalArgumentException("a system states "
                             + "where its hooks are (HOOK), never a door");
                 }
+                String after = optionalText(row, "after");
+                if ((after == null) == (optionalText(row, "before") == null)) {
+                    throw new IllegalArgumentException(
+                            "a hook states one of before and after");
+                }
                 hooks.add(new Hook(matching(NAME, text(row, "transport"),
                         "transport").group(), matching(NAME, text(row,
                         "direction"), "direction").group(),
                         signature(text(row, "door")).group(),
                         signature(text(row, "method")).group(),
-                        signature(text(row, "after")).group()));
+                        signature(after != null ? after
+                                : text(row, "before")).group(),
+                        after != null));
             } catch (RuntimeException malformed) {
                 throw refused(entry.getKey(), malformed.getMessage(),
                         malformed);
@@ -384,10 +415,26 @@ public final class LibraryCatalog {
         return hooks;
     }
 
-    /** Whether a marker name is a demanded door's ({@code
-     *  FAULT:<TRANSPORT>:..} of a transport whose doors are demanded). */
-    public static boolean demandedMarker(String name) {
-        return doorMarker(name, true);
+    /** Whether a marker name is a door's that roots no region: a demanded
+     *  door's ({@code FAULT:<TRANSPORT>:..} of a transport whose doors are
+     *  demanded) or a data-flow door's ({@link #dataFlowMarker}). */
+    public static boolean rootsNothing(String name) {
+        return doorMarker(name, true) || dataFlowMarker(name);
+    }
+
+    /** Whether a marker name is a data-flow door's ({@code
+     *  FAULT:<TRANSPORT>:<DIRECTION>..} of a {@value #DATA_FLOW} door):
+     *  asked only where its fetch lies on the traced data flow. */
+    public static boolean dataFlowMarker(String name) {
+        String[] parts = name == null ? new String[0] : name.split(":", -1);
+        if (parts.length < 3 || !"FAULT".equals(parts[0])) return false;
+        for (Door door : doors()) {
+            if (door.dataFlow && door.transport.equals(parts[1])
+                    && door.direction.equals(parts[2])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether a marker name is a message door's ({@code
@@ -540,12 +587,21 @@ public final class LibraryCatalog {
         }
         String method = optionalText(row, "method");
         String sites = optionalText(row, "sites");
-        boolean demanded = sites != null;
-        if (demanded && (!DEMANDED.equals(sites) || method != null
-                || before == null)) {
+        boolean demanded = DEMANDED.equals(sites);
+        boolean dataFlow = DATA_FLOW.equals(sites);
+        if (sites != null && !demanded && !dataFlow) {
+            throw new IllegalArgumentException("sites is " + DEMANDED
+                    + " or " + DATA_FLOW + ": " + sites);
+        }
+        if (demanded && (method != null || before == null)) {
             throw new IllegalArgumentException("sites " + DEMANDED
                     + " is a door at calls with no method, before its call:"
                     + " a failed operation never happens");
+        }
+        if (dataFlow && (method == null || before == null)) {
+            throw new IllegalArgumentException("sites " + DATA_FLOW
+                    + " is a door at a method, before its request: a read"
+                    + " that fails never reaches the server");
         }
         JsonElement listed = row.get("faults");
         Result result = result(row.get("result"), row.has("result"));
@@ -569,7 +625,7 @@ public final class LibraryCatalog {
                 .group(), matching(NAME, text(row, "direction"), "direction")
                 .group(), method == null ? null : signature(method).group(),
                 signature(after != null ? after : before).group(),
-                after != null, faults, demanded, result, null);
+                after != null, faults, demanded, dataFlow, result, null);
     }
 
     /** A door's {@code result}: {@code false}, {@code null} or {@code 0}

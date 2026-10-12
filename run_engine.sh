@@ -491,6 +491,16 @@ run_in_directory() {
 # where a planner left to the JVM collected for ten minutes and died with
 # exit 1 of "GC overhead limit exceeded" (sweep a40h2, DataStreamer-638),
 # so a caller can tell the most heap a head JVM is given from a crash.
+# campaign_jvm_footprint_mb <heap_mb>: what an engine JVM run at -Xmx<heap_mb>
+# is charged and held on its host: its heap and the JVM's own memory beside
+# it (metaspace, code cache, the collector's tables, thread stacks), a
+# sixteenth of the heap and 384 MB.  Charged at its heap alone, a served
+# planner that filled it passed its charge on a host near the ceiling and was
+# ended (solr-adhoc-07 RX4: 8375 MB resident at an 8192 MB heap).
+campaign_jvm_footprint_mb() {
+  printf '%s\n' "$(( $1 + $1 / 16 + 384 ))"
+}
+
 campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
 engine_java() {
@@ -506,7 +516,8 @@ engine_java() {
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
-    campaign_head_charged "${start}" campaign_engine_jvm \
+    campaign_head_charged "$(campaign_jvm_footprint_mb "${start}")" \
+      campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
       -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
@@ -523,7 +534,8 @@ engine_java() {
       "${main##*.}" "${start}" "${next}" >&2
     start=${next}
   done
-  campaign_head_charged "${heap}" campaign_engine_jvm \
+  campaign_head_charged "$(campaign_jvm_footprint_mb "${heap}")" \
+    campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
     -XX:+ExitOnOutOfMemoryError "$@"
@@ -615,16 +627,18 @@ campaign_engine_need_mb() {
 # The room a head reserves on its host, in MB (campaign_head_reserve): its
 # measured step need -- the largest peak any of its engine JVMs reached
 # (${campaign_root}/engine_peak_mb, campaign_engine_jvm) times 1.25, rounded
-# up to 128 MB, at least 1024 and at most the engine heap, read again at
-# every heartbeat; before any was measured, what the largest of its engine
-# JVMs that come back every round starts at -- a round's planner, a
+# up to 128 MB, at least 1024 and at most the engine heap's JVM footprint
+# (campaign_jvm_footprint_mb), read again at every heartbeat; before any was
+# measured, the footprint the largest of its engine JVMs that come back every
+# round starts at -- a round's planner, a
 # witness's composer (engine_java) -- not the case's engine heap, unless one
 # of them outgrew its need.  An idle 8 GB hold for steps that peaked at a
 # median 0.7 GB (p90 3.7, p99 7.8; 609 planners and composers of sweep HG5A
 # and round MCH2) kept 8 GB of every lift from the pool.  A step its held
 # room does not cover is placed by its own charge (campaign_head_charged).
 campaign_head_need_mb() {
-  local main start largest=0 peak heap=${engine_memory_mb:-8192}
+  local main start largest=0 peak heap
+  heap=$(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}")
   if [[ -n "${campaign_root}" ]] \
       && read -r peak 2>/dev/null <"${campaign_root}/engine_peak_mb" \
       && [[ "${peak}" =~ ^[1-9][0-9]*$ ]]; then
@@ -635,7 +649,7 @@ campaign_head_need_mb() {
   fi
   for main in edu.uva.liftlab.graphchecker.explore.ExploreMain \
       edu.uva.liftlab.graphchecker.compose.ComposeMain; do
-    start=$(campaign_engine_start_mb "${main}")
+    start=$(campaign_jvm_footprint_mb "$(campaign_engine_start_mb "${main}")")
     (( start <= largest )) || largest=${start}
   done
   printf '%s\n' "${largest}"
@@ -2600,6 +2614,14 @@ resident memory (workload_rss_mb): no replay after it has a measured need"
 campaign_replay_peak_mb=0
 # The least measured need, in MB.
 campaign_replay_min_need_mb=512
+# The resident peaks of the replays after the seed's (an obligation's, a GROW
+# re-run's, a CONFIRM's) as they returned, and what a replay of the stream
+# is charged at its start once enough of them did (campaign_replay_typical).
+campaign_replay_peaks=()
+campaign_replay_typical_mb=0
+# How many replays after the seed's must have returned before the stream
+# charges the typical replay instead of the largest.
+campaign_replay_typical_after=8
 
 # The memory, in MB, one replay of this campaign needs once one was measured
 # -- an obligation's, a GROW re-run's, a CONFIRM's: the largest peak its
@@ -2637,14 +2659,44 @@ campaign_need_of_peak_mb() {
 campaign_replay_measured() {
   local peak first=$(( campaign_replay_peak_mb == 0 )) before
   read -r peak 2>/dev/null <"$1/workload_rss_mb" || return 0
-  [[ "${peak}" =~ ^[0-9]+$ ]] && (( peak > campaign_replay_peak_mb )) \
-    || return 0
+  [[ "${peak}" =~ ^[0-9]+$ ]] || return 0
+  (( first )) || campaign_replay_typical "${peak}"
+  (( peak > campaign_replay_peak_mb )) || return 0
   before=$(campaign_replay_need_mb)
   campaign_replay_peak_mb=${peak}
   (( first )) || [[ "$(campaign_replay_need_mb)" != "${before}" ]] || return 0
   campaign_log "a replay peaked at ${peak} MB (${1}): every replay from now \
 on needs $(campaign_replay_need_mb) MB and is charged \
 $(campaign_replay_charge_mb "$(campaign_replay_need_mb)") MB"
+}
+
+# campaign_replay_typical <peak_mb>: one more replay after the seed's
+# returned at <peak_mb>.  Once campaign_replay_typical_after of them have,
+# the stream charges a replay at their 90th percentile times 1.25, rounded up
+# to 128 MB, at least campaign_replay_min_need_mb and at most the need
+# (campaign_stream_charge_mb), while its heap stays sized by the need: one
+# replay that outgrows its charge grows it while its host has real room
+# (campaign_watch_workload).  Charged at the largest peak times 1.5, the
+# lifts' ledgers held 21-22 GB over 8-11 GB of real use and no host admitted
+# one more start (solr-adhoc-21 RX4: peaks p50 918, p90 1242, max 2234 MB,
+# each replay charged 3456 MB; solr-adhoc-40 LD1: p50 1583, max 3454 MB, the
+# seed's).  Said when it moves.
+campaign_replay_typical() {
+  local p90 typical
+  campaign_replay_peaks+=("$1")
+  (( ${#campaign_replay_peaks[@]} >= campaign_replay_typical_after )) \
+    || return 0
+  p90=$(printf '%s\n' "${campaign_replay_peaks[@]}" | LC_ALL=C sort -n \
+    | awk '{ peak[NR] = $1 } END { i = int(NR * 0.9); if (i < NR) i++;
+             print peak[i] }')
+  typical=$(( (p90 * 5 + 511) / 512 * 128 ))
+  (( typical >= campaign_replay_min_need_mb )) \
+    || typical=${campaign_replay_min_need_mb}
+  (( typical != campaign_replay_typical_mb )) || return 0
+  campaign_replay_typical_mb=${typical}
+  campaign_log "the replays after the seed's peaked at ${p90} MB or less \
+in 9 of 10 (${#campaign_replay_peaks[@]} returned): a replay of the stream is \
+charged $(campaign_stream_charge_mb REPLAY) MB at its start"
 }
 
 # campaign_replay_charge_mb <need>: what a replay of that need is charged at
@@ -4760,7 +4812,7 @@ campaign_planner_alive() {
 # held by the shell that holds it for as long as it runs.
 campaign_planner_start() {
   local heap=$1 state="${iteration_dir}/planner" host charge id busy=""
-  campaign_head_place "${heap}" >&2
+  campaign_head_place "$(campaign_jvm_footprint_mb "${heap}")" >&2
   host=${campaign_placed_host}
   charge=${campaign_host_charge_id}
   id="$(date +%s%N)"
@@ -4839,7 +4891,8 @@ campaign_planner_serve() {
   mv -f -- "${dir}/server.part" "${dir}/server"
   printf '%s\n' "${jvm}" >"${jvm_file}"
   watched=$(mktemp -d) || return
-  campaign_watch_workload "${jvm}" "${heap}" "${watched}" 2>>"${log}"
+  campaign_watch_workload "${jvm}" "$(campaign_jvm_footprint_mb "${heap}")" \
+    "${watched}" 2>>"${log}"
   wait "${jvm}" || status=$?
   read -r peak 2>/dev/null <"${watched}/workload_rss_mb" || peak=0
   # Its server file stays, naming a pid gone: a question asked after says
@@ -5047,7 +5100,10 @@ campaign_stream_take_round() {
   # UNPLANNED_INPUT) nothing to grow.
   require_file "round growth rows" "${round_dir}/growth.jsonl"
   require_file "round obligations" "${round_dir}/obligations.jsonl"
-  exposures=$(campaign_exposures "${round_dir}/growth.jsonl")
+  # A doors-only occurrence a value demand reached grows the plan as an
+  # exposure does (campaign_stream_grow).
+  exposures=$(campaign_exposures "${round_dir}/growth.jsonl"; \
+    campaign_unpauses "${round_dir}/growth.jsonl")
   exposed=$(printf '%s' "${exposures}" | grep -c '' || true)
   mapfile -t rows < "${round_dir}/obligations.jsonl"
   mapfile -t ids < <(jq -r '.obligationId' "${round_dir}/obligations.jsonl")
@@ -5105,15 +5161,20 @@ campaign_stream_chain_round() {
   local round_dir=$1 occurrence grow=0
   shift
   stream_cancelled+=("$@")
+  # A doors-only occurrence a value demand reached is run whole whatever
+  # chain is open: dropping its mark asks no obligation.
   jq -c --argjson chain "$(printf '%s\n' "${!stream_chain[@]}" \
       | jq -R . | jq -s -c .)" \
-    'select(.kind == "EXPOSED_REGION" and (.occurrence as $at
-       | any($chain[]; . == $at)))' "${round_dir}/growth.jsonl" \
-    >"${round_dir}/growth-chain.jsonl"
+    'select(.kind == "DOORS_ONLY_UNPAUSED" or .kind == "EXPOSED_REGION"
+       and (.occurrence as $at | any($chain[]; . == $at)))' \
+    "${round_dir}/growth.jsonl" >"${round_dir}/growth-chain.jsonl"
   while read -r occurrence; do
     stream_chain_grown[${occurrence}]=1
     grow=$((grow + 1))
-  done < <(jq -r '.occurrence' "${round_dir}/growth-chain.jsonl" | sort -u)
+  done < <(jq -r 'select(.kind == "EXPOSED_REGION") | .occurrence' \
+    "${round_dir}/growth-chain.jsonl" | sort -u)
+  grow=$((grow + $(campaign_unpauses "${round_dir}/growth-chain.jsonl" \
+    | grep -c '' || true)))
   campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
 ${grow} of its producer(s) exposed here grow, and the round's $# \
 obligation(s) and $(jq -c 'select(.kind == "UNPLANNED_INPUT")' \
@@ -5640,7 +5701,8 @@ campaign_stream_warm() {
 # has no room for its solver); either grows as its JVM does
 # (campaign_watch_workload); a replay -- a
 # REPLAY, a RERUN, a CONFIRM, and the pool's slots (campaign_stream_has_slot)
-# -- the campaign's measured replay need (campaign_replay_need_mb), at most
+# -- the campaign's measured replay need (campaign_replay_need_mb), or the
+# typical replay's once enough returned (campaign_replay_typical), at most
 # half a host's ceiling (campaign_replay_charge_mb).  A solve charged a
 # replay waited for room it never used (HG5A-11, hdfs-adhoc-19: its eight
 # obligations waited 12 of EXPLORE's 13 minutes for room for a 2500 MB
@@ -5651,7 +5713,12 @@ campaign_stream_charge_mb() {
   elif [[ "${1:-}" == OBLIGATION ]]; then
     printf '%s\n' "${campaign_solver_start_mb}"
   else
-    campaign_replay_charge_mb "$(campaign_replay_need_mb)"
+    local need
+    need=$(campaign_replay_need_mb)
+    (( campaign_replay_typical_mb == 0 \
+       || campaign_replay_typical_mb >= need )) \
+      || need=${campaign_replay_typical_mb}
+    campaign_replay_charge_mb "${need}"
   fi
 }
 
@@ -5951,29 +6018,41 @@ campaign_exposures() {
     | LC_ALL=C sort -u
 }
 
-# GROW (PIPELINE §7.8): a region a replay reached without its hooks, or a
-# marker invocation only a flipped world made, is planned, woven in, and the
-# replay that exposed it is run again under the same world, so a later
-# round's closure sees the region's decisions and exports, or flips the new
-# root.
+# The DOORS_ONLY_UNPAUSED rows of a round's growth.jsonl (a doors-only
+# occurrence a value demand reached, ClosurePlanner#plan), one `obligation
+# occurrence session` line each, sorted; the obligation and session are ""
+# where no admitted focused replay ran it.
+campaign_unpauses() {
+  jq -r 'select(.kind == "DOORS_ONLY_UNPAUSED")
+         | [.obligationId, .occurrence, .sessionId] | @tsv' "$1" \
+    | LC_ALL=C sort -u
+}
+
+# GROW (PIPELINE §7.8): a region a replay reached without its hooks, a
+# marker invocation only a flipped world made, or a doors-only occurrence a
+# value demand reached is planned -- the region woven in -- and the replay
+# that exposed it is run again under the same world, so a later round's
+# closure sees the region's decisions and exports, flips the new root, or
+# takes the occurrence's values.
 #
 # One GROW is one GENERATION of the plan and the class tree:
 # ExposedRegionPlanMain writes the generation's whole plan -- the one before
-# it, each grown invocation an input of its task's row, plus the task rows
-# the exposed regions need (admissionBasis EXPOSED_BY) -- as a new file, kept
-# beside the round too (grown_plan.jsonl); the iteration's plan and the seed
-# plan are its links from now on, and INSTRUMENT weaves it into the
-# generation's own tree.  A start takes the generation current when it
-# starts (campaign_stream_start), so whatever already runs keeps the plan
-# and the classes it started on.  Each exposing obligation's replay is
+# it with the reached doors-only occurrences' marks dropped, each grown
+# invocation an input of its task's row, plus the task rows the exposed
+# regions need (admissionBasis EXPOSED_BY) -- as a new file, kept beside the
+# round too (grown_plan.jsonl); the iteration's plan and the seed plan are
+# its links from now on, and INSTRUMENT weaves it into the generation's own
+# tree where it has new task rows.  A start takes the generation current
+# when it starts (campaign_stream_start), so whatever already runs keeps the
+# plan and the classes it started on.  Each exposing obligation's replay is
 # queued first, to re-run -- on whichever host of the pool admits it, as an
 # obligation does -- in a directory of its own beside its worker; until
 # every re-run has returned and swapped its session in
 # (campaign_stream_swap), no obligation starts and no round is planned.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
-  local growth=${2:-${round_dir}/growth.jsonl}
-  local worker file
+  local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
+  local worker file unpaused
   # An exposure names the obligation whose replay is re-run.  One that names
   # none was exposed by the seed replay, and the seed is not re-run: the
   # recording reached that region too, so it is PLAN's to name, not GROW's.
@@ -5984,18 +6063,31 @@ can be grown into"
   stream_generation=$((stream_generation + 1))
   generation="${iteration_dir}/generations/g${stream_generation}"
   mkdir -p "${generation}"
-  run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
-    --iteration "${iteration_dir}" \
-    --static-scope-map "${causynth_static_scope_map}" \
-    --plan "${stream_plan}" \
-    --growth "${growth}" \
-    --output "${generation}/execution_task_plan.jsonl" \
-    >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
-  [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
-    "${round_dir}/grow-stderr.log" \
-    "GROW's planner failed with exit ${status}: \
+  # A doors-only occurrence a value demand reached runs whole from this
+  # generation on: its task row loses the mark.
+  unpaused=$(campaign_unpauses "${growth}" | cut -f2 | jq -R . | jq -s -c .)
+  jq -c --argjson unpaused "${unpaused}" \
+    'if .doorsOnly == true and (.occurrenceId as $at
+       | any($unpaused[]; . == $at)) then del(.doorsOnly) else . end' \
+    "${stream_plan}" >"${generation}/unpaused_plan.jsonl"
+  if [[ -n "$(campaign_exposures "${growth}")" ]]; then
+    run_capturing_status run_java_main \
+      edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
+      --iteration "${iteration_dir}" \
+      --static-scope-map "${causynth_static_scope_map}" \
+      --plan "${generation}/unpaused_plan.jsonl" \
+      --growth "${growth}" \
+      --output "${generation}/execution_task_plan.jsonl" \
+      >"${round_dir}/grow-stdout.log" 2>"${round_dir}/grow-stderr.log"
+    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE ExposedRegionPlanMain \
+      "${round_dir}/grow-stderr.log" \
+      "GROW's planner failed with exit ${status}: \
 $(campaign_thrown "${round_dir}/grow-stderr.log")"
+    rm -f -- "${generation}/unpaused_plan.jsonl"
+  else
+    mv -- "${generation}/unpaused_plan.jsonl" \
+      "${generation}/execution_task_plan.jsonl"
+  fi
   require_nonempty "the grown generation's plan" \
     "${generation}/execution_task_plan.jsonl"
   ln -f "${generation}/execution_task_plan.jsonl" \
@@ -6005,15 +6097,17 @@ $(campaign_thrown "${round_dir}/grow-stderr.log")"
   ln -f "${generation}/execution_task_plan.jsonl" \
     "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   stream_plan="${generation}/execution_task_plan.jsonl"
-  # A grown input stands at the hook its marker's planned input has (the
-  # weave hooks a local definition by method, unit and local, never by
-  # invocation): only an exposed region weaves a new tree.
+  # Only new task rows are new weaving: a grown input stands at the hook its
+  # marker's planned input has (the weave hooks a local definition by
+  # method, unit and local, never by invocation), and dropping a doors-only
+  # mark weaves nothing.
   if jq -e -s 'any(.[]; .kind == "EXPOSED_REGION")' "${growth}" \
       >/dev/null; then
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
-exposure(s)); weaving generation g${stream_generation}"
+exposure(s)), $(jq 'length' <<<"${unpaused}") doors-only occurrence(s) run \
+whole; weaving generation g${stream_generation}"
     campaign_instrument "${iteration_dir}" \
       "${generation}/instrumented-classes"
     stream_classes="${generation}/instrumented-classes"
@@ -6021,7 +6115,8 @@ exposure(s)); weaving generation g${stream_generation}"
     campaign_log "$(basename "${round_dir}"): grown by \
 $(campaign_exposures "${growth}" | cut -f2 | LC_ALL=C sort -u \
   | paste -sd, -) ($(campaign_exposures "${growth}" | grep -c '') \
-exposure(s)); generation g${stream_generation} weaves nothing new"
+exposure(s)), $(jq 'length' <<<"${unpaused}") doors-only occurrence(s) run \
+whole; generation g${stream_generation} weaves nothing new"
   fi
   while IFS=$'\t' read -r obligation_id session; do
     worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
@@ -6039,7 +6134,14 @@ exposure(s)); generation g${stream_generation} weaves nothing new"
     stream_queue=("RERUN $(basename "${round_dir}") ${obligation_id} \
 ${session}" "${stream_queue[@]}")
     stream_hold=$((stream_hold + 1))
-  done < <(campaign_exposures "${growth}" | cut -f1,3 | LC_ALL=C sort -u)
+    rerun_count=$((rerun_count + 1))
+  done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
+    | awk -F'\t' '$1 != ""' | cut -f1,3 | LC_ALL=C sort -u)
+  # A doors-only occurrence no focused replay ran is re-run by none: the
+  # next round is owed all the same, so a closure still demanding it states
+  # it (BLOCKING at the fixed point, ExploreMain) rather than the driver
+  # ending on a plan that changed under it.
+  (( rerun_count > 0 )) || stream_dirty=1
 }
 
 # The directory one exposing obligation's re-run for <round> runs in.
@@ -6141,7 +6243,8 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 campaign_stream_promote_generation() {
   local generation
   (( stream_generation > 0 )) || return 0
-  # Only grown inputs: no generation wove a tree of its own.
+  # No generation wove a tree of its own (grown inputs only, doors-only
+  # marks dropped): its tree is still the iteration's.
   [[ "${stream_classes}" != "${iteration_dir}/instrumented-classes" ]] \
     || return 0
   rm -rf -- "${iteration_dir}/instrumented-classes"
@@ -7315,10 +7418,16 @@ campaign_emit() {
   bounded=$(campaign_bounds "${iteration_dir}") \
     || campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
       "the declared bounds the search touched could not be read"
+  # The planned occurrences run paused but for their doors (control
+  # producers, RuntimeSelectedRegionFinalizer#DOORS_ONLY): one plan row each.
+  local doors_only
+  doors_only=$(grep -c '"doorsOnly":true' -- "${runtime_region_plan}") \
+    || doors_only=0
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --argjson confirmation "${confirmation}" \
     --argjson bounded "${bounded}" \
+    --argjson doorsOnly "${doors_only}" \
     --arg formula "${formula_path}" \
     --arg formulaSha "$(campaign_digest "${campaign_final}/candidate.smt2")" \
     --slurpfile refutedClaims "${refuted}" \
@@ -7419,6 +7528,10 @@ campaign_emit() {
      # region plan catalog'"'"'s gap rows): null, or their sum, by owner
      # class, and the first rows.  An UNSAT reading looks at the anchor'"'"'s
      # demanded fields among them: the recorded heap is partial.
+     # How many planned occurrences ran paused but for their doors: the
+     # control producers, which contribute no value (SYMBOL-SCOPE §4.4,
+     # RuntimeSelectedRegionFinalizer#DOORS_ONLY).
+     doorsOnlyOccurrences: $doorsOnly,
      confinedWriters: ([($planCatalog[0].gaps // [])[]
          | select(.kind == "CLOSURE_CONFINED")] as $rows
        | if ($rows | length) == 0 then null

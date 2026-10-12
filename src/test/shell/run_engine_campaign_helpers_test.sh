@@ -1820,6 +1820,37 @@ done <<'EOF'
 171 - 300 400|512 512 512 640|2
 - 238|512 512|1
 EOF
+# MEASURED-TYPICAL: once eight replays after the seed's returned, a replay of
+# the stream is charged their 90th percentile times 1.25 (rounded up to 128
+# MB, at least 512, at most the need), its heap still the need; before that,
+# the need.  Per row: the seed's peak, the later peaks, the need and the
+# stream's replay charge after them.
+while IFS='|' read -r typical_seed typical_peaks typical_need typical_charge; do
+  rm -rf -- "${measured_dir}"
+  mkdir -p "${measured_dir}"
+  typical_got=$(
+    campaign_replay_peak_mb=0
+    campaign_replay_peaks=()
+    campaign_replay_typical_mb=0
+    typical_n=0
+    for typical_peak in ${typical_seed} ${typical_peaks}; do
+      typical_n=$((typical_n + 1))
+      mkdir -p "${measured_dir}/${typical_n}"
+      echo "${typical_peak}" >"${measured_dir}/${typical_n}/workload_rss_mb"
+      campaign_replay_measured "${measured_dir}/${typical_n}" >/dev/null 2>&1
+    done
+    printf '%s|%s' "$(campaign_replay_need_mb)" \
+      "$(campaign_stream_charge_mb REPLAY)"
+  )
+  [[ "${typical_got}" == "${typical_need}|${typical_charge}" ]] \
+    || fail "seed ${typical_seed} and peaks ${typical_peaks} gave \
+${typical_got}, not ${typical_need}|${typical_charge}"
+done <<'EOF'
+2234|918 900 950 1000 880 1242 920 910|3456|1664
+3454|1583 1600 1500|5248|5248
+2234|300 310 320 330 340 350 360 370|3456|512
+1000|900 950 1000 1100 1200 1300 1400 3000|4608|3840
+EOF
 need_dir="${bound_dir}/need"
 mkdir -p "${need_dir}"
 printf '{"taskId":"TASK.1"}\n' >"${need_dir}/plan.jsonl"
@@ -4507,6 +4538,44 @@ ${stream_classes} ${stream_plan}"
   || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
 reset_config
 
+# GROW-2: a doors-only occurrence a value demand reached that no focused
+# replay ran (ClosurePlanner#plan): its generation drops the task row's mark,
+# plans and weaves nothing, re-runs nothing and owes a round; promoting it
+# keeps the iteration's own tree.
+grow2="${test_tmp}/grow2"
+mkdir -p "${grow2}/obligations-0003" "${grow2}/instrumented-classes" \
+  "${grow2}/seed-replay"
+: >"${grow2}/instrumented-classes/woven"
+printf '%s\n' '{"occurrenceId":"W#1","taskId":"T.W","doorsOnly":true}' \
+  '{"occurrenceId":"X#1","taskId":"T.X","doorsOnly":true}' \
+  >"${grow2}/execution_task_plan.jsonl"
+printf '%s\n' \
+  '{"kind":"DOORS_ONLY_UNPAUSED","regionId":"R","node":"nn0","occurrence":"W#1","sessionId":"","obligationId":""}' \
+  >"${grow2}/obligations-0003/growth.jsonl"
+(
+  iteration_dir=${grow2}
+  stream_plan=${grow2}/execution_task_plan.jsonl
+  stream_classes=${grow2}/instrumented-classes
+  stream_generation=0
+  stream_dirty=0
+  stream_hold=0
+  stream_queue=()
+  run_java_main() { fail "the exposed-region planner ran with no exposure"; }
+  campaign_instrument() { fail "a generation that only dropped a mark wove"; }
+  campaign_stream_grow "${grow2}/obligations-0003" >/dev/null
+  jq -e -s 'length == 2 and (.[0].doorsOnly == null)
+    and .[1].doorsOnly == true' \
+    "${grow2}/generations/g1/execution_task_plan.jsonl" >/dev/null \
+    || fail "the generation did not drop the reached occurrence's mark alone"
+  [[ "${stream_classes}" == "${grow2}/instrumented-classes" \
+      && ${#stream_queue[@]} -eq 0 && "${stream_dirty}" == 1 ]] \
+    || fail "a dropped mark wove, queued a re-run, or owed no round"
+  campaign_stream_promote_generation
+  [[ -f "${grow2}/instrumented-classes/woven" ]] \
+    || fail "promoting a generation that wove nothing removed the tree"
+) || fail "GROW-2 failed"
+reset_config
+
 
 # GROW-CONFIRM: a witness's confirmation holds GROW's swap (Z2M).  OB.x's
 # session observed the fatal and exposed a region: its attempt claims and
@@ -5245,7 +5314,7 @@ reset_config
 
 # MEMORY-4: HEAD ROOM.  A head's host keeps room for the head's next engine
 # JVM against every other start -- what its planner or composer starts at
-# (campaign_head_need_mb), not the case's engine heap: an obligation counts
+# (campaign_head_need_mb: that JVM's footprint), not the case's engine heap: an obligation counts
 # the largest idle, fresh reservation of the host as used, a head's own
 # start counts none, one of its JVMs running (busy) or a reservation gone
 # stale frees it, and the head gives it up when it exits.  The hosts are
@@ -5262,11 +5331,11 @@ engine_memory_mb=12000
 (
   campaign_head_charging=1
   campaign_head_reserve
-  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
   run_capturing_status campaign_host_try_start localhost 6000
-  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"8192 MB held \
+  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"$(campaign_jvm_footprint_mb 8192) MB held \
 for a head"* ]] || fail "an obligation took the room a head reserved: \
 ${campaign_host_wait_reason}"
   campaign_host_try_start lift14 6000 \
@@ -5285,7 +5354,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
     || fail "a subshell of the head gave up the head's room"
   # A head step no host has room for holds its need on the host with the
   # most room (lift14's 39400 MB less the 30000 MB reserve, against the
-  # head's 39300 less its own 8192 held): an obligation lift14 would admit
+  # head's 39300 less its own 9088 held, an 8192 MB heap's footprint): an obligation lift14 would admit
   # is refused while the 9500 MB step waits, the step takes lift14 once it
   # has room, its own hold not held against it, and gives the hold up.
   campaign_worker_hosts="gate-head lift14"
@@ -5314,7 +5383,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   grep -q 'held on lift14' "${memory_dir}/head-place.log" \
     || fail "a waiting head step did not say where it held its need"
   [[ -z "$(ls "${campaign_host_gate_root}/lift14/heads/")" \
-     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == 8192 ]] \
+     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
     || fail "a placed head step kept its hold: \
 $(ls "${campaign_host_gate_root}"/*/heads/)"
 ) || exit 1
@@ -5453,7 +5522,8 @@ reset_config
 # (campaign_engine_jvm) and its peak joins the campaign's engine_peak_mb,
 # never lowering it; its status is the JVM's.  The head's held room is that
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
-# heap; before any was measured, what its planner or composer starts at.
+# heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
+# footprint of what its planner or composer starts at.
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
 # file after them, and the held room (engine heap 12000).
 need_dir=${test_tmp}/head-need
@@ -5481,11 +5551,11 @@ while IFS='|' read -r need_peaks need_file need_room; do
     || fail "engine peaks ${need_peaks} left ${need_said}, not \
 ${need_file}|${need_room}"
 done <<'EOF'
-|-|8192
+|-|9088
 700:0|700|1024
 2949:0 1200:3|2949|3712
 9000:0|9000|11264
-20000:0 300:0|20000|12000
+20000:0 300:0|20000|13134
 EOF
 campaign_root=""
 
@@ -5600,7 +5670,9 @@ EOF
 
 # HEADS-2: launch-round.sh weighs a case's head by its engine heap; a sweep
 # admits it for the room it reserves on its host, what its planner or
-# composer starts at (campaign_head_need_mb), never more than that heap:
+# composer starts at with the JVM's own memory beside its heap
+# (campaign_head_need_mb, campaign_jvm_footprint_mb), never more than that
+# heap's footprint:
 # a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
 # while one case's obligations filled the lifts.  Per row: the case's
 # configuration, its weight and its head's room.
@@ -5610,9 +5682,9 @@ while IFS='|' read -r heads_config heads_heap heads_reserve; do
     || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
 and reserves $(case_head_reserve_mb "${heads_config}")"
 done <<'EOF'
-engine_memory_mb=16384|16384|8192
-engine_memory_mb=|8192|8192
-engine_memory_mb=4096|4096|4096
+engine_memory_mb=16384|16384|9088
+engine_memory_mb=|8192|9088
+engine_memory_mb=4096|4096|4736
 EOF
 
 # POOL-SLOTS: the obligation slots a sweep's cases share
@@ -5641,7 +5713,8 @@ $(campaign_pool_slots "${slots_need}" lift12 lift13 lift14) slots"
 EOF
 )
 
-# SWEEP-1: sweep.sh launches every case with its head's room as its need,
+# SWEEP-1: sweep.sh launches every case with its head's room as its need (an
+# engine heap of 1 MB: its JVM footprint, 385 MB),
 # in the shared pool, and a measurement sweep's stop stage and pruning on the
 # job's command line (ssh carries no environment); a case id that names no
 # case launches no case.
@@ -5664,7 +5737,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
-  && grep -q "^ADMIT_MB=1 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
+  && grep -q "^ADMIT_MB=385 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room in the \
 shared pool: $(cat "${sweep_dir}/launched" \

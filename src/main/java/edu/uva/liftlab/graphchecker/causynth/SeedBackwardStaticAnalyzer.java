@@ -150,6 +150,9 @@ final class SeedBackwardStaticAnalyzer {
             "java.util.Queue", "java.util.Deque");
     /** The one control-dependence row kind: branch operand -> guarded cell. */
     private static final String GUARD_KIND = "guard_dependency";
+    /** A {@code field_read} edge's mark: the read is on its method's own
+     *  receiver ({@link #processFieldReads}). */
+    public static final String ON_RECEIVER = "onReceiver";
     private final CausynthTargetContext target;
     private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
     private final Map<String, SootMethod> allMethodsBySignature =
@@ -987,15 +990,22 @@ final class SeedBackwardStaticAnalyzer {
                             method, fact);
                 }
             }
-            processFieldReads(method, fact, defs, relevant);
+            processFieldReads(method, facts, fact, defs, relevant);
             processFieldWrites(method, facts, fact, relevant);
             processArrayAccesses(method, fact, defs, relevant);
             processInvoke(method, fact, defs, relevant);
         }
     }
 
-    private void processFieldReads(String method, Fact fact,
-                                   List<String> defs, Set<String> relevant) {
+    /** A field read's edges; one on the method's own receiver ({@code this})
+     *  says so ({@value #ON_RECEIVER}): the receiver its call was recorded
+     *  with is the object it read the field on, whether or not the
+     *  recording wrote the read's row ({@code
+     *  runtime.RuntimeRegionPlanner#stampFieldOwners}). */
+    private void processFieldReads(String method, List<Fact> facts,
+                                   Fact fact, List<String> defs,
+                                   Set<String> relevant) {
+        boolean onReceiver = onReceiver(facts, fact);
         for (String field : fact.fieldUses) {
             String fieldNode = canonical(method, field);
             if (ignoreNode(fieldNode)) {
@@ -1009,8 +1019,10 @@ final class SeedBackwardStaticAnalyzer {
                 if (ignoreNode(def)) {
                     continue;
                 }
-                annotateDirectDeclaredFieldEdge(addEdge("field_read",
-                        fieldNode, def, method, fact), field);
+                Map<String, Object> edge = addEdge("field_read",
+                        fieldNode, def, method, fact);
+                annotateDirectDeclaredFieldEdge(edge, field);
+                if (edge != null && onReceiver) edge.put(ON_RECEIVER, true);
             }
             relevant.add(fieldNode);
         }
@@ -1183,18 +1195,33 @@ final class SeedBackwardStaticAnalyzer {
      *  a constructor, builds: its {@code this}. */
     private static boolean storesOwnObject(String method, List<Fact> facts,
                                            Fact fact) {
-        if (facts == null || !method.contains(" <init>(")) return false;
-        String self = null;
+        return method.contains(" <init>(") && onReceiver(facts, fact);
+    }
+
+    /** Whether the unit's instance field reference is on the method's own
+     *  receiver ({@link #onReceiver(String, String)}). */
+    private static boolean onReceiver(List<Fact> facts, Fact fact) {
+        if (facts == null) return false;
         for (Fact identity : facts) {
             int at = identity.unitText.indexOf(" := @this");
             if (at > 0) {
-                self = identity.unitText.substring(0, at);
-                break;
+                return onReceiver(identity.unitText.substring(0, at),
+                        fact.unitText);
             }
         }
-        int field = fact.unitText.indexOf(".<");
-        return self != null && field > 0
-                && fact.unitText.substring(0, field).equals(self);
+        return false;
+    }
+
+    /** Whether {@code unit}'s instance field reference ({@code b.<f>}, read
+     *  or written) is on {@code self}, the local a {@code := @this} identity
+     *  defines. */
+    static boolean onReceiver(String self, String unit) {
+        int field = unit.indexOf(".<");
+        if (field <= 0) return false;
+        String base = unit.substring(0, field);
+        int assigned = base.lastIndexOf(" = ");
+        return (assigned < 0 ? base : base.substring(assigned + 3))
+                .equals(self);
     }
 
     private void expandFieldWriters(String method) {

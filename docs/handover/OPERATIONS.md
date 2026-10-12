@@ -89,7 +89,8 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
 - Every replay after a campaign's seed replay (obligations, GROW re-runs, CONFIRM) is charged the
   campaign's measured need (`run_engine.sh` `campaign_replay_need_mb`): the largest resident peak
   its replays stated so far (`workload_rss_mb` in each worker directory; the seed replay's first)
-  times 1.5, at least 512 MB; the seed replay's heap is sized for seven times the recording's peak and it is charged twice that peak at its start
+  times 1.5, at least 512 MB (its heap), and once eight have returned after the seed's, their 90th percentile
+  times 1.25 (its charge, `campaign_replay_typical`); the seed replay's heap is sized for seven times the recording's peak and it is charged twice that peak at its start
   (HDFS seed replays peak at 0.5-1.4 times their recording), growing past it while its host has real room; every
   replay at most half a host's ceiling at its start, growing past it while the host has real room.
   The replay logs say it: "the workload JVM's resident memory peaked at X MB; its host was charged Y
@@ -104,7 +105,7 @@ GC_OUT=/bigtemp/vnr3ne/gc-out tools/rounds/stop-run.sh <round>-<case> ...
   (`campaign_stream_has_slot`).
   A sweep's head is admitted (`fanout.sh` `ADMIT_MB`, no lifelong charge: its campaign reserves the room) for the room it reserves on its host
   before it measured anything, what its planner or composer starts at (`tools/lib/heads.sh`
-  `case_head_reserve_mb`, 8 GB), not its engine heap: a40's Solr heads asked for 16 GB and waited
+  `case_head_reserve_mb`, the 8 GB planner's JVM footprint, 9088 MB: an engine JVM is charged at its heap + heap/16 + 384 MB, `campaign_jvm_footprint_mb`), not its engine heap: a40's Solr heads asked for 16 GB and waited
   while one case's 27-32 replays filled the lifts. Once its engine JVMs have run, the room it holds
   is their measured peak times 1.25 (`run_engine.sh` `campaign_head_need_mb`). A lift holds the
   largest idle reservation of its heads, not their sum.
@@ -241,6 +242,16 @@ breaks a campaign's time down by stage.
 
 ## 8. Traps the last leads fell into
 
+- **A wedged `/sw` on the control host stalls every bash** (2026-10-12, lift11): the login environment exports
+  `BASH_ENV=/sw/ubuntu/custom/lmod/lmod/init/bash` (`/etc/profile.d/modules.sh`), so every non-interactive bash sources
+  a file on `/sw`; when `/sw`'s automount hangs on one host (lift11 only; every other lift answered in ms) each `bash`
+  there waits in `autofs_wait` (`bash -c true`: 30 s+ with it, 6 ms without), the sessions' shells and wait loops pile
+  up in D state (60 at load 65) and every tool call takes minutes. NFS itself was not slow. Fix: no GraphChecker tool
+  needs lmod -- `unset BASH_ENV` in the session's shell snapshot (`~/.claude/shell-snapshots/<current>.sh`, appended
+  once per session) or `env -u BASH_ENV bash ...`. Diagnose a slow host with `cat /proc/<pid>/wchan` of a D-state
+  process (`autofs_wait`: an automount; `nfs_*`/`rpc_*`: the server) and `timeout 20 stat <path>` per mount, before
+  blaming NFS. Keep the control host light: wait loops poll from another lift (`ssh lift06 'until ...; sleep 60'`), at
+  most one per agent, and campaigns launched while sessions run there leave it out of `LIFTS`.
 - **pkill can kill your own shell.** `pkill -f <pattern>` matches every process whose command line
   contains the pattern, including the shell that runs it, and a heredoc counts as part of that command
   line. The lead session runs on `lift11`, which is also a worker. Use `[x]`-style patterns, kill by pid,

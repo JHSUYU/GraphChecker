@@ -143,6 +143,9 @@ public final class DeclaredSiteCapture {
 
     public String declaredCallee() { return declaredCallee; }
 
+    /** Its ordinal among the occurrence's captures of its site, from 1. */
+    public int ordinal() { return ordinal; }
+
     /** The port one declaration mints at this capture, before {@link
      *  ConcolicScheduler#materializationPlan} binds it. The region is the
      *  PLAN's, not the scope map's innermost static {@code regionId}. */

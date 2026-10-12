@@ -824,8 +824,10 @@ public final class MessageDoors {
         }
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
+        // The decode runs on the fetching thread right after the read: the
+        // occurrence running it is the fetch's.
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
-                registered);
+                registered, here);
         if (!repoints) return;
         if (!RowRuntime.open()) {
             // Before the window: what the node holds when it opens, the

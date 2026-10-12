@@ -985,6 +985,16 @@ public final class RowRuntime {
     /** The declared roots found carrying another input's expression. */
     private static final Set<String> DERIVED =
             ConcurrentHashMap.<String>newKeySet();
+    /** The occurrences this replay ran for their doors alone. */
+    private static final Set<String> DOORS_ONLY =
+            ConcurrentHashMap.<String>newKeySet();
+
+    /** One activation run for its doors alone ({@code RuntimeTask
+     *  #doorsOnly}): the manifest states it at the run's end, so EXPLORE
+     *  takes no value of it from this session. */
+    static void ranDoorsOnly(OccurrenceAddress occurrence) {
+        if (occurrence != null) DOORS_ONLY.add(occurrence.render());
+    }
 
     /**
      * One read of a declared root that minted none ({@code RootMint}: an
@@ -1396,7 +1406,7 @@ public final class RowRuntime {
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());
         }
-        session.atClose(unnamed, CONCRETE, DERIVED);
+        session.atClose(unnamed, CONCRETE, DERIVED, DOORS_ONLY);
         unattributedStores();
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.
@@ -1503,6 +1513,7 @@ public final class RowRuntime {
             UNNAMED.clear();
             CONCRETE.clear();
             DERIVED.clear();
+            DOORS_ONLY.clear();
             expressions = new ExpressionRefs();
             Identity.resetForTests();
             CLOCK_CELLS.clear();
