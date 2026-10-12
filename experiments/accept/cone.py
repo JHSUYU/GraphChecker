@@ -31,6 +31,10 @@ Two facts are published for report.py, which gates on both:
                 claim): a SAT's other paths' unbound variables are reported in
                 unboundOffWitness, never hidden, and gate nothing.  COMPOSE
                 names the same set (compose.Cone, the claim's openChain).
+                A store content leaf a producer refused by rule settles is
+                no open link, listed by how: constantByRefusedProducer,
+                exportedByRefusedProducer, boundedByTick (concrete[] kinds
+                CONSTANT, EXPORTED, BOUNDED).
 
 A root is named by its rootId in result.json and by its symbol in the
 formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
@@ -174,23 +178,28 @@ def main():
     # A SAT stands on its witness's path; an UNSAT on every path.
     sat = result.get('claim') == 'SAT_CANDIDATE' and bool(selector)
     out['unboundOffWitness'] = []
-    # A store content leaf held as its version's constant because the
-    # closure refuses its producer by rule (concrete[] kind CONSTANT,
-    # compose.Composer#refusedByRule): named, and no open link.
+    # A store content leaf a producer the closure refuses by rule settles
+    # (compose.Composer#refusedByRule, SmtLowering#settled): concrete[] kind
+    # CONSTANT (its export a constant), EXPORTED (bound by its export) or
+    # BOUNDED (held past the daemon tick bound): named, and no open link.
     path_of = {p.get('selector', ''): p.get('pathId', '')
                for p in manifest.get('paths') or []}
-    constant = {}
+    named = {'CONSTANT': 'constantByRefusedProducer',
+             'EXPORTED': 'exportedByRefusedProducer',
+             'BOUNDED': 'boundedByTick'}
+    settled, by_kind = {}, {kind: set() for kind in named}
     for row in result.get('concrete') or []:
-        if row.get('kind') == 'CONSTANT':
-            constant.setdefault(row.get('pathId', ''), set()).add(
+        if row.get('kind') in named:
+            settled.setdefault(row.get('pathId', ''), set()).add(
                 row.get('subject', ''))
-    out['constantByRefusedProducer'] = sorted(
-        {s for subjects in constant.values() for s in subjects})
+            by_kind[row['kind']].add(row.get('subject', ''))
+    for kind, key in named.items():
+        out[key] = sorted(by_kind[kind])
     for each, own in sorted(fatal.items()):
         bound = set()
         for family in families.get(each, []):
             bound |= family
-        for subject in constant.get(path_of.get(each, ''), set()):
+        for subject in settled.get(path_of.get(each, ''), set()):
             bound |= {subject, '|' + subject + '|'}
         open_links = sorted(c for c in own if is_boundary(c) and c not in bound)
         if sat and each != selector:

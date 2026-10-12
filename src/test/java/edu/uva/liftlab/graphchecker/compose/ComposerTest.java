@@ -43,6 +43,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -66,6 +67,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -850,28 +852,136 @@ public class ComposerTest {
         // A symbol the body spells bare, and one it must bar-quote: the open
         // link names its producer either way (solr-18413 Z2R: 40 String
         // leaves, |M_L'String'_...|, named no producer).
+        JsonObject expression = symbol(MARKER, "Z");
         for (String vh : new String[] {"M_Z_field_HOFF.key",
                 "M_Z_field_HOFF.k'ey"}) {
-            judgedOnItsPaths(vh, "PORT.key", PRODUCER);
+            judgedOnItsPaths(vh, "PORT.key", PRODUCER, expression, "OPEN");
         }
         // A store content leaf whose unattested producer the closure refuses
-        // by rule (a role: no weave captures it) is a constant of its
-        // version, named, and no open link (lead's rule (a)); the same leaf
-        // of a region producer a round could plan stays an open link.
+        // by rule settles by that producer's own export at the port (lead's
+        // rule (a), B-a): an expression binds it, a constant expression
+        // holds it as its version's constant -- past the daemon tick bound,
+        // that bound by name -- each named and no open link; with no export
+        // it stays an open link, as the same leaf of a region producer a
+        // round could plan does.
         String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
-        judgedOnItsPaths("M_Z_field_HOFF.leaf", content, PRODUCER);
-        judgedOnItsPaths("M_Z_field_HOFF.leaf2", content,
-                OccurrenceAddress.of(PRODUCER.node(),
-                        OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
-                        PRODUCER.context(), ExecutionIndex.empty()));
+        OccurrenceAddress role = OccurrenceAddress.of(PRODUCER.node(),
+                OccurrenceAddress.ROLE_REGION + "OVERSEER_STATE_UPDATE",
+                PRODUCER.context(), ExecutionIndex.empty());
+        OccurrenceAddress late = OccurrenceAddress.of(PRODUCER.node(),
+                "REGION.tick", CausalContext.of(Role.of("TICK"), "", 2),
+                ExecutionIndex.empty());
+        Object[][] rows = {
+            {PRODUCER, expression, "OPEN"},
+            {role, expression, SmtLowering.Unbound.EXPORTED},
+            {role, constant("false"), SmtLowering.Unbound.CONSTANT},
+            {role, null, "OPEN"},
+            {late, constant("false"), SmtLowering.Unbound.BOUNDED},
+            {late, expression, SmtLowering.Unbound.EXPORTED},
+        };
+        for (Object[] row : rows) {
+            judgedOnItsPaths("M_Z_field_HOFF.leaf", content,
+                    (OccurrenceAddress) row[0], (JsonObject) row[1],
+                    (String) row[2]);
+        }
+    }
+
+    /**
+     * A WRITER REACHED THROUGH A STORE WRITE THE ENGINE STATED IS CUT THERE
+     * (RestsOn.Reached, RowOrder#beforeCut): its reads stated before that
+     * write at the same seq join; one stated after it is past the cut, so
+     * no closure, COMPOSE's, EXPLORE's or CONFIRM's, holds a read not on the
+     * flow (review M-c: the bare seq let every engine read of the seq in).
+     */
+    @Test
+    public void aWritersCutIsTheEngineWriteItWasReachedThrough() {
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/state.json");
+        LocationId before = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/before");
+        LocationId after = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/after");
+        Endpoint writer = Endpoint.of(PRODUCER, "W", at("write#1", 0), 0);
+        Endpoint reader = Endpoint.of(ANCHOR, "R", at("read#1", 0), 0);
+        WriteRow written = WriteRow.of("s", 42L, writer, state, 1L, "",
+                "[B").withTie(2);
+        ReadRow anchored = ReadRow.of("s", 50L, reader, state, 1L, "R1",
+                "[B", "");
+        ReadRow earlier = ReadRow.of("s", 42L, writer, before, 0L, "R2",
+                "[B", "").withTie(1);
+        ReadRow later = ReadRow.of("s", 42L, writer, after, 0L, "R3",
+                "[B", "").withTie(3);
+        Map<String, List<ReadRow>> reads = new HashMap<String, List<ReadRow>>();
+        reads.put(ANCHOR.id(), Collections.singletonList(anchored));
+        reads.put(PRODUCER.id(), Arrays.asList(earlier, later));
+        RestsOn.Log log = new RestsOn.Log() {
+            @Override
+            public List<ReadRow> readsOn(String occurrenceId) {
+                return reads.getOrDefault(occurrenceId,
+                        Collections.<ReadRow>emptyList());
+            }
+
+            @Override
+            public WriteRow writeOf(String locationKey, long version) {
+                return locationKey.equals(SmtLowering.locationKey(state))
+                        && version == 1L ? written : null;
+            }
+
+            @Override
+            public List<WriteRow> writesOf(String locationKey) {
+                return locationKey.equals(SmtLowering.locationKey(state))
+                        ? Collections.singletonList(written)
+                        : Collections.<WriteRow>emptyList();
+            }
+        };
+        List<String> joined = new ArrayList<String>();
+        List<String> past = new ArrayList<String>();
+        RestsOn.Reached reached = RestsOn.closure(log, ANCHOR, ANCHOR, 60L,
+                new ArrayList<WriteRow>(), false, new RestsOn.Reads() {
+                    @Override
+                    public void joined(ReadRow read, WriteRow write) {
+                        joined.add(read.symbol());
+                    }
+
+                    @Override
+                    public void past(ReadRow read) {
+                        past.add(read.symbol());
+                    }
+                });
+        assertEquals(Long.valueOf(42L), reached.get(PRODUCER.id()));
+        assertTrue(joined.toString(), joined.contains("R1")
+                && joined.contains("R2"));
+        assertEquals("stated after the write it was reached through",
+                Collections.singletonList("R3"), past);
+        assertTrue(reached.before(PRODUCER.id(), earlier));
+        assertFalse(reached.before(PRODUCER.id(), later));
     }
 
     /** How many {@link #judgedOnItsPaths} built: each its own folder. */
     private int judged;
 
+    /**
+     * @param exported what s2's producer {@code heldBy} exported at the
+     *                 port, none where null
+     * @param settles  how s2's arrival is stated: "OPEN" an open link, else
+     *                 the kind a producer refused by rule settles it as
+     */
     private void judgedOnItsPaths(String vh, String site,
-                                  OccurrenceAddress heldBy) throws Exception {
+                                  OccurrenceAddress heldBy,
+                                  JsonObject exported, String settles)
+            throws Exception {
         Path iteration = folder.newFolder("judged-" + judged++).toPath();
+        // The recording ran TICK #1 on the producer's node, the last, and
+        // PRODUCER's own IPC_HANDLER #1: only a TICK #2 is past it.
+        List<JsonObject> recorded = new ArrayList<JsonObject>();
+        for (String role : new String[] {"TICK", "IPC_HANDLER"}) {
+            recorded.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
+                    ScheduleEvent.Kind.WAKE, PRODUCER.node().render() + "|"
+                            + CausalContext.of(Role.of(role), "", 1)
+                            .render(), "tick." + role, 0, "")));
+        }
+        RowCodec.writeJsonl(iteration.resolve("recorded_schedule.jsonl"),
+                recorded);
         Endpoint producer = Endpoint.of(PRODUCER, site,
                 at("export#1", 0), 0);
         Endpoint consumer = Endpoint.of(ANCHOR, site,
@@ -884,9 +994,9 @@ public class ComposerTest {
         // session attests (it ran concretely): its arrival is held.
         Endpoint unattested = Endpoint.of(heldBy, site,
                 at("export#2", 0), 0);
-        boolean refused = heldBy.role();
+        boolean refused = !"OPEN".equals(settles);
         session(iteration, "s2", true, "false", unattested, consumer, vh,
-                "false", null, false, false, "EXPR.v1.marker");
+                "false", null, false, false, "EXPR.v1.marker", exported);
         Composer.Composition composition = compose(iteration, 8);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver());
@@ -927,15 +1037,34 @@ public class ComposerTest {
         ClaimPolicy.Decision again = ClaimPolicy.decide(next, solver());
         assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, again.claim().kind());
         JsonObject unsat = ComposeMain.campaignClaim(next, again);
+        String stated = "";
+        for (Composer.Concrete row : next.concrete()) {
+            if (row.subject.equals(vh) && SmtLowering.settled(row.kind)) {
+                stated = row.kind;
+            }
+        }
+        assertEquals(settles + ": " + next.concrete(), refused ? settles : "",
+                stated);
         if (refused) {
-            assertFalse("a constant of its version is no open link: "
-                    + unsat, unsat.has("openChain"));
+            assertFalse(settles + " is no open link: " + unsat,
+                    unsat.has("openChain"));
+            assertEquals(unsat.toString(), "UNSAT_CLOSED",
+                    unsat.get("claim").getAsString());
+            // Named per producer, rule and kind; past the tick bound, as
+            // the bound the case rests on (campaign_bounds).
+            String subject = SmtLowering.Unbound.BOUNDED.equals(settles)
+                    ? heldBy.render() + " " + Composer.DAEMON_TICK_BOUND
+                    + "=1" : heldBy.render();
+            String word = SmtLowering.Unbound.BOUNDED.equals(settles)
+                    ? "boundedByTick" : SmtLowering.Unbound.EXPORTED.equals(
+                    settles) ? "exportedByRefusedProducer"
+                    : "constantByRefusedProducer";
             boolean named = false;
             for (GapRow gap : next.gaps()) {
-                named |= gap.detail().contains("constantByRefusedProducer")
-                        && gap.subject().equals(heldBy.render());
+                named |= gap.detail().contains(word)
+                        && gap.subject().equals(subject);
             }
-            assertTrue("named per producer and rule: " + next.gaps(), named);
+            assertTrue(settles + " named: " + next.gaps(), named);
             return;
         }
         assertEquals(unsat.toString(), "RUN_DEFECT",
@@ -944,7 +1073,7 @@ public class ComposerTest {
                 .getAsJsonObject();
         assertEquals(SmtNames.legalSymbols(vh),
                 link.get("symbol").getAsString());
-        assertEquals("the producer GROW would plan", PRODUCER.render(),
+        assertEquals("the producer its arrival names", heldBy.render(),
                 link.get("producer").getAsString());
     }
 
@@ -8809,20 +8938,32 @@ public class ComposerTest {
                          String symbol, String arrival, String answered,
                          boolean attestProducer, boolean observedFatal,
                          String ref) throws IOException {
+        session(iteration, id, explored, marker, producer, consumer, symbol,
+                arrival, answered, attestProducer, observedFatal, ref,
+                symbol(MARKER, "Z"));
+    }
+
+    /** The same, the producer's export {@code exported}, none where null. */
+    private void session(Path iteration, String id, boolean explored,
+                         String marker, Endpoint producer, Endpoint consumer,
+                         String symbol, String arrival, String answered,
+                         boolean attestProducer, boolean observedFatal,
+                         String ref, JsonObject exported) throws IOException {
         Session session = new Session(iteration, id, explored);
         // A producer the replay did not instrument is one that ran
         // concretely: it states its delivery and attests nothing.
         session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                 explored, attestProducer);
         session.marker(marker);
-        session.expression(ref, symbol(MARKER, "Z"));
+        session.expression(ref, exported == null ? symbol(MARKER, "Z")
+                : exported);
         // The producer decides, then exports: a family arm is guarded by
         // the prefix its own session had taken by then.
         if (attestProducer) {
             session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
                     + MARKER + "))");
         }
-        session.export(producer, ref, 1L, marker);
+        if (exported != null) session.export(producer, ref, 1L, marker);
         if (answered == null) {
             session.attach(consumer, symbol, arrival, producer);
         } else {

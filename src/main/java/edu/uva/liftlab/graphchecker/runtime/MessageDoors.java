@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
@@ -130,7 +131,8 @@ public final class MessageDoors {
      * creating can carry to whatever thread later sends it.
      */
     public static Object captureScope() {
-        return CausynthTraceRecorder.captureScope();
+        return guarded("captureScope", null, null,
+                CausynthTraceRecorder::captureScope);
     }
 
     /**
@@ -244,7 +246,7 @@ public final class MessageDoors {
     /** The request {@link #requestStarting} began is over, answered or
      *  failed ({@code Identity#requestEnded}). */
     public static void requestEnded(long request) {
-        Identity.requestEnded(request);
+        guarded("requestEnded", null, () -> Identity.requestEnded(request));
     }
 
     /**
@@ -275,7 +277,7 @@ public final class MessageDoors {
 
     /** The hand-off {@link #handingOff} began is over. */
     public static void handedOff(Object handoff) {
-        Identity.handoffEnded(handoff);
+        guarded("handedOff", null, () -> Identity.handoffEnded(handoff));
     }
 
     /**
@@ -441,13 +443,15 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storing(String transport, String location) {
-        boolean paused = pause();
-        try {
-            turn(ScheduleEvent.Kind.WRITE, transport, location);
-            return inFlight(transport, location);
-        } finally {
-            resume(paused);
-        }
+        return guarded("storing", location, -1L, () -> {
+            boolean paused = pause();
+            try {
+                turn(ScheduleEvent.Kind.WRITE, transport, location);
+                return inFlight(transport, location);
+            } finally {
+                resume(paused);
+            }
+        });
     }
 
     /**
@@ -464,16 +468,18 @@ public final class MessageDoors {
      * @return the write's token, for {@link #storeEnded}
      */
     public static long storingChild(String transport, String location) {
-        boolean paused = pause();
-        try {
-            String path = trimmed(location);
-            int slash = path.lastIndexOf('/');
-            turn(ScheduleEvent.Kind.WRITE, transport,
-                    slash <= 0 ? "/" : path.substring(0, slash));
-            return inFlight(transport, location);
-        } finally {
-            resume(paused);
-        }
+        return guarded("storingChild", location, -1L, () -> {
+            boolean paused = pause();
+            try {
+                String path = trimmed(location);
+                int slash = path.lastIndexOf('/');
+                turn(ScheduleEvent.Kind.WRITE, transport,
+                        slash <= 0 ? "/" : path.substring(0, slash));
+                return inFlight(transport, location);
+            } finally {
+                resume(paused);
+            }
+        });
     }
 
     /**
@@ -486,12 +492,14 @@ public final class MessageDoors {
      * went to another node).
      */
     public static void reading(String transport, String location) {
-        boolean paused = pause();
-        try {
-            turn(ScheduleEvent.Kind.READ, transport, location);
-        } finally {
-            resume(paused);
-        }
+        guarded("reading", location, () -> {
+            boolean paused = pause();
+            try {
+                turn(ScheduleEvent.Kind.READ, transport, location);
+            } finally {
+                resume(paused);
+            }
+        });
     }
 
     /**
@@ -780,16 +788,43 @@ public final class MessageDoors {
      * code, which such a door leaves as it found it (a NullPointerException
      * of #decode killed every seed replay whose test builds its cluster in
      * @Before, solr-sg3 SP2-10).  The rows the door would have stated are
-     * missing: SESSION_INCOMPLETE, BLOCKING.  A fault door's planted fault
-     * is the system's world, not an engine fault: it is thrown, never here.
+     * missing: ENGINE_FAULT, BLOCKING.  A fault door's planted fault is the
+     * system's world, not an engine fault: it is thrown, never here; nor
+     * is an Error (a replay's cut, LoopAccounting).
      */
     static void doorFault(String door, RuntimeException fault) {
         StackTraceElement[] frames = fault.getStackTrace();
-        RowRuntime.gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING, door,
+        RowRuntime.gap(GapKind.ENGINE_FAULT, GapClass.BLOCKING, door,
                 "the engine's door threw " + fault + (frames.length == 0
                         ? "" : " at " + frames[0]) + "; the system's call"
                         + " went on, and the rows the door states are"
                         + " missing");
+    }
+
+    /**
+     * {@code call}, its engine fault named ({@link #doorFault}) and
+     * {@code fallback} returned in place of a throw into the system: a
+     * token no end door matches.  The door is named {@code at} what (null:
+     * nothing) only when it faults, so a store door spells nothing per call.
+     */
+    private static <T> T guarded(String door, String at, T fallback,
+                                 Supplier<T> call) {
+        try {
+            return call.get();
+        } catch (RuntimeException fault) {
+            doorFault(at == null ? door : door + " " + at, fault);
+            return fallback;
+        }
+    }
+
+    /** {@code call}, its engine fault named ({@link #doorFault}) as
+     *  {@link #guarded(String, String, Object, Supplier)} names it. */
+    private static void guarded(String door, String at, Runnable call) {
+        try {
+            call.run();
+        } catch (RuntimeException fault) {
+            doorFault(at == null ? door : door + " " + at, fault);
+        }
     }
 
     private static void decode(String transport, String key, Object product) {
@@ -1250,12 +1285,14 @@ public final class MessageDoors {
      */
     public static long enterCarriedScope(Object scope, String role,
                                          String api) {
-        return CausynthTraceRecorder.enterCarriedScope(scope, role, api);
+        return guarded("enterCarriedScope", role, 0L, () ->
+                CausynthTraceRecorder.enterCarriedScope(scope, role, api));
     }
 
     /** Leaves the scope {@link #enterCarriedScope} entered. */
     public static void exitCarriedScope(long token) {
-        CausynthTraceRecorder.exitCarriedScope(token);
+        guarded("exitCarriedScope", null, () ->
+                CausynthTraceRecorder.exitCarriedScope(token));
     }
 
     /**
@@ -1269,8 +1306,10 @@ public final class MessageDoors {
      * and the turn stated no END: hdfs-adhoc-21/22/23/25, round HG5A).
      */
     public static long beginTick(Object owner, String role) {
-        endInbound();
-        return CausynthTraceRecorder.beginDaemonTick(owner, role);
+        return guarded("beginTick", role, 0L, () -> {
+            endInbound();
+            return CausynthTraceRecorder.beginDaemonTick(owner, role);
+        });
     }
 
     /**
@@ -1309,8 +1348,10 @@ public final class MessageDoors {
      * Overseer's batch write after its last item's turn served that item).
      */
     public static void endTick(long token) {
-        endInbound();
-        CausynthTraceRecorder.endDaemonTick(token);
+        guarded("endTick", null, () -> {
+            endInbound();
+            CausynthTraceRecorder.endDaemonTick(token);
+        });
     }
 
     /** Opens the recorded window: the workload's recording boundary. */
@@ -1349,8 +1390,11 @@ public final class MessageDoors {
      */
     public static long beginNodeStartup(String kind, String role,
                                         String sourceId) {
-        endInbound();
-        return CausynthTraceRecorder.beginNodeStartup(kind, role, sourceId);
+        return guarded("beginNodeStartup", role, 0L, () -> {
+            endInbound();
+            return CausynthTraceRecorder.beginNodeStartup(kind, role,
+                    sourceId);
+        });
     }
 
     /**
@@ -1359,13 +1403,16 @@ public final class MessageDoors {
      * exchange the thread served ends first, as for a construction.
      */
     public static long beginNodeStartup(Object node) {
-        endInbound();
-        return CausynthTraceRecorder.beginNodeStartup(node);
+        return guarded("beginNodeStartup", null, 0L, () -> {
+            endInbound();
+            return CausynthTraceRecorder.beginNodeStartup(node);
+        });
     }
 
     /** Ends the startup {@code token} opened. */
     public static void endNodeStartup(long token) {
-        CausynthTraceRecorder.endNodeStartup(token);
+        guarded("endNodeStartup", null, () ->
+                CausynthTraceRecorder.endNodeStartup(token));
     }
 
     /** Closes it: the workload's test is over, its teardown unrecorded. */
@@ -1431,13 +1478,17 @@ public final class MessageDoors {
     }
 
     public static long beginRequest(Object source, String api) {
-        endInbound();
-        return CausynthTraceRecorder.beginSourceRequest(source, api);
+        return guarded("beginRequest", api, 0L, () -> {
+            endInbound();
+            return CausynthTraceRecorder.beginSourceRequest(source, api);
+        });
     }
 
     public static void endRequest(long request, String api) {
-        endInbound();
-        CausynthTraceRecorder.endSourceRequest(request, api);
+        guarded("endRequest", api, () -> {
+            endInbound();
+            CausynthTraceRecorder.endSourceRequest(request, api);
+        });
     }
 
     /**

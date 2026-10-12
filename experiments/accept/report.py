@@ -585,7 +585,9 @@ concrete = result.get("concrete") or []
 CONCRETE_SHOWN = 20
 WORDS = {"FREE": "free (over-approximated)",
          "HELD": "held at its recorded value",
-         "CONSTANT": "a constant of its version (its producer refused by rule)"}
+         "CONSTANT": "a constant of its version (its producer refused by rule)",
+         "EXPORTED": "bound by its producer's export (its producer refused by rule)",
+         "BOUNDED": "held past the daemon tick bound"}
 witness = next((row for row in result.get("valuations") or []
                 if row.get("ordinal") == valuation_ordinal), {})
 witness_path = witness.get("selectedPathId") or ""

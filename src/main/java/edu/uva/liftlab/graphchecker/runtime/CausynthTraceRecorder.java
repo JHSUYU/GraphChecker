@@ -105,6 +105,11 @@ public final class CausynthTraceRecorder {
     /** The most {@link #BEFORE_WINDOW} keeps: a door that faults on every
      *  call before the window says so in its first rows. */
     private static final int BEFORE_WINDOW_MAX = 256;
+    /** The gaps {@link #BEFORE_WINDOW} dropped past its cap, counted by
+     *  kind and class (a dropped BLOCKING row still blocks), named when the
+     *  window opens; guarded by {@link #LOCK}. */
+    private static final Map<String, Integer> BEFORE_WINDOW_DROPPED =
+            new LinkedHashMap<String, Integer>();
 
     private CausynthTraceRecorder() {
     }
@@ -114,12 +119,24 @@ public final class CausynthTraceRecorder {
         initialize();
         RecordingWindow.open();
         List<GapRow> before;
+        Map<String, Integer> dropped;
         synchronized (LOCK) {
             before = new ArrayList<GapRow>(BEFORE_WINDOW);
             BEFORE_WINDOW.clear();
+            dropped = new LinkedHashMap<String, Integer>(
+                    BEFORE_WINDOW_DROPPED);
+            BEFORE_WINDOW_DROPPED.clear();
         }
         for (GapRow gap : before) {
             recordingGap(gap.kind(), gap.cls(), gap.subject(), gap.detail());
+        }
+        for (Map.Entry<String, Integer> more : dropped.entrySet()) {
+            String[] kindAndClass = more.getKey().split("\\|", 2);
+            recordingGap(GapKind.valueOf(kindAndClass[0]),
+                    GapClass.valueOf(kindAndClass[1]), "recording",
+                    more.getValue() + " more " + kindAndClass[0] + " gap(s)"
+                            + " stated before the window opened were dropped"
+                            + " past the first " + BEFORE_WINDOW_MAX);
         }
         // Enforced prefix: running timed waits are held to their turns.
         if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
@@ -515,6 +532,9 @@ public final class CausynthTraceRecorder {
                     BEFORE_WINDOW.add(GapRow.of("recording", kind, cls,
                             nonNull(subject).isEmpty() ? "recording"
                                     : subject, nonNull(detail)));
+                } else {
+                    BEFORE_WINDOW_DROPPED.merge(kind.name() + "|"
+                            + cls.name(), 1, Integer::sum);
                 }
             }
             return;

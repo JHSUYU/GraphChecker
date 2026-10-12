@@ -30,6 +30,7 @@ import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -522,15 +523,14 @@ public final class RestsOn {
      * a run whose reader read another version, a lagging watch, does not
      * confirm it).
      */
-    Set<String> storeLocations(String session, Map<String, Long> reached) {
+    Set<String> storeLocations(String session, Reached reached) {
         Set<String> locations = new LinkedHashSet<String>();
         for (Map.Entry<String, Long> each : reached.entrySet()) {
             OccurrenceAddress at = corpus.occurrence(each.getKey());
             if (at == null) continue;
             for (ReadRow read : corpus.readsOn(session, at)) {
                 if (read.location().kind() == LocationKind.STORE
-                        && RowOrder.beforeEvent(read.seq(), read.tie(),
-                        each.getValue())) {
+                        && reached.before(each.getKey(), read)) {
                     locations.add(SmtLowering.locationKey(read.location()));
                 }
             }
@@ -552,8 +552,8 @@ public final class RestsOn {
      * a map lacks was removed earlier under a clock comparison).  Each
      * (location, version) is handled once.</p>
      */
-    Map<String, Long> closure(String session, OccurrenceAddress start,
-                              long cutoff, List<WriteRow> seeds) {
+    Reached closure(String session, OccurrenceAddress start,
+                    long cutoff, List<WriteRow> seeds) {
         return closure(log(session), anchor, start, cutoff, seeds, true,
                 null);
     }
@@ -613,14 +613,11 @@ public final class RestsOn {
      * read after the expiry check).  {@code reads}, when given, hears each
      * read met.
      */
-    public static Map<String, Long> closure(Log log,
-                                            OccurrenceAddress anchor,
-                                            OccurrenceAddress start,
-                                            long cutoff,
-                                            List<WriteRow> seeds,
-                                            boolean anchorWhole,
-                                            Reads reads) {
-        Map<String, Long> reached = new LinkedHashMap<String, Long>();
+    public static Reached closure(Log log, OccurrenceAddress anchor,
+                                 OccurrenceAddress start, long cutoff,
+                                 List<WriteRow> seeds, boolean anchorWhole,
+                                 Reads reads) {
+        Reached reached = new Reached();
         reached.put(start.id(), cutoff);
         List<String> pending = new ArrayList<String>();
         pending.add(start.id());
@@ -636,10 +633,8 @@ public final class RestsOn {
             while (!pending.isEmpty()) {
                 String at = pending.remove(0);
                 boolean whole = anchorWhole && anchor.id().equals(at);
-                long cut = reached.get(at);
                 for (ReadRow read : log.readsOn(at)) {
-                    if (!whole && !RowOrder.beforeEvent(read.seq(),
-                            read.tie(), cut)) {
+                    if (!whole && !reached.before(at, read)) {
                         if (reads != null) reads.past(read);
                         continue;
                     }
@@ -670,8 +665,7 @@ public final class RestsOn {
      * INITIAL has neither: no occurrence wrote it.
      */
     private static void reach(WriteRow write, OccurrenceAddress anchor,
-                              OccurrenceAddress start,
-                              Map<String, Long> reached,
+                              OccurrenceAddress start, Reached reached,
                               List<String> pending, List<WriteRow> versions,
                               Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
@@ -684,10 +678,56 @@ public final class RestsOn {
                 + write.version())) {
             versions.add(write);
         }
-        Long held = reached.get(writer);
-        if (held != null && held.longValue() >= write.seq()) return;
-        reached.put(writer, write.seq());
+        if (!reached.extend(writer, write)) return;
         pending.add(writer);
+    }
+
+    /**
+     * The occurrences a closure reaches, each with the cut its prefix runs
+     * to: a VM event's seq, or -- a writer reached through a store write the
+     * engine stated -- that write's place, seq and tie ({@link RowOrder}),
+     * so a read the writer stated after its write at the same seq is past
+     * the cut.  Read as occurrence id -> cut seq wherever only the seq
+     * matters (a decision is a VM row).
+     */
+    public static final class Reached extends LinkedHashMap<String, Long> {
+        private static final long serialVersionUID = 1L;
+        private final Map<String, Integer> ties = new HashMap<String, Integer>();
+
+        /** Moves {@code occurrence}'s cut out to {@code write}, if later:
+         *  whether it moved. */
+        boolean extend(String occurrence, WriteRow write) {
+            Long held = get(occurrence);
+            if (held != null && !later(write.seq(), write.tie(), held,
+                    ties.getOrDefault(occurrence, 0))) {
+                return false;
+            }
+            put(occurrence, write.seq());
+            if (write.tie() > 0) {
+                ties.put(occurrence, write.tie());
+            } else {
+                ties.remove(occurrence);
+            }
+            return true;
+        }
+
+        /** Whether the cut at ({@code seq}, {@code tie}) is past the one at
+         *  ({@code heldSeq}, {@code heldTie}): a VM event's cut (tie 0) is
+         *  past every engine row of its seq ({@link RowOrder}). */
+        private static boolean later(long seq, int tie, long heldSeq,
+                                     int heldTie) {
+            if (seq != heldSeq) return seq > heldSeq;
+            int at = tie == 0 ? Integer.MAX_VALUE : tie;
+            int was = heldTie == 0 ? Integer.MAX_VALUE : heldTie;
+            return at > was;
+        }
+
+        /** Whether {@code read} stands before {@code occurrence}'s cut. */
+        public boolean before(String occurrence, ReadRow read) {
+            Long cut = get(occurrence);
+            return cut != null && RowOrder.beforeCut(read.seq(), read.tie(),
+                    cut, ties.getOrDefault(occurrence, 0));
+        }
     }
 
     /** The decisions of every reached occurrence but the anchor, each
