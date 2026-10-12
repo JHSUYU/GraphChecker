@@ -252,7 +252,7 @@ orders, three under other JVM identity-hash generators).
 | --- | --- | --- |
 | Engine code naming a system or case | done, with two library rules | Only comments name cases. `gc/runtime/PoolWorkers` names Jetty's `QueuedThreadPool.startThread`. The wire rule names `.protobuf.` (also `.protobuf.RpcController`); scope growth reads the library catalog's `CODEC` rows (protobuf's runtimes, SolrJ's JavaBin). |
 | VM code naming a system | done | Only comments. Library lists are hard-coded: logging and crypto are muted, commons-lang 2 and Spring `StringUtils` are modeled, two Jackson classes are muted. |
-| Per-case switches | partial | the named cases' `causynth_scope_growth_budget=0` (their declared occurrences name regions of the declared scope); each named case's `loop-bounds*.jsonl` and `region_path_max_tasks=128` for 11741; the two per-case workarounds of `hdfs-adhoc` (07's tree and world depth, 21's tree and loop bounds, `case.sh`) |
+| Per-case switches | partial | the named cases' `causynth_scope_growth_budget=0` (their declared occurrences name regions of the declared scope); each named case's `loop-bounds*.jsonl` and `region_path_max_tasks=128` for 11741; solr-18413's own `WIRE_FLOW` rows, which stay while store content capture does not carry `routingRules.*.expireAt` to its guard (the decode's objects are built outside every region, where the VM propagates nothing: the field reaches the guard as an INITIAL constant; round Z2L UNSAT_CLOSED without them, SYMBOL-SCOPE §6.3); the two per-case workarounds of `hdfs-adhoc` (07's tree and world depth, 21's tree and loop bounds, `case.sh`) |
 | Dead or fallback code | not done | See "Fallbacks and dead code" below. |
 
 ## Per-system surface

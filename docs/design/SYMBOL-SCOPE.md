@@ -1231,8 +1231,12 @@ Capture kinds: `METHOD_PARAMETER` (`index`), `METHOD_RETURN` (no selector), `CAL
 (`callee`, `occurrence` = the k-th call of the callee in the method, `index`), `CALL_RETURN`
 (`callee`, `occurrence`). Both captures' types must equal `javaType`. Any other schema or kind is
 refused, never skipped. A declared row is for a value no protobuf message field carries (HDFS: the
-key id inside the SASL user name); a protobuf field is derived (§6.2), and a store's JSON content
-crosses leaf by leaf (§6.4: Solr's routing-rule expiry, once a declared row).
+key id inside the SASL user name; Solr: the routing rule's expiry); a protobuf field is derived
+(§6.2), and a store's JSON content crosses leaf by leaf (§6.4). solr-18413's two rows stay while the
+leaf path does not carry `routingRules.*.expireAt` to the guard: node1's watcher parses it outside
+every region and `RoutingRule`'s constructor parses the long there, where the VM propagates nothing,
+so the guard's region reads the field as an INITIAL constant (round Z2L: UNSAT_CLOSED without the
+rows).
 
 SEED demands every capture and joins each producer to each consumer (`wire_handoff`,
 `wire_capture_argument` edges), so the slice continues on the sending side.
