@@ -691,6 +691,84 @@ public class ConfirmationTest {
     }
 
     /**
+     * A write that filed its version is no longer one more a refresh can
+     * reach, though its adapter's bracket has not ended (review re-check M6:
+     * counted filed and in flight, a refresh reaching the paired version
+     * only was held as reaching past it).
+     */
+    @Test
+    public void aFiledWriteIsNotAlsoInFlight() throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        SourceRef node = new SourceRef("CLUSTER_NODE", "SOLR_NODE",
+                "auto0/node0", 0);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, node);
+        for (int version = 0; version <= 3; version++) {
+            MessageDoors.stored("SOLR_ZK", "/filed/state.json@" + version,
+                    owner, null);
+        }
+        java.util.concurrent.CountDownLatch filed =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch refreshed =
+                new java.util.concurrent.CountDownLatch(1);
+        Thread writer = new Thread(() -> {
+            long write = MessageDoors.storing("SOLR_ZK", "/filed/state.json");
+            try {
+                MessageDoors.stored("SOLR_ZK", "/filed/state.json@4", owner,
+                        null);
+                filed.countDown();
+                refreshed.await();
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+            } finally {
+                MessageDoors.storeEnded("SOLR_ZK", write);
+            }
+        });
+        long[] took = new long[1];
+        Thread watch = new Thread(() -> {
+            long scope = RuntimeTraceContext.beginRequest(node, "watch");
+            try {
+                filed.await();
+                long started = System.nanoTime();
+                MessageDoors.refreshing("SOLR_ZK", "/filed/state.json");
+                took[0] = System.nanoTime() - started;
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+            } finally {
+                refreshed.countDown();
+                RuntimeTraceContext.endRequest(scope);
+            }
+        });
+        long hop = RuntimeTraceContext.beginRequest(node, "read");
+        try {
+            OccurrenceAddress reader = Identity.occurrence(node.key(),
+                    "REGION.reader", true);
+            LocationId view = MessageDoors.viewOf(MessageDoors.storeLocation(
+                    "SOLR_ZK", "/filed/state.json"), reader);
+            Confirmation.resetForTests();
+            handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                    + "\"view\":\"" + Confirmation.viewKey(view) + "\","
+                    + "\"above\":4,\"readerContext\":\""
+                    + Confirmation.contextKey(reader) + "\",\"until\":\""
+                    + Endpoint.activation(reader, ExecutionIndex.empty())
+                    + "\"}"));
+            System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+            writer.start();
+            watch.start();
+            watch.join(5000L);
+            writer.join(5000L);
+            assertTrue("version 4 filed, none in flight: it went on: "
+                    + took[0], took[0] < 200_000_000L);
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+            RuntimeTraceContext.endRequest(hop);
+            Identity.resetForTests();
+        }
+    }
+
+    /**
      * A view hold whose reader read in role work, which no hook closes, ends
      * at the first region that work closes after the read, in the run as it
      * goes: a region of its context closing before the read ends nothing.

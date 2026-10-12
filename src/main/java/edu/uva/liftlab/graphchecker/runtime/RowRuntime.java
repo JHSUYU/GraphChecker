@@ -515,21 +515,6 @@ public final class RowRuntime {
     }
 
     /**
-     * The seq a row the engine states itself takes (a store row): the VM's
-     * last event id, after every event before it and before every event
-     * after it; 0 -- no VM clock, which no order check reads (a thread with
-     * no VM context; outside a session, where no row is published).
-     */
-    static long currentEvent() {
-        if (publisher == null) return 0L;
-        try {
-            return Math.max(0L, ConcolicVmBroker.engine().currentEventId());
-        } catch (Throwable unavailable) {
-            return 0L;
-        }
-    }
-
-    /**
      * The occurrence a door's own event runs in: the admitted activation's,
      * else the one running here (a role, an unselected region), stated as an
      * unselected activation so its rows are an activation's (as a port

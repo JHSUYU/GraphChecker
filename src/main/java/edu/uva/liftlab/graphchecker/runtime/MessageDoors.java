@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -60,8 +61,8 @@ public final class MessageDoors {
     private static final Set<String> REPOINTED =
             ConcurrentHashMap.newKeySet();
     /** The newest version of each location a write filed ({@link
-     *  #stored}), by transport and location: how far a refresh can reach
-     *  ({@link #refreshing}). */
+     *  #filedVersion}), by transport and the location named with its life
+     *  ({@link #life}): how far a refresh can reach ({@link #refreshing}). */
     private static final Map<String, Long> NEWEST =
             new ConcurrentHashMap<String, Long>();
     /**
@@ -85,6 +86,9 @@ public final class MessageDoors {
     private static final class Write {
         private final Thread thread;
         private final String location;
+        /** Whether its version is filed ({@link #filedVersion}): no longer
+         *  one more a refresh can reach.  Guarded by {@link #STORING}. */
+        private boolean filed;
 
         private Write(Thread thread, String location) {
             this.thread = thread;
@@ -634,8 +638,6 @@ public final class MessageDoors {
             Outbound message = outbound(transport, key, "1", REQUEST, owner,
                     null);
             if (message.active()) STORED.put(transport + "\n" + key, message);
-            NEWEST.merge(transport + "\n" + location(key), version(key),
-                    Math::max);
             written(transport, key, owner);
         } finally {
             storeEnded(transport, store);
@@ -653,6 +655,7 @@ public final class MessageDoors {
         long version = version(key);
         if (version < 0L) return;
         String path = life(transport, location(key), version, true);
+        filedVersion(transport, location(key), path, version);
         String node = RuntimeTraceContext.ownedSource(owner).key();
         CausynthTraceRecorder.storeWritten(trimmed(transport), path, version,
                 Identity.currentOccurrence(node));
@@ -666,6 +669,28 @@ public final class MessageDoors {
                 Endpoint.messageSite(trimmed(transport), "WRITE",
                         location.slot().replace('/', '.').replace('@', '.')),
                 location, version);
+    }
+
+    /**
+     * This thread's write filed {@code version} of {@code location} ({@code
+     * path}: named with its life): the newest a refresh of that life
+     * reaches, and the writes this thread has in flight there are no longer
+     * one more -- in one step under {@link #STORING}, so no refresh counts
+     * one write as filed and in flight ({@link #refreshing}).
+     */
+    private static void filedVersion(String transport, String location,
+                                     String path, long version) {
+        synchronized (STORING) {
+            NEWEST.merge(transport + "\n" + path, version, Math::max);
+            Map<Long, Write> writes = STORING.get(transport);
+            if (writes == null) return;
+            for (Write write : writes.values()) {
+                if (write.thread == Thread.currentThread()
+                        && write.makes(location)) {
+                    write.filed = true;
+                }
+            }
+        }
     }
 
     /**
@@ -705,9 +730,7 @@ public final class MessageDoors {
         // re-points nothing: one write of a view per version, the first.
         String node = nodeHere();
         OccurrenceAddress here = Identity.currentOccurrence(node);
-        // The node: the running occurrence's, else the thread's scope's (a
-        // decode before the window, or on a thread no occurrence runs on).
-        String decoder = here != null ? here.node().render() : node;
+        String decoder = decoderNode(here, node);
         LocationId view = viewOf(store, decoder);
         boolean repoints = !decoder.isEmpty() && REPOINTED.add(
                 trimmed(transport) + "\n" + path + "\n" + decoder + "@"
@@ -750,20 +773,36 @@ public final class MessageDoors {
             String node = nodeHere();
             OccurrenceAddress at = Identity.currentOccurrence(node);
             String location = trimmed(path);
+            // The view a decode here re-points (#decode): the path's life
+            // now, at the node #decoderNode names.
+            String life = life(transport, location, 0L, false);
             // Each write of the location makes the next version (a store's
-            // version counts its writes): the newest filed, and one more per
-            // write in flight there.
+            // version counts its writes): the newest filed in this life, and
+            // one more per thread with a write in flight there unfiled.
             long reach;
             synchronized (STORING) {
-                reach = NEWEST.getOrDefault(transport + "\n" + location, -1L)
-                        + inFlight(transport, location,
-                        Thread.currentThread()).size();
+                Set<Thread> writers = new HashSet<Thread>();
+                for (Write write : inFlight(transport, location,
+                        Thread.currentThread()).values()) {
+                    if (!write.filed) writers.add(write.thread);
+                }
+                reach = NEWEST.getOrDefault(transport + "\n" + life, -1L)
+                        + writers.size();
             }
-            Confirmation.decoding(viewOf(storeLocation(transport, location),
-                    at), reach, at);
+            Confirmation.decoding(viewOf(storeLocation(transport, life),
+                    decoderNode(at, node)), reach, at);
         } finally {
             resume(paused);
         }
+    }
+
+    /**
+     * The node whose view a decode or a refresh on this thread re-points:
+     * the running occurrence's, else the thread's scope's (a decode before
+     * the window, or on a thread no occurrence runs on).
+     */
+    private static String decoderNode(OccurrenceAddress here, String node) {
+        return here != null ? here.node().render() : node;
     }
 
     /**
@@ -800,7 +839,7 @@ public final class MessageDoors {
     private static final ThreadLocal<Integer> REFRESHING =
             ThreadLocal.withInitial(() -> 0);
 
-    /** The node the running thread's work is attributed to, or "". */    /** The node the running thread's work is attributed to, or "". */
+    /** The node the running thread's work is attributed to, or "". */
     private static String nodeHere() {
         RuntimeTraceContext.View view = RuntimeTraceContext.current();
         return view.source == null ? "" : view.source.key();
