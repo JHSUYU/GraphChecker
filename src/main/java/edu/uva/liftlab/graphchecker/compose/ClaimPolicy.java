@@ -708,7 +708,7 @@ public final class ClaimPolicy {
                     clockDriven);
             if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
                 return new Decision(Claim.of(kind, 0,
-                        movedRoots(composition, recorded, kind), true, gaps),
+                        movedRoots(composition, recorded), true, gaps),
                         outcomes);
             }
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
@@ -733,8 +733,7 @@ public final class ClaimPolicy {
 
         private Decision claimed(ClaimKind kind, Outcome witness) {
             return new Decision(Claim.of(kind, witness.valuation().ordinal(),
-                    movedRoots(composition, witness, kind), true, gaps),
-                    outcomes);
+                    movedRoots(composition, witness), true, gaps), outcomes);
         }
     }
 
@@ -1003,27 +1002,6 @@ public final class ClaimPolicy {
             Long jumped = jump(composition, model, cell);
             if (jumped == null || jumped == 0L) continue;
             moved.put(cell, model.get(cell).trim());
-        }
-        return moved;
-    }
-
-    /**
-     * {@link #movedRoots}, and for a pairing claim the arms its witness
-     * re-paired ({@code Composition#repaired}: a state or wire slot no run
-     * took), each by its selector, set: what a pairing witness moves where
-     * no root moves (a view read taking an older decode, PIPELINE §7.4).
-     */
-    private static Map<String, String> movedRoots(
-            Composer.Composition composition, Outcome outcome,
-            ClaimKind kind) {
-        Map<String, String> moved = movedRoots(composition, outcome);
-        if (outcome != null && (kind == ClaimKind.STATE_PAIRING_FLIPPED
-                || kind == ClaimKind.MESSAGE_PAIRING_FLIPPED)) {
-            for (String arm : composition.repaired(
-                    outcome.selected().selector(),
-                    outcome.selectedArms().keySet())) {
-                moved.put(arm, "true");
-            }
         }
         return moved;
     }
