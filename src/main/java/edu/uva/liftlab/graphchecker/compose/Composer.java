@@ -1342,10 +1342,14 @@ public final class Composer {
         //       the roots alone: a location a family binds and nothing else
         //       reaches holds the formula's alternatives, not the witness (a
         //       confirming run is held to these only).
-        Set<String> fatalLocations = restsOn.independence(session,
-                fatalRests(fatalTerm, path.decisions, cutoff),
-                Collections.<String>emptySet(), reached, conditions)
-                .locations();
+        Set<String> fatalLocations = new LinkedHashSet<String>(
+                restsOn.independence(session, fatalRests(fatalTerm,
+                        path.decisions, cutoff),
+                        Collections.<String>emptySet(), reached, conditions)
+                        .locations());
+        //       And the store versions its guards read through a decode,
+        //       which no term names (RestsOn#storeLocations).
+        fatalLocations.addAll(restsOn.storeLocations(session, reached));
 
         // (0b) Reads whose value the row states outright, bound BEFORE any
         //      lowering so every leaf naming them resolves, not just later

@@ -1017,6 +1017,44 @@ public class ComposerTest {
     // 2. Two producers on one port are two interactions, two families.
     // ------------------------------------------------------------------
 
+    /**
+     * A guard that read a decoded store version rests on it (IDENTITY §7.2):
+     * the path's restsOn names the STORE location of each store read of its
+     * closure before the cutoff, which no term names, so CONFIRM holds the
+     * read to the version the session read; a store read past the cutoff
+     * rests nothing.
+     */
+    @Test
+    public void aStoreVersionAGuardReadIsWhatThePathRestsOn()
+            throws Exception {
+        Path iteration = folder.newFolder("store-rests").toPath();
+        LocationId state = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/collections/t/state.json");
+        LocationId aliases = LocationId.of(LocationKind.STORE, "SOLR_ZK",
+                "/aliases.json");
+        Session session = new Session(iteration, "s0", false);
+        session.activation(PRODUCER);
+        session.marker("true");
+        session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        session.write(Endpoint.of(PRODUCER,
+                "SOLR_ZK#WRITE:.collections.t.state.json", at("w#1", 0), 0),
+                state, 3L, "");
+        session.read(Endpoint.of(ANCHOR, "Router#route#4:READ",
+                at("r#1", 0), 0), state, 3L, "S_state3", "[B", null);
+        session.decision(ANCHOR, "Router#route#u5", MARKER);
+        session.target(MARKER, false, true);
+        session.read(Endpoint.of(ANCHOR, "Router#after#9:READ",
+                at("r#2", 0), 0), aliases, 1L, "S_aliases1", "[B", null);
+        session.write();
+
+        Set<String> rests = compose(iteration, 2).disjuncts().get(0)
+                .restsOn();
+        assertTrue(rests.toString(),
+                rests.contains(SmtLowering.locationKey(state)));
+        assertFalse(rests.toString(),
+                rests.contains(SmtLowering.locationKey(aliases)));
+    }
+
     @Test
     public void twoProducersOnOnePortAreTwoFamilies() throws Exception {
         Path iteration = folder.newFolder("families").toPath();
