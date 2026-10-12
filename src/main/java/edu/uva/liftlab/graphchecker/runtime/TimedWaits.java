@@ -6,7 +6,6 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
@@ -683,69 +682,6 @@ public final class TimedWaits {
             Waits waits = WAITS.get(on);
             if (waits != null) waits.sent++;
         }
-    }
-
-    // ---- CountDownLatch.await(long, TimeUnit) -----------------------------
-
-    /**
-     * A latch's timed await: a condition's rule ({@link #await(Condition,
-     * long, TimeUnit, String)}), its signal the latch's own state -- a count
-     * at zero -- which no woven notifier has to mark and no gap between two
-     * asks can lose.
-     */
-    public static boolean await(CountDownLatch latch, long time,
-                                TimeUnit unit, String site)
-            throws InterruptedException {
-        // NO WAIT.
-        if (time <= 0L) return latch.await(time, unit);
-        WakeScopes.waiting();
-        interruptedAtEntry(site);
-        long deadline = System.nanoTime() + unit.toNanos(time);
-        return takeTurn(site, freeLatchWait(latch, deadline, site),
-                latchQuantum(latch), deadline);
-    }
-
-    /** The free part of a latch's timed await, in quanta; true once the
-     *  count is zero. */
-    private static boolean freeLatchWait(CountDownLatch latch, long deadline,
-                                         String site)
-            throws InterruptedException {
-        while (!ScheduleLog.enforcing()) {
-            long left = deadline - System.nanoTime();
-            if (left <= 0L) return latch.getCount() == 0L;
-            try {
-                if (latch.await(Math.min(left, TimeUnit.MILLISECONDS
-                        .toNanos(QUANTUM_MS)), TimeUnit.NANOSECONDS)) {
-                    return true;
-                }
-            } catch (InterruptedException interrupted) {
-                interruptedWake(site);
-                throw interrupted;
-            }
-        }
-        return latch.getCount() == 0L;
-    }
-
-    /** A latch's quantum: its count at zero is its signal; one that ended
-     *  waits out a pause on a lock of its own, not on the open latch. */
-    private static Quantum latchQuantum(final CountDownLatch latch) {
-        final Quantum idle = sleepQuantum();
-        return new Quantum() {
-            @Override
-            boolean signalled() {
-                return latch.getCount() == 0L;
-            }
-
-            @Override
-            boolean await(long millis) throws InterruptedException {
-                if (latch.getCount() == 0L) {
-                    idle.await(millis);
-                    return true;
-                }
-                return latch.await(Math.max(1L, millis),
-                        TimeUnit.MILLISECONDS);
-            }
-        };
     }
 
     // ---- BlockingQueue.poll(long, TimeUnit) -------------------------------
