@@ -46,11 +46,13 @@ import java.util.regex.Pattern;
  *       parsed by every side that sent the op): it sits at the first call of
  *       its anchor in every analysed method making one -- or, with {@code
  *       sites} {@value #DEMANDED}, only at the calls the root demand chose
- *       ({@link DemandedDoors}: a local file operation, {@code LOCAL_IO}),
- *       before the call, so a failed operation never happens.  Such a door
- *       states either the kinds it throws or the failing {@code result} the
- *       call returns instead ({@code false}, {@code null}: {@code
- *       File#renameTo}, {@code File#list}).</li>
+ *       ({@link DemandedDoors}: a local file operation, {@code LOCAL_IO};
+ *       a timed wait, {@code TIMED_WAIT}), before the call, so a failed
+ *       operation never happens.  Such a door states either the kinds it
+ *       throws or the failing {@code result} the call returns instead
+ *       ({@code false}, {@code null}, {@code 0}: {@code File#renameTo},
+ *       {@code File#list}, a timed wait's timeout -- {@code
+ *       CountDownLatch#await}'s false, {@code Condition#awaitNanos}'s 0).</li>
  *   <li>{@code CONFIG_SOURCE} ({@code method, keyArg, defaultArg?}): a
  *       configuration getter, argument {@code keyArg} (a String) its key and
  *       {@code defaultArg} its default ({@link ConfigRoots}).</li>
@@ -144,8 +146,9 @@ public final class LibraryCatalog {
     }
 
     /** What a demanded door's call returns instead of failing by a
-     *  throw: nothing (it throws its kinds), {@code false} or {@code null}. */
-    public enum Result { NONE, FALSE, NULL }
+     *  throw: nothing (it throws its kinds), {@code false}, {@code null} or
+     *  {@code 0}. */
+    public enum Result { NONE, FALSE, NULL, ZERO }
 
     /** One fault point of a library transport. */
     public static final class Door {
@@ -566,7 +569,8 @@ public final class LibraryCatalog {
                 after != null, faults, demanded, result, null);
     }
 
-    /** A door's {@code result}: {@code false} or {@code null} when stated. */
+    /** A door's {@code result}: {@code false}, {@code null} or {@code 0}
+     *  when stated. */
     private static Result result(JsonElement value, boolean stated) {
         if (!stated) return Result.NONE;
         if (value.isJsonNull()) return Result.NULL;
@@ -574,7 +578,11 @@ public final class LibraryCatalog {
                 && !value.getAsBoolean()) {
             return Result.FALSE;
         }
-        throw new IllegalArgumentException("result is false or null: "
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isNumber()
+                && "0".equals(value.getAsString())) {
+            return Result.ZERO;
+        }
+        throw new IllegalArgumentException("result is false, null or 0: "
                 + value);
     }
 

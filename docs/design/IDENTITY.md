@@ -409,7 +409,7 @@ another node than its address is `TASK_UNANSWERED` BLOCKING
 | submissions | `execute`, `submit`, `schedule`, `invokeAll` with a `Runnable`, `Callable`, `ForkJoinTask` or `Collection` (one start per element) argument |
 | queue submissions and claims | `BlockingQueue` `put`/`offer`/`add` (and deque ends); `take`/`poll` (and deque ends) return the work |
 | work entries (where a start is claimed) | `Runnable.run`, `Callable.call`, `ForkJoinTask.exec`/`compute`, `Thread.run` |
-| timed waits | `Thread.sleep`, `TimeUnit.sleep`, `Object.wait(long)`, `LockSupport.parkNanos`, `Condition.awaitNanos`/`await(long, TimeUnit)`, `BlockingQueue.poll(long, TimeUnit)`; notifiers and untimed waits as signal state |
+| timed waits | `Thread.sleep`, `TimeUnit.sleep`, `Object.wait(long)`, `LockSupport.parkNanos`, `Condition.awaitNanos`/`await(long, TimeUnit)`, `BlockingQueue.poll(long, TimeUnit)`, `CountDownLatch.await(long, TimeUnit)` (its count at zero is its signal); notifiers and untimed waits as signal state |
 
 A start made under a hop (§3) captures the starter's scope with the carrier
 (`RuntimeTraceContext#captureAsync`) and writes a `START` event; the claim restores it

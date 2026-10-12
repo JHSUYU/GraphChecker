@@ -349,6 +349,9 @@ public final class WorkStartSites {
                     "long", "java.util.concurrent.TimeUnit"),
             new TimedWait(QUEUE_TYPE, "poll", false, "java.lang.Object",
                     "poll", "long", "java.util.concurrent.TimeUnit"),
+            new TimedWait("java.util.concurrent.CountDownLatch", "await",
+                    false, "boolean", "await", "long",
+                    "java.util.concurrent.TimeUnit"),
             // Signals as state (see TimedWait): notifiers and untimed waits;
             // not events.
             new TimedWait("java.lang.Object", "wait", false, "void",

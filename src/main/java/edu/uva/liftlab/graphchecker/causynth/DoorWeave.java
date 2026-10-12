@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import soot.Body;
 import soot.BooleanType;
 import soot.Local;
+import soot.LongType;
 import soot.RefType;
 import soot.Scene;
 import soot.SootClass;
@@ -21,6 +22,7 @@ import soot.jimple.GotoStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeStmt;
 import soot.jimple.Jimple;
+import soot.jimple.LongConstant;
 import soot.jimple.NewExpr;
 import soot.jimple.NullConstant;
 import soot.jimple.SpecialInvokeExpr;
@@ -61,10 +63,11 @@ import java.util.regex.Pattern;
  * A door at every call of its anchor ({@link LibraryCatalog.Door#atCalls})
  * is woven in each analysed method that makes the call, at its first; a
  * program that makes none has none.  A demanded door ({@code sites}
- * DEMANDED, a local file operation) is woven only at the calls the root
- * demand chose ({@link DemandedDoors}), before the call: its markers throw
- * its kinds, or, for a failing result, {@code r = marker ? failing :
- * call(..)}, so a failed operation never happens.</p>
+ * DEMANDED, a local file operation or a timed wait) is woven only at the
+ * calls the root demand chose ({@link DemandedDoors}), before the call: its
+ * markers throw its kinds, or, for a failing result, {@code r = marker ?
+ * failing : call(..)}, so a failed operation never happens (a timed wait
+ * returns its timeout at once).</p>
  *
  * <p>A kind is an ENVIRONMENT failure the transport can raise and a caller
  * distinguishes (e.g. {@code RetryPolicies} fails over on
@@ -214,8 +217,9 @@ final class DoorWeave {
         units.add(jimple.newIfStmt(jimple.newEqExpr(chosen,
                 IntConstant.v(0)), call));
         units.add(jimple.newAssignStmt(call.getLeftOp(),
-                door.result == LibraryCatalog.Result.FALSE
-                        ? IntConstant.v(0) : NullConstant.v()));
+                door.result == LibraryCatalog.Result.NULL ? NullConstant.v()
+                        : call.getLeftOp().getType() instanceof LongType
+                        ? LongConstant.v(0L) : IntConstant.v(0)));
         units.add(jimple.newGotoStmt(next));
         for (Unit unit : units) {
             unit.addTag(WOVEN);
