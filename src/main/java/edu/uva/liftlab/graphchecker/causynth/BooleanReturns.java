@@ -9,15 +9,18 @@ import soot.Modifier;
 import soot.Scene;
 import soot.SootField;
 import soot.SootFieldRef;
+import soot.SootClass;
 import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
 import soot.jimple.AssignStmt;
 import soot.jimple.BinopExpr;
+import soot.jimple.CastExpr;
 import soot.jimple.EqExpr;
 import soot.jimple.GotoStmt;
 import soot.jimple.IfStmt;
 import soot.jimple.InstanceInvokeExpr;
+import soot.jimple.InvokeStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
 import soot.jimple.NeExpr;
@@ -109,8 +112,28 @@ final class BooleanReturns {
                                                      boolean equal,
                                                      boolean nullThrows,
                                                      int depth) {
+        return helperDeciders(body, tested, compared, equal, nullThrows,
+                false, depth);
+    }
+
+    /**
+     * The deciders of the test on {@code tested}, the result of one call --
+     * or, {@code tested} a {@code Boolean}'s {@code booleanValue()}, the
+     * result of the call that returned that {@code Boolean}, its constant
+     * arms {@code Boolean.TRUE} and {@code FALSE} read as 1 and 0 ({@code
+     * boxed}): {@code if (!callable.call())}, solr-adhoc-09's
+     * DeleteReplicaCmd.java:277.
+     */
+    private static List<StaticScopeMap.Guard> helperDeciders(
+            Body body, Local tested, Kept compared, boolean equal,
+            boolean nullThrows, boolean boxed, int depth) {
         List<StaticScopeMap.Guard> found =
                 new ArrayList<StaticScopeMap.Guard>();
+        Local unboxed = boxed ? null : unboxed(body, tested);
+        if (unboxed != null) {
+            return helperDeciders(body, unboxed, compared, equal, nullThrows,
+                    true, depth);
+        }
         SootMethod helper = onlyCallDefining(body, tested);
         Body helperBody = helper == null
                 || !helper.getDeclaringClass().isApplicationClass() ? null
@@ -122,14 +145,15 @@ final class BooleanReturns {
             if (unit instanceof IfStmt) branches.add((IfStmt) unit);
         }
         if (branches.isEmpty()) {
-            return forwarded(helperBody, compared, equal, depth);
+            return forwarded(helperBody, compared, equal, nullThrows, boxed,
+                    depth);
         }
         for (IfStmt branch : branches) {
-            Boolean taken = verdict(returned(helperBody, branch.getTarget()),
-                    compared, equal, nullThrows);
+            Boolean taken = verdict(returned(helperBody, branch.getTarget(),
+                    boxed), compared, equal, nullThrows);
             Boolean fallen = verdict(returned(helperBody,
-                    helperBody.getUnits().getSuccOf(branch)), compared, equal,
-                    nullThrows);
+                    helperBody.getUnits().getSuccOf(branch), boxed), compared,
+                    equal, nullThrows);
             if (taken == null && fallen == null
                     || taken != null && taken.equals(fallen)) {
                 continue;
@@ -154,19 +178,33 @@ final class BooleanReturns {
     private static List<StaticScopeMap.Guard> forwarded(Body helperBody,
                                                         Kept compared,
                                                         boolean equal,
+                                                        boolean nullThrows,
+                                                        boolean boxed,
                                                         int depth) {
         List<StaticScopeMap.Guard> found =
                 new ArrayList<StaticScopeMap.Guard>();
         InvokeExpr equals = null;
+        Local returned = null;
         for (Unit unit : helperBody.getUnits()) {
             if (!(unit instanceof ReturnStmt)) continue;
             Value op = ((ReturnStmt) unit).getOp();
             InvokeExpr call = op instanceof Local
                     ? definingCall(helperBody, (Local) op) : null;
-            if (equals != null || call == null || !identityEquals(call)) {
+            if (equals != null || returned != null || call == null) {
                 return found;
             }
-            equals = call;
+            if (identityEquals(call)) {
+                equals = call;
+            } else {
+                returned = (Local) op;
+            }
+        }
+        // A forwarder: it returns what one call returned (Soot's desugared
+        // lambda's call() running the lambda's body, lambda$m$N), so the
+        // deciders are that call's, one helper deeper.
+        if (returned != null) {
+            return depth < MAX_DEPTH ? helperDeciders(helperBody, returned,
+                    compared, equal, nullThrows, boxed, depth + 1) : found;
         }
         if (equals == null) return found;
         Value base = ((InstanceInvokeExpr) equals).getBase();
@@ -294,6 +332,19 @@ final class BooleanReturns {
     private static SootMethod onlyCallDefining(Body body, Local local) {
         InvokeExpr call = definingCall(body, local);
         if (call == null) return null;
+        // An interface or virtual call on an object the body created: the
+        // method its class runs ({@link CreatedFrom}), a lambda's included.
+        if (call instanceof InstanceInvokeExpr
+                && ((InstanceInvokeExpr) call).getBase() instanceof Local) {
+            Set<SootClass> created = CreatedFrom.classes(body.getUnits(),
+                    (Local) ((InstanceInvokeExpr) call).getBase());
+            if (created.size() == 1) {
+                SootMethod runs = CreatedFrom.implementation(
+                        created.iterator().next(),
+                        call.getMethodRef().getSubSignature().getString());
+                if (runs != null) return runs;
+            }
+        }
         SootMethod helper = CausynthStaticFacts.method(
                 call.getMethodRef().getSignature());
         if (helper == null || !helper.isConcrete()) return null;
@@ -328,12 +379,23 @@ final class BooleanReturns {
         return call;
     }
 
-    /** The constant an arm returns, walking only constant stores and
-     *  jumps; null for anything else. */
-    private static Kept returned(Body body, Unit start) {
-        Map<Value, Kept> constants = new HashMap<Value, Kept>();
+    /**
+     * The constant an arm returns, walking constant stores, jumps, calls
+     * that store nothing, and a branch both of whose arms return the same
+     * constant (javac's inlined {@code finally { if (onComplete != null)
+     * onComplete.run(); }} before each return); null for anything else.
+     * {@code boxed}: {@code Boolean.TRUE} and {@code FALSE} are 1 and 0.
+     */
+    private static Kept returned(Body body, Unit start, boolean boxed) {
+        return returned(body, start, new HashMap<Value, Kept>(), boxed,
+                MAX_ARM);
+    }
+
+    private static Kept returned(Body body, Unit start,
+                                 Map<Value, Kept> constants, boolean boxed,
+                                 int budget) {
         Unit unit = start;
-        for (int step = 0; unit != null && step < MAX_ARM; step++) {
+        for (int step = 0; unit != null && step < budget; step++) {
             if (unit instanceof ReturnStmt) {
                 Value op = ((ReturnStmt) unit).getOp();
                 Kept direct = constant(op);
@@ -343,11 +405,22 @@ final class BooleanReturns {
                 unit = ((GotoStmt) unit).getTarget();
                 continue;
             }
+            if (unit instanceof IfStmt) {
+                Kept taken = returned(body, ((IfStmt) unit).getTarget(),
+                        new HashMap<Value, Kept>(constants), boxed,
+                        budget - step - 1);
+                Kept fallen = returned(body, body.getUnits().getSuccOf(unit),
+                        new HashMap<Value, Kept>(constants), boxed,
+                        budget - step - 1);
+                return taken != null && taken.equals(fallen) ? taken : null;
+            }
             Kept stored = unit instanceof AssignStmt
-                    ? constantOrEnum(((AssignStmt) unit).getRightOp()) : null;
+                    ? constantOrEnum(((AssignStmt) unit).getRightOp(), boxed)
+                    : null;
             if (stored != null) {
                 constants.put(((AssignStmt) unit).getLeftOp(), stored);
-            } else if (!(unit instanceof NopStmt)) {
+            } else if (!(unit instanceof NopStmt)
+                    && !(unit instanceof InvokeStmt)) {
                 return null;
             }
             unit = body.getUnits().getSuccOf(unit);
@@ -355,8 +428,55 @@ final class BooleanReturns {
         return null;
     }
 
-    private static Kept constantOrEnum(Value value) {
+    /** {@code Boolean.TRUE} or {@code FALSE}, as the int a {@code
+     *  booleanValue()} unboxes it to; else null. */
+    private static Kept booleanConstant(Value value) {
+        if (!(value instanceof StaticFieldRef)) return null;
+        SootFieldRef ref = ((StaticFieldRef) value).getFieldRef();
+        if (!"java.lang.Boolean".equals(ref.declaringClass().getName())) {
+            return null;
+        }
+        return "TRUE".equals(ref.name()) ? Kept.ofInt(1)
+                : "FALSE".equals(ref.name()) ? Kept.ofInt(0) : null;
+    }
+
+    /** The {@code Boolean} a local's one definition unboxes, {@code
+     *  b.booleanValue()} -- b's cast, {@code (Boolean) o}, passed to o --
+     *  or null. */
+    private static Local unboxed(Body body, Local local) {
+        InvokeExpr call = definingCall(body, local);
+        if (!(call instanceof InstanceInvokeExpr)
+                || !"booleanValue".equals(call.getMethodRef().getName())
+                || !"java.lang.Boolean".equals(call.getMethodRef()
+                .getDeclaringClass().getName())
+                || !(((InstanceInvokeExpr) call).getBase() instanceof Local)) {
+            return null;
+        }
+        Local boxed = (Local) ((InstanceInvokeExpr) call).getBase();
+        Value cast = definition(body, boxed);
+        return cast instanceof CastExpr && ((CastExpr) cast).getOp()
+                instanceof Local ? (Local) ((CastExpr) cast).getOp() : boxed;
+    }
+
+    /** The right side of the body's one assignment of {@code local}, or
+     *  null. */
+    private static Value definition(Body body, Local local) {
+        Value found = null;
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof AssignStmt)
+                    || ((AssignStmt) unit).getLeftOp() != local) {
+                continue;
+            }
+            if (found != null) return null;
+            found = ((AssignStmt) unit).getRightOp();
+        }
+        return found;
+    }
+
+    private static Kept constantOrEnum(Value value, boolean boxed) {
         Kept direct = constant(value);
-        return direct != null ? direct : enumConstant(value);
+        if (direct != null) return direct;
+        Kept unboxed = boxed ? booleanConstant(value) : null;
+        return unboxed != null ? unboxed : enumConstant(value);
     }
 }

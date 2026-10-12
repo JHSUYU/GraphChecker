@@ -2783,11 +2783,11 @@ public final class CausynthPipeline {
                 boolean fixedCount = naturalLoopHasSite(
                         method, loop, continuations,
                                 fixedCountLoopSites);
-                // A fixed-count loop is a resource loop: charged per body.
-                int loopBodyBound = fixedCount
-                        ? policy.maxBackedgeTraversals()
-                        : naturalLoopBodyBound(
-                                method, loop, continuations, policy);
+                // A fixed-count loop is a resource loop, charged per body to
+                // the work cap its own K_L raises (LoopBoundPolicy#workCap);
+                // a condition-bounded one counts its traversals.
+                int loopBodyBound = naturalLoopBodyBound(
+                        method, loop, continuations, policy);
                 for (CfgLoopControl.Backedge backedge : loop.backedges) {
                     if (method.isConstructor()
                             && (safeEntry == null || !unitAtOrAfter(

@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -16,6 +17,8 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.plan.ForcingTable;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
@@ -31,6 +34,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * WHAT A DELIVERY RESTS ON in one session (PIPELINE §8 P3, §7.2): the
@@ -67,11 +72,14 @@ public final class RestsOn {
     /**
      * THE ADMITTED PATHS, COMPOSE's disjuncts and EXPLORE's demand alike
      * (PIPELINE §7.2, §8), each refusal a row of {@code gaps}: every
-     * session's path that reached the anchor, or, where none did,
-     * every session's path that ran the occurrence and left the way to the
-     * throw (its fatal arm the constant healthy decision).  The declared
-     * occurrence is always the anchor; a corpus without a target row for it
-     * never ran it, a defect, never a reason to elect another occurrence.
+     * admitted session's path that reached the anchor, or, where none did
+     * ({@link #reached}), every admitted session's path that ran the
+     * occurrence (its way guard's other arm its fatal, or the constant
+     * healthy decision).  A session its own rows do not admit is no disjunct
+     * and drops none, even where it reached the anchor or threw there.  The
+     * declared occurrence is always the anchor; a corpus without a target
+     * row for it never ran it, a defect, never a reason to elect another
+     * occurrence.
      */
     public List<Corpus.RecordedPath> admitted(List<GapRow> gaps) {
         List<Corpus.RecordedPath> admitted =
@@ -84,28 +92,45 @@ public final class RestsOn {
                             + "for it");
             return admitted;
         }
-        // Where no session reached the anchor, each that ran the occurrence
-        // and left the way to the throw at a guard is a path: its fatal arm
-        // is the constant healthy decision ({@link #compose}).  Beside a
-        // path that reached it, such a disjunct adds nothing.
-        boolean reached = false;
-        for (TargetRow target : targets) reached |= target.reachedAnchor();
+        // Beside an admitted path that reached the anchor, a path that left
+        // the way to the throw adds no disjunct (its fatal arm is the
+        // constant healthy decision, or the flip of a guard a reaching path
+        // already holds).
+        boolean reached = reached();
         for (TargetRow target : targets) {
-            Corpus.RecordedPath path = corpus.path(target.sessionId(),
-                    anchor);
+            String session = target.sessionId();
+            Corpus.RecordedPath path = corpus.path(session, anchor);
             if (reached && !target.reachedAnchor()) {
                 gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session ran the occurrence "
+                        session, "this session ran the occurrence "
                                 + "and did not reach the anchor");
+                // Its cut still bounds the search, where its own rows admit
+                // it: the worlds it would have run on are not composed.
+                if (path != null && settled(session, null)) {
+                    cut(gaps, session, decided(session, target,
+                            path.decisions));
+                }
                 continue;
             }
             if (path == null) {
                 gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        target.sessionId(), "this session ran the occurrence "
-                                + "and published no path at it");
+                        session, "this session ran the occurrence and "
+                                + "published no path at it");
                 continue;
             }
-            if (!settled(target.sessionId(), gaps)) continue;
+            if (!settled(session, gaps)) {
+                if (target.reachedAnchor()) {
+                    gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                            session, "this session reached the anchor"
+                                    + (target.observedFatal()
+                                    ? " and threw the target" : "")
+                                    + " in a replay its own rows do not "
+                                    + "admit: no disjunct, and it drops no "
+                                    + "path (solr-adhoc-19 F2V4: such a "
+                                    + "replay made COMPOSE drop 63)");
+                }
+                continue;
+            }
             admitted.add(path);
         }
         // And each forced path (PIPELINE §7.10): the recording's world with
@@ -115,11 +140,33 @@ public final class RestsOn {
     }
 
     /**
+     * Whether a session whose own rows admit it ({@link #settled}) reached
+     * the anchor at a path it published: THE rule COMPOSE's admission and
+     * EXPLORE's flip sites ({@code ClosurePlanner#plan}) read, once per
+     * corpus.  A replay that refused its own obligation is the recording
+     * again under a valuation it did not take: its reach states nothing.
+     */
+    public boolean reached() {
+        if (reached == null) {
+            boolean any = false;
+            for (TargetRow target : corpus.targetsOn(anchor)) {
+                any |= target.reachedAnchor()
+                        && corpus.path(target.sessionId(), anchor) != null
+                        && settled(target.sessionId(), null);
+            }
+            reached = Boolean.valueOf(any);
+        }
+        return reached.booleanValue();
+    }
+
+    private Boolean reached;
+
+    /**
      * Whether this session's OWN rows admit the obligation it ran (the
      * replay owns the verdict).  A refused obligation's path is the
      * recording again under a valuation the run did not take, so it is no
      * disjunct.  A SEED admits itself; an obligation the manifest names and
-     * no row settles is BLOCKING.
+     * no row settles is BLOCKING.  {@code gaps} null: asked quietly.
      */
     private boolean settled(String session, List<GapRow> gaps) {
         SessionReader reader = corpus.session(session);
@@ -129,7 +176,9 @@ public final class RestsOn {
         boolean admitted = reader.admitted();
         for (ObligationResult result : reader.obligations()) {
             stated.add(result.obligationId());
-            if (result.verdict() == Verdict.ADMITTED) continue;
+            if (result.verdict() == Verdict.ADMITTED || gaps == null) {
+                continue;
+            }
             gap(gaps, GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
                     "this replay states " + result.verdict() + " for the "
                             + "obligation it ran (" + result.obligationId()
@@ -141,12 +190,42 @@ public final class RestsOn {
         for (String obligation : asked) {
             if (stated.contains(obligation)) continue;
             admitted = false;
+            if (gaps == null) continue;
             gap(gaps, GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
                     "session " + session + " states it ran this obligation "
                             + "and publishes no verdict for it, so what it "
                             + "settled is not in this corpus");
         }
         return admitted;
+    }
+
+    /**
+     * Names what a path that never reached the anchor rests on, as a gap of
+     * {@code gaps}: a loop bound's cut of its occurrence, a DIAGNOSTIC
+     * {@code <anchor> loop-body-bound=<N>} row the case's {@code bounded}
+     * counts (run_engine.sh campaign_bounds: {@code loop_body_bound}), so its
+     * UNSAT is not done (CHECKING §1); a failure of the anchor's loop
+     * accounting, a BLOCKING row: an engine defect (RUN_DEFECT), never a
+     * bound.
+     */
+    void cut(List<GapRow> gaps, String session, Decided decided) {
+        if (!decided.defect.isEmpty()) {
+            gap(gaps, GapKind.BOUND_INSUFFICIENT, GapClass.BLOCKING,
+                    anchor.render(), "session " + session + ": the loop"
+                            + " accounting at the anchor failed, an engine"
+                            + " defect and no bound: " + decided.defect);
+        }
+        if (!decided.cut.isEmpty()) {
+            gap(gaps, GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                    anchor.render() + " " + Composer.LOOP_BODY_BOUND + "="
+                            + boundOf(decided.cut), "session " + session
+                            + " reached no point of the anchor and a loop"
+                            + " bound cut its occurrence "
+                            + (decided.way == null ? "before it left the way"
+                            + " to the throw at any guard" : "after it left"
+                            + " the way at " + decided.way.siteId() + "#"
+                            + decided.way.ordinal()) + ": " + decided.cut);
+        }
     }
 
     /** One admission row, as COMPOSE names it ({@code Composer#gap}). */
@@ -167,26 +246,42 @@ public final class RestsOn {
          *  whole path. */
         final long cutoff;
         /** Its fatal arm: phi; a symbolic way guard's other arm, the way to
-         *  the throw; else (a concrete one) the constant false. */
+         *  the throw; else (a concrete one, or none) the constant false. */
         final String fatalTerm;
+        /** Where it reached the anchor at no point and a loop bound cut
+         *  its occurrence -- before it left the way at a guard or after:
+         *  a later turn of a loop, in its method or a caller's, may have
+         *  come back to the way -- the cut; else "". */
+        final String cut;
+        /** Where the anchor's loop accounting itself failed (a policy
+         *  mismatch, a hook failure: {@link #boundReached} false), its row;
+         *  an engine defect, never a bound. */
+        final String defect;
 
         private Decided(DecisionRow way, boolean symbolicWay, long cutoff,
-                        String fatalTerm) {
+                        String fatalTerm, String cut, String defect) {
             this.way = way;
             this.symbolicWay = symbolicWay;
             this.cutoff = cutoff;
             this.fatalTerm = fatalTerm;
+            this.cut = cut;
+            this.defect = defect;
         }
     }
 
     /**
      * Where a path decided: at its target row, or, where it never reached
      * the anchor, at the guard it left the way to the throw at (a row that
-     * did not reach the anchor stands at no point of it).
+     * did not reach the anchor stands at no point of it).  One that left it
+     * at none stopped on the way -- a loop bound cut its occurrence
+     * ({@link #cutOf}), an exception or a return no table branch decided --
+     * and states no arm toward the throw: its fatal is the constant false,
+     * named with how it stopped (Composer: the WAY row, and a cut's bound).
      */
     Decided decided(String session, TargetRow target,
                     List<DecisionRow> decisions) {
-        DecisionRow way = target.reachedAnchor() ? null : wayGuard(decisions);
+        DecisionRow way = target.reachedAnchor() ? null
+                : wayGuard(target, decisions);
         boolean symbolicWay = way != null
                 && !corpus.termSymbols(session, way.term()).isEmpty();
         long cutoff = target.reachedAnchor() ? target.seq()
@@ -194,22 +289,92 @@ public final class RestsOn {
         String fatalTerm = target.reachedAnchor() ? target.phiTerm()
                 : symbolicWay ? Arms.conjunct(way.term(), !way.outcome())
                 : "false";
-        return new Decided(way, symbolicWay, cutoff, fatalTerm);
+        String cut = target.reachedAnchor() ? "" : cutOf(session);
+        boolean defect = !cut.isEmpty() && !boundReached(cut);
+        return new Decided(way, symbolicWay, cutoff, fatalTerm,
+                defect ? "" : cut, defect ? cut : "");
     }
 
-    /** The last decision a path took at a site on the way to the throw
-     *  (the target sites' path sites), or null. */
-    DecisionRow wayGuard(List<DecisionRow> decisions) {
-        Set<String> way = new LinkedHashSet<String>();
-        for (StaticScopeMap.Site target : scope.targetSites()) {
-            way.addAll(target.pathSites());
+    /** Whether a cut's row says a bound was reached ({@code
+     *  plan.LoopBoundPolicy#BOUND_REACHED}): the loop's K_L or the work
+     *  cap, not the accounting's own failure. */
+    static boolean boundReached(String cut) {
+        for (String reason : LoopBoundPolicy.BOUND_REACHED) {
+            if (cut.contains(reason)) return true;
         }
-        DecisionRow last = null;
-        for (DecisionRow decision : decisions) {
-            if (way.contains(decision.siteId())) last = decision;
-        }
-        return last;
+        return false;
     }
+
+    /**
+     * The guard a path left the way to the throw at: the last decision at a
+     * site on the way (the anchor's own TARGET_SITE's path sites, {@link
+     * StaticScopeMap#ownTarget}, never another throw's) that took an arm off
+     * it.  Scanned back past the decisions that kept the way -- the arm its
+     * forcing table names toward the throw, or a {@code passable} branch,
+     * either arm of which leads on -- and past a decider ({@code via}
+     * stated) decided in a call from elsewhere than its row's {@code via},
+     * which is no decision of the way ({@code DecisionRow#via}); a decision
+     * that states no caller (a corpus recorded before rows stated it) is
+     * taken as one of the way, an over-approximation.  A site the
+     * table names no arm for (a switch, a fault call) is taken as left.
+     * None that left: the path stopped on the way, so null (solr-adhoc-19
+     * SG2b: create's u9 `!inFlightCreations.add`, taken toward the throw
+     * before a loop bound cut the occurrence, was composed as the CONFLICT
+     * throw).  A path that left at G and later kept the way at another
+     * decision before a normal return left at G.
+     */
+    DecisionRow wayGuard(TargetRow target, List<DecisionRow> decisions) {
+        StaticScopeMap.Site own = scope.ownTarget(target.site());
+        if (own == null) return null;
+        Set<String> way = own.pathSites();
+        Map<String, ForcingTable.Arm> table =
+                ForcingTable.read(scope.forcing(own.siteId));
+        for (int index = decisions.size() - 1; index >= 0; index--) {
+            DecisionRow decision = decisions.get(index);
+            if (!way.contains(decision.siteId())) continue;
+            ForcingTable.Arm arm = table.get(decision.siteId());
+            if (arm == null) return decision;
+            if (!arm.via.isEmpty() && !decision.via().isEmpty()
+                    && !JvmNames.stable(arm.via).equals(decision.via())) {
+                continue;
+            }
+            if (!arm.passable && arm.arm != decision.outcome()) {
+                return decision;
+            }
+        }
+        return null;
+    }
+
+    /** Why a loop bound cut the anchor's occurrence in {@code session}
+     *  (its {@code BOUND_INSUFFICIENT} row, runtime.LoopAccounting#endAtCut),
+     *  or "". */
+    String cutOf(String session) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null) return "";
+        for (GapRow gap : reader.gaps()) {
+            if (gap.kind() != GapKind.BOUND_INSUFFICIENT) continue;
+            try {
+                if (OccurrenceAddress.parse(gap.subject()).id()
+                        .equals(anchor.id())) {
+                    return gap.detail();
+                }
+            } catch (IllegalArgumentException noOccurrence) {
+                // A port's bound (HandoffMint): no occurrence's cut.
+            }
+        }
+        return "";
+    }
+
+    /** The number of bodies a cut's loop bound stood at (its message,
+     *  LoopAccounting's two cuts), or 0. */
+    static int boundOf(String cut) {
+        Matcher bound = CUT_BOUND.matcher(cut == null ? "" : cut);
+        return bound.find() ? Integer.parseInt(bound.group(1) != null
+                ? bound.group(1) : bound.group(2)) : 0;
+    }
+
+    private static final Pattern CUT_BOUND = Pattern.compile(
+            "after (\\d+) loop body iterations|exceeds (\\d+)");
 
     /**
      * WHAT EXPLORE DEMANDS of one delivery {@code start} made in this

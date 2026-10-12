@@ -17,6 +17,7 @@ import java.util.Deque;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -144,8 +145,13 @@ public class BranchDecisionRecordingTest {
         String helper = "<a.W: long readVLong(java.io.DataInput)>";
         for (int call = 0; call < 2; call++) {
             long frame = Identity.enterFrame(helper, null);
-            assertEquals(1L, active.traverseBackedge(helper + "#loop:u8"));
-            assertEquals(2L, active.traverseBackedge(helper + "#loop:u8"));
+            active.termedDecisions++;
+            assertNull("call " + call + ": its first body",
+                    active.traverseBackedge(helper + "#loop:u8", 2));
+            active.termedDecisions++;
+            assertNotNull("call " + call + ": its second decided on a"
+                    + " symbol, at K_L 2", active.traverseBackedge(
+                    helper + "#loop:u8", 2));
             Identity.exitFrame(frame);
         }
     }

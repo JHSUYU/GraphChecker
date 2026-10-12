@@ -945,6 +945,105 @@ public class ScheduleLogTest {
         assertTrue(progress, progress.contains("1 of them let go"));
     }
 
+    /**
+     * An event of a timed-wait loop's turn ({@code Root:WAKE/<wait>#k}: k
+     * counts the loop's wakes, a timing fact) waits at the slot its key
+     * found like a poll past its count: with the run idle it is let go a
+     * grace in and takes that slot, and the unmade x before it is never
+     * given up on its account (solr-adhoc-39 MB29s: a queue write in replayed
+     * turn #88 at recorded #88's slot bounded a give-up of 4251 slots).  The
+     * same event in a request is a plain waiter: the stall gives x up.
+     */
+    @Test(timeout = 30000L)
+    public void aTimedWaitTurnsEventAtItsSlotBoundsNoGiveUp()
+            throws Exception {
+        Object[][] rows = {
+                {true, "1 taken, 0 given up"},
+                {false, "1 taken, 1 given up"},
+        };
+        for (Object[] row : rows) {
+            boolean turn = (Boolean) row[0];
+            noRequest();
+            request("a", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                    "x"));
+            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
+            Runnable y = () -> turnOrRequest(turn, "y");
+            y.run();
+            order.add(events().get(1));
+            assertEquals(turn, ScheduleLog.timedWaitTurn(order.get(1)
+                    .context()));
+            noRequest();
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "4000");
+            enforce(order);
+            long before = System.nanoTime();
+            Thread waiter = new Thread(y);
+            waiter.start();
+            waiter.join(20000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime()
+                    - before);
+            String progress = ScheduleLog.progress();
+            assertTrue(turn + " " + progress, progress.contains(
+                    (String) row[1]));
+            if (turn) {
+                assertTrue("a grace, not the timeout: " + took,
+                        took < 3500L);
+                assertTrue(progress, progress.contains("1 of them let go"));
+            }
+        }
+    }
+
+    /**
+     * Let go, a timed-wait turn's WRITE still never passes an earlier held
+     * write to its location: it waits behind it, and the stall gives that
+     * one write up (the write rule), never taking its own slot past it.
+     */
+    @Test(timeout = 30000L)
+    public void aLetGoTurnsWriteStillWaitsBehindTheWriteBeforeIt()
+            throws Exception {
+        noRequest();
+        request("a", () -> written("L"));
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>(events());
+        long frame = Identity.enterFrame("<L: void loop()>#u1", node);
+        long wake = RuntimeTraceContext.beginWake("L.poll");
+        written("L");
+        RuntimeTraceContext.endWakeIfInnermost(wake);
+        Identity.exitFrame(frame);
+        order.add(events().get(1));
+        assertTrue(ScheduleLog.timedWaitTurn(order.get(1).context()));
+        noRequest();
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "3000");
+        enforce(order);
+        Thread waiter = new Thread(() -> {
+            long inner = Identity.enterFrame("<L: void loop()>#u1", node);
+            long turn = RuntimeTraceContext.beginWake("L.poll");
+            written("L");
+            RuntimeTraceContext.endWakeIfInnermost(turn);
+            Identity.exitFrame(inner);
+        });
+        waiter.start();
+        waiter.join(20000L);
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("1 taken, 1 given up"));
+    }
+
+    /** {@code site} sent in a timed-wait loop's first turn on the node,
+     *  else in a request of the node. */
+    private void turnOrRequest(boolean turn, String site) {
+        if (!turn) {
+            request("b", () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                    site));
+            return;
+        }
+        long frame = Identity.enterFrame("<L: void loop()>#u1", node);
+        long wake = RuntimeTraceContext.beginWake("L.poll");
+        try {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, site);
+        } finally {
+            RuntimeTraceContext.endWakeIfInnermost(wake);
+            Identity.exitFrame(frame);
+        }
+    }
+
     /** The workload closes its window: what the order still holds goes. */
     @Test(timeout = 20000L)
     public void closingTheWindowLetsTheOrderGo() throws Exception {

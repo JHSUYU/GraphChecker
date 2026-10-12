@@ -143,7 +143,7 @@ public final class ConcolicScheduler {
                 // The arms a forced replay forces on the way to the throw
                 // (ForcingTable): its own TARGET_SITE's, for this
                 // occurrence; the replay plan carries them.
-                StaticScopeMap.Site own = ownTarget(loaded.staticScopeMap,
+                StaticScopeMap.Site own = loaded.staticScopeMap.ownTarget(
                         candidate.targetSiteId);
                 JsonArray force = own == null ? new JsonArray()
                         : ForcingTable.forOccurrence(
@@ -277,20 +277,6 @@ public final class ConcolicScheduler {
             return guards;
         }
         return guards;
-    }
-
-    /** The TARGET_SITE a task's target branch guards: one whose guards,
-     *  else whose chain, name it; null for none. */
-    static StaticScopeMap.Site ownTarget(StaticScopeMap map, String site) {
-        for (StaticScopeMap.Site target : map.targetSites()) {
-            if (target.guards.contains(site)) return target;
-        }
-        for (StaticScopeMap.Site target : map.targetSites()) {
-            for (StaticScopeMap.Guard guard : target.chain) {
-                if (guard.siteId().equals(site)) return target;
-            }
-        }
-        return null;
     }
 
     /** The branch sites the recording's occurrence decided. */
