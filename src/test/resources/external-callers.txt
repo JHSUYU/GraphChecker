@@ -94,3 +94,4 @@ runtime.MessageDoors storeEnded void string long
 runtime.MessageDoors stored void string string object byte[]
 runtime.MessageDoors storing long string string
 runtime.MessageDoors vacant boolean long
+runtime.MessageDoors viewed void string string object

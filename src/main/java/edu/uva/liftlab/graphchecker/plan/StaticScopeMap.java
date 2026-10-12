@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Clock;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.Validity;
@@ -1722,6 +1723,12 @@ public final class StaticScopeMap {
     public boolean demandedAt(String recordedSite, String javaType,
                               LocationKind kind) {
         String site = recordedSite == null ? "" : recordedSite;
+        // A node's view handed out by the adapter's accessor is a read of
+        // the version its decode made, wherever the occurrence used it
+        // (SYMBOL-SCOPE §6.4): no static walk names that site.
+        if (kind == LocationKind.STORE && ContentPort.viewed(site)) {
+            return true;
+        }
         for (Site named : sites) {
             // A store read a guard made through a decoded object is stated
             // at the provenance site itself.

@@ -336,7 +336,11 @@ public class SymbolicRootPolicyTest {
             {"a heap read there is not", false, map.demandedAt(
                     GET_NUM + "#u7", "Ljava/lang/Boolean;",
                     edu.uva.liftlab.graphchecker.contract.LocationKind
-                            .INSTANCE)}};
+                            .INSTANCE)},
+            {"a view accessor's store read is demanded wherever it stands",
+                true, map.demandedAt(edu.uva.liftlab.graphchecker.contract
+                    .ContentPort.viewed("SOLR_ZK", "/aliases.json"), "[B",
+                    edu.uva.liftlab.graphchecker.contract.LocationKind.STORE)}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }

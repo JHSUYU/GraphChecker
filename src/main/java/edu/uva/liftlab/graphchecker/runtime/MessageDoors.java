@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -611,6 +612,36 @@ public final class MessageDoors {
                 storeLocation(transport, path), path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered);
+    }
+
+    /**
+     * The adapter's accessor of one node's view of {@code path} handed out
+     * {@code product}, the object its decodes re-point (Solr's {@code
+     * AliasesManager#getAliases}): a read of the version a decode made it
+     * from ({@link Provenance}), stated as a STORE read and a VIEW read of
+     * the running occurrence -- the admitted activation's, else the
+     * thread's role occurrence -- at the accessor's site ({@link
+     * ContentPort#viewed}), as a PROVENANCE site states one (SYMBOL-SCOPE
+     * §6.4).
+     * An object no decode made states nothing.
+     */
+    public static void viewed(String transport, String path, Object product) {
+        Provenance.Version version = product == null ? null
+                : Provenance.observe(product, null, new boolean[1]);
+        if (version == null || !RowRuntime.open()) return;
+        RuntimeTraceContext.View view = RuntimeTraceContext.current();
+        OccurrenceAddress at = RowRuntime.doorOccurrence(
+                view.source == null ? "" : view.source.key());
+        if (at == null) return;
+        long seq = RowRuntime.currentEvent();
+        String site = ContentPort.viewed(trimmed(transport), path);
+        RowRuntime.storeRead(at, seq, site, version.location,
+                version.version);
+        LocationId node = viewOf(version.location, at);
+        if (node != null) {
+            RowRuntime.viewRead(at, seq, site + "#VIEW", node,
+                    version.version);
+        }
     }
 
     /**

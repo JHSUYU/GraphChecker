@@ -46,6 +46,23 @@ public final class ContentPort {
                 path(rest.substring(0, cut)), path(rest.substring(cut + 1)));
     }
 
+    /** The half a view accessor's read stands at ({@link #viewed}). */
+    private static final String VIEWED = "#VIEWED:";
+
+    /**
+     * The site one node's view accessor stands at when it hands out what
+     * its decodes of {@code location} made (SYMBOL-SCOPE §6.4): {@code
+     * <transport>#VIEWED:<location>}, spelled as {@link #of} spells it.
+     */
+    public static String viewed(String transport, String location) {
+        return transport + VIEWED + site(location);
+    }
+
+    /** Whether {@code site} is a view accessor's ({@link #viewed}). */
+    public static boolean viewed(String site) {
+        return site != null && site.indexOf(VIEWED) > 0;
+    }
+
     private static String site(String path) {
         return path.replace("%", "%25").replace("|", "%7C")
                 .replace("@", "%40").replace('/', '|');

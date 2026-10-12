@@ -1381,7 +1381,12 @@ A node decides on its VIEW of a location: each decode re-points it, and a guard 
 whichever decode the view held. The view is a location of its own (`LocationKind.VIEW`, CONTRACT-SPEC
 §1: the transport at the node, the store's path), its value the version decoded: every parse of a
 fetched version writes it at the decoding occurrence, and every PROVENANCE read reads it too, at the
-same site (`#VIEW`), with a symbol of its own. A STATE family may re-pair that read with another
+same site (`#VIEW`), with a symbol of its own. Where no guard's static walk reaches the objects a
+caller holds from the view, the adapter's accessor of the view states the read
+(`MessageDoors#viewed`, site `<transport>#VIEWED:<location>`, a STORE read and a VIEW read of the
+running occurrence, else the thread's role occurrence: Solr's `AliasesManager#getAliases`, STATUS
+"Per-system surface"); PLAN demands such a STORE read as a PROVENANCE site's (`StaticScopeMap#demandedAt`).
+A STATE family may re-pair that read with another
 decode of the node (PIPELINE §8), and the leaves the guard read follow it: a content leaf's attach
 symbol, where a re-pairable read of its view stands in the path, lowers as the leaf of whichever
 decode the view holds (`SmtLowering#throughView`; CONFIRM holds the pairing by its ORDER rows, the
