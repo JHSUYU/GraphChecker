@@ -2140,11 +2140,18 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      read observed the planted writer's version and could have seen another writer),
      `STATE_PAIRING_FLIPPED` -- the world's pairing is what moved, though no term of the path names
      the read (a node's view at a version lacking an alias decides nothing the VM states) --, its
-     witness the session's own run with that pairing, asked with the path's own deliveries
-     (`Composition#ownDeliveries`) and its families held to the plants (`Composition#worldPlants`),
-     so this rule needs no attested arm (nothing moves in one: solr-bugs-tra-start-overwrite Z2K,
-     whose request arms' producers ran concretely), and the pairing named in `repairedArms`, by its
-     arm, else `PAIRING:<reader>=<writer>` where no family states the read;
+     witness that session's whole world, as CONFIRM re-runs it: the path's own run with the plants in
+     place of the recording's pairing at each planted location (`Composition#worldRun`), the
+     world's roots (`#worldValuation`) and clock skews (`#worldClocks`), so `movedRoots` names every
+     fault and clock the world planted besides the pairing; it needs no attested arm (nothing moves in
+     one: solr-bugs-tra-start-overwrite Z2K, whose request arms' producers ran concretely), and the
+     pairing is named in `repairedArms`, by its arm, else `PAIRING:<reader>=<writer>` where no family
+     states the read. It stands only where something holds the path, each taken pairing lies on the
+     fatal path (`Composition#onFatalPath`: the read's symbol in the path's cone, or -- a read no term
+     names -- its occurrence is the anchor's or wrote a version a read in the cone observed), and the
+     session is that world's run (`Composition#ranWorld`, `Moved#ranWorldBy`: its roots and clocks the
+     witness's, its pairings exactly those taken); else a DIAGNOSTIC names why and the next path that
+     observed the fatal and took a pairing is tried, the recorded valuation's first;
    - else THE FORMULA DECIDES (`ClaimPolicy#closed`): the composed formula is asked whole, every
      root free over its domain -- the very text exported as `final/candidate.smt2` -- and its answer
      is the verdict; the enumeration of single and pair moves above only picks a witness's

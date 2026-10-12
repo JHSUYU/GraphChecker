@@ -758,12 +758,6 @@ public final class Composer {
             return asserted(observedReads.get(pathId));
         }
 
-        /** The arms that are the path {@code selector}'s own session's
-         *  deliveries ({@code ComposedFamilies#ownArms}), asserted. */
-        public List<String> ownDeliveries(String selector) {
-            return asserted(ownArms.get(selector));
-        }
-
         /**
          * The arms {@code taken} under the path {@code selector} names that
          * are no pairing its own run had ({@link #ownRun}: its own
@@ -810,6 +804,27 @@ public final class Composer {
                         .get(pairing.getKey()));
             }
             return repaired;
+        }
+
+        /**
+         * {@code selected}'s path as its session ran it, plants and all: its
+         * own run ({@link #ownRun}) but, at each location its world planted
+         * a pairing on, the plant ({@link #worldPlants}) in place of the
+         * recording's pairing there (any arm but the plant, which #ownRun
+         * holds so {@link #repaired} can tell a re-pairing).
+         */
+        public List<String> worldRun(Disjunct selected) {
+            List<String> held = ownRun(selected.selector());
+            Map<String, List<String>> world =
+                    worldArms.get(selected.selector());
+            if (world != null) {
+                for (List<String> plants : world.values()) {
+                    held.remove("(assert (not " + VmTermLowering.or(plants)
+                            + "))");
+                }
+            }
+            held.addAll(worldPlants(selected));
+            return held;
         }
 
         /**
@@ -919,6 +934,113 @@ public final class Composer {
         public boolean ranRoots(Disjunct selected,
                                 Map<String, String> movedRoots) {
             return ran(selected, movedRoots, false);
+        }
+
+        /**
+         * Whether {@code selected}'s session is itself the run of a world
+         * pairing's claim: the model's moves ({@link #ranModel}'s test) and
+         * exactly the pairings {@code readers} took ({@link
+         * Moved#ranWorldBy}).
+         */
+        public boolean ranWorld(Disjunct selected,
+                                Map<String, String> movedRoots,
+                                Set<String> readers) {
+            String session = selected.path().sessionId;
+            SessionReader rows = corpus.session(session);
+            SessionReader seed = corpus.session(seedSessionId);
+            if (rows == null || seed == null) return false;
+            return Moved.of(movedRoots, clockRootReadings, rows, seed)
+                    .ranWorldBy(corpus.world(session), rows, readers);
+        }
+
+        /**
+         * Whether a pairing's read lies on {@code selected}'s fatal path (a
+         * world pairing's claim, {@code ClaimPolicy}): its symbol is in the
+         * path's cone ({@link #cone}); or -- a read no term names: a key an
+         * older document lacks decides nothing the VM states -- its
+         * occurrence is the anchor's, or wrote a version a read in the cone
+         * observed (that read's symbol in the cone: a store version the
+         * stale view's work wrote back, a field the anchor reads).
+         */
+        public boolean onFatalPath(Disjunct selected, ReadRow read) {
+            Set<String> cone = cone(selected.selector());
+            if (named(cone, read.symbol())) return true;
+            OccurrenceAddress reader = read.endpoint().occurrence();
+            if (reader.equals(selected.path().occurrence)) return true;
+            SessionReader rows = corpus.session(selected.path().sessionId);
+            if (rows == null) return false;
+            for (WriteRow write : rows.writes()) {
+                if (write.initial()
+                        || !reader.equals(write.endpoint().occurrence())) {
+                    continue;
+                }
+                for (ReadRow observed : rows.reads()) {
+                    if (observed.location().equals(write.location())
+                            && observed.observedVersion() == write.version()
+                            && named(cone, observed.symbol())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        /** Whether the cone names {@code symbol}, as written or quoted. */
+        private static boolean named(Set<String> cone, String symbol) {
+            return symbol != null && (cone.contains(symbol)
+                    || cone.contains(SmtNames.legalSymbols(symbol)));
+        }
+
+        /**
+         * The valuation {@code selected}'s session's world planted, numbered
+         * {@code ordinal}: each declared root at the world's value, else its
+         * recording's, pinned as {@link #modelValuation} pins.
+         */
+        public Valuation worldValuation(int ordinal, Disjunct selected) {
+            Map<String, String> planted = corpus.world(
+                    selected.path().sessionId).rootAssignments;
+            Map<String, String> model = new LinkedHashMap<String, String>();
+            for (Map.Entry<String, RootMintRow> root
+                    : declaredRoots.entrySet()) {
+                String value = planted.get(root.getKey());
+                if (value != null) {
+                    model.put(SmtNames.legalSymbols(root.getValue()
+                            .symbol()), value);
+                }
+            }
+            return modelValuation(ordinal, model);
+        }
+
+        /**
+         * {@code selected}'s session's world's clocks as named pins: a cell
+         * whose CLOCK root the world skewed at that skew off its root's
+         * reading ({@link Moved}'s timeline), every other cell running on
+         * from the cell before it ({@link #clockStep} at 0).
+         */
+        public List<String> worldClocks(Disjunct selected) {
+            Map<String, String> deltas = corpus.world(
+                    selected.path().sessionId).clockDeltas;
+            Map<String, String> rootOf = new LinkedHashMap<String, String>();
+            SessionReader seed = corpus.session(seedSessionId);
+            if (seed != null) {
+                for (RootMintRow row : seed.roots()) {
+                    rootOf.putIfAbsent(row.symbol(), row.rootId());
+                }
+            }
+            List<String> pins = new ArrayList<String>();
+            for (String cell : clockCells) {
+                String root = rootOf.get(cell);
+                String skew = root == null ? null : deltas.get(root);
+                String reading = root == null ? null
+                        : clockRootReadings.get(root);
+                String pin = skew != null && reading != null
+                        ? "(= (- " + cell + " " + integralLiteral(reading)
+                        + ") " + integralLiteral(skew) + ")"
+                        : clockStep(cell, clockReadings, clockBefore, 0);
+                pins.add("(assert (! " + pin + " :named world_clock__"
+                        + ArtifactIO.digest(cell, 10) + "))");
+            }
+            return pins;
         }
 
         private boolean ran(Disjunct selected, Map<String, String> movedRoots,

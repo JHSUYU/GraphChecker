@@ -4849,8 +4849,33 @@ public final class SmtLowering {
         if ("toString".equals(operation)) {
             return javaToString(params, origin);
         }
+        if ("valueOf".equals(operation)) {
+            return javaValueOf(params, origin);
+        }
         return codecGap(firstNonBlank(operation, "unknown"),
                 "UNSUPPORTED_OPERATION", origin, Sort.STRING);
+    }
+
+    /**
+     * {@code String.valueOf(x)}: of an Object that is a String, {@code
+     * "null"} where it is null and else the String itself (Solr's {@code
+     * Replica.<init>}: {@code String.valueOf(propMap.getOrDefault(STATE,
+     * ..))}, a state leaf of the store's content); of a primitive, its
+     * String form ({@link #javaToString}).
+     */
+    private Term javaValueOf(JsonArray params, String origin) {
+        if (params.size() != 1) {
+            return codecGap("valueOf", "ARITY", origin, Sort.STRING);
+        }
+        Term value = dispatch(params.get(0), null, origin + ":valueOf");
+        if (value.sort != Sort.STRING) return javaToString(params, origin);
+        if (nullnessUnknown(Collections.singletonList(value))) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    "valueOf", Sort.STRING);
+        }
+        return Term.nonNullString("false".equals(value.stringNullness)
+                ? value.text : "(ite " + value.stringNullness + " \"null\" "
+                + value.text + ")", value.precondition);
     }
 
     /**

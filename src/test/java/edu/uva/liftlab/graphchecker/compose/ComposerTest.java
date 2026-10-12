@@ -4098,6 +4098,42 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * String.valueOf: of a String, "null" where it is null and else
+     * itself; of an int, its decimal.  Solr's Replica.<init> chooses its
+     * state as {@code State.valueOf(String.valueOf(map.get(STATE))
+     * .toUpperCase())} (solr-18413 Z2Q: refused UNSUPPORTED_OPERATION once
+     * the state was a content leaf).
+     */
+    @Test
+    public void stringValueOfIsTheStringOrItsDecimal() {
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        JsonObject s = vmLeaf("SymbolExpression", "s", "java/lang/String");
+        JsonObject state = enumValueOf("s");
+        JsonArray named = state.getAsJsonArray("_param_list");
+        named.set(1, vmString("toUpperCase", vmString("valueOf", s)));
+        String[][] rows = {
+                // lowered, what its text holds
+                {lowering.dispatch(vmString("valueOf", s), null, "t").text,
+                        "s"},
+                {lowering.dispatch(vmString("valueOf", vmLeaf(
+                        "SymbolExpression", "n", "I")), null, "t").text,
+                        "java_int_to_string"},
+                {lowering.dispatch(state, null, "t").text, "\"ACTIVE\""},
+        };
+        lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        for (String[] row : rows) {
+            assertTrue(row[0], row[0].contains(row[1]));
+        }
+    }
+
     /** {@code Enum.valueOf(org.x.State, <leaf>)} over ACTIVE and DOWN. */
     private static JsonObject enumValueOf(String leaf) {
         JsonObject valueOf = new JsonObject();
@@ -5079,21 +5115,28 @@ public class ComposerTest {
                 at("g#1", 0), 0);
         Endpoint asking = Endpoint.of(writer, "Volumes#excluded#5:READ",
                 at("r#1", 0), 0);
+        OccurrenceAddress elsewhere = occurrence("case/dn0", "REGION.other",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Handler#run#3", 0));
         // planted?, a guard names the view?, the decode of 2 has an arm?,
-        // the claim
+        // the turn writes what the anchor reads?, the claim
         Object[][] table = {
-                {true, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, true, true, ClaimKind.FORMULA_SAT},
-                {true, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
-                {false, false, true, ClaimKind.FORMULA_SAT},
-                {true, false, false, ClaimKind.STATE_PAIRING_FLIPPED},
+                {true, true, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, true, true, true, ClaimKind.FORMULA_SAT},
+                {true, false, true, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                {false, false, true, true, ClaimKind.FORMULA_SAT},
+                {true, false, false, true, ClaimKind.STATE_PAIRING_FLIPPED},
+                // Unnamed, and its work wrote nothing the fatal reads: off
+                // the fatal path, no pairing claim (the formula's own).
+                {true, false, true, false, ClaimKind.FORMULA_SAT},
         };
         for (Object[] row : table) {
             boolean planted = (Boolean) row[0];
             boolean named = (Boolean) row[1];
             boolean again = (Boolean) row[2];
+            boolean onPath = (Boolean) row[3];
             Path iteration = folder.newFolder("view-planted-" + planted + "-"
-                    + named + "-" + again).toPath();
+                    + named + "-" + again + "-" + onPath).toPath();
             for (boolean explored : new boolean[]{false, true}) {
                 String id = explored ? "s1" : "s0";
                 Session session = new Session(iteration, id, explored);
@@ -5102,6 +5145,7 @@ public class ComposerTest {
                 session.activation(turn);
                 session.activation(older);
                 session.activation(newer);
+                session.activation(elsewhere);
                 session.expression("EXPR.0000000000000000", integer("I", 0));
                 session.expression("EXPR.0000000000000007", integer("I", 7));
                 session.expression("EXPR.0000000000000011", integer("J", 1));
@@ -5139,9 +5183,9 @@ public class ComposerTest {
                     session.writes.add(WriteRow.of(id, ++session.seq,
                             repoint, view, 2L, again ? "EXPR.0000000000000012"
                                     : "EXPR.0000000000000013", "J"));
-                    session.write(Endpoint.of(turn, "Detector#run#9:WRITE",
-                                    at("w#2", 0), 0), list, 4L,
-                            "EXPR.0000000000000007");
+                    session.write(Endpoint.of(onPath ? turn : elsewhere,
+                                    "Detector#run#9:WRITE", at("w#2", 0), 0),
+                            list, 4L, "EXPR.0000000000000007");
                     listed = 4L;
                 }
                 JsonObject excluded = read("INSTANCE_FIELD", 1L, 88L, listed,
@@ -5166,10 +5210,10 @@ public class ComposerTest {
             ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                     solver());
             String detail = "planted " + planted + ", named " + named
-                    + ", again " + again + ": " + decision.claim().gaps()
-                    + "\n" + composition.body();
-            assertEquals(detail, row[3], decision.claim().kind());
-            if (!planted) continue;
+                    + ", again " + again + ", on path " + onPath + ": "
+                    + decision.claim().gaps() + "\n" + composition.body();
+            assertEquals(detail, row[4], decision.claim().kind());
+            if (!planted || !onPath) continue;
             assertTrue(detail, decision.claim().polarityDecides());
             ClaimPolicy.Outcome witness = decision.outcomes().get(
                     decision.claim().valuationOrdinal());
