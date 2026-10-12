@@ -608,10 +608,31 @@ public final class MessageDoors {
         long version = version(key);
         if (version < 0L || product == null) return;
         String path = location(key);
+        LocationId store = storeLocation(transport, path);
+        // The decode re-points its node's view (LocationKind.VIEW) once the
+        // system takes it: a pairing's hold waits here first
+        // (Confirmation#decoding), then the view's write is stated.
+        String node = nodeHere();
+        LocationId view = viewOf(store, Identity.currentOccurrence(node));
+        Confirmation.decoding(view, version,
+                Identity.currentOccurrence(node));
         List<Object> registered = Provenance.register(new Provenance.Version(
-                storeLocation(transport, path), path, version), product);
+                store, path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered);
+        if (view != null && RowRuntime.open()) {
+            OccurrenceAddress at = RowRuntime.doorOccurrence(node);
+            RowRuntime.viewWrite(at, RowRuntime.currentEvent(),
+                    Endpoint.messageSite(trimmed(transport), "VIEW",
+                            view.slot().replace('/', '.').replace('@', '.')),
+                    viewOf(store, at), version);
+        }
+    }
+
+    /** The node the running thread's work is attributed to, or "". */
+    private static String nodeHere() {
+        RuntimeTraceContext.View view = RuntimeTraceContext.current();
+        return view.source == null ? "" : view.source.key();
     }
 
     /**
@@ -628,18 +649,20 @@ public final class MessageDoors {
     public static void viewed(String transport, String path, Object product) {
         Provenance.Version version = product == null ? null
                 : Provenance.observe(product, null, new boolean[1]);
-        if (version == null || !RowRuntime.open()) return;
-        RuntimeTraceContext.View view = RuntimeTraceContext.current();
-        OccurrenceAddress at = RowRuntime.doorOccurrence(
-                view.source == null ? "" : view.source.key());
+        if (version == null) return;
+        String node = nodeHere();
+        OccurrenceAddress reading = Identity.currentOccurrence(node);
+        Confirmation.viewObserved(viewOf(version.location, reading), reading);
+        if (!RowRuntime.open()) return;
+        OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         if (at == null) return;
         long seq = RowRuntime.currentEvent();
         String site = ContentPort.viewed(trimmed(transport), path);
         RowRuntime.storeRead(at, seq, site, version.location,
                 version.version);
-        LocationId node = viewOf(version.location, at);
-        if (node != null) {
-            RowRuntime.viewRead(at, seq, site + "#VIEW", node,
+        LocationId view = viewOf(version.location, at);
+        if (view != null) {
+            RowRuntime.viewRead(at, seq, site + "#VIEW", view,
                     version.version);
         }
     }
@@ -676,15 +699,9 @@ public final class MessageDoors {
 
     /**
      * One node's view of a store location (LocationKind.VIEW): the
-     * transport at the node, the location as every run spells it; null for
-     * no registered node, whose view is no node's.
+     * transport at the node of {@code at}, the location as every run spells
+     * it; null for no registered node, whose view is no node's.
      */
-    static LocationId viewLocation(String transport, OccurrenceAddress at,
-                                   String path) {
-        return viewOf(storeLocation(transport, path), at);
-    }
-
-    /** {@link #viewLocation} of a store location already spelled. */
     static LocationId viewOf(LocationId store, OccurrenceAddress at) {
         String node = at == null ? "" : at.node().render();
         if (store == null || node.isEmpty() || node.startsWith(
@@ -702,7 +719,7 @@ public final class MessageDoors {
     }
 
     /** A stored version's version: its key after the last {@code @}, or -1. */
-    static long version(String key) {
+    private static long version(String key) {
         String held = trimmed(key);
         int at = held.lastIndexOf('@');
         if (at < 0) return -1L;

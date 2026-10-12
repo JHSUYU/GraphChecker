@@ -15,7 +15,6 @@ import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
-import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
@@ -307,16 +306,6 @@ final class StoreContent {
                     && active.d3Address != null ? active.d3Address
                     : occurrenceHere(transport);
             if (consumer == null) return;
-            // The decode re-points its node's view of the location.
-            long version = MessageDoors.version(key);
-            LocationId view = MessageDoors.viewLocation(transport, consumer,
-                    location);
-            if (view != null && version >= 0L) {
-                RowRuntime.viewWrite(consumer, RowRuntime.currentEvent(),
-                        Endpoint.messageSite(trimmed(transport), "VIEW",
-                                view.slot().replace('/', '.')
-                                        .replace('@', '.')), view, version);
-            }
             for (Leaf leaf : leaves(transport, location, tree)) {
                 attach(active, consumer, transport, key, location, leaf,
                         exports == null ? null : exports.get(leaf.pointer));

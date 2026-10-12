@@ -124,6 +124,8 @@ public final class RecordingPlant {
      *  {@code EVENT}, the confirmed session's realized order
      *  ({@code ScheduleLog#holdRealizedLocked}). */
     public static final String ORDER = "ORDER";
+    /** A pairing's hold of a node's decodes of a view (Confirmation). */
+    public static final String VIEW_HOLD = "VIEW_HOLD";
     /** An ORDER row's scope: none for CONFIRM's activations, {@code EVENT}
      *  for schedule events. */
     public static final String SCOPE = "scope";
@@ -731,7 +733,8 @@ public final class RecordingPlant {
                 anchor = occurrence;
                 fatalArms.put(optionalString(row, SITE),
                         row.get(VALUE).getAsBoolean());
-            } else if (!ORDER.equals(kind) || !ordered(row)) {
+            } else if (!VIEW_HOLD.equals(kind)
+                    && (!ORDER.equals(kind) || !ordered(row))) {
                 throw new IOException("not a plant row: " + row);
             }
         }

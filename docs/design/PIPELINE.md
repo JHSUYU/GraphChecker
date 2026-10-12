@@ -927,8 +927,15 @@ Every assigned root must have a mint in the seed session (else `ASSIGNMENT_UNMIN
 from (`ConfirmMain#holding`, §10: a `STATE` row per paired read, `ORDER` rows that realize it --
 for an INITIAL every writer of the location after the read; a writer the read must precede waits for
 the reader's occurrence to close, since the choice binds every read it makes of the location and
-the flipped world may read it again, CONFIRM's for the read's activation); a pairing that session states no read
-or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
+the flipped world may read it again, CONFIRM's for the read's activation; for a node's VIEW, whose
+decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
+`VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
+before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`), until the
+reader's occurrence has read the view (`Confirmation#viewObserved`, at the view accessor or a
+PROVENANCE site), never the reader's own decodes, at most the order's timeout (300 s), past which
+the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
+native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
+states no read or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`
 (`SAT_MODEL_READY`), `obligation.jsonl`, `obligation_query.smt2`, `gaps.jsonl`,
 `focused_task.jsonl` (the focus row, [CONTRACT-SPEC.md §3](CONTRACT-SPEC.md)), the pairings'
 `expected_edges.jsonl` and the schedule cut (`SchedulePrefix.write`, held): the source session's

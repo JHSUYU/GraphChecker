@@ -868,8 +868,17 @@ public final class ConcolicRegionRuntime {
                                          Object holder) {
         Provenance.Version version = Provenance.observe(receiver, holder,
                 new boolean[1]);
+        if (version == null) return;
         ActiveRegion active = activeRegion();
-        if (version == null || active == null || active.d3Address == null) {
+        // A pairing's hold of this node's decodes ends where its reader's
+        // occurrence reads the view (Confirmation#viewObserved).
+        OccurrenceAddress reading = active != null && active.d3Address != null
+                ? active.d3Address : Identity.currentOccurrence(
+                RuntimeTraceContext.current().source == null ? ""
+                        : RuntimeTraceContext.current().source.key());
+        Confirmation.viewObserved(MessageDoors.viewOf(version.location,
+                reading), reading);
+        if (active == null || active.d3Address == null) {
             return;
         }
         long seq = RowRuntime.currentEvent();

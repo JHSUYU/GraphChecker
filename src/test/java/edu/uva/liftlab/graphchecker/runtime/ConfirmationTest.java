@@ -433,6 +433,62 @@ public class ConfirmationTest {
     }
 
     /**
+     * THE DECODE HOLD: a pairing holds a node's decodes of a view past the
+     * paired version until the reader's occurrence read the view; the
+     * reader's own decodes are never held, a decode at or below the version
+     * is not either, and a hold whose reader never reads is unrealized by
+     * name once the decode waited out the order's timeout.
+     */
+    @Test
+    public void aViewsLaterDecodeWaitsForItsReaderAndAnUnreadHoldIsAMismatch()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                + "\"view\":\"" + Confirmation.viewKey(view) + "\","
+                + "\"above\":1,\"readerOccurrence\":\""
+                + Confirmation.occurrenceKey(reader) + "\"}"));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+        try {
+            long[] decoded = new long[1];
+            Thread watch = new Thread(() -> {
+                Confirmation.decoding(view, 2L, decoder);
+                decoded[0] = System.nanoTime();
+            });
+            watch.start();
+            // Not held: the paired version itself, and the reader's own.
+            Confirmation.decoding(view, 1L, decoder);
+            Confirmation.decoding(view, 3L, reader);
+            Thread.sleep(100L);
+            long read = System.nanoTime();
+            Confirmation.viewObserved(view, reader);
+            watch.join(5000L);
+            assertTrue("the decode went on only after the reader read",
+                    decoded[0] >= read);
+            assertTrue(Confirmation.close().isEmpty());
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+        }
+        Confirmation.resetForTests();
+        handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
+                + "\"view\":\"" + Confirmation.viewKey(view) + "\","
+                + "\"above\":1,\"readerOccurrence\":\""
+                + Confirmation.occurrenceKey(reader) + "\"}"));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "100");
+        try {
+            Confirmation.decoding(view, 2L, decoder);
+            List<String> mismatches = Confirmation.close();
+            assertEquals(1, mismatches.size());
+            assertTrue(mismatches.get(0), mismatches.get(0)
+                    .startsWith("VIEW_HOLD " + Confirmation.viewKey(view)));
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+        }
+    }
+
+    /**
      * How a replay held its world ({@code Confirmation#held}, condition (b)
      * of a WORLD_REFUTED): a hold an interrupt ended stands while its
      * activation does nothing tracked after it, and gave way once it does;

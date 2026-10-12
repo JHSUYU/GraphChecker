@@ -506,7 +506,8 @@ public final class ConfirmMain {
      *   world skews a clock: every such reading runs on its node's clock;</li>
      *   <li>an ANSWER per attach the world answers, at its port's call-return
      *   capture: the endpoint, the call and the regions declaring it;</li>
-     *   <li>the world's ORDER rows as CONFIRM holds them, each pair once;
+     *   <li>the world's ORDER and VIEW_HOLD rows as CONFIRM holds them, each
+     *   once;
      *   and the order the session CONFIRM saw ran in from the roots' mint
      *   occurrences on, ORDER rows of events ({@link RealizedOrder}), which
      *   a native run holds as CONFIRM holds its own: a run on the
@@ -573,7 +574,9 @@ public final class ConfirmMain {
             }
             if (RecordingPlant.ORDER.equals(kind)
                     && orders.add(optionalString(edge, "before") + "\n"
-                    + optionalString(edge, "after"))) {
+                    + optionalString(edge, "after"))
+                    || RecordingPlant.VIEW_HOLD.equals(kind)
+                    && orders.add(edge.toString())) {
                 rows.add(edge);
             }
         }
@@ -1590,6 +1593,24 @@ public final class ConfirmMain {
             edge.addProperty("location", location);
             holding.edges.add(edge);
             if (mint) continue;
+            // A node's view: its decodes run in work no activation hook
+            // holds (watch deliveries, request handlers), so the pairing
+            // holds them at the decode -- every decode of the view past
+            // the paired version waits until the reader's occurrence read
+            // it (Confirmation#decoding) -- and orders nothing else.
+            if (held.location().kind() == LocationKind.VIEW) {
+                JsonObject hold = new JsonObject();
+                hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
+                hold.addProperty("view",
+                        Confirmation.viewKey(held.location()));
+                hold.addProperty("above", held.version());
+                hold.addProperty("readerOccurrence",
+                        Confirmation.occurrenceKey(
+                                read.endpoint().occurrence()));
+                hold.addProperty("reader", Confirmation.id(read.endpoint()));
+                holding.edges.add(hold);
+                continue;
+            }
             if (!held.initial()) {
                 closure.order(holding, closure.exit(held.endpoint(),
                         held.seq()), read.endpoint(), read.seq());
