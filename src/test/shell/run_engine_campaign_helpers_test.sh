@@ -3789,7 +3789,9 @@ EOF
 # the starts made, in order.
 while IFS='|' read -r ld_hold ld_started; do
   ld_said=$(
-    stream_queue=("OBLIGATION obligations-0001 B" "REPLAY obligations-0000 C g0/c g0/p")
+    declare -A stream_queued_at=()
+    stream_queue=("OBLIGATION obligations-0001 B"
+      "REPLAY obligations-0000 C g0/c g0/p")
     [[ "${ld_hold}" -eq 0 ]] || stream_queue=()
     stream_hard=("HARD obligations-0000 A")
     stream_hold=${ld_hold}
