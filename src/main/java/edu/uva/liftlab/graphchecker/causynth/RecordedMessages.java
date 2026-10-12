@@ -29,9 +29,10 @@ final class RecordedMessages {
     private final Map<String, ContextShape.Stance> stances = new HashMap<>();
     /** Producer endpoint id -> the occurrence ids that took it in. */
     private final Map<String, Set<String>> receivers = new HashMap<>();
-    /** Where a context anchored on nothing stands -> the message it took
-     *  into itself (a DataNode's turn and its DataTransfer op). */
-    private final Map<String, String> takenIn = new HashMap<>();
+    /** Where a context anchored on nothing stands -> the messages it took
+     *  into itself (a DataNode's turn and its DataTransfer op; a batching
+     *  Overseer turn, every item it flushed at once). */
+    private final Map<String, Set<String>> takenIn = new HashMap<>();
     /** Producer endpoint id -> the stances of the turns that took it in at
      *  their root, no occurrence open ({@link #doorStancesOf}). */
     private final Map<String, Set<String>> receivingStances = new HashMap<>();
@@ -54,7 +55,8 @@ final class RecordedMessages {
                         ContextShape.Stance.ofSend(event.context());
                 if (at != null
                         && !(at.context() instanceof CausalContext.Anchor)) {
-                    takenIn.putIfAbsent(at.render(), message);
+                    takenIn.computeIfAbsent(at.render(),
+                            ignored -> new LinkedHashSet<>()).add(message);
                 }
                 if (!event.occurrence().isEmpty()) {
                     receivers.computeIfAbsent(message,
@@ -79,12 +81,13 @@ final class RecordedMessages {
      * None when no message started it.
      */
     Set<String> doorsOf(OccurrenceAddress occurrence) {
-        String endpoint = startedBy(occurrence);
-        if (endpoint.isEmpty()) return Collections.emptySet();
-        Set<String> doors = new LinkedHashSet<>(receivers.getOrDefault(
-                endpoint, Collections.<String>emptySet()));
-        String sender = senders.get(endpoint);
-        if (sender != null) doors.add(sender);
+        Set<String> doors = new LinkedHashSet<>();
+        for (String endpoint : startedBy(occurrence)) {
+            doors.addAll(receivers.getOrDefault(endpoint,
+                    Collections.<String>emptySet()));
+            String sender = senders.get(endpoint);
+            if (sender != null) doors.add(sender);
+        }
         doors.remove(occurrence.id());
         return doors;
     }
@@ -100,23 +103,27 @@ final class RecordedMessages {
      * runs).
      */
     Set<String> doorStancesOf(OccurrenceAddress occurrence) {
-        String endpoint = startedBy(occurrence);
-        Set<String> doors = new LinkedHashSet<>(receivingStances.getOrDefault(
-                endpoint, Collections.<String>emptySet()));
-        ContextShape.Stance sentFrom = stances.get(endpoint);
-        if (sentFrom != null) doors.add(sentFrom.render());
+        Set<String> doors = new LinkedHashSet<>();
+        for (String endpoint : startedBy(occurrence)) {
+            doors.addAll(receivingStances.getOrDefault(endpoint,
+                    Collections.<String>emptySet()));
+            ContextShape.Stance sentFrom = stances.get(endpoint);
+            if (sentFrom != null) doors.add(sentFrom.render());
+        }
         return doors;
     }
 
-    /** The producer endpoint of the message that started {@code
-     *  occurrence}: its context's anchor, else the message that context
-     *  took into itself; "" for none. */
-    private String startedBy(OccurrenceAddress occurrence) {
+    /** The producer endpoints of the messages that started {@code
+     *  occurrence}: its context's anchor, else every message that context
+     *  took into itself (a batching turn is started by each item it took
+     *  in); none for none. */
+    private Set<String> startedBy(OccurrenceAddress occurrence) {
         return occurrence.context() instanceof CausalContext.Anchor
-                ? ((CausalContext.Anchor) occurrence.context())
-                        .producerEndpointId()
+                ? Collections.singleton(((CausalContext.Anchor)
+                        occurrence.context()).producerEndpointId())
                 : takenIn.getOrDefault(
-                        ContextShape.Stance.of(occurrence).render(), "");
+                        ContextShape.Stance.of(occurrence).render(),
+                        Collections.<String>emptySet());
     }
 
     /** The shape of {@code context} over the recording's senders. */

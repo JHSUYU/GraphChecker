@@ -818,7 +818,7 @@ public final class ClosurePlanner {
     /** A door of the message a demanded occurrence served -- its sender or
      *  its receiver ({@link Corpus#doorsOf}), paired via the message that
      *  started the served occurrence ({@link Corpus#startedBy}: its ANCHOR,
-     *  or what its turn took in) -- joins as a control producer where a
+     *  or each item its turn took in) -- joins as a control producer where a
      *  session recorded a fault decision of it: it contributes no value,
      *  but that fault point decides whether the message exists (IDENTITY
      *  §7.3), the door PLAN's CONTROL_PRODUCER rule admits (it read a
@@ -831,8 +831,16 @@ public final class ClosurePlanner {
     private static void controlProducer(Walk walk, Demand demand,
                                         List<Demand> next) {
         Corpus corpus = walk.corpus;
-        String endpoint = corpus.startedBy(demand.occurrence);
-        if (endpoint.isEmpty()) return;
+        for (String endpoint : corpus.startedBy(demand.occurrence)) {
+            doorsOf(walk, demand, endpoint, next);
+        }
+    }
+
+    /** {@link #controlProducer} over the doors of one message that started
+     *  the demanded occurrence. */
+    private static void doorsOf(Walk walk, Demand demand, String endpoint,
+                                List<Demand> next) {
+        Corpus corpus = walk.corpus;
         for (OccurrenceAddress door : corpus.doorsOf(endpoint,
                 demand.occurrence)) {
             if (door.equals(demand.occurrence)) continue;

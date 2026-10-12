@@ -555,7 +555,8 @@ For a store the nodes share (ZooKeeper in a one-JVM cluster):
   thread served and is the message the thread serves until the next (its key and `REQUEST`, as its
   write sent it), its staged values with it; the consumer keeps its own context, and its RECV names
   the item it took in (`CausynthTraceRecorder#receivedExchange`), so the item's sender is a door of
-  the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`). A
+  the message that started the consumer's turn (`Corpus#startedBy`, `RecordedMessages#doorsOf`) --
+  of every item a batching turn took in (the Overseer's state writer flushing several at once). A
   RECV a turn makes at its root, before any of its regions opened, names no occurrence: unless the
   turn stands on the item (a request's handler, which the item started), every occurrence the turn
   runs is then a receiver, a door of the item for an occurrence of another turn (its own turn is
