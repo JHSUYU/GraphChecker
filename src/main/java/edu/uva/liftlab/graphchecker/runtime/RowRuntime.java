@@ -583,8 +583,12 @@ public final class RowRuntime {
         }
         // A guard that reads several objects of one parse with no VM event
         // between them (a loop over a collection's slices) reads the version
-        // once.
-        if (!STORE_READS.add(seq + "|" + location)) return;
+        // once.  The seq is the JVM's last event id, which another node's
+        // reader shares: one read per occurrence, event, location and version.
+        if (!STORE_READS.add(occurrence.id() + "|" + seq + "|" + location
+                + "|" + version)) {
+            return;
+        }
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         if (version >= 0L) {
@@ -597,7 +601,8 @@ public final class RowRuntime {
         Confirmation.read(at, location, version, ReadRow.UNKNOWN_VERSION);
     }
 
-    /** seq|location of every store read stated: one per event. */
+    /** occurrence|seq|location|version of every store read stated: one
+     *  per event (RowInvariants invariant 4 keys a STORE read alike). */
     private static final Set<String> STORE_READS =
             ConcurrentHashMap.newKeySet();
 

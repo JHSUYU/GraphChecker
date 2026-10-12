@@ -331,9 +331,17 @@ public final class RowInvariants {
     private static void onePerEvent(SessionReader session,
                                     List<GapRow> gaps) {
         Set<String> seen = new LinkedHashSet<String>();
+        // A store read is its reader's read of one version (IDENTITY §7.2):
+        // its seq is the JVM's last event, which another node's reader of
+        // another version shares.
         for (ReadRow row : session.reads()) {
-            twice(session, gaps, seen, "reads", row.seq(), "seq/location",
-                    row.seq() + "|" + row.location(), row.location() + "");
+            boolean store = row.location().kind() == LocationKind.STORE;
+            twice(session, gaps, seen, "reads", row.seq(), store
+                    ? "occurrence/seq/location/version" : "seq/location",
+                    (store ? row.endpoint().occurrence().id() + "|" : "")
+                            + row.seq() + "|" + row.location()
+                            + (store ? "|" + row.observedVersion() : ""),
+                    row.location() + "");
         }
         // A store's write is its version (IDENTITY §7.2): two versions of
         // one path with no VM event between them, or with no VM clock at all
