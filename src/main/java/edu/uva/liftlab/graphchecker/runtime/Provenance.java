@@ -27,7 +27,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * with the version, the first decode that reaches an object keeping it (a
  * later product holding an older object shares it, it does not re-make it:
  * stated, never a silent re-pin, as a DIAGNOSTIC row and in {@link
- * #summary}).  What a decode reaches but did not make is no product of it:
+ * #summary}, as are a holder built from two decodes and a member the walk
+ * could not read).  What a decode reaches but did not make is no product of it:
  * a class's constant (an object a static field of its own class holds,
  * Solr's {@code DocRouter.DEFAULT} behind every collection's router) and
  * what a supplier holds (code that makes state on demand, Solr's {@code
@@ -112,9 +113,24 @@ final class Provenance {
     static Version observe(Object receiver, Object holder, boolean[] derived) {
         Version version = of(receiver);
         if (version != null && holder != null && holder != receiver) {
-            derived[0] = DECODED.putIfAbsent(holder, version) == null;
+            Version held = DECODED.putIfAbsent(holder, version);
+            derived[0] = held == null;
+            // Built from two decodes: it keeps the first, stated.
+            if (held != null && !same(held, version)) {
+                state(holder.getClass(), held, version, "a "
+                        + holder.getClass().getName() + " built from the"
+                        + " decodes of " + held + " and " + version
+                        + " keeps the first, so a guard reading it reads "
+                        + held);
+            }
         }
         return version;
+    }
+
+    /** Whether two versions name one location's one version. */
+    private static boolean same(Version one, Version other) {
+        return one.location.equals(other.location)
+                && one.version == other.version;
     }
 
     /**
@@ -209,9 +225,12 @@ final class Provenance {
                 // is what it holds; another version's is stated.
                 Version held = DECODED.putIfAbsent(value, version);
                 if (held != null) {
-                    if (!held.location.equals(version.location)
-                            || held.version != version.version) {
-                        shared(type, held, version);
+                    if (!same(held, version)) {
+                        state(type, held, version, "the decode reached a "
+                                + type.getName() + " that the decode of "
+                                + held + " registered: it keeps that version,"
+                                + " so a guard reading it reads " + held
+                                + ", not this decode's");
                     }
                     continue;
                 }
@@ -222,25 +241,31 @@ final class Provenance {
             } catch (ReflectiveOperationException | RuntimeException
                     unreadable) {
                 // A member it cannot read (a concurrent map moving under a
-                // shared object) registers nothing below it.
+                // shared object) registers nothing below it: stated.
+                state(type, version, version, "the decoded walk could not"
+                        + " read a " + type.getName() + " (" + unreadable
+                        .getClass().getSimpleName() + "): nothing below it"
+                        + " holds " + version);
             }
         }
         return bounded;
     }
 
     /**
-     * One object a decode reached that another version holds: it keeps
-     * that version (a guard reading it reads that version, not this
-     * decode's), counted and stated once per class and pair.
+     * What a decode left unregistered or registered under another version
+     * (a shared object, a holder built from two decodes, an unreadable
+     * member): counted, stated once per class, pair and kind (DIAGNOSTIC),
+     * never a silent re-pin or skip.
      */
-    private static void shared(Class<?> type, Version held, Version version) {
+    private static void state(Class<?> type, Version held, Version version,
+                              String detail) {
         SHARED.incrementAndGet();
-        if (!STATED.add(type.getName() + "|" + held + "|" + version)) return;
+        if (!STATED.add(type.getName() + "|" + held + "|" + version + "|"
+                + detail.substring(0, Math.min(24, detail.length())))) {
+            return;
+        }
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                version.toString(), "the decode reached a " + type.getName()
-                        + " that the decode of " + held + " registered: it"
-                        + " keeps that version, so a guard reading it reads "
-                        + held + ", not this decode's");
+                version.toString(), detail);
     }
 
     /** Whether a static field of {@code value}'s own class or one of its
@@ -352,7 +377,7 @@ final class Provenance {
                 : NANOS.get() / 1e6 / decodes) + " ms each, longest "
                 + String.format("%.2f", MAX_NANOS.get() / 1e6) + " ms, "
                 + BOUNDED.get() + " at the bound, " + SHARED.get()
-                + " object(s) reached that another version holds, "
+                + " object(s) another version holds or unreadable, "
                 + UNREGISTERED.get() + " provenance read(s) of an object no"
                 + " decode registered";
     }
@@ -380,7 +405,8 @@ final class Provenance {
         return UNREGISTERED.get();
     }
 
-    /** Objects decodes reached that another version holds (tests). */
+    /** Objects a decode reached that another version holds, holders built
+     *  from two decodes, members it could not read (tests). */
     static long shared() {
         return SHARED.get();
     }

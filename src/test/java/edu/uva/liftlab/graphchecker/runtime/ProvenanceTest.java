@@ -99,7 +99,8 @@ public class ProvenanceTest {
     /**
      * SYMBOL-SCOPE §5.7: an object a constructor builds from a decoded
      * receiver it reads holds the receiver's version (a processor's copy of
-     * its collection's read-only flag), once: it keeps the first.
+     * its collection's read-only flag), once: it keeps the first, and a
+     * second decode's is stated.
      */
     @Test
     public void aConstructorsCopyOfADecodedObjectHoldsItsVersion() {
@@ -115,6 +116,8 @@ public class ProvenanceTest {
         Provenance.observe(two, processor, derived);
         assertEquals("the first kept", 7L, Provenance.of(processor).version);
         assertEquals("not taken again", false, derived[0]);
+        assertEquals("a holder built from two decodes: stated", 1L,
+                Provenance.shared());
         assertNull("an object no decode made derives nothing",
                 Provenance.observe(new Object(), new Object(), derived));
     }
