@@ -866,6 +866,17 @@ public final class ConcolicRegionRuntime {
      */
     public static void observeProvenance(String siteId, Object receiver,
                                          Object holder) {
+        // Woven into the system's code with no trap of its own: an engine
+        // fault is named, never thrown into it (MessageDoors#doorFault).
+        try {
+            observeVersion(siteId, receiver, holder);
+        } catch (RuntimeException fault) {
+            MessageDoors.doorFault("observeProvenance " + siteId, fault);
+        }
+    }
+
+    private static void observeVersion(String siteId, Object receiver,
+                                       Object holder) {
         Provenance.Version version = Provenance.observe(receiver, holder,
                 new boolean[1]);
         ActiveRegion active = activeRegion();

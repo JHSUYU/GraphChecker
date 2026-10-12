@@ -182,14 +182,20 @@ public final class MessageDoors {
                                  String attemptId, String half,
                                  Object localOwner, Object scope,
                                  String verb, Object message) {
-        // Staged before the door files what the message carries.
-        MessageCodec.send(message);
-        String trace = CausynthTraceRecorder.outboundExchange(transport,
-                correlationId, attemptId, half, localOwner, scope,
-                trimmed(verb));
-        String symbolic = SymbolicMessageEnvelope.takeOutbound();
-        return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
-                : new Outbound(correlationId, attemptId, trace, symbolic);
+        try {
+            // Staged before the door files what the message carries.
+            MessageCodec.send(message);
+            String trace = CausynthTraceRecorder.outboundExchange(transport,
+                    correlationId, attemptId, half, localOwner, scope,
+                    trimmed(verb));
+            String symbolic = SymbolicMessageEnvelope.takeOutbound();
+            return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
+                    : new Outbound(correlationId, attemptId, trace,
+                    symbolic);
+        } catch (RuntimeException fault) {
+            doorFault("send " + transport + " " + correlationId, fault);
+            return Outbound.EMPTY;
+        }
     }
 
     /**
@@ -209,10 +215,15 @@ public final class MessageDoors {
      */
     public static long requestStarting(String transport, String verb,
                                        int attempt) {
-        callStarting();
-        return Identity.requestStarting(Endpoint.messageSite(
-                trimmed(transport), REQUEST, trimmed(verb)), verb,
-                attempt);
+        try {
+            callStarting();
+            return Identity.requestStarting(Endpoint.messageSite(
+                    trimmed(transport), REQUEST, trimmed(verb)), verb,
+                    attempt);
+        } catch (RuntimeException fault) {
+            doorFault("requestStarting " + transport + " " + verb, fault);
+            return 0L;
+        }
     }
 
     /**
@@ -250,10 +261,16 @@ public final class MessageDoors {
      */
     public static Object handingOff(String transport, String correlationId,
                                     String half) {
-        String sender = Interactions.sender(trimmed(transport),
-                trimmed(correlationId), trimmed(half));
-        return Identity.handoffStarting(sender.isEmpty() ? ""
-                : trimmed(transport) + "." + sender);
+        try {
+            String sender = Interactions.sender(trimmed(transport),
+                    trimmed(correlationId), trimmed(half));
+            return Identity.handoffStarting(sender.isEmpty() ? ""
+                    : trimmed(transport) + "." + sender);
+        } catch (RuntimeException fault) {
+            doorFault("handingOff " + transport + " " + correlationId,
+                    fault);
+            return null;
+        }
     }
 
     /** The hand-off {@link #handingOff} began is over. */
@@ -272,6 +289,19 @@ public final class MessageDoors {
                                   String transport, String correlationId,
                                   String attemptId, String half,
                                   Object localOwner, boolean keepSymbolic) {
+        try {
+            return install(trace, symbolic, transport, correlationId,
+                    attemptId, half, localOwner, keepSymbolic);
+        } catch (RuntimeException fault) {
+            doorFault("inbound " + transport + " " + correlationId, fault);
+            return Inbound.EMPTY;
+        }
+    }
+
+    private static Inbound install(String trace, String symbolic,
+                                   String transport, String correlationId,
+                                   String attemptId, String half,
+                                   Object localOwner, boolean keepSymbolic) {
         // Every receipt ends the request this thread had in hand, whether or
         // not it carries a context (Identity#requestInHand).
         Identity.requestInHand("");
@@ -311,6 +341,18 @@ public final class MessageDoors {
     public static Inbound received(String symbolic, String transport,
                                    String correlationId, String attemptId,
                                    Object localOwner) {
+        try {
+            return take(symbolic, transport, correlationId, attemptId,
+                    localOwner);
+        } catch (RuntimeException fault) {
+            doorFault("received " + transport + " " + correlationId, fault);
+            return Inbound.EMPTY;
+        }
+    }
+
+    private static Inbound take(String symbolic, String transport,
+                                String correlationId, String attemptId,
+                                Object localOwner) {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         String declared = trimmed(symbolic);
@@ -336,7 +378,11 @@ public final class MessageDoors {
      * ({@link MessageCodec#receive}), for the getters that read it.
      */
     public static void parsed(Object message) {
-        MessageCodec.receive(message);
+        try {
+            MessageCodec.receive(message);
+        } catch (RuntimeException fault) {
+            doorFault("parsed", fault);
+        }
     }
 
     /** Ends {@code scope} if the thread still serves it. */
@@ -628,11 +674,14 @@ public final class MessageDoors {
      */
     public static void stored(String transport, String key, Object owner,
                               byte[] data) {
-        boolean paused = pause();
-        // In flight until filed, whatever bracket the adapter opened: the
-        // SEND and the producer it mints take the concolic VM milliseconds.
-        long store = inFlight(transport, location(key));
+        boolean paused = false;
+        long store = -1L;
         try {
+            paused = pause();
+            // In flight until filed, whatever bracket the adapter opened:
+            // the SEND and the producer it mints take the concolic VM
+            // milliseconds.
+            store = inFlight(transport, location(key));
             // Its place on the session's order before anything files it: a
             // reader released by the filing (#filed) stands after the write
             // (review re-check M8: positioned after the filing, a decode of
@@ -646,7 +695,7 @@ public final class MessageDoors {
             if (message.active()) STORED.put(transport + "\n" + key, message);
             written(transport, key, owner, position);
         } catch (RuntimeException fault) {
-            observerFault("stored " + key, fault);
+            doorFault("stored " + key, fault);
         } finally {
             storeEnded(transport, store);
             resume(paused);
@@ -713,25 +762,28 @@ public final class MessageDoors {
      * the objects each occurrence read a field on.
      */
     public static void decoded(String transport, String key, Object product) {
-        boolean paused = pause();
+        boolean paused = false;
         try {
+            paused = pause();
             decode(transport, key, product);
         } catch (RuntimeException fault) {
-            observerFault("decoded " + key, fault);
+            doorFault("decoded " + key, fault);
         } finally {
             resume(paused);
         }
     }
 
     /**
-     * An engine fault in a door that only observes the system -- its
-     * decodes, views, refreshes, stores and content: named, never thrown
-     * into the system's code, which such a door leaves as it found it (a
-     * NullPointerException of #decode killed every seed replay whose test
-     * builds its cluster in @Before, solr-sg3 SP2-10).  The rows the door
-     * would have stated are missing: SESSION_INCOMPLETE, BLOCKING.
+     * An engine fault in a door the system's code calls -- one that
+     * observes it (decodes, views, refreshes, stores, content) or brackets
+     * its messages and requests: named, never thrown into the system's
+     * code, which such a door leaves as it found it (a NullPointerException
+     * of #decode killed every seed replay whose test builds its cluster in
+     * @Before, solr-sg3 SP2-10).  The rows the door would have stated are
+     * missing: SESSION_INCOMPLETE, BLOCKING.  A fault door's planted fault
+     * is the system's world, not an engine fault: it is thrown, never here.
      */
-    private static void observerFault(String door, RuntimeException fault) {
+    static void doorFault(String door, RuntimeException fault) {
         StackTraceElement[] frames = fault.getStackTrace();
         RowRuntime.gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING, door,
                 "the engine's door threw " + fault + (frames.length == 0
@@ -805,8 +857,9 @@ public final class MessageDoors {
      * collection's creation held its node's watch for the order's timeout).
      */
     public static void refreshing(String transport, String path) {
-        boolean paused = pause();
+        boolean paused = false;
         try {
+            paused = pause();
             String node = nodeHere();
             OccurrenceAddress at = Identity.currentOccurrence(node);
             String location = trimmed(path);
@@ -829,7 +882,7 @@ public final class MessageDoors {
             Confirmation.decoding(viewOf(storeLocation(transport, life),
                     decoderNode(at, node)), reach, at);
         } catch (RuntimeException fault) {
-            observerFault("refreshing " + path, fault);
+            doorFault("refreshing " + path, fault);
         } finally {
             resume(paused);
         }
@@ -897,11 +950,12 @@ public final class MessageDoors {
      */
     public static void viewed(String transport, String path, Object product) {
         if (product == null || !RowRuntime.open()) return;
-        boolean paused = pause();
+        boolean paused = false;
         try {
+            paused = pause();
             view(transport, path, product);
         } catch (RuntimeException fault) {
-            observerFault("viewed " + path, fault);
+            doorFault("viewed " + path, fault);
         } finally {
             resume(paused);
         }
@@ -947,7 +1001,7 @@ public final class MessageDoors {
         try {
             StoreContent.written(bytes, document);
         } catch (RuntimeException fault) {
-            observerFault("jsonWritten", fault);
+            doorFault("jsonWritten", fault);
         }
     }
 
@@ -961,7 +1015,7 @@ public final class MessageDoors {
         try {
             StoreContent.parsed(bytes, tree);
         } catch (RuntimeException fault) {
-            observerFault("jsonRead", fault);
+            doorFault("jsonRead", fault);
         }
     }
 
@@ -1054,8 +1108,14 @@ public final class MessageDoors {
         try {
             callback.run();
         } finally {
-            NOTIFIED.remove();
-            endInbound();
+            // The callback's own exception is the system's and goes on; an
+            // engine fault here would replace it, so it is named instead.
+            try {
+                NOTIFIED.remove();
+                endInbound();
+            } catch (RuntimeException fault) {
+                doorFault("notified " + kind, fault);
+            }
         }
     }
 
@@ -1075,11 +1135,12 @@ public final class MessageDoors {
      */
     public static void fetched(String transport, String key, Object owner,
                                byte[] data) {
-        boolean paused = pause();
+        boolean paused = false;
         try {
+            paused = pause();
             fetch(transport, key, owner, data);
         } catch (RuntimeException fault) {
-            observerFault("fetched " + key, fault);
+            doorFault("fetched " + key, fault);
         } finally {
             resume(paused);
         }
@@ -1130,9 +1191,12 @@ public final class MessageDoors {
      * of the window filed names nothing.
      */
     public static void consumed(String transport, String key) {
-        boolean paused = pause();
+        boolean paused = false;
         try {
+            paused = pause();
             consume(transport, key);
+        } catch (RuntimeException fault) {
+            doorFault("consumed " + key, fault);
         } finally {
             resume(paused);
         }
