@@ -886,9 +886,12 @@ reaches, to a fixed point:
   but for each door decision -- the marker's mint lifts the pause, the woven test records the decision,
   the next hook restores it -- and each mutation of a tracked container at a site the scope map names
   (never a read), which so runs hooked. COMPOSE reads from it its door roots and decisions and the
-  schedule's events of its send; CONFIRM no state row of it. EXPLORE re-plans one a value demand
-  reaches (`explore.ClosurePlanner#plan`, `#valueDemand`): a `DOORS_ONLY_UNPAUSED` growth row, and
-  GROW's next generation drops the mark and re-runs the replay that ran it. A field it writes runs unhooked, as an unplanned occurrence's: a
+  schedule's events of its send; CONFIRM no state row of it. A session's manifest states what it ran
+  doors-only (`SessionManifest#doorsOnly`), and EXPLORE re-plans one a value demand reaches that no
+  session ran whole (`explore.ClosurePlanner#plan`, `#valueDemand`, `#ranWhole`): a
+  `DOORS_ONLY_UNPAUSED` growth row, GROW's next generation drops the mark and re-runs the focused
+  replay that ran it; one only the seed ran (the seed is not re-run) is a BLOCKING row at the fixed
+  point unless a later replay ran it whole. A field it writes runs unhooked, as an unplanned occurrence's: a
   later read of the word is stated as changed by an unhooked write (VM.md §10), where a planned writer's
   version was named before -- a reader of a location it writes that is no demand of the walk, or one
   another node's demand reads through an object the JVM shares (a static: MiniSolrCloudCluster's

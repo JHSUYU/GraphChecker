@@ -107,12 +107,16 @@ public final class ClosurePlanner {
         /** Demanded past the task bound, so not planned: the closure is
          *  incomplete, which only {@link ExploreMain} can weigh. */
         public final Set<String> truncated;
-        /** A demanded occurrence the current plan runs for its doors alone
-         *  ({@code RuntimeSelectedRegionFinalizer#DOORS_ONLY}) that a value
-         *  demand reached -> the admitted focused session whose replay is
-         *  re-run once GROW has dropped the mark, or "" for none: it is no
-         *  value's capture until a replay ran it whole. */
+        /** A demanded occurrence every session ran for its doors alone
+         *  ({@code SessionManifest#doorsOnly}) that a value demand reached ->
+         *  the admitted focused session whose replay is re-run once GROW has
+         *  dropped the mark, or "" for none (the mark only dropped): it is
+         *  no value's capture until a replay ran it whole. */
         public final Map<OccurrenceAddress, String> unpaused;
+        /** Demanded as a value, run for its doors alone by every session
+         *  that captured it, and ran by no focused replay GROW could re-run:
+         *  a gap the fixed point makes BLOCKING ({@link ExploreMain}). */
+        public final Set<OccurrenceAddress> runWhole;
         /** What every admitted path decided the anchor on, when that is no
          *  symbol ({@link ClosurePlanner#concrete}): no root reaches it yet,
          *  which only {@link ExploreMain} can weigh.  Null for any other
@@ -125,8 +129,9 @@ public final class ClosurePlanner {
                      Map<OccurrenceAddress, String> exposed,
                      Set<OccurrenceAddress> waiting, Set<String> truncated,
                      Map<OccurrenceAddress, String> unpaused,
-                     Concrete concrete) {
+                     Set<OccurrenceAddress> runWhole, Concrete concrete) {
             this.unpaused = Collections.unmodifiableMap(unpaused);
+            this.runWhole = Collections.unmodifiableSet(runWhole);
             this.tasks = Collections.unmodifiableList(tasks);
             this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
@@ -229,6 +234,8 @@ public final class ClosurePlanner {
                 new LinkedHashSet<OccurrenceAddress>();
         Map<OccurrenceAddress, String> unpaused =
                 new LinkedHashMap<OccurrenceAddress, String>();
+        Set<OccurrenceAddress> runWhole =
+                new LinkedHashSet<OccurrenceAddress>();
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
@@ -236,19 +243,30 @@ public final class ClosurePlanner {
                         walk.gaps);
                 continue;
             }
+            // Run for its doors alone by every session that captured it
+            // (SessionManifest#doorsOnly), it is no value's capture: GROW
+            // drops the mark (doorsOnly: the current plan's) and re-runs the
+            // focused replay that ran it, else none is -- the seed is not
+            // re-run -- and the fixed point names it (ExploreMain).
             if (valueDemand(demand.why)
-                    && doorsOnly.contains(demand.occurrence.render())) {
-                unpaused.put(demand.occurrence, exposing(corpus, branches,
-                        demand.occurrence, exposed.values())[0]);
+                    && !ranWhole(corpus, demand.occurrence)) {
+                String rerun = exposing(corpus, branches, demand.occurrence,
+                        exposed.values())[0];
+                if (!rerun.isEmpty()
+                        || doorsOnly.contains(demand.occurrence.render())) {
+                    unpaused.put(demand.occurrence, rerun);
+                }
+                if (rerun.isEmpty()) runWhole.add(demand.occurrence);
                 walk.gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                        demand.occurrence.render(), "planned for its doors"
+                        demand.occurrence.render(), "run for its doors"
                                 + " alone (a control producer or a store"
-                                + " fetch), it is demanded as a value ("
-                                + demand.why + "): GROW drops the mark and its"
-                                + " replays run it whole from then on; until"
-                                + " one has, its guards and roots ran paused"
-                                + " and have no term to flip"));
+                                + " fetch) by every session that captured it,"
+                                + " it is demanded as a value (" + demand.why
+                                + "): its replays run it whole once GROW has"
+                                + " dropped the mark; until one has, its guards"
+                                + " and roots ran paused and have no term to"
+                                + " flip"));
             }
             String taskId = taskId(demand.occurrence);
             tasks.add(Task.of(taskId, demand.occurrence,
@@ -261,7 +279,7 @@ public final class ClosurePlanner {
             flips.put(taskId, sites);
         }
         return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
-                exposed, waiting, truncated, unpaused, concrete);
+                exposed, waiting, truncated, unpaused, runWhole, concrete);
     }
 
     /**
@@ -482,6 +500,21 @@ public final class ClosurePlanner {
                 GapClass.BLOCKING, occurrence.render(),
                 "no session of this corpus ran this occurrence, so no replay "
                         + "can be focused on it and it is not a task"));
+    }
+
+    /** Whether a session that captured {@code occurrence} ran it whole, not
+     *  for its doors alone ({@code SessionManifest#doorsOnly}). */
+    private static boolean ranWhole(Corpus corpus,
+                                    OccurrenceAddress occurrence) {
+        String rendered = occurrence.render();
+        for (SessionReader session : corpus.sessions()) {
+            if ((session.manifest().seed() || session.admitted())
+                    && ran(corpus, session.sessionId(), occurrence)
+                    && !session.manifest().doorsOnly().contains(rendered)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether a demand wants a value of its occurrence -- a member's, a

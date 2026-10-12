@@ -64,6 +64,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -2724,9 +2725,11 @@ public class ExploreTest {
                 + focused, focused.contains(WRITER.render()));
         assertTrue(plan.unpaused.isEmpty());
 
-        // The same writer planned for its doors alone is no capture of the
+        // The same writer run for its doors alone is no capture of the
         // value it is demanded for: GROW is asked to run it whole (no
         // focused replay ran it, so none is re-run), and it is named.
+        seed.doorsOnly.add(WRITER.render());
+        seed.flush();
         ClosurePlanner.Plan doors = ClosurePlanner.plan(
                 Corpus.read(iteration, null), TARGET,
                 ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty(),
@@ -2735,6 +2738,8 @@ public class ExploreTest {
                         new ArrayList<GapRow>()),
                 Collections.singleton(WRITER.render()));
         assertEquals(Collections.singletonMap(WRITER, ""), doors.unpaused);
+        assertEquals("no focused replay ran it: the fixed point names it",
+                Collections.singleton(WRITER), doors.runWhole);
         boolean named = false;
         for (GapRow gap : doors.gaps) {
             named |= gap.subject().equals(WRITER.render())
@@ -6192,6 +6197,8 @@ public class ExploreTest {
         private final List<ObligationResult> answered = new ArrayList<>();
         /** A FORCE run's session ({@code SessionManifest.Role#FORCED}). */
         private boolean forced;
+        /** The occurrences it ran for their doors alone. */
+        private final Set<String> doorsOnly = new TreeSet<String>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -6387,7 +6394,8 @@ public class ExploreTest {
                             forced ? ran : focused
                                     ? Collections.singletonList(
                                     "OBL." + sessionId)
-                                    : Collections.<String>emptyList()));
+                                    : Collections.<String>emptyList())
+                            .atClose(null, null, null, doorsOnly));
         }
     }
 }

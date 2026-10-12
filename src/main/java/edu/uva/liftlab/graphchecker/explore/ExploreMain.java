@@ -241,6 +241,8 @@ public final class ExploreMain {
         Set<String> doorsOnly = doorsOnlyOccurrences(iteration);
         Map<OccurrenceAddress, String> unpaused =
                 new LinkedHashMap<OccurrenceAddress, String>();
+        Set<OccurrenceAddress> runWhole =
+                new LinkedHashSet<OccurrenceAddress>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope, branches, doorsOnly);
@@ -270,6 +272,7 @@ public final class ExploreMain {
                     : plan.unpaused.entrySet()) {
                 unpaused.putIfAbsent(door.getKey(), door.getValue());
             }
+            runWhole.addAll(plan.runWhole);
             for (Task task : plan.tasks) {
                 if (!opened.add(task.taskId())) continue;
                 tasks.add(task);
@@ -345,6 +348,20 @@ public final class ExploreMain {
         // the closure is incomplete.
         boolean fixpoint = open.empty() && exposed == 0
                 && frontier.inFlightCount() == 0 && witnesses.isEmpty();
+        // A doors-only occurrence demanded as a value that no replay ran
+        // whole, and none GROW can re-run (the seed is not): at the fixed
+        // point no replay ever will.
+        if (fixpoint) {
+            for (OccurrenceAddress paused : runWhole) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+                        paused.render(), "demanded as a value and run for"
+                                + " its doors alone by every session that"
+                                + " captured it, and the exploration ends"
+                                + " here: no replay ran it whole, so its"
+                                + " guards and roots were never flippable"));
+            }
+        }
         for (OccurrenceAddress unexposed : waiting) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, fixpoint ? GapClass.BLOCKING

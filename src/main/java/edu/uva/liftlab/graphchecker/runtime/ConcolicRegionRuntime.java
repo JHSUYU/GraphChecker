@@ -604,6 +604,7 @@ public final class ConcolicRegionRuntime {
             // (#openDoorWindow), released at its close.
             if (admitted.doorsOnly) {
                 active.basePaused = true;
+                RowRuntime.ranDoorsOnly(active.d3Address);
             } else {
                 api.resumePathCondition();
             }

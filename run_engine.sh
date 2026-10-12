@@ -5107,15 +5107,20 @@ campaign_stream_chain_round() {
   local round_dir=$1 occurrence grow=0
   shift
   stream_cancelled+=("$@")
+  # A doors-only occurrence a value demand reached is run whole whatever
+  # chain is open: dropping its mark asks no obligation.
   jq -c --argjson chain "$(printf '%s\n' "${!stream_chain[@]}" \
       | jq -R . | jq -s -c .)" \
-    'select(.kind == "EXPOSED_REGION" and (.occurrence as $at
-       | any($chain[]; . == $at)))' "${round_dir}/growth.jsonl" \
-    >"${round_dir}/growth-chain.jsonl"
+    'select(.kind == "DOORS_ONLY_UNPAUSED" or .kind == "EXPOSED_REGION"
+       and (.occurrence as $at | any($chain[]; . == $at)))' \
+    "${round_dir}/growth.jsonl" >"${round_dir}/growth-chain.jsonl"
   while read -r occurrence; do
     stream_chain_grown[${occurrence}]=1
     grow=$((grow + 1))
-  done < <(jq -r '.occurrence' "${round_dir}/growth-chain.jsonl" | sort -u)
+  done < <(jq -r 'select(.kind == "EXPOSED_REGION") | .occurrence' \
+    "${round_dir}/growth-chain.jsonl" | sort -u)
+  grow=$((grow + $(campaign_unpauses "${round_dir}/growth-chain.jsonl" \
+    | grep -c '' || true)))
   campaign_log "$(basename "${round_dir}"): the witness's chain is open: \
 ${grow} of its producer(s) exposed here grow, and the round's $# \
 obligation(s) wait"
@@ -5954,7 +5959,7 @@ campaign_unpauses() {
 # (campaign_stream_swap), no obligation starts and no round is planned.
 campaign_stream_grow() {
   local round_dir=$1 status=0 generation obligation_id session rerun
-  local growth=${2:-${round_dir}/growth.jsonl}
+  local growth=${2:-${round_dir}/growth.jsonl} rerun_count=0
   local rows="${round_dir}/exposed_region_plan.jsonl"
   local worker file
   # An exposure names the obligation whose replay is re-run.  One that names
@@ -6021,8 +6026,14 @@ occurrence(s) run whole; generation g${stream_generation}"
     stream_queue=("RERUN $(basename "${round_dir}") ${obligation_id} \
 ${session}" "${stream_queue[@]}")
     stream_hold=$((stream_hold + 1))
+    rerun_count=$((rerun_count + 1))
   done < <({ campaign_exposures "${growth}"; campaign_unpauses "${growth}"; } \
     | awk -F'\t' '$1 != ""' | cut -f1,3 | LC_ALL=C sort -u)
+  # A doors-only occurrence no focused replay ran is re-run by none: the
+  # next round is owed all the same, so a closure still demanding it states
+  # it (BLOCKING at the fixed point, ExploreMain) rather than the driver
+  # ending on a plan that changed under it.
+  (( rerun_count > 0 )) || stream_dirty=1
 }
 
 # The directory one exposing obligation's re-run for <round> runs in.
