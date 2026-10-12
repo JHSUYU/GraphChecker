@@ -1391,8 +1391,8 @@ decode of the node (PIPELINE §8), and the leaves the guard read follow it: a co
 symbol, where a re-pairable read of its view stands in the path, lowers as the leaf of whichever
 decode the view holds (`SmtLowering#throughView`). A pairing flip (PIPELINE §7.4) re-pairs a read of
 a view with an older decode where the difference is no value a term names; CONFIRM holds a view's
-pairing by a `VIEW_HOLD` row: the node's later decodes wait until the reader's occurrence read the
-view (PIPELINE §7.5).
+pairing by a `VIEW_HOLD` row: the node's later decodes wait until the reader's work's region exits
+(PIPELINE §7.5).
 
 ## 7. Current limits
 

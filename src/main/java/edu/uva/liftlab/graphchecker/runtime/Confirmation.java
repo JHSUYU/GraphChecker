@@ -448,19 +448,26 @@ public final class Confirmation {
     /**
      * One VIEW_HOLD row ({@code explore.ConfirmMain#stateEdges}): a pairing
      * holds a read of a node's view to that node's decode of version {@code
-     * above}, so the node's decodes of the view past it wait until the
-     * reader's occurrence has read the view ({@link #viewObserved}).
+     * above}, so the node's decodes of the view past it wait while the work
+     * that read it runs -- until the activation {@code until} exits: the
+     * reader's occurrence, or the region the reader's work opened next
+     * (a routed alias's capture before its store door) --, except the
+     * decodes of that work itself ({@code readerContext}: its node and
+     * causal context), its own program order.
      */
     private static final class ViewHold {
         final String view;
         final long above;
-        final String readerOccurrence;
-        boolean released;
+        final String readerContext;
+        final String until;
+        boolean gaveWay;
 
-        ViewHold(String view, long above, String readerOccurrence) {
+        ViewHold(String view, long above, String readerContext,
+                 String until) {
             this.view = view;
             this.above = above;
-            this.readerOccurrence = readerOccurrence;
+            this.readerContext = readerContext;
+            this.until = until;
         }
 
         String label() {
@@ -473,10 +480,12 @@ public final class Confirmation {
         return view.kind() + "/" + view.owner() + "#" + view.slot();
     }
 
-    /** The id a VIEW_HOLD row names an occurrence by: as every delivery of
-     *  its stored message names it. */
-    public static String occurrenceKey(OccurrenceAddress occurrence) {
-        return occurrence == null ? "" : occurrence.anyDelivery().id();
+    /** The key a VIEW_HOLD row names a reader's work by: its node and its
+     *  causal context, as every delivery of its stored message names it. */
+    public static String contextKey(OccurrenceAddress occurrence) {
+        if (occurrence == null) return "";
+        OccurrenceAddress any = occurrence.anyDelivery();
+        return any.node().render() + "|" + any.context().render();
     }
 
     /**
@@ -484,25 +493,25 @@ public final class Confirmation {
      * view}, at {@code at}, before the system re-points the view to it
      * ({@code MessageDoors#decoded}), in a replay, a CONFIRM run and a
      * native reproduction alike.  It waits while a hold names the view below
-     * this version and its reader's occurrence -- never this one: the
-     * reader's own decodes are its program order -- has not read the view,
-     * at most {@link #ORDER_TIMEOUT_PROPERTY}; past it the decode goes on
-     * and the hold is unrealized by name (the run is no model of the
-     * pairing: CONFIRM_MISMATCH, PAIRING_UNTAKEN), every other hold of a
-     * native run giving way with it.
+     * this version and its {@code until} activation has not exited -- never
+     * in the reader's own work --, at most {@link #ORDER_TIMEOUT_PROPERTY};
+     * past it the decode goes on and the hold is unrealized by name (the run
+     * is no model of the pairing: CONFIRM_MISMATCH, PAIRING_UNTAKEN), every
+     * other hold of a native run giving way with it.
      */
     static void decoding(LocationId view, long version,
                          OccurrenceAddress at) {
         if (view == null) return;
         load();
         String key = viewKey(view);
-        String here = occurrenceKey(at);
+        String here = contextKey(at);
         synchronized (LOCK) {
             List<ViewHold> holding = new ArrayList<ViewHold>();
             for (ViewHold hold : VIEW_HOLDS) {
-                if (!hold.released && hold.view.equals(key)
+                if (!hold.gaveWay && hold.view.equals(key)
                         && version > hold.above
-                        && !hold.readerOccurrence.equals(here)) {
+                        && !hold.readerContext.equals(here)
+                        && !EXITED.contains(hold.until)) {
                     holding.add(hold);
                 }
             }
@@ -510,7 +519,7 @@ public final class Confirmation {
             FocusedReplay.worldActed();
             for (ViewHold hold : holding) {
                 planted(RecordingPlant.HOLDING, hold.label(),
-                        Collections.singleton(hold.readerOccurrence));
+                        Collections.singleton(hold.until));
             }
             long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
                     ORDER_TIMEOUT_MS);
@@ -518,13 +527,16 @@ public final class Confirmation {
             while (true) {
                 List<ViewHold> open = new ArrayList<ViewHold>();
                 for (ViewHold hold : holding) {
-                    if (!hold.released) open.add(hold);
+                    if (!hold.gaveWay && !EXITED.contains(hold.until)) {
+                        open.add(hold);
+                    }
                 }
                 if (open.isEmpty()) {
                     for (ViewHold hold : holding) {
-                        planted(RecordingPlant.APPLIED, hold.label(),
-                                Collections.singleton(
-                                        hold.readerOccurrence));
+                        if (!hold.gaveWay) {
+                            planted(RecordingPlant.APPLIED, hold.label(),
+                                    Collections.singleton(hold.until));
+                        }
                     }
                     return;
                 }
@@ -534,16 +546,14 @@ public final class Confirmation {
                     for (ViewHold hold : open) {
                         // One unrealized hold is the run's answer; the
                         // decodes after it go on.
-                        hold.released = true;
+                        hold.gaveWay = true;
                         UNREALIZED.add(hold.label() + ": the decode of"
                                 + " version " + version + " waited " + timeout
-                                + " ms for occurrence "
-                                + hold.readerOccurrence + " to read the view,"
-                                + " which it did not, so this program cannot"
+                                + " ms for " + hold.until + " to exit, which"
+                                + " it did not, so this program cannot"
                                 + " realize the pairing");
                         planted(RecordingPlant.UNHELD, hold.label(),
-                                Collections.singleton(
-                                        hold.readerOccurrence));
+                                Collections.singleton(hold.until));
                     }
                     if (RecordingPlant.planting()) RecordingPlant.gaveWay();
                     return;
@@ -551,36 +561,12 @@ public final class Confirmation {
                 try {
                     LOCK.wait(Math.min(left, 200L));
                 } catch (InterruptedException interrupted) {
-                    // A shutdown ended the wait: the read never came, and
-                    // the STATE edge says so at the close.
+                    // A shutdown ended the wait: the read the pairing asks
+                    // is the STATE edge's to judge at the close.
                     Thread.currentThread().interrupt();
                     return;
                 }
             }
-        }
-    }
-
-    /**
-     * The occurrence {@code at} read its node's {@code view} ({@code
-     * MessageDoors#viewed}, a PROVENANCE site): the holds it is the reader
-     * of are released, whatever version it saw -- the STATE edge compares
-     * that at the close.
-     */
-    static void viewObserved(LocationId view, OccurrenceAddress at) {
-        if (view == null || at == null) return;
-        load();
-        String key = viewKey(view);
-        String here = occurrenceKey(at);
-        synchronized (LOCK) {
-            boolean released = false;
-            for (ViewHold hold : VIEW_HOLDS) {
-                if (!hold.released && hold.view.equals(key)
-                        && hold.readerOccurrence.equals(here)) {
-                    hold.released = true;
-                    released = true;
-                }
-            }
-            if (released) LOCK.notifyAll();
         }
     }
 
@@ -886,11 +872,11 @@ public final class Confirmation {
                         ViewHold hold = new ViewHold(
                                 optionalString(row, "view"),
                                 row.get("above").getAsLong(),
-                                optionalString(row, "readerOccurrence"));
+                                optionalString(row, "readerContext"),
+                                optionalString(row, "until"));
                         VIEW_HOLDS.add(hold);
                         if (row.has(RecordingPlant.ROW)) {
-                            PLANTED.put(hold.label() + "\n"
-                                    + hold.readerOccurrence,
+                            PLANTED.put(hold.label() + "\n" + hold.until,
                                     row.get(RecordingPlant.ROW).getAsInt());
                         }
                     } else if (RecordingPlant.ORDER.equals(kind)

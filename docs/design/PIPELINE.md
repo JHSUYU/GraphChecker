@@ -932,8 +932,10 @@ the flipped world may read it again, CONFIRM's for the read's activation; for a 
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's decodes of the view past the paired version wait at the decode,
 before the system re-points the view (`MessageDoors#decoded`, `Confirmation#decoding`), until the
-reader's occurrence has read the view (`Confirmation#viewObserved`, at the view accessor or a
-PROVENANCE site), never the reader's own decodes, at most the order's timeout (300 s), past which
+reader's work's region exits -- the reader's occurrence, or for a read in role work the first region
+its node opened after it under the same causal context (`ConfirmMain#viewUntil`: a routed alias
+captures its view in the request's role work and writes it in a store door's region) --, never the
+decodes of the reader's own work (its node and causal context), at most the order's timeout (300 s), past which
 the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
 states no read or write of refuses (`PAIRING_UNSTATED`). The worker writes `obligation_result.jsonl`

@@ -650,10 +650,8 @@ public final class MessageDoors {
         Provenance.Version version = product == null ? null
                 : Provenance.observe(product, null, new boolean[1]);
         if (version == null) return;
-        String node = nodeHere();
-        OccurrenceAddress reading = Identity.currentOccurrence(node);
-        Confirmation.viewObserved(viewOf(version.location, reading), reading);
         if (!RowRuntime.open()) return;
+        String node = nodeHere();
         OccurrenceAddress at = RowRuntime.doorOccurrence(node);
         if (at == null) return;
         long seq = RowRuntime.currentEvent();

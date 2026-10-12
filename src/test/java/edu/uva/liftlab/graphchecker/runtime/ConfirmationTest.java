@@ -434,22 +434,24 @@ public class ConfirmationTest {
 
     /**
      * THE DECODE HOLD: a pairing holds a node's decodes of a view past the
-     * paired version until the reader's occurrence read the view; the
-     * reader's own decodes are never held, a decode at or below the version
-     * is not either, and a hold whose reader never reads is unrealized by
+     * paired version until the reader's work's region exits; the reader's
+     * own work's decodes are never held, a decode at or below the version
+     * is not either, and a hold whose region never exits is unrealized by
      * name once the decode waited out the order's timeout.
      */
     @Test
-    public void aViewsLaterDecodeWaitsForItsReaderAndAnUnreadHoldIsAMismatch()
+    public void aViewsLaterDecodeWaitsForTheReadersRegionAndAnUnendedHoldIsAMismatch()
             throws Exception {
         LocationId view = LocationId.of(LocationKind.VIEW,
                 "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
         OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
         OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
-        handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                + "\"view\":\"" + Confirmation.viewKey(view) + "\","
-                + "\"above\":1,\"readerOccurrence\":\""
-                + Confirmation.occurrenceKey(reader) + "\"}"));
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        String row = "{\"kind\":\"VIEW_HOLD\",\"view\":\""
+                + Confirmation.viewKey(view) + "\",\"above\":1,"
+                + "\"readerContext\":\"" + Confirmation.contextKey(reader)
+                + "\",\"until\":\"" + until + "\"}";
+        handed("", Collections.singletonList(row));
         System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
         try {
             long[] decoded = new long[1];
@@ -462,20 +464,17 @@ public class ConfirmationTest {
             Confirmation.decoding(view, 1L, decoder);
             Confirmation.decoding(view, 3L, reader);
             Thread.sleep(100L);
-            long read = System.nanoTime();
-            Confirmation.viewObserved(view, reader);
+            long exited = System.nanoTime();
+            Confirmation.exited(until);
             watch.join(5000L);
-            assertTrue("the decode went on only after the reader read",
-                    decoded[0] >= read);
+            assertTrue("the decode went on only after the reader's region"
+                    + " exited", decoded[0] >= exited);
             assertTrue(Confirmation.close().isEmpty());
         } finally {
             System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
         }
         Confirmation.resetForTests();
-        handed("", Collections.singletonList("{\"kind\":\"VIEW_HOLD\","
-                + "\"view\":\"" + Confirmation.viewKey(view) + "\","
-                + "\"above\":1,\"readerOccurrence\":\""
-                + Confirmation.occurrenceKey(reader) + "\"}"));
+        handed("", Collections.singletonList(row));
         System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "100");
         try {
             Confirmation.decoding(view, 2L, decoder);

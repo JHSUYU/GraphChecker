@@ -1354,6 +1354,40 @@ public final class ConfirmMain {
             return new Hold(event.occurrence(), hold);
         }
 
+        /**
+         * The occurrence whose close ends a view pairing's hold: the
+         * reader's, or -- a read in role work -- the first region its node
+         * opened after it under the same causal context (a routed alias
+         * captures its view in the request's role work and writes it in a
+         * store door's region); with none, the reader's, which no hook
+         * closes: its hold is then unrealized past the timeout.
+         */
+        private OccurrenceAddress viewUntil(ReadRow read) {
+            OccurrenceAddress reader = read.endpoint().occurrence();
+            if (!reader.role()) return reader;
+            String context = Confirmation.contextKey(reader);
+            OccurrenceAddress until = reader;
+            long first = Long.MAX_VALUE;
+            for (ActivationRow activation : activations.values()) {
+                OccurrenceAddress candidate = activation.occurrence();
+                List<Placed> events = placed.get(candidate.id());
+                if (candidate.role() || events == null
+                        || !Confirmation.contextKey(candidate).equals(
+                        context)) {
+                    continue;
+                }
+                long opened = Long.MAX_VALUE;
+                for (Placed event : events) {
+                    opened = Math.min(opened, event.seq);
+                }
+                if (opened > read.seq() && opened < first) {
+                    first = opened;
+                    until = candidate;
+                }
+            }
+            return until;
+        }
+
         /** Where the session's events sat, and its writes: what an ORDER is
          *  built from ({@link #order}), with no closure. */
         private StateClosure(SessionReader session) {
@@ -1596,17 +1630,19 @@ public final class ConfirmMain {
             // A node's view: its decodes run in work no activation hook
             // holds (watch deliveries, request handlers), so the pairing
             // holds them at the decode -- every decode of the view past
-            // the paired version waits until the reader's occurrence read
-            // it (Confirmation#decoding) -- and orders nothing else.
+            // the paired version, but the reader's work's own, waits until
+            // that work's region exits (Confirmation#decoding) -- and
+            // orders nothing else.
             if (held.location().kind() == LocationKind.VIEW) {
                 JsonObject hold = new JsonObject();
                 hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
                 hold.addProperty("view",
                         Confirmation.viewKey(held.location()));
                 hold.addProperty("above", held.version());
-                hold.addProperty("readerOccurrence",
-                        Confirmation.occurrenceKey(
-                                read.endpoint().occurrence()));
+                hold.addProperty("readerContext", Confirmation.contextKey(
+                        read.endpoint().occurrence()));
+                hold.addProperty("until", Confirmation.activation(
+                        closure.viewUntil(read), ExecutionIndex.empty()));
                 hold.addProperty("reader", Confirmation.id(read.endpoint()));
                 holding.edges.add(hold);
                 continue;
