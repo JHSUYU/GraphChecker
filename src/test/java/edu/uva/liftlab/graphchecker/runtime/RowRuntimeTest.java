@@ -955,6 +955,44 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A node's view takes one write per version it decodes: a second parse
+     * of a version the node decoded before (a watcher's and a fetch's, or
+     * one before any row was stated), or of one a read of the view already
+     * observed, re-points nothing, so no read of the view is ordered before
+     * a write of the version it saw (round Z2K: every tra session's view
+     * read of version 0 met a re-decode of it after the read,
+     * TOPOLOGY_DIVERGENCE).
+     */
+    @Test
+    public void aNodesViewTakesOneWritePerVersionItDecodes() throws Exception {
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NN);
+        long request = RuntimeTraceContext.beginRequest(owner, "watch");
+        // Decoded before any row is stated, then again once they are.
+        MessageDoors.decoded("STORE", "/views/once.json@0", new Object());
+        RowRuntime.configure(sessionFile());
+        RecordingWindow.open();
+        MessageDoors.decoded("STORE", "/views/once.json@0", new Object());
+        MessageDoors.decoded("STORE", "/views/once.json@1", new Object());
+        // A version a read of the view observed before any parse of it
+        // stated a row (one a thread no node owns decoded) is held already.
+        OccurrenceAddress here = Identity.currentOccurrence(NN.key());
+        RowRuntime.viewRead(here, 0L, "STORE#VIEWED:|views|once.json#VIEW",
+                MessageDoors.viewOf(MessageDoors.storeLocation("STORE",
+                        "/views/once.json"), here), 2L);
+        MessageDoors.decoded("STORE", "/views/once.json@2", new Object());
+        RuntimeTraceContext.endRequest(request);
+        RowRuntime.closeSession();
+        List<Long> versions = new ArrayList<Long>();
+        for (WriteRow write : SessionReader.read(session()).writes()) {
+            if (write.location().kind() == LocationKind.VIEW) {
+                versions.add(write.version());
+            }
+        }
+        assertEquals(Collections.singletonList(1L), versions);
+    }
+
+    /**
      * Never silent: an export or attach the VM refused, and a receipt whose
      * sender this run does not hold, each name the occurrence they ran in.
      * An attach no activation ran is the closure's to admit: an

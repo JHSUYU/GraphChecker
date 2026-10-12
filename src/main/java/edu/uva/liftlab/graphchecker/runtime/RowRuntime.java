@@ -608,9 +608,10 @@ public final class RowRuntime {
                                  long version) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || view == null) return;
-        // Two decodes of one version on one node with no VM event between
-        // them (a watcher's and a fetch's) re-point the view once.
-        if (!STORE_EVENTS.add(seq + "|" + view + "|" + version)) return;
+        // A version a read of the view observed already: the node held it,
+        // decoded where no row was stated (a thread no node owns), so this
+        // parse re-points nothing.
+        if (READERS.containsKey(Confirmation.key(view, version))) return;
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
         JsonObject value = new JsonObject();
@@ -636,6 +637,8 @@ public final class RowRuntime {
         if (!STORE_EVENTS.add(seq + "|" + view)) return;
         Endpoint at = Identity.endpointAt(occurrence, site, 0);
         if (at == null) return;
+        READERS.computeIfAbsent(Confirmation.key(view, version),
+                key -> new Readers(at, view, version)).count.incrementAndGet();
         session.read(ReadRow.of(sessionId(), sequence(seq), at, view,
                 version, "V_" + ArtifactIO.digest(at.id(), 16), "J",
                 Long.toString(version)));
@@ -643,8 +646,7 @@ public final class RowRuntime {
         FocusedReplay.viewRead(at, version);
     }
 
-    /** seq|location of every store read stated, seq|view|version of every
-     *  view write: one per event. */
+    /** seq|location of every store or view read stated: one per event. */
     private static final Set<String> STORE_EVENTS =
             ConcurrentHashMap.newKeySet();
 

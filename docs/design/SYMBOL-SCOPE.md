@@ -1388,8 +1388,11 @@ Which version a node's objects hold is the PROVENANCE read (§5.7).
 
 A node decides on its VIEW of a location: each decode re-points it, and a guard reads the objects of
 whichever decode the view held. The view is a location of its own (`LocationKind.VIEW`, CONTRACT-SPEC
-§1: the transport at the node, the store's path), its value the version decoded: every parse of a
-fetched version writes it at the decoding occurrence, and every PROVENANCE read reads it too, at the
+§1: the transport at the node, the store's path), its value the version decoded: the first parse of
+a fetched version on its node writes it at the decoding occurrence -- a later parse of a version the
+node decoded before (a watcher's and a fetch's, or one before the window opened) re-points nothing,
+and writes nothing a read could be ordered before (round Z2K: every tra session's view read of
+version 0 met a re-decode of it after the read, `TOPOLOGY_DIVERGENCE`) --, and every PROVENANCE read reads it too, at the
 same site (`#VIEW`), with a symbol of its own. Where no guard's static walk reaches the objects a
 caller holds from the view, the adapter's accessor of the view states the read
 (`MessageDoors#viewed`, site `<transport>#VIEWED:<location>`, a STORE read and a VIEW read of the

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -54,6 +55,10 @@ public final class MessageDoors {
      */
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
+    /** Each node's view and version a decode re-pointed it to, once,
+     *  inside the window or before it ({@link #decode}). */
+    private static final Set<String> REPOINTED =
+            ConcurrentHashMap.newKeySet();
     /** The newest version of each location a write filed ({@link
      *  #stored}), by transport and location: how far a refresh can reach
      *  ({@link #refreshing}). */
@@ -686,16 +691,21 @@ public final class MessageDoors {
         LocationId store = storeLocation(transport, path);
         // The decode re-points its node's view (LocationKind.VIEW) once the
         // system takes it: a pairing's hold waits here first
-        // (Confirmation#decoding), then the view's write is stated.
+        // (Confirmation#decoding), then the view's write is stated.  A
+        // version its node decoded before -- a watcher's and a fetch's parse
+        // of one version, or one decoded before the window opened --
+        // re-points nothing: one write of a view per version, the first.
         String node = nodeHere();
-        LocationId view = viewOf(store, Identity.currentOccurrence(node));
-        Confirmation.decoding(view, version,
-                Identity.currentOccurrence(node));
+        boolean repoints = !node.isEmpty() && REPOINTED.add(trimmed(transport)
+                + "\n" + path + "\n" + node + "@" + version);
+        OccurrenceAddress here = Identity.currentOccurrence(node);
+        LocationId view = viewOf(store, here);
+        if (repoints) Confirmation.decoding(view, version, here);
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
         CausynthTraceRecorder.storeDecoded(trimmed(transport), path, version,
                 registered);
-        if (view != null && RowRuntime.open()) {
+        if (repoints && RowRuntime.open()) {
             OccurrenceAddress at = RowRuntime.doorOccurrence(node);
             RowRuntime.viewWrite(at, RowRuntime.currentEvent(),
                     Endpoint.messageSite(trimmed(transport), "VIEW",
