@@ -683,6 +683,10 @@ public final class ConfirmMain {
         JsonObject row = root(category, rootId, mint);
         if (category == RootCategory.FAULT) {
             row.addProperty(RecordingPlant.SITE, marked.iterator().next());
+            // The marker's call it answers in its occurrence: a grown
+            // invocation is a root of its own (PIPELINE §7.8).
+            row.addProperty(RecordingPlant.INVOCATION,
+                    sites.invocation(rootId, mint));
         } else if (category == RootCategory.READ) {
             PlantSites.Call call = calls.get(0);
             row.addProperty(RecordingPlant.SITE, call.siteId);

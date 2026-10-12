@@ -511,7 +511,12 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    the per-site counts) is a `TOPOLOGY_DIVERGENCE` as well, BLOCKING when the session is admitted
    and in a world where the member ran, else DIAGNOSTIC (a new occurrence); under the member's shape
    it ran the member, whatever it counted (a poll's k-th wake is another k in every run), and under
-   that shape and another too it grew. A slot stands on the session that opened it: the slots of a
+   that shape and another too it grew. A member the session ran under its own shape (no `Lost`
+   context), at its region and index, on another node MOVED -- the world placed the work there, and
+   what runs at its code point is other work (solr-bugs-snapshot-no-active Z2K: a setData fault made
+   node1 the Overseer, the client's update ran on node0, node1's autoscaling write stood at
+   setData's code point) -- an `ADDRESS_UNSTABLE` DIAGNOSTIC row naming the node, never a
+   replacement. A slot stands on the session that opened it: the slots of a
    session no longer in the corpus (one a GROW swap withdrew, §7.8) are dropped first, here and
    where COMPOSE reads the table, and the session in its place opens them again. An occurrence a
    replay answered by its shape (IDENTITY §9, its `ADDRESS_UNSTABLE` row) stands at the planned
@@ -1252,18 +1257,18 @@ ends everything it started first (an EXIT trap: each job's process tree, and eve
 ### 7.8 GROW
 
 When a round's `growth.jsonl` holds `EXPOSED_REGION` rows (occurrence, region, node, exposing session
-and its obligation), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
+and its obligation) or `UNPLANNED_INPUT` rows (below), the head grows (`campaign_stream_grow`) and queues the round's proposals behind
 GROW's re-runs, as what was queued before them stays queued: they start once the re-runs have
 swapped in, in flight from the round on, so no later round asks them again (solr-bugs-reindex-cleanup
 Z10: dropped and re-asked, four growing rounds in a row re-proposed a backlog of 951 of round 5's 980
 obligations, and the witness flip a non-growing round 1 queued in Z9 waited from round 1 to round 5,
 unanswered when the exploration ended). One GROW is one GENERATION of the plan
-and the class tree, under `generations/g<k>/`: `plan.ExposedRegionPlanMain` synthesizes one task row
-per exposed address (admission basis `EXPOSED_BY:`, static inputs only, the plan's
-`replayGroupId`), the generation's plan is the one before it plus those rows, written as a new file
--- the iteration's plan and the seed plan are its hard links from then on, and the generation before
-keeps its own inode for whatever runs on it -- and INSTRUMENT weaves it into the generation's own
-tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
+and the class tree, under `generations/g<k>/`: `plan.ExposedRegionPlanMain` writes the generation's
+plan, the one before it plus one task row per exposed address (admission basis `EXPOSED_BY:`,
+static inputs only, the plan's `replayGroupId`) and each grown invocation (below), as a new file
+kept beside the round (`grown_plan.jsonl`) -- the iteration's plan and the seed plan are its hard
+links from then on, and the generation before keeps its own inode for whatever runs on it -- and
+INSTRUMENT weaves it into the generation's own tree. Each exposing obligation's replay is queued first, to re-run on whichever host of the pool
 admits it (§7.7) in
 `<worker>/grow-<round>/<obligation>/` (the worker's focus row and schedule cut linked in). Until every
 re-run has returned and no obligation's solve runs that started before them, no solve starts and
@@ -1281,6 +1286,24 @@ run would read the re-run and every later session of its world as a replacement 
 two BLOCKING rows withheld the witness's composition). Once nothing runs, the last generation's tree is the iteration's
 `instrumented-classes` (CONFIRM, REPRODUCE). An exposure no obligation names (seed exposure) fails
 EXPLORE.
+
+A flipped world may also call a planned fault marker of a demanded door more often in its
+occurrence than the recording did (solr-adhoc-09: the first `waitForState` timed out, so the
+DeleteReplica task waited a second time, a call the recording never made). Its input action plans
+one invocation (`replayOccurrence` k), so the replay runs the k-th call concretely and states an
+`UNPLANNED_INPUT` row, subject `<taskId> <symbol>#<k>` (`runtime.RootMint#unplanned`); any other
+input's later call keeps its rule and is no exposure: a clock read again is a later instant of
+its one root, a configuration one root per key. A round's `growth.jsonl` holds one
+`UNPLANNED_INPUT` row (task, input, k, exposing session and obligation) per invocation an
+admitted session that may parent states (`ClosurePlanner#unplanned`), once: one its plan already
+holds grows nothing, and one past `unplanned-input-max` (4) is a DIAGNOSTIC row of the round and
+a declared bound of the case (`campaign_bounds`, `bounded` `unplanned_input_max`). GROW's
+planner (`ExposedRegionPlanMain`) writes the generation's whole plan: the one before it, each
+grown invocation added to its own task's row as the input `<symbol>#<k>` (port alike,
+`replayOccurrence` k, observed in no recording) -- a second row of the occurrence would compete
+for its claim -- then the exposed regions' rows. The exposing replay re-runs under it in its
+world, the new input mints the k-th call, and a later round flips it there (one flip deeper,
+`max_world_depth`).
 
 ### 7.9 The loop
 
@@ -2549,7 +2572,8 @@ recording's own is not kept apart.
    bound in their subject), `region_path_max_tasks` (the static candidates the last round's closure
    cut: `truncated` less `ceilingCut`), `region_path_closure_ceiling` (occurrences the rows connect cut
    past `ClosurePlanner.CLOSURE_CEILING`, 1024), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
-   (an open arm the last round left BOUNDED, §7.1) and `campaign_max_claims`
+   (an open arm the last round left BOUNDED, §7.1), `unplanned_input_max` (the last round's rows
+   of a marker invocation past those GROW plans inputs for, §7.8) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a
    `## Bounded` section, `triage.py` in its `bounded` column and `BOUNDED=` count,

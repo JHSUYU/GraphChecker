@@ -313,3 +313,11 @@ rounds HG8F, HG9, HG9B, HG9L, SW1, HG10V; four coding agents A1, A2, A4, D1 and 
 - **A run on an old jar misleads**: C's CC7-11741 stalled on a defect fixed in the merged body but not in its branch;
   check a slow run's snapshot against HEAD before asking an agent to diagnose it (CHECKING trap 17).
 
+**Lesson from 2026-10-12 (Solr takeover)**
+- **An agent listed as running may be idle.** After the account's usage limit, two agents reported a failure and were
+  resumed at once; a third reported nothing and sat about 5 hours without a commit while the background list still showed
+  it. At every check-in compare each agent's last commit time and newest run directory; message any agent quiet for more
+  than an hour ("continue where you were").
+- **Reviews keep paying:** every batch of the night (force2, Z1, Z2, EX, READ doors) had real blockers the gates passed --
+  silent drops in COMPOSE, CONFIRM checking nothing for store reads, keys merging different worlds. Launch the review beside
+  the live gate, not after it, to keep the wall time.

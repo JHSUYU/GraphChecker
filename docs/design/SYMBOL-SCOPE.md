@@ -418,6 +418,7 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
 | `LOCAL_IO` | `OPEN`, `READ`, `WRITE`, `SYNC`, `NAMESPACE` | a demanded call only (below) | before the call: the failed operation never happens |
+| `TIMED_WAIT` | `AWAIT`, `POLL`, `GET`, `ACQUIRE` | a demanded call only (below) | before the call: the wait returns its timeout at once |
 
 **Demanded doors.** A local file operation is a door only where the root demand chose its call
 (§4.6): its result or its failure flows into what the slice traces, never every IO call of a class
@@ -444,6 +445,29 @@ IOException(..)`) -- is a raise of the door's marker (`causynth/FaultPropagation
 flows on as a thrown door kind does. A site the file names that no catalog row or no analysed call
 answers, or a call that already holds a door, is refused (`DEMANDED_DOOR_UNAVAILABLE`). A demanded
 door's marker roots no region (§4.6).
+
+**Timed waits.** A timed wait whose outcome the slice reads is a demanded door of transport
+`TIMED_WAIT`, its marker the environment's timing: the signal came after the deadline (a
+`waitForState` that a slow ZooKeeper watch let expire), so a finding names a timed wait and its
+realism is judged as a fault's. Its rows return the wait's timeout instead of waiting: `false` for
+`CountDownLatch#await(long,TimeUnit)`, `Condition#await(long,TimeUnit)`, `Semaphore#tryAcquire`
+and `Lock#tryLock` with a timeout, the read-write lock's two included (direction `AWAIT`,
+`ACQUIRE`), `0` for `Condition#awaitNanos`, `null` for a timed `poll` (`POLL`: `BlockingQueue`,
+`BlockingDeque` and its `pollFirst`/`pollLast`, the JDK queues as the call names them), and a
+timed `get` throws its `TimeoutException` (`GET`: `Future`, `FutureTask`, `ScheduledFuture`,
+`CompletableFuture`, `ForkJoinTask`). A demanded door's call return is an IO boundary of the root
+demand (§4.6), classified before the operands the call carries, so the walk reaches it as it
+reaches a file operation's; a sleep or an `Object#wait` states no outcome and is no door. A planted
+timeout takes only where the real call could time out (`DoorWeave#guard`, `runtime.TimedWaits
+#timesOut`, after the marker's test): a latch already open, a future already done, a queue holding
+an element, a lock free or held by the thread, a semaphore with the permits, or an interrupted
+thread (the wait throws at once) make the world impossible -- a replay states a BLOCKING
+`ASSIGNMENT_UNPLANTED`, which CONFIRM refutes, a native run its FAULT row `PLANT_UNWRITTEN`, and
+the call runs; COMPOSE stays over-approximate (solr-adhoc-09's `waitForState` may count its latch
+down on the waiting thread before the await). A native run answers a FAULT row at its marker call's
+`invocation` in the occurrence (a grown root's own call, PIPELINE §7.8), each invocation once. The door needs no held wait (its marker returns the timeout before the
+call), so a latch's wait itself stays out of the weave's timed waits and runs on the wall clock
+(IDENTITY limits).
 
 A door keeps the pairing its call made: a request door lies after the tree's outbound message hook
 (or before anything is sent: the SASL magic number), a response door after its inbound hook, a

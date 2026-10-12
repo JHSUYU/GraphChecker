@@ -222,7 +222,7 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/iteration-*/campaign_gaps.jsonl'
   'schedule/iteration-*/obligations-*/obligations.jsonl'
   'schedule/iteration-*/obligations-*/growth.jsonl'
-  'schedule/iteration-*/obligations-*/exposed_region_plan.jsonl'
+  'schedule/iteration-*/obligations-*/grown_plan.jsonl'
   'schedule/iteration-*/obligations-*/tasks.jsonl'
   'schedule/iteration-*/obligations-*/gaps.jsonl'
   'schedule/iteration-*/obligations-*/*/obligation_result.jsonl'
