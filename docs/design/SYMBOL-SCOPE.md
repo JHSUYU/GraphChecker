@@ -417,8 +417,51 @@ Doors are the engine's, not a case's: the `DOOR` rows of the library catalog
 | `SOLR_HTTP` | `REQUEST` / `RESPONSE` | `HttpSolrClient#executeMethod` | before / after `HttpClient#execute` |
 | `SOLR_HTTP2` | `REQUEST` / `RESPONSE` | `Http2SolrClient#request` | after `InputStreamResponseListener#<init>` / after its `get(long,TimeUnit)` |
 | `ZOOKEEPER` | `WRITE` | `ZooKeeper#{create (two), setData, delete, multiInternal}` | after `ClientCnxn#submitRequest` (the write happened; the client sees the failure) |
+| `ZOOKEEPER` | `READ` | `ZooKeeper#{getData, exists, getChildren (two)}`, `sites` `DATA_FLOW` (below) | before `ClientCnxn#submitRequest`: the read never reaches the server, so it registers no watch on the client |
 | `LOCAL_IO` | `OPEN`, `READ`, `WRITE`, `SYNC`, `NAMESPACE` | a demanded call only (below) | before the call: the failed operation never happens |
 | `TIMED_WAIT` | `AWAIT`, `POLL`, `GET`, `ACQUIRE` | a demanded call only (below) | before the call: the wait returns its timeout at once |
+
+**Data-flow doors.** A shared store's read is a door (`"sites": "DATA_FLOW"`, a door at a method,
+`before` its request), but every cluster-state read and every poll of a queue would be one, and a door
+is IO only where it lies on the traced data flow (owner, 2026-10-04). So it is woven wherever its
+method is, as any door at a method, roots no region (`LibraryCatalog#rootsNothing`: its marker is read
+in the occurrence that runs the call, as a demanded door's), and is *asked* only where PLAN finds its
+fetch on the data flow (`causynth/RuntimeSelectedRegionFinalizer#askFetches`, over the recording's
+STORE rows, §5.7): the fetch whose decode registered an object the question's target read
+(`PROVENANCE`) and every other fetch, on the target's node, of a location what it read was decoded
+from, at a version up to the one it holds (`LOCATION`; a later version's fetch ran after the read),
+each such occurrence admitted (`STORE_FETCH_V1`; PLAN's log counts them): a read
+that fails registers no watch, so the node never fetches
+the next version and reads the one before (a ZooKeeper watch whose re-read fails only logs and is
+never re-armed: Solr's `AliasesManager#process`, the collection `StateWatcher`'s refresh; an
+external study's "alias must exist" at `RoutedAliasUpdateProcessor:133`, solr-adhoc-40's target, and
+"Could not remove replica" at `DeleteReplicaCmd:278`, solr-adhoc-09's). The recording states each
+decode with the occurrence that fetched it (`MessageDoors#decoded`, the `STORE_DECODED` trace row's
+`occurrenceAddress`); a decode of a version its own occurrence wrote (Solr's aliases parsed from
+the bytes its compare-and-set stored) fetched nothing (`RecordedStore`); the fetch's door is the
+data-flow door call that occurrence made last before the decode and after its store event before it
+(an earlier door call served that event), every marker of that one call (`#fetchDoor`). The
+occurrence's row states those captures
+(`storeFetches`: site, ordinal, `fetch`, location, version), and only they mint
+(`plan.ConcolicScheduler#declaredPorts`); every other capture of such a door is woven but never
+asked, and is no root another rule admits by (`#rootReads`: no `ROOT_RELEVANT`, no
+`CONTROL_PRODUCER`). An exposed occurrence's data-flow sites mint nothing: no recording places
+its fetch. PLAN's log counts the planned occurrences' store reads, those asked by why and those woven
+but never asked, and the fetching occurrences (`#dataFlowDoors`). EXPLORE demands the same
+occurrences: a demanded STORE read of a location joins the fetches of it on the reader's node that the
+frozen plan states (`explore.ClosurePlanner#storeFetches`, `STORE_FETCH`), contributing no value,
+flipped at their fault decisions -- one predicate, PLAN's.
+
+A watch callback's occurrence is named only by the first version it reads (IDENTITY §7.2,
+`MessageDoors#fetched`), so a door before that read ran in no occurrence: nothing records it, nothing
+mints or plants it, and a read it failed would leave the callback unnamed. Solr's data read
+(`SolrZkClient#getData`) therefore places its door after the read's hook, where the reply reaches the
+caller after `ZkCmdExecutor`'s retries: the fault is the reply lost. ZooKeeper's client registers a
+data watch only with a delivered reply (`ClientCnxn#finishPacket`, `watchRegistration.register` for
+`rc == 0`) and re-sends only registered watches on reconnect, so the tree's fault arm removes the
+watch the read set on this client alone (`removeWatches(path, w, Data, true)`, its own failure only
+logged) and rethrows: the state a lost reply leaves, the external study's. Its other reads
+(`exists`, `getChildren`) name no occurrence and keep the door before the request.
 
 **Demanded doors.** A local file operation is a door only where the root demand chose its call
 (§4.6): its result or its failure flows into what the slice traces, never every IO call of a class
@@ -475,12 +518,14 @@ store door after the store hook. Where a system's own hook follows the library's
 library anchor cannot be there, and the system states only where its hook sits: a `HOOK` row of
 `experiments/<system>/doors.jsonl` (`run.sh` passes it as `-Dcausynth.system.doors`) names a catalog
 door (`transport`, `direction`, `door`: its method) and the system call after which it is woven
-(`method`, `after`); the door keeps the catalog's kinds, no door is added or dropped, and a `HOOK`
+(`method`, `after`) -- or before which (`before`: a store read's door goes before the system's read
+hook, as the catalog's goes before the request); the door keeps the catalog's kinds, no door is added or dropped, and a `HOOK`
 naming no catalog door, or a `DOOR` row in a system's file, is refused (`LibraryCatalog#placed`).
 Moved out of the library, the door would leave every other call of its method doorless: in every
 other method of the hook method's class family (its nested classes and lambdas included) that calls
-the door method itself -- through a subclass's reference too -- it is woven after each first call of
-the hook call it reaches by control flow (`DoorWeave#moved`, `LibraryCatalog.Door#relocated`):
+the door method itself -- through a subclass's reference too -- it is woven at each first call of
+the hook it reaches by control flow, forward for a door after its hook, backward for one before it
+(`DoorWeave#moved`, `LibraryCatalog.Door#relocated`):
 Solr's `SolrZkClient#makePath` creates each node itself, its retry lambda included, and without it
 solr-bugs-overseer-lock-leak's `OperationTimeout` at `DistributedMap#put` could not be flipped. A door
 method that calls the hook method itself (Solr's HTTP/2 request parsing its response) carries the door
@@ -495,14 +540,21 @@ inside the door method, where it would fire for the hook method's call too, befo
 break the pairing the hook keeps.
 Solr's: `ZooKeeper#setData`, `#create` and `#multiInternal` in `SolrZkClient#setData`, `#create`
 and `#multi` after `causynthWrote` (the store hook `MessageDoors.stored`; in `multi`, after the first
-operation's, so a multi's later operations are unpaired under a fault); the `SOLR_HTTP` and
+operation's, so a multi's later operations are unpaired under a fault); `ZooKeeper#getData` in
+`SolrZkClient#getData` before `causynthReplied` (after the read's hook `causynthRead`, inside the
+`try` whose `catch` removes the watch: a lost reply, above); `ZooKeeper#exists` and both
+`#getChildren` in `SolrZkClient#exists(String,Watcher,boolean)` and
+both `#getChildren` before `causynthReading` (the read turn's hook, `MessageDoors#reading`, at the
+start of each read method, before `ZkCmdExecutor#retryOperation`: the caller sees the fault as it
+sees one after the retries), `SolrZkClient#exists(String,boolean)` by the moved-door rule, every
+retry lambda's own call a `DOOR_UNPLACED` row covered by its caller's door; the `SOLR_HTTP` and
 `SOLR_HTTP2` responses after `CausynthHttp#response` (in `HttpSolrClient#executeMethod` and
 `Http2SolrClient#processErrorsAndResponse`). HDFS's: the trunk line's `HADOOP_IPC` response in
 `Client#getRpcResponse` after `installCausynthResponse`, the response's inbound hook (the 3.4 line's
 catalog anchor already follows it). These rows are the tree adapters' hooks spelled out; they go
 when the engine finds a door's following hook itself (a hook call of the door method or of its
-caller after the anchor). There is no door on a data read (DataTransfer's `PacketReceiver`, ZooKeeper
-`getData`/`exists`/`getChildren`): every packet and cluster-state read would be one.
+caller after the anchor). A data read is no door (DataTransfer's `PacketReceiver`: every packet would
+be one) but a shared store's, a data-flow door (above).
 
 A row with no `method` is a door at calls: a library call whose outcome each caller reads where it
 makes it. A caller that an execution context or the target already roots keeps that region (its
@@ -734,7 +786,15 @@ reaches, to a fixed point:
     a call at a site that returns a field -- an unwoven accessor -- or mutates a field of its
     receiver -- a `WRITE_SITE`'s `declaredCallee` whose cell is not its carrier, an atomic's
     `value`: `RuntimeSelectedRegionFinalizer#fieldAccessingCalls`), and apart what a reference field
-    held (`FIELD_REFERENTS`). A writer the recording saw access the field on other objects only than
+    held (`FIELD_REFERENTS`) and a reader's holders the recording may have left out
+    (`RECEIVER_HOLDERS`): the receiver of each call into a method that reads a field on its own
+    receiver alone (the static pass marks such a `field_read` edge `onReceiver`,
+    `SeedBackwardStaticAnalyzer#onReceiver`; `RuntimeSelectedRegionFinalizer#receiverReads`), whether
+    or not the read's row was written -- a watch callback's rows before `MessageDoors#fetched` names
+    its occurrence are not (solr-adhoc-40 Z1D4: node2's aliases callback read its dispatch wrapper's
+    `watcher` unrecorded, so with no holder every wrapper construction on the node was its writer, 97
+    of them ESCAPED) --, none for a field one of its methods reads on another object, and asked of a
+    reader only: a writer's holders are what its rows say. A writer the recording saw access the field on other objects only than
     the reader did is not crossed to (`DemandWalk#holdsOthersOnly`): the holders for a store, the
     holders and what they held for a mutation through the field (a container's or an atomic's
     state); a referent shared by a store's holders is no shared location (Solr: every lambda
@@ -840,7 +900,26 @@ reaches, to a fixed point:
   owner's rule: the recorded order is no fixed order). It contributes no value, so the doors of the
   message that started it are not admitted in turn. These are the control producers EXPLORE
   proposes the faults of as flips (IDENTITY.md §7.3); the seven HDFS `MARKER_FLIPPED` witnesses
-  move such an IPC door.
+  move such an IPC door. A value rule that reaches one moves its basis -- a demand (`DemandWalk#reach`),
+  a root or an attached value whose influence reaches the demand, a store version the target rests on
+  (`#admitValue`) -- and one that keeps it, or a store fetch's (`STORE_FETCH_V1`, one rule with
+  EXPLORE's: `#doorBasis`), is planned **doors-only** (`DOORS_ONLY`, `#stateDoorsOnly`; PLAN's log and
+  result.json `doorsOnlyOccurrences` count them): its task keeps its whole plan and weave, and the
+  replay runs its door markers' inputs alone (`runtime.ConcolicTaskPlan.RuntimeTask#doorsOnly`) with
+  the path condition paused from its start to its close (`runtime.ConcolicRegionRuntime#openDoorWindow`)
+  but for each door decision -- the marker's mint lifts the pause, the woven test records the decision,
+  the next hook restores it -- and each mutation of a tracked container at a site the scope map names
+  (never a read), which so runs hooked. COMPOSE reads from it its door roots and decisions and the
+  schedule's events of its send; CONFIRM no state row of it. A session's manifest states what it ran
+  doors-only (`SessionManifest#doorsOnly`), and EXPLORE re-plans one a value demand reaches that no
+  session ran whole (`explore.ClosurePlanner#plan`, `#valueDemand`, `#ranWhole`): a
+  `DOORS_ONLY_UNPAUSED` growth row, GROW's next generation drops the mark and re-runs the focused
+  replay that ran it; one only the seed ran (the seed is not re-run) is a BLOCKING row at the fixed
+  point unless a later replay ran it whole. A field it writes runs unhooked, as an unplanned occurrence's: a
+  later read of the word is stated as changed by an unhooked write (VM.md §10), where a planned writer's
+  version was named before -- a reader of a location it writes that is no demand of the walk, or one
+  another node's demand reads through an object the JVM shares (a static: MiniSolrCloudCluster's
+  nodes are one JVM, and the walk crosses to writers on the reader's node only).
 
 - **Equivalent deciders are one class** (`DemandWalk#classDeciders`). Occurrences the walk reached
   only as writers of a demanded store that stored no demanded cell in the recording (each left the
@@ -984,7 +1063,8 @@ others cut `WIDTH` or `DISTANCE`), and `io_doors.jsonl` holds them for every lat
 its `via`: the methods the descent walked, from the demanded site's method down to the door's
 caller. A demanded door roots no region, unlike a catalog door at calls: its marker is read in the
 occurrence that runs the demanded site, the chain's methods joining every region that holds the
-site's method (`causynth/SymbolicRegionPlanner#fold`; no root is added, so no address moves). Rooted
+site's method (`causynth/SymbolicRegionPlanner#fold`; no root is added, so no address moves); a
+data-flow door roots none either (§4.2), its marker read in the occurrence that runs the store read. Rooted
 as fault entries, utility callers (`StorageInfo#readPropertiesFile`, `FileUtil#listFiles`) opened
 occurrences wherever they ran, and the test thread's DataNode starts lost their hop
 (hdfs-adhoc-26, `DECLARED_TARGET_BEFORE_WINDOW`). A call whose demanded site no region holds is cut

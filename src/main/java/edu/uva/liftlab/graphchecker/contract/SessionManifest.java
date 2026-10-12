@@ -23,8 +23,9 @@ import java.util.TreeSet;
  * row of the session states what ran there; and it states what a declared
  * root was read at where the replay minted none ({@link #concreteReadings})
  * and which declared roots held a value computed from others where it read
- * them ({@link #derivedRoots}).  Schema 2; a manifest of another schema
- * is refused.
+ * them ({@link #derivedRoots}), and the occurrences it ran for their doors
+ * alone ({@link #doorsOnly}).  Schema 2; a manifest of another schema is
+ * refused.
  */
 public final class SessionManifest {
     /** What a session ran as: the recording, one counterfactual of it, or
@@ -43,12 +44,13 @@ public final class SessionManifest {
     private final Map<String, Integer> unnamedEntries;
     private final Map<String, Map<String, String>> concreteReadings;
     private final Set<String> derivedRoots;
+    private final Set<String> doorsOnly;
 
     private SessionManifest(String sessionId, Role role,
                             List<String> obligationIds,
                             Map<String, Integer> unnamedEntries,
                             Map<String, Map<String, String>> readings,
-                            Set<String> derived) {
+                            Set<String> derived, Set<String> doorsOnly) {
         this.sessionId = sessionId;
         this.role = role;
         this.obligationIds = Collections.unmodifiableList(obligationIds);
@@ -64,6 +66,8 @@ public final class SessionManifest {
         this.concreteReadings = Collections.unmodifiableMap(sorted);
         this.derivedRoots = Collections.unmodifiableSet(
                 new TreeSet<String>(derived));
+        this.doorsOnly = Collections.unmodifiableSet(
+                new TreeSet<String>(doorsOnly));
     }
 
     /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
@@ -80,20 +84,35 @@ public final class SessionManifest {
                 Fields.required(role, "role"), ids,
                 Collections.<String, Integer>emptyMap(),
                 Collections.<String, Map<String, String>>emptyMap(),
+                Collections.<String>emptySet(),
                 Collections.<String>emptySet());
     }
 
     /** This manifest, with what only the run's end can state. */
     public SessionManifest atClose(Map<String, Integer> entries,
                                    Map<String, Map<String, String>> readings,
-                                   Set<String> derived) {
+                                   Set<String> derived,
+                                   Set<String> doorsOnly) {
         return new SessionManifest(sessionId, role, obligationIds,
                 entries == null ? Collections.<String, Integer>emptyMap()
                         : entries,
                 readings == null
                         ? Collections.<String, Map<String, String>>emptyMap()
                         : readings,
-                derived == null ? Collections.<String>emptySet() : derived);
+                derived == null ? Collections.<String>emptySet() : derived,
+                doorsOnly == null ? Collections.<String>emptySet()
+                        : doorsOnly);
+    }
+
+    /**
+     * The rendered occurrences this replay ran for their doors alone (a
+     * control producer's or a store fetch's task, {@code
+     * RuntimeSelectedRegionFinalizer#DOORS_ONLY}): their guards and roots ran
+     * paused, so this session captured no value of them ({@code
+     * explore.ClosurePlanner#plan}).
+     */
+    public Set<String> doorsOnly() {
+        return doorsOnly;
     }
 
     /**
@@ -163,6 +182,11 @@ public final class SessionManifest {
             derived.add(rootId);
         }
         json.add("derivedRoots", derived);
+        JsonArray doors = new JsonArray();
+        for (String occurrence : doorsOnly) {
+            doors.add(occurrence);
+        }
+        json.add("doorsOnly", doors);
         return json;
     }
 
@@ -212,7 +236,8 @@ public final class SessionManifest {
                 JsonFields.strings(json, "obligationIds"));
         return new SessionManifest(manifest.sessionId, manifest.role,
                 manifest.obligationIds, unnamed, readings,
-                new TreeSet<String>(JsonFields.strings(json, "derivedRoots")));
+                new TreeSet<String>(JsonFields.strings(json, "derivedRoots")),
+                new TreeSet<String>(JsonFields.strings(json, "doorsOnly")));
     }
 
     @Override

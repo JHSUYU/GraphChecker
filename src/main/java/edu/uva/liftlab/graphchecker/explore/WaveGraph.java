@@ -158,23 +158,26 @@ final class WaveGraph {
     }
 
     /** Writes {@code growth.jsonl}: one EXPOSED_REGION row per occurrence the
-     *  closure grows ({@link ClosurePlanner.Plan#exposed}) and one
-     *  UNPLANNED_INPUT row per marker invocation a flipped world added
-     *  ({@link ClosurePlanner#unplanned}), each naming the session whose
-     *  replay is re-run and its obligation; returns the row count. */
+     *  closure grows ({@link ClosurePlanner.Plan#exposed}), one
+     *  DOORS_ONLY_UNPAUSED row per doors-only occurrence a value demand
+     *  reached ({@link ClosurePlanner.Plan#unpaused}: GROW drops its mark),
+     *  and one UNPLANNED_INPUT row per marker invocation a flipped world
+     *  added ({@link ClosurePlanner#unplanned}), each naming the session
+     *  whose replay is re-run, if any, and its obligation; returns the row
+     *  count. */
     static int writeGrowth(Corpus corpus,
                            Map<OccurrenceAddress, String> exposed,
+                           Map<OccurrenceAddress, String> unpaused,
                            Map<UnplannedInput, String> inputs,
                            Path roundDir) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Map.Entry<OccurrenceAddress, String> grown : exposed.entrySet()) {
-            OccurrenceAddress occurrence = grown.getKey();
-            JsonObject row = exposing(corpus, grown.getValue());
-            row.addProperty("kind", "EXPOSED_REGION");
-            row.addProperty("regionId", occurrence.regionId());
-            row.addProperty("node", occurrence.node().render());
-            row.addProperty("occurrence", occurrence.render());
-            rows.add(row);
+            rows.add(growthRow("EXPOSED_REGION", corpus, grown.getKey(),
+                    grown.getValue()));
+        }
+        for (Map.Entry<OccurrenceAddress, String> door : unpaused.entrySet()) {
+            rows.add(growthRow(DOORS_ONLY_UNPAUSED, corpus, door.getKey(),
+                    door.getValue()));
         }
         for (Map.Entry<UnplannedInput, String> grown : inputs.entrySet()) {
             UnplannedInput input = grown.getKey();
@@ -187,6 +190,27 @@ final class WaveGraph {
         }
         RowCodec.writeJsonl(roundDir.resolve(GROWTH), rows);
         return rows.size();
+    }
+
+    /** A growth row's kind for a doors-only occurrence a value demand
+     *  reached. */
+    static final String DOORS_ONLY_UNPAUSED = "DOORS_ONLY_UNPAUSED";
+
+    /** One growth row of an occurrence; a session "" names no replay to
+     *  re-run. */
+    private static JsonObject growthRow(String kind, Corpus corpus,
+                                        OccurrenceAddress occurrence,
+                                        String sessionId) {
+        JsonObject row = new JsonObject();
+        row.addProperty("kind", kind);
+        row.addProperty("regionId", occurrence.regionId());
+        row.addProperty("node", occurrence.node().render());
+        row.addProperty("occurrence", occurrence.render());
+        row.addProperty("sessionId", sessionId);
+        row.addProperty("obligationId", sessionId.isEmpty() ? ""
+                : corpus.session(sessionId).obligations().get(0)
+                .obligationId());
+        return row;
     }
 
     /** A growth row's exposing session and its obligation. */

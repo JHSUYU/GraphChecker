@@ -240,7 +240,7 @@ final class RootMint {
         for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesLocal(method, unitIndex, local)) continue;
             if (marker == null
-                    && LibraryCatalog.demandedMarker(action.marker)) {
+                    && LibraryCatalog.rootsNothing(action.marker)) {
                 marker = action;
             }
             if (!action.acceptsOccurrence(occurrence)
@@ -256,7 +256,8 @@ final class RootMint {
     }
 
     /**
-     * A demanded door's planned marker called at an invocation its task
+     * A planned marker of a door that roots no region (a demanded or a
+     * data-flow door, LibraryCatalog#rootsNothing) called at an invocation its task
      * plans no input for -- a call only this world makes (solr-adhoc-09: the
      * second {@code waitForState} after the first timed out) -- runs at its
      * recorded polarity, concretely, and is named ({@link UnplannedInput}),
@@ -1049,6 +1050,10 @@ final class RootMint {
             // as a native plant's does (any other root names no marker).
             if (Boolean.TRUE.equals(fresh)) {
                 Identity.doorFaulted(action.marker);
+            }
+            // A doors-only occurrence decides its door unpaused.
+            if (!action.marker.isEmpty()) {
+                ConcolicRegionRuntime.openDoorWindow(active);
             }
             return fresh;
         } catch (Throwable throwable) {

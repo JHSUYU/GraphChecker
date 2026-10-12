@@ -4507,6 +4507,44 @@ ${stream_classes} ${stream_plan}"
   || fail "grown inputs only: $(cat "${stream_dir}/inputs-only.log")"
 reset_config
 
+# GROW-2: a doors-only occurrence a value demand reached that no focused
+# replay ran (ClosurePlanner#plan): its generation drops the task row's mark,
+# plans and weaves nothing, re-runs nothing and owes a round; promoting it
+# keeps the iteration's own tree.
+grow2="${test_tmp}/grow2"
+mkdir -p "${grow2}/obligations-0003" "${grow2}/instrumented-classes" \
+  "${grow2}/seed-replay"
+: >"${grow2}/instrumented-classes/woven"
+printf '%s\n' '{"occurrenceId":"W#1","taskId":"T.W","doorsOnly":true}' \
+  '{"occurrenceId":"X#1","taskId":"T.X","doorsOnly":true}' \
+  >"${grow2}/execution_task_plan.jsonl"
+printf '%s\n' \
+  '{"kind":"DOORS_ONLY_UNPAUSED","regionId":"R","node":"nn0","occurrence":"W#1","sessionId":"","obligationId":""}' \
+  >"${grow2}/obligations-0003/growth.jsonl"
+(
+  iteration_dir=${grow2}
+  stream_plan=${grow2}/execution_task_plan.jsonl
+  stream_classes=${grow2}/instrumented-classes
+  stream_generation=0
+  stream_dirty=0
+  stream_hold=0
+  stream_queue=()
+  run_java_main() { fail "the exposed-region planner ran with no exposure"; }
+  campaign_instrument() { fail "a generation that only dropped a mark wove"; }
+  campaign_stream_grow "${grow2}/obligations-0003" >/dev/null
+  jq -e -s 'length == 2 and (.[0].doorsOnly == null)
+    and .[1].doorsOnly == true' \
+    "${grow2}/generations/g1/execution_task_plan.jsonl" >/dev/null \
+    || fail "the generation did not drop the reached occurrence's mark alone"
+  [[ "${stream_classes}" == "${grow2}/instrumented-classes" \
+      && ${#stream_queue[@]} -eq 0 && "${stream_dirty}" == 1 ]] \
+    || fail "a dropped mark wove, queued a re-run, or owed no round"
+  campaign_stream_promote_generation
+  [[ -f "${grow2}/instrumented-classes/woven" ]] \
+    || fail "promoting a generation that wove nothing removed the tree"
+) || fail "GROW-2 failed"
+reset_config
+
 
 # GROW-CONFIRM: a witness's confirmation holds GROW's swap (Z2M).  OB.x's
 # session observed the fatal and exposed a region: its attempt claims and

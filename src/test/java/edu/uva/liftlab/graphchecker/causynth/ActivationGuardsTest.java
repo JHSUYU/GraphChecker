@@ -193,6 +193,23 @@ public class ActivationGuardsTest {
         }
     }
 
+    /** A field reference on the method's own receiver ({@code := @this}'s
+     *  local), read or written, and none on another object or a static. */
+    @Test
+    public void aFieldReferenceOnTheMethodsOwnReceiver() {
+        Object[][] rows = {
+                {"$r2 = r0.<a.W: a.Watcher watcher>", true},
+                {"r0.<a.Box: int v> = i0", true},
+                {"$r1 = $r0.<a.S: java.lang.String name>", false},
+                {"r1.<a.S: int w> = i0", false},
+                {"$r0 = <a.S: a.S inst>", false}};
+        for (Object[] row : rows) {
+            assertEquals((String) row[0], row[1],
+                    SeedBackwardStaticAnalyzer.onReceiver("r0",
+                            (String) row[0]));
+        }
+    }
+
     private static final String STORE = "a.S";
     private static final String MAKE = "<a.S: void make(a.S,int)>";
     private static final String PICK = "<a.S: void pick(a.S,int)>";

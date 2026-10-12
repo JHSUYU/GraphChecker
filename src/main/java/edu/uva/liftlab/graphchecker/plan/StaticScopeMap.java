@@ -558,8 +558,12 @@ public final class StaticScopeMap {
     private final Map<String, Set<String>> stored =
             new java.util.concurrent.ConcurrentHashMap<String, Set<String>>();
     /** Region -> the regions an occurrence of it folded in the epoch's
-     *  plan ({@link #withFolds}); empty for a map read alone. */
+     *  plan ({@link #withPlan}); empty for a map read alone. */
     private final Map<String, Set<String>> folds;
+    /** Store location ({@code <transport>:<path>}) -> the occurrences the
+     *  epoch's plan states fetched it on a target's data flow ({@link
+     *  #withPlan}); empty for a map read alone. */
+    private final Map<String, Set<String>> fetches;
 
     /** Each TARGET_SITE row's forcing table ({@link ForcingTable}), by
      *  its site id. */
@@ -570,6 +574,7 @@ public final class StaticScopeMap {
                            Map<String, List<String>> concreteReads,
                            Map<String, JsonArray> forcing) {
         this(sites, regionMethods, concreteReads, forcing,
+                Collections.<String, Set<String>>emptyMap(),
                 Collections.<String, Set<String>>emptyMap());
     }
 
@@ -577,27 +582,33 @@ public final class StaticScopeMap {
                            Map<String, Set<String>> regionMethods,
                            Map<String, List<String>> concreteReads,
                            Map<String, JsonArray> forcing,
-                           Map<String, Set<String>> folds) {
+                           Map<String, Set<String>> folds,
+                           Map<String, Set<String>> fetches) {
         this.sites = Collections.unmodifiableList(sites);
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
         this.concreteConfigurationReads =
                 Collections.unmodifiableMap(concreteReads);
         this.forcing = forcing;
         this.folds = Collections.unmodifiableMap(folds);
+        this.fetches = Collections.unmodifiableMap(fetches);
     }
 
     /**
-     * This map with the epoch's fold relation: per region, the regions its
-     * occurrences folded in the plan PLAN froze for the iteration (each
-     * region row's {@code foldedRegionIds}, {@code
-     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}).  A folded region's
+     * This map with what the plan PLAN froze for the iteration states of its
+     * occurrences.  The fold relation: per region, the regions its
+     * occurrences folded (each region row's {@code foldedRegionIds}, {@code
+     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}); a folded region's
      * text ran inside the enclosing occurrence, whose skeleton does not name
      * it (the weave stops at a nested root), so what that occurrence may
-     * read is its region's and theirs ({@link #readLocations}).  An
-     * unreadable plan is refused by name.
+     * read is its region's and theirs ({@link #readLocations}).  And the
+     * store fetches on a target's data flow ({@code
+     * RuntimeSelectedRegionFinalizer#STORE_FETCHES}, {@link #storeFetches}).
+     * An unreadable plan is refused by name.
      */
-    public StaticScopeMap withFolds(Path regionPlan) {
+    public StaticScopeMap withPlan(Path regionPlan) {
         Map<String, Set<String>> found =
+                new LinkedHashMap<String, Set<String>>();
+        Map<String, Set<String>> fetched =
                 new LinkedHashMap<String, Set<String>>();
         if (regionPlan != null && Files.isRegularFile(regionPlan)) {
             try {
@@ -605,10 +616,24 @@ public final class StaticScopeMap {
                     String regionId = optionalString(row, "regionId");
                     List<String> folded = strings(row,
                             RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS);
-                    if (regionId.isEmpty() || folded.isEmpty()) continue;
-                    found.computeIfAbsent(regionId,
-                            key -> new LinkedHashSet<String>())
-                            .addAll(folded);
+                    if (!regionId.isEmpty() && !folded.isEmpty()) {
+                        found.computeIfAbsent(regionId,
+                                key -> new LinkedHashSet<String>())
+                                .addAll(folded);
+                    }
+                    JsonElement stated = row.get(
+                            RuntimeSelectedRegionFinalizer.STORE_FETCHES);
+                    String occurrence = optionalString(row, "occurrenceId");
+                    if (stated == null || !stated.isJsonArray()
+                            || occurrence.isEmpty()) {
+                        continue;
+                    }
+                    for (JsonElement fetch : stated.getAsJsonArray()) {
+                        fetched.computeIfAbsent(optionalString(
+                                fetch.getAsJsonObject(), "location"),
+                                key -> new LinkedHashSet<String>())
+                                .add(occurrence);
+                    }
                 }
             } catch (IOException | RuntimeException unreadable) {
                 throw new IllegalStateException("REGION_PLAN_UNREADABLE: "
@@ -616,7 +641,17 @@ public final class StaticScopeMap {
             }
         }
         return new StaticScopeMap(sites, regionMethods,
-                concreteConfigurationReads, forcing, found);
+                concreteConfigurationReads, forcing, found, fetched);
+    }
+
+    /**
+     * The occurrences (rendered addresses) the epoch's plan states fetched
+     * the store location {@code transport}:{@code path} on a target's data
+     * flow (SYMBOL-SCOPE §4.2): whose store-read doors PLAN minted.
+     */
+    public Set<String> storeFetches(String transport, String path) {
+        return fetches.getOrDefault(transport + ":" + path,
+                Collections.<String>emptySet());
     }
 
     /** The TARGET_SITE a task's target branch -- an anchor's target row's
@@ -1682,7 +1717,7 @@ public final class StaticScopeMap {
      * #READ_INPUT}: an atomic's {@code get()} another region's {@code
      * incrementAndGet} writes), in the methods it holds ({@link
      * #methodsOf}; by its id when the map knows none), and those of the
-     * regions its occurrences folded ({@link #withFolds}).  A recorded write
+     * regions its occurrences folded ({@link #withPlan}).  A recorded write
      * whose stored locations ({@link #storedAt}) meet them may feed what an
      * occurrence of the region reads, whether or not the arm a session took
      * read it.
