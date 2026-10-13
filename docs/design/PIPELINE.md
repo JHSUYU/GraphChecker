@@ -1880,12 +1880,14 @@ and an UNSAT says nothing about them.
 
 Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped by correlation id,
 one message under one selector; the eligible senders are the
-sessions with an attested arm at every leaf of the message that ran none of the roots their arms are
-guarded by at another value than the path's own session ran it at -- judged against the PATH's
-session at every depth (`ComposedFamilies#compatible`): the path carries its own run's valuation
-(`Composer#valuationOf`), so such an arm is never chosen, and, the one arm left, it made the path
-unsat with its own run (solr-adhoc-39 SP6-39: the seed's delivery, admitted because its flips,
-none, are a subset of the faulted session's, pinned that session's fault at the seed's reading);
+sessions with an attested arm at every leaf of the message whose world's flip set contains or is
+contained in the path's, and that ran none of the roots their arms are guarded by at another value
+than the path's own session ran it at -- both judged against the PATH's session at every depth
+(`ComposedFamilies#compatible`): the path carries its own run's valuation (`Composer#valuationOf`),
+so an arm pinning another is never chosen, and, the one arm left, it made the path unsat with its
+own run (solr-adhoc-39 SP6-39: the seed's delivery, admitted because its flips, none, are a subset
+of the faulted session's, pinned that session's fault at the seed's reading); pins alone admit
+incomparable worlds, whose deliveries contradicted 51 of SP6-39's 56 paths;
 one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm guarded by its replay's value of every root it holds under (`Arms#arm`:
 those its expression names, every varied root, every root its replay read and minted none -- the

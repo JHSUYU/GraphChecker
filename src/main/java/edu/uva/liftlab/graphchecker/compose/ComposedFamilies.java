@@ -867,25 +867,44 @@ final class ComposedFamilies {
 
     /**
      * The eligible sessions whose deliveries of this message can hold in the
-     * PATH's own world, at every depth (PIPELINE §8).  Every arm is guarded
-     * by its replay's value of every varied root it ran ({@link Arms#arm}),
-     * so a sender that ran a root the path's session also ran, at another
-     * value, delivers only in a world the path's own deliveries exclude:
-     * left the one arm of a message, it made the path unsat with its own
-     * run (solr-adhoc-39 SP6-39: the seed's CreateCollectionCmd message,
-     * the only arm once the faulted session's own was refused, pinned the
-     * client door that session had faulted at the seed's false -- admitted
-     * because the seed's flips, none, are a subset of the session's, and its
-     * own nested CREATE task judged against the seed's world, not the
-     * path's).  The path's own session is always one.
+     * PATH's own world, judged against the path's session at every depth
+     * (PIPELINE §8): one flip set contains the other, so the two worlds are
+     * one world extended, never two branches of the exploration mixed; and
+     * the sender ran no root the path's session ran at another value
+     * ({@link #agrees}), since every arm is guarded by its replay's value of
+     * every varied root it ran ({@link Arms#arm}) and the path by its own,
+     * so such an arm is never chosen and, the one arm left, made the path
+     * unsat with its own run.  solr-adhoc-39 SP6-39: the seed's
+     * CreateCollectionCmd message, the only arm once the faulted session's
+     * own was refused, pinned the client door that session had faulted at
+     * the seed's false (its flips, none, are a subset of the session's),
+     * and the CREATE task nested in it was judged against the seed's world,
+     * not the path's.  Pins alone admit incomparable worlds, whose other
+     * deliveries contradict the path's run (SP6-39: 51 of 56 paths unsat
+     * without their fatal arm).  The path's own session is always one.
      */
     private List<String> compatible(List<String> eligible,
                                     Map<String, List<Arms.Arm>> bySession) {
+        Set<String> own = flips(pathSession);
         List<String> senders = new ArrayList<String>();
         for (String session : eligible) {
-            if (agrees(session, bySession.get(session))) senders.add(session);
+            Set<String> producer = flips(session);
+            if ((own.containsAll(producer) || producer.containsAll(own))
+                    && agrees(session, bySession.get(session))) {
+                senders.add(session);
+            }
         }
         return senders;
+    }
+
+    /** The decisions one session was held to, own and inherited. */
+    private Set<String> flips(String session) {
+        Set<String> held = new LinkedHashSet<String>();
+        for (Corpus.Flip flip : corpus.world(session).flips) {
+            held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "#"
+                    + flip.ordinal + "=" + flip.outcome);
+        }
+        return held;
     }
 
     /**
