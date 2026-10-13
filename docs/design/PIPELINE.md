@@ -473,7 +473,8 @@ and gated), its `results` (`<round>/answers.jsonl`: the answers landed) and its 
 (`<round>/in_flight.jsonl`) -- and its `outputDir` (`planning-NNNN`, `obligations-NNNN` once taken),
 asked through `explore.Service`, the protocol the host solvers speak, §7.5; the driver's side is §7.9:
 the campaign lands sessions while a round plans, and the round reads none of them,
-`SessionDir#named`; a named session the iteration does not hold fails the round). What it read
+`SessionDir#named`; a named session the iteration does not hold fails the round; the obligation
+workers' own files it reads as they stand, §7.9). What it read
 for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus, Collection)`:
 a landed session's rows never change, so only the sessions new to the round's corpus are parsed, and
 one that left -- a GROW swap, after-witness trimming -- is dropped) with what was derived from each
@@ -1543,8 +1544,12 @@ life anyway). Between two head steps, in the head's hands, in this order:
    round started -- over inputs frozen now, written into `planning-NNNN/` beside its files:
    `corpus.txt`, the sessions landed (every one gated: no head step gates); `answers.jsonl`, the answers
    landed (`obligation_results.jsonl` as it stands); `in_flight.jsonl`, the obligation rows queued or
-   running (§7.3). It plans in the background, the campaign landing meanwhile, and reads none of what
-   lands (§7.1), so it plans what it would plan had nothing landed while it planned;
+   running (§7.3). It plans in the background, the campaign landing meanwhile, and no session or
+   answer that lands meanwhile is the round's (§7.1). The obligation workers' own files -- each one's
+   answer, focus row and question, read for the worlds, the answers by flip and the killed replays
+   (`Corpus#indexWorlds`, `ExploreMain#answersByFlip`, `#boundedFlips`) -- it reads as they stand when
+   it reads them, as a round always did: a worker writes its own answer as its replay ends, and a
+   landing writes an unfinished one's (`campaign_obligation_unfinished`);
 3. everything that returned meanwhile LANDS (`campaign_stream_step_start`): each verdict is appended to
    `obligation_results.jsonl` (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the
    sessions the workers staged move into the corpus (`campaign_stream_move`); the next head step then
@@ -1554,11 +1559,20 @@ life anyway). Between two head steps, in the head's hands, in this order:
 
 A round may also start while an attempt or a verdict step runs, every landed session being gated
 then. Until a round is taken no reader of the rounds sees it -- its name matches no `obligations-*`
-(the slot table, the workers, an attempt's COMPOSE) -- so an attempt composes only taken rounds, and
-the final COMPOSE after a witness reads exactly the table the accepted attempt read (solr-18413 Z3S,
-one lane: a witness that returned three seconds after a step began, which gated six sessions and
-planned round 2 -- its planner out of 8 GB, then 1437 s waiting for 17.8 GB -- was attempted 69
-minutes after its replay ended). THE PLANNER SERVICE (`campaign_stream_plan`): the
+(the slot table, the workers, an attempt's COMPOSE) -- so an attempt composes only taken rounds
+(solr-18413 Z3S, one lane: a witness that returned three seconds after a step began, which gated six
+sessions and planned round 2 -- its planner out of 8 GB, then 1437 s waiting for 17.8 GB -- was
+attempted 69 minutes after its replay ended). AN ATTEMPT'S SLOT TABLE IS ONE ROUND BEHIND ITS
+SESSIONS, an over-approximation: the sessions landed since the last taken round started, the witness
+among them, have no slots of their own until a round reconciles them (§7.1 step 4) -- the round that
+does may plan while the attempt composes -- so COMPOSE checks their pairings only against the slots
+earlier rounds opened (`SlotTable#replacements`: one that contradicts a slot of its own world is a
+replacement, one no slot holds is growth). A spurious SAT is possible, and CONFIRM filters it (§10);
+the next attempt reads the slots the round opened. After a witness the final COMPOSE reads the
+accepted attempt's corpus (the sessions landed after it leave, WITNESSED below) with the slot table of
+every round taken by then -- rounds taken between the attempt and its confirmation's verdict among
+them -- so its claim may differ from the attempt's: `campaign_confirm` reuses the attempt's
+confirmation for the same model only, and replays CONFIRM for any other. THE PLANNER SERVICE (`campaign_stream_plan`): the
 round's lane starts it when none lives, as a head step -- placed by the usual rule (`campaign_head_place`) at
 what the planner starts at (`campaign_engine_start_mb`), its charge held for its life by the shell
 that holds it (`campaign_host_keep`, as a host solver's), grown as a watched JVM
@@ -1616,7 +1630,7 @@ obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
   `explore-reaped/`, `roundDropped`, owed as `roundDue`) -- and the sessions that landed after the accepted
   attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
   (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
-  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted (its replay did
+  attempt read (its slot table may hold rounds taken since, above); a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted (its replay did
   not reach the fatal at the anchor: a false positive, §10), its model is excluded from every later
   composition and the exploration goes on, as after any other claim; one CONFIRM gave no verdict on
   (a task it refused by name, a decision that failed: a defect of the engine) is excluded from

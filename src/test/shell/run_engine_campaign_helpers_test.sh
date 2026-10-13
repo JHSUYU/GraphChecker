@@ -3299,7 +3299,7 @@ attempted after A's refutation: $(cat "${stream_dir}/exploration.json")"
 # STREAM-WITFIRST: A WITNESS WAITS FOR NO ROUND (PIPELINE §7.9).  A round
 # plans in its own lane, over inputs frozen as it started, so a witness that
 # returns while a round plans lands, is gated and is attempted at once: W
-# returns while round 1 -- its planner ten seconds long -- plans over the
+# returns while round 1 -- its planner thirty seconds long -- plans over the
 # corpus landed before it (A's session, not W's); W's attempt starts while
 # round 1 plans, and, accepted, ends the exploration: round 1, never taken,
 # leaves the iteration for explore-reaped/ (roundDropped, roundDue), its
@@ -3315,7 +3315,7 @@ stream_fixture stream-witfirst
       0) stream_propose "$2" A W ;;
       1)
         date +%s.%N >"${stream_dir}/round-1-started-at"
-        sleep 10
+        sleep 30
         date +%s.%N >"${stream_dir}/round-1-ended-at" ;;
     esac
   }
@@ -3338,7 +3338,7 @@ $(cat "${stream_dir}/explore.log")"
     && -s "${stream_dir}/attempt-started-at" ]] \
   && awk -v r="$(cat "${stream_dir}/round-1-started-at")" \
     -v a="$(head -n 1 "${stream_dir}/attempt-started-at")" \
-    'BEGIN{exit !(a > r && a < r + 10)}' \
+    'BEGIN{exit !(a > r && a < r + 30)}' \
   && [[ ! -e "${stream_dir}/round-1-ended-at" ]] \
   || fail "STREAM-WITFIRST: the witness's attempt waited for the round: \
 $(cat "${stream_dir}/round-1-started-at" "${stream_dir}/attempt-started-at" \
@@ -3448,8 +3448,9 @@ it left unasked"
 [[ ! -e "${stream_dir}/obligations-0001/NEVER" ]] \
   || fail "a round past the budget was dispatched"
 
-# STREAM-3c: THE CAMPAIGN BUDGET.  Between two steps, once the campaign's
-# budget has no room for the stages after the exploration (its reserve,
+# STREAM-3c: THE CAMPAIGN BUDGET.  Between two head steps, whatever a round
+# plans, once the campaign's budget has no room for the stages after the
+# exploration (its reserve,
 # campaign_reserve), the exploration ends as at a witness: the queue
 # cancelled, what runs reaped, the stop a DIAGNOSTIC row, and
 # exploration.json states what it left owed.  It still owed an arm (SLOW,
@@ -3519,6 +3520,41 @@ for end in '{"stop": "WITNESSED", "cancelled": ["A"]}' \
     || fail "${end} under an UNSAT is not ${want} cut row(s): \
 $(cat "${stream_dir}/campaign_gaps.jsonl")"
 done
+
+# STREAM-3d: THE BUDGET ENDS A ROUND STILL PLANNING.  The campaign's budget is
+# judged between two head steps, not when a round returns: round 1 -- its
+# planner a minute long -- still plans when the budget has no room left, so
+# the exploration ends as at a witness and the round, never taken, is dropped:
+# its planner stopped, its directory out of the iteration for explore-reaped/,
+# exploration.json naming it (roundDropped) as a round owed (roundDue).
+stream_fixture stream-3d
+(
+  stream_stubs
+  campaign_budget_s=15
+  campaign_reserve_s=1
+  reproduce_min_s=1
+  campaign_started_s=${SECONDS}
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A ;;
+      1) date +%s.%N >"${stream_dir}/round-1-started-at"; sleep 60 ;;
+    esac
+  }
+  campaign_obligation_worker() { stream_answer "$4" A ADMITTED SESSION.A; }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "STREAM-3d: the budgeted loop did not finish: \
+$(cat "${stream_dir}/explore.log")"
+jq -e '.stop == "CAMPAIGN_BUDGET_REACHED" and .rounds == 1
+  and .roundDropped == "planning-0001" and .roundDue == true' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  && [[ -s "${stream_dir}/round-1-started-at" \
+        && -s "${campaign_root}/explore-reaped/planning-0001/corpus.txt" \
+        && ! -e "${stream_dir}/planning-0001" \
+        && ! -e "${stream_dir}/obligations-0001" \
+        && ! -e "${stream_dir}/planner/pid" ]] \
+  || fail "STREAM-3d: the budget did not drop the round still planning: \
+$(cat "${stream_dir}/exploration.json"; ls "${stream_dir}")"
 
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
 # heap a head JVM is given (exit 3) is not planned: its directory leaves the
@@ -3621,6 +3657,36 @@ grep -q 'the planner service on localhost ended with exit 1' \
   && [[ "$(grep -c . "${stream_dir}/planner-heaps.txt")" == 1 ]] \
   || fail "STREAM-SERVE: a planner's other end did not fail EXPLORE by name: \
 $(cat "${stream_dir}/explore.log")"
+
+# STREAM-REAP-HOLDS: the exploration's end ends a lane that waits for room
+# (campaign_stream_reap: a round whose planner waits to be placed): the room
+# it holds on a host (campaign_head_hold_room, named by the pid of the
+# process that waits) is the hosts' again at once, never left to lapse; a
+# hold another process keeps stays.
+(
+  campaign_host_gate_root=${test_tmp}/reap-holds/hosts
+  mkdir -p "${campaign_host_gate_root}/lift12/heads"
+  sleep 60 &
+  stream_round_pid=$!
+  sleep 60 &
+  reap_other=$!
+  reap_held="${campaign_host_gate_root}/lift12/heads/$(hostname -s).\
+${stream_round_pid}.1791900000.hold"
+  reap_kept="${campaign_host_gate_root}/lift12/heads/$(hostname -s).\
+${reap_other}.1791900000.hold"
+  printf '17792\n' >"${reap_held}"
+  printf '4096\n' >"${reap_kept}"
+  declare -A stream_jobs=() stream_job_charge=()
+  stream_step_pid=""
+  stream_ticker=""
+  campaign_adapter_kill_grace_s=0
+  campaign_reap_remote_workers() { :; }
+  campaign_stream_reap
+  ! kill -0 "${reap_other}" 2>/dev/null || kill "${reap_other}"
+  [[ ! -e "${reap_held}" && -s "${reap_kept}" && -z "${stream_round_pid}" ]] \
+    || fail "STREAM-REAP-HOLDS: the ended lane's hold was not given back, or \
+another's was: $(ls "${campaign_host_gate_root}/lift12/heads")"
+)
 
 # STREAM-4: a planner that states no growth file did not run to completion:
 # refused by name, never read as "nothing exposed".
@@ -6089,6 +6155,33 @@ done <<'EOF'
 20000:0 300:0|20000|13134
 EOF
 campaign_root=""
+# HEAD-NEED-LANES: a round's planner and a head step fold their peaks at once
+# (campaign_engine_peak, under its lock): of twenty folds racing, the largest
+# stands and the lock is gone; a lock a folder left when it was ended (older
+# than 10 s) is broken, not waited on.
+need_dir=${test_tmp}/head-need-lanes
+mkdir -p "${need_dir}"
+for need_peak in $(seq 100 100 2000); do
+  campaign_engine_peak "${need_dir}/engine_peak_mb" "${need_peak}" &
+done
+wait
+[[ "$(cat "${need_dir}/engine_peak_mb")" == 2000 \
+    && ! -e "${need_dir}/engine_peak_mb.lock" ]] \
+  || fail "HEAD-NEED-LANES: racing folds left $(cat \
+"${need_dir}/engine_peak_mb"), not the largest"
+mkdir "${need_dir}/engine_peak_mb.lock"
+touch -d '-1 minute' "${need_dir}/engine_peak_mb.lock"
+campaign_engine_peak "${need_dir}/engine_peak_mb" 2500 &
+need_pid=$!
+for need_try in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "${need_pid}" 2>/dev/null || break
+  sleep 0.5
+done
+! kill "${need_pid}" 2>/dev/null \
+  || fail "HEAD-NEED-LANES: a lock left by an ended folder was waited on"
+wait "${need_pid}" || true
+[[ "$(cat "${need_dir}/engine_peak_mb")" == 2500 ]] \
+  || fail "HEAD-NEED-LANES: the fold past a stale lock was lost"
 
 # FANOUT-1: fanout.sh charges each job to the same ledger with the need its
 # line states, releases it when the job returns, and a restart over the same

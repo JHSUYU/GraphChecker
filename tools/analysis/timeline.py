@@ -17,13 +17,11 @@ the sources are the files the campaign wrote:
                      wait for memory, off its stderr.log
                      (campaign_head_place: "waiting for memory for a head
                      step", then "room ... after waiting <s> s")
-  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, confirms, and
-                     in a run before rounds had a lane of their own, round;
+  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, confirms;
                      written as it starts) to its last output -- the gate's
-                     import_gate.json, an attempt's compose.log, the round's
-                     explore_manifest.json; one step runs at a time, beside
-                     the pool and the round planning (an attempt's
-                     confirmation replay is a job of the pool,
+                     import_gate.json, an attempt's compose.log; one step
+                     runs at a time, beside the pool and the round planning
+                     (an attempt's confirmation replay is a job of the pool,
                      witness-confirm/NNNN/)
   witness attempts   witness_attempts.jsonl: its step's witnesses (written as
                      the step starts) to its compose.log, and its claim
@@ -279,14 +277,11 @@ def step_rows(iteration):
     rows = []
     for step in sorted(glob.glob(os.path.join(iteration, "steps", "[0-9]*"))):
         started = min([t for t in (mtime(os.path.join(step, n))
-                                   for n in ("gate", "witnesses", "confirms", "round")) if t]
+                                   for n in ("gate", "witnesses", "confirms")) if t]
                       or [None])
         gate = os.path.join(step, "gate")
         gated = mtime(os.path.join(step, "import_gate.json"))
         outputs = [gated] + [mtime(p) for p in attempts.get(os.path.basename(step), [])]
-        if os.path.isfile(os.path.join(step, "round")):
-            name = open(os.path.join(step, "round")).read().strip()
-            outputs.append(mtime(os.path.join(iteration, name, "explore_manifest.json")))
         ended = max([t for t in outputs if t] or [None])
         count = len([l for l in open(gate).read().splitlines() if l.strip()]) if os.path.isfile(gate) else 0
         rows.append(((ended - started) if started and ended else None,

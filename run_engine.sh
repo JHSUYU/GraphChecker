@@ -590,15 +590,28 @@ campaign_engine_jvm() {
 
 # campaign_engine_peak <peak_file> <peak_mb>: an engine JVM's peak folded
 # into <peak_file>, the largest any of the campaign's reached (none named
-# outside a campaign).
+# outside a campaign).  A round's planner and a head step's JVM fold theirs
+# at once, from any host: read, compare and replace under one lock
+# (<peak_file>.lock, a mkdir, atomic on NFS too), so a slower write of the
+# smaller never replaces the larger; a lock left 10 s by a folder that was
+# ended is broken.
 campaign_engine_peak() {
-  local file=$1 peak=$2 held tmp
+  local file=$1 peak=$2 held tmp at
   [[ -n "${file}" && "${peak}" =~ ^[0-9]+$ ]] || return 0
+  [[ -d "$(dirname -- "${file}")" ]] || return 0
+  until mkdir "${file}.lock" 2>/dev/null; do
+    if at=$(stat -c %Y "${file}.lock" 2>/dev/null) \
+        && (( $(date +%s) - at >= 10 )); then
+      rmdir "${file}.lock" 2>/dev/null || true
+    fi
+    sleep 0.1
+  done
   read -r held 2>/dev/null <"${file}" || held=0
   if (( peak > ${held:-0} )); then
     tmp=$(mktemp "${file}.XXXXXX") \
       && printf '%s\n' "${peak}" >"${tmp}" && mv -f -- "${tmp}" "${file}"
   fi
+  rmdir "${file}.lock" 2>/dev/null || true
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
@@ -4573,7 +4586,8 @@ campaign log says}); its logs are in ${worker}"
 # waits for the next one -- the busier the head, the more one step takes in.
 # ROUNDS, one at a time (campaign_stream_round): the exploration's planner
 # plans each over inputs frozen as it starts -- the sessions landed, every
-# one gated; the answers landed; what is queued or running -- so the head
+# one gated; the answers landed; what is queued or running; the workers' own
+# files are read as they stand -- so the head
 # lands, gates, attempts witnesses and decides confirmations while a round
 # plans (Z3S-18413: a witness landed behind a 57-minute round and was
 # attempted 69 minutes after its replay ended).  A round is taken between
@@ -4896,10 +4910,15 @@ campaign_stream_step() {
 # the answers landed (obligation_results.jsonl as it stands);
 # in_flight.jsonl, the obligation rows queued or running -- so the head goes
 # on landing, gating, attempting witnesses and deciding confirmations while
-# it plans, and the round reads what a round planned at this moment read
-# when nothing landed while it planned.  No round starts while GROW's re-runs
-# or swaps are owed (campaign_stream_plan_due), so no swap withdraws a
-# session a round reads.
+# it plans, and no session or answer that lands meanwhile is the round's.
+# The obligation workers' own files -- each one's answer, focus row and
+# question, read for the worlds, the answers by flip and the killed replays
+# (Corpus#indexWorlds, ExploreMain#answersByFlip, #boundedFlips) -- the round
+# reads as they stand when it reads them, as a round always did: a worker
+# writes its own answer as its replay ends, and a landing writes an
+# unfinished one's (campaign_obligation_unfinished).  No round starts while
+# GROW's re-runs or swaps are owed (campaign_stream_plan_due), so no swap
+# withdraws a session a round reads.
 campaign_stream_round_start() {
   local dir row
   [[ -z "${stream_stop}" && -z "${stream_round_pid}" \
@@ -7415,8 +7434,9 @@ campaign_reproduce_bound() {
 }
 
 # "PLANNER <ms>": the wall of the last round the planner finished, from
-# its in_flight.jsonl, copied as the planner starts (campaign_stream_step),
-# to its explore_manifest.json, written as it ends; nothing before one has.
+# its in_flight.jsonl, written as the round starts
+# (campaign_stream_round_start), to its explore_manifest.json, written as it
+# ends; nothing before one has.
 campaign_last_round_millis() {
   local manifest started ended last=""
   for manifest in "${campaign_root}"/iteration-0000/obligations-[0-9]*/explore_manifest.json; do

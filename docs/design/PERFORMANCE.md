@@ -182,6 +182,13 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    synchronously by the head (`campaign_stream_take_round` -> `campaign_stream_grow`), so no start is dispatched,
    nothing lands and no witness is attempted until the weave returns (solr-18413 Z3S round 2: 8 min). Rounds and
    witness attempts already run beside the head (PIPELINE §7.9); GROW would be a step of a lane too.
+10. **Known limits of the two lanes** (PIPELINE §7.9). Both may wait for memory at once: a round's planner and a
+   witness's composer are each placed by its own charge, each holding its need on the roomiest host while it waits
+   (two holds, maybe on one host), and the head's room covers one of them -- an attempt no longer waits behind a
+   round, but it can still wait for room (Z3S's planner waited 1437 s for 17.8 GB). A round's directory is written by
+   the planner, maybe on a peer, and renamed `planning-NNNN` -> `obligations-NNNN` by the head on its own host: a
+   reader elsewhere finds the new name by a lookup at the server, but an NFS client that looked that name up before
+   the rename (no reader names a round before it is taken) would hold a negative entry for its attribute-cache time.
 
 ## 6. Every HDFS case alone on the ten lifts (series EX1, 2026-10-07/08)
 
