@@ -492,6 +492,20 @@ public final class System {
     public static native void resumeConcolicPathCondition();
 
     /**
+     * Takes the base pause a doors-only occurrence holds from its start to
+     * its close: a pause as {@link #pauseConcolicPathCondition} is, nestable
+     * with it, except that a frame pushed while it alone stands keeps its
+     * tracking, so a door decided in that frame records once
+     * {@link #resumeConcolicBase} lifts it there.  Such a frame takes no
+     * expression from its caller and hands none back.
+     */
+    public static native void pauseConcolicBase();
+
+    /** Releases one base pause ({@link #pauseConcolicBase}); none taken, a
+     *  no-op. */
+    public static native void resumeConcolicBase();
+
+    /**
      * Installs the session's guarded-store table and returns how many store
      * methods it names.
      *

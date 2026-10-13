@@ -573,6 +573,20 @@ JVM_ENTRY(void, JVM_ResumeConcolicPathCondition(JNIEnv *env, jclass ignored))
 #endif
 JVM_END
 
+JVM_ENTRY(void, JVM_PauseConcolicBase(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_PauseConcolicBase");
+#ifdef ENABLE_CONCOLIC
+  ConcolicMngr::pauseBaseRecording();
+#endif
+JVM_END
+
+JVM_ENTRY(void, JVM_ResumeConcolicBase(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_ResumeConcolicBase");
+#ifdef ENABLE_CONCOLIC
+  ConcolicMngr::resumeBaseRecording();
+#endif
+JVM_END
+
 JVM_ENTRY(jint, JVM_InstallGuardedStoreSites(JNIEnv *env, jclass ignored,
                                             jstring table))
   JVMWrapper("JVM_InstallGuardedStoreSites");

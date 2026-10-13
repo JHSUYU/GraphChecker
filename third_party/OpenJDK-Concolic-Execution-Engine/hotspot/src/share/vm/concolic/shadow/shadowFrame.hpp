@@ -11,12 +11,17 @@ class ShadowFrame {
 private:
   const ZeroFrame *_zero_frame;
   bool _symbolic_tracking_enabled;
+  // Pushed while recording was paused: no expression enters it from its
+  // caller or leaves it to its caller (ShadowStack::push/pop), whether or
+  // not it tracks once the pause lifts in it (the base pause alone).
+  bool _concrete_boundary;
   ShadowTable _opr_stack;
   ShadowTable _local_tbl;
 
 public:
   explicit ShadowFrame(frame &fr);
-  ShadowFrame(const ZeroFrame *zero_frame, bool symbolic_tracking_enabled);
+  ShadowFrame(const ZeroFrame *zero_frame, bool symbolic_tracking_enabled,
+              bool concrete_boundary);
   ~ShadowFrame() {}
 
   void copy();
@@ -27,6 +32,7 @@ public:
   inline bool symbolic_tracking_enabled() const {
     return _symbolic_tracking_enabled;
   }
+  inline bool concrete_boundary() const { return _concrete_boundary; }
   void check(ZeroFrame *zero_frame);
 
 };

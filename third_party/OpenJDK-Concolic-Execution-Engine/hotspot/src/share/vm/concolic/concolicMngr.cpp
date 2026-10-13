@@ -809,6 +809,18 @@ void ConcolicMngr::resumePathConditionRecording() {
   }
 }
 
+void ConcolicMngr::pauseBaseRecording() {
+  if (has_active_context()) {
+    ctx->pause_base_recording();
+  }
+}
+
+void ConcolicMngr::resumeBaseRecording() {
+  if (has_active_context()) {
+    ctx->resume_base_recording();
+  }
+}
+
 jlong ConcolicMngr::endConcolic() {
   if (!ctx) {
     tty->print_cr("Warning: corrupted concolic execution thread state, is startConcolicRegion() invoked properly?");

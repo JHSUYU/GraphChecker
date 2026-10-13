@@ -55,9 +55,12 @@ void JavaThread::push_zero_frame(ZeroFrame *zframe) {
         *(ZeroFrame **)zframe, _top_zero_frame);
   }
   if (ConcolicMngr::can_maintain_shadow_stack()) {
+    // A frame pushed under the base pause alone may still track once the
+    // pause lifts in it (ConcolicMngr::can_track_pushed_frame).
     ConcolicMngr::ctx->get_shadow_stack().push(
         _top_zero_frame, *(ZeroFrame **)zframe,
-        ConcolicMngr::can_do_concolic());
+        ConcolicMngr::can_track_pushed_frame(),
+        !ConcolicMngr::can_do_concolic());
   }
 #endif
 }

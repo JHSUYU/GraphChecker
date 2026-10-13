@@ -79,8 +79,13 @@ public:
     return *_s_frames.at(size - 1 - index);
   }
 
+  /**
+   * `symbolic_tracking_enabled`: whether the callee may track (with its
+   * caller's); `concrete_boundary`: recording is paused at the push, so the
+   * callee takes no expression from its caller and hands none back.
+   */
   void push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
-            bool symbolic_tracking_enabled);
+            bool symbolic_tracking_enabled, bool concrete_boundary);
 
   void pop(ZeroFrame *zero_frame);
 

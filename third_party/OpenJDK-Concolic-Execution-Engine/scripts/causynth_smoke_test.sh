@@ -37,6 +37,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionNumericSemanticsApiSmoke.java \
   test/causynth/RegionObjectArrayMapApiSmoke.java \
   test/causynth/RegionPausedSymbolizationSmoke.java \
+  test/causynth/RegionBasePauseCalleeSmoke.java \
   test/causynth/RegionLookupSwitchApiSmoke.java \
   test/causynth/org/slf4j/helpers/CausynthObservationProbe.java \
   test/causynth/RegionLoggingObservationSmoke.java \
@@ -114,6 +115,7 @@ for smoke in \
   RegionNumericSemanticsApiSmoke \
   RegionObjectArrayMapApiSmoke \
   RegionPausedSymbolizationSmoke \
+  RegionBasePauseCalleeSmoke \
   RegionLookupSwitchApiSmoke \
   RegionLoggingObservationSmoke \
   RegionOneWayFunctionSmoke \

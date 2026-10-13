@@ -63,6 +63,7 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
     : _thread(jt), _s_stack(jt),
       _path_condition_enabled(true), _path_condition_admitted(true),
       _path_condition_pause_depth(0),
+      _base_pause_depth(0),
       _aborted(false),
       _context_id(context_id),
       _owner_java_thread_id(jt == NULL || jt->threadObj() == NULL
@@ -744,6 +745,17 @@ int ThreadContext::resume_path_condition_recording() {
     --_path_condition_pause_depth;
   }
   return _path_condition_pause_depth;
+}
+
+int ThreadContext::pause_base_recording() {
+  ++_base_pause_depth;
+  return pause_path_condition_recording();
+}
+
+int ThreadContext::resume_base_recording() {
+  if (_base_pause_depth == 0) return _path_condition_pause_depth;
+  --_base_pause_depth;
+  return resume_path_condition_recording();
 }
 
 #endif

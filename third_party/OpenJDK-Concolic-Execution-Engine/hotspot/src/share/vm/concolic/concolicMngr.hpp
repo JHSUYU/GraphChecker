@@ -195,6 +195,10 @@ public:
   static void cleanupAbandonedContext(JavaThread *thread);
   static void pausePathConditionRecording();
   static void resumePathConditionRecording();
+  // System.pauseConcolicBase/resumeConcolicBase: the base pause
+  // (ThreadContext::pause_base_recording).
+  static void pauseBaseRecording();
+  static void resumeBaseRecording();
   static jlong markBranch(const char *site_id, int occurrence);
   /** System.forceNextConcolicBranch: forces what the next marker marks
    *  (ThreadContext::force_next_branch). */
@@ -370,6 +374,16 @@ public:
         && ctx->path_condition_pause_depth() == 0
         && !ctx->is_symbolizing_method()
         && ctx->symbolic_tracking_enabled();
+  }
+
+  // Whether a frame pushed now may track once the pause lifts in it: it
+  // propagates now (can_do_concolic), or only the base pause stands.  A
+  // frame pushed under an observation pause never tracks.
+  inline static bool can_track_pushed_frame() {
+    return can_do_concolic()
+        || (ctx && !ctx->is_aborted() && ctx->base_paused_only()
+            && !ctx->is_symbolizing_method()
+            && ctx->symbolic_tracking_enabled());
   }
 
   // Explicit System.symbolize* calls remain valid inside a paused Java

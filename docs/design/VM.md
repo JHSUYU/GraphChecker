@@ -80,7 +80,16 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
   `runtime/InheritedState`) -- and every call of a logging API in woven code, which is IO off the
   traced flow (`CausynthPipeline#pauseAround`). Paused, the interpreter propagates nothing and no model runs
   (`ConcolicMngr::can_do_concolic`), so the engine's lists over program objects shadow none of
-  them.
+  them, and a frame pushed while paused never tracks, even once the pause lifts in it
+  (`ShadowStack::push`). `pauseConcolicBase` / `resumeConcolicBase` take and release the base pause a
+  doors-only occurrence holds from its start to its close (`runtime/ConcolicRegionRuntime#holdBasePause`):
+  one pause level as any other (`ThreadContext::pause_base_recording`, counted apart in
+  `_base_pause_depth`), except that a frame pushed while it alone stands keeps its tracking
+  (`ConcolicMngr::can_track_pushed_frame`), so a door decided in a callee -- Solr's
+  `SolrZkClient#makePath` retry lambda, reached through the unwoven `ZkCmdExecutor#retryOperation` --
+  records its branch once the door window lifts the base pause there. A frame pushed while recording is
+  paused, of either kind, is a concrete boundary (`ShadowFrame::concrete_boundary`): it takes no expression
+  from its caller and hands none back.
 
 ## 3. Propagation through bytecode
 
@@ -712,7 +721,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 73
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 74
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -743,5 +752,7 @@ nested `if`s off their concrete arms to a throw, one marker at a time (a refused
 callee's branch, a branch recording is paused at and a switch unforced, §2); `RegionEnumSmoke` compares, names
 and switches on a constant `valueOf` chose by a symbolic name, tests it in an `EnumSet`, keys a map and a set
 that hold plain constants with it, compares it with another enum class, with null and through a tracked read,
-and reads an enum with a static array of its own type in ordinal order (§3, §4). No smoke test covers the
+and reads an enum with a static array of its own type in ordinal order (§3, §4); `RegionBasePauseCalleeSmoke`
+decides a door in a callee pushed under the base pause through a helper frame, records nothing for the same
+callee under an observation pause, and hands no expression back across the base-paused frame (§2). No smoke test covers the
 collections the VM does not model, a resize caught in flight, or anything across JVMs.

@@ -78,7 +78,8 @@ ShadowStack::~ShadowStack() {
 }
 
 void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
-                       bool symbolic_tracking_enabled) {
+                       bool symbolic_tracking_enabled,
+                       bool concrete_boundary) {
   if (_s_frames.empty()) {
     // There is no sound caller state from which to seed this frame.  This can
     // only occur after the region owner has escaped without a matching
@@ -94,12 +95,16 @@ void ShadowStack::push(ZeroFrame *callee_frame, ZeroFrame *caller_frame,
   ShadowTable &last_opr_stack = last_s_frame.get_opr_stack();
   bool effective_tracking = symbolic_tracking_enabled
       && last_s_frame.symbolic_tracking_enabled();
-  ShadowFrame *s_frame = new ShadowFrame(callee_frame, effective_tracking);
+  bool boundary = concrete_boundary || !effective_tracking;
+  ShadowFrame *s_frame = new ShadowFrame(callee_frame, effective_tracking,
+                                         boundary);
   s_frame->copy();
-  if (!effective_tracking) {
+  if (boundary) {
     // Paused and method-symbolized callees still perform real JVM stack
     // transitions.  Consume their caller arguments even though no expression
-    // is propagated into the deliberately non-tracking callee frame.
+    // is propagated into the callee frame: a non-tracking one, or one pushed
+    // under the base pause alone, which tracks once the pause lifts in it
+    // (a doors-only occurrence's door decided in a callee).
     if (callee_frame->is_interpreter_frame()) {
       interpreterState callee_istate =
           callee_frame->as_interpreter_frame()->interpreter_state();
@@ -196,8 +201,10 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
 
   // Observation helpers entered while concolic propagation is paused still
   // need a structural frame so push/pop remains balanced.  Their values are
-  // deliberately not copied back into the symbolic caller state.
-  if (!s_frame->symbolic_tracking_enabled()) {
+  // deliberately not copied back into the symbolic caller state; nor are a
+  // frame's pushed under the base pause, which ran paused but where a door
+  // decided (its shadow is stale there).
+  if (s_frame->concrete_boundary()) {
     if (callee_frame->is_interpreter_frame()) {
       interpreterState callee_istate =
           callee_frame->as_interpreter_frame()->interpreter_state();
@@ -325,7 +332,7 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
 void ShadowStack::push_callback(ZeroFrame *callee_frame,
                                 const std::vector<int> &anchors,
                                 const exp_list_t &seeds) {
-  ShadowFrame *s_frame = new ShadowFrame(callee_frame, true);
+  ShadowFrame *s_frame = new ShadowFrame(callee_frame, true, false);
   s_frame->copy();
   for (size_t index = 0; index < anchors.size() && index < seeds.size();
        ++index) {

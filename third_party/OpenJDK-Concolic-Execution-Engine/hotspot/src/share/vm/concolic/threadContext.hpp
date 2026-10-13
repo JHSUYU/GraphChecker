@@ -101,6 +101,12 @@ private:
   // which temporarily toggles _path_condition_enabled around library code.
   bool _path_condition_admitted;
   int _path_condition_pause_depth;
+  // How much of _path_condition_pause_depth is the base pause a doors-only
+  // occurrence holds from its start to its close (pause_base_recording).
+  // Paused, it is a pause as any other; but a frame pushed under it alone
+  // keeps its tracking flag (ShadowStack::push), so a door decided in a
+  // callee frame records once the occurrence lifts it there.
+  int _base_pause_depth;
   // Once the Java stack that existed at region start has completely
   // unwound, there is no sound caller frame onto which symbolic values can
   // be rebased.  Keep the context allocated only long enough for a caller to
@@ -294,6 +300,15 @@ public:
   int resume_path_condition_recording();
   inline int path_condition_pause_depth() const {
     return _path_condition_pause_depth;
+  }
+  // The base pause: one pause level, counted apart too (_base_pause_depth).
+  int pause_base_recording();
+  int resume_base_recording();
+  // Whether the pause standing is the base pause alone: no observation
+  // pause (a hook's bracket) above it.
+  inline bool base_paused_only() const {
+    return _base_pause_depth > 0
+        && _path_condition_pause_depth == _base_pause_depth;
   }
 
 public:
