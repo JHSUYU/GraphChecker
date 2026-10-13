@@ -399,6 +399,9 @@ public final class FocusedReplay {
         load();
         if (task == null || reader == null) return;
         String id = Confirmation.id(reader);
+        // Asked before this lock: Confirmation's own lock is taken under
+        // its load, which asks this class (#pairs), so never inside ours.
+        String because = Confirmation.untakenBecause(id);
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
                 String asked = trimmed(obligation.obligationId());
@@ -414,7 +417,8 @@ public final class FocusedReplay {
                     REFUSALS.put(asked, PAIRING_UNTAKEN + ": read " + id
                             + " observed version " + version + " of its"
                             + " view, the pairing flip asks version "
-                            + obligation.pairedVersion());
+                            + obligation.pairedVersion()
+                            + (because.isEmpty() ? "" : " (" + because + ")"));
                 }
             }
         }

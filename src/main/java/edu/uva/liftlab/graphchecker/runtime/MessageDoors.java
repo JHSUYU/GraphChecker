@@ -877,6 +877,14 @@ public final class MessageDoors {
         boolean repoints = view != null && REPOINTED.add(
                 trimmed(transport) + "\n" + path + "\n" + decoder + "@"
                         + version);
+        // A refresh's decode is what its reader reads at once where no
+        // publication follows it (a lazy collection's live fetch): past a
+        // pairing's hold of the view, it overrides it, named.
+        if (view != null && REFRESHING.get() > 0) {
+            Confirmation.overridden(view, version, here, "a decode inside"
+                    + " a refresh the system asked for, what its reader"
+                    + " reads at once");
+        }
         List<Object> registered = Provenance.register(new Provenance.Version(
                 store, path, version), product);
         // The decode runs on the fetching thread right after the read: the
@@ -935,6 +943,9 @@ public final class MessageDoors {
     public static boolean publishing(String transport, String path,
                                      long version, Runnable apply) {
         boolean delivering = DELIVERING.get() > 0 && REFRESHING.get() == 0;
+        String why = REFRESHING.get() > 0
+                ? "inside a refresh the system asked for"
+                : "on a thread delivering no store notification";
         return guarded("publishing", path, Boolean.FALSE, () -> {
             if (!Confirmation.holdsViews()) return false;
             boolean paused = pause();
@@ -947,7 +958,7 @@ public final class MessageDoors {
                 LocationId view = viewOf(storeLocation(transport, life),
                         decoder);
                 if (!delivering) {
-                    Confirmation.published(view, version);
+                    Confirmation.published(view, version, at, why);
                     return false;
                 }
                 return Confirmation.publishing(view, version, at, decoder,

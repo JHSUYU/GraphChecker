@@ -481,6 +481,9 @@ public final class Confirmation {
         boolean readSeen;
         boolean released;
         boolean gaveWay;
+        /** Who published past it before its read, or null ({@link
+         *  #overridden}). */
+        String overriddenBy;
         /** When it first deferred a publication (nanoTime), 0 before:
          *  what VIEW_HOLD_MAX counts from. */
         long firstDeferred;
@@ -693,10 +696,82 @@ public final class Confirmation {
      * where the system's own compare (Solr's: the znode version and the
      * per-replica states' cversion) keeps the newest.
      */
-    static void published(LocationId view, long version) {
+    static void published(LocationId view, long version,
+                          OccurrenceAddress at, String why) {
         if (view == null) return;
+        load();
         synchronized (LOCK) {
+            overriddenLocked(viewKey(view), version, at, why);
             superseded(queueKey(view), version);
+        }
+    }
+
+    /**
+     * The system put version {@code version} of a node's view in force at
+     * once ({@code at}, {@code why}): a publication no hold defers ({@link
+     * #published}), or a refresh's decode that is itself what its reader
+     * reads (a lazy collection's live fetch, {@code MessageDoors#decode}).
+     * Each hold of that view still standing before its read, below that
+     * version, is overridden: named -- a PAIRING_OVERRIDDEN row, and the
+     * CONFIRM mismatch its pairing cannot be realized by -- once per hold,
+     * and the read's PAIRING_UNTAKEN says who ({@link #untakenBecause}).
+     * Nothing is held or released by it: the system's own refresh stands.
+     * The reader's own work's publication is no override: a pairing is
+     * never offered below a decode that work made before the read
+     * ({@code explore.PairingFlip}), and the hold exempts it ({@link
+     * #publishing}).
+     */
+    static void overridden(LocationId view, long version,
+                           OccurrenceAddress at, String why) {
+        if (view == null || !holdsViews()) return;
+        synchronized (LOCK) {
+            overriddenLocked(viewKey(view), version, at, why);
+        }
+    }
+
+    /** {@link #overridden}, guarded by {@link #LOCK}. */
+    private static void overriddenLocked(String key, long version,
+                                         OccurrenceAddress at, String why) {
+        for (ViewHold hold : VIEW_HOLDS) {
+            if (hold.ended() || hold.readSeen || hold.overriddenBy != null
+                    || !hold.view.equals(key) || version <= hold.above) {
+                continue;
+            }
+            String where = at == null ? "a thread no occurrence runs"
+                    : at.render();
+            hold.overriddenBy = "version " + version + " published at once"
+                    + " at " + where + " (" + why + ")";
+            UNREALIZED.add(hold.label() + ": " + hold.overriddenBy
+                    + " before read " + hold.reader + ": the system's own"
+                    + " refresh, which no hold defers, so this program"
+                    + " cannot realize the pairing");
+            RowRuntime.gap(GapKind.PAIRING_OVERRIDDEN, GapClass.DIAGNOSTIC,
+                    key + " past version " + hold.above, "read " + hold.reader
+                            + " is paired to version " + hold.above + ", and "
+                            + hold.overriddenBy + " before it: the system's"
+                            + " own refresh, which no hold defers");
+        }
+    }
+
+    /**
+     * Why the pairing of {@code reader} was not taken, as its hold knows
+     * it: overridden by whom ({@link #overridden}), or given way at
+     * VIEW_HOLD_MAX; "" where its hold states neither.
+     */
+    static String untakenBecause(String reader) {
+        load();
+        synchronized (LOCK) {
+            for (ViewHold hold : VIEW_HOLDS) {
+                if (!hold.reader.equals(reader)) continue;
+                if (hold.overriddenBy != null) {
+                    return "overridden: " + hold.overriddenBy;
+                }
+                if (hold.gaveWay) {
+                    return "its hold gave way at " + VIEW_HOLD_MAX + " ("
+                            + viewHoldMaxRecorded() + " ms of recorded time)";
+                }
+            }
+            return "";
         }
     }
 

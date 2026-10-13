@@ -893,7 +893,7 @@ as a flip of the world (depth) and among a path's owed arms. No query is asked: 
 its session ran, up to the read, and the world is that session's with the read paired to the decode
 of the asked version (a view's writer is its version, `Confirmation#viewWriter`), held by CONFIRM's
 rows (`ConfirmMain#holding`). The replay takes it where the read observed that version
-(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw, and a read
+(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw -- and why, where its hold knows: overridden by whom, or given way at VIEW_HOLD_MAX (`Confirmation#untakenBecause`) --, and a read
 that never ran leaves its occurrence unflipped (the prefix abandoned). A child inherits the pairing
 as a pairing of its world, never as a decision to take.
 
@@ -1156,7 +1156,7 @@ gives way by name, the configured bound in its row, a CONFIRM mismatch and `PAIR
 the final one). The system's own throw in a deferred apply is the system's failure, named; an apply
 blocked past VIEW_HOLD_MAX is named, the node's later publications waiting behind it; one superseded
 while it applies is named (it may land after the synchronous publication), one superseded before it
-began is never applied; an interrupt never ends the publisher. An `ORDER` row waits at most the order's timeout (300 s), past which the
+began is never applied; an interrupt never ends the publisher. A version the system puts in force at once past a hold still standing before its read -- a publication no hold defers (a request that carried a newer view, Solr's `ZkStateReader#compareStateVersions`; a refresh it asked for) or a refresh's decode its reader reads as it is (a lazy collection's live fetch, `MessageDoors#decode`) -- overrides it, named once per hold: `PAIRING_OVERRIDDEN` (DIAGNOSTIC), a CONFIRM mismatch, and the read's `PAIRING_UNTAKEN` says who (`Confirmation#overridden`; snapshot-no-active, rounds Z3E/Z3F: the client's `/update` refreshed the Overseer's node past the paired version, silently until then); nothing is held or released by it, and the reader's own work's publication, which the hold exempts, overrides nothing. An `ORDER` row waits at most the order's timeout (300 s), past which the
 writer goes on and the order is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
 states no read or write of refuses (`PAIRING_UNSTATED`). A pairing no term of a path names is claimed
