@@ -363,6 +363,9 @@ final class ComposedFamilies {
     private final List<Runnable> pathUndo = new ArrayList<Runnable>();
     /** The path being composed: its selector, and its messages by group. */
     private String path;
+    /** The path's own session: the world every sender of its messages is
+     *  judged against, at every depth ({@link #compatible}). */
+    private String pathSession;
     private final Map<String, Closed> closed =
             new LinkedHashMap<String, Closed>();
 
@@ -411,6 +414,7 @@ final class ComposedFamilies {
         pathUndo.clear();
         closed.clear();
         path = null;
+        pathSession = null;
     }
 
     /** The path is refused: nothing its families stated stays (the values
@@ -419,6 +423,7 @@ final class ComposedFamilies {
     void discard() {
         rollback(new int[]{0, 0, lowering.unboundMark()});
         path = null;
+        pathSession = null;
     }
 
     /** How far the path being composed has stated, for {@link #rollback}. */
@@ -541,13 +546,14 @@ final class ComposedFamilies {
      * @return whether every message this path binds has an eligible
      *         session; if not, the path leaves the disjunction
      */
-    boolean closeFamilies(int ordinal, String selector, String owner,
+    boolean closeFamilies(int ordinal, String selector, String session,
                           Set<String> reached,
                           List<AttachRow> bound, List<String> stated,
                           List<GapRow> refusals) {
         path = selector;
-        return closeMessages(ordinal, selector, owner, bound, reached,
-                stated, refusals, 0);
+        pathSession = session;
+        return closeMessages(ordinal, selector, bound, reached, stated,
+                refusals, 0);
     }
 
     /**
@@ -563,7 +569,7 @@ final class ComposedFamilies {
      * @param byGuard version choice -> the attaches lowered only under it
      * @return the version choices the path asserts false
      */
-    List<String> closeViewVersions(int ordinal, String owner,
+    List<String> closeViewVersions(int ordinal,
                                    Map<String, List<AttachRow>> byGuard,
                                    Set<String> reached,
                                    List<String> stated) {
@@ -574,8 +580,8 @@ final class ComposedFamilies {
             Set<String> slots = new LinkedHashSet<String>(reached);
             List<String> said = new ArrayList<String>();
             List<GapRow> refusals = new ArrayList<GapRow>();
-            if (closeMessages(ordinal, version.getKey(), owner,
-                    version.getValue(), slots, said, refusals, 0)) {
+            if (closeMessages(ordinal, version.getKey(), version.getValue(),
+                    slots, said, refusals, 0)) {
                 reached.addAll(slots);
                 stated.addAll(said);
                 continue;
@@ -606,7 +612,7 @@ final class ComposedFamilies {
      * it ({@link Closed}); this level's messages are all closed before any
      * of their arms closes its own.
      */
-    private boolean closeMessages(int ordinal, String guard, String owner,
+    private boolean closeMessages(int ordinal, String guard,
                                   List<AttachRow> attaches,
                                   Set<String> reached, List<String> stated,
                                   List<GapRow> refusals, int depth) {
@@ -681,7 +687,7 @@ final class ComposedFamilies {
                     slotOf.keySet(), attestedAt, refusals);
             // One message not closed refuses what rests on it, and the
             // rollback of that takes the message back.
-            if (eligible == null || !messageFamily(ordinal, family, owner,
+            if (eligible == null || !messageFamily(ordinal, family,
                     message.getKey(), leaves, slotOf, symbolOf, eligible,
                     attestedAt, bySession, reached, stated, refusals,
                     depth)) {
@@ -762,16 +768,16 @@ final class ComposedFamilies {
      * what rests on the message ({@link Closed}).
      */
     private boolean messageFamily(
-            int ordinal, Closed family, String owner, String message,
+            int ordinal, Closed family, String message,
             List<AttachRow> leaves, Map<String, Interaction> slotOf,
             Map<String, String> symbolOf, List<String> eligible,
             Map<String, Set<String>> attestedAt,
             Map<String, List<Arms.Arm>> bySession, Set<String> reached,
             List<String> stated, List<GapRow> refusals, int depth) {
         String group = groupId(leaves);
-        List<String> senders = compatible(owner, eligible);
+        List<String> senders = compatible(eligible, bySession);
         if (senders.isEmpty()) {
-            refusals.add(GapRow.of(owner, GapKind.UNPRODUCIBLE_ANSWER,
+            refusals.add(GapRow.of(pathSession, GapKind.UNPRODUCIBLE_ANSWER,
                     GapClass.DIAGNOSTIC, message, "none of the "
                             + eligible.size() + " session(s) eligible to "
                             + "have sent this message ran in a world "
@@ -805,7 +811,7 @@ final class ComposedFamilies {
             // the same nested messages), states nothing.
             if (body == null || same != null) rollback(mark);
             if (body == null) continue;
-            if (family.atPath && session.equals(owner)) {
+            if (family.atPath && session.equals(pathSession)) {
                 own(same != null ? same : selector);
             }
             if (same != null) {
@@ -860,22 +866,35 @@ final class ComposedFamilies {
     }
 
     /**
-     * The eligible sessions whose WORLD is compatible with this path's
-     * (PIPELINE §8): one flip set contains the other.  Each is one arm, so
-     * the value read is an {@code ite} over the deliveries its world admits,
-     * and a producer flip becomes an alternative inside the path.  The own
-     * session is the case where the two worlds are equal.
+     * The eligible sessions whose deliveries of this message can hold in the
+     * PATH's own world, judged against the path's session at every depth
+     * (PIPELINE §8): one flip set contains the other, so the two worlds are
+     * one world extended, never two branches of the exploration mixed; and
+     * the sender ran no root the path's session ran at another value
+     * ({@link #agrees}), since every arm is guarded by its replay's value of
+     * every varied root it ran ({@link Arms#arm}) and the path by its own,
+     * so such an arm is never chosen and, the one arm left, made the path
+     * unsat with its own run.  solr-adhoc-39 SP6-39: the seed's
+     * CreateCollectionCmd message, the only arm once the faulted session's
+     * own was refused, pinned the client door that session had faulted at
+     * the seed's false (its flips, none, are a subset of the session's),
+     * and the CREATE task nested in it was judged against the seed's world,
+     * not the path's.  Pins alone admit incomparable worlds, whose other
+     * deliveries contradict the path's run (SP6-39: 51 of 56 paths unsat
+     * without their fatal arm).  The path's own session is always one.
      */
-    private List<String> compatible(String owner, List<String> eligible) {
-        Set<String> own = flips(owner);
-        List<String> arms = new ArrayList<String>();
+    private List<String> compatible(List<String> eligible,
+                                    Map<String, List<Arms.Arm>> bySession) {
+        Set<String> own = flips(pathSession);
+        List<String> senders = new ArrayList<String>();
         for (String session : eligible) {
             Set<String> producer = flips(session);
-            if (own.containsAll(producer) || producer.containsAll(own)) {
-                arms.add(session);
+            if ((own.containsAll(producer) || producer.containsAll(own))
+                    && agrees(session, bySession.get(session))) {
+                senders.add(session);
             }
         }
-        return arms;
+        return senders;
     }
 
     /** The decisions one session was held to, own and inherited. */
@@ -887,6 +906,37 @@ final class ComposedFamilies {
         }
         return held;
     }
+
+    /**
+     * Whether the path's session ran no root these arms are guarded by at
+     * another value.  A session's guard is every varied root it ran, the
+     * same for each of its arms (a root an arm names that is not varied has
+     * one value), so the answer is the pair's, kept for the corpus.
+     */
+    private boolean agrees(String session, List<Arms.Arm> arms) {
+        if (session.equals(pathSession) || arms == null || arms.isEmpty()) {
+            return true;
+        }
+        return agreed.computeIfAbsent(pathSession + "|" + session, key -> {
+            for (Arms.Arm arm : arms) {
+                for (Map.Entry<String, RootMintRow> pinned
+                        : arm.guardMints().entrySet()) {
+                    String rootId = pinned.getValue().rootId();
+                    if (corpus.ranRoot(rootId, pathSession) == null) continue;
+                    String own = corpus.rootValue(pathSession, rootId);
+                    if (!own.isEmpty() && !own.equals(
+                            arm.guard().get(pinned.getKey()))) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        });
+    }
+
+    /** {@code pathSession|sender} -> whether they agree ({@link #agrees}). */
+    private final Map<String, Boolean> agreed =
+            new LinkedHashMap<String, Boolean>();
 
     /** The leaves one message was received at, in the rows' own order. */
     private static List<String> endpointIds(List<AttachRow> leaves) {
@@ -1150,8 +1200,8 @@ final class ComposedFamilies {
             List<AttachRow> handed = handedOn(session, selector, outs, asks,
                     holds, local);
             conjuncts.addAll(holds);
-            return closeMessages(ordinal, selector, session, handed,
-                    reachedSlots, nested, local, depth + 1);
+            return closeMessages(ordinal, selector, handed, reachedSlots,
+                    nested, local, depth + 1);
         }
 
         /**
