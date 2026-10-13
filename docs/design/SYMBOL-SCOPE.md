@@ -1512,7 +1512,7 @@ float's decimal text), and its readers mint their own (`StoreContent#wide`, `#wi
 reader's, so a leaf's two ends are declared alike; a reader leaf that cannot cross as its writer's
 mints by its own text, unpaired. At most
 1024 leaves and 16 levels of one document are walked; past them a DIAGNOSTIC `UNSTATED_VALUE` names
-`CONTENT_BOUND:<port>` and the rest crosses as constants. A writer's export of a leaf is the VM's
+`CONTENT_BOUND:<port>` and the rest crosses as constants. A leaf is one value whatever scalar sort a run sent it at: a reader's symbol stands at the sort its own read parsed, and a writer's export of another sort binds it through its rendering (a Boolean read the `Boolean.parseBoolean` of a String sent, a String read the `Boolean.toString` or `Integer.toString` of what was sent; `SmtLowering#leafEquals`), any other pair refused by name. A writer's export of a leaf is the VM's
 expression of it imported through the VM's expression store (`StoreContent#export`, as `WireExport`
 imports a message field's), never its raw answer, whose nodes are references. A leaf whose producer
 no session attests at its port (a role, a tick past the recording, or a region no session ran

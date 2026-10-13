@@ -2532,14 +2532,16 @@ public final class Composer {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "refused-producer-export",
                     conditions);
-            if (delivered == null || delivered.sort != sort) continue;
+            if (delivered == null) continue;
+            String received = lowering.leafEquals(attach.symbol(), sort,
+                    delivered);
+            if (received == null) continue;
             SessionReader reader = corpus.session(export.sessionId());
             Set<String> symbols = new LinkedHashSet<String>();
             Arms.symbolsIn(reader.expressions().expression(
                     export.expressionRef()), symbols);
             constant &= symbols.isEmpty();
-            conditions.add("(= " + attach.symbol() + " " + delivered.text
-                    + ")");
+            conditions.add(received);
             alternatives.add(VmTermLowering.and(conditions));
         }
         return alternatives.isEmpty() ? null : new Delivery(
@@ -2564,11 +2566,19 @@ public final class Composer {
      */
     private boolean attestedArrival(AttachRow attach,
                                     List<ExportRow> attested) {
+        // The symbol is the sort its own read parsed; an arm that sent the
+        // leaf at another scalar sort binds it through its rendering
+        // (SmtLowering#leafEquals), any other is no delivery of it.
+        Sort parsed = JavaSmtSorts.sortOfJava(attach.javaType());
         for (ExportRow export : attested) {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export.expressionRef(), "paired-arm", null);
-            if (delivered == null) continue;
-            lowering.declareStated(attach.symbol(), delivered.sort);
+            if (delivered == null || lowering.leafEquals(attach.symbol(),
+                    parsed, delivered) == null) {
+                continue;
+            }
+            lowering.declareStated(attach.symbol(), parsed == Sort.VALUE
+                    ? delivered.sort : parsed);
             return true;
         }
         return false;

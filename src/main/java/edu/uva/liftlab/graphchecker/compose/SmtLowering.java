@@ -3816,6 +3816,51 @@ public final class SmtLowering {
     }
 
     /**
+     * ONE LEAF, ONE VALUE, WHATEVER SORT A RUN PARSED IT AT (SGF2
+     * snapshot-no-active: state.json's {@code leader} is a Boolean where one
+     * Overseer mutator wrote it and the String "true" where ReplicaMutator
+     * did): the equation binding a reader's {@code symbol}, parsed at
+     * {@code symbolSort}, to a value a writer {@code delivered} at its own
+     * sort.  A JSON scalar is its String rendering, so a Boolean read is
+     * {@code Boolean.parseBoolean} of the String sent and a String read of a
+     * Boolean sent is {@code Boolean.toString}; an integral and a String,
+     * {@code Integer.toString}/{@code Long.toString} ({@code
+     * java_int_to_string}) either way.  Never a second free name.  Any other
+     * pair, null: the caller refuses it by name.
+     */
+    public String leafEquals(String symbol, Sort symbolSort, Term delivered) {
+        Sort sent = delivered.sort;
+        if (symbolSort == null || symbolSort == sent) {
+            return "(= " + symbol + " " + delivered.text + ")";
+        }
+        if (symbolSort == Sort.BOOL && sent == Sort.STRING) {
+            return "(= " + symbol + " (= (java_ascii_lower "
+                    + delivered.text + ") \"true\"))";
+        }
+        if (symbolSort == Sort.STRING && sent == Sort.BOOL) {
+            return "(= " + symbol + " (ite " + delivered.text
+                    + " \"true\" \"false\"))";
+        }
+        if (symbolSort == Sort.STRING && sent == Sort.INT) {
+            return "(= " + symbol + " (java_int_to_string " + delivered.text
+                    + "))";
+        }
+        if (symbolSort == Sort.INT && sent == Sort.STRING) {
+            return "(= (java_int_to_string " + symbol + ") " + delivered.text
+                    + ")";
+        }
+        return null;
+    }
+
+    /** A reader's leaf a run sent at a sort no rendering relates to the
+     *  one the read parsed ({@link #leafEquals} null), refused by name. */
+    public void leafRefused(String symbol, Sort parsed, Sort sent) {
+        refuse(SORT_CONFLICT + ":" + symbol, "a run sent this leaf as "
+                + sent + " and the read parsed it as " + parsed + ", which"
+                + " no rendering relates");
+    }
+
+    /**
      * Declares one name THIS LOWERING minted; a second, different sort is
      * a defect.
      */

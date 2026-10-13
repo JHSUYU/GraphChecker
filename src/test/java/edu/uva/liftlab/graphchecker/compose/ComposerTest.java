@@ -3811,6 +3811,60 @@ public class ComposerTest {
     }
 
     /**
+     * ONE LEAF, ONE VALUE, AT WHATEVER SORT A RUN PARSED IT (SGF2
+     * snapshot-no-active: state.json's {@code leader} is the Boolean true
+     * where one Overseer mutator wrote it and the String "true" where
+     * ReplicaMutator did, so its reader's symbol is M_Z_ in one run and
+     * M_L'String'_ in another): the recording's reader parsed a Boolean,
+     * the flip's writer sent the String "true", and its family binds the
+     * Boolean read to Boolean.parseBoolean of it -- the marker that made
+     * that writer run is the witness.  Bound at the arm's sort instead, one
+     * name stood at two sorts, a BLOCKING conflict and no claim.
+     */
+    @Test
+    public void aLeafOneRunSentAsABooleanAndAnotherAsAStringIsOneValue()
+            throws Exception {
+        String parsedBoolean = "M_Z_field_HOFF.d1";
+        String parsedString = "M_L'String'_field_HOFF.d1";
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.leader",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.leader",
+                at("attach#1", 0), 0);
+        Path iteration = folder.newFolder("leaf-sorts").toPath();
+        // The recording: the writer sent the Boolean false (the marker),
+        // the reader parsed a Boolean, and the fatal is that Boolean.
+        session(iteration, "s0", false, "false", producer, consumer,
+                parsedBoolean, "false", null, true, false, "EXPR.0000000000000e01");
+        // The flip: another mutator ran and sent the String "true".
+        Session flip = new Session(iteration, "s1", true);
+        flip.activation(PRODUCER, "thread#" + PRODUCER.regionId(), true,
+                true);
+        flip.marker("true");
+        flip.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not " + MARKER
+                + "))");
+        JsonObject sent = vmLeaf("ConStringSymbolExp", "Y_L'String'_true",
+                "java/lang/String");
+        flip.expression("EXPR.0000000000000e02", sent);
+        flip.export(producer, "EXPR.0000000000000e02", "Ljava/lang/String;", 1L,
+                "true");
+        flip.attach(consumer, parsedString, "Ljava/lang/String;", "true",
+                producer);
+        flip.expression("EXPR.0000000000000e03", vmString("equals",
+                symbol(parsedString, "java/lang/String"), sent));
+        flip.target("EXPR.0000000000000e03", true, true);
+        flip.write();
+
+        Composer.Composition composition = compose(iteration, 8);
+        assertFalse("one leaf at two sorts is one value", says(
+                composition.gaps(), GapKind.UNSTATED_VALUE, "at two sorts"));
+        ClaimPolicy.Decision witness = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, witness.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                witness.claim().movedRoots());
+    }
+
+    /**
      * A HANDOFF AN ARM'S CLOSURE READS IS BOUND LIKE ONE ITS DELIVERY NAMES
      * (hdfs-11741 r8: the balancer's block-key expiry): the producer decided
      * over a value it was handed before it sent the marker, and the flip

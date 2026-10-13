@@ -1103,9 +1103,9 @@ final class ComposedFamilies {
                 }
                 for (String symbol : out.symbols) {
                     if (symbol == null || symbol.isEmpty()) continue;
-                    lowering.declareStated(symbol, delivered.sort);
-                    conjuncts.add("(= " + symbol + " " + delivered.text
-                            + ")");
+                    String received = received(symbol, delivered);
+                    if (received == null) return false;
+                    conjuncts.add(received);
                     if (out.arm.write() != null) {
                         conjuncts.add(lowering.storeChoice(symbol,
                                 out.arm.write()));
@@ -1943,6 +1943,26 @@ final class ComposedFamilies {
     }
 
     /**
+     * A reader's {@code symbol} bound to a value an arm {@code delivered}:
+     * declared at the sort its own read parsed (its name states it, {@link
+     * JavaSmtSorts#sortOfSymbol}; else the value's), the value through its
+     * rendering where the writer sent the leaf at another scalar sort
+     * ({@link SmtLowering#leafEquals}).  Null, refused by name, for a pair
+     * no rendering relates: that run's delivery is no value of this read.
+     */
+    private String received(String symbol, Term delivered) {
+        VmTermLowering.Sort parsed = JavaSmtSorts.sortOfSymbol(symbol);
+        String equation = lowering.leafEquals(symbol, parsed, delivered);
+        if (equation == null) {
+            lowering.leafRefused(symbol, parsed, delivered.sort);
+            return null;
+        }
+        lowering.declareStated(symbol, parsed == null ? delivered.sort
+                : parsed);
+        return equation;
+    }
+
+    /**
      * An INITIAL's arm: each read of its location bound to the value the
      * location held before every write its log names, and a query through
      * the read to that state ({@link SmtLowering#storeChoice}), and nothing
@@ -1964,8 +1984,12 @@ final class ComposedFamilies {
             }
             for (String symbol : out.symbols) {
                 if (symbol == null || symbol.isEmpty()) continue;
-                lowering.declareStated(symbol, value.sort);
-                conjuncts.add("(= " + symbol + " " + value.text + ")");
+                String received = received(symbol, value);
+                if (received == null) {
+                    stated = false;
+                    break;
+                }
+                conjuncts.add(received);
                 conjuncts.add(lowering.storeChoice(symbol, out.arm.write()));
             }
         }
