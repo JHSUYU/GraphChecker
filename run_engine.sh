@@ -6609,15 +6609,15 @@ campaign_stream_manifest() {
 # COMPOSE's daemon-tick-bound rows: their producers, begun by a tick past the
 # recording's last, are never grown); the pairing holds that gave way at
 # VIEW_HOLD_MAX (view_hold_max, a replay's view-hold-max rows); and the claims
-# decided again after CONFIRM refuted one (campaign_max_claims).  A round's
-# max-flips-per-path is no such bound -- the next round asks the decisions it
-# left -- nor is the time budget (campaign_exploration_cut).
+# decided again after CONFIRM did not confirm one (campaign_max_claims).  A
+# round's max-flips-per-path is no such bound -- the next round asks the
+# decisions it left -- nor is the time budget (campaign_exploration_cut).
 campaign_bounds() {
-  local iteration_dir=$1 decided refutes=false
+  local iteration_dir=$1 decided unconfirmed=false
   decided=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
     2>/dev/null | grep -c '' || true)
   [[ ! -s "${campaign_final}/confirm.json" ]] \
-    || refutes=$(jq '.refutes == true' "${campaign_final}/confirm.json")
+    || unconfirmed=$(jq '.confirmed != true' "${campaign_final}/confirm.json")
   jq -n -c \
     --slurpfile exploration <(cat "${iteration_dir}/exploration.json" \
       2>/dev/null) \
@@ -6634,7 +6634,7 @@ explore_manifest.json 2>/dev/null) \
       "$(dirname "${iteration_dir}")"/witness-confirm/*/sessions/*/gaps.jsonl \
       "${campaign_final}"/confirm/sessions/*/gaps.jsonl 2>/dev/null \
       | grep -F ' view-hold-max=' || true) \
-    --argjson decided "${decided}" --argjson refutes "${refutes}" \
+    --argjson decided "${decided}" --argjson unconfirmed "${unconfirmed}" \
     --argjson maxClaims "${campaign_max_claims}" '
     def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
     def rows($bound): [$gaps[0].telemetryGaps[]?, $gaps[0].gaps[]?
@@ -6713,10 +6713,10 @@ explore_manifest.json 2>/dev/null) \
             detail: ("PLAN planned the closure only to demand depth"
               + " \($cut.keptDepth): \($cut.occurrences) deeper"
               + " occurrence(s) not planned")}),
-        (select($refutes and $decided >= $maxClaims)
+        (select($unconfirmed and $decided >= $maxClaims)
          | {by: "campaign_max_claims",
             detail: ("the claim was decided again \($decided) time(s) and"
-              + " the refuted claim is published")}) ]
+              + " the unconfirmed claim is published")}) ]
     | if length == 0 then null
       else {by: map(.by), detail: (map(.detail) | join("; "))} end'
 }
@@ -7146,20 +7146,21 @@ confirmation decision exited ${status}; its log is ${dir}/confirm.log" "" \
     false >"${claims}/confirm.json"
 }
 
-# A verdict written: the claim refuted (campaign_refute) when the verdict
-# refutes it -- a replay that did not reach the fatal at the anchor, or a
-# claim ConfirmMain refuted by name (the run as recorded); one neither
-# confirmed nor refuted (a refusal no replay ran, a failed decision) is the
-# engine's defect, excluded from nothing: EMIT publishes it RUN_DEFECT.
+# A verdict written: every claim CONFIRM did not confirm is a false positive
+# its model excluded (campaign_refute; owner 2026-10-08, no refused split):
+# a replay that did not reach the fatal at the anchor, timed out or stalled,
+# a claim ConfirmMain refuted by name (the run as recorded), and a claim no
+# replay decided -- a refusal (PAIRING_UNHELD, rows that state no runnable
+# model), a failed decision -- which EMIT also names a defect
+# (CONFIRM_NO_VERDICT).  The next claim is composed past it
+# (campaign_next_claim); never RUN_DEFECT for it.
 campaign_confirm_settle() {
-  local iteration_dir=$1 claims=$2
+  local iteration_dir=$1 claims=$2 outcome=undecided
   require_nonempty "confirmation" "${claims}/confirm.json"
-  if [[ "$(jq -r '.refutes' "${claims}/confirm.json")" == true ]]; then
-    campaign_refute "${iteration_dir}" "${claims}"
-  elif [[ "$(jq -r '.confirmed' "${claims}/confirm.json")" != true ]]; then
-    campaign_log "no verdict, a defect of the engine: $(jq -r '.reason' \
-"${claims}/confirm.json")"
-  fi
+  [[ "$(jq -r '.confirmed' "${claims}/confirm.json")" != true ]] || return 0
+  [[ "$(jq -r '.refutes' "${claims}/confirm.json")" != true ]] \
+    || outcome=refuted
+  campaign_refute "${iteration_dir}" "${claims}" "${outcome}"
 }
 
 # One model of an iteration as every composition of it names the model
@@ -7179,19 +7180,21 @@ campaign_claim_model() {
       assignment: (.assignment // {}), moved: ($c.movedRoots // {})}' "$1"
 }
 
-# A claim the program did not agree with, refuted: its model, where it was
-# claimed and the confirmation's reason, one row of
+# A claim CONFIRM did not confirm, excluded: its model, where it was
+# claimed, the confirmation's <outcome> (refuted: a replay or ConfirmMain
+# refuted it; undecided: no replay decided it) and reason, one row of
 # <iteration>/refuted_claims.jsonl, which every later composition of the
 # iteration excludes (compose.Refutations) and EMIT publishes.
 campaign_refute() {
-  local iteration_dir=$1 claims=$2
+  local iteration_dir=$1 claims=$2 outcome=$3
   campaign_claim_model "${claims}/claim.json" \
     | jq -c --slurpfile confirmation "${claims}/confirm.json" \
-      --arg claimed "${claims}" \
+      --arg claimed "${claims}" --arg outcome "${outcome}" \
       '{schemaVersion: 1, kind: "REFUTED_CLAIM", model: ., claimed: $claimed,
-        reason: $confirmation[0].reason}' \
+        outcome: $outcome, reason: $confirmation[0].reason}' \
     >>"${iteration_dir}/refuted_claims.jsonl"
-  campaign_log "refuted: $(jq -r '.reason' "${claims}/confirm.json")"
+  campaign_log "COMPOSE SAT -> CONFIRM ${outcome}: $(jq -r '.reason' \
+"${claims}/confirm.json") -> excluded"
 }
 
 # Whether the campaign's budget (campaign_budget_s from its start) has room
@@ -7256,7 +7259,7 @@ campaign_last_round_millis() {
 }
 
 # Whether the final stages owe the next claim: the last was a SAT_CANDIDATE
-# CONFIRM refuted -- a false positive, its model recorded once in
+# CONFIRM did not confirm -- a false positive, its model recorded once in
 # refuted_claims.jsonl (campaign_model_key) -- so the next composition
 # excludes it, and it is not a model the composition was told
 # to exclude already -- the budget has room, and fewer than
@@ -7296,7 +7299,7 @@ has no room for another claim"
     [[ ! -e "${campaign_final}/${name}" ]] \
       || mv -- "${campaign_final}/${name}" "${dir}/"
   done
-  campaign_log "the claim was refuted (${dir}): composing the next one"
+  campaign_log "the claim was excluded (${dir}): composing the next one"
 }
 
 # REPRODUCE (PIPELINE §10b), after EMIT: a confirmed witness run again
@@ -7812,16 +7815,20 @@ campaign_emit() {
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
     # The formula decides, SAT or UNSAT.  A SAT claim is what CONFIRM made
-    # of it: confirmed, refuted (SAT_UNCONFIRMED), or no verdict -- a replay
-    # that timed out or published none, a decision that failed -- which is
-    # a defect of the run (RUN_DEFECT), never a refutation.  An UNSAT closes
-    # only where no stage named a defect.  Every defect is in defects[].
+    # of it: confirmed, or not (SAT_UNCONFIRMED) -- refuted by a replay or
+    # by ConfirmMain, or decided by no replay (a refusal, a failed
+    # decision: also a CONFIRM_NO_VERDICT defect) -- a false positive whose
+    # model the next claim excluded, so the last claim is unconfirmed only
+    # where the claim bound or the budget ran out (owner 2026-10-08, no
+    # refused split); every SAT excluded, the UNSAT the formula then decides
+    # is the claim.
+    # An UNSAT closes only where no stage named a defect.  Every defect is
+    # in defects[].
     ($confirmation != null and $confirmation.confirmed != true
      and $confirmation.refutes != true) as $noVerdict |
     ($decided.claim == "SAT_CANDIDATE"
      and $confirmation.confirmed == true) as $confirmedSat |
     (if $confirmedSat then "SAT_CANDIDATE"
-     elif $decided.claim == "SAT_CANDIDATE" and $noVerdict then "RUN_DEFECT"
      elif $decided.claim == "SAT_CANDIDATE" then "SAT_UNCONFIRMED"
      elif $gapCount > 0 then "RUN_DEFECT"
      else $decided.claim end) as $claim |
@@ -7829,11 +7836,11 @@ campaign_emit() {
      kind: "CAMPAIGN_RESULT",
      provenance: $provenance,
      claim: $claim,
-     claimReason: (if $claim == "SAT_UNCONFIRMED"
-       then "the confirmation replay did not agree with the model: "
+     claimReason: (if $claim == "SAT_UNCONFIRMED" and $noVerdict
+       then "no confirmation replay decided the model: "
             + $confirmation.reason
-       elif $noVerdict
-       then "the confirmation of the formula'"'"'s witness published no verdict: "
+       elif $claim == "SAT_UNCONFIRMED"
+       then "the confirmation replay did not agree with the model: "
             + $confirmation.reason
        elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
        then "the formula decided " + $decided.claim + ", and the run named "
@@ -7851,8 +7858,6 @@ campaign_emit() {
      blockerCount: $decided.blockerCount,
      whyNotAccepted: (if $claim == "SAT_UNCONFIRMED"
        then "SAT_UNCONFIRMED: " + $confirmation.reason
-       elif $noVerdict
-       then "RUN_DEFECT: CONFIRM published no verdict: " + $confirmation.reason
        elif $claim == "RUN_DEFECT" and $decided.claim != "RUN_DEFECT"
        then "RUN_DEFECT: the run named " + ($gapCount | tostring)
             + " defect(s): " + ([$gaps.gaps[] | .code] | unique | join(", "))
@@ -7954,8 +7959,8 @@ campaign_emit() {
                 and $gapCount == 0),
      blockingGapCodes: ($gaps.byCode // {}),
      # The defects of the run or the engine, each a bug to fix: the BLOCKING
-     # gaps, whichever stage raised them, and a confirmation that published
-     # no verdict.
+     # gaps, whichever stage raised them, and a confirmation no replay
+     # decided (its claim SAT_UNCONFIRMED all the same).
      defects: ([$gaps.gaps[] | {stage, code, subject, detail}]
        + (if $noVerdict
           then [{stage: "CONFIRM", code: "CONFIRM_NO_VERDICT",

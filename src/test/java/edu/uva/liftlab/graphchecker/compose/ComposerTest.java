@@ -94,6 +94,23 @@ import static org.junit.Assert.assertTrue;
  * a formula that was satisfiable all along.</p>
  */
 public class ComposerTest {
+    /** A system declaring Solr's published views (PUBLISHED_VIEW): a read
+     *  of any other view offers no version choice
+     *  (ComposedFamilies#heldView). */
+    @org.junit.Before
+    public void publishedViews() {
+        System.setProperty(edu.uva.liftlab.graphchecker.causynth
+                .LibraryCatalog.SYSTEM_DOORS, java.nio.file.Paths.get("src",
+                "test", "resources", "published-views.jsonl")
+                .toAbsolutePath().toString());
+    }
+
+    @org.junit.After
+    public void noSystemDoors() {
+        System.clearProperty(edu.uva.liftlab.graphchecker.causynth
+                .LibraryCatalog.SYSTEM_DOORS);
+    }
+
 
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
@@ -1621,6 +1638,10 @@ public class ComposerTest {
      *       2))}, named;</li>
      *   <li>TWO: versions 2 and 3 both have senders: both stay alternatives,
      *       each under its own choice.</li>
+     *   <li>UNHELD: the view is one no publication hook publishes (no
+     *       PUBLISHED_VIEW: a snapshot's metadata, Z3Q snapshot-no-active):
+     *       no hold can defer it, so its read offers no version choice --
+     *       it stays at the version it observed, named.</li>
      * </ul>
      */
     @Test
@@ -1629,11 +1650,14 @@ public class ComposerTest {
         OccurrenceAddress target = occurrence("case/dn0", "REGION.target",
                 CausalContext.of(Role.of("SCANNER_TICK"), "", 1),
                 frame("Scanner#run#3", 0));
-        LocationId view = LocationId.of(LocationKind.VIEW,
-                "SOLR_ZK@" + target.node().render(),
-                "/collections/c/state.json");
-        String port = "SOLR_ZK#CONTENT:|collections|c|state.json#|c|state";
-        for (String row : new String[] {"SENT", "UNSENDABLE", "TWO"}) {
+        for (String row : new String[] {"SENT", "UNSENDABLE", "TWO",
+                "UNHELD"}) {
+            String path = "UNHELD".equals(row) ? "/snapshots/c/c-M"
+                    : "/collections/c/state.json";
+            LocationId view = LocationId.of(LocationKind.VIEW,
+                    "SOLR_ZK@" + target.node().render(), path);
+            String port = "SOLR_ZK#CONTENT:" + path.replace('/', '|')
+                    + "#|c|state";
             Path iteration = folder.newFolder("versions-" + row).toPath();
             Session session = new Session(iteration, "s0", false);
             session.occurrence = target;
@@ -1656,11 +1680,10 @@ public class ComposerTest {
                     at("export#1", 0), 0);
             session.export(sent1, "EXPR.v1.marker", 1L, "true");
             session.attach(Endpoint.of(decoders[1], port, at("d#1", 0), 0),
-                    "h1", "Z", "true", sent1,
-                    "/collections/c/state.json@1");
+                    "h1", "Z", "true", sent1, path + "@1");
             session.writes.add(WriteRow.of("s0", ++session.seq,
-                    Endpoint.of(decoders[1], "SOLR_ZK#DECODED:/collections/"
-                            + "c/state.json", at("d#1", 0), 0), view, 1L,
+                    Endpoint.of(decoders[1], "SOLR_ZK#DECODED:" + path,
+                            at("d#1", 0), 0), view, 1L,
                     "EXPR.view.1", "J"));
             session.read(Endpoint.of(target, "guard#VIEW", at("g#1", 0), 0),
                     view, 1L, "V_r", "J", "1");
@@ -1674,11 +1697,10 @@ public class ComposerTest {
                 session.export(sender, "EXPR.v1.marker", version, "true");
                 session.attach(Endpoint.of(decoders[version], port,
                         at("d#1", 0), 0), "h" + version, "Z", "true",
-                        sender, "/collections/c/state.json@" + version);
+                        sender, path + "@" + version);
                 session.writes.add(WriteRow.of("s0", ++session.seq,
                         Endpoint.of(decoders[version], "SOLR_ZK#DECODED:"
-                                + "/collections/c/state.json",
-                                at("d#1", 0), 0), view, version,
+                                + path, at("d#1", 0), 0), view, version,
                         "EXPR.view." + version, "J"));
             }
             session.write();
@@ -1688,8 +1710,20 @@ public class ComposerTest {
             String body = composition.body();
             assertEquals(row + ": the path stands: " + composition.gaps(),
                     1, composition.disjuncts().size());
+            String pinned = "(= V_r 1))) :named path_fatal__0";
+            if ("UNHELD".equals(row)) {
+                assertTrue("no version choice of a view no hook publishes:"
+                        + " its read is held at the version it observed: "
+                        + body, body.contains(pinned));
+                assertTrue("named: " + composition.gaps(), says(
+                        composition.gaps(), GapKind.ADMISSION_GAP,
+                        "its read stays at the version it observed, 1"));
+                continue;
+            }
             assertTrue(row + ": the leaf reads through the view: " + body,
                     body.contains("view_leaf__"));
+            assertFalse(row + ": a family chooses the read's version: "
+                    + body, body.contains(pinned));
             boolean named = false;
             for (GapRow gap : composition.gaps()) {
                 named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
@@ -3808,6 +3842,188 @@ public class ComposerTest {
                             GapKind.UNSTATED_VALUE, "no attach row of its "
                                     + "session minted"));
         }
+    }
+
+    /**
+     * ONE LEAF, ONE VALUE, AT WHATEVER SORT A RUN PARSED IT (SGF2
+     * snapshot-no-active: state.json's {@code leader} is the Boolean true
+     * where one Overseer mutator wrote it and the String "true" where
+     * ReplicaMutator did, so its reader's symbol is M_Z_ in one run and
+     * M_L'String'_ in another): the recording's reader parsed a Boolean,
+     * the flip's writer sent the String "true", and its family binds the
+     * Boolean read to Boolean.parseBoolean of it -- the marker that made
+     * that writer run is the witness.  Bound at the arm's sort instead, one
+     * name stood at two sorts, a BLOCKING conflict and no claim.
+     */
+    @Test
+    public void aLeafOneRunSentAsABooleanAndAnotherAsAStringIsOneValue()
+            throws Exception {
+        String parsedBoolean = "M_Z_field_HOFF.d1";
+        String parsedString = "M_L'String'_field_HOFF.d1";
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.leader",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.leader",
+                at("attach#1", 0), 0);
+        Path iteration = folder.newFolder("leaf-sorts").toPath();
+        // The recording: the writer sent the Boolean false (the marker),
+        // the reader parsed a Boolean, and the fatal is that Boolean.
+        session(iteration, "s0", false, "false", producer, consumer,
+                parsedBoolean, "false", null, true, false, "EXPR.0000000000000e01");
+        // The flip: another mutator ran and sent the String "true".
+        Session flip = new Session(iteration, "s1", true);
+        flip.activation(PRODUCER, "thread#" + PRODUCER.regionId(), true,
+                true);
+        flip.marker("true");
+        flip.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not " + MARKER
+                + "))");
+        JsonObject sent = vmLeaf("ConStringSymbolExp", "Y_L'String'_true",
+                "java/lang/String");
+        flip.expression("EXPR.0000000000000e02", sent);
+        flip.export(producer, "EXPR.0000000000000e02", "Ljava/lang/String;", 1L,
+                "true");
+        flip.attach(consumer, parsedString, "Ljava/lang/String;", "true",
+                producer);
+        flip.expression("EXPR.0000000000000e03", vmString("equals",
+                symbol(parsedString, "java/lang/String"), sent));
+        flip.target("EXPR.0000000000000e03", true, true);
+        flip.write();
+
+        Composer.Composition composition = compose(iteration, 8);
+        assertFalse("one leaf at two sorts is one value", says(
+                composition.gaps(), GapKind.UNSTATED_VALUE, "at two sorts"));
+        ClaimPolicy.Decision witness = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, witness.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                witness.claim().movedRoots());
+    }
+
+    /**
+     * AN EXPORT NO RENDERING RELATES IS NO DELIVERY, AND ANOTHER BINDS
+     * (review R4): in the recording the producer sent the leaf as a char,
+     * which renders as itself and is no value of the String or Boolean
+     * read, and in the flip as the String "true".  The char export alone is
+     * no delivery, named as a DIAGNOSTIC; the reads bind to the export that
+     * relates, and the flip is the witness.  Refused there, every path met
+     * the recording's char first and was dropped: no claim.
+     */
+    @Test
+    public void anExportNoRenderingRelatesIsNoDeliveryAndAnotherBinds()
+            throws Exception {
+        String parsedBoolean = "M_Z_field_HOFF.d2";
+        String parsedString = "M_L'String'_field_HOFF.d2";
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.leader",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.leader",
+                at("attach#1", 0), 0);
+        Path iteration = folder.newFolder("leaf-unrelated").toPath();
+        // The recording: the writer sent the char 'f', the reader parsed a
+        // Boolean.
+        Session recording = new Session(iteration, "s0", false);
+        recording.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                false, true);
+        recording.marker("false");
+        recording.expression("EXPR.0000000000000e11", integer("C", 102L));
+        recording.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        recording.export(producer, "EXPR.0000000000000e11", "C", 1L, "f");
+        recording.attach(consumer, parsedBoolean, "false", producer);
+        recording.target(parsedBoolean, false, true);
+        recording.write();
+        Session flip = new Session(iteration, "s1", true);
+        flip.activation(PRODUCER, "thread#" + PRODUCER.regionId(), true,
+                true);
+        flip.marker("true");
+        flip.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not " + MARKER
+                + "))");
+        JsonObject sent = vmLeaf("ConStringSymbolExp", "Y_L'String'_true",
+                "java/lang/String");
+        flip.expression("EXPR.0000000000000e12", sent);
+        flip.export(producer, "EXPR.0000000000000e12", "Ljava/lang/String;",
+                1L, "true");
+        flip.attach(consumer, parsedString, "Ljava/lang/String;", "true",
+                producer);
+        flip.expression("EXPR.0000000000000e13", vmString("equals",
+                symbol(parsedString, "java/lang/String"), sent));
+        flip.target("EXPR.0000000000000e13", true, true);
+        flip.write();
+
+        Composer.Composition composition = compose(iteration, 8);
+        ClaimPolicy.Decision witness = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, witness.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                witness.claim().movedRoots());
+        assertTrue("the char export is named: " + composition.gaps(), says(
+                composition.gaps(), GapKind.UNSTATED_VALUE,
+                "no rendering relates"));
+    }
+
+    /**
+     * EACH LEAF LIFT IS JAVA'S OWN (review S7/S9): a reader's symbol at the
+     * sort its read parsed, bound to what a writer sent at another, is
+     * exactly that sort's parse or rendering of it -- Boolean.parseBoolean
+     * ("TRUE" too), Boolean.toString, Integer.toString of a negative, and
+     * Integer.parseInt with its sign and leading zeros ("+7", "007", "-0");
+     * a String no parse accepts binds no value, and a char, which renders
+     * as itself, is no lift at all (null: the caller refuses it by name).
+     */
+    @Test
+    public void eachLeafLiftIsJavasOwnParseOrRendering() {
+        // reader sort, reader type, sent, sent type, the reader's value
+        // (null: no value binds it)
+        Object[][] rows = {
+                {"BOOL", "Z", "\"true\"", "java/lang/String", "true"},
+                {"BOOL", "Z", "\"TRUE\"", "java/lang/String", "true"},
+                {"BOOL", "Z", "\"yes\"", "java/lang/String", "false"},
+                {"STRING", "java/lang/String", "true", "Z", "\"true\""},
+                {"STRING", "java/lang/String", "(- 7)", "I", "\"-7\""},
+                {"INT", "I", "\"+7\"", "java/lang/String", "7"},
+                {"INT", "I", "\"007\"", "java/lang/String", "7"},
+                {"INT", "I", "\"-0\"", "java/lang/String", "0"},
+                {"INT", "I", "\"-12\"", "java/lang/String", "(- 12)"},
+                {"INT", "I", "\"7a\"", "java/lang/String", null},
+        };
+        Z3 solver = solver();
+        for (Object[] row : rows) {
+            VmTermLowering.Sort reader = VmTermLowering.Sort.valueOf(
+                    (String) row[0]);
+            VmTermLowering.Sort sentSort = JavaSmtSorts.sortOfJava(
+                    (String) row[3]);
+            SmtLowering lowering = new SmtLowering(
+                    new LinkedHashMap<String, VmTermLowering.Sort>());
+            String equation = lowering.leafEquals("v", reader,
+                    (String) row[1], VmTermLowering.Term.of((String) row[2],
+                            sentSort), (String) row[3]);
+            assertNotNull(Arrays.toString(row), equation);
+            StringBuilder query = new StringBuilder();
+            for (String line : lowering.preambleLines()) {
+                query.append(line).append('\n');
+            }
+            query.append("(declare-const v ").append(reader == VmTermLowering
+                    .Sort.STRING ? "String" : reader == VmTermLowering.Sort
+                    .BOOL ? "Bool" : "Int").append(")\n");
+            query.append("(assert ").append(equation).append(")\n");
+            Z3.Answer bound = solver.ask(query.toString(),
+                    Collections.<String>emptyList(), false);
+            assertEquals(Arrays.toString(row) + " " + equation,
+                    row[4] != null, bound.sat());
+            if (row[4] == null) continue;
+            query.append("(assert (not (= v ").append(row[4]).append(")))\n");
+            Z3.Answer other = solver.ask(query.toString(),
+                    Collections.<String>emptyList(), false);
+            assertTrue(Arrays.toString(row) + ": exactly " + row[4] + " "
+                    + other, other.unsat());
+        }
+        SmtLowering lowering = new SmtLowering(
+                new LinkedHashMap<String, VmTermLowering.Sort>());
+        assertNull("a char renders as itself: no lift", lowering.leafEquals(
+                "v", VmTermLowering.Sort.STRING, "java/lang/String",
+                VmTermLowering.Term.of("65", VmTermLowering.Sort.INT), "C"));
+        assertNull("no rendering relates a float", lowering.leafEquals("v",
+                VmTermLowering.Sort.STRING, "java/lang/String",
+                VmTermLowering.Term.of("x", VmTermLowering.Sort.FLOAT64),
+                "D"));
     }
 
     /**

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
@@ -269,15 +270,21 @@ final class RealizedOrder {
      */
     static boolean turnCounted(String context) {
         String scope = scope(context);
-        CausalContext hop = CausalContext.parse(
-                scope.substring(scope.indexOf('|') + 1));
+        String spelled = scope.substring(scope.indexOf('|') + 1);
+        // A view's publication's stance (<node>|VIEW) is no causal context
+        // and counts no turns (ScheduleEvent.Kind#PUBLISH).
+        if (ContextShape.Stance.VIEW_STANCE.equals(spelled)) return false;
+        CausalContext hop = CausalContext.parse(spelled);
         return hop instanceof CausalContext.Root
                 && !((CausalContext.Root) hop).role().equals(Role.CLIENT);
     }
 
-    /** Whether an event is a step: not the clock (a WAKE, a turn's END). */
+    /** Whether an event is a step: not the clock (a WAKE, a turn's END),
+     *  nor a node's view publication, whose stance is no work's and never
+     *  on a cone (it would hide the cone step before it). */
     private static boolean step(ScheduleEvent event) {
         return event.kind() != ScheduleEvent.Kind.WAKE
-                && event.kind() != ScheduleEvent.Kind.END;
+                && event.kind() != ScheduleEvent.Kind.END
+                && event.kind() != ScheduleEvent.Kind.PUBLISH;
     }
 }

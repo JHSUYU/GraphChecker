@@ -261,7 +261,7 @@ emit_fixture
 mkdir -p "${campaign_final}/refuted/0000" "${campaign_final}/refuted/0001" \
   "${emit_iteration}/obligations-0000" "${emit_iteration}/obligations-0001"
 campaign_max_claims=2
-jq '.refutes = true' "${campaign_final}/confirm.json" \
+jq '.confirmed = false | .refutes = true' "${campaign_final}/confirm.json" \
   >"${campaign_final}/confirm.json.tmp"
 mv "${campaign_final}/confirm.json.tmp" "${campaign_final}/confirm.json"
 jq -n '{stop: "REGION_PATH_WAVE_BUDGET_REACHED", detail: "wave 3"}' \
@@ -308,6 +308,13 @@ jq -e '.bounded.by == ["region_path_max_waves",
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
 $(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"
+# The fixture's claim confirmed again, its result the one the rows below
+# read; a confirmed claim needs no claim bound.
+rm -rf -- "${campaign_final}/refuted"
+jq '.confirmed = true | .refutes = false' "${campaign_final}/confirm.json" \
+  >"${campaign_final}/confirm.json.tmp"
+mv "${campaign_final}/confirm.json.tmp" "${campaign_final}/confirm.json"
+run_emit
 # VIEW-HOLD-1: a pairing hold's bound in a replay is VIEW_HOLD_MAX times the
 # VM's slowdown S -- the seed replay's window over the recording's, rounded
 # up (campaign_view_hold_max) --, written to view_hold_max.tsv beside the
@@ -662,6 +669,27 @@ jq -e --arg formula "$(realpath --relative-to="${causynth_output_dir}" \
   "${campaign_final}/result.json" >/dev/null \
   || fail "a defect-free UNSAT was not published as the verdict: \
 $(jq -c '{claim, accepted, defects, concrete}' "${campaign_final}/result.json")"
+# Every SAT excluded -- one a replay refuted, one no replay decided (CONFIRM
+# refused it: PAIRING_UNHELD) -- and COMPOSE then answers UNSAT: the verdict
+# is UNSAT_CLOSED with both exclusions listed (COMPOSE SAT -> CONFIRM
+# <outcome> -> excluded -> UNSAT_CLOSED), never RUN_DEFECT for a refusal.
+emit_unsat_fixture
+printf '%s\n' \
+  '{"kind":"REFUTED_CLAIM","model":{"pathId":"P1"},"outcome":"refuted","reason":"the run took an edge the model did not choose: WIRE e1"}' \
+  '{"kind":"REFUTED_CLAIM","model":{"pathId":"P2"},"outcome":"undecided","reason":"CONFIRM refused: PAIRING_UNHELD: a view no publication hook publishes"}' \
+  >"${emit_iteration}/refuted_claims.jsonl"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "an UNSAT after excluded claims was not accepted: \
+$(<"${emit_root}/emit.log")"
+jq -e '.claim == "UNSAT_CLOSED" and .accepted == true and .defects == []
+  and [.refutedClaims[] | .outcome] == ["refuted", "undecided"]
+  and (.refutedClaims[1].reason | contains("PAIRING_UNHELD"))' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an UNSAT after every SAT was excluded was not UNSAT_CLOSED with \
+its exclusions: $(jq -c '{claim, defects, refutedClaims}' \
+    "${campaign_final}/result.json")"
+rm -f -- "${emit_iteration}/refuted_claims.jsonl"
 
 # OPEN-ARM: an open decider arm no run took (ExploreMain#openArms) is named in
 # concrete[]; only an UNSAT flip closes over it, and one whose flip came to no
@@ -5217,7 +5245,7 @@ confirm_refutes() {
     && jq -e -s --arg why "$1" 'length == 1 and (.[0] | .kind == "REFUTED_CLAIM"
       and .model.pathId == "P.sel" and .model.arms == ["message_arm__1__a1",
         "message_arm__1__b2"] and .model.assignment == {"ROOT.M": "true"}
-      and .model.moved == {"ROOT.M": "true"}
+      and .model.moved == {"ROOT.M": "true"} and .outcome == "refuted"
       and (.reason | contains($why)))' \
       "${confirm_iteration}/refuted_claims.jsonl" >/dev/null \
     || fail "$2, and was not refuted as its model: \
@@ -5262,11 +5290,12 @@ confirm_says true "is itself the run" "a realized claim was not confirmed"
 [[ ! -e "${confirm_root}/replay-ran" ]] \
   || fail "a claim the selected session already realized was replayed"
 confirm_stub_realized=false
-# A confirmation nothing can run is refused by name: a defect of the rows,
-# which no replay ran -- the claim is unconfirmed for that reason, its model
-# excluded from nothing, and the campaign goes on to EMIT (RUN_DEFECT).  Only
-# a claim ConfirmMain refutes by name (the run as recorded) is refuted
-# without a replay.
+# A confirmation nothing can run is refused by name, which no replay ran:
+# the claim is unconfirmed for that reason, not refuted (refutes false), and
+# its model is excluded all the same, its outcome undecided -- a false
+# positive, the next claim composed past it (owner 2026-10-08, no refused
+# split).  A claim ConfirmMain refutes by name (the run as recorded) is
+# refuted without a replay.
 confirm_stub_task_status=1
 refuted_before=0
 run_confirm SAT_CANDIDATE
@@ -5274,9 +5303,14 @@ confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
   "a refused confirmation task did not name its reason"
 [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == false \
     && "$(grep -c "" "${confirm_iteration}/refuted_claims.jsonl" 2>/dev/null)" \
-      -eq "${refuted_before}" ]] \
-  || fail "a refused confirmation refuted the model: \
-$(cat "${campaign_final}/confirm.json")"
+      -eq $((refuted_before + 1)) \
+    && "$(tail -n 1 "${confirm_iteration}/refuted_claims.jsonl" \
+      | jq -r '.outcome + " " + .reason')" \
+      == "undecided CONFIRM refused: the claim moves a cell nobody minted" ]] \
+  || fail "a refused confirmation did not exclude its model, undecided: \
+$(cat "${campaign_final}/confirm.json" \
+  "${confirm_iteration}/refuted_claims.jsonl" 2>&1)"
+refuted_before=$((refuted_before + 1))
 confirm_stub_task_line="CONFIRM refutes: the claim moves nothing: its \
 witness is the run as recorded"
 run_confirm SAT_CANDIDATE
@@ -5284,7 +5318,9 @@ confirm_says false "CONFIRM refutes: the claim moves nothing" \
   "a refuted confirmation task did not name its reason"
 [[ "$(jq -r '.refutes' "${campaign_final}/confirm.json")" == true \
     && "$(grep -c "" "${confirm_iteration}/refuted_claims.jsonl" 2>/dev/null)" \
-      -eq $((refuted_before + 1)) ]] \
+      -eq $((refuted_before + 1)) \
+    && "$(tail -n 1 "${confirm_iteration}/refuted_claims.jsonl" \
+      | jq -r '.outcome')" == refuted ]] \
   || fail "the run as recorded was not refuted: \
 $(cat "${campaign_final}/confirm.json")"
 confirm_stub_task_status=0
@@ -5317,6 +5353,7 @@ next_iteration="${next_root}/iteration-0000"
 campaign_final="${next_root}/final"
 composition_manifest="${campaign_final}/candidate_composition_manifest.json"
 # next_claim <confirmed> <file CONFIRM's verdict recorded the model in>
+#   [<refutes>; default: whether that file is refuted_claims]
 next_claim() {
   mkdir -p "${campaign_final}/confirm" "${next_iteration}"
   jq -n '{solver: {campaignClaim: {claim: "SAT_CANDIDATE"}}}' \
@@ -5325,8 +5362,10 @@ next_claim() {
   jq -n '{claim: {valuationOrdinal: 0}, valuations: [{ordinal: 0,
     selectedPathId: "P", selectedArms: [{selector: "m__0__a"}],
     assignment: {}}]}' >"${campaign_final}/claim.json"
-  jq -n --argjson confirmed "$1" --arg file "$2" '{confirmed: $confirmed,
-    refutes: ($file == "refuted_claims"), reason: "r"}' \
+  jq -n --argjson confirmed "$1" --arg file "$2" \
+    --arg refutes "${3:-}" '{confirmed: $confirmed,
+    refutes: (if $refutes == "" then $file == "refuted_claims"
+              else $refutes == "true" end), reason: "r"}' \
     >"${campaign_final}/confirm.json"
   rm -f -- "${next_iteration}/refuted_claims.jsonl"
   campaign_claim_model "${campaign_final}/claim.json" \
@@ -5345,7 +5384,7 @@ for next_index in 0 1; do
   next_claim false refuted_claims
   next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
     || fail "a refuted claim with room in the budget was not followed"
-  [[ "${next_out}" == *"was refuted ("* ]] \
+  [[ "${next_out}" == *"was excluded ("* ]] \
     || fail "the next claim after a refuted one did not say why: ${next_out}"
   [[ -s "${campaign_final}/refuted/000${next_index}/claim.json" \
       && -d "${campaign_final}/refuted/000${next_index}/confirm" \
@@ -5353,6 +5392,14 @@ for next_index in 0 1; do
     || fail "the artifacts of refuted claim ${next_index} did not move out of \
 final/"
 done
+# A claim no replay decided (CONFIRM refused it: refutes false), its model
+# excluded all the same, is followed too.
+next_claim false refuted_claims false
+next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
+  || fail "an undecided claim with room in the budget was not followed: \
+${next_out}"
+[[ -s "${campaign_final}/refuted/0002/claim.json" ]] \
+  || fail "the artifacts of the undecided claim did not move out of final/"
 next_claim false refuted_claims
 campaign_claim_model "${campaign_final}/claim.json" \
   | jq -c '{model: (.arms = ["m__3__a"])}' \
@@ -5365,17 +5412,17 @@ campaign_reserve_s=120
 ! campaign_next_claim "${next_iteration}" >/dev/null \
   || fail "a claim past the campaign budget was followed"
 [[ -s "${campaign_final}/claim.json" \
-    && ! -e "${campaign_final}/refuted/0002" ]] \
+    && ! -e "${campaign_final}/refuted/0003" ]] \
   || fail "a claim that ends the campaign left final/"
 # Re-decision has a named bound: past campaign_max_claims claims decided
 # again, the last claim is published, budget or not.
 campaign_reserve_s=20
-campaign_max_claims=2
+campaign_max_claims=3
 next_claim false refuted_claims
 next_out=$(campaign_next_claim "${next_iteration}" 2>&1) \
   && fail "a claim past campaign_max_claims was decided again"
-[[ "${next_out}" == *'campaign_max_claims=2'* \
-    && ! -e "${campaign_final}/refuted/0002" ]] \
+[[ "${next_out}" == *'campaign_max_claims=3'* \
+    && ! -e "${campaign_final}/refuted/0003" ]] \
   || fail "the re-decision bound was not named: ${next_out}"
 unset -f next_claim
 reset_config
@@ -5459,26 +5506,28 @@ $(jq -c '{claim, accepted, confirmation, whyNotAccepted}' \
     "${campaign_final}/result.json")"
 grep -q 'no accepted candidate: claim=SAT_UNCONFIRMED' "${emit_root}/emit.log" \
   || fail "EMIT did not name the unconfirmed claim: $(<"${emit_root}/emit.log")"
-# A confirmation that published no verdict (a replay that timed out) is a
-# defect of the run, never a refutation: RUN_DEFECT, exit 3, the
-# confirmation's reason a CONFIRM defect.
+# The last claim, unconfirmed where the claim bound or the budget ran out,
+# decided by no replay (CONFIRM refused it, or its decision failed): a false
+# positive all the same (owner 2026-10-08, no refused split) --
+# SAT_UNCONFIRMED, exit 2 -- never RUN_DEFECT for it; the confirmation that
+# no replay decided is still named, a CONFIRM_NO_VERDICT defect.
 emit_fixture
 jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: false,
   refutes: false, sessionId: "",
-  reason: "the confirmation replay published no verdict (exit 124)"}' \
+  reason: "CONFIRM refused: PAIRING_UNHELD: a view no publication hook publishes"}' \
   >"${campaign_final}/confirm.json"
 run_emit
-[[ "${emit_status}" -eq 3 ]] \
-  || fail "a confirmation with no verdict exited ${emit_status}, not 3: \
+[[ "${emit_status}" -eq 2 ]] \
+  || fail "an undecided last claim exited ${emit_status}, not 2: \
 $(<"${emit_root}/emit.log")"
-jq -e '.claim == "RUN_DEFECT" and .formulaClaim == "SAT_CANDIDATE"
-  and .accepted == false and (.claimReason | contains("exit 124"))
-  and (.whyNotAccepted | startswith("RUN_DEFECT: CONFIRM published no verdict"))
+jq -e '.claim == "SAT_UNCONFIRMED" and .formulaClaim == "SAT_CANDIDATE"
+  and .accepted == false and (.claimReason | contains("PAIRING_UNHELD"))
+  and (.claimReason | startswith("no confirmation replay decided the model"))
+  and (.whyNotAccepted | startswith("SAT_UNCONFIRMED: CONFIRM refused"))
   and ([.defects[] | select(.stage == "CONFIRM"
-        and .code == "CONFIRM_NO_VERDICT")] | length) == 1
-  and .refutedClaims == []' \
+        and .code == "CONFIRM_NO_VERDICT")] | length) == 1' \
   "${campaign_final}/result.json" >/dev/null \
-  || fail "a confirmation with no verdict was not a run defect: \
+  || fail "an undecided last claim was not SAT_UNCONFIRMED: \
 $(jq -c '{claim, formulaClaim, claimReason, defects}' \
     "${campaign_final}/result.json")"
 # A SAT claim with no confirmation at all is a malformed run, not a pass.

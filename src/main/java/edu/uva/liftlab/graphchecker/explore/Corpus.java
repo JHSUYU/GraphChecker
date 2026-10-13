@@ -486,6 +486,9 @@ public final class Corpus implements Arms.Rows {
         if (!Files.isRegularFile(recorded)) return;
         recordedTicks = new HashMap<String, Integer>();
         for (ScheduleEvent event : SessionReader.readSchedule(recorded)) {
+            // A view's publication stands at its node's |VIEW stance, no
+            // causal context and no tick (ScheduleEvent.Kind#PUBLISH).
+            if (event.kind() == ScheduleEvent.Kind.PUBLISH) continue;
             String[] stance = event.context().split("\\|", 3);
             if (stance.length < 2) continue;
             CausalContext.Root tick = daemonTick(CausalContext.parse(stance[1]));

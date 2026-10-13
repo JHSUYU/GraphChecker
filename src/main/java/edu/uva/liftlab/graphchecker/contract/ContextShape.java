@@ -61,12 +61,17 @@ public final class ContextShape {
         }
 
         /** A schedule SEND's context, {@code node|context[|...]}; null when
-         *  it states no context. */
+         *  it states no causal context -- none, or a node's view stance
+         *  ({@code <node>|VIEW}, a PUBLISH's: no work's context). */
         public static Stance ofSend(String sendContext) {
             String[] parts = sendContext.split("\\|", 3);
-            return parts.length < 2 ? null
-                    : new Stance(parts[0], CausalContext.parse(parts[1]));
+            if (parts.length < 2 || VIEW_STANCE.equals(parts[1])) return null;
+            return new Stance(parts[0], CausalContext.parse(parts[1]));
         }
+
+        /** The second part of a node's view stance's context ({@code
+         *  runtime.ScheduleLog#viewStance}). */
+        public static final String VIEW_STANCE = "VIEW";
     }
 
     /**

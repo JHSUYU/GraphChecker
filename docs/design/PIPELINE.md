@@ -893,7 +893,7 @@ as a flip of the world (depth) and among a path's owed arms. No query is asked: 
 its session ran, up to the read, and the world is that session's with the read paired to the decode
 of the asked version (a view's writer is its version, `Confirmation#viewWriter`), held by CONFIRM's
 rows (`ConfirmMain#holding`). The replay takes it where the read observed that version
-(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw, and a read
+(`FocusedReplay#viewRead`); another version is `PAIRING_UNTAKEN` naming the one it saw -- and why, where its hold knows: overridden by whom, or given way at VIEW_HOLD_MAX (`Confirmation#untakenBecause`) --, and a read
 that never ran leaves its occurrence unflipped (the prefix abandoned). A child inherits the pairing
 as a pairing of its world, never as a decision to take.
 
@@ -1140,8 +1140,10 @@ on a thread no registered node owns re-points no view; a view's writer is its ve
 too). Only a view the system publishes through the hook is held, one its doors file names
 (`PUBLISHED_VIEW` rows, `LibraryCatalog#publishedView`: Solr's collection `state.json` and aliases): a
 pairing of any other (Solr's legacy `clusterstate.json`, a snapshot's metadata) is never offered
-(`PairingFlip`, a named `ADMISSION_GAP`) and refused at CONFIRM (`PAIRING_UNHELD`), never left to give
-way. A hold ends when the reader's work is done -- the reader's occurrence exits, or, for a read in
+(`PairingFlip`, a named `ADMISSION_GAP`), never composed -- its read offers COMPOSE no version
+choice and stays at the version it observed, a named `ADMISSION_GAP` (`ComposedFamilies#heldView`;
+Z3Q snapshot-no-active's claim had paired the Overseer's read of a snapshot's metadata) -- and
+refused at CONFIRM (`PAIRING_UNHELD`), never left to give way. A hold ends when the reader's work is done -- the reader's occurrence exits, or, for a read in
 role work which no hook closes, the first region that work closes after the read in the run as it
 goes, a named region's exit or a hop's close (`Confirmation#regionClosed`: a routed alias captures its
 view in the request's role work and writes it in a store door's region) -- and is realistic for at most
@@ -1156,7 +1158,7 @@ gives way by name, the configured bound in its row, a CONFIRM mismatch and `PAIR
 the final one). The system's own throw in a deferred apply is the system's failure, named; an apply
 blocked past VIEW_HOLD_MAX is named, the node's later publications waiting behind it; one superseded
 while it applies is named (it may land after the synchronous publication), one superseded before it
-began is never applied; an interrupt never ends the publisher. An `ORDER` row waits at most the order's timeout (300 s), past which the
+began is never applied; an interrupt never ends the publisher. A version the system puts in force at once past a hold still standing before its read -- a publication no hold defers (a request that carried a newer view, Solr's `ZkStateReader#compareStateVersions`; a refresh it asked for) or a refresh's decode its reader reads as it is (a lazy collection's live fetch, `MessageDoors#decode`) -- overrides it, named once per hold: `PAIRING_OVERRIDDEN` (DIAGNOSTIC), a CONFIRM mismatch, and the read's `PAIRING_UNTAKEN` says who (`Confirmation#overridden`; snapshot-no-active, rounds Z3E/Z3F: the client's `/update` refreshed the Overseer's node past the paired version, silently until then); nothing is held or released by it, and the reader's own work's publication, which the hold exempts, overrides nothing. An `ORDER` row waits at most the order's timeout (300 s), past which the
 writer goes on and the order is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
 states no read or write of refuses (`PAIRING_UNSTATED`). A pairing no term of a path names is claimed
@@ -2481,8 +2483,8 @@ SAT, `UNSAT_CHAIN_OPEN` for an UNSAT). A SAT's other paths' open links are state
 UNSAT's paths are closed by the exploration's own growth, which plans each demanded producer an
 admitted session exposes (§7.2, §7.8), so a link still open at the fixed point is one growing could
 not close. EMIT publishes
-`SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation refutes it, `RUN_DEFECT`
-when it published no verdict: a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
+`SAT_CANDIDATE` as CONFIRM left it (`SAT_UNCONFIRMED` when the confirmation does not confirm it,
+refuted or decided by no replay -- the latter also a `CONFIRM_NO_VERDICT` defect), and an `UNSAT_CLOSED`
 beside a BLOCKING gap of any stage as `RUN_DEFECT` (`formulaClaim` keeps the composition's own),
 with every defect in `defects[]`, what the decision rested on concretely in `concrete[]`, and the
 formula it decided on in `formula` (`final/candidate.smt2`'s path and sha256: the disjunction of the
@@ -2621,16 +2623,20 @@ with it is a `RUN_DEFECT`.
   nothing: a defect of the engine.
 
 `final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, refutes, reason,
-sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says the
-claim is a false positive: its replay did not reach the fatal at the anchor (above), or
-ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A task ConfirmMain
-refused by name (`CONFIRM refused:`, rows that state no runnable model) and a decision that
-failed ran no replay of the model: a defect of the engine, excluded from nothing, and a final
-claim left so is `RUN_DEFECT` (`CONFIRM_NO_VERDICT`). A final claim CONFIRM refuted with no next
-claim owed (below: the bound, the budget) is `SAT_UNCONFIRMED`: every claim filtered as a false
-positive, not accepted and no RUN_DEFECT.
+sessionId}`, the same shape for a refusal, `realized.json` and the decision. `refutes` says a
+replay or ConfirmMain refuted the claim: its replay did not reach the fatal at the anchor (above),
+or ConfirmMain refuted it by name (`CONFIRM refutes:`, the run as recorded). A task ConfirmMain
+refused by name (`CONFIRM refused:`, `PAIRING_UNHELD` or rows that state no runnable model) and a
+decision that failed ran no replay of the model (`refutes` false): undecided. Either way a claim
+CONFIRM did not confirm is a false positive (owner 2026-10-08, no refused split): its model is
+excluded and the next claim composed, never RUN_DEFECT for it (an undecided one is also named, a
+`CONFIRM_NO_VERDICT` defect). A final claim left unconfirmed with no next claim owed (below: the
+bound, the budget) is `SAT_UNCONFIRMED`; every SAT excluded, the UNSAT the formula then decides is
+the claim (`UNSAT_CLOSED` with its exclusions in `refutedClaims`: COMPOSE SAT -> CONFIRM
+<outcome> -> excluded -> UNSAT_CLOSED).
 
-**A claim CONFIRM did not confirm is followed by the next.** A refuted claim (`campaign_refute`)
+**A claim CONFIRM did not confirm is followed by the next.** An excluded claim (`campaign_refute`,
+its `outcome` refuted or undecided, logged "COMPOSE SAT -> CONFIRM <outcome>: <reason> -> excluded")
 is one row of `<iteration>/refuted_claims.jsonl`: its `model` (`campaign_claim_model`, off `claim.json`: the
 finding kind, the selected path, the arm selectors it chose there, the valuation, and the claim's
 moved roots, a clock by its cell's symbol at the model's instant), where it was `claimed`, and the
@@ -2870,7 +2876,7 @@ recording's own is not kept apart.
    stated stage, else IMPORT; the composer's refusals (BLOCKING), `gaps` and claim gaps as COMPOSE. Published as
    `gaps` (BLOCKING), `telemetryGaps` (DIAGNOSTIC), `gapCount`, `byStage`, `byCode`.
 3. `final/result.json`: `claim` = the campaign claim; a `SAT_CANDIDATE` whose confirmation is not
-   `confirmed` is `SAT_UNCONFIRMED` when the confirmation `refutes` it, else `RUN_DEFECT` with a
+   `confirmed` is `SAT_UNCONFIRMED`, and one no replay decided (`refutes` false) also a
    `CONFIRM_NO_VERDICT` row in `defects[]` (the confirmation is copied in);
    `refutedClaims`, every row of `refuted_claims.jsonl` (§10), whatever the claim;
    `restsOnRefutations` (the refuted models an UNSAT's core names, and each world a
@@ -2943,8 +2949,8 @@ with a `result.json` `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmati
 `CONFIG_ONLY` when `configurationOnly` is true (COMPOSE's rule, read, never re-derived), a finding read
 after the others (`findings.py` ranks its mechanism after every other: a configuration-validation throw
 fires by design) --, `REFUTED` when
-`claim` is `SAT_UNCONFIRMED` and the confirmation `refutes` the model (the confirmation's reason is
-the row's reason; one that published no verdict is a `RUN_DEFECT`), `UNSAT` when it is
+`claim` is `SAT_UNCONFIRMED` (refuted, or decided by no replay: the confirmation's reason is the
+row's reason), `UNSAT` when it is
 `UNSAT_CLOSED` (a concrete anchor of `concrete[]` is the reason), else `RUN_DEFECT` (the first of
 `defects[]` is the reason). A case without one is `STOPPED` when its summary row
 exists (the stage and reason its logs state: the campaign's own failure, the case timeout, a

@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 /**
  * The question {@code (r,c)} at any index: a context's shape over the
@@ -41,6 +42,14 @@ public class ContextShapeTest {
             assertEquals((String) row[0], row[1], ContextShape.of(
                     CausalContext.parse((String) row[0]), SENDERS::get));
         }
+    }
+
+    /** A node's view stance (a PUBLISH's {@code <node>|VIEW}) is no causal
+     *  context: no sender's stance, and nothing parses it (review B1). */
+    @Test
+    public void aViewStanceIsNoSendersStance() {
+        assertNull(ContextShape.Stance.ofSend("auto0/node0#epoch0|"
+                + ContextShape.Stance.VIEW_STANCE));
     }
 
     @Test

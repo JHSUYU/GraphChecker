@@ -192,6 +192,17 @@ public enum GapKind {
      */
     CONFIRM_MISMATCH,
     /**
+     * A pairing's hold of a node's view stood, and the system published a
+     * version of that view past the paired one at once: its own refresh --
+     * a request that carried a newer view (Solr's {@code
+     * ZkStateReader#compareStateVersions}), a refresh it asked for, a lazy
+     * collection's live fetch -- which no hold defers, before the paired
+     * read, so the pairing cannot be realized in this run.  DIAGNOSTIC; the
+     * read's {@code PAIRING_UNTAKEN} names it ({@code
+     * runtime.Confirmation#overridden}).
+     */
+    PAIRING_OVERRIDDEN,
+    /**
      * A model CONFIRM refuted, which the composition excludes so the next
      * claim is another model or none ({@code compose.Refutations}).
      * DIAGNOSTIC: the exclusion is the composition's own knowledge.

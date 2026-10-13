@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -21,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.SlotTable;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
@@ -699,6 +701,9 @@ final class ComposedFamilies {
 
     /** Arms named as the anchor's work past the path, per path. */
     private final Set<String> leftNamed = new LinkedHashSet<String>();
+    /** The views no hook publishes already named ({@code
+     *  StateFamilies#heldView}). */
+    private final Set<String> unheldNamed = new LinkedHashSet<String>();
 
     /**
      * Whether an arm is the anchor occurrence's work past the path being
@@ -1101,11 +1106,12 @@ final class ComposedFamilies {
                 if (out.arm.attach() != null) {
                     bind(session, out.arm, delivered, leaves);
                 }
+                String sent = sentType(session, out.arm.expressionRef());
                 for (String symbol : out.symbols) {
                     if (symbol == null || symbol.isEmpty()) continue;
-                    lowering.declareStated(symbol, delivered.sort);
-                    conjuncts.add("(= " + symbol + " " + delivered.text
-                            + ")");
+                    String received = received(symbol, delivered, sent);
+                    if (received == null) return false;
+                    conjuncts.add(received);
                     if (out.arm.write() != null) {
                         conjuncts.add(lowering.storeChoice(symbol,
                                 out.arm.write()));
@@ -1685,7 +1691,8 @@ final class ComposedFamilies {
                 named &= !read.unnamedWriter();
             }
             for (Arms.Arm arm : arms.stateArms(first.endpoint(), session,
-                    location.key, first.observedVersion(), named)) {
+                    location.key, first.observedVersion(),
+                    named && heldView(first))) {
                 if (replacing.contains(arm.sessionId())
                         || arm.producer() == null || leftPath(arm)
                         || !seenByAll(reader, session, location.key,
@@ -1703,6 +1710,36 @@ final class ComposedFamilies {
                 found.add(arm);
             }
             return found;
+        }
+
+        /**
+         * Whether a read may pair with another write of its location: any
+         * but a node's VIEW no publication hook publishes (no PUBLISHED_VIEW
+         * of it, {@code Confirmation#hookPublishes}) -- no hold can defer it,
+         * so no run pairs its read otherwise (PairingFlip's ADMISSION_GAP,
+         * CONFIRM's PAIRING_UNHELD for the same views): it stays at the
+         * version it observed, named once per location (Z3Q
+         * snapshot-no-active: a claim paired the Overseer's read of a
+         * snapshot's metadata, a direct fetch's decode, and CONFIRM refused
+         * it).
+         */
+        private boolean heldView(ReadRow read) {
+            if (read.location() == null
+                    || read.location().kind() != LocationKind.VIEW
+                    || Confirmation.hookPublishes(read.location())) {
+                return true;
+            }
+            String view = SmtLowering.locationKey(read.location());
+            if (unheldNamed.add(view)) {
+                composer.gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, view,
+                        "no publication hook publishes " + read.location()
+                                + " (its system states no PUBLISHED_VIEW of"
+                                + " it), so no hold can defer it: its read"
+                                + " stays at the version it observed, "
+                                + read.observedVersion()
+                                + ", no version choice");
+            }
+            return false;
         }
 
         /**
@@ -1943,6 +1980,36 @@ final class ComposedFamilies {
     }
 
     /**
+     * A reader's {@code symbol} bound to a value an arm {@code delivered}:
+     * declared at the sort its own read parsed (its name states it, {@link
+     * JavaSmtSorts#sortOfSymbol}; else the value's), the value through its
+     * rendering where the writer sent the leaf at another scalar sort
+     * ({@link SmtLowering#leafEquals}).  Null, refused by name, for a pair
+     * no rendering relates: that run's delivery is no value of this read.
+     */
+    private String received(String symbol, Term delivered, String sent) {
+        VmTermLowering.Sort parsed = JavaSmtSorts.sortOfSymbol(symbol);
+        String equation = lowering.leafEquals(symbol, parsed, symbol,
+                delivered, sent);
+        if (equation == null) {
+            lowering.leafRefused(symbol, parsed, delivered.sort);
+            return null;
+        }
+        lowering.declareStated(symbol, parsed == null ? delivered.sort
+                : parsed);
+        return equation;
+    }
+
+    /** The Java type the VM states an arm's delivered expression has, or
+     *  "" ({@link SmtLowering#leafEquals}: a char renders as itself). */
+    private String sentType(String session, String expressionRef) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null || expressionRef == null) return "";
+        return VmTermLowering.expressionJavaType(
+                reader.expressions().expression(expressionRef));
+    }
+
+    /**
      * An INITIAL's arm: each read of its location bound to the value the
      * location held before every write its log names, and a query through
      * the read to that state ({@link SmtLowering#storeChoice}), and nothing
@@ -1962,10 +2029,15 @@ final class ComposedFamilies {
                 stated = false;
                 break;
             }
+            String sent = sentType(session, out.arm.expressionRef());
             for (String symbol : out.symbols) {
                 if (symbol == null || symbol.isEmpty()) continue;
-                lowering.declareStated(symbol, value.sort);
-                conjuncts.add("(= " + symbol + " " + value.text + ")");
+                String received = received(symbol, value, sent);
+                if (received == null) {
+                    stated = false;
+                    break;
+                }
+                conjuncts.add(received);
                 conjuncts.add(lowering.storeChoice(symbol, out.arm.write()));
             }
         }

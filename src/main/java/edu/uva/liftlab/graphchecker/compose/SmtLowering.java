@@ -3816,6 +3816,90 @@ public final class SmtLowering {
     }
 
     /**
+     * ONE LEAF, ONE VALUE, WHATEVER SORT A RUN PARSED IT AT (SGF2
+     * snapshot-no-active: state.json's {@code leader} is a Boolean where one
+     * Overseer mutator wrote it and the String "true" where ReplicaMutator
+     * did): the equation binding a reader's {@code symbol}, parsed at
+     * {@code symbolSort}, to a value a writer {@code delivered} at its own
+     * sort.  A JSON scalar is its String rendering, so a Boolean read is
+     * {@code Boolean.parseBoolean} of the String sent and a String read of a
+     * Boolean sent is {@code Boolean.toString}; an integral and a String,
+     * {@code Integer.toString}/{@code Long.toString} ({@code
+     * java_int_to_string}) either way.  Never a second free name.  Any other
+     * pair, null: the caller refuses it by name.
+     */
+    public String leafEquals(String symbol, Sort symbolSort,
+                             String symbolJavaType, Term delivered,
+                             String sentJavaType) {
+        Sort sent = delivered.sort;
+        if (symbolSort == null || symbolSort == Sort.VALUE
+                || symbolSort == sent) {
+            return "(= " + symbol + " " + delivered.text + ")";
+        }
+        // A char renders as itself, not its code: no lift relates it.
+        if (JavaSmtSorts.isChar(symbolJavaType)
+                || JavaSmtSorts.isChar(sentJavaType)) {
+            return null;
+        }
+        String d = delivered.text;
+        if (symbolSort == Sort.BOOL && sent == Sort.STRING) {
+            // Boolean.parseBoolean: "true" ignoring case.
+            return "(= " + symbol + " (str.in_re " + d + " (re.++"
+                    + " (re.union (str.to_re \"t\") (str.to_re \"T\"))"
+                    + " (re.union (str.to_re \"r\") (str.to_re \"R\"))"
+                    + " (re.union (str.to_re \"u\") (str.to_re \"U\"))"
+                    + " (re.union (str.to_re \"e\") (str.to_re \"E\")))))";
+        }
+        if (symbolSort == Sort.STRING && sent == Sort.BOOL) {
+            return "(= " + symbol + " (ite " + d + " \"true\" \"false\"))";
+        }
+        if (symbolSort == Sort.STRING && sent == Sort.INT) {
+            return "(= " + symbol + " (java_int_to_string " + d + "))";
+        }
+        if (symbolSort == Sort.INT && sent == Sort.STRING) {
+            // Integer.parseInt / Long.parseLong: an optional sign, then ASCII
+            // digits, leading zeros allowed ("+7", "007", "-0"); a String no
+            // parse accepts is no value of this read.  The width's overflow
+            // stays over-approximate.
+            String digits = "(str.substr " + d + " 1 (- (str.len " + d
+                    + ") 1))";
+            return "(and (str.in_re " + d + " (re.++ (re.opt (re.union"
+                    + " (str.to_re \"+\") (str.to_re \"-\")))"
+                    + " (re.+ (re.range \"0\" \"9\"))))"
+                    + " (= " + symbol + " (ite (= (str.at " + d + " 0) \"-\")"
+                    + " (- (str.to_int " + digits + "))"
+                    + " (ite (= (str.at " + d + " 0) \"+\")"
+                    + " (str.to_int " + digits + ") (str.to_int " + d
+                    + ")))))";
+        }
+        return null;
+    }
+
+    /** A reader's leaf a run sent at a sort no rendering relates to the
+     *  one the read parsed ({@link #leafEquals} null), refused by name: an
+     *  arm's delivery, which is no value of the read ({@code
+     *  ComposedFamilies#received}). */
+    public void leafRefused(String symbol, Sort parsed, Sort sent) {
+        refuse(SORT_CONFLICT + ":" + symbol, unrelated(parsed, sent));
+    }
+
+    /**
+     * The same of one export among a leaf's alternatives ({@code
+     * Composer#attestedArrival}, {@code #delivery}): that binding alone is
+     * no delivery, another may bind the leaf, and the arrival is never a
+     * refused conjunction -- named, a DIAGNOSTIC (review R4).
+     */
+    public void leafUnrelated(String symbol, Sort parsed, Sort sent) {
+        top().diagnostics.put(SORT_CONFLICT + ":" + symbol + ":" + sent,
+                unrelated(parsed, sent));
+    }
+
+    private static String unrelated(Sort parsed, Sort sent) {
+        return "a run sent this leaf as " + sent + " and the read parsed it"
+                + " as " + parsed + ", which no rendering relates";
+    }
+
+    /**
      * Declares one name THIS LOWERING minted; a second, different sort is
      * a defect.
      */

@@ -1947,6 +1947,12 @@ public class ExploreTest {
             if (recorded >= 0) {
                 // PRODUCER is nn0's KEY_MANAGER_TICK #1.
                 List<JsonObject> ticks = new ArrayList<JsonObject>();
+                // A view's publication stands at its node's |VIEW stance,
+                // which no tick reading parses (ScheduleEvent.Kind#PUBLISH).
+                ticks.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
+                        ScheduleEvent.Kind.PUBLISH, producer.node().render()
+                                + "|VIEW", ScheduleEvent.published("SOLR_ZK",
+                                "/collections/c/state.json", 3L), 0, "")));
                 if (recorded > 0) {
                     ticks.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
                             ScheduleEvent.Kind.WAKE, producer.node().render()
@@ -7170,6 +7176,14 @@ public class ExploreTest {
                     ScheduleEvent.Kind.SEND, ContextShape.Stance.of(restore)
                             .render(), "SOLR_ZK#REQUEST", 0, restore.id(),
                     "e-item")));
+            // A node's view publication: its stance is no causal context,
+            // and the corpus reads past it (review B1: every schedule
+            // holding one crashed the planner).
+            schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
+                    ScheduleEvent.Kind.PUBLISH, restore.node().render()
+                            + "|" + ContextShape.Stance.VIEW_STANCE,
+                    ScheduleEvent.published("SOLR_ZK",
+                            "/collections/t/state.json", 2L), 0, "")));
             if (taken) {
                 schedule.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(1L,
                         ScheduleEvent.Kind.RECV, ContextShape.Stance.of(

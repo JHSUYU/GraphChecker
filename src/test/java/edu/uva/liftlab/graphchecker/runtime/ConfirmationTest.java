@@ -491,7 +491,8 @@ public class ConfirmationTest {
     /** {@link Confirmation#publishing} on {@link #NODE}, with no scope. */
     private static boolean publishing(LocationId view, long version,
                                       OccurrenceAddress at, Runnable apply) {
-        return Confirmation.publishing(view, version, at, NODE, null, apply);
+        return Confirmation.publishing(view, version, at, NODE, null, apply,
+                null);
     }
 
     /** Waits for {@code applied} to hold {@code count} publications. */
@@ -706,6 +707,74 @@ public class ConfirmationTest {
     }
 
     /**
+     * NEVER SILENT (snapshot-no-active, rounds Z3E/Z3F): a version the system
+     * puts in force at once -- a publication no hold defers (a request that
+     * carried a newer view, Solr's compareStateVersions; a refresh it asked
+     * for), or a refresh's decode its reader reads as it is (a lazy
+     * collection's live fetch) -- past a hold still standing before its read
+     * overrides it: named once per hold (a CONFIRM mismatch, and the read's
+     * PAIRING_UNTAKEN says who), and nothing is held or released by it.  At
+     * or below the paired version, after the read, or the reader's own
+     * work's (exempt by the hold), it overrides nothing.
+     */
+    @Test
+    public void theSystemsOwnPublicationPastAHoldBeforeItsReadIsNamed()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/collections/c/state.json");
+        Endpoint read = endpoint(ANCHOR, "<a.Handler: void handle()>#u1");
+        OccurrenceAddress reader = read.occurrence();
+        OccurrenceAddress request = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        String id = Confirmation.id(read);
+        // what, version, read first, named
+        Object[][] rows = {
+                {"a request's refresh past the hold", 8L, false, true},
+                {"a refresh at the paired version", 7L, false, false},
+                {"a refresh after the read", 8L, true, false},
+                {"the reader's own work, which the hold exempts", 8L, false,
+                        false},
+                {"a lazy fetch's decode past the hold", 8L, false, true},
+        };
+        for (Object[] row : rows) {
+            String what = (String) row[0];
+            long version = (Long) row[1];
+            Confirmation.resetForTests();
+            handed("", Collections.singletonList(viewHold(view, 7L, reader,
+                    until, id)));
+            if ((Boolean) row[2]) {
+                Confirmation.read(read, view, 7L, ReadRow.UNKNOWN_VERSION);
+            }
+            if (what.startsWith("the reader's own")) {
+                assertFalse(what + ": published at once", publishing(view,
+                        version, reader, () -> { }));
+            } else if (what.startsWith("a lazy")) {
+                Confirmation.overridden(view, version, request, "a lazy"
+                        + " fetch");
+                Confirmation.overridden(view, version + 1L, request,
+                        "a lazy fetch");
+            } else {
+                Confirmation.published(view, version, request,
+                        "a request's refresh", null, null);
+            }
+            String because = Confirmation.untakenBecause(id);
+            List<String> mismatches = Confirmation.close();
+            if ((Boolean) row[3]) {
+                assertTrue(what + ": " + because,
+                        because.startsWith("overridden: version " + version));
+                assertEquals(what + ": once per hold " + mismatches, 1,
+                        mismatches.size());
+                assertTrue(what + ": " + mismatches.get(0), mismatches.get(0)
+                        .contains("published at once at "
+                                + request.render()));
+            } else {
+                assertEquals(what, "", because);
+                assertTrue(what + ": " + mismatches, mismatches.isEmpty());
+            }
+        }
+    }
+
+    /**
      * A publication the system makes at once read the store after the
      * deferred ones did: it drops a deferred removal and what came before
      * it -- applied after, the removal would delete what it published --,
@@ -732,7 +801,9 @@ public class ConfirmationTest {
                     publication(applied, -1L)));
             assertTrue(publishing(view, 4L, decoder,
                     publication(applied, 4L)));
-            Confirmation.published(view, synchronous);
+            Confirmation.published(view, synchronous,
+                    OccurrenceAddress.parse(MINT), "a forced refresh", null,
+                    null);
             Confirmation.exited(until);
             if (synchronous != -1L) awaitApplied(applied, 1);
             Thread.sleep(100L);

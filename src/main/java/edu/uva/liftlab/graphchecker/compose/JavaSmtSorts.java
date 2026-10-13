@@ -46,6 +46,40 @@ public final class JavaSmtSorts {
         return Sort.REF;
     }
 
+    /**
+     * The sort a VM minted symbol's name states, or null for any other name:
+     * {@code M_<type>_...}, the type a descriptor letter ({@code M_Z_},
+     * {@code M_I_}) or a quoted class ({@code M_L'String'_}).  A handoff
+     * leaf's name says the sort its reader parsed, which a writer of the
+     * same leaf in another run may have sent otherwise.
+     */
+    public static Sort sortOfSymbol(String name) {
+        if (name == null || !name.startsWith("M_") || name.length() < 4) {
+            return null;
+        }
+        String rest = name.substring(2);
+        if (rest.startsWith("L'")) {
+            int close = rest.indexOf('\'', 2);
+            if (close < 0) return null;
+            String named = rest.substring(2, close);
+            return sortOfJava(named.indexOf('/') >= 0 ? named
+                    : "java/lang/" + named);
+        }
+        if (rest.length() < 2 || rest.charAt(1) != '_') return null;
+        return sortOfJava(rest.substring(0, 1));
+    }
+
+    /** Whether a Java type or a VM symbol's name ({@code M_C_...}) is a
+     *  char, which renders as itself and not as its code. */
+    public static boolean isChar(String typeOrSymbol) {
+        if (typeOrSymbol == null) return false;
+        String type = typeOrSymbol.replace('.', '/');
+        return type.startsWith("M_C_") || "C".equals(type)
+                || "char".equals(type) || "java/lang/Character".equals(type)
+                || "Ljava/lang/Character;".equals(type)
+                || type.startsWith("M_L'Character'_");
+    }
+
     /** The sort one JVM cast descriptor denotes. */
     public static Sort castSort(String descriptor) {
         if (descriptor == null) return Sort.VALUE;
