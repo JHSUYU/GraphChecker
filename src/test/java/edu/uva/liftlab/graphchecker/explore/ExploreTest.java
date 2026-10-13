@@ -2578,6 +2578,64 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * A HANDOFF IS NAMED BY A DIGEST ({@code Corpus#tokenName}): its name
+     * holds its producer's arms and their conditions, which name the
+     * handoffs they read, so a chain whose every level reads the one before
+     * twice would be text 3^n long held whole (solr-adhoc-40 SL1: one name
+     * outgrew an 8 GB heap).  Rows: a constant at the chain's head 24 levels
+     * up re-keys, the same constant again does not.
+     */
+    @Test(timeout = 60000)
+    public void aHandoffChainIsNamedByDigests() throws Exception {
+        Path iteration = tree.newFolder("handoff-chain").toPath();
+        int depth = 24;
+        OccurrenceAddress[] chain = new OccurrenceAddress[depth + 1];
+        for (int at = 0; at <= depth; at++) {
+            chain[at] = occurrence("hdfs-case/dn" + (at % 3), "REGION.chain",
+                    CausalContext.of(Role.of("CHAIN"), "", at + 1),
+                    "o.a.h.Chain#run#" + (at + 1));
+        }
+        Endpoint told = at(TARGET, "XCH.chain", "Chain#told");
+        for (String name : new String[] {"s-one", "s-one-again", "s-two"}) {
+            Session session = new Session(iteration, name);
+            session.activation(TARGET, false);
+            session.constant("e.head", name.equals("s-two") ? "2" : "1");
+            session.activation(chain[0], false);
+            session.export(at(chain[0], "XCH.chain", "Chain#0"), "e.head",
+                    1L, "1");
+            for (int at = 1; at <= depth; at++) {
+                // Each level reads the one before, decides on it twice and
+                // passes it on.
+                session.activation(chain[at], false);
+                String symbol = "M_CHAIN_" + at;
+                session.attach(at(chain[at], "XCH.chain", "Chain#in"),
+                        symbol, "1", at(chain[at - 1], "XCH.chain",
+                                "Chain#" + (at - 1)));
+                session.decision(chain[at], "Chain#u1", 1, true,
+                        "(> " + symbol + " 0)");
+                session.decision(chain[at], "Chain#u2", 1, true,
+                        "(< " + symbol + " 9)");
+                session.symbolic("e.pass" + at, symbol);
+                session.export(at(chain[at], "XCH.chain", "Chain#" + at),
+                        "e.pass" + at, 1L + at, "1");
+            }
+            session.attach(told, "M_TOLD", "1", at(chain[depth],
+                    "XCH.chain", "Chain#" + depth));
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        List<String> stated = Collections.singletonList("(> M_TOLD 3)");
+        List<OccurrenceAddress> none = Collections.emptyList();
+        Set<String> nowhere = Collections.emptySet();
+        String one = corpus.inputShape("s-one", TARGET, none, nowhere, stated);
+        assertEquals("the same chain again", one, corpus.inputShape(
+                "s-one-again", TARGET, none, nowhere, stated));
+        assertFalse("another constant at the head, 24 levels up",
+                one.equals(corpus.inputShape("s-two", TARGET, none, nowhere,
+                        stated)));
+    }
+
     private static String dependence(Corpus corpus, Task task,
                                      String sessionId, String siteId)
             throws IOException {
