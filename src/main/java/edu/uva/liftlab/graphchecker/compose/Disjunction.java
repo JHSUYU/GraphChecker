@@ -81,11 +81,11 @@ final class Disjunction implements AutoCloseable {
     static final int PATH_ASKS = 8;
 
     /**
-     * The slot one z3 of a path ask holds, in MB ({@code Z3#slotted}):
-     * per-path z3s held 0.1-1 GB (hdfs-11741 i1, m1), so a composer's 8 GB
-     * room runs four path asks at once.
+     * The slot one z3 of a path ask holds, in MB ({@code Z3#slotted}), so a
+     * composer's 4 GB room runs four path asks at once; one at its cap is
+     * asked again alone, in half the room an engine ({@code Z3#ask}).
      */
-    static final int PATH_SLOT_MB = 1024;
+    static final int PATH_SLOT_MB = 512;
 
     /** One path found unsat under these assertions. */
     private static final class Refutation {
@@ -232,8 +232,9 @@ final class Disjunction implements AutoCloseable {
             Z3.Answer whole = solver.ask(composition.query(assertions),
                     asked, wantCore, WHOLE_BUDGET_MS);
             if (whole.decided()) return whole;
-            // Past its budget or its memory cap: every path is a smaller
-            // question.
+            // Past its budget, or at its memory cap asked alone (a shared
+            // slot's cap is asked again alone first, Z3#ask): every path is
+            // a smaller question.
             if (whole.timedOut() || whole.memOut()) pathByPath.set(true);
         }
         // Every open path's own run first, all of them: a sat one answers

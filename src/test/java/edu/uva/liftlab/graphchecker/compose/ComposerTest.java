@@ -2164,6 +2164,51 @@ public class ComposerTest {
     }
 
     /**
+     * A WHOLE ASK AT ITS MEMORY CAP GOES PATH BY PATH, as one past its
+     * budget does (a lone ask's cap: there is no larger slot to ask it in):
+     * the fixture z3 runs out of memory on the whole query, refutes path 0
+     * and satisfies path 1; the disjunction is sat, and the next ask asks no
+     * whole query again.
+     */
+    @Test
+    public void aWholeAskAtItsCapGoesPathByPath() throws Exception {
+        Path iteration = folder.newFolder("whole-memout").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.target("true", true, true);
+        seed.target("true", true, true);
+        seed.write();
+        Composer.Composition composition = compose(iteration, 4);
+        String first = composition.disjuncts().get(0).selector();
+        String second = composition.disjuncts().get(1).selector();
+        Path log = folder.newFile("whole.log").toPath();
+        Path script = folder.newFile("z3-whole-memout.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/bash",
+                "input=$(cat)",
+                "case $input in",
+                "  *'(assert " + first + ")'*) echo unsat; echo '()' ;;",
+                "  *'(assert " + second + ")'*) echo sat; echo '((x 1))' ;;",
+                "  *) echo whole >> " + log
+                        + "; echo '(error \"out of memory\")'; exit 101 ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        List<String> none = Collections.emptyList();
+        Z3 solver = new Z3(script, 30000L, 8192);
+        try (Disjunction asks = new Disjunction(composition, solver)) {
+            Z3.Answer answer = asks.ask(none, composition.selectors(), none,
+                    false);
+            assertEquals(answer.toString(), "sat", answer.status());
+            long whole = asked(log);
+            assertTrue("the whole query was asked: " + whole, whole > 0);
+            assertEquals("sat", asks.ask(Collections.singletonList(
+                    "(assert true)"), composition.selectors(), none, false)
+                    .status());
+            assertEquals("no whole ask once one ran out of memory", whole,
+                    asked(log));
+            assertTrue(solver.errors().toString(), solver.errors().isEmpty());
+        }
+    }
+
+    /**
      * Two recorded keys are one key when they print one text: compared node
      * by node ({@code ContainerSmtCodec#sameText}) exactly where their texts
      * are equal -- a number's spelling, a string against a number, member

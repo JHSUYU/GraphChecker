@@ -2239,8 +2239,9 @@ $(live_charges "${solver_test}/hosts")"
 # what its host could hold) is no answer: it is asked once more of a solver
 # of its own at its corpus's solver heap, placed by that JVM's footprint and
 # a question's z3 room (campaign_solver_need_mb: 2048 MB -> 2560 + 1152 MB),
-# or by what the first held -- its watched peak with the usual margin -- where
-# that is more; a JVM that ran out of heap (3) doubles the corpus's solver
+# or by what the first held -- its watched peak with the usual margin, and the
+# z3 room its peak does not count -- where that is more (killed: 1788 MB ->
+# 2688 + 1152); a JVM that ran out of heap (3) doubles the corpus's solver
 # heap first (4096 MB -> 4736 + 1152 MB); what other solvers of the corpus
 # held places nothing (measured:
 # 6000 MB in solver-lift12.log beside the corpus);
@@ -2341,7 +2342,7 @@ done <<'EOF_RETRY'
 answers 3712
 fails 3712
 noroom 3712
-killed 3712
+killed 3840
 nohost 3712
 measured 3712
 heap 5888
@@ -4082,8 +4083,10 @@ EOF
 # SOLVE-LANES: what a solve's return does with the lanes.  A first ask
 # undecided at the first budget (SOLVER_TIMEOUT) leaves for the hard lane,
 # landing nothing, its first answer kept aside; with no shorter first budget
-# it lands as any answer, and so does any other refusal; a HARD ask's
-# SOLVER_TIMEOUT lands, named in solver_timeouts.jsonl.  Per row: the full
+# it lands as any answer, and so does any other refusal; one at its z3s' cap
+# (SOLVER_MEMOUT) leaves for the hard lane whatever the budgets, its larger
+# z3 room; a HARD ask's SOLVER_TIMEOUT or SOLVER_MEMOUT lands, named in
+# solver_timeouts.jsonl.  Per row: the full
 # budget, the ending job's kind, its answer's detail, the hard lane after,
 # what waits to land, the first answer kept aside, and the named timeout.
 lanes_dir="${test_tmp}/solve-lanes"
@@ -4136,6 +4139,8 @@ done <<'EOF'
 60000|OBLIGATION|SOLVER_TIMEOUT after 60000ms|-|OBLIGATION obligations-0000 A lift12 0|-|-
 1800000|OBLIGATION|the query was refused: no root|-|OBLIGATION obligations-0000 A lift12 0|-|-
 1800000|HARD|SOLVER_TIMEOUT after 1800000ms|-|HARD obligations-0000 A lift12 0|-|A
+60000|OBLIGATION|SOLVER_MEMOUT at 512 MB|HARD obligations-0000 A|-|aside|-
+1800000|HARD|SOLVER_MEMOUT at 1984 MB|-|HARD obligations-0000 A lift12 0|-|A
 EOF
 
 # SOLVE-LANES-DISPATCH: the hard lane starts once no other start waits, and
@@ -5978,7 +5983,8 @@ reset_config
 
 # MEMORY-4: HEAD ROOM.  A head's host keeps room for the head's next engine
 # JVM against every other start -- what its planner or composer starts at
-# (campaign_head_need_mb: that JVM's footprint), not the case's engine heap: an obligation counts
+# (campaign_head_need_mb: that JVM's footprint, the composer's with its z3
+# room), not the case's engine heap: an obligation counts
 # the largest idle, fresh reservation of the host as used, a head's own
 # start counts none, one of its JVMs running (busy) or a reservation gone
 # stale frees it, and the head gives it up when it exits.  The hosts are
@@ -5995,11 +6001,13 @@ engine_memory_mb=12000
 (
   campaign_head_charging=1
   campaign_head_reserve
-  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
+  head_room=$(campaign_jvm_charge_mb \
+    edu.uva.liftlab.graphchecker.compose.ComposeMain 8192)
+  [[ "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "${head_room}" ]] \
     || fail "the head reserved no room on its host, or the engine heap's: \
 $(cat "${campaign_host_gate_root}/gate-head/heads/"*)"
   run_capturing_status campaign_host_try_start localhost 6000
-  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"$(campaign_jvm_footprint_mb 8192) MB held \
+  [[ "${status}" -eq 1 && "${campaign_host_wait_reason}" == *"${head_room} MB held \
 for a head"* ]] || fail "an obligation took the room a head reserved: \
 ${campaign_host_wait_reason}"
   campaign_host_try_start lift14 6000 \
@@ -6018,7 +6026,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
     || fail "a subshell of the head gave up the head's room"
   # A head step no host has room for holds its need on the host with the
   # most room (lift14's 39400 MB less the 30000 MB reserve, against the
-  # head's 39300 less its own 9088 held, an 8192 MB heap's footprint): an obligation lift14 would admit
+  # head's 39300 less its own room held, an 8192 MB composer's charge): an obligation lift14 would admit
   # is refused while the 9500 MB step waits, the step takes lift14 once it
   # has room, its own hold not held against it, and gives the hold up.
   campaign_worker_hosts="gate-head lift14"
@@ -6047,7 +6055,7 @@ gate-head/heads/' >'${memory_dir}/head-busy'" \
   grep -q 'held on lift14' "${memory_dir}/head-place.log" \
     || fail "a waiting head step did not say where it held its need"
   [[ -z "$(ls "${campaign_host_gate_root}/lift14/heads/")" \
-     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "$(campaign_jvm_footprint_mb 8192)" ]] \
+     && "$(cat "${campaign_host_gate_root}/gate-head/heads/"*)" == "${head_room}" ]] \
     || fail "a placed head step kept its hold: \
 $(ls "${campaign_host_gate_root}"/*/heads/)"
 ) || exit 1
@@ -6206,10 +6214,13 @@ done
 # Z3-ROOM: a JVM that starts z3 is charged its footprint and its z3 room, and
 # told the room (--z3-room-mb), so the ledger sees every z3 it may run at once
 # (SGF3-adhoc-13: a composer charged its footprint alone ran a z3 to 10.9
-# GB): a composer the least of 8192 MB and what the host's ceiling (70 % of
-# 30000 MB here) leaves beside its footprint; a solver a question's room, its
+# GB): a composer 4096 MB, less where its footprint, the room and a 2048 MB
+# margin would not fit under the host's ceiling (70 % of 30000 MB here), the
+# least room (256 MB) where nothing is left; a solver a question's room, its
 # hard lane 4096 MB; a main that starts no z3 none.  Per row: the main (or a
-# solver lane), the heap, the room, the charge.
+# solver lane), the heap, the room, the charge.  A composer at 8 and at 16 GB
+# is admitted on an idle 31583 MB lift (a charge at the ceiling never was:
+# head steps waited for room forever).
 (
   campaign_host_total_mb() { echo 30000; }
   while IFS='|' read -r z3_main z3_heap z3_room z3_charge; do
@@ -6228,18 +6239,32 @@ done
       || fail "Z3-ROOM: ${z3_main} at ${z3_heap} MB: ${z3_said}, not \
 ${z3_room}|${z3_charge}"
   done <<'EOF'
-compose.ComposeMain|8192|8192|17280
-compose.ComposeMain|16384|3208|21000
+compose.ComposeMain|8192|4096|13184
+compose.ComposeMain|16384|1160|18952
+compose.ComposeMain|18000|256|19765
 explore.ExploreMain|8192|0|9088
 explore.ObligationSolverMain|2048|1152|3712
 solver|2048|1152|3712
 HARD|2048|4096|6656
 EOF
   [[ "$(campaign_z3_room_args edu.uva.liftlab.graphchecker.compose.ComposeMain \
-      8192)" == "--z3-room-mb 8192" \
+      8192)" == "--z3-room-mb 4096" \
      && -z "$(campaign_z3_room_args edu.uva.liftlab.graphchecker.explore.ExploreMain \
       8192)" ]] \
     || fail "Z3-ROOM: a composer is not told its room, or a planner is"
+  campaign_host_gate_root=${test_tmp}/z3-room-idle/hosts
+  campaign_host_total_mb() { echo 31583; }
+  campaign_host_available_mb() { echo 31583; }
+  for z3_heap in 8192 16384; do
+    z3_status=0
+    campaign_host_try_start localhost "$(campaign_jvm_charge_mb \
+      edu.uva.liftlab.graphchecker.compose.ComposeMain "${z3_heap}")" \
+      || z3_status=$?
+    [[ "${z3_status}" -eq 0 ]] \
+      || fail "Z3-ROOM: a composer at ${z3_heap} MB is not admitted on an \
+idle host (${z3_status}): ${campaign_host_wait_reason}"
+    campaign_host_release localhost "${campaign_host_charge_id}"
+  done
 )
 
 # HEAD-NEED: every engine JVM is watched where its step runs
@@ -6247,7 +6272,9 @@ EOF
 # never lowering it; its status is the JVM's.  The head's held room is that
 # peak times 1.25, rounded up to 128 MB, at least 1024 and at most the engine
 # heap's JVM footprint (heap + heap/16 + 384); before any was measured, the
-# footprint of what its planner or composer starts at.
+# footprint of what its planner or composer starts at; and on top, the z3 room
+# its composer is charged (4096 MB: its z3s are children its peak does not
+# count).
 # Per row: the peaks of the JVMs run in turn (each JVM's exit), the peak
 # file after them, and the held room (engine heap 12000).
 need_dir=${test_tmp}/head-need
@@ -6258,6 +6285,7 @@ while IFS='|' read -r need_peaks need_file need_room; do
     campaign_root=${need_dir}
     engine_memory_mb=12000
     campaign_watch_interval_s=0.1
+    campaign_host_total_mb() { echo 30000; }
     for need_run in ${need_peaks}; do
       need_peak=${need_run%:*}
       need_exit=${need_run#*:}
@@ -6275,11 +6303,11 @@ while IFS='|' read -r need_peaks need_file need_room; do
     || fail "engine peaks ${need_peaks} left ${need_said}, not \
 ${need_file}|${need_room}"
 done <<'EOF'
-|-|9088
-700:0|700|1024
-2949:0 1200:3|2949|3712
-9000:0|9000|11264
-20000:0 300:0|20000|13134
+|-|13184
+700:0|700|5120
+2949:0 1200:3|2949|7808
+9000:0|9000|15360
+20000:0 300:0|20000|17230
 EOF
 campaign_root=""
 # HEAD-NEED-LANES: a round's planner and a head step fold their peaks at once
@@ -6423,20 +6451,24 @@ EOF
 # admits it for the room it reserves on its host, what its planner or
 # composer starts at with the JVM's own memory beside its heap
 # (campaign_head_need_mb, campaign_jvm_footprint_mb), never more than that
-# heap's footprint:
+# heap's footprint, and the z3 room its composer is charged (4096 MB on a
+# 30000 MB host):
 # a40's Solr heads asked fanout for 16 GB they never held and waited 90 min
 # while one case's obligations filled the lifts.  Per row: the case's
 # configuration, its weight and its head's room.
-while IFS='|' read -r heads_config heads_heap heads_reserve; do
-  [[ "$(case_engine_heap_mb "${heads_config}")" == "${heads_heap}" \
-      && "$(case_head_reserve_mb "${heads_config}")" == "${heads_reserve}" ]] \
-    || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
+(
+  campaign_host_total_mb() { echo 30000; }
+  while IFS='|' read -r heads_config heads_heap heads_reserve; do
+    [[ "$(case_engine_heap_mb "${heads_config}")" == "${heads_heap}" \
+        && "$(case_head_reserve_mb "${heads_config}")" == "${heads_reserve}" ]] \
+      || fail "${heads_config} weighs $(case_engine_heap_mb "${heads_config}") \
 and reserves $(case_head_reserve_mb "${heads_config}")"
-done <<'EOF'
-engine_memory_mb=16384|16384|9088
-engine_memory_mb=|8192|9088
-engine_memory_mb=4096|4096|4736
+  done <<'EOF'
+engine_memory_mb=16384|16384|13184
+engine_memory_mb=|8192|13184
+engine_memory_mb=4096|4096|8832
 EOF
+)
 
 # POOL-SLOTS: the obligation slots a sweep's cases share
 # (campaign_pool_slots): on each host as many starts of the need as fit
@@ -6465,7 +6497,8 @@ EOF
 )
 
 # SWEEP-1: sweep.sh launches every case with its head's room as its need (an
-# engine heap of 1 MB: its JVM footprint, 385 MB),
+# engine heap of 1 MB: its JVM footprint, 385 MB, and its composer's z3 room,
+# 4096 MB on any lift),
 # in the shared pool, and a measurement sweep's stop stage and pruning on the
 # job's command line (ssh carries no environment); a case id that names no
 # case launches no case.
@@ -6488,7 +6521,7 @@ sweep_run() {
 }
 sweep_run s1 || fail "the sweep failed: $(cat "${sweep_dir}/s1.out")"
 [[ "$(cat "${sweep_dir}/launched")" == "c-one true SEED" ]] \
-  && grep -q "^ADMIT_MB=385 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
+  && grep -q "^ADMIT_MB=4481 PRUNE=0 .* CAUSYNTH_STREAM_SHARED_POOL=true .*\
  CAUSYNTH_CAMPAIGN_STOP_AFTER='SEED' " "${sweep_dir}/out/sweep-s1-jobs.txt" \
   || fail "the sweep's case did not launch with its head's room in the \
 shared pool: $(cat "${sweep_dir}/launched" \

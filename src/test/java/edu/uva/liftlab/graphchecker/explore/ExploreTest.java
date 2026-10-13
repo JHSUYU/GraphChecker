@@ -5542,6 +5542,9 @@ public class ExploreTest {
         String inWorld = "the query was refused: ADMISSION_GAP:Rotate#u5#1";
         String killed = ObligationResult.REPLAY_BOUNDED + ": replay exceeded"
                 + " replay_timeout_s=2400";
+        // At its z3s' cap: undecided by name, as a timeout is -- no fact
+        // about the arm.
+        String memout = "SOLVER_MEMOUT at 1984 MB";
         Object[][] rows = {
             // its answers' details (the k-th landing takes the k-th, the
             // last repeating), how many of them landed on its flip,
@@ -5553,6 +5556,7 @@ public class ExploreTest {
             {unrun, 2, false, false, false},
             {atArm, 1, true, false, false},
             {inWorld, 1, false, true, false},
+            {memout, 1, false, true, false},
             {killed, 1, false, true, false},
             {new String[] {killed, unrun}, 2, false, true, false},
             {killed, 2, false, false, true},

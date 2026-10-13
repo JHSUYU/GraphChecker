@@ -179,6 +179,85 @@ public class Z3Test {
     }
 
     /**
+     * A CAP AFTER THE VERDICT ANSWERS ONLY WITH ITS PAYLOAD: a core run
+     * whose z3 printed unsat and then stopped at its cap names no core (the
+     * core is unknown, not empty), and a model run's z3 that printed sat and
+     * then stopped at its cap loses the race to the other engine's model.
+     * {what each engine's core or model run prints after its verdict, the
+     * core known, x's value}.
+     */
+    @Test
+    public void aCapAfterTheVerdictAnswersOnlyWithItsPayload()
+            throws IOException {
+        Path script = folder.newFile("z3-cap-after").toPath();
+        Files.write(script, Arrays.asList(
+                "#!/bin/bash",
+                "input=$(cat)",
+                "engine=$(printf '%s' \"$input\" | sed -n"
+                        + " 's/.*(set-option :smt.arith.solver \\([0-9]*\\)).*/\\1/p'"
+                        + " | head -1)",
+                "verdict=$(printf '%s' \"$input\" | sed -n"
+                        + " 's/.*; verdict \\([a-z]*\\).*/\\1/p' | head -1)",
+                "case $input in",
+                "  *get-unsat-core*) echo unsat;"
+                        + " echo '(error \"out of memory\")' ;;",
+                "  *get-value*) echo sat; if [ $engine = 2 ];"
+                        + " then echo '(error \"out of memory\")';"
+                        + " else echo '((x 6))'; fi ;;",
+                "  *) echo $verdict ;;",
+                "esac"), StandardCharsets.UTF_8);
+        assertTrue(script.toFile().setExecutable(true));
+        Z3 solver = new Z3(script, 3000L, 8192);
+        Z3.Answer unsat = solver.ask("; verdict unsat\n",
+                Collections.<String>emptyList(), true);
+        assertTrue(unsat.toString(), unsat.unsat());
+        assertTrue("a core cut by the cap is unknown: " + unsat,
+                !unsat.coreKnown() && unsat.core().isEmpty());
+        Z3.Answer sat = solver.ask("; verdict sat\n",
+                Collections.singletonList("x"), false);
+        assertEquals("the other engine's model answers: " + sat, "6",
+                sat.values().get("x"));
+        assertTrue(solver.errors().toString(), solver.errors().isEmpty());
+    }
+
+    /**
+     * AN ASK AT ITS CAP IN A SHARED SLOT IS ASKED AGAIN ALONE, in half the
+     * room an engine, before it is undecided: a z3 at a path ask's 448 MB
+     * cap, one at the lone cap of a 4096 MB room (1984 MB) answering.
+     * {the caps at which the fixture runs out of memory, the status, the
+     * cap the answer names}.
+     */
+    @Test
+    public void anAskAtItsCapInASharedSlotIsAskedAgainAlone()
+            throws IOException {
+        Object[][] rows = {
+                {"448", "sat", null},
+                {"448|1984", "memout", "1984 MB"},
+        };
+        for (Object[] row : rows) {
+            Path script = folder.newFile("z3-alone-"
+                    + ((String) row[0]).replace('|', '-')).toPath();
+            Files.write(script, Arrays.asList(
+                    "#!/bin/bash",
+                    "cat >/dev/null",
+                    "case \" $* \" in",
+                    "  *' memory_max_size=" + ((String) row[0]).replace("|",
+                            " '*|*' memory_max_size=") + " '*)"
+                            + " echo '(error \"out of memory\")'; exit 101 ;;",
+                    "  *) echo sat ;;",
+                    "esac"), StandardCharsets.UTF_8);
+            assertTrue(script.toFile().setExecutable(true));
+            Z3.Answer answer = new Z3(script, 3000L, 4096).slotted(512)
+                    .ask("(assert true)\n", Collections.<String>emptyList(),
+                            false);
+            String what = Arrays.toString(row) + ": " + answer;
+            assertEquals(what, row[1], answer.status());
+            assertTrue(what, row[2] == null
+                    || answer.reason().contains((String) row[2]));
+        }
+    }
+
+    /**
      * THE RUNS OF A ROOM HOLD NO MORE THAN IT: asks put at once run as many
      * as their slots fit, the rest waiting -- a room of 4096 MB at slots of
      * 1024 runs two asks (four z3s) at a time -- and every slot is given

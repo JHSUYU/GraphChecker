@@ -538,6 +538,11 @@ engine_java() {
     break
   done
   start=$(campaign_engine_start_mb "${main}" "${engine_need_mb:-}")
+  [[ "$(campaign_z3_room_mb "${main}" "${heap}")" != \
+      "${campaign_z3_least_room_mb}" ]] \
+    || printf '[campaign] %s at %s MB leaves no z3 room under the host'"'"'s \
+ceiling: its z3s run in the least, %s MB\n' "${main##*.}" "${heap}" \
+      "${campaign_z3_least_room_mb}" >&2
   while (( start < heap )); do
     out=$(mktemp) || return
     status=0
@@ -574,14 +579,20 @@ engine_java() {
 # the JVM that starts it is charged its footprint and a z3 room, the caps it
 # may run at once, so the ledger sees its z3s (SGF3-adhoc-13: a composer
 # charged its 8.9 GB footprint ran a z3 that grew to 10.9 GB in 20 minutes,
-# swap full, its host unreachable for a minute).  A composer's room is the
-# least of campaign_compose_z3_room_mb and what the host's ceiling
-# (CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal; the lifts are alike)
-# leaves beside its footprint: a lone ask's engines take half each, four
-# valuations asked together an eighth, a path ask 1 GB (smt/Z3#shared,
+# swap full, its host unreachable for a minute).  A composer's room is
+# campaign_compose_z3_room_mb, less where its footprint, the room and
+# campaign_z3_room_margin_mb would not fit under the host's ceiling
+# (CAUSYNTH_HOST_MAX_USED_PCT of this host's MemTotal; the lifts are alike),
+# so its charge always leaves real room a host can admit -- a composer whose
+# footprint leaves less than campaign_z3_least_room_mb runs in that, saying
+# so (engine_java): a lone ask's engines take half the room each, four
+# valuations asked together an eighth, a path ask 512 MB (smt/Z3#shared,
 # #slotted).  A solver's is a question's, in its first lane
 # (campaign_solver_z3_room_mb).  A main that starts no z3 has none.
-campaign_compose_z3_room_mb=8192
+campaign_compose_z3_room_mb=4096
+campaign_z3_room_margin_mb=2048
+# The least room smt/Z3 holds a run in (Z3.Room).
+campaign_z3_least_room_mb=256
 campaign_z3_room_mb() {
   local main=$1 heap=$2 room limit
   case "${main}" in
@@ -595,11 +606,11 @@ campaign_z3_room_mb() {
   esac
   limit=$(campaign_host_limit_mb "$(campaign_host_total_mb localhost \
     | tail -n 1)")
-  room=$(( limit - $(campaign_jvm_footprint_mb "${heap}") ))
+  room=$(( limit - $(campaign_jvm_footprint_mb "${heap}") \
+    - campaign_z3_room_margin_mb ))
   (( room <= campaign_compose_z3_room_mb )) \
     || room=${campaign_compose_z3_room_mb}
-  # The least room smt/Z3 holds a run in.
-  (( room >= 256 )) || room=256
+  (( room >= campaign_z3_least_room_mb )) || room=${campaign_z3_least_room_mb}
   printf '%s\n' "${room}"
 }
 
@@ -728,19 +739,23 @@ campaign_engine_need_mb() {
 # and round MCH2) kept 8 GB of every lift from the pool.  A step its held
 # room does not cover is placed by its own charge (campaign_head_charged).
 campaign_head_need_mb() {
-  local main start largest=0 peak heap
+  local main start largest=0 peak heap room compose
+  compose=edu.uva.liftlab.graphchecker.compose.ComposeMain
   heap=$(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}")
+  # A composer's z3s are its children, which its JVM's peak does not count.
+  room=$(campaign_z3_room_mb "${compose}" \
+    "$(campaign_engine_start_mb "${compose}")")
   if [[ -n "${campaign_root}" ]] \
       && read -r peak 2>/dev/null <"${campaign_root}/engine_peak_mb" \
       && [[ "${peak}" =~ ^[1-9][0-9]*$ ]]; then
     largest=$(( (peak * 5 + 511) / 512 * 128 ))
     (( largest >= 1024 )) || largest=1024
-    printf '%s\n' "$(( largest < heap ? largest : heap ))"
+    printf '%s\n' "$(( (largest < heap ? largest : heap) + room ))"
     return 0
   fi
-  for main in edu.uva.liftlab.graphchecker.explore.ExploreMain \
-      edu.uva.liftlab.graphchecker.compose.ComposeMain; do
-    start=$(campaign_jvm_footprint_mb "$(campaign_engine_start_mb "${main}")")
+  for main in edu.uva.liftlab.graphchecker.explore.ExploreMain "${compose}"; do
+    start=$(campaign_jvm_charge_mb "${main}" \
+      "$(campaign_engine_start_mb "${main}")")
     (( start <= largest )) || largest=${start}
   done
   printf '%s\n' "${largest}"
@@ -3556,9 +3571,9 @@ campaign_obligation_worker() {
   case "${status}" in
     3) campaign_log "obligation ${obligation_id}: no room on $(hostname -s) \
 to start its solver now; answered in a solver JVM of its own" ;;
-    4) campaign_log "obligation ${obligation_id}: undecided in \
-$(campaign_solver_first_ms) ms; asked at the full ${budget} ms in a solver \
-JVM of its own" ;;
+    4) campaign_log "obligation ${obligation_id}: undecided in its first ask \
+(its budget or its z3s' cap); asked at the full ${budget} ms and a z3 room of \
+${room} MB in a solver JVM of its own" ;;
     5) campaign_log "obligation ${obligation_id}: its host's solver was busy \
 past ${campaign_solver_busy_patience_s}s; answered in a solver JVM of its own" ;;
   esac
@@ -3566,7 +3581,8 @@ past ${campaign_solver_busy_patience_s}s; answered in a solver JVM of its own" ;
     # Answered in its own JVM at once, not after a start that waits for
     # memory nor behind a question its host's solver is busy with: here
     # under this start's charge when it covers that JVM's need, else placed
-    # as any start by that need (a question's charge, 512 MB, on a warm host).
+    # as any start by that need (a question's charge, 1152 MB, on a warm
+    # host).
     need=$(campaign_solver_need_mb "${sessions}" "${lane}")
     if (( charged >= need )); then
       run_capturing_status campaign_solve_obligation_alone "${obligation_id}" \
@@ -3601,8 +3617,10 @@ ${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
     peak=${campaign_watch_peak_mb}
     need=$(campaign_solver_need_mb "${sessions}" "${lane}")
-    (( peak <= 0 || $(campaign_need_of_peak_mb "${peak}") <= need )) \
-      || need=$(campaign_need_of_peak_mb "${peak}")
+    # Its JVM's watched peak counts no z3 of it: its room comes on top.
+    (( peak <= 0 \
+       || $(campaign_need_of_peak_mb "${peak}") + room <= need )) \
+      || need=$(( $(campaign_need_of_peak_mb "${peak}") + room ))
     measured=$(( $(campaign_jvm_footprint_mb "${engine_memory_mb:-8192}") \
       + room ))
     (( need <= measured )) || need=${measured}
@@ -7086,10 +7104,11 @@ campaign_open_arms() {
     "${last}" >>"${iteration_dir}/campaign_gaps.jsonl"
 }
 
-# The obligations the hard lane left undecided at the full budget
-# (campaign_solver_first_tier_ms, solver_timeouts.jsonl): each an arm no
-# verdict answered, one ADMISSION_GAP row SOLVER_TIMEOUT, BLOCKING under any
-# claim but a SAT_CANDIDATE (whose witness stands as CONFIRM decides it).
+# The obligations the hard lane left undecided -- at the full budget, or at
+# its z3s' cap (campaign_hard_z3_room_mb) -- (solver_timeouts.jsonl): each an
+# arm no verdict answered, one ADMISSION_GAP row SOLVER_TIMEOUT or
+# SOLVER_MEMOUT, BLOCKING under any claim but a SAT_CANDIDATE (whose witness
+# stands as CONFIRM decides it).
 campaign_solver_timeouts() {
   local iteration_dir=$1 claim
   [[ -s "${iteration_dir}/solver_timeouts.jsonl" ]] || return 0
@@ -7098,9 +7117,11 @@ campaign_solver_timeouts() {
     {schemaVersion: 1, sessionId: "", stage: "EXPLORE",
      kind: "ADMISSION_GAP",
      cls: (if $claim == "SAT_CANDIDATE" then "DIAGNOSTIC" else "BLOCKING" end),
-     subject: "SOLVER_TIMEOUT", topologyEpoch: $epoch,
-     detail: ("obligation \(.obligationId) on \(.host): \(.detail), at the"
-       + " full budget after the first; its arm has no verdict, so no UNSAT"
+     subject: (if (.detail // "") | startswith("SOLVER_MEMOUT")
+       then "SOLVER_MEMOUT" else "SOLVER_TIMEOUT" end),
+     topologyEpoch: $epoch,
+     detail: ("obligation \(.obligationId) on \(.host): \(.detail), in the"
+       + " hard lane after the first ask; its arm has no verdict, so no UNSAT"
        + " closes over it")}' \
     "${iteration_dir}/solver_timeouts.jsonl" \
     >>"${iteration_dir}/campaign_gaps.jsonl"

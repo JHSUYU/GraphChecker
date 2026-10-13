@@ -223,13 +223,18 @@ public final class Z3 {
     /**
      * One JVM's z3 room: the MB its charge holds for its z3 processes
      * ({@code --z3-room-mb}), and the slots its running z3s hold.  A run
-     * takes its two slots before it starts, waiting while they do not fit
-     * in what is free, and gives them back when its z3s are gone; a run
-     * alone always fits, its slots being at most half the room each.
+     * takes its two slots before it starts, in the order the runs asked
+     * (so an ask again alone, in half the room an engine, is not passed by
+     * smaller ones forever), waiting while they do not fit in what is free,
+     * and gives them back when its z3s are gone; a run alone always fits,
+     * its slots being at most half the room each.
      */
     static final class Room {
         final int mb;
         private int held;
+        private long issued;
+        private long serving;
+        private final Set<Long> abandoned = new java.util.HashSet<Long>();
 
         Room(int mb) {
             if (mb < 2 * LEAST_SLOT_MB) {
@@ -239,19 +244,31 @@ public final class Z3 {
             this.mb = mb;
         }
 
-        /** Takes {@code need} MB once they fit: true; false when
-         *  interrupted first. */
+        /** Takes {@code need} MB once every run that asked before took
+         *  its own and they fit: true; false when interrupted first. */
         synchronized boolean take(int need) {
-            while (held + need > mb) {
+            long ticket = issued++;
+            while (ticket != serving || held + need > mb) {
                 try {
                     wait();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
+                    abandoned.add(ticket);
+                    pass();
                     return false;
                 }
             }
             held += need;
+            serving++;
+            pass();
             return true;
+        }
+
+        /** The turn past the runs that stopped waiting, and every waiter
+         *  told. */
+        private void pass() {
+            while (abandoned.remove(serving)) serving++;
+            notifyAll();
         }
 
         synchronized void give(int need) {
@@ -390,6 +407,12 @@ public final class Z3 {
         long budget = budgetMillis > 0L ? budgetMillis : timeoutMillis;
         String status = firstLine(run("", query, "(check-sat)\n", budget));
         if (MEMOUT.equals(status)) {
+            // At a slot shared with other asks: once more alone, in half
+            // the room an engine, before it is undecided.
+            if (slotMb < room.mb / 2) {
+                return slotted(room.mb / 2).ask(query, modelSymbols,
+                        wantCore, budgetMillis);
+            }
             return new Answer(status, Collections.<String, String>emptyMap(),
                     Collections.<String>emptyList(), false, "out of memory at"
                     + " its cap of " + capMb() + " MB (memory_max_size)");
@@ -407,7 +430,8 @@ public final class Z3 {
             // host had room, it answered unknown) names no core.
             String printed = run(CORE_TRACKING, query,
                     "(check-sat)\n(get-unsat-core)\n", timeoutMillis);
-            coreKnown = "unsat".equals(firstLine(printed));
+            coreKnown = "unsat".equals(firstLine(printed))
+                    && answerBlock(printed, true) != null;
             if (coreKnown) core = parseCore(printed);
         }
         // Not after a timeout: it would spend the budget again for "".
@@ -556,11 +580,22 @@ public final class Z3 {
                 engines[at] = launch(ARITHMETIC[at], prefix, query, suffix,
                         budgetMillis, output, readers);
             }
-            return answerOf(race(engines, read, readers, started, deadline));
+            String printed = race(engines, read, readers, started, deadline,
+                    suffix);
+            // A cap hit before the payload asked for was printed: the run
+            // answered nothing, whatever verdict it printed first.
+            return answerOf(memoryOut(printed) && !decided(printed, suffix)
+                    ? OUT_OF_MEMORY : printed);
         } finally {
             for (Process engine : engines) {
                 if (engine == null) continue;
                 engine.destroyForcibly();
+                // Its slot is given back once its memory is: when it is gone.
+                try {
+                    engine.waitFor(ORPHAN_MARGIN_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
                 LIVE.remove(engine);
             }
         }
@@ -575,17 +610,19 @@ public final class Z3 {
     private static String race(Process[] engines,
                                List<AtomicReference<String>> read,
                                List<Thread> readers, long started,
-                               long deadline) {
+                               long deadline, String suffix) {
         long otherDecidedAt = 0L;
         try {
             while (true) {
                 String preferred = finished(engines[0], read.get(0),
                         readers.get(0));
-                if (preferred != null && decided(preferred)) return preferred;
+                if (preferred != null && decided(preferred, suffix)) {
+                    return preferred;
+                }
                 String other = finished(engines[1], read.get(1),
                         readers.get(1));
                 long now = System.nanoTime();
-                if (other != null && decided(other)) {
+                if (other != null && decided(other, suffix)) {
                     if (otherDecidedAt == 0L) otherDecidedAt = now;
                     long took = otherDecidedAt - started;
                     long grace = Math.max(took, TimeUnit.MILLISECONDS
@@ -620,9 +657,40 @@ public final class Z3 {
         return read.get() == null ? "" : read.get();
     }
 
-    private static boolean decided(String printed) {
+    /**
+     * Whether one engine's printed answer decided its run's command
+     * ({@code suffix}): sat or unsat, and -- where z3 stopped at its cap
+     * after the verdict -- the payload the command asked for printed before
+     * the cap: the model's values of a {@code (get-value ...)}, the core of a
+     * {@code (get-unsat-core)}.
+     */
+    static boolean decided(String printed, String suffix) {
         String verdict = firstLine(printed);
-        return "sat".equals(verdict) || "unsat".equals(verdict);
+        if (!"sat".equals(verdict) && !"unsat".equals(verdict)) return false;
+        if (!memoryOut(printed)) return true;
+        if (suffix.contains("(get-unsat-core)")) {
+            return "unsat".equals(verdict) && payload(printed);
+        }
+        if (suffix.contains("(get-value")) {
+            return "sat".equals(verdict) && payload(printed);
+        }
+        return true;
+    }
+
+    /** Whether z3 printed its cap's {@link #OUT_OF_MEMORY} anywhere. */
+    static boolean memoryOut(String printed) {
+        if (printed == null) return false;
+        for (String line : printed.split("\n", -1)) {
+            if (OUT_OF_MEMORY.equals(line.trim())) return true;
+        }
+        return false;
+    }
+
+    /** Whether the line after the verdict is a payload: a list, no error. */
+    private static boolean payload(String printed) {
+        String[] lines = printed.split("\n", -1);
+        return lines.length > 1 && lines[1].trim().startsWith("(")
+                && !lines[1].trim().startsWith(ERROR);
     }
 
     /** How one engine is stated ({@link #ARITHMETIC_OPENING}). */

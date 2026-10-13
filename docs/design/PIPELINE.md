@@ -950,15 +950,17 @@ host as it grows.
 with that budget, and so is a question asked in a JVM of its own. A question its host's solver has not
 taken within `campaign_solver_busy_patience_s` (30 s) is withdrawn from its queue (the same atomic rename
 `Service` takes one by) and answered in a JVM of its own at once (`campaign_solve_obligation` 5). A
-question undecided at the first budget (`SOLVER_TIMEOUT after <first> ms`) lands nothing: the head moves
-its answer aside (`obligation_result.first.jsonl`), keeps the obligation in flight, and queues it in the
-hard lane (`campaign_stream_ended`, `stream_hard`), which `campaign_stream_dispatch` starts only once no
-other start waits and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
-`solver_timeout_ms` in a solver JVM of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`),
-charged a solver's start, at most `campaign_stream_hard_per_host` (1) per host. Since the obligation
-stays in flight, no fixed point is declared before its hard ask. One undecided at the full budget lands
-NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each a
-`SOLVER_TIMEOUT` ADMISSION_GAP row (`campaign_solver_timeouts`), BLOCKING under any claim but a
+question undecided at the first budget (`SOLVER_TIMEOUT after <first> ms`) -- or at its z3s' cap
+(`SOLVER_MEMOUT at <cap> MB`, whatever the budgets) -- lands nothing: the head moves its answer aside
+(`obligation_result.first.jsonl`), keeps the obligation in flight, and queues it in the hard lane
+(`campaign_stream_ended`, `stream_hard`), which `campaign_stream_dispatch` starts only once no other
+start waits and, as any solve, not while GROW holds the solves -- HARD, in its worker, at the full
+`solver_timeout_ms` and the hard lane's z3 room (`campaign_hard_z3_room_mb`, 4096 MB) in a solver JVM
+of its own (`campaign_obligation_worker ... HARD`, `hard-host.txt`), charged its footprint and that
+room (`campaign_solver_need_mb ... HARD`), at most `campaign_stream_hard_per_host` (1) per host. Since
+the obligation stays in flight, no fixed point is declared before its hard ask. One undecided there
+lands NOT_ADMITTED (settled, never asked again) and is named in `solver_timeouts.jsonl`; EMIT makes each
+a `SOLVER_TIMEOUT` or `SOLVER_MEMOUT` ADMISSION_GAP row (`campaign_solver_timeouts`), BLOCKING under any claim but a
 SAT_CANDIDATE: a RUN_DEFECT, counted in `defects[]`. Why (SP4-10, 2026-10-12): the answered questions took
 a median 1 s, p90 4 s, but 12 READ-door and routed-alias flips ran their z3 races 1000-1180 s of the
 1810 s budget inside their hosts' solvers, and the 292 questions queued behind them waited up to 1135 s.
@@ -1076,17 +1078,18 @@ required; `smt.Z3.Room`) and charged its footprint and R; each of its z3s holds 
 under z3's own `memory_max_size` at the slot less 64 MB (`Z3#MISSED_MB`: what z3's accounting does not
 count; on 4.14.1 a capped z3 stayed within its cap at 1-2 GB and 12-20 MB past it at caps of tens of
 MB, and stops printing `(error "out of memory")`, exit 101), and a run starts only while its two
-slots fit in what R has free (`Room#take`, so a run alone always does). A z3 at its cap is the answer
-`memout` (`Answer#memOut`): undecided by name, as a timeout is, never sat or unsat and no error of the
-query (an error voids a composition's claim), its reason the cap it hit. A solver's R is a question's
-(`campaign_question_mb`, 1152 MB: its two engines 512 MB each), in the hard lane
-`campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at its cap is NOT_ADMITTED
-`SOLVER_MEMOUT` (a DIAGNOSTIC row of that kind) and asked again in the hard lane, as a first-lane
-timeout is, and one at the hard lane's cap too is named as a timeout there is
-(`solver_timeouts.jsonl`, `campaign_solver_timeouts`). Uncharged, a composer's z3 grew to 10.9 GB in
-20 minutes beside its 8.9 GB charge (SGF3-adhoc-13, lift12: swap full, load 110, sshd a minute late);
-the admission this replaces read the host's `MemAvailable` against a guess of what the JVM's z3s may
-grow to, charging nothing. Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
+slots fit in what R has free, in the order the runs asked (`Room#take`; a run alone always fits).
+A z3 at its cap answers nothing: a run whose output holds the cap's line is `memout` unless its
+verdict AND the payload its command asked for (a model's values, a core) were printed before it
+(`Z3#decided`), so a core cut by the cap is unknown, never empty, and a model cut by it loses the race
+to the other engine's. An ask at its cap in a slot shared with other asks is asked once more alone, in
+half of R an engine (`Z3#ask`); at that cap too it is `memout` (`Answer#memOut`): undecided by name,
+as a timeout is, never sat or unsat and no error of the query (an error voids a composition's claim),
+its reason the cap it hit. A solver's R is a question's (`campaign_question_mb`, 1152 MB: its two
+engines 512 MB each), in the hard lane `campaign_hard_z3_room_mb` (4096: 2 GB each); an obligation at
+its cap is NOT_ADMITTED `SOLVER_MEMOUT` (a DIAGNOSTIC row of that kind) and asked again in the hard
+lane whatever the budgets, and one at the hard lane's cap is named as a hard-lane timeout is
+(`solver_timeouts.jsonl`, EMIT's `SOLVER_MEMOUT` row, `campaign_solver_timeouts`). Every run, here and in COMPOSE, is two z3 processes, one per arithmetic engine
 (`smt.arith.solver` 2, the one the query states, and 6; `Z3#ARITHMETIC`), and answers with the
 first that decides, killing the other; the stated engine's answer wins when it decides within as
 long again as the other took (at least a second), so what it alone decides promptly answers as it
@@ -2411,14 +2414,16 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    out). Whole, z3 decides in seconds where it decides at all, but can spend any budget searching
    every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole, about a
    second each alone); one that stops at its memory cap goes path by path too. Path by path, the
-   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 1 GB slot of the composer's
-   z3 room (`PATH_SLOT_MB`, `Z3#slotted`: per-path z3s held 0.1-1 GB), so an 8 GB room runs four at
-   once, the rest waiting for a slot; the valuations, asked four at a time (`PARALLEL_ASKS`), ask
-   their whole disjunctions in slots of an eighth of the room (`Disjunction#asking`, `Z3#shared`),
-   and a lone ask -- the formula's, a refinement's, a path asked alone -- in half of it each engine.
-   A composer's room is the least of 8192 MB and what the host's ceiling leaves beside its footprint
-   (`campaign_z3_room_mb`; charged with it, `campaign_jvm_charge_mb`). The paths answer in their
-   order: the first sat path's answer (the asks
+   paths are put to the solver 8 at a time (`PATH_ASKS`), each z3 in a 512 MB slot of the
+   composer's z3 room (`PATH_SLOT_MB`, `Z3#slotted`), so a 4 GB room runs four at once, the rest
+   waiting for a slot; the valuations, asked up to four at a time (`PARALLEL_ASKS`, at most as many as
+   there are), ask their whole disjunctions in slots of the room shared that many ways
+   (`Disjunction#asking`, `Z3#shared`), and a lone ask -- the formula's, a refinement's, a path asked
+   alone -- in half of it each engine; an ask at a shared slot's cap is asked once more alone first.
+   A composer's room is 4096 MB, less where its footprint, the room and a 2048 MB margin would not fit
+   under the host's ceiling (`campaign_z3_room_mb`, at least 256 MB, said when it is; charged with it,
+   `campaign_jvm_charge_mb`; the head's held room counts it, `campaign_head_need_mb`). The paths answer
+   in their order: the first sat path's answer (the asks
    after it stopped, their z3s killed), else undecided if any path was, else unsat with the union of
    the paths' cores. A path is asked in its own run first (`Disjunction#pathAsk`,
    `Composition#ownRun`): its own session's arm of each message the path received and each state

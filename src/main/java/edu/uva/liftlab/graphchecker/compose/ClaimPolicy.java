@@ -440,7 +440,8 @@ public final class ClaimPolicy {
             selfContradictory(composition, asks, gaps);
             // Asked PARALLEL_ASKS at a time: each whole ask's z3s in a
             // slot of the composer's z3 room shared that many ways.
-            Disjunction together = asks.asking(PARALLEL_ASKS);
+            Disjunction together = asks.asking(Math.min(PARALLEL_ASKS,
+                    composition.valuations().size()));
             outcomes = new ArrayList<Outcome>(inParallel(
                     composition.valuations(), valuation -> outcome(
                             composition, together, valuation,
