@@ -146,9 +146,13 @@ public class DoorsOnlyRuntimeTest {
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_READ);
         assertEquals("a read stays paused", 0, Vm.baseResumes);
+        // The mutation's hook runs in its woven bracket, which leaves the
+        // window open past its end.
+        ConcolicRegionRuntime.pauseObservation();
         ConcolicRegionRuntime.observeTrackedContainer("s", MAP,
                 new HashMap<String, String>(),
                 ConcolicRegionRuntime.CONTAINER_BEFORE_MUTATION);
+        ConcolicRegionRuntime.resumeObservation();
         assertEquals("a mutation runs hooked", 1, Vm.baseResumes);
         assertFalse(active.basePaused);
 
@@ -179,6 +183,38 @@ public class DoorsOnlyRuntimeTest {
     }
 
     /**
+     * THE RULE: a door window opens only inside a woven observation bracket,
+     * where the hook's own frames never track; asked for outside one it is
+     * not opened, and the engine fault is named.  An activation in which the
+     * VM refused an observation resume that found no observation pause
+     * above the base pause is named too: its brackets went unbalanced.
+     */
+    @Test
+    public void aWindowOutsideEveryBracketAndARefusedResumeAreNamed()
+            throws Exception {
+        openSession();
+        ActiveRegion active = region(new ConcolicTaskPlan.RuntimeTask(
+                task()));
+        active.basePaused = true;
+        ConcolicRegionRuntime.openDoorWindow(active);
+        assertTrue("not opened", active.basePaused);
+        assertEquals(0, Vm.baseResumes);
+        com.google.gson.JsonObject summary = new com.google.gson.JsonObject();
+        summary.addProperty("refusedObservationResumes", 0);
+        ConcolicRegionRuntime.refusedResumes(active, summary);
+        summary.addProperty("refusedObservationResumes", 2);
+        ConcolicRegionRuntime.refusedResumes(active, summary);
+        List<GapRow> named = gaps();
+        assertEquals(2, named.size());
+        for (GapRow gap : named) {
+            assertEquals(GapKind.ENGINE_FAULT, gap.kind());
+            assertEquals(GapClass.BLOCKING, gap.cls());
+        }
+        assertTrue(named.get(0).detail().contains("outside every woven"));
+        assertTrue(named.get(1).detail().startsWith("2 observation"));
+    }
+
+    /**
      * A woven branch the VM gives no event while its occurrence records
      * there -- its frame does not track -- is named once, never silent: a
      * door there would decide nothing and EXPLORE find its occurrence
@@ -188,11 +224,7 @@ public class DoorsOnlyRuntimeTest {
     @Test
     public void aBranchTheVmGivesNoEventWhileRecordingIsNamed()
             throws Exception {
-        Path results = session.getRoot().toPath().resolve("iteration-0000")
-                .resolve("seed-result")
-                .resolve("concolic_region_results.jsonl");
-        Files.createDirectories(results.getParent());
-        RowRuntime.configure(results);
+        openSession();
         ActiveRegion active = region(new ConcolicTaskPlan.RuntimeTask(
                 task()));
         active.pathRecordingStarted = true;
@@ -223,6 +255,15 @@ public class DoorsOnlyRuntimeTest {
         assertEquals(METHOD + "#u11", named.get(0).subject());
         assertTrue("and no row states an arm", active.branchMappings
                 .isEmpty());
+    }
+
+    /** Opens the session the gap rows are published into. */
+    private void openSession() throws Exception {
+        Path results = session.getRoot().toPath().resolve("iteration-0000")
+                .resolve("seed-result")
+                .resolve("concolic_region_results.jsonl");
+        Files.createDirectories(results.getParent());
+        RowRuntime.configure(results);
     }
 
     private List<GapRow> gaps() throws Exception {
