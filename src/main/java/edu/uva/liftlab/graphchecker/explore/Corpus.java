@@ -999,12 +999,20 @@ public final class Corpus implements Arms.Rows {
                 : MARKED.matcher(text).replaceAll("$1");
     }
 
+    /** {@code text} with each open unit ({@link #step}) unnumbered: a
+     *  walk's entry numbers order nothing. */
+    private static String unopened(String text) {
+        return text.indexOf(OPEN) < 0 ? text
+                : OPENED.matcher(text).replaceAll(String.valueOf(OPEN));
+    }
+
     /** How the names of one set are ordered: by what they say without
      *  their handles first, so a run's handles do not reorder them (then
-     *  by the text itself). */
+     *  by the text itself); an open unit's entry number never (two names
+     *  apart by it alone keep their order). */
     private static final Comparator<String> BY_SHAPE = Comparator
-            .comparing(Corpus::unmarked)
-            .thenComparing(Comparator.<String>naturalOrder());
+            .comparing((String text) -> unmarked(unopened(text)))
+            .thenComparing(Corpus::unopened);
 
     /** One naming unit's name ({@link #step}): the digest of its text, its
      *  handles numbered ({@link #numbered}), then their marks in that
@@ -1016,13 +1024,34 @@ public final class Corpus implements Arms.Rows {
         return order.isEmpty() ? digest : digest + order.values();
     }
 
-    /** One canonical naming walk: the terms and container subterms it is
-     *  expanding, outermost first; the outermost of them a back-edge met
-     *  so far points at; and whether it met an unsupported subterm. */
+    /**
+     * One canonical naming walk (Tarjan's, over naming units: terms and
+     * container subterms): each unit it entered whose cycle has not closed,
+     * by its entry number, in entry order, with its text once expanded; the
+     * lowest entry number a cycle edge met in the unit being expanded;
+     * whether its text met an unsupported subterm, and which open container
+     * subterms' taint it takes (known when their cycle closes).
+     */
     private static final class Naming {
-        final List<String> stack = new ArrayList<String>();
-        int reach = Integer.MAX_VALUE;
+        final Map<String, Integer> entered = new HashMap<String, Integer>();
+        final List<String> open = new ArrayList<String>();
+        final Map<String, Unit> units = new HashMap<String, Unit>();
+        int next;
+        int low = Integer.MAX_VALUE;
         boolean unsupported;
+        Set<String> taints = new HashSet<String>();
+    }
+
+    /** One expanded unit of an open cycle ({@link Naming}). */
+    private static final class Unit {
+        final boolean taints;
+        String text;
+        boolean unsupported;
+        Set<String> takes;
+
+        Unit(boolean taints) {
+            this.taints = taints;
+        }
     }
 
     /**
@@ -1072,7 +1101,7 @@ public final class Corpus implements Arms.Rows {
      * run's handle (an identity, by the object it stands for) as a handle
      * ({@link #handle}), and what the program spelled, its string constants
      * and a long's digits, by its program names ({@link #programNames}).
-     * No depth bound ({@link #step}).
+     * No depth bound; a cycle by {@link #step}.
      */
     private String term(String sessionId, String expressionRef,
                         Naming naming) {
@@ -1085,25 +1114,36 @@ public final class Corpus implements Arms.Rows {
                     if (lowered == null || !lowered.ok()
                             || FlipQuery.undeclared(this, sessionId,
                             lowered.text()) != null) {
-                        return UNLOWERED;
+                        return null;
                     }
-                    String text = canonical(sessionId, lowered.text(),
-                            naming);
-                    return naming.unsupported ? UNSUPPORTED : unit(text);
+                    return canonical(sessionId, lowered.text(), naming);
                 });
         return UNLOWERED.equals(name) ? null : name;
     }
 
+    /** {@link #step}: where an open unit stands in a text until its cycle
+     *  closes, by its entry number. */
+    private static final char OPEN = '\u0004';
+    private static final Pattern OPENED = Pattern.compile(
+            "\u0004(\\d+)\u0004");
+    /** {@link #close}: the most text one cycle's names may digest; past it
+     *  each of its units is named by its own reference
+     *  (ARM_KEY_NAMING_CUT, {@link #namingCut}). */
+    static final long NAMING_BUDGET = 1L << 26;
+
     /**
-     * One memoized naming step, a term or a container subterm: the memo's
-     * answer; a BACK-EDGE (a walk through concurrent writers meeting what
-     * it is expanding) named by its distance up the expansion stack, so
-     * chains whose back-edges point at different ancestors name apart;
-     * else {@code body}'s answer, memoized per session and reference unless
-     * a back-edge in it points above it -- its name then depends on where
-     * it was entered.  {@code taints}: whether an unsupported subterm in it
-     * marks the enclosing walk (a container subterm's does; a term answers
-     * {@link #UNSUPPORTED} for itself).
+     * One memoized naming step, a term or a container subterm ({@code body}
+     * its canonical text, null where it states nothing): its name, a
+     * function of the session alone, whichever unit a walk entered first.
+     * A unit no cycle runs through is named by its text ({@link #unit}).
+     * The units of one CYCLE -- a walk through concurrent writers meeting
+     * what it is expanding, Tarjan's strongly connected component -- are
+     * named when it closes ({@link #close}); until then a text holds an open
+     * unit by its entry number.  Each unit is expanded once per session
+     * (solr-adhoc-09 SC7: naming a cycle anew from every entry was
+     * exponential in its depth).  {@code taints}: whether an unsupported
+     * subterm in it marks the enclosing walk (a container subterm's does; a
+     * term answers {@link #UNSUPPORTED} for itself).
      */
     private String step(String key, Naming naming, boolean taints,
                         Supplier<String> body) {
@@ -1112,30 +1152,169 @@ public final class Corpus implements Arms.Rows {
             naming.unsupported |= taints && held.charAt(0) == 'U';
             return held.substring(1);
         }
-        int at = naming.stack.indexOf(key);
-        if (at >= 0) {
-            naming.reach = Math.min(naming.reach, at);
-            return "cycle" + (naming.stack.size() - at);
+        Integer entered = naming.entered.get(key);
+        if (entered != null) {
+            naming.low = Math.min(naming.low, entered);
+            if (taints) naming.taints.add(key);
+            return OPEN + entered.toString() + OPEN;
         }
-        int depth = naming.stack.size();
-        int reach = naming.reach;
+        int number = naming.next++;
+        naming.entered.put(key, number);
+        naming.open.add(key);
+        int low = naming.low;
         boolean unsupported = naming.unsupported;
-        naming.reach = Integer.MAX_VALUE;
+        Set<String> outer = naming.taints;
+        naming.low = number;
         naming.unsupported = false;
-        naming.stack.add(key);
+        naming.taints = new HashSet<String>();
+        Unit unit = new Unit(taints);
         try {
-            String name = body.get();
-            if (naming.reach >= depth) {
-                canonicalNames.put(key, (naming.unsupported ? "U" : "S")
-                        + name);
-            }
-            unsupported |= taints && naming.unsupported;
-            return name;
+            unit.text = body.get();
         } finally {
-            naming.stack.remove(depth);
-            naming.reach = Math.min(reach, naming.reach);
+            unit.unsupported = naming.unsupported;
+            unit.takes = naming.taints;
+            naming.units.put(key, unit);
             naming.unsupported = unsupported;
+            naming.taints = outer;
         }
+        // The lowest entry number a cycle edge in it met: its own, or an
+        // open unit's above it.
+        int reached = naming.low;
+        naming.low = Math.min(low, reached);
+        if (reached < number) {
+            // Inside a cycle that closes above: named when it closes.
+            if (taints) naming.taints.add(key);
+            return OPEN + Integer.toString(number) + OPEN;
+        }
+        List<String> cycle = naming.open.subList(naming.open.indexOf(key),
+                naming.open.size());
+        Map<String, String> names = close(new ArrayList<String>(cycle),
+                naming);
+        for (String member : cycle) {
+            naming.entered.remove(member);
+            naming.units.remove(member);
+        }
+        cycle.clear();
+        String name = names.get(key);
+        canonicalNames.putAll(names);
+        naming.unsupported |= taints && name.charAt(0) == 'U';
+        return name.substring(1);
+    }
+
+    /**
+     * The names of one closed cycle's units ({@link #step}), each with its
+     * memo mark ('U' unsupported, else 'S').  A unit is unsupported where
+     * its own text met an unsupported subterm or a container subterm it
+     * takes the taint of is.  A unit whose text is null states nothing
+     * ({@link #UNLOWERED}); a term unsupported is {@link #UNSUPPORTED}, and
+     * so wherever the cycle holds it.  Any other unit is named by the cycle
+     * as it meets it: the texts of the units it reaches, numbered by first
+     * appearance from it (it first), each open unit in them by that number
+     * ({@code cycleN}) -- a unit alone is its text, a unit holding itself
+     * holds {@code cycle1}.  Two cycles name alike only as alike graphs, so
+     * an arm settled through one stands for another only where its query
+     * reads alike.  Past {@link #NAMING_BUDGET} each unit is named by its
+     * own reference: no world folds through it (never a cut of the
+     * exploration: its arms are asked again), counted by name.
+     */
+    private Map<String, String> close(List<String> cycle, Naming naming) {
+        Map<String, Unit> units = new HashMap<String, Unit>();
+        Map<Integer, String> byNumber = new HashMap<Integer, String>();
+        for (String member : cycle) {
+            units.put(member, naming.units.get(member));
+            byNumber.put(naming.entered.get(member), member);
+        }
+        Set<String> unsupported = new HashSet<String>();
+        for (boolean grew = true; grew; ) {
+            grew = false;
+            for (String member : cycle) {
+                if (unsupported.contains(member)) continue;
+                Unit unit = units.get(member);
+                boolean tainted = unit.unsupported;
+                for (String taken : unit.takes) {
+                    tainted |= unsupported.contains(taken);
+                }
+                if (tainted) grew = unsupported.add(member);
+            }
+        }
+        Map<String, String> fixed = new HashMap<String, String>();
+        for (String member : cycle) {
+            Unit unit = units.get(member);
+            if (unit.text == null) {
+                fixed.put(member, UNLOWERED);
+            } else if (!unit.taints && unsupported.contains(member)) {
+                fixed.put(member, UNSUPPORTED);
+            }
+        }
+        long cost = 0;
+        for (String member : cycle) {
+            String text = units.get(member).text;
+            cost += text == null ? 0 : text.length();
+        }
+        boolean cut = cycle.size() > 1 && cost * cycle.size() > NAMING_BUDGET;
+        if (cut) {
+            namingCuts.merge(cycle.size(), 1, Integer::sum);
+        }
+        Map<String, String> names = new HashMap<String, String>();
+        for (String member : cycle) {
+            String name = fixed.get(member);
+            if (name == null) {
+                name = cut ? unit("cut:" + member)
+                        : unit(cycleText(member, units, byNumber, fixed));
+            }
+            names.put(member, (unsupported.contains(member) ? "U" : "S")
+                    + name);
+        }
+        return names;
+    }
+
+    /** {@link #close}: one cycle unit's text as the cycle meets it from
+     *  {@code from}. */
+    private static String cycleText(String from, Map<String, Unit> units,
+                                    Map<Integer, String> byNumber,
+                                    Map<String, String> fixed) {
+        List<String> order = new ArrayList<String>();
+        Map<String, Integer> number = new HashMap<String, Integer>();
+        order.add(from);
+        number.put(from, 1);
+        StringBuilder out = new StringBuilder();
+        for (int at = 0; at < order.size(); at++) {
+            if (at > 0) out.append(OPEN);
+            Matcher open = OPENED.matcher(units.get(order.get(at)).text);
+            StringBuffer text = new StringBuffer();
+            while (open.find()) {
+                String member = byNumber.get(Integer.parseInt(open.group(1)));
+                String name = fixed.get(member);
+                if (name == null) {
+                    Integer seen = number.get(member);
+                    if (seen == null) {
+                        seen = order.size() + 1;
+                        number.put(member, seen);
+                        order.add(member);
+                    }
+                    name = "cycle" + seen;
+                }
+                open.appendReplacement(text, Matcher.quoteReplacement(name));
+            }
+            out.append(open.appendTail(text));
+        }
+        return out.toString();
+    }
+
+    /** Cycles named each unit by its own reference ({@link #close}), by
+     *  their size. */
+    private final Map<Integer, Integer> namingCuts =
+            new ConcurrentHashMap<Integer, Integer>();
+
+    /** The cycles past {@link #NAMING_BUDGET} so far, named ("ARM_KEY_NAMING_CUT:
+     *  ..."), or null where none was. */
+    public String namingCut() {
+        if (namingCuts.isEmpty()) return null;
+        return "ARM_KEY_NAMING_CUT: " + new TreeMap<Integer, Integer>(
+                namingCuts) + " (cycle size -> cycles) were past the naming"
+                + " budget of " + NAMING_BUDGET + " characters: each of"
+                + " their units is named by its own reference, so no world"
+                + " folds through them and their arms are asked again";
     }
 
     /** {@link #canonical}: where a name stands while the program's own
@@ -1176,7 +1355,7 @@ public final class Corpus implements Arms.Rows {
         String body = lowering == null ? null : lowering.sharedBody(token);
         if (body != null) {
             return "dag:" + step("dag|" + sessionId + "|" + token, naming,
-                    true, () -> unit(canonical(sessionId, body, naming)));
+                    true, () -> canonical(sessionId, body, naming));
         }
         switch (symbolKind(sessionId, token)) {
             case ROOT: {
@@ -1185,9 +1364,12 @@ public final class Corpus implements Arms.Rows {
                         + root.rootId();
             }
             case HANDOFF:
-                return handoffName(attach(sessionId, token), naming);
+                return tokenName("handoff|" + sessionId + "|" + token,
+                        () -> handoffName(attach(sessionId, token), naming));
             case READ:
-                return readName(sessionId, read(sessionId, token), naming);
+                return tokenName("read|" + sessionId + "|" + token,
+                        () -> readName(sessionId, read(sessionId, token),
+                                naming));
             default:
                 if (lowering == null || !lowering.minted(token)) return null;
                 if (token.startsWith("unsupported__")) {
@@ -1286,6 +1468,7 @@ public final class Corpus implements Arms.Rows {
                 String term = term(sessionId, arm.expressionRef(), naming);
                 if (term == null) continue;
                 boolean unsupported = naming.unsupported;
+                Set<String> taints = new HashSet<String>(naming.taints);
                 List<String> conditions = new ArrayList<String>();
                 for (String conjunct : arm.pi()) {
                     if (!Arms.predicate(conjunct)) continue;
@@ -1298,6 +1481,7 @@ public final class Corpus implements Arms.Rows {
                     conditions.add(canonical(sessionId, stated, naming));
                 }
                 naming.unsupported = unsupported;
+                naming.taints = taints;
                 arms.add(classOf(arm.producer()) + "@"
                         + attach.producer().site() + "=" + term + "|"
                         + conditions + "|" + new TreeMap<String, String>(
@@ -1311,6 +1495,21 @@ public final class Corpus implements Arms.Rows {
         arms.sort(BY_SHAPE);
         return port + "<-" + arms;
     }
+
+    /** A handoff's or a read's name ({@link #handoffName}, {@link
+     *  #readName}), once per session and token: memoized once no open
+     *  unit stands in it ({@link #step}). */
+    private String tokenName(String key, Supplier<String> name) {
+        String held = tokenNames.get(key);
+        if (held != null) return held;
+        String named = name.get();
+        if (named.indexOf(OPEN) < 0) tokenNames.put(key, named);
+        return named;
+    }
+
+    /** {@link #tokenName}'s memo. */
+    private final Map<String, String> tokenNames =
+            new ConcurrentHashMap<String, String>();
 
     /** {@link #step}: the canonical names asked so far, per session. */
     private final Map<String, String> canonicalNames =

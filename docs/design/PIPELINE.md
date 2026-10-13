@@ -751,9 +751,15 @@ name), so a URL at another port names one node; a run's handle for an object -- 
 (`<Class>@<hex>`, `RunSpellings#IDENTITY`), an object the VM named (`M_L'<class>'_<rid>`,
 `VmRows#objectHandle`), a name the lowering minted from one (`identity__`, by its object) -- by its
 class or kind and the order the key first meets it (`Corpus#handle`, `#numbered`), so objects
-aliased alike fold and objects aliased otherwise name apart. No depth bound: a walk meeting a
-term it is expanding names the back-edge by its distance up the expansion stack, and a term is
-memoized per session and reference unless a back-edge in it points above it. A member flip that writes another
+aliased alike fold and objects aliased otherwise name apart. No depth bound, and each naming
+unit (a term, a container subterm) expanded once per session (`Corpus#step`, Tarjan's walk): a unit
+no cycle runs through is its text; the units of one cycle (writers whose terms read what the others
+wrote) are named when it closes (`Corpus#close`), each by the cycle's texts as it meets them, numbered
+by first appearance from it (`cycleN`), so a name is the session's whichever unit a walk entered first
+and two cycles name alike only as alike graphs (solr-adhoc-09 SC7: naming a cycle anew from every
+entry was exponential in its depth, the planner 55 min on one round). A cycle whose texts times its
+size pass `Corpus#NAMING_BUDGET` names each unit by its own reference -- no world folds through
+it, its arms are asked again -- and the round names it (DIAGNOSTIC `ARM_KEY_NAMING_CUT`). A member flip that writes another
 value there, a producer sending another term, a pinned payload of another value, or a term reading a
 location another writer of another class may have written is another world; the same canonical
 term written again folds) -- never delivered values, and a function of the session alone: semantic

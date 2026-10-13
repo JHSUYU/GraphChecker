@@ -479,7 +479,10 @@ Correctness:
     rids are distinct, `SmtLowering#assertIdentitiesDistinct`); a handoff or a read inside
     it is named by what binds it in the flip query (its own run's wire arms, every writer the query
     offers, or the pinned value), by the query's own conditions (an arm or value it drops binds
-    nothing), with no depth bound; a name a node had only in its run (a host and port, a store
+    nothing), with no depth bound, each term once per session and a cycle of writers named as a
+    graph when it closes (`Corpus#step`, `#close`: solr-adhoc-09 SC7's planner spent 55 min naming
+    cycles anew from every entry; past `NAMING_BUDGET` a cycle keys by reference, DIAGNOSTIC
+    `ARM_KEY_NAMING_CUT`); a name a node had only in its run (a host and port, a store
     session's id: the manifest's `runSpellings`) by the node, in what the program spelled only (an
     observed value, a term's constants; never an engine-built hop or writer name), and never in a
     store key, where an identity hash stays (two objects' paths are two locations) (live
