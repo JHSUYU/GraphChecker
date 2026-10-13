@@ -788,8 +788,12 @@ downstream of a schedule variant (a member that ran in one replay of a world onl
 again: schedules are not worlds. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier round answered it
 `ADMITTED`, `UNSAT` or a faithful `NOT_ADMITTED` (`ObligationResult#settlesArm`: its replay ran its
-world as asked, `WORLD_RAN:`; any other NOT_ADMITTED -- its world not run, or its query refused --
-settles only its own flip, once a second one of it lands; `SAT_MODEL_READY` is no answer); an
+world as asked, `WORLD_RAN:`, or its query was refused at the arm, `ARM_REFUSED:` -- the flipped
+predicate or the versions it read that no row wrote, all of which the key names, so every world
+under it is refused alike; any other NOT_ADMITTED -- its world not run, or its query refused for what
+the world holds (an inherited flip, a writer choice, the query's closure) -- settles only its own
+flip, once a second one of it lands; `SAT_MODEL_READY` is no answer; an arm refused at the arm that
+no run took stays an open arm, its refusal named on its row and its `OPEN_ARM_UNANSWERED`); an
 `ADMITTED` replay also
 settles its flip (`ObligationFactory#flip`) under whatever id the arm has since: a replay of that flip
 of that path already took the arm in the path's world, and only the sessions landed since moved its

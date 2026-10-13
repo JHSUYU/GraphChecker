@@ -125,12 +125,25 @@ final class FlipQuery {
          *  VmTermLowering.Sort#smt}): how a value of it is spelled. */
         final Map<String, String> sorts;
         final List<GapRow> gaps;
+        /** Whether the refusal's cause lies in what an arm's key names --
+         *  the flipped predicate itself, and the reads it rests on -- so
+         *  every world under that key is refused alike ({@link #atArm}). */
+        final boolean armRefused;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       List<Control> controls, Map<String, String> rootVariables,
                       Map<String, String> clockVariables,
                       List<WriterChoice> choices, Map<String, String> sorts,
                       List<GapRow> gaps) {
+            this(smt2, modelSymbols, refusal, controls, rootVariables,
+                    clockVariables, choices, sorts, gaps, false);
+        }
+
+        private Built(String smt2, List<String> modelSymbols, String refusal,
+                      List<Control> controls, Map<String, String> rootVariables,
+                      Map<String, String> clockVariables,
+                      List<WriterChoice> choices, Map<String, String> sorts,
+                      List<GapRow> gaps, boolean armRefused) {
             this.smt2 = smt2;
             this.modelSymbols =
                     Collections.unmodifiableList(modelSymbols);
@@ -143,6 +156,24 @@ final class FlipQuery {
             this.choices = Collections.unmodifiableList(choices);
             this.sorts = Collections.unmodifiableMap(sorts);
             this.gaps = Collections.unmodifiableList(gaps);
+            this.armRefused = armRefused;
+        }
+
+        /**
+         * This refusal as one of the ARM ({@code
+         * ObligationResult#ARM_REFUSED}): its cause is the flipped predicate
+         * -- a name its session declares nowhere, a construct the query
+         * cannot state -- or the reads it rests on, versions no row wrote,
+         * all of which the arm's key names ({@code
+         * ObligationFactory#dependence}), so it settles the arm as UNSAT
+         * does.  A refusal resting on what the key leaves out -- an
+         * inherited flip, a writer choice, the query's closure -- settles
+         * only its flip.
+         */
+        Built atArm() {
+            return new Built(smt2, modelSymbols, refusal, controls,
+                    rootVariables, clockVariables, choices, sorts, gaps,
+                    true);
         }
 
         boolean ok() {
@@ -465,7 +496,7 @@ final class FlipQuery {
                                 "the flipped predicate names " + named
                                         + ", which no mint, attach or read of "
                                         + path.sessionId + " declares",
-                                flipped);
+                                flipped).atArm();
                     }
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
@@ -485,7 +516,7 @@ final class FlipQuery {
                                         + "query cannot state (\"" + held
                                         + "\"), so the flip is refused rather "
                                         + "than asked as a malformed query",
-                                flipped);
+                                flipped).atArm();
                     }
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
@@ -556,7 +587,7 @@ final class FlipQuery {
                                     + " the corpus wrote " + held + ": held"
                                     + " at what the recording read, their"
                                     + " producer unstated, so no verdict",
-                            flipped);
+                            flipped).atArm();
                 }
                 return refused(NOT_FLIPPABLE + ":" + flipped.siteId() + "#"
                         + flipped.ordinal(), flipped);

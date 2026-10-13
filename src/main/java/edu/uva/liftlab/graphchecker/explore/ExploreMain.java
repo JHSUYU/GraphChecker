@@ -497,6 +497,8 @@ public final class ExploreMain {
                     new LinkedHashMap<String, Map<String, JsonObject>>();
             Map<String, Set<String>> unrun =
                     new LinkedHashMap<String, Set<String>>();
+            Map<String, Set<String>> refusals =
+                    new LinkedHashMap<String, Set<String>>();
             Set<String> taken = new LinkedHashSet<String>();
             for (TargetRow row : corpus.targetsOn(root)) {
                 TargetRow.OpenArm arm = row.openArm();
@@ -511,6 +513,8 @@ public final class ExploreMain {
                 String state = openArmState(corpus, task, root, row, arm,
                         frontier, proposed, answers, worlds,
                         unrun.computeIfAbsent(key,
+                                k -> new LinkedHashSet<String>()),
+                        refusals.computeIfAbsent(key,
                                 k -> new LinkedHashSet<String>()));
                 if ("TAKEN".equals(state)) taken.add(key);
                 states.computeIfAbsent(key,
@@ -556,6 +560,9 @@ public final class ExploreMain {
                 row.add("refutedWorlds", worlds);
                 row.add("unrunWorlds", ExploreCodec.list(new ArrayList<String>(
                         unrun.get(arm.getKey()))));
+                // The arm's query refused at the arm: named, never closed.
+                row.add("refused", ExploreCodec.list(new ArrayList<String>(
+                        refusals.get(arm.getKey()))));
                 arms.add(row);
             }
         }
@@ -584,7 +591,9 @@ public final class ExploreMain {
      * are added to {@code
      * refuted}, by digest; each replay that did not run its world ({@code
      * ObligationResult#worldUnrefuted}: asked once more, {@link
-     * Frontier#consume}) to {@code unrun}, as obligation@session.
+     * Frontier#consume}) to {@code unrun}, as obligation@session; each
+     * refusal at the arm ({@code ObligationResult#ARM_REFUSED}), its own
+     * flip's or its id's, to {@code refusals}: the arm stays open, by name.
      */
     private static String openArmState(Corpus corpus, Task task,
                                        OccurrenceAddress root, TargetRow row,
@@ -594,7 +603,8 @@ public final class ExploreMain {
                                        Map<String, List<ObligationResult>>
                                                answers,
                                        Map<String, JsonObject> refuted,
-                                       Set<String> unrun) {
+                                       Set<String> unrun,
+                                       Set<String> refusals) {
         if (arm.askedSiteId().isEmpty()) return "NOT_FLIPPABLE";
         if (task == null) return "NOT_ASKED";
         for (Corpus.RecordedPath path : corpus.pathsOf(root)) {
@@ -621,9 +631,14 @@ public final class ExploreMain {
                     return "TAKEN";
                 }
                 Verdict last = null;
+                String atArm = frontier.armRefusal(id);
+                if (atArm != null) refusals.add(atArm);
                 for (ObligationResult answer : answers.getOrDefault(flip,
                         Collections.<ObligationResult>emptyList())) {
                     if (answer.verdict() == Verdict.ADMITTED) return "TAKEN";
+                    if (answer.armRefusal() != null) {
+                        refusals.add(answer.armRefusal());
+                    }
                     if (answer.worldUnrefuted()) {
                         unrun.add(answer.obligationId() + "@"
                                 + answer.sessionId());

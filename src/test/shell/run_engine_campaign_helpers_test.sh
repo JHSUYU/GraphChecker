@@ -635,6 +635,26 @@ for state in UNSAT UNANSWERED; do
     || fail "an open arm ${state} was not judged: \
 $(jq -c '{claim, concrete, evidence, defects}' "${campaign_final}/result.json")"
 done
+# An open arm whose query was refused at the arm (ARM_REFUSED) is still open,
+# by name, with the refusal on its defect.
+emit_unsat_fixture
+jq '.solver.unsatClosureComplete = true' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+jq '.openArms = [{anchor: "REGION.T#1", siteId: "H#u2", outcome: true,
+    state: "UNANSWERED", paths: {UNANSWERED: 1}, asked: ["H#u2@1"],
+    refused: ["the query was refused: ADMISSION_GAP:H#u2#1"]}]' \
+  "${emit_iteration}/obligations-0000/explore_manifest.json" \
+  >"${emit_root}/manifest.tmp"
+mv "${emit_root}/manifest.tmp" \
+  "${emit_iteration}/obligations-0000/explore_manifest.json"
+run_emit
+jq -e '.claim == "RUN_DEFECT"
+  and ([.defects[] | select(.subject == "OPEN_ARM_UNANSWERED") | .detail]
+       | any(contains("refused at the arm: the query was refused: ADMISSION_GAP:H#u2#1")))' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "an arm refused at the arm closed silently: \
+$(jq -c '{claim, defects}' "${campaign_final}/result.json")"
 
 # SOLVER-TIMEOUT: an obligation the hard lane left undecided at the full
 # budget (solver_timeouts.jsonl) is a SOLVER_TIMEOUT defect

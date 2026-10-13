@@ -230,9 +230,12 @@ field=<f> <subject>`.
   once more (`explore.Frontier#consume`; no question reuse answers it) and a second such run settles it.
   Any flip's NOT_ADMITTED whose replay ran its world as asked -- every assignment minted and planted, no
   prefix abandoned, no refusal deciding it, every inherited flip taken -- and never reached the decision
-  opens its `detail` with `WORLD_RAN:` (`runtime.FocusedReplay#unrun`): the one NOT_ADMITTED that settles
-  its arm for every world (`ObligationResult#settlesArm`); any other settles only its own flip, once a
-  second one of it lands.
+  opens its `detail` with `WORLD_RAN:` (`runtime.FocusedReplay#unrun`), and one whose query was refused
+  for a cause in what the arm's key names -- the flipped predicate names what its session declares
+  nowhere or lowers to what the query cannot state, or it reaches no variable and rests on versions no
+  row wrote (`explore.FlipQuery.Built#atArm`) -- opens it with `ARM_REFUSED:`: the NOT_ADMITTEDs that
+  settle their arm for every world (`ObligationResult#settlesArm`); any other settles only its own
+  flip, once a second one of it lands.
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl` (the answer, written once by the worker),
   `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer

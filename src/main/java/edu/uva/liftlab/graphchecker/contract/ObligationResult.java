@@ -19,6 +19,11 @@ public final class ObligationResult extends Value {
      *  decision ({@code runtime.FocusedReplay#unrun}): the one NOT_ADMITTED
      *  that is a fact about the arm ({@link #settlesArm}). */
     public static final String WORLD_RAN = "WORLD_RAN";
+    /** How a NOT_ADMITTED opens when its query was refused for a cause in
+     *  what its arm's key names -- the flipped predicate, the reads it
+     *  rests on ({@code explore.FlipQuery.Built#atArm}) -- so every world
+     *  under that key is refused alike ({@link #settlesArm}). */
+    public static final String ARM_REFUSED = "ARM_REFUSED";
 
     private final String obligationId;
     private final Verdict verdict;
@@ -81,16 +86,27 @@ public final class ObligationResult extends Value {
     /**
      * Whether this answer is a fact about its ARM, whatever world asks it
      * ({@code explore.Frontier#consume}): ADMITTED, UNSAT, or a NOT_ADMITTED
-     * whose replay ran its world as asked ({@link #WORLD_RAN}).  Any other
+     * whose replay ran its world as asked ({@link #WORLD_RAN}) or whose
+     * query was refused at the arm ({@link #ARM_REFUSED}).  Any other
      * NOT_ADMITTED -- the replay did not run its world (a root not minted, an
      * inherited flip not taken, a refusal, a stall, a killed or unfinished
-     * worker), or the query was refused -- is a fact about its own world
-     * only, and a refuted world answers nothing of the arm.
+     * worker), or the query was refused for what the world holds -- is a
+     * fact about its own world only, and a refuted world answers nothing of
+     * the arm.
      */
     public boolean settlesArm() {
         return verdict == Verdict.ADMITTED || verdict == Verdict.UNSAT
                 || verdict == Verdict.NOT_ADMITTED && refutation == null
-                && detail.startsWith(WORLD_RAN + ":");
+                && (detail.startsWith(WORLD_RAN + ":")
+                || detail.startsWith(ARM_REFUSED + ":"));
+    }
+
+    /** The refusal an arm-refused answer names ({@link #ARM_REFUSED}),
+     *  or null. */
+    public String armRefusal() {
+        return verdict == Verdict.NOT_ADMITTED
+                && detail.startsWith(ARM_REFUSED + ":")
+                ? detail.substring(ARM_REFUSED.length() + 1).trim() : null;
     }
 
     /** Whether this is an open-arm flip's replay that ran its world neither

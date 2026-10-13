@@ -5317,6 +5317,12 @@ public class ExploreTest {
         String unrun = "occurrence o never reached Lookup#u8#1 in this"
                 + " replay; its world did not run: the inherited root R was"
                 + " never minted";
+        // A refusal whose cause is in what the key names (the flipped
+        // predicate, the versions it read that no row wrote) is the arm's;
+        // one resting on the world (an inherited flip) is its own flip's.
+        String atArm = ObligationResult.ARM_REFUSED + ": the query was"
+                + " refused: ADMISSION_GAP:Lookup#u8#1";
+        String inWorld = "the query was refused: ADMISSION_GAP:Rotate#u5#1";
         Object[][] rows = {
             // its answer's detail, how many of them landed on its flip,
             // whether the arm is settled for every world, whether the next
@@ -5324,6 +5330,8 @@ public class ExploreTest {
             {ran, 1, true, false},
             {unrun, 1, false, true},
             {unrun, 2, false, false},
+            {atArm, 1, true, false},
+            {inWorld, 1, false, true},
         };
         int at = 0;
         for (Object[] row : rows) {
@@ -5515,10 +5523,13 @@ public class ExploreTest {
                         "1 planted pairing(s)"));
             } else {
                 // No writer to choose: the read is the value it returned,
-                // and the flip has no variable of its own.
+                // and the flip has no variable of its own -- refused at the
+                // arm, for a version no row wrote is the same in every
+                // world under its key.
                 assertEquals(detail, Verdict.NOT_ADMITTED, worker.verdict);
-                assertTrue(detail, detail(worker).contains(
-                        "the query was refused: ADMISSION_GAP"));
+                assertTrue(detail, detail(worker).startsWith(
+                        ObligationResult.ARM_REFUSED + ": the query was "
+                                + "refused: ADMISSION_GAP"));
             }
         }
     }
