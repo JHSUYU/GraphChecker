@@ -79,7 +79,19 @@ case "${1:?usage: case.sh <bug>}" in
   # from the snapshot (non-incremental, the path that reads it).  The
   # witness: the Overseer's view of the added replica not ACTIVE yet at
   # CREATESNAPSHOT.  The target: the backup's search for a live replica with
-  # the snapshot, the window's only one.
+  # the snapshot, the window's only one.  The chain starts at the Overseer's
+  # view of a replica's state, which Replica.<init> derives from the decoded
+  # leaf: outside every region it runs with no VM model, and
+  # CreateSnapshotCmd's ACTIVE test decided concretely in every occurrence
+  # (SGF, 168 of 168).  The scope holds the classes that build the view, as
+  # solr-18413's: with them the node's watch callback is a region and the
+  # decode runs in it; Replica alone, Slice with it or ClusterState with it
+  # root no region the decode runs (rounds Z3A, Z3B, Z3C).  Their lookup and
+  # construction paths took round 1 from 2 obligations to 3384 over 101
+  # (site, ordinal, arm) triples (round Z2T), so flips are asked from the
+  # seed's paths only (world depth 0, named BOUNDED): the bug's mechanism is
+  # one flip there, a pairing of the Overseer's view at CREATESNAPSHOT with
+  # an older decode of state.json (round Z3D: round 1 198 obligations).
   snapshot-no-active)
     test_class=org.apache.solr.cloud.TestCausynthSnapshotBackup
     test_method=backupFromASnapshotAfterItsLeaderIsGone
@@ -89,7 +101,12 @@ case "${1:?usage: case.sh <bug>}" in
       core:org/apache/solr/cloud/api/collections/BackupCmd
       core:org/apache/solr/core/snapshots/SolrSnapshotManager
       core:org/apache/solr/core/snapshots/CollectionSnapshotMetaData
-      solrj:org/apache/solr/common/cloud/ZkStateReader)
+      solrj:org/apache/solr/common/cloud/ZkStateReader
+      solrj:org/apache/solr/common/cloud/ClusterState
+      solrj:org/apache/solr/common/cloud/DocCollection
+      solrj:org/apache/solr/common/cloud/Slice
+      solrj:org/apache/solr/common/cloud/Replica)
+    export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0
     ;;
   # Bug study #26: a RESTORE into a new collection marks its shards
   # CONSTRUCTION and ACTIVE only at its end; a retry into the collection it
