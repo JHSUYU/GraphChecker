@@ -44,8 +44,9 @@ evidence is [../STATUS.md](../STATUS.md) "Solr checks"; the lead's notes, readin
 - **2026-10-13 morning:** SGF on 12cd346d9 passed 18406, 18413, migrate, restore and tra (native 10/10 each) and exposed
   the defects merged since (TODO Solr §0, "Merged 2026-10-13 morning"); the study runs and reindex were stopped for
   them. Lock-leak passes by #50's chain on the merged code (LL5: OperationTimeout at the queue tick's makePath, native
-  10/10). The final round is SGF2: `system/solr` + `gc/solr-final6` (three tree patches: the Overseer's state-queue waits,
-  snapshot-no-active's search loop, the session expirer) + `vm-force8`, all 20 cases.
+  10/10). The final round is SGF2: `system/solr` + `gc/solr-final7` b707106739 (`/bigtemp/vnr3ne/wt/lucene-solr-final7`,
+  GC_TREES `/bigtemp/vnr3ne/wt/sg3f-trees`; final5 + three tree patches: the Overseer's state-queue waits,
+  snapshot-no-active's search loop, the session expirer) + `/bigtemp/vnr3ne/vm-force8/j2sdk-image`, all 20 cases.
 - **Agents (2026-10-13):** EX (explore2/key6), Z2 (zk2), ST (final trees, fork), SC (study 38 14 19 09 31 05; an
   Overseer batching-wait workaround for 31/05's seed drift on a branch from final5), and a read-only lock-leak analyst.
   Their agent briefs and rules: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/` (AGENT-RULES.md, brief-*.md).
