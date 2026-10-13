@@ -5698,6 +5698,7 @@ cat >"${engine_test}/java" <<'EOF'
 #!/usr/bin/env bash
 oom=n
 [[ "$1" == -XX:+ExitOnOutOfMemoryError ]] && oom=y
+echo "$2" >>"${ENGINE_TEST_LOG}.stack"
 echo "heap=${GRAPH_CHECKER_ENGINE_MEMORY_MB} oom=${oom}" >>"${ENGINE_TEST_LOG}"
 if [[ "${oom}" == y && "${GRAPH_CHECKER_ENGINE_MEMORY_MB}" -lt 5000 ]]; then
   echo "half of an artifact"
@@ -5731,8 +5732,28 @@ $(tr '\n' ' ' <"${engine_test}/log")"
   [[ "$(tail -n 1 "${engine_test}/log")" == "heap=6000 oom=y" ]] \
     || fail "an engine JVM started above the engine heap: \
 $(tail -n 1 "${engine_test}/log")"
+  [[ "$(sort -u "${engine_test}/log.stack")" == -Xss512m ]] \
+    || fail "an engine JVM ran at another stack: \
+$(sort -u "${engine_test}/log.stack" | tr '\n' ' ')"
 )
 reset_config
+
+# ENGINE-STACK: every engine JVM -- a head's (engine_java), the served
+# planner, a solver, offline A/B's -- runs at campaign_engine_stack: a term
+# ~750 binary operations deep overflowed the default stack in an arm's key
+# (solr-adhoc-19 SC7).  Each java_bin start names it.
+for engine_file in "${repo}/run_engine.sh" \
+    "${repo}/tools/regress/offline-ab.sh"; do
+  starts=$(grep -c 'env "GRAPH_CHECKER_ENGINE_MEMORY_MB=' "${engine_file}")
+  staged=$(grep -A3 --group-separator=@ \
+      'env "GRAPH_CHECKER_ENGINE_MEMORY_MB=' "${engine_file}" \
+    | awk '/^@$/ {n += hit; hit = 0; next}
+           /campaign_engine_stack/ {hit = 1}
+           END {print n + hit}')
+  (( starts > 0 && starts == staged )) \
+    || fail "${engine_file##*/}: ${staged} of ${starts} engine JVM starts \
+name campaign_engine_stack"
+done
 
 # HEAD-NEED: every engine JVM is watched where its step runs
 # (campaign_engine_jvm) and its peak joins the campaign's engine_peak_mb,

@@ -412,6 +412,13 @@ public final class ExploreMain {
         // An empty file IS the frontier closing.
         RowCodec.writeAll(out.resolve("obligations.jsonl"), open.obligations,
                 ExploreCodec::writeObligation);
+        // A cycle past the naming budget keys its arms by reference: named.
+        String namingCut = corpus.namingCut();
+        if (namingCut != null) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, "arm keys",
+                    namingCut));
+        }
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,

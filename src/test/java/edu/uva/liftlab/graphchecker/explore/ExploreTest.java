@@ -835,9 +835,14 @@ public class ExploreTest {
         wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
         wye.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         wye.decision(target, "Concrete#u3", 1, false, "");
+        // Two keys, two exports: a key read twice would be one delivery.
+        Endpoint secondKey = Endpoint.of(PRODUCER, "XCH.resp.block-key-id",
+                ExecutionIndex.of(Collections.singletonList(Frame.of(
+                        "PBHelper#convert#9", 1))), 0);
         wye.export(ROTATED, "e.kept", 11L, "119992");
+        wye.export(secondKey, "e.kept", 12L, "119992");
         wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        wye.attach(DELIVERED, "M_HOFF_KEY", "119992", secondKey);
         wye.write(STORED, ALL_KEYS, 5L, "e.kept");
         wye.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         wye.answered(ObligationResult.of("OBL.world-y", Verdict.ADMITTED,
@@ -1984,7 +1989,8 @@ public class ExploreTest {
      * run's wire arms (the producer's class, export site, canonical term),
      * else by its arrival; a read inside its term by every writer the query
      * offers it, else by its value; a term that does not lower by the values
-     * observed; no depth bound, a back-edge by how far up it points.  Each
+     * observed; no depth bound, a cycle by its graph (each unit named once,
+     * whichever the walk entered first).  Each
      * by the query's own conditions: an arm or a writer's value the query
      * drops (a name it cannot declare, a value of another sort) binds
      * nothing; a name a node has only in one run by the node, an identity
@@ -1992,7 +1998,7 @@ public class ExploreTest {
      * meets it (two values aliased otherwise name apart).  Each row: two
      * worlds, and whether they share the arm's key.
      */
-    @Test
+    @Test(timeout = 120000)
     public void aWrittenTermIsNamedByWhatBindsItInTheQuery()
             throws Exception {
         Path iteration = tree.newFolder("written-binds").toPath();
@@ -2022,6 +2028,15 @@ public class ExploreTest {
                     CausalContext.of(Role.of("CYCLE"), "", at + 1),
                     "o.a.h.h.s.d.Cycle#run#" + (at + 1));
         }
+        int ringSize = 40;
+        OccurrenceAddress[] ring = new OccurrenceAddress[ringSize];
+        LocationId[] ringed = new LocationId[ringSize];
+        for (int at = 0; at < ringSize; at++) {
+            ring[at] = occurrence("hdfs-case/dn0", "REGION.ring",
+                    CausalContext.of(Role.of("RING"), "", at + 1),
+                    "o.a.h.h.s.d.Ring#run#" + (at + 1));
+            ringed[at] = LocationId.of(LocationKind.INSTANCE, "70", "" + at);
+        }
         // session -> what WRITER writes at the guard's location
         String[] names = {"s-seed", "h-plus", "h-minus", "h-plus-again",
             "p-five", "p-seven", "i-one", "i-two", "u-five", "u-seven",
@@ -2029,7 +2044,8 @@ public class ExploreTest {
             "c-self", "g-eleven", "g-eleven-minus", "g-twelve", "r-three",
             "r-four", "b-three", "b-four", "n-one", "n-one-again", "n-two",
             "y-hash", "y-hash-again", "y-other", "v-doc", "v-doc-again",
-            "v-other", "w-alias", "w-alias-again", "w-apart"};
+            "v-other", "w-alias", "w-alias-again", "w-apart", "k-ring",
+            "k-ring-again", "k-ring-deep"};
         for (String name : names) {
             Session session = new Session(iteration, name);
             session.activation(TARGET, !name.equals("s-seed"));
@@ -2137,6 +2153,33 @@ public class ExploreTest {
                 session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
                         cycledOne, 7L, "M_CYCLED", "3");
                 session.symbolic("EXPR.00000000000000f2", "M_CYCLED", "I");
+            } else if (name.startsWith("k-")) {
+                // A ring of forty writers: each one's term reads the next
+                // location, which the next two wrote -- a cycle met from
+                // every one of 2^40 paths (solr-adhoc-09 SC7: naming it
+                // anew from every entry never ended).  k-ring-deep adds 2
+                // instead of 1 twenty writers deep.
+                for (int at = 0; at < ringSize; at++) {
+                    session.activation(ring[at], false, true, "ring" + at);
+                    String ref = String.format("EXPR.%016x", 0x100 + at);
+                    session.expression(ref, binary("+", leaf("M_RING" + at,
+                            "I"), literal(name.equals("k-ring-deep")
+                            && at == ringSize / 2 ? 2 : 1)));
+                    session.write(at(ring[at], "Ring#u1:WRITE", "Ring#u1"),
+                            ringed[at], 100L + 2 * at, ref);
+                    session.write(at(ring[at], "Ring#u1:WRITE", "Ring#u1"),
+                            ringed[(at + ringSize - 1) % ringSize],
+                            101L + 2 * ((at + ringSize - 1) % ringSize),
+                            ref);
+                    int next = (at + 1) % ringSize;
+                    session.read(at(ring[at], "Ring#u2:READ", "Ring#u2"),
+                            ringed[next], 100L + 2 * next, "M_RING" + at,
+                            "1");
+                }
+                session.read(at(WRITER, "Inner#u2:READ", "Inner#u2"),
+                        ringed[0], 100L, "M_RINGED",
+                        name.equals("k-ring-again") ? "4" : "3");
+                session.symbolic("EXPR.00000000000000f2", "M_RINGED", "I");
             } else if (name.startsWith("p-")) {
                 session.attach(DELIVERED, "M_HOFF_KEY",
                         name.equals("p-five") ? "5" : "7", null);
@@ -2235,6 +2278,10 @@ public class ExploreTest {
             {"w-alias", "w-alias-again", true,
                     "one object twice, at another identity hash"},
             {"w-alias", "w-apart", false, "one object twice against two"},
+            {"k-ring", "k-ring-again", true,
+                    "a ring of forty writers, each unit named once"},
+            {"k-ring", "k-ring-deep", false,
+                    "another constant twenty writers deep in the ring"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[3], row[2], dependence(corpus, task,
@@ -2402,6 +2449,68 @@ public class ExploreTest {
                 unknownCorpus.inputShape("s-one", TARGET, unnamed, guard)
                         .equals(unknownCorpus.inputShape("s-two", TARGET,
                                 unnamed, guard)));
+    }
+
+    /**
+     * WHAT FED A MEMBER, BY SEMANTIC COUNTS ({@code Corpus#handoffs}): each
+     * distinct (handoff site, producer) once -- hdfs-11741's five keys
+     * against four are five distinct exports against four, while a content
+     * field read again four or three times is one delivery, and a queue's
+     * first item is one whatever its sequential counter (solr-adhoc-19 SC6:
+     * qn-0000000000 in one world, qn-0000000001 in another); two producers
+     * of one site are two.
+     */
+    @Test
+    public void aMemberIsFedByDistinctSitesAndProducers() throws Exception {
+        Path iteration = tree.newFolder("fed-by").toPath();
+        String queue = "SOLR_ZK#CONTENT:|overseer|queue|qn-000000000";
+        // session, the exports of PRODUCER WRITER takes in (by index; -1 a
+        // SIDECAR one), the content site it reads (null: none) and how often
+        Object[][] sessions = {
+            {"s-five", new int[] {0, 1, 2, 3, 4}, null, 0},
+            {"s-four", new int[] {0, 1, 2, 3}, null, 0},
+            {"s-again-4", new int[] {0, 0, 0, 0}, null, 0},
+            {"s-again-3", new int[] {0, 0, 0}, null, 0},
+            {"s-qn0", new int[] {}, queue + "0#|name", 1},
+            {"s-qn1", new int[] {}, queue + "1#|name", 2},
+            {"s-one", new int[] {0}, null, 0},
+            {"s-two", new int[] {0, -1}, null, 0},
+        };
+        for (Object[] row : sessions) {
+            Session session = new Session(iteration, (String) row[0]);
+            session.activation(TARGET, false);
+            session.activation(WRITER, false);
+            for (int k : (int[]) row[1]) {
+                Endpoint producer = k < 0 ? SENT : Endpoint.of(PRODUCER,
+                        "XCH.resp.block-key-id", ExecutionIndex.of(
+                                Collections.singletonList(Frame.of(
+                                        "PBHelper#convert#9", k))), 0);
+                session.attach(DELIVERED, "M_HOFF_" + k, "1", producer);
+            }
+            for (int read = 0; read < (Integer) row[3]; read++) {
+                session.attach(at(WRITER, (String) row[2], "ZkRead#3"),
+                        "M_CONTENT_" + read, "x", null);
+            }
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        List<OccurrenceAddress> factor = Collections.singletonList(WRITER);
+        Set<String> none = Collections.<String>emptySet();
+        Object[][] rows = {
+            {"s-five", "s-four", false, "five distinct exports against four"},
+            {"s-again-4", "s-again-3", true,
+                    "one export read four times against three"},
+            {"s-again-4", "s-one", true, "read again against read once"},
+            {"s-qn0", "s-qn1", true,
+                    "the first queue item at another counter, read again"},
+            {"s-one", "s-two", false, "two producers of one site"},
+        };
+        for (Object[] row : rows) {
+            assertEquals((String) row[3], row[2], corpus.inputShape(
+                    (String) row[0], TARGET, factor, none).equals(
+                    corpus.inputShape((String) row[1], TARGET, factor,
+                            none)));
+        }
     }
 
     /** What the guard at {@code siteId} depends on in one session's path of

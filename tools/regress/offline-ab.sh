@@ -144,7 +144,8 @@ ab_java() {
   local -a run=(env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}"
     timeout -k 30 "${AB_STAGE_TIMEOUT_S}"
     /usr/bin/time -f '%e %M' -o "${dir}/time.txt"
-    "${ab_java_bin}" "-Dcausynth.loop.default.bound=${ab_loop_bound}"
+    "${ab_java_bin}" "${campaign_engine_stack}"
+    "-Dcausynth.loop.default.bound=${ab_loop_bound}"
     "${ab_props[@]}" -cp "${cp}" "${main}" "$@")
   ab_place "${heap}"
   if campaign_host_is_local "${ab_placed_host}"; then
@@ -548,7 +549,7 @@ ab_landings() {
     || cp "${ab_acc_it}/recorded_schedule.jsonl" "${it}/"
   : >"${it}/obligation_results.jsonl"
   local -a planner=(env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}"
-    "${ab_java_bin}" -XX:+ExitOnOutOfMemoryError
+    "${ab_java_bin}" -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}"
     "-Dcausynth.loop.default.bound=${ab_loop_bound}" -cp "${ab_jar}"
     edu.uva.liftlab.graphchecker.explore.ExploreMain
     --sessions "${it}/sessions" --results "${it}/obligation_results.jsonl"

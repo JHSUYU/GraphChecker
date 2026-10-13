@@ -79,12 +79,16 @@ public final class RunSpellings {
         return new RunSpellings(next);
     }
 
-    /** {@code text} with each spelling named by its node, {@code {node}}. */
+    /** {@code text} with each spelling named by its node, {@code {node}}
+     *  (a spelling it does not hold costs a search, never a pattern: an
+     *  arm's key names every constant so, solr-adhoc-09 SC7). */
     public String name(String text) {
         if (text == null) return null;
         String named = text;
         for (String[] spelling : spellings) {
-            named = named.replace(spelling[0], "{" + spelling[1] + "}");
+            if (named.contains(spelling[0])) {
+                named = named.replace(spelling[0], "{" + spelling[1] + "}");
+            }
         }
         return named;
     }

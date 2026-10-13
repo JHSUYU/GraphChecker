@@ -503,6 +503,13 @@ campaign_jvm_footprint_mb() {
 
 campaign_engine_outgrown=""
 campaign_jvm_out_of_heap_status=3
+# Every engine JVM (a head's, the served planner, a solver) runs at this
+# thread stack: lowering a term recurses once per subterm, and a recorded
+# term ~750 binary operations deep overflowed the JVM's default stack in an
+# arm's key (solr-adhoc-19 SC7, the planner's round 3: StackOverflowError
+# in SmtLowering.binary under Corpus#written).  A stack is reserved, not
+# held: only the depth a walk reaches is resident.
+campaign_engine_stack=-Xss512m
 engine_java() {
   local heap=${engine_memory_mb:-8192} main="" start index next status
   local out
@@ -520,7 +527,8 @@ engine_java() {
       campaign_engine_jvm \
       "${campaign_root:+${campaign_root}/engine_peak_mb}" \
       env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${start}" "${java_bin}" \
-      -XX:+ExitOnOutOfMemoryError "$@" >"${out}" || status=$?
+      -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@" \
+      >"${out}" || status=$?
     if (( status != campaign_jvm_out_of_heap_status )); then
       cat -- "${out}"
       rm -f -- "${out}"
@@ -538,7 +546,7 @@ engine_java() {
     campaign_engine_jvm \
     "${campaign_root:+${campaign_root}/engine_peak_mb}" \
     env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-    -XX:+ExitOnOutOfMemoryError "$@"
+    -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" "$@"
 }
 
 # campaign_engine_jvm <peak_file> <command...>: one engine JVM of a head
@@ -3212,6 +3220,7 @@ campaign_solver_jvm() {
   require_file "GraphChecker jar" "${graphchecker_jar}"
   (cd "${graphchecker_work_dir}" \
     && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
+      "${campaign_engine_stack}" \
       "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
       "-Dcausynth.system.doors=${causynth_system_doors}" \
       -cp "${graphchecker_jar}" \
@@ -4945,7 +4954,7 @@ campaign_planner_serve() {
   require_file "GraphChecker jar" "${graphchecker_jar}"
   (cd "${graphchecker_work_dir}" \
     && exec env "GRAPH_CHECKER_ENGINE_MEMORY_MB=${heap}" "${java_bin}" \
-      -XX:+ExitOnOutOfMemoryError \
+      -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}" \
       "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
       "-Dcausynth.system.doors=${causynth_system_doors}" \
       -cp "${graphchecker_jar}" \
