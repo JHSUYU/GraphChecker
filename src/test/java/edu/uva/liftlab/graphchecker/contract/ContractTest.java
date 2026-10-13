@@ -755,6 +755,27 @@ public class ContractTest {
                 ActivationRow.ClaimKind.HANDOFF_TASK, null);
         assertEquals(handed, RowCodec.readActivation(
                 reline(RowCodec.writeActivation(handed)), new RowPool()));
+        assertTrue(handed.heldWhereItRuns(Collections.<String>emptySet()));
+        assertFalse("a hand-off task that served a queue",
+                handed.heldWhereItRuns(Collections.singleton(
+                        handed.threadKey())));
+        // A claimed row from before claimKind reads as NONE and keeps the
+        // send rule.
+        JsonObject legacy = RowCodec.writeActivation(handed);
+        legacy.remove("claimKind");
+        ActivationRow old = RowCodec.readActivation(reline(legacy),
+                new RowPool());
+        assertEquals(ActivationRow.ClaimKind.NONE, old.claimKind());
+        assertFalse(old.heldWhereItRuns(Collections.<String>emptySet()));
+        // Claimed work is keyed by its claimed start, never by its thread.
+        try {
+            ActivationRow.of("s-17897-1", anchor, "task-1", true, true,
+                    "pool-1-thread-1#20", ActivationRow.ClaimKind.ITEM, null);
+            fail("an item keyed by its thread");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("claimed start"));
+        }
         // An activation a lightweight entry hook published carries no thread
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.

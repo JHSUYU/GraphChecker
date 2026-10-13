@@ -1740,31 +1740,7 @@ public final class CausynthPipeline {
                     Stmt stmt = (Stmt) unit;
                     if (!stmt.containsInvokeExpr()) continue;
                     String site = SiteId.of(method.getSignature(), unitIndex);
-                    List<Unit> before = new ArrayList<>();
-                    int started = 0;
-                    for (Value carried : startedWork(stmt.getInvokeExpr())) {
-                        if (sentinel(body, stmt.getInvokeExpr(), carried)) {
-                            continue;
-                        }
-                        Value carrier = objectArg(body, carried, before);
-                        if (carrier instanceof NullConstant) continue;
-                        // What the work was submitted to (an executor's
-                        // hand-off decides how a claim of it is held:
-                        // Identity#handsOff): the call's receiver, never a
-                        // constructor's (not yet initialized before it).
-                        InvokeExpr call = stmt.getInvokeExpr();
-                        Value submittedTo = call instanceof InstanceInvokeExpr
-                                && !"<init>".equals(call.getMethodRef().name())
-                                ? ((InstanceInvokeExpr) call).getBase()
-                                : NullConstant.v();
-                        refs.bracket(before, Hook.START_WORK,
-                                StringConstant.v(site), carrier, submittedTo);
-                        started++;
-                    }
-                    if (started > 0) {
-                        insertBeforeSequence(body, stmt, before);
-                        filed += started;
-                    }
+                    filed += fileStarts(body, stmt, site, refs);
                     // Queue consumer claims the taken element here: it may
                     // be a lambda whose entry no weave reaches.
                     boolean claims = claimsFromQueue(stmt.getInvokeExpr());
@@ -2200,6 +2176,35 @@ public final class CausynthPipeline {
             }
         }
         return carried;
+    }
+
+    /**
+     * Files every work start {@code stmt} makes ({@link #startedWork}):
+     * {@code startWork(site, carrier, submittedTo)}, bracketed, before it.
+     * What the work was submitted to is the call's receiver -- an
+     * executor's hand-off decides how a claim of its task is held ({@code
+     * Identity#handsOff}) -- and null for a static call.  No start shape is
+     * a constructor, so the receiver is initialized.
+     *
+     * @return how many starts it filed
+     */
+    static int fileStarts(Body body, Stmt stmt, String site,
+                          HookCatalog refs) {
+        InvokeExpr call = stmt.getInvokeExpr();
+        Value submittedTo = call instanceof InstanceInvokeExpr
+                ? ((InstanceInvokeExpr) call).getBase() : NullConstant.v();
+        List<Unit> before = new ArrayList<>();
+        int started = 0;
+        for (Value carried : startedWork(call)) {
+            if (sentinel(body, call, carried)) continue;
+            Value carrier = objectArg(body, carried, before);
+            if (carrier instanceof NullConstant) continue;
+            refs.bracket(before, Hook.START_WORK, StringConstant.v(site),
+                    carrier, submittedTo);
+            started++;
+        }
+        if (started > 0) insertBeforeSequence(body, stmt, before);
+        return started;
     }
 
     /** {@link WorkStartSites.Types} of a declared type: its hierarchy. */

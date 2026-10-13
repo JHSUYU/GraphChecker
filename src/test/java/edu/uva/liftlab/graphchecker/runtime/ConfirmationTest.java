@@ -22,8 +22,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -1043,9 +1045,12 @@ public class ConfirmationTest {
     /**
      * An ORDER on a queued task or a queue item (a server pipeline's
      * request) is held at the send that started it, up the chain of such
-     * work; on any other activation -- a task its executor handed to a
-     * worker of its own among them -- where it runs; and refused, naming
-     * the claim's kind, where no send runs where it can be held.
+     * work; so is one on a hand-off task that served a queue (a
+     * ConcurrentUpdate client's Runner, its session's servingTasks) and on
+     * claimed work a row from before claimKind states no kind of.  On any
+     * other activation -- a hand-off task that served none among them --
+     * it is held where it runs; and it is refused, naming the claim's kind,
+     * where no send runs where it can be held.
      */
     @Test
     public void claimedWorkIsHeldAtTheSendThatStartedIt() {
@@ -1063,11 +1068,15 @@ public class ConfirmationTest {
         OccurrenceAddress served = OccurrenceAddress.parse(
                 "zk/server0#epoch0/region/REGION.final/ctx:Anchor:"
                         + relayed.id() + "@SYNC/test/idx:<a.Final: void f()>@0");
-        ActivationRow.ClaimKind none = ActivationRow.ClaimKind.NONE;
-        ActivationRow.ClaimKind item = ActivationRow.ClaimKind.ITEM;
-        ActivationRow.ClaimKind queued = ActivationRow.ClaimKind.QUEUED_TASK;
-        ActivationRow.ClaimKind handed = ActivationRow.ClaimKind.HANDOFF_TASK;
-        // row of each occurrence: its claim's kind, its anchor's producer
+        String none = "NONE";
+        String item = "ITEM";
+        String queued = "QUEUED_TASK";
+        String handed = "HANDOFF_TASK";
+        // a hand-off task that took other work on its thread
+        String serving = "HANDOFF_TASK serving";
+        // a row from before claimKind: a claimed key, no kind
+        String legacy = "NONE claimed";
+        // row of each occurrence: its claim, its anchor's producer
         Object[][] table = {
                 // held at the client's send, through the relaying stage
                 {served, item, relayed, prep, item, send, send},
@@ -1082,34 +1091,53 @@ public class ConfirmationTest {
                 {served, handed, null, null, none, null, null},
                 // a send made inside a handed-off task is held there
                 {served, item, relayed, prep, handed, null, relayed},
+                // a Runner that polled its update queue is held at its send
+                {served, serving, relayed, prep, none, null, relayed},
+                {served, serving, null, null, none, null, "ORDER_UNHELD"},
+                // and is no place to hold a send made inside it
+                {served, item, relayed, prep, serving, send, send},
+                // a claimed row of no stated kind keeps the send rule
+                {served, legacy, relayed, prep, none, null, relayed},
+                {served, legacy, null, null, none, null, "ORDER_UNHELD"},
         };
         for (Object[] row : table) {
             Map<String, ActivationRow> rows =
                     new HashMap<String, ActivationRow>();
-            put(rows, (OccurrenceAddress) row[0],
-                    (ActivationRow.ClaimKind) row[1], (Endpoint) row[2]);
+            Set<String> servingTasks = new HashSet<String>();
+            put(rows, servingTasks, (OccurrenceAddress) row[0],
+                    (String) row[1], (Endpoint) row[2]);
             if (row[3] != null) {
-                put(rows, (OccurrenceAddress) row[3],
-                        (ActivationRow.ClaimKind) row[4], (Endpoint) row[5]);
+                put(rows, servingTasks, (OccurrenceAddress) row[3],
+                        (String) row[4], (Endpoint) row[5]);
             }
             Object held;
             try {
                 held = Confirmation.submitter((OccurrenceAddress) row[0],
-                        rows::get);
+                        rows::get, servingTasks);
             } catch (IllegalStateException unheld) {
                 assertTrue(unheld.getMessage(), unheld.getMessage().contains(
-                        ((ActivationRow.ClaimKind) row[1]).description()));
+                        rows.get(((OccurrenceAddress) row[0]).id())
+                                .claimedAs(servingTasks)));
                 held = unheld.getMessage().split(":")[0];
             }
             assertEquals(row[0] + " " + row[1], row[6], held);
         }
     }
 
+    /** An activation row stating {@code claim} ("KIND", "KIND serving"
+     *  for a hand-off task that served a queue, "NONE claimed" for a row
+     *  from before claimKind). */
     private static void put(Map<String, ActivationRow> rows,
-                            OccurrenceAddress at,
-                            ActivationRow.ClaimKind kind, Endpoint producer) {
+                            Set<String> servingTasks, OccurrenceAddress at,
+                            String claim, Endpoint producer) {
+        String[] parts = claim.split(" ");
+        ActivationRow.ClaimKind kind =
+                ActivationRow.ClaimKind.valueOf(parts[0]);
+        String threadKey = kind == ActivationRow.ClaimKind.NONE
+                && parts.length == 1 ? "main#1"
+                : ActivationRow.CLAIMED + at.id();
+        if (claim.endsWith(" serving")) servingTasks.add(threadKey);
         rows.put(at.id(), ActivationRow.of("s0", at, "", false, true,
-                kind == ActivationRow.ClaimKind.NONE ? "main#1"
-                        : ActivationRow.CLAIMED + at.id(), kind, producer));
+                threadKey, kind, producer));
     }
 }

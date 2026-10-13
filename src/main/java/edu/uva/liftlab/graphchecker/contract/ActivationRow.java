@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import java.util.Set;
+
 /**
  * CONTRACT-SPEC §2.2: one activation a replay session entered, with its address.
  * {@code focused}: ran symbolically as the task's region (others run
@@ -21,9 +23,11 @@ public final class ActivationRow extends Value {
 
     /**
      * What the claim an activation runs in is ({@link #claimKind}): a task
-     * an executor handed to a worker of its own, which holds nothing queued
-     * behind it; a task a worker took off its executor's queue; an item a
-     * consumer took off a queue; or no claim (its thread orders it).
+     * an executor handed to a worker of its own, which holds nothing of its
+     * executor's queue behind it; a task a worker took off its executor's
+     * queue; an item a consumer took off a queue; or no claim (its thread
+     * orders it).  A row from before this field states NONE under a {@link
+     * #CLAIMED} key: claimed work of no stated kind, held at its send.
      */
     public enum ClaimKind {
         NONE("no claimed work"),
@@ -81,11 +85,17 @@ public final class ActivationRow extends Value {
                                    boolean focused, boolean instrumented,
                                    String threadKey, ClaimKind claimKind,
                                    Endpoint anchorProducer) {
+        String key = Fields.text(threadKey, "threadKey");
+        if (Fields.required(claimKind, "claimKind") != ClaimKind.NONE
+                && !key.startsWith(CLAIMED)) {
+            throw new IllegalArgumentException("an activation of claimed work"
+                    + " (" + claimKind + ") is keyed by its claimed start, not"
+                    + " by thread " + key);
+        }
         return new ActivationRow(Fields.text(sessionId, "sessionId"),
                 Fields.required(occurrence, "occurrence"),
-                Fields.required(taskId, "taskId"), focused, instrumented,
-                Fields.text(threadKey, "threadKey"),
-                Fields.required(claimKind, "claimKind"), anchorProducer);
+                Fields.required(taskId, "taskId"), focused, instrumented, key,
+                claimKind, anchorProducer);
     }
 
     public String sessionId() {
@@ -115,8 +125,8 @@ public final class ActivationRow extends Value {
         return threadKey;
     }
 
-    /** Whether it ran as claimed work on a consumer thread ({@link
-     *  #CLAIMED}): what holds it holds the items queued behind it. */
+    /** Whether it ran as claimed work ({@link #CLAIMED}): a task or a queue
+     *  item, ordered by its claimed start, not by the thread it ran on. */
     public boolean claimed() {
         return threadKey.startsWith(CLAIMED);
     }
@@ -128,12 +138,30 @@ public final class ActivationRow extends Value {
 
     /**
      * Whether holding it where it runs holds nothing else: it is no claimed
-     * work, or a task its executor handed to a worker of its own.  A
-     * queued task or a queue item is held where it was sent
-     * ({@code runtime.Confirmation#submitter}).
+     * work, or a task its executor handed to a worker of its own that served
+     * no queue ({@code servingTasks}, its session's {@link
+     * SessionManifest#servingTasks}).  A queued task, a queue item, a
+     * hand-off task that took other work on its thread (a ConcurrentUpdate
+     * client's Runner), and claimed work of no stated kind are held where
+     * they were sent ({@code runtime.Confirmation#submitter}).
      */
-    public boolean heldWhereItRuns() {
-        return !claimed() || claimKind == ClaimKind.HANDOFF_TASK;
+    public boolean heldWhereItRuns(Set<String> servingTasks) {
+        return !claimed() || claimKind == ClaimKind.HANDOFF_TASK
+                && !servingTasks.contains(threadKey);
+    }
+
+    /** Why claimed work is not held where it runs ({@link
+     *  #heldWhereItRuns}), in words. */
+    public String claimedAs(Set<String> servingTasks) {
+        if (claimKind == ClaimKind.NONE) {
+            return "claimed work its row states no kind of, a row from before"
+                    + " claimKind";
+        }
+        return claimKind.description()
+                + (claimKind == ClaimKind.HANDOFF_TASK
+                        && servingTasks.contains(threadKey)
+                        ? ", which took other work on its thread: it serves a"
+                                + " queue" : "");
     }
 
     /**

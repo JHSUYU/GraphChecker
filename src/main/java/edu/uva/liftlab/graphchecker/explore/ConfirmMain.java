@@ -1205,6 +1205,9 @@ public final class ConfirmMain {
         /** Occurrence id -> the session's activation of it. */
         private final Map<String, ActivationRow> activations =
                 new LinkedHashMap<String, ActivationRow>();
+        /** The session's hand-off tasks that served a queue ({@code
+         *  SessionManifest#servingTasks}): held at their sends. */
+        private final Set<String> servingTasks;
         /** Occurrence id -> where its events sat: activation frames, seq. */
         private final Map<String, List<Placed>> placed =
                 new LinkedHashMap<String, List<Placed>>();
@@ -1327,18 +1330,21 @@ public final class ConfirmMain {
         /**
          * Where {@code event} is held: before it in its own occurrence
          * ({@link #holdBefore}) -- also as a task its executor handed to a
-         * worker of its own (an Overseer command's Runner) -- or, where that
-         * runs as a queued task or a queue item on a consumer thread, at the
-         * entry of the send that started it ({@link Confirmation#submitter},
-         * the one rule): ZooKeeper's server applies a getData on the thread
-         * that must apply the delete ordered before it, so the client's
-         * getData is held.
+         * worker of its own that served no queue (an Overseer command's
+         * Runner) -- or, where that runs as a queued task, a queue item or a
+         * hand-off task that serves a queue (a ConcurrentUpdate client's
+         * Runner), at the entry of the send that started it ({@link
+         * Confirmation#submitter}, the one rule): ZooKeeper's server applies
+         * a getData on the thread that must apply the delete ordered before
+         * it, so the client's getData is held.  Held in place, the task
+         * holds what it holds there -- an Overseer command its task lock, a
+         * pool worker its pool's room -- until the order's timeout.
          */
         private Hold held(Endpoint event, long seq) {
             Endpoint send;
             try {
                 send = Confirmation.submitter(event.occurrence(),
-                        activations::get);
+                        activations::get, servingTasks);
             } catch (IllegalStateException unheld) {
                 throw new Refused(unheld.getMessage());
             }
@@ -1385,6 +1391,9 @@ public final class ConfirmMain {
         /** Where the session's events sat, and its writes: what an ORDER is
          *  built from ({@link #order}), with no closure. */
         private StateClosure(SessionReader session) {
+            servingTasks = session.manifest() == null
+                    ? Collections.<String>emptySet()
+                    : session.manifest().servingTasks();
             for (ActivationRow activation : session.activations()) {
                 activations.putIfAbsent(activation.occurrence().id(),
                         activation);

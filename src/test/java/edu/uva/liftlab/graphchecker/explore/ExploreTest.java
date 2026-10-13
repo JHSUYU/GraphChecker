@@ -8088,7 +8088,8 @@ public class ExploreTest {
                                     ? Collections.singletonList(
                                     "OBL." + sessionId)
                                     : Collections.<String>emptyList())
-                            .atClose(null, null, null, spelled, doorsOnly));
+                            .atClose(null, null, null, spelled, doorsOnly,
+                                    null));
         }
     }
 }

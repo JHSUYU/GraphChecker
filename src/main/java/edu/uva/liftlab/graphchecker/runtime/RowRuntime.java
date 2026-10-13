@@ -45,6 +45,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -1408,8 +1409,13 @@ public final class RowRuntime {
         for (Map.Entry<String, AtomicInteger> entry : UNNAMED.entrySet()) {
             unnamed.put(entry.getKey(), entry.getValue().get());
         }
+        // The hand-off tasks that served a queue, as their rows key them.
+        Set<String> serving = new TreeSet<String>();
+        for (String start : Identity.servingTasks()) {
+            serving.add(ActivationRow.CLAIMED + start);
+        }
         session.atClose(unnamed, CONCRETE, DERIVED, RunNames.stated(),
-                DOORS_ONLY);
+                DOORS_ONLY, serving);
         unattributedStores();
         // A root the obligation assigns that no mint planted: this run did
         // not run what was asked.

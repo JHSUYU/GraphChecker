@@ -52,6 +52,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
@@ -283,12 +287,15 @@ public class RowRuntimeTest {
      * the manifest counts every entry at the run's end.  So is a declared
      * source read where its occurrence ran concretely: the manifest states
      * the first reading at each occurrence, and nothing for a value the
-     * hook could not spell, and the roots found derived; a schema-1
-     * manifest states neither.
+     * hook could not spell, and the roots found derived; and the hand-off
+     * tasks that took queue items on their thread, as their rows key them
+     * (none in a manifest from before that field); a schema-1 manifest
+     * states none of it.
      */
     @Test
     public void theRunsEndStatesUnnamedEntriesAndConcreteReadings()
             throws Exception {
+        AtomicReference<String> runnerKey = new AtomicReference<>();
         RowRuntime.configure(sessionFile());
         RecordingWindow.open();
         try {
@@ -312,6 +319,31 @@ public class RowRuntimeTest {
             RowRuntime.concreteReading("ROOT.SERIAL", "occ#3", "");
             RowRuntime.derivedRoot("ROOT.EXPIRY");
             RunNames.spelled("auto0/node1", "10.0.0.1:8983_solr");
+            // A Runner on a SynchronousQueue pool polling its update queue,
+            // its run() entering no frame (a lineage-only class): the take
+            // replaces its claim, and it served all the same.
+            Object owner = new Object();
+            RuntimeTraceContext.registerSource(owner, NN);
+            ThreadPoolExecutor scheduler = new ThreadPoolExecutor(0, 1, 1L,
+                    TimeUnit.SECONDS, new SynchronousQueue<Runnable>());
+            Object runner = new Object();
+            Object update = new Object();
+            long request = RuntimeTraceContext.beginRequest(NN, "update");
+            Identity.startWork("<a.Client: void request()>#u3", runner,
+                    scheduler);
+            Identity.startWork("<a.Client: void request()>#u7", update,
+                    new LinkedBlockingQueue<Object>());
+            RuntimeTraceContext.endRequest(request);
+            Thread worker = new Thread(() -> {
+                long claimed = Identity.claimStart(runner);
+                runnerKey.set(ActivationRow.CLAIMED
+                        + Identity.claimedStart());
+                Identity.claimItem(update);
+                Identity.endClaim(claimed);
+            });
+            worker.start();
+            worker.join();
+            scheduler.shutdownNow();
             RowRuntime.closeSession();
         } finally {
             RecordingWindow.reset();
@@ -345,6 +377,12 @@ public class RowRuntimeTest {
         spelled.put("10.0.0.1:8983_solr", "auto0/node1");
         spelled.put("10.0.0.1:8983", "auto0/node1");
         assertEquals(spelled, manifest.runSpellings().asMap());
+        assertEquals(Collections.singleton(runnerKey.get()),
+                manifest.servingTasks());
+        JsonObject before = manifest.toJson();
+        before.remove("servingTasks");
+        assertEquals(Collections.<String>emptySet(),
+                SessionManifest.fromJson(before).servingTasks());
         JsonObject older = manifest.toJson();
         older.addProperty("schemaVersion", 1);
         try {
