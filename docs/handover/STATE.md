@@ -29,8 +29,8 @@ evidence is [../STATUS.md](../STATUS.md) "Solr checks"; the lead's notes, readin
   (owner 2026-10-12: a closure too large to converge may end at a declared, named bound): world depth 0 for 07 09 10 13
   19 21 40, 1 for 05 14 31 39, reasons and unasked counts in STATUS "Per-system surface".
 - **The Solr tree:** `gc/solr-final5` 827b46a609 (`/bigtemp/vnr3ne/wt/lucene-solr-final5`, owner agent ST; `GC_TREES=
-  /bigtemp/vnr3ne/wt/sg3e-trees`): all 17 workloads PASS natively; it carries the publication hook (a'). It goes to the
-  fork as `graphchecker/solr-checks` after SGF.
+  /bigtemp/vnr3ne/wt/sg3e-trees`): all 17 workloads PASS natively; it carries the publication hook (a'). It is the fork's
+  `graphchecker/solr-checks` (pushed 2026-10-13, verified from a fresh clone: 17/17 natives, 20 cases validate).
 - **Bug checks before SGF:** 18406, migrate, restore PASS on the merged code (rounds LD2, Z1W); reindex PASS (Z1W; the
   same bug as study #04); tra PASS on int10 + final5 (Z2Z: STATE_PAIRING_FLIPPED on node1's aliases view, confirmed,
   native 10/10 under (a')); 18413: its two CONFIRM refutations (SG3G, SG3H) fixed (the anchor's work past the path is no

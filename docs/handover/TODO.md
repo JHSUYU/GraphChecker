@@ -251,9 +251,12 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
 2. Verify each with `tools/rounds/round-verify.sh`; read every `.smt` with `tools/analysis/smt-legend.py --repo
    /bigtemp/vnr3ne/wt/lucene-solr-final5` against the readings and CHECKING §2; write each STATUS row; record every FP
    filtered ("COMPOSE SAT -> CONFIRM refute -> excluded -> UNSAT_CLOSED").
-3. The fork: push gc/solr-final5 (or its successor) as `graphchecker/solr-checks` to
-   `https://github.com/JHSUYU/solr.git` (never apache); trees.tsv, solr-cases.tsv and REPRODUCE §6 name it; verify §6
-   from a fresh clone of `system/solr` (a local clone; pushing `system/solr` needs the owner) + the fork.
+3. The fork: DONE 2026-10-13. `gc/solr-final5` 827b46a609 is `graphchecker/solr-checks` on
+   `https://github.com/JHSUYU/solr.git` (apache untouched); trees.tsv, solr-cases.tsv and REPRODUCE §6 name it. Verified
+   from a fresh clone (agent ST, report 27): a sparse clone of `system/solr` d119c91f8 built, `prepare-trees.sh` with the
+   default SOLR_FORK cloned the branch, all 17 workloads PASSED natively and all 20 cases validate
+   (`/bigtemp/vnr3ne/wt/fork-check-gc` + `fork-trees`, log `gc-out/solr-sg3/prepare-fork.log`). A later tree goes there
+   as a fast-forward of the same branch.
 
 ### 5. Where things live
 
