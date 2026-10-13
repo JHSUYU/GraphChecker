@@ -353,9 +353,10 @@ public final class ObligationFactory {
      *       is, so two paths differing only there ask the same
      *       question.</li>
      *   <li><b>Its world, by its effect at the task</b>: what the world
-     *       delivered to the task and to the factor members that feed it
-     *       ({@link Corpus#inputShape}), the writes at the locations the
-     *       guard and its kept conditions read.</li>
+     *       delivered the query ({@link Corpus#inputShape}): the handoffs
+     *       the guard and its kept conditions state, by what binds them, and
+     *       the factor members that wrote at the locations they read, by
+     *       what they wrote and what fed them.</li>
      * </ul>
      *
      * <p>Never the session, and never the inherited flips' prefixes, which
@@ -392,6 +393,11 @@ public final class ObligationFactory {
         // Per occurrence, site and outcome, the different conditions decided
         // there.
         Map<String, Set<String>> kept = new TreeMap<String, Set<String>>();
+        // The terms the query states: the guard's, then its kept conditions'
+        // (Corpus#inputShape names the handoffs they read by what binds
+        // them).
+        List<String> stated = new ArrayList<String>();
+        stated.add(flipped.term());
         // The domain of every integral configuration the guard or a kept
         // condition names: a corpus that widens it owes the arm again
         // (Corpus#domainOf).
@@ -403,6 +409,7 @@ public final class ObligationFactory {
                     + condition.siteId() + "=" + condition.outcome(),
                     key -> new HashSet<String>()).add(corpus.decisionShape(
                     path.sessionId, condition.term()));
+            stated.add(condition.term());
             domains(corpus, path.sessionId, condition.term(), domains);
         }
         StringBuilder text = new StringBuilder();
@@ -412,7 +419,7 @@ public final class ObligationFactory {
         }
         return ArtifactIO.digest(text + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
-                corpus.feeders(task), rests.locations())
+                corpus.feeders(task), rests.locations(), stated)
                 + (domains.isEmpty() ? "" : "\n" + domains), 16);
     }
 

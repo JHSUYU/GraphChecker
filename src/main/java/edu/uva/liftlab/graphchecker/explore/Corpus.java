@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.ContentPort;
 import edu.uva.liftlab.graphchecker.contract.ContextShape;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
@@ -687,27 +688,38 @@ public final class Corpus implements Arms.Rows {
      * the cause (keying by upstream flips asks one question per flip
      * combination).
      *
-     * <p>Covers the occurrence -- whether it ran, and per site how many
-     * handoffs from which producers -- and each factor member that FEEDS it
-     * ({@link #feeders}: they write state it reads) and delivered it
-     * something the query states: its handoffs (whole, not only those the
-     * guard names: the arm consumes them after the flip -- hdfs-11741: dn1's
-     * expiry scan names only its own clock, and the witness is that scan
-     * flipped in the world whose key conversion delivered four keys instead
-     * of five), and its writes at {@code locations}, every location a read
-     * the guard and its kept conditions rest on reads ({@code
-     * Independence#locations}), each by what it wrote as the guard reads it,
-     * canonical ({@link #written}): a member flip that writes another value
-     * there, a second writer of another class, or a pinned value another
-     * read of the task observed, re-key.  A member that only wrote state
-     * the region reads elsewhere is no line: it is no conjunct of the query,
-     * and a world that changed it is reached by nesting from the answer's
-     * session (PIPELINE §7.5), as an inherited prefix is (solr-adhoc-21 RX4:
-     * such lines re-keyed half the re-asks, a state watcher or a client
-     * STATUS that ran in one replay only).  Trap: never a member's writes
-     * elsewhere, never the region's own reads or decisions (behaviour, not
-     * input), never delivered VALUES carried symbolically (clock values
-     * differ every run).</p>
+     * <p>Covers the occurrence -- whether it ran, its distinct (handoff
+     * site, producer) pairs ({@link #handoffs}), and each handoff the query
+     * STATES (a symbol of {@code stated}: the guard's term, then its kept
+     * conditions') by what binds it there ({@link #handoffName}: its
+     * producer's arms, or its pinned arrival), the guard's in the order it
+     * names them, its kept conditions' as a set -- and each factor member
+     * that FEEDS it ({@link #feeders}) and was delivered something or wrote
+     * where the query reads: its MESSAGE handoffs (whole, not only those
+     * the guard names: the arm consumes them after the flip -- hdfs-11741's
+     * witness is dn1's expiry scan flipped in the world whose key
+     * conversion delivered addKeys four keys instead of five, while the
+     * guard rests on none of addKeys' writes), and its writes at {@code
+     * locations}, every location a read the guard and its kept conditions
+     * rest on reads ({@code Independence#locations}), each by what it wrote
+     * as the guard reads it, canonical ({@link #written}).  A member flip
+     * that writes another value there, a second writer of another class, or
+     * a pinned value another read of the task observed, re-key, as does a
+     * producer delivering the task another value the query states.  What a
+     * member READ OF A STORE (a content port, {@link ContentPort}) is a
+     * read, no delivery: the key names it wherever it reaches the query --
+     * a write's term, a handoff the query states -- and a member with
+     * neither a message handoff nor a write where the query reads is no
+     * line (solr-adhoc-19 SC6: members that read cluster state and wrote
+     * nothing the guard reads, present in some worlds only, 32 ids of one
+     * arm).  Nor is a member that only wrote state the region reads
+     * elsewhere: it is no conjunct of the query, and a world that changed
+     * it is reached by nesting from the answer's session (PIPELINE §7.5), as
+     * an inherited prefix is (solr-adhoc-21 RX4: state watchers and client
+     * STATUS calls that ran in one replay only re-keyed half the re-asks).
+     * Trap: never a member's writes elsewhere, never the region's own reads
+     * or decisions (behaviour, not input), never delivered VALUES carried
+     * symbolically (clock values differ every run).</p>
      *
      * <p>A function of the session alone, whatever the corpus has learned
      * since: the members as a set (the order the corpus lists the factor in
@@ -717,32 +729,52 @@ public final class Corpus implements Arms.Rows {
      * every replay renumbers -- a member's writes are a set of (site, what it
      * wrote), and identical lines count once: a poll or a watch callback
      * that wrote the same value k or k' times, or under renumbered ids,
-     * delivered one world (solr-adhoc-07/21 IB1).  A member's handoffs are
-     * its distinct (attach site, producer) pairs ({@link #handoffs}).  A
-     * run's handle for an object is numbered by where the key first meets
-     * it ({@link #numbered}).  LIMITS: a member's write the recording states
-     * at no write site (unwoven) re-keys no arm; the downstream of a
-     * schedule variant -- a member that ran in one replay of a world only --
-     * is not asked again: schedules are not worlds.</p>
+     * delivered one world (solr-adhoc-07/21 IB1).  A run's handle for an
+     * object is numbered by where the key first meets it ({@link
+     * #numbered}).  LIMITS: a member's write the recording states at no
+     * write site (unwoven) re-keys no arm; nor does a member's store read
+     * that reaches the query by no read or handoff it states (one that
+     * changed only what the arm consumes after the flip: 11741's shape,
+     * were addKeys' keys read from a store); the downstream of a schedule
+     * variant -- a member that ran in one replay of a world only -- is not
+     * asked again: schedules are not worlds.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor,
-                             Set<String> locations) {
+                             Set<String> locations, List<String> stated) {
         Set<String> members = new TreeSet<String>(BY_SHAPE);
         for (OccurrenceAddress member : factor) {
             if (member.equals(occurrence)) continue;
-            Set<String> handoffs = handoffs(sessionId, member);
             Set<String> writes = writeSites(sessionId, member, occurrence,
                     locations);
-            if (handoffs.isEmpty() && writes.isEmpty()) continue;
+            Set<String> messages = handoffs(sessionId, member, false);
+            if (writes.isEmpty() && messages.isEmpty()) continue;
             members.add(classOf(member) + ':'
-                    + (activation(sessionId, member) != null) + handoffs
-                    + writes);
+                    + (activation(sessionId, member) != null)
+                    + messages + writes);
+        }
+        List<String> guard = new ArrayList<String>();
+        Set<String> kept = new TreeSet<String>(BY_SHAPE);
+        for (int at = 0; at < stated.size(); at++) {
+            for (String symbol : termSymbols(sessionId, stated.get(at))) {
+                if (symbolKind(sessionId, symbol) != SymbolKind.HANDOFF) {
+                    continue;
+                }
+                String bound = tokenName("handoff|" + sessionId + "|"
+                        + symbol, () -> handoffName(attach(sessionId,
+                        symbol), new Naming()));
+                if (at == 0) {
+                    guard.add(bound);
+                } else {
+                    kept.add(bound);
+                }
+            }
         }
         StringBuilder text = new StringBuilder();
         text.append(occurrence.id()).append(':')
                 .append(activation(sessionId, occurrence) != null)
-                .append(handoffs(sessionId, occurrence));
+                .append(handoffs(sessionId, occurrence, true)).append(guard)
+                .append(kept);
         for (String member : members) text.append('\n').append(member);
         return ArtifactIO.digest(numbered(text.toString(),
                 new LinkedHashMap<String, String>()), 16);
@@ -826,12 +858,19 @@ public final class Corpus implements Arms.Rows {
      * first appearance ({@link #handle}); one no row places, by its endpoint,
      * a handle too.  A set: the replies to one call arrive in any order
      * (hdfs-adhoc-07 CC5).  A site's sequential znode suffix is a timing
-     * name ({@link #sequences}).
+     * name ({@link #sequences}).  {@code stores}: whether what it read of a
+     * store ({@link ContentPort}) counts -- a member's does not: a store
+     * read is named wherever it reaches the query ({@link #inputShape}).
      */
     private Set<String> handoffs(String sessionId,
-                                 OccurrenceAddress occurrence) {
+                                 OccurrenceAddress occurrence,
+                                 boolean stores) {
         Set<String> fed = new TreeSet<String>(BY_SHAPE);
         for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            if (!stores && ContentPort.parse(attach.endpoint().site())
+                    != null) {
+                continue;
+            }
             Endpoint producer = attach.producer();
             String from = producer == null ? ""
                     : "<-" + (producer.occurrence() == null

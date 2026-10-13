@@ -468,7 +468,17 @@ Correctness:
     2026-10-12: hdfs-11741's distinct exports stay apart, a field re-read 4 or 3 times or a
     `qn-0000000000` against `qn-0000000001` is one world); a kept decision is its
     site and outcome with how many different conditions it decided there (`Corpus#decisionShape`),
-    never its ordinal. A member that only wrote state the region reads elsewhere is no line (no
+    never its ordinal. A member's handoffs count only as MESSAGES: what it read of a store (a
+    content port, `contract/ContentPort`) is a read, named wherever it reaches the query (a write's
+    term, a handoff the query states), and a member with neither a message handoff nor a write where
+    the query reads is no line ((C6), 2026-10-12: solr-adhoc-19 SC6 r14 6121 ids -> (B) 6075 ->
+    (C6) 2738, one arm's 32 -> 1; SC7 r2 2001 -> 1986 -> 1250); hdfs-11741's addKeys, fed keys
+    by messages, stays a line though the guard rests on none of its writes (what the arm consumes
+    after the flip). The handoffs the query STATES -- the guard's in its order, its kept conditions'
+    as a set -- are named by what binds them (`Corpus#handoffName`), so a member that delivers the
+    task another value there re-keys even with no line. LIMIT: a member's store read that reaches
+    the query by no read or handoff it states (one that changed only what the arm consumes after the
+    flip) re-keys no arm. A member that only wrote state the region reads elsewhere is no line (no
     conjunct of the query; a world that changed it is reached by nesting): LIMIT, the downstream of
     a schedule variant -- a watcher or a client STATUS that ran in one replay of a world only -- is
     not asked again (schedules are not worlds; solr-adhoc-21 RX4: such lines re-keyed half the
