@@ -755,7 +755,7 @@ public class ConfirmationTest {
                         "a lazy fetch");
             } else {
                 Confirmation.published(view, version, request,
-                        "a request's refresh");
+                        "a request's refresh", null, null);
             }
             String because = Confirmation.untakenBecause(id);
             List<String> mismatches = Confirmation.close();
@@ -802,7 +802,8 @@ public class ConfirmationTest {
             assertTrue(publishing(view, 4L, decoder,
                     publication(applied, 4L)));
             Confirmation.published(view, synchronous,
-                    OccurrenceAddress.parse(MINT), "a forced refresh");
+                    OccurrenceAddress.parse(MINT), "a forced refresh", null,
+                    null);
             Confirmation.exited(until);
             if (synchronous != -1L) awaitApplied(applied, 1);
             Thread.sleep(100L);

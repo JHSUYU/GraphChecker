@@ -3865,6 +3865,67 @@ public class ComposerTest {
     }
 
     /**
+     * AN EXPORT NO RENDERING RELATES IS NO DELIVERY, AND ANOTHER BINDS
+     * (review R4): in the recording the producer sent the leaf as a char,
+     * which renders as itself and is no value of the String or Boolean
+     * read, and in the flip as the String "true".  The char export alone is
+     * no delivery, named as a DIAGNOSTIC; the reads bind to the export that
+     * relates, and the flip is the witness.  Refused there, every path met
+     * the recording's char first and was dropped: no claim.
+     */
+    @Test
+    public void anExportNoRenderingRelatesIsNoDeliveryAndAnotherBinds()
+            throws Exception {
+        String parsedBoolean = "M_Z_field_HOFF.d2";
+        String parsedString = "M_L'String'_field_HOFF.d2";
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.leader",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.leader",
+                at("attach#1", 0), 0);
+        Path iteration = folder.newFolder("leaf-unrelated").toPath();
+        // The recording: the writer sent the char 'f', the reader parsed a
+        // Boolean.
+        Session recording = new Session(iteration, "s0", false);
+        recording.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                false, true);
+        recording.marker("false");
+        recording.expression("EXPR.0000000000000e11", integer("C", 102L));
+        recording.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        recording.export(producer, "EXPR.0000000000000e11", "C", 1L, "f");
+        recording.attach(consumer, parsedBoolean, "false", producer);
+        recording.target(parsedBoolean, false, true);
+        recording.write();
+        Session flip = new Session(iteration, "s1", true);
+        flip.activation(PRODUCER, "thread#" + PRODUCER.regionId(), true,
+                true);
+        flip.marker("true");
+        flip.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not " + MARKER
+                + "))");
+        JsonObject sent = vmLeaf("ConStringSymbolExp", "Y_L'String'_true",
+                "java/lang/String");
+        flip.expression("EXPR.0000000000000e12", sent);
+        flip.export(producer, "EXPR.0000000000000e12", "Ljava/lang/String;",
+                1L, "true");
+        flip.attach(consumer, parsedString, "Ljava/lang/String;", "true",
+                producer);
+        flip.expression("EXPR.0000000000000e13", vmString("equals",
+                symbol(parsedString, "java/lang/String"), sent));
+        flip.target("EXPR.0000000000000e13", true, true);
+        flip.write();
+
+        Composer.Composition composition = compose(iteration, 8);
+        ClaimPolicy.Decision witness = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals(ClaimKind.MARKER_FLIPPED, witness.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                witness.claim().movedRoots());
+        assertTrue("the char export is named: " + composition.gaps(), says(
+                composition.gaps(), GapKind.UNSTATED_VALUE,
+                "no rendering relates"));
+    }
+
+    /**
      * EACH LEAF LIFT IS JAVA'S OWN (review S7/S9): a reader's symbol at the
      * sort its read parsed, bound to what a writer sent at another, is
      * exactly that sort's parse or rendering of it -- Boolean.parseBoolean

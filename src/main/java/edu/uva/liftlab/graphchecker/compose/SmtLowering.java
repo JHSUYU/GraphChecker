@@ -3876,11 +3876,27 @@ public final class SmtLowering {
     }
 
     /** A reader's leaf a run sent at a sort no rendering relates to the
-     *  one the read parsed ({@link #leafEquals} null), refused by name. */
+     *  one the read parsed ({@link #leafEquals} null), refused by name: an
+     *  arm's delivery, which is no value of the read ({@code
+     *  ComposedFamilies#received}). */
     public void leafRefused(String symbol, Sort parsed, Sort sent) {
-        refuse(SORT_CONFLICT + ":" + symbol, "a run sent this leaf as "
-                + sent + " and the read parsed it as " + parsed + ", which"
-                + " no rendering relates");
+        refuse(SORT_CONFLICT + ":" + symbol, unrelated(parsed, sent));
+    }
+
+    /**
+     * The same of one export among a leaf's alternatives ({@code
+     * Composer#attestedArrival}, {@code #delivery}): that binding alone is
+     * no delivery, another may bind the leaf, and the arrival is never a
+     * refused conjunction -- named, a DIAGNOSTIC (review R4).
+     */
+    public void leafUnrelated(String symbol, Sort parsed, Sort sent) {
+        top().diagnostics.put(SORT_CONFLICT + ":" + symbol + ":" + sent,
+                unrelated(parsed, sent));
+    }
+
+    private static String unrelated(Sort parsed, Sort sent) {
+        return "a run sent this leaf as " + sent + " and the read parsed it"
+                + " as " + parsed + ", which no rendering relates";
     }
 
     /**

@@ -2398,7 +2398,8 @@ public final class Composer {
             lowering.declareStated(attach.symbol(), sort);
             lowering.freedArrival(attach.symbol(), "attested producer "
                     + attach.producer().id() + ", whose "
-                    + attested.size() + " export(s) did not lower");
+                    + attested.size() + " export(s) did not lower to a value"
+                    + " of the read's sort");
             return;
         }
         // No producer the corpus attests delivered it.
@@ -2536,7 +2537,8 @@ public final class Composer {
             String received = lowering.leafEquals(attach.symbol(), sort,
                     attach.javaType(), delivered, export.javaType());
             if (received == null) {
-                lowering.leafRefused(attach.symbol(), sort, delivered.sort);
+                // Not this alternative; the others may bind (R4).
+                lowering.leafUnrelated(attach.symbol(), sort, delivered.sort);
                 continue;
             }
             SessionReader reader = corpus.session(export.sessionId());
@@ -2571,7 +2573,8 @@ public final class Composer {
                                     List<ExportRow> attested) {
         // The symbol is the sort its own read parsed; an arm that sent the
         // leaf at another scalar sort binds it through its rendering
-        // (SmtLowering#leafEquals), any other is no delivery of it.
+        // (SmtLowering#leafEquals), any other is no delivery of it, named,
+        // and another may bind: never a refused conjunction (#arrival).
         Sort parsed = JavaSmtSorts.sortOfJava(attach.javaType());
         for (ExportRow export : attested) {
             Term delivered = composedFamilies.lower(export.sessionId(),
@@ -2579,7 +2582,7 @@ public final class Composer {
             if (delivered == null) continue;
             if (lowering.leafEquals(attach.symbol(), parsed,
                     attach.javaType(), delivered, export.javaType()) == null) {
-                lowering.leafRefused(attach.symbol(), parsed,
+                lowering.leafUnrelated(attach.symbol(), parsed,
                         delivered.sort);
                 continue;
             }

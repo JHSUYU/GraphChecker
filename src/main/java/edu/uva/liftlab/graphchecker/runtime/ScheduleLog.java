@@ -28,6 +28,7 @@ import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -118,6 +119,13 @@ public final class ScheduleLog {
     static final int CEILING = 8;
     private static final long CPU_SAMPLE_MS = 1000L;
 
+    /**
+     * The one lock of the order.  Lock order: {@code Confirmation}'s lock,
+     * then this one, then {@code FocusedReplay}'s -- a superseded
+     * publication's turn is settled under Confirmation's ({@link
+     * #turnNotTaken}) -- and nothing taken under this one calls back up that
+     * chain: this class never calls Confirmation.
+     */
     private static final Object LOCK = new Object();
 
     interface Sink {
@@ -355,17 +363,41 @@ public final class ScheduleLog {
     }
 
     /**
-     * A node put {@code site}'s version of a view in force (a notification's
-     * publication or the system's own): its open PUBLISH slots of that view
-     * at an older version will never come -- a node publishes a version at
-     * most once, never an older one after a newer -- so each is given up at
-     * once, by name, rather than by the watchdog at the frontier's cost.  A
-     * given-up slot is still taken if its event comes late.
+     * A node's publication of {@code site}'s version of a view reached its
+     * door (a notification's, before its turn is asked, or the system's own
+     * at once): the node's open PUBLISH slots of that view at an older
+     * version, but those still on their way ({@code coming}: deferred on
+     * the node's publisher), will never come -- a notification fetches the
+     * newest version, so a callback that fetched this one never publishes
+     * an older one, and a node never publishes an older version after a
+     * newer -- so each is given up now, by name, not by the watchdog at the
+     * frontier's cost.  Now, not once this version is in force: its own
+     * turn is after theirs, so it would wait for them (review R3: a
+     * callback that fetched v9 and never published v8).  The system's own
+     * publication at once ({@code atOnce}) settles this version's turn too:
+     * the fetch that made it set the watch its next notification answers,
+     * so no notification publishes this version after it (Z3Q's seed: a
+     * command's refresh published v4 on the Overseer's node before the
+     * recorded callback's turn, which stood 15 s).  A given-up slot is still
+     * taken if its event comes late.
      */
-    public static void publishedPast(String node, String site) {
-        settleTurns(node, site, true, "its node put " + site + " in force,"
-                + " so this older version of the view will never be"
-                + " published");
+    public static void publicationReached(String node, String site,
+                                          Set<Long> coming, boolean atOnce) {
+        settleTurns(node, site, atOnce ? Settle.UP_TO : Settle.OLDER, coming,
+                "its node's " + (atOnce ? "own publication of " + site
+                        + " at once" : "publication of " + site + " reached"
+                        + " its door") + ", so this version, not on its way,"
+                        + " will never be published by a notification");
+    }
+
+    /** Which open PUBLISH slots of a view {@link #settleTurns} settles. */
+    private enum Settle {
+        /** Below the version. */
+        OLDER,
+        /** At or below it. */
+        UP_TO,
+        /** At it. */
+        AT
     }
 
     /**
@@ -374,14 +406,14 @@ public final class ScheduleLog {
      * up now by name.
      */
     public static void turnNotTaken(String node, String site, String why) {
-        settleTurns(node, site, false, why);
+        settleTurns(node, site, Settle.AT, Collections.<Long>emptySet(), why);
     }
 
-    /** {@link #publishedPast} ({@code older}: every open PUBLISH slot of
-     *  the view at a version below {@code site}'s) and {@link #turnNotTaken}
-     *  (its own slot). */
-    private static void settleTurns(String node, String site, boolean older,
-                                    String why) {
+    /** {@link #publicationReached} and {@link #turnNotTaken}: the node's
+     *  open PUBLISH slots of the view {@code which} names against {@code
+     *  site}'s version, but those {@code coming}. */
+    private static void settleTurns(String node, String site, Settle which,
+                                    Set<Long> coming, String why) {
         if (node == null || site == null || !RecordingWindow.opened()) return;
         int at = site.lastIndexOf('@');
         if (at < 0) return;
@@ -414,7 +446,10 @@ public final class ScheduleLog {
                     } catch (NumberFormatException none) {
                         continue;
                     }
-                    if (older ? held >= version : held != version) continue;
+                    boolean settles = which == Settle.AT ? held == version
+                            : held < version || which == Settle.UP_TO
+                            && held == version;
+                    if (!settles || coming.contains(held)) continue;
                     giveUpLocked(slot);
                     stateLocked("schedule-publish-settled#" + slot,
                             event.render() + " given up: " + why);
@@ -424,6 +459,214 @@ public final class ScheduleLog {
             }
         } finally {
             unmute();
+        }
+    }
+
+    /**
+     * Which of a node's views' head publications, by their PUBLISH {@code
+     * sites}, are due now ({@link #dueNow}); the node's publisher asks, never
+     * blocking on a turn (review B2), and waits on its own primitive between
+     * asks.  For the rest it is a WAITER, as a held timed wait is ({@link
+     * #turn(Wake)}): at the earliest of their slots, so the watchdog runs on
+     * its asks and its give-up stops at that slot -- a publication whose
+     * predecessor never comes gives way by name, and no other waiter's
+     * give-up runs past it (review R1).  It waits no more once an ask finds
+     * none not due, or {@link #waitsNoMore}.
+     */
+    public static Set<String> duePublications(String node,
+                                              Collection<String> sites) {
+        Set<String> due = new HashSet<String>();
+        if (!RecordingWindow.opened()) {
+            due.addAll(sites);
+            return due;
+        }
+        mute();
+        try {
+            Stance at = viewStance(node);
+            Thread self = Thread.currentThread();
+            synchronized (LOCK) {
+                loadOrderLocked();
+                while (true) {
+                    due.clear();
+                    int earliest = Integer.MAX_VALUE;
+                    for (String site : sites) {
+                        Pending event = holds ? pending(
+                                ScheduleEvent.Kind.PUBLISH, site, "", at)
+                                : null;
+                        int slot = event == null ? -1 : slotOf(event);
+                        if (slot < 0 || !heldKind(slot) || dueLocked(slot)) {
+                            due.add(site);
+                        } else {
+                            earliest = Math.min(earliest, slot);
+                        }
+                    }
+                    if (earliest == Integer.MAX_VALUE) {
+                        if (doneWaitingLocked(self)) LOCK.notifyAll();
+                        return due;
+                    }
+                    waitLocked(self, earliest);
+                    if (!due.isEmpty() || !watchdogLocked()) return due;
+                }
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /** This thread waits for no turn any more: a wait that ended on its own
+     *  primitive ({@link #withdraw}), or a publisher with no publication
+     *  left to wait for ({@link #duePublications}). */
+    public static void waitsNoMore() {
+        synchronized (LOCK) {
+            Thread self = Thread.currentThread();
+            LET_GO.remove(self);
+            HELD.remove(self);
+            if (doneWaitingLocked(self)) LOCK.notifyAll();
+        }
+    }
+
+    /**
+     * A PUBLISH whose apply runs on its node's publisher, its turn due: the
+     * turn is taken once the publication is in force ({@link
+     * #publicationInForce}), so nothing the order lets go after it reads
+     * past it (review S1) -- unless the apply waits on something rather
+     * than computes while it stands at the frontier, past {@link
+     * #PUBLISH_GRACE_MS}: the system's own locks it takes (Solr's
+     * collection refresh lock, the reader's update lock) may be held by a
+     * thread the order holds behind it (a forced refresh's READ behind the
+     * WRITE behind this slot), so the watchdog takes the turn on its behalf,
+     * named, and the order moves (review R2; {@link #inFlightLocked}).
+     */
+    static final class Publication {
+        private final Pending event;
+        private final int slot;
+        private final Thread publisher;
+        private final long began;
+        /** The last look at its apply: when, the publisher's CPU (ns, -1
+         *  unknown) and the collectors' time (ms) then. */
+        private long lookedAt;
+        private long cpuLooked;
+        private long collectedLooked;
+        /** The watchdog took its turn on its behalf (guarded by LOCK). */
+        private boolean taken;
+
+        private Publication(Pending event, int slot, Thread publisher,
+                            long began) {
+            this.event = event;
+            this.slot = slot;
+            this.publisher = publisher;
+            this.began = began;
+            this.lookedAt = began;
+            this.cpuLooked = cpuOf(publisher);
+            this.collectedLooked = collectedMillis();
+        }
+    }
+
+    /** How long a PUBLISH's apply at the frontier may wait on something,
+     *  rather than compute, before its turn is taken for it, in ms. */
+    static final long PUBLISH_GRACE_MS = 500L;
+
+    /** The PUBLISH applies in flight, by slot ({@link Publication}). */
+    private static final Map<Integer, Publication> IN_FLIGHT =
+            new HashMap<Integer, Publication>();
+
+    /**
+     * The publisher on this thread begins the apply of {@code site}'s
+     * publication on {@code node}, its turn due: the in-flight publication
+     * whose turn {@link #publicationInForce} takes, or null where no slot
+     * holds it.
+     */
+    public static Publication publicationBegins(String node, String site) {
+        if (!RecordingWindow.opened()) return null;
+        mute();
+        try {
+            synchronized (LOCK) {
+                loadOrderLocked();
+                if (!holds) return null;
+                Pending event = pending(ScheduleEvent.Kind.PUBLISH, site, "",
+                        viewStance(node));
+                int slot = event == null ? -1 : slotOf(event);
+                if (slot < 0 || state[slot] != OPEN) return null;
+                Publication applying = new Publication(event, slot,
+                        Thread.currentThread(), System.currentTimeMillis());
+                IN_FLIGHT.put(slot, applying);
+                return applying;
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /** {@code site}'s publication on {@code node} is in force: its PUBLISH
+     *  turn, unless the watchdog took it for its apply ({@code applying},
+     *  {@link #publicationBegins}). */
+    public static void publicationInForce(Publication applying, String node,
+                                          String site) {
+        if (applying != null) {
+            synchronized (LOCK) {
+                IN_FLIGHT.remove(applying.slot, applying);
+                if (applying.taken) return;
+            }
+        }
+        observe(ScheduleEvent.Kind.PUBLISH, site, "", viewStance(node));
+    }
+
+    /**
+     * The watchdog's first look ({@link #watchdogLocked}): a PUBLISH's apply
+     * in flight at the frontier.  Its publisher is an engine thread, whose
+     * CPU no look counts, so it is looked at here: computing, it holds the
+     * order as any owner of the frontier at work does (true: nothing else is
+     * done), up to {@link #CEILING} timeouts; waiting on something past
+     * {@link #PUBLISH_GRACE_MS} -- under half its time on CPU or in the
+     * collectors since the last look -- its turn is taken for it, the event
+     * written now and named, and the publication lands when its apply ends
+     * (review R2).  What the watchdog answers then (true: it settled the
+     * turn; false: nothing yet), or null where no apply stands there, or
+     * past the ceiling, and the watchdog looks on as for any frontier.
+     */
+    private static Boolean inFlightLocked(long now) {
+        Publication applying = IN_FLIGHT.get(firstBlocking);
+        if (applying == null || state[applying.slot] != OPEN) return null;
+        if (now - applying.lookedAt >= PUBLISH_GRACE_MS) {
+            long cpu = cpuOf(applying.publisher);
+            long collected = collectedMillis();
+            long span = now - applying.lookedAt;
+            long used = cpu < 0L || applying.cpuLooked < 0L ? span
+                    : TimeUnit.NANOSECONDS.toMillis(cpu - applying.cpuLooked);
+            long busy = used + collected - applying.collectedLooked;
+            applying.lookedAt = now;
+            applying.cpuLooked = cpu;
+            applying.collectedLooked = collected;
+            if (2L * busy < span) {
+                applying.taken = true;
+                IN_FLIGHT.remove(applying.slot);
+                takeLocked(applying.slot);
+                appendLocked(applying.event);
+                stateLocked("schedule-publish-blocked#" + applying.slot,
+                        applying.event.render() + " at slot " + applying.slot
+                                + ": its apply on "
+                                + applying.publisher.getName() + " waited on"
+                                + " something, not computing, " + span
+                                + " ms of the " + (now - applying.began)
+                                + " ms it ran at the frontier (a lock the"
+                                + " system's publication takes may be held by"
+                                + " a thread the order holds behind it): its"
+                                + " turn is taken now, and the publication"
+                                + " lands when the apply ends");
+                return Boolean.TRUE;
+            }
+        }
+        return now - applying.began < CEILING * timeoutMillis()
+                ? Boolean.FALSE : null;
+    }
+
+    /** A thread's CPU time in ns, or -1 where the JVM states none. */
+    private static long cpuOf(Thread thread) {
+        try {
+            return ManagementFactory.getThreadMXBean().getThreadCpuTime(
+                    thread.getId());
+        } catch (UnsupportedOperationException none) {
+            return -1L;
         }
     }
 
@@ -586,14 +829,7 @@ public final class ScheduleLog {
     }
 
     static void withdraw(Wake wake) {
-        if (wake == null) return;
-        synchronized (LOCK) {
-            LET_GO.remove(Thread.currentThread());
-            HELD.remove(Thread.currentThread());
-            if (doneWaitingLocked(Thread.currentThread())) {
-                LOCK.notifyAll();
-            }
-        }
+        if (wake != null) waitsNoMore();
     }
 
     /** What a held wait's ask for its turn found. */
@@ -1909,11 +2145,16 @@ public final class ScheduleLog {
      * first answer lets the waits held without a slot go; a grace later, the
      * slots before the earliest waiter a slot holds are given up.  With only
      * waits held without a slot waiting (polls past their recorded count,
-     * waits at the line), it lets them go again, a grace apart.
+     * waits at the line), it lets them go again, a grace apart.  A PUBLISH
+     * whose apply is in flight at the frontier is looked at first ({@link
+     * #inFlightLocked}): no wait held behind it is let go meanwhile, to read
+     * the version before it.
      */
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
         long now = System.currentTimeMillis();
+        Boolean applying = inFlightLocked(now);
+        if (applying != null) return applying;
         long timeout = timeoutMillis();
         long since = stallSinceLocked();
         if (since != stallSince) {
@@ -2509,6 +2750,7 @@ public final class ScheduleLog {
             CONFLICTED.clear();
             BY_LOCATION.clear();
             DEAD_BY_KEY.clear();
+            IN_FLIGHT.clear();
             FAILED.clear();
             POLLED.clear();
             PASSED_BY_CONTEXT.clear();
