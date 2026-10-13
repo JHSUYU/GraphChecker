@@ -279,6 +279,17 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   the reaped"): 3 of 3 failed on lift08 while it carried round Z3D's workers (2026-10-13, solr-zk4 bfada52ac, whose
   change no test reads), and the same tree passed on lift06, as did a909fa5c7 on lift08 between them.
 
+- **i. The Overseer's idle wait (after SGF2, lead 2026-10-13):** SGF2's reindex seed recording stalled because a
+  missed child watch of `/overseer/queue` parked the never-timeout idle wait for good (STATUS "tree: the Overseer's
+  state-queue waits"; evidence `/bigtemp/vnr3ne/gc-out/solr/accept-SGF2-bugs-reindex-cleanup`, schedule seq 938-963,
+  the dump in `logs/solr-bugs-reindex-cleanup.log`; relaunch SGF2R recorded through, natives 5/5). Fix (preferred):
+  revert the idle-wait hunk to stock's 3 s timeout -- SC measured that it alone moved nothing (05 158 -> 163, 31 18 ->
+  23 give-ups by the same slots, SC8/SC10; §3c), and stock bounds a lost watch to 3 s; keep the batching-0 hunk, which
+  carried 05's improvement (SC12-05: 47 give-ups). Alternative, if the revert brings 05's drift back:
+  `ZkDistributedQueue#peekElements` never parks without an armed child watcher -- under `updateLock`, if `watcherCount
+  == 0` set `isDirty` and loop, so the next `firstChild(false, true)` refetches and arms one (automatic cluster only).
+  Either way: natives 5x reindex, seeds of 05 and 31 compared with SC12.
+
 ### 4. The final round SGF and the fork
 
 1. Snapshot `system/solr` (`tools/lib/worktree-add.sh ~/gc-run/sgf <sha> --detach`, build with `tools/onlift.sh`), trees
