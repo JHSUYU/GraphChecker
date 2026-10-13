@@ -153,6 +153,7 @@ public final class SmtNames {
                     "str.++", "str.len", "str.contains", "str.prefixof",
                     "str.suffixof", "str.from_int", "str.to_int", "str.substr",
                     "str.indexof", "str.at", "str.from_code", "str.to_code",
+                    "re.union", "re.++",
                     "str.in_re", "str.to_re", "re.*", "re.range",
                     "fp.add", "fp.sub", "fp.mul", "fp.div", "fp.neg",
                     "fp.eq", "fp.lt", "fp.leq", "fp.gt", "fp.geq",

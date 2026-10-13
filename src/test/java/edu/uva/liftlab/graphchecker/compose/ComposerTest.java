@@ -74,6 +74,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -7553,6 +7554,219 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * Every String operation the VM carries, against Java, row by row: each
+     * lowered over symbols s, t (String) and n, m, k (int) set to the row's
+     * values; a row Java answers is that answer and no other, a row Java
+     * throws on is no world.  Offsets below 0, inside, at and past the
+     * length; empty needles and prefixes; code points in the BMP,
+     * supplementary, a lone surrogate and invalid ones; equalsIgnoreCase
+     * against a literal, the chars Unicode folds into ASCII letters too
+     * (solr-str2: startsWith(String, int) refused 59 of 59 of SP6-39's
+     * paths).  A regionMatches whose ignoreCase flag may be true, and an
+     * equalsIgnoreCase of two symbolic sides, are named gaps.
+     */
+    @Test
+    public void everyStringOperationTheVmCarriesIsJavasOwn() {
+        StringRows rows = new StringRows(solver());
+        JsonObject s = vmLeaf("SymbolExpression", "s", "java/lang/String");
+        JsonObject t = vmLeaf("SymbolExpression", "t", "java/lang/String");
+        JsonObject n = vmLeaf("SymbolExpression", "n", "I");
+        JsonObject m = vmLeaf("SymbolExpression", "m", "I");
+        JsonObject k = vmLeaf("SymbolExpression", "k", "I");
+        String abc = "abcabc";
+        for (String x : new String[] {"ca", "", "bc", "abcabcd"}) {
+            for (int at : new int[] {-1, 0, 2, 6, 7}) {
+                rows.check(vmString("startsWith", s, t, n), abc, x, at, 0, 0,
+                        () -> abc.startsWith(x, at));
+                rows.check(vmString("indexOf", s, t, n), abc, x, at, 0, 0,
+                        () -> abc.indexOf(x, at));
+                rows.check(vmString("lastIndexOf", s, t, n), abc, x, at, 0,
+                        0, () -> abc.lastIndexOf(x, at));
+            }
+            rows.check(vmString("indexOf", s, t), abc, x, 0, 0, 0,
+                    () -> abc.indexOf(x));
+            rows.check(vmString("lastIndexOf", s, t), abc, x, 0, 0, 0,
+                    () -> abc.lastIndexOf(x));
+            rows.check(vmString("compareTo", s, t), abc, x, 0, 0, 0,
+                    () -> abc.compareTo(x));
+        }
+        for (String x : new String[] {"", "a"}) {
+            for (int at : new int[] {-1, 0, 1}) {
+                rows.check(vmString("startsWith", s, t, n), "", x, at, 0, 0,
+                        () -> "".startsWith(x, at));
+                rows.check(vmString("indexOf", s, t, n), "", x, at, 0, 0,
+                        () -> "".indexOf(x, at));
+                rows.check(vmString("lastIndexOf", s, t, n), "", x, at, 0, 0,
+                        () -> "".lastIndexOf(x, at));
+            }
+        }
+        for (String x : new String[] {"abd", "ab", "b", "abcd", "ABC"}) {
+            rows.check(vmString("compareTo", s, t), "abc", x, 0, 0, 0,
+                    () -> "abc".compareTo(x));
+        }
+        String[][] cases = {{"true", "TRUE"}, {"true", "tRuE"}, {"true", "tru"},
+                {"true", "truex"}, {"", ""}, {"", "a"}, {"k", "\u212a"},
+                {"s", "\u017f"}, {"i", "\u0130"}, {"i", "\u0131"},
+                {"i", "j"}, {"x-1", "X-1"}};
+        for (String[] pair : cases) {
+            rows.check(vmString("equalsIgnoreCase", s, VmExpressionIr
+                    .stringConstant(pair[0])), pair[1], "", 0, 0, 0,
+                    () -> pair[1].equalsIgnoreCase(pair[0]));
+            rows.check(vmString("equalsIgnoreCase", VmExpressionIr
+                    .stringConstant(pair[0]), t), "", pair[1], 0, 0, 0,
+                    () -> pair[0].equalsIgnoreCase(pair[1]));
+        }
+        // One supplementary character, U+1F600, between "a" and "ba".
+        String wide = "a\ud83d\ude00ba";
+        for (int point : new int[] {'a', 0x1F600, 0xD83D, -1, 0x110000}) {
+            rows.check(vmString("indexOf", s, n), wide, "", point, 0, 0,
+                    () -> wide.indexOf(point));
+            rows.check(vmString("indexOf", s, n, m), wide, "", point, 1, 0,
+                    () -> wide.indexOf(point, 1));
+            rows.check(vmString("lastIndexOf", s, n), wide, "", point, 0, 0,
+                    () -> wide.lastIndexOf(point));
+            rows.check(vmString("lastIndexOf", s, n, m), wide, "", point, 2,
+                    0, () -> wide.lastIndexOf(point, 2));
+        }
+        JsonObject b = vmLeaf("ConstExpr", "C_I_98", "I");
+        rows.check(vmString("indexOf", s, b, m), abc, "", 0, 2, 0,
+                () -> abc.indexOf('b', 2));
+        rows.check(vmString("lastIndexOf", s, b), abc, "", 0, 0, 0,
+                () -> abc.lastIndexOf('b'));
+        rows.check(vmString("indexOf", s, vmLeaf("ConstExpr", "C_I_128512",
+                "I")), wide, "", 0, 0, 0, () -> wide.indexOf(0x1F600));
+        int[][] regions = {{1, 1, 2}, {4, 1, 2}, {1, 1, 3}, {-1, 1, 0},
+                {6, 4, 0}, {6, 4, 1}, {2, 1, -1}, {0, -1, 0}};
+        for (int[] region : regions) {
+            rows.check(vmString("regionMatches", s, n, t, m, k), abc, "xbcx",
+                    region[0], region[1], region[2],
+                    () -> abc.regionMatches(region[0], "xbcx", region[1],
+                            region[2]));
+        }
+        rows.check(vmString("regionMatches", s, vmLeaf("ConstExpr", "C_Z_0",
+                "Z"), n, t, m, k), abc, "xbcx", 1, 1, 2,
+                () -> abc.regionMatches(false, 1, "xbcx", 1, 2));
+        for (int[] range : new int[][] {{1, 3}, {0, 6}, {3, 2}, {-1, 2},
+                {2, 7}}) {
+            rows.check(vmString("subSequence", s, n, m), abc, "", range[0],
+                    range[1], 0,
+                    () -> abc.subSequence(range[0], range[1]).toString());
+        }
+
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("t", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        declared.put("f", VmTermLowering.Sort.BOOL);
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("row", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        lowering.dispatch(vmString("regionMatches", s, vmLeaf(
+                "SymbolExpression", "f", "Z"), n, s, n, n), null, "row");
+        lowering.dispatch(vmString("equalsIgnoreCase", s, t), null, "row");
+        String refusals = lowering.openRefusals().toString();
+        assertTrue(refusals, refusals.contains("regionMatches:IGNORE_CASE"));
+        assertTrue(refusals,
+                refusals.contains("equalsIgnoreCase:NO_LITERAL_SIDE"));
+        lowering.end();
+    }
+
+    /** One table of String rows, each lowered and asked of z3. */
+    private static final class StringRows {
+        private final Z3 solver;
+
+        StringRows(Z3 solver) {
+            this.solver = solver;
+        }
+
+        void check(JsonObject expression, String s, String t, long n, long m,
+                   long k, Supplier<Object> java) {
+            Object expected;
+            try {
+                expected = java.get();
+            } catch (RuntimeException thrown) {
+                expected = null;
+            }
+            Map<String, VmTermLowering.Sort> declared =
+                    new LinkedHashMap<String, VmTermLowering.Sort>();
+            declared.put("s", VmTermLowering.Sort.STRING);
+            declared.put("t", VmTermLowering.Sort.STRING);
+            for (String name : new String[] {"n", "m", "k"}) {
+                declared.put(name, VmTermLowering.Sort.INT);
+            }
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("row", SmtLowering.NO_JOIN,
+                    ExpressionTable.empty());
+            VmTermLowering.Term term = lowering.dispatch(expression, null,
+                    "row");
+            String row = expression + " at s=" + literal(s) + " t="
+                    + literal(t) + " n=" + n + " m=" + m + " k=" + k;
+            assertTrue(row + ": " + lowering.openRefusals(),
+                    lowering.openRefusals().isEmpty());
+            // The conditions the lowering raised, the term's definedness and
+            // each input the term reads, set to the row's value.
+            List<String> facts = new ArrayList<String>(lowering.end());
+            facts.add(term.precondition);
+            Set<String> read = SmtNames.symbols(term.text + " "
+                    + String.join(" ", facts), new LinkedHashSet<String>());
+            String[] values = {literal(s), literal(t), integer(n), integer(m),
+                    integer(k)};
+            for (int index = 0; index < values.length; index++) {
+                String name = String.valueOf("stnmk".charAt(index));
+                if (read.contains(name)) {
+                    facts.add("(= " + name + " " + values[index] + ")");
+                }
+            }
+            List<String> texts = new ArrayList<String>(facts);
+            texts.add(term.text);
+            StringBuilder query = new StringBuilder(lowering.body(texts));
+            for (String fact : facts) {
+                query.append("(assert ").append(fact).append(")\n");
+            }
+            if (expected == null) {
+                assertEquals(row + " is no world", "unsat",
+                        ask(query.toString()));
+                return;
+            }
+            String value = expected instanceof String
+                    ? literal((String) expected)
+                    : expected instanceof Integer
+                    ? integer((Integer) expected) : expected.toString();
+            assertEquals(row + " is defined, " + expected, "sat",
+                    ask(query + "(assert (= " + term.text + " " + value
+                            + "))\n"));
+            assertEquals(row + " is " + expected + " alone", "unsat",
+                    ask(query + "(assert (not (= " + term.text + " " + value
+                            + ")))\n"));
+        }
+
+        private String ask(String query) {
+            return solver.ask(query, Collections.<String>emptyList(), false)
+                    .status();
+        }
+
+        private static String integer(long value) {
+            return value < 0 ? "(- " + -value + ")" : Long.toString(value);
+        }
+
+        /** A Java String as an SMT-LIB literal, z3's \\u{..} past ASCII. */
+        private static String literal(String text) {
+            StringBuilder literal = new StringBuilder("\"");
+            for (char c : text.toCharArray()) {
+                if (c == '"') {
+                    literal.append("\"\"");
+                } else if (c < 32 || c > 126) {
+                    literal.append("\\u{").append(Integer.toHexString(c))
+                            .append('}');
+                } else {
+                    literal.append(c);
+                }
+            }
+            return literal.append('"').toString();
+        }
+    }
+
     /** The VM's {@code splitElement(s, d, i)} of {@code s.split(d)}. */
     private static JsonObject splitElement(JsonObject receiver,
                                            String delimiter, int index) {
@@ -7594,6 +7808,13 @@ public class ComposerTest {
         for (JsonObject expression : Arrays.asList(
                 vmString("substring", s, n), vmString("charAt", s, n),
                 vmString("indexOf", s, c), vmString("lastIndexOf", s, s),
+                vmString("startsWith", s, s, n), vmString("indexOf", s, n, n),
+                vmString("lastIndexOf", s, s, n),
+                vmString("lastIndexOf", s, n), vmString("compareTo", s, s),
+                vmString("regionMatches", s, n, s, n, n),
+                vmString("equalsIgnoreCase", s,
+                        VmExpressionIr.stringConstant("Ok")),
+                vmString("subSequence", s, n, n),
                 vmString("toString", c), splitElement(s, ",", 1),
                 vmString("toLowerCase", s), vmString("toUpperCase", s),
                 binary("==", relation("INDEXED", "READ", "I",

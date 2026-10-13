@@ -50,7 +50,7 @@ public final class VmExpressionIr {
     private static final Set<String> BOOLEAN_STRING_OPERATIONS =
             new HashSet<String>(Arrays.asList(
                     "isEmpty", "equals", "equalsIgnoreCase", "contains",
-                    "startsWith", "endsWith", "matches"));
+                    "startsWith", "endsWith", "matches", "regionMatches"));
     private static final Set<String> INT_STRING_OPERATIONS =
             new HashSet<String>(Arrays.asList(
                     "length", "indexOf", "lastIndexOf", "charAt",
