@@ -174,7 +174,7 @@ with the adapter, every case's target marker and the bug checks' workloads.
    `MISSING` (the script fails). The tree's hooks call the engine's `MessageDoors` (the view publication:
    `publishing`, `refreshStarting`, `refreshEnded`) and `Sessions` (the expirer a planted
    SessionExpired calls, `CausynthSolrCluster#expire`), so it is built against, and runs on, the jar of the same
-   `system/solr` checkout. On `gc/solr-final8` (7845c97bb1, 2026-10-13; engine system/solr c3e446e38) all 17 workloads of the 20 cases passed (05 and 07
+   `system/solr` checkout. On `gc/solr-final9` (0ce3deafed, 2026-10-13; engine system/solr ee96878c7) all 17 workloads of the 20 cases passed (05 and 07
    share `AddReplicaTest#testAddMultipleReplicas`; 10, 39 and 40 `TimeRoutedAliasUpdateProcessorTest#test`), 3-62 s
    each, about 17 minutes for the workloads after the build, and `bash experiments/lib/run.sh
    experiments/solr/<case dir> <arg> validate` found every case's configuration valid. After a change to the tree, `SKIP_TREE_BUILD=1 experiments/solr/build.sh
