@@ -249,7 +249,9 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # bound that cut the anchor's occurrence on the way to the throw too
 # (COMPOSE's loop-body-bound row, RestsOn#decided), a store content leaf
 # held past the daemon tick bound (COMPOSE's daemon-tick-bound row,
-# Composer#arrival), the invocations of one marker past those GROW plans
+# Composer#arrival), a pairing hold that gave way past VIEW_HOLD_MAX (a
+# replay's view-hold-max row, Confirmation#gaveWay -- a CONFIRM replay's
+# too, witness or final), the invocations of one marker past those GROW plans
 # inputs for (unplanned-input-max), the task bound by the static candidates it
 # cut, the closure ceiling by the occurrences the rows connect cut past it; a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
@@ -283,6 +285,12 @@ for round in 0000:U 0001:T; do
       cls: "DIAGNOSTIC", subject: $subject, detail: "deferred"}' \
     >"${emit_iteration}/obligations-${round%:*}/gaps.jsonl"
 done
+# A pairing hold that gave way in a CONFIRM replay of the final stages.
+mkdir -p "${campaign_final}/confirm/sessions/worker-1"
+jq -n -c '{schemaVersion: 1, sessionId: "worker-1",
+  kind: "BOUND_INSUFFICIENT", cls: "DIAGNOSTIC",
+  subject: "VIEW/SOLR_ZK@n0#/a.json view-hold-max=3000", detail: "gave way"}' \
+  >"${campaign_final}/confirm/sessions/worker-1/gaps.jsonl"
 # A marker invocation past the ones GROW plans inputs for, in the last round.
 jq -n -c '{schemaVersion: 1, sessionId: "exploration",
   kind: "UNPLANNED_INPUT", cls: "DIAGNOSTIC",
@@ -292,13 +300,60 @@ run_emit
 jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
     "pairing_flip_per_read", "loop_body_bound", "daemon_tick_bound",
-    "unplanned_input_max",
+    "view_hold_max", "unplanned_input_max",
     "region_path_max_tasks", "region_path_closure_ceiling", "schedule_max_jobs",
     "campaign_max_claims"]
-  and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 static.*without 1 occ"))' \
+  and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 static.*without 1 occ"))
+  and (.bounded.detail | test("1 pairing hold.*VIEW_HOLD_MAX [(]3000 ms"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
 $(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"
+# VIEW-HOLD-1: a pairing hold's bound in a replay is VIEW_HOLD_MAX times the
+# VM's slowdown S -- the seed replay's window over the recording's, rounded
+# up (campaign_view_hold_max) --, written to view_hold_max.tsv beside the
+# iteration, where every replay below it finds it
+# (campaign_view_hold_wall_ms).  A window its run ended inside (marked cut)
+# is named in the file and the log; one that stated no duration fails the
+# campaign by name: no bound is guessed.
+view_hold_root="${test_tmp}/view-hold"
+view_hold_iteration="${view_hold_root}/schedule/iteration-0000"
+for missing in none cut recording seed; do
+  rm -rf "${view_hold_root}"
+  mkdir -p "${view_hold_root}/causynth/runtime" \
+    "${view_hold_iteration}/seed-result/focused"
+  [[ "${missing}" == recording ]] \
+    || echo 1000 >"${view_hold_root}/causynth/runtime/window_ms"
+  [[ "${missing}" == seed ]] \
+    || printf '2500%s\n' "$([[ "${missing}" != cut ]] || printf '\tcut')" \
+      >"${view_hold_iteration}/seed-result/focused/window_ms"
+  view_hold_status=0
+  ( causynth_output_dir="${view_hold_root}/causynth" view_hold_max_ms=3000
+    campaign_view_hold_max "${view_hold_iteration}" ) \
+    2>"${view_hold_root}/err.log" || view_hold_status=$?
+  if [[ "${missing}" == cut ]]; then
+    (( view_hold_status == 0 )) \
+      && [[ "$(<"${view_hold_root}/schedule/view_hold_max.tsv")" \
+        == $'3\t9000\tseed-replay' ]] \
+      && grep -q 'the seed-replay window was cut' "${view_hold_root}/err.log" \
+      || fail "a cut seed replay window was not named: \
+$(cat "${view_hold_root}/schedule/view_hold_max.tsv" "${view_hold_root}/err.log" 2>&1)"
+  elif [[ "${missing}" == none ]]; then
+    (( view_hold_status == 0 )) \
+      && [[ "$(<"${view_hold_root}/schedule/view_hold_max.tsv")" \
+        == $'3\t9000\t' ]] \
+      && [[ "$(campaign_view_hold_wall_ms \
+        "${view_hold_iteration}/obligations-0000/worker")" == 9000 ]] \
+      || fail "the view hold's bound was not VIEW_HOLD_MAX times S: \
+$(cat "${view_hold_root}/schedule/view_hold_max.tsv" 2>&1)"
+  else
+    (( view_hold_status != 0 )) \
+      && grep -q 'component=VIEW_HOLD_MAX' "${view_hold_root}/err.log" \
+      && [[ ! -e "${view_hold_root}/schedule/view_hold_max.tsv" ]] \
+      || fail "a ${missing} window with no duration did not fail by name: \
+$(<"${view_hold_root}/err.log")"
+  fi
+done
+
 # EMIT-1: the artifacts are published at ${campaign_root}/final, which is the
 # one path every later reader and the harness open.
 [[ -s "${campaign_root}/final/result.json" ]] \
@@ -1046,7 +1101,9 @@ done
 # shared pool, and each exploration sizes its share from its measured need.
 # 54: `reproduce_min_s` joined it: the least wall clock a native run is
 # given, since a short recording says little of ten runs at once.
-[[ "$(print_normalized_config | wc -l)" -eq 54 ]] \
+# 55: `view_hold_max_ms`, a pairing hold's realism bound in recorded time
+# (runtime.Confirmation#publishing, campaign_view_hold_max).
+[[ "$(print_normalized_config | wc -l)" -eq 55 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1738,7 +1795,12 @@ known_config_key seed_replay_time_factor \
   || fail "seed_replay_time_factor is not loadable from a workflow file"
 [[ "${seed_replay_time_factor}" == 40 ]] \
   || fail "seed_replay_time_factor does not default to 40"
+# The recording's window, which the seed replay's scales the view hold's
+# bound by (campaign_view_hold_max): every stub replay below states its own.
+mkdir -p "${bound_dir}/causynth/runtime"
+echo 1000 >"${bound_dir}/causynth/runtime/window_ms"
 seed_bound() (
+  causynth_output_dir="${bound_dir}/causynth"
   replay_timeout_s=$1 seed_replay_time_factor=$2
   campaign_recorded_workload_s=$3
   campaign_recorded_workload_rss_mb=100
@@ -1749,6 +1811,7 @@ seed_bound() (
       "${campaign_adapter_timeout_rule}"
     mkdir -p "$6"
     echo 300 >"$6/workload_rss_mb"
+    echo 1500 >"$6/window_ms"
   }
   campaign_session_replay "${bound_dir}/seed-iteration"
 )
@@ -1788,6 +1851,7 @@ while read -r need_rss need_peak need_expected need_whole need_after; do
   [[ "${need_rss}" != - ]] || need_rss=""
   [[ "${need_expected}" != cap ]] || need_expected=${need_cap}
   need_said=$(
+    causynth_output_dir="${bound_dir}/causynth"
     campaign_recorded_workload_rss_mb=${need_rss}
     campaign_replay_peak_mb=0
     replay_timeout_s=2400 seed_replay_time_factor=40
@@ -1800,6 +1864,7 @@ while read -r need_rss need_peak need_expected need_whole need_after; do
       mkdir -p "$6"
       rm -f -- "$6/workload_rss_mb"
       [[ "${need_peak}" == - ]] || echo "${need_peak}" >"$6/workload_rss_mb"
+      echo 1500 >"$6/window_ms"
     }
     campaign_session_replay "${bound_dir}/seed-iteration" \
       2>"${bound_dir}/need.err"

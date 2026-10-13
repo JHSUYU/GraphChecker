@@ -77,8 +77,8 @@ final class PairingFlip {
      * The pairing flips one path of {@code task} offers, newest version
      * first per read; a read offered more than {@link #PER_READ} files the
      * bound's gap.  None older than a decode the reader's own work made
-     * before the read: the hold never holds the reader's own decodes
-     * ({@code Confirmation#decoding}), so the view is at least that one's.
+     * before the read: the hold never defers the reader's own publications
+     * ({@code Confirmation#publishing}), so the view is at least that one's.
      */
     static List<ObligationFactory.Candidate> candidates(Corpus corpus,
             Task task, Corpus.RecordedPath path, List<GapRow> gaps) {
@@ -89,6 +89,15 @@ final class PairingFlip {
             return offered;
         }
         for (ReadRow read : reads(corpus, task, session)) {
+            if (!Confirmation.hookPublishes(read.location())) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, site(read),
+                        "no publication hook publishes " + read.location()
+                                + " (its system states no PUBLISHED_VIEW of"
+                                + " it), so no hold can defer it: no pairing"
+                                + " of the read is asked"));
+                continue;
+            }
             String view = SmtLowering.locationKey(read.location());
             String reader = Confirmation.contextKey(
                     read.endpoint().occurrence());

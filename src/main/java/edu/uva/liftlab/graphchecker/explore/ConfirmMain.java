@@ -1644,11 +1644,18 @@ public final class ConfirmMain {
             if (mint || held.location().kind() == LocationKind.STORE) continue;
             // A node's view: its decodes run in work no activation hook
             // holds (watch deliveries, request handlers), so the pairing
-            // holds them at the decode -- every decode of the view past
-            // the paired version, but the reader's work's own, waits until
-            // that work's region exits (Confirmation#decoding) -- and
-            // orders nothing else.
+            // defers the node's publications of the view past the paired
+            // version, but the reader's work's own, until that work's
+            // region exits (Confirmation#publishing) -- and orders nothing
+            // else.
             if (held.location().kind() == LocationKind.VIEW) {
+                if (!Confirmation.hookPublishes(held.location())) {
+                    throw new Refused("PAIRING_UNHELD: the world pairs read "
+                            + reader + " of " + held.location() + ", a view"
+                            + " no publication hook publishes (no"
+                            + " PUBLISHED_VIEW of it), so no hold can defer"
+                            + " it");
+                }
                 JsonObject hold = new JsonObject();
                 hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
                 hold.addProperty("view",

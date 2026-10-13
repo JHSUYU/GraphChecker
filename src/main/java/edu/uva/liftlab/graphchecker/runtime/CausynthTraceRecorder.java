@@ -1598,6 +1598,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static void shutdown() {
+        RecordingWindow.measured();
         synchronized (LOCK) {
             if (traceWriter != null) {
                 try {

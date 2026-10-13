@@ -652,6 +652,7 @@ final class ConcolicResultPublisher {
         try {
             configuration().publishUnansweredAddresses();
             // Called from every exit path: a halt runs no shutdown hook.
+            RecordingWindow.measured();
             RowRuntime.closeSession();
         } finally {
             synchronized (RUN_TOTALS_LOCK) {
