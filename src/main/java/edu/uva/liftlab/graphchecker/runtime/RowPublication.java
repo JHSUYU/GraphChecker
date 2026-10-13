@@ -168,6 +168,19 @@ final class RowPublication {
      * ({@link RowRuntime#journalRegion}).  It stays in the activation's
      * map: its mint stores and referents are this activation's question
      * ({@link RowPlaceholderMint#mintStores}, {@link #unrowedReferent}).</p>
+     *
+     * <p>THE WALK RULE, which that skip rests on: every effect of walking a
+     * record is a session-wide claim ({@link RowRuntime#claimEvent}: a row,
+     * a gap), an idempotent filing ({@link LoggedEventSites#index},
+     * {@link RowRuntime#storedOutside}), or reads only what the record and
+     * the session already held when the record existed.  An effect that
+     * depends on the publishing activation -- or is made without a claim --
+     * does not go inside the per-record walks below: it goes in a loop of
+     * its own over every record, walked or not (as {@link
+     * RowPlaceholderMint#mintStores} reads them), or the skip would drop it
+     * silently.  A change to these walks names in its review how it keeps
+     * the rule; the check build of RO1 (PERFORMANCE §3) is how it was
+     * measured.</p>
      */
     private static void writes(ActiveRegion active) {
         // One read node is reachable from many versions: count it once.

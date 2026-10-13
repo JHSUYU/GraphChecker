@@ -404,7 +404,10 @@ first reading decoded, shared by every activation that read it (`SharedStateCapt
 the stores outside every region keep what they hold, and what else it reads only grows before the
 record exists (a mint's label is filed before its store, the READ_SITE methods at session open, a
 performer at its region entry). The record stays the activation's, for its mint stores and its
-referents (`RowPlaceholderMint#mintStores`, `RowPublication#unrowedReferent`).
+referents (`RowPlaceholderMint#mintStores`, `RowPublication#unrowedReferent`). The walk rule this rests
+on is named at `RowPublication#writes`: an effect that depends on the publishing activation, or is made
+without a claim, goes in a loop of its own over every record, walked or not, never inside the walks
+the skip drops.
 
 Every logged version a region stored is a write row (`RowPublication#writes`; a store outside
 every region has no performer, a declared input is a mint), the location's INITIAL among them,
