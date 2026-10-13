@@ -5408,7 +5408,12 @@ public class ExploreTest {
      * fact about that world only -- the arm stays owed for any other world,
      * the flip itself asked once more and settled by a second such answer
      * (solr-bugs-tra-start-overwrite SG3A: the one pairing flip's world never
-     * minted its inherited root, and its NOT_ADMITTED closed the arm).
+     * minted its inherited root, and its NOT_ADMITTED closed the arm).  A
+     * replay killed past its bound ({@code REPLAY_BOUNDED}) answered
+     * nothing: it is no world-only answer, the flip is asked once more, and
+     * killed twice it is held BOUNDED and named, never settled
+     * (solr-adhoc-38 EXZ1: 24 flips killed twice read as world-only
+     * answers, and the run closed UNSAT).
      */
     @Test
     public void onlyAFaithfulNotAdmittedSettlesTheArm() throws Exception {
@@ -5424,15 +5429,22 @@ public class ExploreTest {
         String atArm = ObligationResult.ARM_REFUSED + ": the query was"
                 + " refused: ADMISSION_GAP:Lookup#u8#1";
         String inWorld = "the query was refused: ADMISSION_GAP:Rotate#u5#1";
+        String killed = ObligationResult.REPLAY_BOUNDED + ": replay exceeded"
+                + " replay_timeout_s=2400";
         Object[][] rows = {
-            // its answer's detail, how many of them landed on its flip,
+            // its answers' details (the k-th landing takes the k-th, the
+            // last repeating), how many of them landed on its flip,
             // whether the arm is settled for every world, whether the next
-            // round asks the flip again from the same path
-            {ran, 1, true, false},
-            {unrun, 1, false, true},
-            {unrun, 2, false, false},
-            {atArm, 1, true, false},
-            {inWorld, 1, false, true},
+            // round asks the flip again from the same path, whether the flip
+            // is held BOUNDED
+            {ran, 1, true, false, false},
+            {unrun, 1, false, true, false},
+            {unrun, 2, false, false, false},
+            {atArm, 1, true, false, false},
+            {inWorld, 1, false, true, false},
+            {killed, 1, false, true, false},
+            {new String[] {killed, unrun}, 2, false, true, false},
+            {killed, 2, false, false, true},
         };
         int at = 0;
         for (Object[] row : rows) {
@@ -5447,14 +5459,22 @@ public class ExploreTest {
             String flip = ObligationFactory.flip(lookup.taskId(),
                     lookup.pathId(), lookup.siteId(), lookup.ordinal(),
                     lookup.flippedOutcome());
+            String[] details = row[0] instanceof String[]
+                    ? (String[]) row[0] : new String[] {(String) row[0]};
             ObligationResult answer = ObligationResult.of(
                     lookup.obligationId(), Verdict.NOT_ADMITTED, "",
-                    (String) row[0]);
+                    details[0]);
             record(results, answer);
             for (int k = 0; k < (Integer) row[1]; k++) {
                 answer(iteration, "OB." + k, ObligationDir.QUESTION,
                         flip + ":content", Verdict.NOT_ADMITTED, "",
-                        (String) row[0]);
+                        details[Math.min(k, details.length - 1)]);
+                // What it asked, which a bounded flip is named by.
+                RowCodec.writeAll(iteration.resolve("obligations-0000")
+                                .resolve("OB." + k)
+                                .resolve(ObligationDir.OBLIGATION),
+                        Collections.singletonList(lookup),
+                        ExploreCodec::writeObligation);
             }
             Frontier frontier = new Frontier(Corpus.read(iteration, null),
                     Collections.<Task>emptyList(),
@@ -5464,11 +5484,29 @@ public class ExploreTest {
             assertEquals(name + ": the arm settled for every world",
                     row[2], !frontier.settled(lookup.obligationId())
                             .isEmpty());
+            assertEquals(name + ": the flip held BOUNDED",
+                    row[4], frontier.boundedFlips().contains(flip));
             Path next = out.resolve("obligations-0001");
-            plan(iteration, TARGET_SELECTOR, null, results, next, 1);
+            JsonObject manifest = plan(iteration, TARGET_SELECTOR, null,
+                    results, next, 1);
             assertEquals(name + ": the flip asked again from its path",
                     row[3], named(obligations(next), "Lookup#u8") != null);
+            assertEquals(name + ": the round names it", (Boolean) row[4]
+                    ? "[Lookup#u8 x2]" : "[]",
+                    names(manifest.getAsJsonArray("boundedFlips")));
         }
+    }
+
+    /** Each bounded flip row's site and how many killed replays it
+     *  names. */
+    private static String names(JsonArray bounded) {
+        List<String> names = new ArrayList<String>();
+        for (JsonElement element : bounded) {
+            JsonObject row = element.getAsJsonObject();
+            names.add(row.get("siteId").getAsString() + " x"
+                    + row.getAsJsonArray("killed").size());
+        }
+        return names.toString();
     }
 
     /** One earlier worker of this iteration: its question file and the

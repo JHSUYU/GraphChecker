@@ -427,6 +427,8 @@ public final class ExploreMain {
                 concrete);
         manifest.add("openArms", openArms(corpus, roots, tasks, frontier,
                 open, byFlip));
+        manifest.add("boundedFlips", boundedFlips(iteration,
+                frontier.boundedFlips()));
         manifest.add("force", forced.manifest);
         Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
@@ -686,6 +688,54 @@ public final class ExploreMain {
                     key -> new ArrayList<ObligationResult>()).addAll(results);
         }
         return byFlip;
+    }
+
+    /**
+     * The flips held BOUNDED by {@code replay_timeout_s} ({@link
+     * Frontier#boundedFlips}), each by the arm its workers asked (task,
+     * path, site, ordinal, the outcome asked) and the obligations whose
+     * replays were killed with what killed them: what run_engine's {@code
+     * campaign_bounds} names, the last round's being every one.
+     */
+    static JsonArray boundedFlips(Path iteration, Set<String> flips)
+            throws IOException {
+        Map<String, JsonObject> rows = new LinkedHashMap<String, JsonObject>();
+        if (flips.isEmpty()) return new JsonArray();
+        for (Path worker : ObligationDir.workerDirs(iteration)) {
+            List<ObligationResult> results = RowCodec.readAll(
+                    worker.resolve(ObligationDir.RESULT),
+                    RowCodec::readObligationResult);
+            if (results.isEmpty()) continue;
+            String flip = flipOf(worker);
+            if (!flips.contains(flip)) continue;
+            List<Obligation> asked = RowCodec.readAll(
+                    worker.resolve(ObligationDir.OBLIGATION),
+                    ExploreCodec::readObligation);
+            JsonObject row = rows.get(flip);
+            if (row == null && !asked.isEmpty()) {
+                Obligation ask = asked.get(0);
+                row = new JsonObject();
+                row.addProperty("flip", flip);
+                row.addProperty("taskId", ask.taskId());
+                row.addProperty("pathId", ask.pathId());
+                row.addProperty("siteId", ask.siteId());
+                row.addProperty("ordinal", ask.ordinal());
+                row.addProperty("outcome", ask.flippedOutcome());
+                row.add("killed", new JsonArray());
+                rows.put(flip, row);
+            }
+            if (row == null) continue;
+            for (ObligationResult result : results) {
+                if (!result.replayBounded()) continue;
+                JsonObject killed = new JsonObject();
+                killed.addProperty("obligationId", result.obligationId());
+                killed.addProperty("detail", result.detail());
+                row.getAsJsonArray("killed").add(killed);
+            }
+        }
+        JsonArray out = new JsonArray();
+        for (JsonObject row : rows.values()) out.add(row);
+        return out;
     }
 
     /** The flip one worker's obligation asked, or "" where it states
