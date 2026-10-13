@@ -1268,9 +1268,12 @@ public class ExploreTest {
      * ONE PLANNER SERVES THE ROUNDS (PIPELINE §7.1): what it read for a round
      * it keeps for the next -- the sessions' rows, the static map, the slot
      * table it changed -- and each round's files are the ones a planner of
-     * its own writes over the iteration as it stands, while sessions land
+     * its own writes over the iteration as it stood, while sessions land
      * and one leaves (a GROW swap).  The slot table on disk is the rounds'
      * changes: a slot a world opened, then dropped once its session left.
+     * A served round reads the corpus its question names (PIPELINE §7.9):
+     * a session that lands once the round's corpus is frozen is no session
+     * of that round.
      */
     @Test
     public void aServedRoundIsAFreshPlannersRound() throws Exception {
@@ -1296,45 +1299,40 @@ public class ExploreTest {
         Files.write(results, new byte[0]);
         Path fresh = tree.newFolder("served-fresh").toPath();
         ExploreMain served = new ExploreMain(iteration, TARGET_SELECTOR, null,
-                results, iteration.resolve(StaticScopeMap.FILE), "epoch0",
+                iteration.resolve(StaticScopeMap.FILE), "epoch0",
                 ClosurePlanner.DEFAULT_MAX_TASKS, DEFAULT_BOUNDS);
         // round -> what lands before it: a world's session, its leaving,
-        // another world's.
+        // another world's; and one that lands after the round's corpus was
+        // frozen, while it plans.
         String[][] landings = {{}, {"land", "s-a"}, {"leave", "s-a"},
-                {"land", "s-b"}};
+                {"land", "s-b"}, {"unlisted", "s-c"}};
         Map<String, Integer> kinds = new LinkedHashMap<String, Integer>();
         for (int round = 0; round < landings.length; round++) {
             String[] landing = landings[round];
             if (landing.length > 0 && landing[0].equals("land")) {
-                Session world = new Session(iteration, landing[1]);
-                world.activation(TARGET, true);
-                world.root(TARGET, "CASE.MARKER", "M_MARKER",
-                        RootKind.MARKER, "true", null, null, true);
-                world.decision(TARGET, "Guard#u8", 1, true, "M_MARKER");
-                world.activation(WRITER, false);
-                world.activation(PRODUCER, false);
-                world.constant("e.119992", "119992");
-                world.symbolic("e.stored", "M_HOFF_KEY");
-                world.export(ROTATED, "e.119992", 11L, "119992");
-                world.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
-                world.write(STORED, ALL_KEYS, 5L, "e.stored");
-                world.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
-                world.answered(ObligationResult.of("o-" + landing[1],
-                        Verdict.ADMITTED, landing[1], "the flip ran"));
-                world.flush();
+                landed(iteration, landing[1]);
                 worker(iteration, String.format("obligations-%04d",
                         round - 1), "w-" + landing[1], "o-" + landing[1],
                         landing[1], TARGET, "Guard#u8",
                         Collections.<String, String>emptyMap(),
                         Collections.<String, String>emptyMap());
-            } else if (landing.length > 0) {
+            } else if (landing.length > 0 && landing[0].equals("leave")) {
                 deleteTree(iteration.resolve("sessions").resolve(landing[1]));
             }
             String name = String.format("obligations-%04d", round);
-            Path mine = iteration.resolve(name);
-            served.round(round, null, mine);
             Path own = fresh.resolve(name);
             plan(iteration, TARGET_SELECTOR, null, results, own, round);
+            List<String> corpus = new ArrayList<String>();
+            try (java.util.stream.Stream<Path> listed =
+                         Files.list(iteration.resolve("sessions"))) {
+                listed.forEach(session -> corpus.add(session.getFileName()
+                        .toString()));
+            }
+            if (landing.length > 0 && landing[0].equals("unlisted")) {
+                landed(iteration, landing[1]);
+            }
+            Path mine = iteration.resolve(name);
+            served.round(round, null, results, corpus, mine);
             List<String> files = new ArrayList<String>();
             try (java.util.stream.Stream<Path> listed = Files.list(own)) {
                 listed.forEach(file -> files.add(file.getFileName()
@@ -1357,6 +1355,29 @@ public class ExploreTest {
         assertTrue("slots were opened and dropped: " + kinds,
                 kinds.containsKey(SlotTable.OPENED)
                         && kinds.containsKey(SlotTable.DROPPED));
+    }
+
+    /** A world's admitted session of the served planner's iteration: the
+     *  target's guard flipped by the marker, the rotated key delivered. */
+    private static Session landed(Path iteration, String id)
+            throws IOException {
+        Session world = new Session(iteration, id);
+        world.activation(TARGET, true);
+        world.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "true", null, null, true);
+        world.decision(TARGET, "Guard#u8", 1, true, "M_MARKER");
+        world.activation(WRITER, false);
+        world.activation(PRODUCER, false);
+        world.constant("e.119992", "119992");
+        world.symbolic("e.stored", "M_HOFF_KEY");
+        world.export(ROTATED, "e.119992", 11L, "119992");
+        world.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        world.write(STORED, ALL_KEYS, 5L, "e.stored");
+        world.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        world.answered(ObligationResult.of("o-" + id, Verdict.ADMITTED, id,
+                "the flip ran"));
+        world.flush();
+        return world;
     }
 
     /** A directory and everything under it, gone (a session GROW moved
@@ -8062,7 +8083,7 @@ public class ExploreTest {
             files.sorted(Collections.reverseOrder())
                     .forEach(path -> path.toFile().delete());
         }
-        Corpus after = Corpus.read(iteration, null, before);
+        Corpus after = Corpus.read(iteration, null, before, null);
         assertTrue("kept, unread",
                 before.session("s-seed") == after.session("s-seed"));
         assertNotNull("read", after.session("s-landed"));

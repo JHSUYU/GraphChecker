@@ -552,7 +552,7 @@ ab_landings() {
     "${ab_java_bin}" -XX:+ExitOnOutOfMemoryError "${campaign_engine_stack}"
     "-Dcausynth.loop.default.bound=${ab_loop_bound}" -cp "${ab_jar}"
     edu.uva.liftlab.graphchecker.explore.ExploreMain
-    --sessions "${it}/sessions" --results "${it}/obligation_results.jsonl"
+    --sessions "${it}/sessions"
     --static-scope-map "${ab_acc}/static_scope_map.jsonl"
     --topology-epoch iteration-0000 "${ab_explore[@]}")
   if [[ "${mode}" == served ]]; then
@@ -587,11 +587,17 @@ ab_landings() {
     mkdir -p "${it}/${round}"
     t0=$(date +%s.%N)
     if [[ "${mode}" == served ]]; then
+      # The round's corpus, named as the run's head names it: the sessions
+      # landed (linked) by then, beside the planner's questions, out of what
+      # the two sides compare.
+      ls -1 "${it}/sessions" | LC_ALL=C sort >"${served}/corpus-${round}.txt"
       campaign_planner_ask "${it}/sessions" ab \
         "$((10#${round#obligations-}))" "" "${it}/${round}" \
+        "${it}/obligation_results.jsonl" "${served}/corpus-${round}.txt" \
         2>>"${dir}/planner.log" || code=$?
     else
       "${planner[@]}" --round "$((10#${round#obligations-}))" \
+        --results "${it}/obligation_results.jsonl" \
         --output-dir "${it}/${round}" >/dev/null 2>>"${dir}/planner.log" \
         || code=$?
     fi

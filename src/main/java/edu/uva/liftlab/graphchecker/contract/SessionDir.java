@@ -3,10 +3,13 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.TreeSet;
 
 /**
  * CONTRACT-SPEC §2.1: the file layout of one replay session,
@@ -55,6 +58,28 @@ public final class SessionDir extends Value {
         for (Path session : directories(Fields.required(iteration,
                 "iteration").resolve(SESSIONS), "*")) {
             found.add(of(iteration, session.getFileName().toString()));
+        }
+        return found;
+    }
+
+    /**
+     * The sessions {@code sessionIds} names in an iteration directory, in
+     * name order: a corpus stated by its list (an EXPLORE round's, frozen as
+     * its planner starts while the campaign goes on landing).  A named
+     * session the iteration does not hold is an error, never skipped.
+     */
+    public static List<SessionDir> named(Path iteration,
+                                         Collection<String> sessionIds)
+            throws IOException {
+        List<SessionDir> found = new ArrayList<>();
+        for (String sessionId : new TreeSet<String>(sessionIds)) {
+            SessionDir session = of(iteration, sessionId);
+            if (!Files.isDirectory(session.dir)) {
+                throw new NoSuchFileException(session.dir.toString(), null,
+                        "a corpus names a session its iteration does not "
+                                + "hold");
+            }
+            found.add(session);
         }
         return found;
     }

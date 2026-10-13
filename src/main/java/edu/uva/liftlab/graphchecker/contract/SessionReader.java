@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -257,14 +258,17 @@ public final class SessionReader {
     }
 
     /**
-     * Every session of one iteration, in the layout's own order, sharing one
+     * Every session of one iteration -- or those {@code named} names, a
+     * corpus stated by its list ({@link SessionDir#named}); null names every
+     * session the iteration holds -- in the layout's own order, sharing one
      * pool (the sessions of a corpus spell the same call sites), each session
      * {@code held} already read from the same directory taken as it is: a
      * landed session's rows never change (it lands whole, in one rename),
      * and reading them is what a corpus read costs.
      */
     public static List<SessionReader> readAll(Path iteration,
-                                              List<SessionReader> held)
+                                              List<SessionReader> held,
+                                              Collection<String> named)
             throws IOException {
         Map<SessionDir, SessionReader> kept =
                 new HashMap<SessionDir, SessionReader>();
@@ -272,7 +276,9 @@ public final class SessionReader {
             kept.put(session.directory, session);
         }
         RowPool pool = new RowPool();
-        return ParallelReads.each(SessionDir.sessionsIn(iteration),
+        return ParallelReads.each(named == null
+                        ? SessionDir.sessionsIn(iteration)
+                        : SessionDir.named(iteration, named),
                 dir -> kept.containsKey(dir) ? kept.get(dir)
                         : read(dir, pool), iteration);
     }

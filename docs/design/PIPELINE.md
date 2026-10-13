@@ -17,7 +17,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/`, `instrument.log` | the weave refuses (its deepest throwable is the reason); no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `import_gated.txt`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
-| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore` (the streaming loop), `campaign_stream_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/` (`planning-NNNN/` until taken), `steps/NNNN/`, `obligation_results.jsonl`, focused sessions, `exploration.json` | a round's planner fails (one out of the most heap a head JVM is given ends the exploration instead, §7.9); a host's memory or cores cannot be read; a GROW re-run does not finish; a landed session's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero, its deepest throwable the reason (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
@@ -466,13 +466,19 @@ witness (only COMPOSE and z3 do).
 ### 7.1 One round: `explore.ExploreMain`
 
 ONE planner JVM serves an exploration's rounds (`ExploreMain --serve <dir> --sessions
-<iteration>/sessions --results obligation_results.jsonl --static-scope-map ... --target-occurrence
-<declared>` plus the root domains and bounds; each round one question naming its `round`, its
-`inFlight` (`<round>/in_flight.jsonl`) and its `outputDir` (`obligations-NNNN`), asked through
-`explore.Service`, the protocol the host solvers speak, §7.5; the driver's side is §7.9). What it read
-for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus)`: a landed
-session's rows never change, so only the sessions new to the listing are parsed, and one that left
--- a GROW swap, after-witness trimming -- is dropped) with what was derived from each session's rows
+<iteration>/sessions --static-scope-map ... --target-occurrence <declared>` plus the root domains and
+bounds; each round one question naming its `round`, the inputs the campaign froze as the round
+started -- its `corpus` (`<round>/corpus.txt`: the sessions it reads, one per line, every one landed
+and gated), its `results` (`<round>/answers.jsonl`: the answers landed) and its `inFlight`
+(`<round>/in_flight.jsonl`) -- and its `outputDir` (`planning-NNNN`, `obligations-NNNN` once taken),
+asked through `explore.Service`, the protocol the host solvers speak, §7.5; the driver's side is §7.9:
+the campaign lands sessions while a round plans, and the round reads none of them,
+`SessionDir#named`; a named session the iteration does not hold fails the round; the obligation
+workers' own files it reads as they stand, §7.9). What it read
+for a round it keeps for the next: the sessions' rows (`Corpus#read(Path, Path, Corpus, Collection)`:
+a landed session's rows never change, so only the sessions new to the round's corpus are parsed, and
+one that left -- a GROW swap, after-witness trimming -- is dropped) with what was derived from each
+session's rows
 alone (`Corpus.Derived`: its state join, its schedule's facts, read once, and the walks of its
 expressions: symbols, leaves, read locations and events, state reads), the static map while its
 file reads the same (by digest), and the slot table it changed (step 4). Within a round, what a
@@ -481,11 +487,12 @@ round asks again of the same corpus is answered once: an arm's dependence per ta
 the closure's walks of a demand that grew reuse its group, the group's reads and each read's
 eligible writes (`ClosurePlanner.Walk#group`, `Corpus#eligibleWrites`). Every index across sessions
 is built anew each round, the lowerings with it, so each round's files are the ones a planner of its own, reading the
-iteration then, writes (`ExploreMain --round N --output-dir ...`, the offline stages' entry over the
-same code; gated by `offline-ab.sh` `EXPLORE.serve`). A late hdfs-adhoc-07 round, rebuilt whole by a
+iteration then, writes (`ExploreMain --round N --results ... --output-dir ...`, the offline stages' entry over the
+same code, reading every session its iteration holds; gated by `offline-ab.sh` `EXPLORE.serve`, whose served side
+names each round's corpus as the run's head does). A late hdfs-adhoc-07 round, rebuilt whole by a
 JVM of its own, was ~15 min: 2.5 min reading 653 sessions' rows and 4 min reading and rewriting a
-1.9 GB slot table (PERFORMANCE §5). A round reads the corpus (`explore.Corpus.read`: every landed
-session, each worker's focus row as that session's world, the verdicts, the recorded schedule) and:
+1.9 GB slot table (PERFORMANCE §5). A round reads the corpus (`explore.Corpus.read`: every session its
+corpus names, each worker's focus row as that session's world, the verdicts, the recorded schedule) and:
 
 1. Names planned tasks answered at two addresses (`ADDRESS_UNSTABLE`, DIAGNOSTIC).
 2. Resolves the declaration against the seed session's activations (`plan.SelectorResolution`);
@@ -1443,8 +1450,9 @@ runs): a start that is no head's own counts the largest idle fresh
 reservation of the host as used, a head's own start counts none (heads take turns and never
 block each other), and the head gives its room up when it exits. A head step that waits for room
 holds its need on the pool's host with the most room when it began to wait (`campaign_head_hold`,
-`<host>/heads/<id>.hold`, fresh while the head lives, given up once the step is placed or the head
-exits; `campaign_head_hold_room`): every start but the head's own counts it as a reservation, so
+`<host>/heads/<id>.hold`, fresh while the head lives, given up once the step is placed, the head
+exits, or the exploration's end ends the step that waits -- a round dropped at a witness, §7.9 --
+by the pid the hold names, `campaign_stream_reap`; `campaign_head_hold_room`): every start but the head's own counts it as a reservation, so
 that host drains as its starts return instead of being taken again one obligation at a time
 (a40h2's 14 GB seed replay waited 70 min, V5-11741's 16 GB GROW step 40 min and more, while the
 pool kept every lift busy).
@@ -1525,18 +1533,52 @@ world, the new input mints the k-th call, and a later round flips it there (one 
 
 `campaign_explore` is one streaming loop on the head, with no wave barrier. It starts queued
 obligations wherever a host admits one (§7.7) and collects each as it returns
-(`campaign_stream_wait`). Its own JVM work is one STEP at a time, in the background
-(`campaign_stream_step`, in `steps/NNNN/`), so the pool goes on starting and collecting while a step
-waits for memory or runs. A step's JVMs -- the gate, the planner, an attempt's composer -- and GROW's
-planner and weave are head steps (§7.7): each goes wherever there is room. Between two steps, in the head's hands (`campaign_stream_step_start`),
-everything that returned meanwhile lands: each verdict is appended to `obligation_results.jsonl`
-(`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the sessions the workers
-staged move into the corpus (`campaign_stream_move`). The next step then takes them in: ONE IMPORT
-gate (§6) over exactly them (the list `gate`, its summary `import_gate.json`; one BLOCKING violation
-fails the campaign at IMPORT) and the round now owed (`round`, planned into `obligations-NNNN/` by
-the exploration's planner, §7.1) -- owed once a session has landed, or once nothing is queued or
-running and an answer came since the last round. THE PLANNER SERVICE (`campaign_stream_plan`): the
-step starts it when none lives, as a head step -- placed by the usual rule (`campaign_head_place`) at
+(`campaign_stream_wait`). Its own JVM work runs in the background in TWO LANES, so the pool goes on
+starting and collecting while either waits for memory or runs, and neither waits for the other.
+HEAD STEPS, one at a time (`campaign_stream_step`, in `steps/NNNN/`): an import gate with the
+confirmation verdicts owed, or an attempt at witnesses. ROUNDS, one at a time (`campaign_stream_round`,
+in `planning-NNNN/`): the exploration's planner (§7.1). Their JVMs -- the gate, the planner, an
+attempt's composer -- and GROW's planner and weave are head steps (§7.7): each goes wherever there is
+room, a planner and a composer at once each by its own charge (the served planner's is held for its
+life anyway). Between two head steps, in the head's hands, in this order:
+1. a round that returned is TAKEN (`campaign_stream_round_take`): its directory becomes
+   `obligations-NNNN/`, and the head takes its round (`campaign_stream_take_round`: the wave budget,
+   GROW, and its proposals into the queue, where they start at once, behind GROW's re-runs);
+2. the round owed STARTS when none plans (`campaign_stream_round_start`) -- owed once a session has
+   landed, or once nothing is queued, running or returned unlanded and an answer came since the last
+   round started -- over inputs frozen now, written into `planning-NNNN/` beside its files:
+   `corpus.txt`, the sessions landed (every one gated: no head step gates); `answers.jsonl`, the answers
+   landed (`obligation_results.jsonl` as it stands); `in_flight.jsonl`, the obligation rows queued or
+   running (§7.3). It plans in the background, the campaign landing meanwhile, and no session or
+   answer that lands meanwhile is the round's (§7.1). The obligation workers' own files -- each one's
+   answer, focus row and question, read for the worlds, the answers by flip and the killed replays
+   (`Corpus#indexWorlds`, `ExploreMain#answersByFlip`, `#boundedFlips`) -- it reads as they stand when
+   it reads them, as a round always did: a worker writes its own answer as its replay ends, and a
+   landing writes an unfinished one's (`campaign_obligation_unfinished`);
+3. everything that returned meanwhile LANDS (`campaign_stream_step_start`): each verdict is appended to
+   `obligation_results.jsonl` (`campaign_stream_land`), GROW's re-runs swap in once due (§7.8), and the
+   sessions the workers staged move into the corpus (`campaign_stream_move`); the next head step then
+   takes them in: ONE IMPORT gate (§6) over exactly them (the list `gate`, its summary
+   `import_gate.json`; one BLOCKING violation fails the campaign at IMPORT), while no round starts
+   (`stream_gating`); once it returns, the round owed starts over them.
+
+A round may also start while an attempt or a verdict step runs, every landed session being gated
+then. Until a round is taken no reader of the rounds sees it -- its name matches no `obligations-*`
+(the slot table, the workers, an attempt's COMPOSE) -- so an attempt composes only taken rounds
+(solr-18413 Z3S, one lane: a witness that returned three seconds after a step began, which gated six
+sessions and planned round 2 -- its planner out of 8 GB, then 1437 s waiting for 17.8 GB -- was
+attempted 69 minutes after its replay ended). AN ATTEMPT'S SLOT TABLE IS ONE ROUND BEHIND ITS
+SESSIONS, an over-approximation: the sessions landed since the last taken round started, the witness
+among them, have no slots of their own until a round reconciles them (§7.1 step 4) -- the round that
+does may plan while the attempt composes -- so COMPOSE checks their pairings only against the slots
+earlier rounds opened (`SlotTable#replacements`: one that contradicts a slot of its own world is a
+replacement, one no slot holds is growth). A spurious SAT is possible, and CONFIRM filters it (§10);
+the next attempt reads the slots the round opened. After a witness the final COMPOSE reads the
+accepted attempt's corpus (the sessions landed after it leave, WITNESSED below) with the slot table of
+every round taken by then -- rounds taken between the attempt and its confirmation's verdict among
+them -- so its claim may differ from the attempt's: `campaign_confirm` reuses the attempt's
+confirmation for the same model only, and replays CONFIRM for any other. THE PLANNER SERVICE (`campaign_stream_plan`): the
+round's lane starts it when none lives, as a head step -- placed by the usual rule (`campaign_head_place`) at
 what the planner starts at (`campaign_engine_start_mb`), its charge held for its life by the shell
 that holds it (`campaign_host_keep`, as a host solver's), grown as a watched JVM
 (`campaign_watch_workload`), the head's room marked busy while it runs on the head's host -- and asks
@@ -1546,20 +1588,21 @@ a peer: its questions wait on that host's disk, `campaign_planner_dir`). Its sta
 (exit 3) is started again at twice it and the round asked again; out of the engine heap it is
 PLANNER_HEAP_EXCEEDED (below); any other end fails EXPLORE with its deepest throwable -- never a
 silent start of another. The exploration's end stops it (`campaign_planner_stop`), and so does the
-head's EXIT trap. A step after which witnesses wait is followed by an
+head's EXIT trap. A head step after which witnesses wait is followed by an
 attempt at them (`witnesses`, below), a step of its own. A head JVM that outgrew its need in a step
-(§7.7) is the head's from then on (`outgrown`).
-When the step returns the head takes its round (`campaign_stream_take_round`): the wave budget,
-GROW, and its proposals into the queue, where they start at once (behind GROW's re-runs). The corpus and the ledger change
-only between two steps, so a step reads them as a landed whole, and the round's in-flight rows
-(`in_flight.jsonl`, §7.3) are what is queued or running as the step starts; the busier the head,
-the more returns one step takes in. The exploration has five ends, each stated in
-`exploration.json` (stop, rounds, steps, generations, answers, attempts, and every obligation
-cancelled or reaped, by id):
+or a round (§7.7) is the head's from then on (`outgrown`, joined per main at the larger heap: the
+two lanes run at once, so neither one's replaces the other's). The corpus and the ledger change only
+between two head steps, so a head step reads them as a landed whole; the busier the head, the more
+returns one step takes in. GROW still runs in the head's hands as a round is taken (its planner and
+weave: 8 min of Z3S's take of round 2, with no start dispatched meanwhile); moving it into a lane is
+open (PERFORMANCE §5). The exploration has five ends, each stated in
+`exploration.json` (stop, rounds, steps (head steps), generations, answers, attempts, every
+obligation cancelled or reaped, by id, and `roundDropped`, a round never taken):
 
 - **WITNESSED.** A landed session whose replay was ADMITTED and whose target row at the declared
   occurrence (the last round's `anchorOccurrences`) observed the fatal -- the rule of §7.1 step 6 --
-  is a witness: once the step that took it in has gated it, the next step is an attempt at every
+  is a witness: once the head step that took it in has gated it, the next head step -- whatever a
+  round plans meanwhile -- is an attempt at every
   witness gated and not yet attempted, one COMPOSE over the corpus as it stands -- `do_compose`, the
   stage's own entry, into `witness-attempts/NNNN/` -- since an observed fatal is not yet a
   composable witness: COMPOSE's families may need sessions later obligations would add
@@ -1587,10 +1630,12 @@ cancelled or reaped, by id):
   reaped (its process tree here, its workers on every peer) -- an obligation's worker directory moves
   to `<campaign>/explore-reaped/`, as does every one that returned after the step began or whose
   REPLAY is still queued, and a
-  confirmation still owed is its attempt's row -- and the sessions that landed after the accepted
+  confirmation still owed is its attempt's row; a round still planning, or returned and not taken,
+  is dropped, its planner stopped first (`campaign_stream_round_drop`: its `planning-NNNN/` to
+  `explore-reaped/`, `roundDropped`, owed as `roundDue`) -- and the sessions that landed after the accepted
   attempt composed leave the corpus for `<campaign>/explore-reaped/after-witness/`
   (`exploration.json` `afterWitness`), so the corpus COMPOSE reads next is exactly the one the
-  attempt read; a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted (its replay did
+  attempt read (its slot table may hold rounds taken since, above); a DIAGNOSTIC `WITNESSED` row goes to `campaign_gaps.jsonl`. Refuted (its replay did
   not reach the fatal at the anchor: a false positive, §10), its model is excluded from every later
   composition and the exploration goes on, as after any other claim; one CONFIRM gave no verdict on
   (a task it refused by name, a decision that failed: a defect of the engine) is excluded from
@@ -1613,7 +1658,7 @@ cancelled or reaped, by id):
   nn0 was exposed by the witness's own session, which ended the exploration before GROW.
   This is every campaign's rule: the question is one declared occurrence (owner 2026-09-28). Once
   the exploration has stopped otherwise, no attempt is made.
-- **CAMPAIGN_BUDGET_REACHED.** Between two steps, the campaign's budget (`campaign_budget_s` from
+- **CAMPAIGN_BUDGET_REACHED.** Between two head steps, whatever a round plans, the campaign's budget (`campaign_budget_s` from
   the campaign's start; `accept.sh` passes what is left of the case's `CASE_TIMEOUT_SECONDS`) has
   less left than the stages after the exploration are owed (`campaign_claim_room`): its reserve,
   `campaign_reserve`, COMPOSE and EMIT each as long as the longest COMPOSE the campaign measured
@@ -1625,25 +1670,27 @@ cancelled or reaped, by id):
   `reproduce_min_s`; its native runs go out at once), never less than
   `campaign_reserve_s` (600; a budget not above it is refused by
   `validate_config`). The exploration ends as at a witness (queue cancelled, what runs or returned
-  unlanded reaped), and the stop is a DIAGNOSTIC row stating what it left owed.
+  unlanded reaped, a round planning or untaken dropped), and the stop is a DIAGNOSTIC row stating
+  what it left owed.
 - **REGION_PATH_WAVE_BUDGET_REACHED.** A round of wave `≥ region_path_max_waves` that still owes
   work is not dispatched (its proposals are named cancelled): the queued solves are cancelled, what
   runs lands -- a solved obligation's REPLAY too -- and the stop is a DIAGNOSTIC row. The wave bound is
   declared and generous: a last-resort valve (RULES, the owner's bound rule), named in `result.json`
   `bounded` like every declared bound that cut the search (§11), never read as the closure's own end.
-- **FIXED_POINT.** Nothing queued, running or unlanded, no step running, and the last round, over
-  every answer, proposed and exposed nothing.
+- **FIXED_POINT.** Nothing queued, running or unlanded, no head step running, no round planning,
+  untaken or owed, and the last round, over every answer, proposed and exposed nothing.
 - **PLANNER_HEAP_EXCEEDED.** The planner ran out of the most heap a head JVM is given
   (`engine_memory_mb`, exit 3, §7.7): the corpus outgrew what the head can hold, so that round is
-  not planned (its directory goes, its logs stay in the step), what runs lands, and the stop is a
+  not planned (its `planning-NNNN/`, with its logs, leaves for `explore-reaped/`, `roundDropped`),
+  what runs lands, and the stop is a
   DIAGNOSTIC row naming the round, the corpus's size on disk and the planner's error -- rounds
   were still owed. Any other planner failure fails EXPLORE, its deepest throwable the reason.
 
 **THE END IS JUDGED ONCE, AT EMIT** (`campaign_exploration_cut`, the one place; owner 2026-10-04,
 only SAT or UNSAT): `exploration.json` states what the end left owed -- queued obligations
 cancelled, unlanded jobs and confirmations reaped, GROW re-runs dropped -- queued, or returned
-and not swapped in (the exposing round's growth and obligations with them) -- a round due when the budget stopped it
-(answers landed since the last round, or re-runs and swaps owed) -- and an end that owed work
+and not swapped in (the exposing round's growth and obligations with them) -- a round due when the exploration stopped
+(answers landed since the last round started, re-runs and swaps owed, or a round dropped untaken) -- and an end that owed work
 (CAMPAIGN_BUDGET_REACHED or WITNESSED with any of it, PLANNER_HEAP_EXCEEDED always) under a claim
 that is no `SAT_CANDIDATE` is one BLOCKING `EXPLORATION_CUT` row: an UNSAT over a corpus missing
 those arms says nothing about them, so EMIT publishes it as a `RUN_DEFECT`. A SAT the corpus holds

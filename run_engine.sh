@@ -590,15 +590,28 @@ campaign_engine_jvm() {
 
 # campaign_engine_peak <peak_file> <peak_mb>: an engine JVM's peak folded
 # into <peak_file>, the largest any of the campaign's reached (none named
-# outside a campaign).
+# outside a campaign).  A round's planner and a head step's JVM fold theirs
+# at once, from any host: read, compare and replace under one lock
+# (<peak_file>.lock, a mkdir, atomic on NFS too), so a slower write of the
+# smaller never replaces the larger; a lock left 10 s by a folder that was
+# ended is broken.
 campaign_engine_peak() {
-  local file=$1 peak=$2 held tmp
+  local file=$1 peak=$2 held tmp at
   [[ -n "${file}" && "${peak}" =~ ^[0-9]+$ ]] || return 0
+  [[ -d "$(dirname -- "${file}")" ]] || return 0
+  until mkdir "${file}.lock" 2>/dev/null; do
+    if at=$(stat -c %Y "${file}.lock" 2>/dev/null) \
+        && (( $(date +%s) - at >= 10 )); then
+      rmdir "${file}.lock" 2>/dev/null || true
+    fi
+    sleep 0.1
+  done
   read -r held 2>/dev/null <"${file}" || held=0
   if (( peak > ${held:-0} )); then
     tmp=$(mktemp "${file}.XXXXXX") \
       && printf '%s\n' "${peak}" >"${tmp}" && mv -f -- "${tmp}" "${file}"
   fi
+  rmdir "${file}.lock" 2>/dev/null || true
 }
 
 # The heap, in MB, <main> starts at (engine_java): its measured need
@@ -4564,16 +4577,25 @@ campaign log says}); its logs are in ${worker}"
 # EXPLORE: ONE STREAMING LOOP (PIPELINE §7.7, §7.9)
 #
 # No wave barrier.  The head starts queued obligations wherever the memory
-# ledger admits one and collects each as it returns.  Its own JVM work -- the
-# import gate over the sessions that landed with the round now owed and the
-# verdicts of the confirmation replays that returned, or a COMPOSE attempt at
-# the witnesses among them -- is one STEP at a time, in the background
-# (campaign_stream_step), so the pool goes on starting and collecting while a
-# step waits for memory or runs; an attempt's confirmation replay is a job of
-# the pool, never a step.  The corpus and the ledger change only
-# between two steps, in the head's hands (campaign_stream_step_start): a
-# step reads them as a landed whole, and whatever returns meanwhile waits
-# for the next one -- the busier the head, the more one step takes in.
+# ledger admits one and collects each as it returns.  Its own JVM work runs
+# in the background in two lanes, so the pool goes on starting and
+# collecting while either waits for memory or runs.  HEAD STEPS, one at a
+# time (campaign_stream_step): the import gate over the sessions that landed
+# and the verdicts of the confirmation replays that returned, or a COMPOSE
+# attempt at the witnesses among them; an attempt's confirmation replay is a
+# job of the pool, never a step.  The corpus and the ledger change only
+# between two head steps, in the head's hands (campaign_stream_step_start):
+# a head step reads them as a landed whole, and whatever returns meanwhile
+# waits for the next one -- the busier the head, the more one step takes in.
+# ROUNDS, one at a time (campaign_stream_round): the exploration's planner
+# plans each over inputs frozen as it starts -- the sessions landed, every
+# one gated; the answers landed; what is queued or running; the workers' own
+# files are read as they stand -- so the head
+# lands, gates, attempts witnesses and decides confirmations while a round
+# plans (Z3S-18413: a witness landed behind a 57-minute round and was
+# attempted 69 minutes after its replay ended).  A round is taken between
+# two head steps (campaign_stream_round_take); until then no reader of the
+# rounds sees it (planning-NNNN/).
 #
 # The loop's state is campaign_explore's locals, which the helpers below read
 # and write through bash's dynamic scope:
@@ -4588,15 +4610,19 @@ campaign log says}); its logs are in ${worker}"
 #                     attempt's number its id)
 #   stream_jobs       pid -> "<kind> <round> <id> <host> [<session>]"
 #   stream_pending    "<kind> <round> <id> <host> <status> [<session>]": what
-#                     returned since the last step began, not landed yet
+#                     returned since the last head step began, not landed yet
 #   stream_flying     obligation id -> its row, from its queueing until its
 #                     answer lands -- solving, its REPLAY queued or
 #                     replaying: a round's --in-flight
 #   stream_host_jobs  host -> how many of this campaign's run there
 #   stream_host_solves host -> how many of them are solves
 #                     (campaign_stream_solves_per_host)
-#   stream_step_pid   the step running, or ""; stream_step_dir its directory
-#                     (steps/NNNN/: what it gates and plans, or attempts)
+#   stream_step_pid   the head step running, or ""; stream_step_dir its
+#                     directory (steps/NNNN/: what it gates and decides, or
+#                     attempts); stream_gating 1 while it gates sessions
+#   stream_round_pid  the round planning, or ""; stream_round_dir its
+#                     directory (planning-NNNN/: its frozen inputs, its files);
+#                     stream_round_returned a round that returned, not taken
 #   stream_witnesses  sessions landed as witnesses, gated, not attempted yet
 #   stream_confirming attempt -> its claim's model, while its confirmation
 #                     is queued, runs or is not decided yet
@@ -4604,7 +4630,7 @@ campaign log says}); its logs are in ${worker}"
 #                     confirmation: attempted again once a verdict lands
 #   stream_swaps      re-runs that returned, whose sessions replace the
 #                     exposing ones once no obligation runs
-#   stream_landed     sessions landed since the last round
+#   stream_landed     sessions landed since the last round started
 #   stream_hold       GROW's re-runs and swaps still owed: no obligation
 #                     starts and no round is planned while any is
 # ---------------------------------------------------------------------------
@@ -4617,15 +4643,17 @@ campaign log says}); its logs are in ${worker}"
 #               publishes the claim the final stages accept, and its
 #               CONFIRM, a job of the pool, confirms it (campaign_stream_attempt,
 #               campaign_stream_decide): the queue is cancelled, what runs
-#               is reaped, and the corpus is the one that attempt composed
-#               (campaign_stream_end).
-#   FIXED_POINT nothing proposed, exposed, queued, running or unlanded.
+#               is reaped, a round still planning is dropped, and the corpus
+#               is the one that attempt composed (campaign_stream_end).
+#   FIXED_POINT nothing proposed, exposed, queued, running or unlanded, and
+#               no round planning, untaken or owed.
 #   REGION_PATH_WAVE_BUDGET_REACHED  a round of wave region_path_max_waves
 #               still owes work: it is not dispatched, the queue is
 #               cancelled, and what runs lands.
-#   CAMPAIGN_BUDGET_REACHED  between two steps, the campaign's budget has
-#               no room for the stages after it (campaign_claim_room): as
-#               at a witness, the queue is cancelled and what runs reaped.
+#   CAMPAIGN_BUDGET_REACHED  between two head steps, the campaign's budget
+#               has no room for the stages after it (campaign_claim_room):
+#               as at a witness, the queue is cancelled, what runs reaped
+#               and a round still planning dropped.
 #   PLANNER_HEAP_EXCEEDED  a round's planner outgrew the head's heap.
 #
 # Each end is stated in exploration.json with the work it left owed, and a
@@ -4647,6 +4675,8 @@ campaign_explore() {
   local stream_share_said="" stream_round_due=false
   local stream_stop_detail="" stream_anchors="[]"
   local stream_step_pid="" stream_step_dir="" stream_steps=0
+  local stream_gating=0 stream_round_pid="" stream_round_dir=""
+  local stream_round_returned="" stream_round_dropped=""
   local -a stream_queue=() stream_hosts=() stream_swaps=() stream_pending=()
   local -a stream_witnesses=() stream_deferred=() stream_after_witness=()
   local -a stream_cancelled=() stream_reaped=() stream_round_args=()
@@ -4675,7 +4705,13 @@ campaign_explore() {
     campaign_head_unreserve' EXIT
 
   while true; do
-    # Between two steps, so the round the last one planned is whole.
+    # Between two head steps, in the head's hands: a round that returned is
+    # taken (its proposals queued, GROW).
+    if [[ -z "${stream_stop}" && -z "${stream_step_pid}" \
+        && -n "${stream_round_returned}" ]]; then
+      campaign_stream_round_take
+    fi
+    # Between two head steps, whatever a round plans meanwhile.
     if [[ -z "${stream_stop}" && -z "${stream_step_pid}" ]] \
         && ! campaign_claim_room; then
       stream_stop=CAMPAIGN_BUDGET_REACHED
@@ -4692,15 +4728,23 @@ the stages after the exploration are owed $(campaign_reserve)s of it \
       campaign_stream_end
       break
     fi
-    [[ -n "${stream_step_pid}" ]] || campaign_stream_step_start
+    # The round owed starts first, over the sessions landed so far, all of
+    # them gated: one that lands now waits for its gate, and for the round
+    # after it.  Again once the head step started, which may gate nothing.
+    if [[ -z "${stream_step_pid}" ]]; then
+      campaign_stream_round_start
+      campaign_stream_step_start
+    fi
+    campaign_stream_round_start
     [[ -z "${stream_stop}" ]] || campaign_stream_drop
     campaign_stream_dispatch
-    # With no step running, everything that returned has landed, and a
-    # round owed is planning (campaign_stream_step_start): nothing left to
-    # start or run is the end -- the stop already stated, else the fixed
-    # point.
+    # With no head step running, everything that returned has landed, and a
+    # round owed is planning (campaign_stream_round_start): nothing left to
+    # start, run, plan or take is the end -- the stop already stated, else
+    # the fixed point.
     if (( ${#stream_jobs[@]} + ${#stream_queue[@]} == 0 )) \
-        && [[ -z "${stream_step_pid}" ]]; then
+        && [[ -z "${stream_step_pid}${stream_round_pid}" \
+              && -z "${stream_round_returned}" ]]; then
       if [[ -z "${stream_stop}" ]]; then
         stream_stop=FIXED_POINT
         stream_stop_detail="round $((stream_round - 1)) proposed nothing, \
@@ -4753,16 +4797,18 @@ campaign_stream_round_args() {
     || stream_round_args+=(--root-domains "${causynth_root_domains}")
 }
 
-# Whether a round is owed now: something answered since the last one, and
-# either a session landed (the corpus grew) or no question is left to wait
-# for (the last answers may close the frontier; a confirmation's verdict
-# changes no frontier).  Never while GROW's re-runs or swaps are owed: the
-# corpus is about to change under the round.
+# Whether a round is owed now: something answered since the last one
+# started, and either a session landed (the corpus grew) or no question is
+# left to wait for -- none queued, running, or returned and not landed (the
+# last answers may close the frontier; a confirmation's verdict changes no
+# frontier).  Never while GROW's re-runs or swaps are owed: the corpus is
+# about to change under the round.
 campaign_stream_plan_due() {
   local entry
   (( stream_dirty == 1 && stream_hold == 0 )) || return 1
   (( stream_landed > 0 )) && return 0
-  for entry in "${stream_jobs[@]}" "${stream_queue[@]}"; do
+  for entry in "${stream_jobs[@]}" "${stream_queue[@]}" \
+      "${stream_pending[@]}"; do
     [[ "${entry}" == CONFIRM\ * ]] || return 1
   done
 }
@@ -4782,22 +4828,23 @@ campaign_stream_confirm_owed() {
   return 1
 }
 
-# Between two steps, in the head's hands, the next one, in steps/NNNN/.
-# Witnesses gated and not yet attempted make it an ATTEMPT (`witnesses`,
-# all of them, and `confirming`, the models whose confirmation is still
-# owed) unless a confirmation is owed its verdict, which goes first
-# (campaign_stream_confirm_owed):
+# Between two head steps, in the head's hands, the next one, in
+# steps/NNNN/.  Witnesses gated and not yet attempted make it an ATTEMPT
+# (`witnesses`, all of them, and `confirming`, the models whose
+# confirmation is still owed) unless a confirmation is owed its verdict,
+# which goes first (campaign_stream_confirm_owed):
 # nothing lands while an attempt runs, so it composes the corpus as it
 # stood, and whatever returns meanwhile, a witness too, waits for the step
 # after it -- at most one attempt at a time, the witnesses that come during
 # one coalesced into the next.  Else what returned lands
 # (campaign_stream_land), GROW's re-runs swap in once due, the staged
 # sessions move into the corpus (campaign_stream_move), and the step takes
-# them in when there is work: `gate`, the sessions that landed; `confirms`,
-# the confirmation replays that returned, to decide; `round`, the round now
-# owed, with its in_flight.jsonl, taken here, where nothing is unlanded.
+# them in when there is work: `gate`, the sessions that landed
+# (stream_gating while it runs: no round starts over a session not gated);
+# `confirms`, the confirmation replays that returned, to decide.  A round
+# is no head step: it plans in its own lane (campaign_stream_round_start).
 campaign_stream_step_start() {
-  local dir name="" row entry
+  local dir entry
   local -a stream_staged=() gate=() confirms=()
   if (( ${#stream_witnesses[@]} > 0 )) && [[ -z "${stream_stop}" ]] \
       && ! campaign_stream_confirm_owed; then
@@ -4814,24 +4861,14 @@ campaign_stream_step_start() {
       (( ${#stream_chain[@]} == 0 )) || campaign_stream_chain_reattempt
     fi
     (( ${#stream_staged[@]} == 0 )) || campaign_stream_move
-    if [[ -z "${stream_stop}" ]] && campaign_stream_plan_due; then
-      name=$(printf 'obligations-%04d' "${stream_round}")
-    fi
-    (( ${#gate[@]} + ${#confirms[@]} > 0 )) || [[ -n "${name}" ]] \
-      || return 0
+    (( ${#gate[@]} + ${#confirms[@]} > 0 )) || return 0
     campaign_stream_step_dir
-    (( ${#gate[@]} == 0 )) || printf '%s\n' "${gate[@]}" >"${dir}/gate"
+    if (( ${#gate[@]} > 0 )); then
+      printf '%s\n' "${gate[@]}" >"${dir}/gate"
+      stream_gating=1
+    fi
     (( ${#confirms[@]} == 0 )) \
       || printf '%s\n' "${confirms[@]}" >"${dir}/confirms"
-    if [[ -n "${name}" ]]; then
-      for row in "${stream_flying[@]}"; do
-        printf '%s\n' "${row}"
-      done >"${dir}/in_flight.jsonl"
-      printf '%s\n' "${name}" >"${dir}/round"
-      stream_round=$((stream_round + 1))
-      stream_dirty=0
-      stream_landed=0
-    fi
   fi
   campaign_stream_step "${dir}" &
   stream_step_pid=$!
@@ -4847,21 +4884,14 @@ campaign_stream_step_dir() {
 
 # One step of the head's JVM work, in the background: an attempt at the
 # witnesses <dir>/witnesses names; or the import gate over the sessions
-# <dir>/gate names (one call: the head's), the verdicts on the confirmation
-# replays <dir>/confirms names (campaign_stream_decide), and -- unless one of
-# them confirmed its claim -- the round <dir>/round names, planned into
-# obligations-NNNN/ by the exploration's planner (campaign_stream_plan).  An
-# accepted witness (<dir>/witnessed) ends the
-# exploration.  A BLOCKING row fails the campaign at IMPORT here, and
-# a planner that fails fails it at EXPLORE -- but one that ran out of the
-# most heap a head JVM is given plans no round: the corpus outgrew what the
-# head can hold, its round directory goes (its logs into the step) and
-# <dir>/heap-exceeded ends the exploration on the rounds before it.  The
-# head takes the rest once the step returns (campaign_stream_step_done), the
-# engine mains that outgrew their need in it among them (<dir>/outgrown,
-# engine_java).
+# <dir>/gate names (one call: the head's) and the verdicts on the
+# confirmation replays <dir>/confirms names (campaign_stream_decide).  An
+# accepted witness (<dir>/witnessed) ends the exploration.  A BLOCKING row
+# fails the campaign at IMPORT here.  The head takes the rest once the step
+# returns (campaign_stream_step_done), the engine mains that outgrew their
+# need in it among them (<dir>/outgrown, engine_java).
 campaign_stream_step() {
-  local dir=$1 round_dir status=0
+  local dir=$1
   local -a gate=() witnesses=()
   if [[ -s "${dir}/witnesses" ]]; then
     mapfile -t witnesses <"${dir}/witnesses"
@@ -4871,33 +4901,142 @@ campaign_stream_step() {
     (( ${#gate[@]} == 0 )) || campaign_import_gate "${iteration_dir}" \
       "${iteration_id}" "${dir}/import_gate.json" "${gate[@]/#/${sessions}/}"
     [[ ! -s "${dir}/confirms" ]] || campaign_stream_decide "${dir}"
-    if [[ -s "${dir}/round" && -s "${dir}/witnessed" ]]; then
-      # The exploration ends here: the round owed is never planned.
-      : >"${dir}/round-skipped"
-    elif [[ -s "${dir}/round" ]]; then
-      round_dir="${iteration_dir}/$(cat "${dir}/round")"
-      [[ ! -e "${round_dir}" ]] || die \
-        "obligation round directory already exists: ${round_dir}"
-      mkdir -p "${round_dir}"
-      # Copied as the planner starts: the round's time is the planner's own.
-      cp -- "${dir}/in_flight.jsonl" "${round_dir}/in_flight.jsonl"
-      campaign_stream_plan "${round_dir}" >"${round_dir}/stdout.log" \
-        2>"${round_dir}/stderr.log" || status=$?
-      if (( status == campaign_jvm_out_of_heap_status )); then
-        mv -- "${round_dir}/stdout.log" "${round_dir}/stderr.log" "${dir}/"
-        rm -r -- "${round_dir}"
-        printf '%s\n' "the planner of $(basename "${round_dir}") ran out \
-of the most heap a head JVM is given (engine_memory_mb=${engine_memory_mb:-8192}) \
-over a corpus of $(du -s -m -- "${sessions}" | cut -f1) MB ($(campaign_thrown \
-"${dir}/stderr.log"), ${dir}/stderr.log)" >"${dir}/heap-exceeded"
-      elif (( status != 0 )); then
-        campaign_fail EXPLORE ExploreMain "${round_dir}/stderr.log" \
-          "the planner of $(basename "${round_dir}") failed with exit \
-${status}: $(campaign_thrown "${round_dir}/stderr.log")"
-      fi
-    fi
   fi
   printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
+}
+
+# The round owed (campaign_stream_plan_due), started in its own lane when
+# the exploration has not stopped, no round plans or waits to be taken, and
+# no head step gates (every session landed is gated): planned in the
+# background (campaign_stream_round) into planning-NNNN/, over inputs frozen
+# now, beside its files -- corpus.txt, the sessions landed; answers.jsonl,
+# the answers landed (obligation_results.jsonl as it stands);
+# in_flight.jsonl, the obligation rows queued or running -- so the head goes
+# on landing, gating, attempting witnesses and deciding confirmations while
+# it plans, and no session or answer that lands meanwhile is the round's.
+# The obligation workers' own files -- each one's answer, focus row and
+# question, read for the worlds, the answers by flip and the killed replays
+# (Corpus#indexWorlds, ExploreMain#answersByFlip, #boundedFlips) -- the round
+# reads as they stand when it reads them, as a round always did: a worker
+# writes its own answer as its replay ends, and a landing writes an
+# unfinished one's (campaign_obligation_unfinished).  No round starts while
+# GROW's re-runs or swaps are owed (campaign_stream_plan_due), so no swap
+# withdraws a session a round reads.
+campaign_stream_round_start() {
+  local dir row
+  [[ -z "${stream_stop}" && -z "${stream_round_pid}" \
+     && -z "${stream_round_returned}" ]] || return 0
+  (( stream_gating == 0 )) || return 0
+  campaign_stream_plan_due || return 0
+  dir=$(printf '%s/planning-%04d' "${iteration_dir}" "${stream_round}")
+  [[ ! -e "${dir}" ]] || die "round directory already exists: ${dir}"
+  mkdir -p "${dir}"
+  # Written as the planner starts: the round's time is the planner's own.
+  for row in "${stream_flying[@]}"; do
+    printf '%s\n' "${row}"
+  done >"${dir}/in_flight.jsonl"
+  cp -- "${results}" "${dir}/answers.jsonl"
+  find "${sessions}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+    | LC_ALL=C sort >"${dir}/corpus.txt"
+  stream_round=$((stream_round + 1))
+  stream_dirty=0
+  stream_landed=0
+  campaign_stream_round "${dir}" &
+  stream_round_pid=$!
+  stream_round_dir=${dir}
+}
+
+# One round, in the background: <dir> (planning-NNNN/, its frozen inputs in
+# it) planned by the exploration's planner (campaign_stream_plan).  A
+# planner that fails fails the campaign at EXPLORE -- but one that ran out of
+# the most heap a head JVM is given plans no round: the corpus outgrew what
+# the head can hold, and <dir>/heap-exceeded ends the exploration on the
+# rounds before it (campaign_stream_round_take).  The engine mains that
+# outgrew their need in it are <dir>/outgrown.
+campaign_stream_round() {
+  local dir=$1 name status=0
+  name="obligations-${1##*-}"
+  campaign_stream_plan "${dir}" >"${dir}/stdout.log" 2>"${dir}/stderr.log" \
+    || status=$?
+  if (( status == campaign_jvm_out_of_heap_status )); then
+    printf '%s\n' "the planner of ${name} ran out of the most heap a head \
+JVM is given (engine_memory_mb=${engine_memory_mb:-8192}) over a corpus of \
+$(du -s -m -- "${sessions}" | cut -f1) MB ($(campaign_thrown \
+"${dir}/stderr.log"), ${campaign_root}/explore-reaped/$(basename \
+"${dir}")/stderr.log)" >"${dir}/heap-exceeded"
+  elif (( status != 0 )); then
+    campaign_fail EXPLORE ExploreMain "${dir}/stderr.log" \
+      "the planner of ${name} failed with exit ${status}: $(campaign_thrown \
+"${dir}/stderr.log")"
+  fi
+  printf '%s\n' "${campaign_engine_outgrown}" >"${dir}/outgrown"
+}
+
+# The round returned: one that failed has said why on the campaign's stderr
+# and ends the head; else the heaps its JVMs outgrew are the head's
+# (campaign_stream_outgrown), and it waits to be taken between two head
+# steps (campaign_stream_round_take).
+campaign_stream_round_done() {
+  local status=$1
+  stream_round_pid=""
+  (( status == 0 )) || exit "${status}"
+  campaign_stream_outgrown "${stream_round_dir}/outgrown"
+  stream_round_returned=${stream_round_dir}
+  stream_round_dir=""
+}
+
+# The round that returned, taken between two head steps, in the head's
+# hands: one its planner could not plan (<dir>/heap-exceeded) leaves the
+# iteration (campaign_stream_round_drop) and ends the exploration,
+# PLANNER_HEAP_EXCEEDED, on the rounds before it; else its directory
+# becomes obligations-NNNN/, which every reader of the rounds -- an
+# attempt's COMPOSE and its slot table among them -- sees from now on, and
+# the round is taken (campaign_stream_take_round).
+campaign_stream_round_take() {
+  local dir=${stream_round_returned} round_dir
+  stream_round_returned=""
+  if [[ -s "${dir}/heap-exceeded" ]]; then
+    stream_stop=PLANNER_HEAP_EXCEEDED
+    stream_stop_detail=$(cat "${dir}/heap-exceeded")
+    campaign_stream_round_drop "${dir}"
+    return 0
+  fi
+  round_dir="${iteration_dir}/obligations-${dir##*-}"
+  [[ ! -e "${round_dir}" ]] || die \
+    "obligation round directory already exists: ${round_dir}"
+  mv -- "${dir}" "${round_dir}"
+  campaign_stream_take_round "${round_dir}"
+}
+
+# A round never taken -- still planning or returned when the exploration
+# ended, or one its planner could not plan -- out of the iteration, to
+# explore-reaped/: no reader of the rounds ever sees it, the rounds are
+# those before it, and exploration.json names it (roundDropped) as a round
+# owed (roundDue).
+campaign_stream_round_drop() {
+  local dir=$1
+  mkdir -p "${campaign_root}/explore-reaped"
+  mv -- "${dir}" "${campaign_root}/explore-reaped/$(basename "${dir}")"
+  stream_round=$((stream_round - 1))
+  stream_round_dropped=$(basename "${dir}")
+  stream_round_due=true
+}
+
+# The heaps the engine mains of a lane outgrew (<file>: ` <main>=<mb>`
+# words, engine_java), joined with the head's (campaign_engine_outgrown):
+# per main, the larger.  A head step and a round run at once, so neither
+# one's words replace the other's.
+campaign_stream_outgrown() {
+  local word main
+  local -A grown=()
+  for word in ${campaign_engine_outgrown} $(cat -- "$1"); do
+    main=${word%=*}
+    (( ${word##*=} <= ${grown[${main}]:-0} )) || grown[${main}]=${word##*=}
+  done
+  campaign_engine_outgrown=""
+  for main in "${!grown[@]}"; do
+    campaign_engine_outgrown+=" ${main}=${grown[${main}]}"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -4905,10 +5044,12 @@ ${status}: $(campaign_thrown "${round_dir}/stderr.log")"
 # (explore.ExploreMain --serve, explore.Service): what it read for a round it
 # keeps for the next -- the corpus's rows, the static map, the slot table --
 # so a round reads only the sessions landed since, and its files are the ones
-# a planner of its own writes (offline-ab.sh EXPLORE.serve).  A planner JVM
-# per round read the whole corpus each time: hdfs-adhoc-07 EX1-07d's 16
+# a planner of its own writes (offline-ab.sh EXPLORE.serve).  A round is one
+# question naming its inputs, frozen as the round started: the corpus
+# (corpus.txt), the answers (answers.jsonl), what is in flight.  A planner
+# JVM per round read the whole corpus each time: hdfs-adhoc-07 EX1-07d's 16
 # planners took 1h51m of EXPLORE's 2h25m, a late round ~15 min (PERFORMANCE
-# §5).  The round's step starts it when none lives, as a head step: placed by
+# §5).  The round's lane starts it when none lives, as a head step: placed by
 # the usual rule (campaign_head_place), at what the planner starts at
 # (campaign_engine_start_mb), charged there for its life (campaign_host_keep)
 # and grown as a watched JVM (campaign_watch_workload); a round is one
@@ -4940,8 +5081,8 @@ campaign_planner_dir() {
 # seconds: its JVM names itself before it reads anything.
 campaign_planner_start_wait_s=300
 
-# The round <round_dir> (obligations-NNNN, its in_flight.jsonl copied in),
-# planned by the exploration's planner: started first when none lives -- at
+# The round <round_dir> (planning-NNNN, its frozen inputs in it), planned
+# by the exploration's planner: started first when none lives -- at
 # twice its heap when the one before ran out of heap (campaign_planner_ended)
 # -- and asked again when it ended without answering.  Its status: 0
 # planned; 3 the planner ran out of the engine heap; anything else failed,
@@ -5037,14 +5178,12 @@ campaign_planner_start() {
       campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
         "${iteration_dir}/planner.log" "${state}/jvm" \
-        --sessions "${sessions}" --results "${results}" \
-        "${stream_round_args[@]}" || status=$?
+        --sessions "${sessions}" "${stream_round_args[@]}" || status=$?
     else
       campaign_run_placed "${host}" campaign_planner_serve "${heap}" "${id}" \
         "${campaign_root:+${campaign_root}/engine_peak_mb}" \
         "${iteration_dir}/planner.log" "${state}/jvm" \
-        --sessions "${sessions}" --results "${results}" \
-        "${stream_round_args[@]}" || status=$?
+        --sessions "${sessions}" "${stream_round_args[@]}" || status=$?
     fi
     [[ -z "${busy}" ]] || rm -f -- "${busy}"
     campaign_host_release "${host}" "${charge}"
@@ -5113,7 +5252,8 @@ campaign_planner_round() {
   host=$(cat "${state}/host")
   id=$(cat "${state}/id")
   local -a ask=(campaign_planner_ask "${sessions}" "${id}" \
-    "$((10#${round_dir##*-}))" "${round_dir}/in_flight.jsonl" "${round_dir}")
+    "$((10#${round_dir##*-}))" "${round_dir}/in_flight.jsonl" "${round_dir}" \
+    "${round_dir}/answers.jsonl" "${round_dir}/corpus.txt")
   if campaign_host_is_local "${host}"; then
     "${ask[@]}" || status=$?
   else
@@ -5122,21 +5262,25 @@ campaign_planner_round() {
   return "${status}"
 }
 
-# campaign_planner_ask <sessions> <id> <round> <in_flight> <round_dir>, on
-# the planner's host: the round put to the planner instance <id> and its
-# answer waited for.  0 planned; 1 failed, its error on stderr; 5 no planner
-# answers there (none named itself within campaign_planner_start_wait_s, or
-# the one named is gone): the question is taken back.
+# campaign_planner_ask <sessions> <id> <round> <in_flight> <round_dir>
+# <answers> <corpus>, on the planner's host: the round put to the planner
+# instance <id> -- over the sessions <corpus> names, one per line, and the
+# answers <answers> holds -- and its answer waited for.  0 planned; 1
+# failed, its error on stderr; 5 no planner answers there (none named itself
+# within campaign_planner_start_wait_s, or the one named is gone): the
+# question is taken back.
 campaign_planner_ask() {
-  local sessions=$1 id=$2 round=$3 in_flight=$4 round_dir=$5
-  local dir name answer pid gone="" since=${SECONDS}
+  local sessions=$1 id=$2 round=$3 in_flight=$4 round_dir=$5 answers=$6
+  local corpus=$7 dir name answer pid gone="" since=${SECONDS}
   dir=$(campaign_planner_dir "${sessions}" "${id}")
   mkdir -p "${dir}/requests"
   name="$(date +%s%N).${BASHPID}"
   answer="${dir}/answers/${name}.json"
   jq -n -c --argjson round "${round}" --arg inFlight "${in_flight}" \
+    --arg results "${answers}" --arg corpus "${corpus}" \
     --arg outputDir "${round_dir}" --arg waiter "${BASHPID}" \
-    '{round: $round, inFlight: $inFlight, outputDir: $outputDir,
+    '{round: $round, inFlight: $inFlight, results: $results,
+      corpus: $corpus, outputDir: $outputDir,
       waiter: $waiter}' >"${dir}/requests/${name}.part"
   mv -- "${dir}/requests/${name}.part" "${dir}/requests/${name}.json"
   while [[ ! -e "${answer}" ]]; do
@@ -5207,19 +5351,20 @@ named && kill -KILL ${pid} 2>/dev/null; exit 0"
   fi
 }
 
-# The step returned: one that failed has said why on the campaign's stderr
-# and ends the head.  An attempt that owes a confirmation queues its replay
-# first in the pool (CONFIRM, its model under confirmation); witnesses whose
-# model was under confirmation wait for a verdict (stream_deferred), and go
-# back to be attempted once one lands without ending the exploration.  An
-# accepted witness ends the exploration; else the step's round, if it
-# planned one, is taken (campaign_stream_take_round).
+# The head step returned: one that failed has said why on the campaign's
+# stderr and ends the head.  The heaps its JVMs outgrew are the head's
+# (campaign_stream_outgrown).  An attempt that owes a confirmation queues its
+# replay first in the pool (CONFIRM, its model under confirmation);
+# witnesses whose model was under confirmation wait for a verdict
+# (stream_deferred), and go back to be attempted once one lands without
+# ending the exploration.  An accepted witness ends the exploration.
 campaign_stream_step_done() {
   local status=$1 dir=${stream_step_dir} id
   stream_step_pid=""
   stream_step_dir=""
+  stream_gating=0
   (( status == 0 )) || exit "${status}"
-  campaign_engine_outgrown=$(cat "${dir}/outgrown")
+  campaign_stream_outgrown "${dir}/outgrown"
   if [[ -s "${dir}/confirm" ]]; then
     id=$(cat "${dir}/confirm")
     stream_confirming[${id}]=$(cat \
@@ -5240,14 +5385,6 @@ campaign_stream_step_done() {
     stream_stop=WITNESSED
     stream_stop_detail=$(cat "${dir}/witnessed")
     campaign_witness_attempt=$(cat "${dir}/attempt")
-    [[ ! -e "${dir}/round-skipped" ]] || stream_round=$((stream_round - 1))
-  elif [[ -s "${dir}/heap-exceeded" ]]; then
-    # The round was never planned: the last one is the round before it.
-    stream_round=$((stream_round - 1))
-    stream_stop=PLANNER_HEAP_EXCEEDED
-    stream_stop_detail=$(cat "${dir}/heap-exceeded")
-  elif [[ -s "${dir}/round" ]]; then
-    campaign_stream_take_round "${iteration_dir}/$(cat "${dir}/round")"
   fi
 }
 
@@ -5657,7 +5794,9 @@ campaign_stream_drop() {
 # queued, running or undecided is its attempt's row, reaped; a GROW re-run
 # queued, or returned and not swapped in, is dropped, its directory with
 # it (a witness's confirmation holds every swap, so the sessions its attempt
-# composed are all still in the corpus).  At a witness
+# composed are all still in the corpus); a round still planning, or
+# returned and not taken, is dropped (campaign_stream_round_drop).  At a
+# witness
 # the sessions that landed after its attempt composed (not in its
 # corpus.txt) leave the corpus for explore-reaped/after-witness/: the corpus
 # COMPOSE reads next is exactly the one the accepted attempt read.
@@ -5706,6 +5845,16 @@ campaign_stream_end() {
       "${campaign_root}/explore-reaped/${round}/${id}"
   done
   campaign_stream_reap
+  if [[ -n "${stream_round_dir}" ]]; then
+    # Its planner first: it writes into the round's directory.
+    campaign_planner_stop
+    campaign_stream_round_drop "${stream_round_dir}"
+    stream_round_dir=""
+  fi
+  if [[ -n "${stream_round_returned}" ]]; then
+    campaign_stream_round_drop "${stream_round_returned}"
+    stream_round_returned=""
+  fi
   for entry in "${dropped[@]}"; do
     read -r kind round id session <<<"${entry}"
     if [[ "${kind}" == CONFIRM ]]; then
@@ -5741,13 +5890,17 @@ ${stream_stop}" 0 false
 }
 
 # Everything this campaign still runs, ended: each job's process tree here,
-# the step's and the ticker's (TERM, the kill grace, KILL), its workers on
-# every peer, and each waited for.  The EXIT trap of a head that fails
+# the head step's, the round's and the ticker's (TERM, the kill grace, KILL),
+# its workers on every peer, and each waited for; the room an ended process
+# held while it waited to be placed (campaign_head_hold_room, named by its
+# pid) is the hosts' again.  The EXIT trap of a head that fails
 # mid-exploration, and the witness's end.
 campaign_stream_reap() {
-  local pid
+  local pid hold
   local -a tree=()
-  for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_ticker}; do
+  local -A ended=()
+  for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
+      ${stream_ticker}; do
     mapfile -t -O "${#tree[@]}" tree < <(campaign_process_tree "${pid}")
   done
   (( ${#tree[@]} > 0 )) || return 0
@@ -5755,13 +5908,23 @@ campaign_stream_reap() {
   sleep "${campaign_adapter_kill_grace_s}"
   kill -KILL "${tree[@]}" 2>/dev/null || true
   campaign_reap_remote_workers
-  for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_ticker}; do
+  for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
+      ${stream_ticker}; do
     wait "${pid}" 2>/dev/null || true
   done
   for pid in "${!stream_jobs[@]}"; do
     campaign_stream_release "${pid}"
   done
+  for pid in "${tree[@]}"; do
+    ended[${pid}]=1
+  done
+  for hold in "${campaign_host_gate_root}"/*/heads/"$(hostname -s)".*.hold; do
+    [[ -e "${hold}" ]] || continue
+    pid=${hold#*/heads/"$(hostname -s)".}
+    [[ -z "${ended[${pid%%.*}]:-}" ]] || rm -f -- "${hold}"
+  done
   stream_step_pid=""
+  stream_round_pid=""
   stream_ticker=""
 }
 
@@ -6113,9 +6276,9 @@ campaign_stream_collect_jobs() {
   done
 }
 
-# Waits for the next return -- a job's or the step's -- or for the poll
-# interval at most (the queue may wait for room, and the head's room stays
-# fresh).  What already ended is taken without waiting: bash reaps a child
+# Waits for the next return -- a job's, the head step's or the round's --
+# or for the poll interval at most (the queue may wait for room, and the
+# head's room stays fresh).  What already ended is taken without waiting: bash reaps a child
 # that ends while the head works, and `wait -n` then waits for the next.
 campaign_stream_wait() {
   local pid finished="" status
@@ -6125,13 +6288,14 @@ campaign_stream_wait() {
     sleep "${campaign_host_poll_s}" &
     stream_ticker=$!
   fi
-  for pid in "${!stream_jobs[@]}" ${stream_step_pid} "${stream_ticker}"; do
+  for pid in "${!stream_jobs[@]}" ${stream_step_pid} ${stream_round_pid} \
+      "${stream_ticker}"; do
     kill -0 "${pid}" 2>/dev/null || ended+=("${pid}")
   done
   if (( ${#ended[@]} == 0 )); then
     status=0
     wait -n -p finished "${!stream_jobs[@]}" ${stream_step_pid} \
-      "${stream_ticker}" || status=$?
+      ${stream_round_pid} "${stream_ticker}" || status=$?
     [[ -z "${finished}" ]] || campaign_stream_ended "${finished}" "${status}"
   fi
   for pid in "${ended[@]}"; do
@@ -6141,10 +6305,11 @@ campaign_stream_wait() {
   done
 }
 
-# One child the head waited for, ended with <status>: the ticker; the step
-# (campaign_stream_step_done); or a job, whose host has its slot and its
-# charge back (campaign_stream_release) and whose replay's peak joins the
-# measured need (campaign_replay_measured).  An obligation its solver
+# One child the head waited for, ended with <status>: the ticker; the head
+# step (campaign_stream_step_done); the round (campaign_stream_round_done);
+# or a job, whose host has its slot and its charge back
+# (campaign_stream_release) and whose replay's peak joins the measured need
+# (campaign_replay_measured).  An obligation its solver
 # answered SAT_MODEL_READY is owed its replay: its REPLAY goes first in the
 # queue at once, never waiting for a step -- still in flight, still within
 # the exploration's share and its host's cores -- on the class tree and plan
@@ -6152,14 +6317,16 @@ campaign_stream_wait() {
 # and GROW's re-runs queued first, which end the exploration or hold every
 # solve (hdfs-11741 AR1: 473 replays of solves that returned later started
 # ahead of the witness's confirmation, which ran four hours after the witness
-# landed).  Every other return waits in stream_pending for the next step to
-# land it.
+# landed).  Every other return waits in stream_pending for the next head
+# step to land it.
 campaign_stream_ended() {
   local pid=$1 status=$2 kind round id host session worker answer
   if [[ "${pid}" == "${stream_ticker}" ]]; then
     stream_ticker=""
   elif [[ "${pid}" == "${stream_step_pid}" ]]; then
     campaign_stream_step_done "${status}"
+  elif [[ "${pid}" == "${stream_round_pid}" ]]; then
+    campaign_stream_round_done "${status}"
   else
     read -r kind round id host session <<<"${stream_jobs[${pid}]}"
     worker=${stream_job_worker[${pid}]}
@@ -6219,7 +6386,7 @@ campaign_stream_enqueue() {
   stream_queued_at[${entry}]=$(date +%s)
 }
 
-# What returned since the last step began, landed: each obligation's
+# What returned since the last head step began, landed: each obligation's
 # verdict into the ledger and the session it staged into stream_staged
 # (campaign_stream_move); each re-run's into stream_swaps, for once no
 # obligation runs; each confirmation into `confirms`, for the step to decide.
@@ -6568,10 +6735,11 @@ campaign_stream_promote_generation() {
 # took, every COMPOSE attempt at a witness (by attempt order), every
 # obligation it dropped -- cancelled from the queue, or reaped before it
 # landed -- by id, the GROW re-runs dropped (queued, or returned and not
-# swapped in) and the confirmations reaped, whether a round was due when
-# the budget stopped it, and the sessions that left the corpus after the
-# witness's attempt composed: what EMIT judges a cut by
-# (campaign_exploration_cut).
+# swapped in) and the confirmations reaped, the round dropped untaken (still
+# planning when the exploration ended, or one its planner could not plan),
+# whether a round was due when the exploration stopped, and the sessions
+# that left the corpus after the witness's attempt composed: what EMIT
+# judges a cut by (campaign_exploration_cut).
 campaign_stream_manifest() {
   jq -n \
     --arg stop "${stream_stop}" --arg detail "${stream_stop_detail}" \
@@ -6591,6 +6759,7 @@ campaign_stream_manifest() {
       "${stream_confirms_reaped[@]}" | jq -R 'select(length > 0)' \
       | jq -s -c .)" \
     --argjson roundDue "${stream_round_due}" \
+    --arg roundDropped "${stream_round_dropped}" \
     --slurpfile attempts "${attempts}" \
     '{schemaVersion: 1, kind: "EXPLORATION", stop: $stop, detail: $detail,
       rounds: $rounds, steps: $steps, generations: $generations,
@@ -6598,6 +6767,7 @@ campaign_stream_manifest() {
       witnessAttempts: ($attempts | sort_by(.attempt)), cancelled: $cancelled,
       reaped: $reaped, rerunsDropped: $rerunsDropped,
       confirmsReaped: $confirmsReaped, roundDue: $roundDue,
+      roundDropped: (if $roundDropped == "" then null else $roundDropped end),
       afterWitness: $afterWitness}' \
     >"${iteration_dir}/exploration.json"
 }
@@ -7278,8 +7448,9 @@ campaign_reproduce_bound() {
 }
 
 # "PLANNER <ms>": the wall of the last round the planner finished, from
-# its in_flight.jsonl, copied as the planner starts (campaign_stream_step),
-# to its explore_manifest.json, written as it ends; nothing before one has.
+# its in_flight.jsonl, written as the round starts
+# (campaign_stream_round_start), to its explore_manifest.json, written as it
+# ends; nothing before one has.
 campaign_last_round_millis() {
   local manifest started ended last=""
   for manifest in "${campaign_root}"/iteration-0000/obligations-[0-9]*/explore_manifest.json; do
