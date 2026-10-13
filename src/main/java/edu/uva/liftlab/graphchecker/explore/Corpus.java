@@ -1557,14 +1557,19 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** A handoff's or a read's name ({@link #handoffName}, {@link
-     *  #readName}), once per session and token: memoized once no open
-     *  unit stands in it ({@link #step}). */
+     *  #readName}), once per session and token, as a unit ({@link #unit}:
+     *  its digest and its handles' marks) once no open unit stands in it
+     *  ({@link #step}): a handoff names its arms' conditions, which name the
+     *  handoffs they read, so a name held whole grew with every level of a
+     *  chain that fans in (solr-adhoc-40 SL1: 8 GB of one name). */
     private String tokenName(String key, Supplier<String> name) {
         String held = tokenNames.get(key);
         if (held != null) return held;
         String named = name.get();
-        if (named.indexOf(OPEN) < 0) tokenNames.put(key, named);
-        return named;
+        if (named.indexOf(OPEN) >= 0) return named;
+        String unit = unit(named);
+        tokenNames.put(key, unit);
+        return unit;
     }
 
     /** {@link #tokenName}'s memo. */

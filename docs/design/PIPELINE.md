@@ -757,7 +757,9 @@ no cycle runs through is its text; the units of one cycle (writers whose terms r
 wrote) are named when it closes (`Corpus#close`), each by the cycle's texts as it meets them, numbered
 by first appearance from it (`cycleN`), so a name is the session's whichever unit a walk entered first
 and two cycles name alike only as alike graphs (solr-adhoc-09 SC7: naming a cycle anew from every
-entry was exponential in its depth, the planner 55 min on one round). A cycle whose texts times its
+entry was exponential in its depth, the planner 55 min on one round); a handoff's and a read's name
+is held as a digest with its handles' marks (`Corpus#tokenName`), as a term's is: held whole, a chain
+whose levels read the one before twice grew 3^n long (solr-adhoc-40 SL1, an 8 GB heap). A cycle whose texts times its
 size pass `Corpus#NAMING_BUDGET` names each unit by its own reference -- no world folds through
 it, its arms are asked again -- and the round names it (DIAGNOSTIC `ARM_KEY_NAMING_CUT`). A member flip that writes another
 value there, a producer sending another term, a pinned payload of another value, or a term reading a
