@@ -446,25 +446,28 @@ public final class Corpus implements Arms.Rows {
     /** Reads an iteration and its case-declared root domains. */
     public static Corpus read(Path iteration, Path rootDomains)
             throws IOException {
-        return read(iteration, rootDomains, null);
+        return read(iteration, rootDomains, null, null);
     }
 
     /**
-     * The same read, the sessions {@code previous} (a read of the same
-     * iteration, or null) holds and the iteration still lists taken from
-     * it unread ({@link SessionReader#readAll(Path, List)}), with what was
-     * derived from each alone ({@link Derived}); every index across
+     * The same read, of the sessions {@code named} names (null: every
+     * session the iteration holds) -- an EXPLORE round's corpus, frozen as
+     * its planner starts, while the campaign goes on landing sessions
+     * (PIPELINE §7.9) -- the sessions {@code previous} (a read of the same
+     * iteration, or null) holds and the read still names taken from it
+     * unread ({@link SessionReader#readAll(Path, List, Collection)}), with
+     * what was derived from each alone ({@link Derived}); every index across
      * sessions is built anew.  The rows are most of a read: hdfs-11741 i1,
      * 45 s for 175 sessions, every time one landed while a host's solver
      * served ({@code ObligationSolverMain#answerer}); hdfs-adhoc-07 EX1,
      * 140-172 s of a late round's ~900 s, every round its planner planned.
      */
-    static Corpus read(Path iteration, Path rootDomains, Corpus previous)
-            throws IOException {
+    static Corpus read(Path iteration, Path rootDomains, Corpus previous,
+                       Collection<String> named) throws IOException {
         Corpus corpus = new Corpus(iteration, SessionReader.readAll(
                 iteration, previous == null
                         ? Collections.<SessionReader>emptyList()
-                        : previous.everySession()), previous);
+                        : previous.everySession(), named), previous);
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));

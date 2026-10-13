@@ -37,6 +37,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -54,16 +55,16 @@ import java.util.TreeSet;
  *   --sessions &lt;dir&gt;           the corpus; its parent is the iteration
  *   --target-occurrence &lt;sel&gt;  the case's declared anchor (v1 selector),
  *                              the ONE root of the closure
- *   --results &lt;file&gt;           earlier rounds' ObligationResults; an
- *                              answered query is never proposed again
  *   --static-scope-map &lt;file&gt;  the epoch's write/export sites and guards
  *                              (SYMBOL-SCOPE §3)
  *   --root-domains &lt;file&gt;      what the CASE says each root may be
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
  *   --max-world-depth
- *   one round:
+ *   one round, over every session the iteration holds:
  *   --round &lt;n&gt;                which round this is
+ *   --results &lt;file&gt;           earlier rounds' ObligationResults; an
+ *                              answered query is never proposed again
  *   --in-flight &lt;file&gt;         the obligation rows the campaign has queued
  *                              or running; none is proposed again
  *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
@@ -71,8 +72,11 @@ import java.util.TreeSet;
  *                              explore_manifest.json
  *   or every round of the exploration ({@link Service}):
  *   --serve &lt;dir&gt;             answer the rounds asked there, each
- *                              question naming its round, inFlight and
- *                              outputDir, until the process is ended
+ *                              question naming its round, inFlight,
+ *                              results (the answers then landed), corpus
+ *                              (a file naming the sessions it reads, one
+ *                              per line) and outputDir, until the process
+ *                              is ended
  * </pre>
  *
  * <p>A round rebuilds the frontier from every session, recorded verdict and
@@ -82,9 +86,12 @@ import java.util.TreeSet;
  * ObligationSolverMain} does).  ONE planner serves an exploration's rounds:
  * what it read for one round it keeps for the next, so a round reads only
  * the sessions landed since -- the corpus's rows ({@link Corpus#read(Path,
- * Path, Corpus)}), the static map while its file reads the same, the slot
- * table it folded and changed ({@link SlotTable}) -- and builds every index
- * across sessions anew.  Each round's files are the ones a planner of its
+ * Path, Corpus, Collection)}), the static map while its file reads the same,
+ * the slot table it folded and changed ({@link SlotTable}) -- and builds
+ * every index across sessions anew.  A served round reads the corpus and the
+ * answers its question names, frozen by the campaign as the round starts,
+ * so the campaign goes on landing, gating and attempting witnesses while it
+ * plans (PIPELINE §7.9).  Each round's files are the ones a planner of its
  * own, reading the iteration then, writes (offline-ab.sh EXPLORE.serve).</p>
  */
 public final class ExploreMain {
@@ -94,7 +101,6 @@ public final class ExploreMain {
     private final Path iteration;
     private final String declaredAnchor;
     private final Path rootDomains;
-    private final Path results;
     private final Path scopeMap;
     private final String topologyEpoch;
     private final int maxTasks;
@@ -119,12 +125,11 @@ public final class ExploreMain {
      *                       downstream sees a selector
      */
     ExploreMain(Path iteration, String declaredAnchor, Path rootDomains,
-                Path results, Path scopeMap, String topologyEpoch,
-                int maxTasks, ObligationFactory.Bounds bounds) {
+                Path scopeMap, String topologyEpoch, int maxTasks,
+                ObligationFactory.Bounds bounds) {
         this.iteration = iteration;
         this.declaredAnchor = declaredAnchor;
         this.rootDomains = rootDomains;
-        this.results = results;
         this.scopeMap = scopeMap;
         this.topologyEpoch = topologyEpoch;
         this.maxTasks = maxTasks;
@@ -157,8 +162,8 @@ public final class ExploreMain {
                     + "(PIPELINE §7.2)");
         }
         ExploreMain planner = new ExploreMain(iteration, declaredAnchor,
-                options.path("root-domains"), options.path("results"),
-                scopeMap, options.value("topology-epoch", ""),
+                options.path("root-domains"), scopeMap,
+                options.value("topology-epoch", ""),
                 (int) options.number("max-tasks",
                         ClosurePlanner.DEFAULT_MAX_TASKS),
                 new ObligationFactory.Bounds(
@@ -176,6 +181,10 @@ public final class ExploreMain {
                 planner.round(question.get("round").getAsInt(),
                         flying.isEmpty() ? null : Paths.get(flying),
                         Paths.get(JsonFields.primitiveString(question,
+                                "results")),
+                        corpus(Paths.get(JsonFields.primitiveString(
+                                question, "corpus"))),
+                        Paths.get(JsonFields.primitiveString(question,
                                 "outputDir")));
             });
             return;
@@ -187,7 +196,16 @@ public final class ExploreMain {
         }
         System.out.println(pretty(planner.round(
                 (int) options.number("round", 0), options.path("in-flight"),
-                out)));
+                options.path("results"), null, out)));
+    }
+
+    /** The sessions a served round's question names, one per line. */
+    private static List<String> corpus(Path file) throws IOException {
+        List<String> named = new ArrayList<String>();
+        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            if (!line.trim().isEmpty()) named.add(line.trim());
+        }
+        return named;
     }
 
     /** One round by a planner of its own: {@link #round}. */
@@ -199,18 +217,21 @@ public final class ExploreMain {
                                   ObligationFactory.Bounds bounds)
             throws IOException {
         return new ExploreMain(iteration, declaredAnchor, rootDomains,
-                results, scopeMap, topologyEpoch, maxTasks, bounds)
-                .round(round, inFlight, out);
+                scopeMap, topologyEpoch, maxTasks, bounds)
+                .round(round, inFlight, results, null, out);
     }
 
     /**
-     * Plans one round over the iteration as it stands, into {@code out}.
+     * Plans one round into {@code out}, over the sessions {@code named}
+     * names -- null: every session the iteration holds -- and the answers
+     * {@code results} holds.
      *
      * @param inFlight the obligation rows queued or running, or null for
      *                 none
      */
-    JsonObject round(int round, Path inFlight, Path out) throws IOException {
-        corpus = Corpus.read(iteration, rootDomains, corpus);
+    JsonObject round(int round, Path inFlight, Path results,
+                     Collection<String> named, Path out) throws IOException {
+        corpus = Corpus.read(iteration, rootDomains, corpus, named);
         // The map is read again only when its file changed.
         String digest = Files.isRegularFile(scopeMap)
                 ? ArtifactIO.sha256(scopeMap) : "";

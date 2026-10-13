@@ -2825,8 +2825,9 @@ stream_fixture() {
 }
 # Where explore.ExploreMain --serve stands (campaign_planner_serve <heap>
 # <id> <peak> <log> <jvm_file> <args...>): it names itself where its rounds
-# are asked and answers each with stream_planner, until it is ended -- or
-# until stream_planner_dies <round> <heap> says it ends there with that status
+# are asked and answers each with stream_planner, over the corpus and the
+# answers the question names, until it is ended -- or until
+# stream_planner_dies <round> <heap> says it ends there with that status
 # (3: out of heap, its JVM's last words in its log).
 stream_planner_serve() {
   local heap=$1 id=$2 log=$4 sessions="" dir request name round status
@@ -2855,7 +2856,9 @@ space" >>"${log}"
       fi
       stream_planner --round "${round}" --output-dir "$(jq -r '.outputDir' \
         "${dir}/requests/${name}.taken")" --in-flight "$(jq -r '.inFlight' \
-        "${dir}/requests/${name}.taken")"
+        "${dir}/requests/${name}.taken")" --corpus "$(jq -r '.corpus // ""' \
+        "${dir}/requests/${name}.taken")" --results "$(jq -r \
+        '.results // ""' "${dir}/requests/${name}.taken")"
       printf '{"exit":0,"error":""}\n' >"${dir}/answers/${name}.part"
       mv -- "${dir}/answers/${name}.part" "${dir}/answers/${name}.json"
       rm -f -- "${dir}/requests/${name}.taken"
@@ -2890,19 +2893,25 @@ stream_planner_dies() { :; }
     || fail "campaign_planner_stop ended a process not named by its id"
   kill "${stranger}"
 )
-# Where explore.ExploreMain stands: the files it states every round.
+# Where explore.ExploreMain stands: the files it states every round, and
+# what it read -- the sessions its corpus names, the answers it was handed.
 stream_planner() {
-  local round="" out="" flying=""
+  local round="" out="" flying="" corpus="" answers=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --round) round=$2; shift 2 ;;
       --output-dir) out=$2; shift 2 ;;
       --in-flight) flying=$2; shift 2 ;;
+      --corpus) corpus=$2; shift 2 ;;
+      --results) answers=$2; shift 2 ;;
       *) shift ;;
     esac
   done
   jq -r '.obligationId' "${flying}" | LC_ALL=C sort | paste -sd ' ' - \
     >"${out}/in-flight.txt"
+  [[ ! -f "${corpus}" ]] || paste -sd ' ' - <"${corpus}" >"${out}/read.txt"
+  [[ ! -f "${answers}" ]] || jq -r '.obligationId' "${answers}" \
+    | LC_ALL=C sort | paste -sd ' ' - >"${out}/answers-read.txt"
   : >"${out}/obligations.jsonl"
   printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
   stream_wave=0
@@ -3044,6 +3053,13 @@ $(ls "${stream_dir}")"
 [[ "$(cat "${stream_dir}/obligations-0001/in-flight.txt")" == *LONG* ]] \
   || fail "the round planned while LONG ran was not handed it as in flight: \
 $(cat "${stream_dir}/obligations-0001/in-flight.txt")"
+[[ "$(cat "${stream_dir}/obligations-0001/read.txt")" == SESSION.SHORT \
+    && "$(cat "${stream_dir}/obligations-0001/corpus.txt")" == SESSION.SHORT \
+    && "$(cat "${stream_dir}/obligations-0001/answers-read.txt")" \
+       == *SHORT* ]] \
+  || fail "round 1 did not read the corpus and the answers landed as it \
+started: $(cat "${stream_dir}/obligations-0001/read.txt" \
+"${stream_dir}/obligations-0001/answers-read.txt")"
 awk -v s="$(cat "${stream_dir}/obligations-0001/NEXT/started-at")" \
     -v e="$(cat "${stream_dir}/obligations-0000/LONG/ended-at")" \
     'BEGIN{exit !(s < e)}' \
@@ -3280,6 +3296,74 @@ jq -e '.stop == "WITNESSED"
   || fail "an attempt started while a confirmation was owed, or B was not \
 attempted after A's refutation: $(cat "${stream_dir}/exploration.json")"
 
+# STREAM-WITFIRST: A WITNESS WAITS FOR NO ROUND (PIPELINE §7.9).  A round
+# plans in its own lane, over inputs frozen as it started, so a witness that
+# returns while a round plans lands, is gated and is attempted at once: W
+# returns while round 1 -- its planner six seconds long -- plans over the
+# corpus landed before it (A's session, not W's); W's attempt starts while
+# round 1 plans, and, accepted, ends the exploration: round 1, never taken,
+# leaves the iteration for explore-reaped/ (roundDropped, roundDue), its
+# planner stopped, no charge left (Z3S-18413: a witness waited 69 minutes,
+# 57 of them behind one round, for its attempt).
+stream_fixture stream-witfirst
+(
+  stream_stubs
+  # The accepted claim's selected session is the run: decided in its step.
+  stream_realize=0000
+  stream_round_plan() {
+    case "$1" in
+      0) stream_propose "$2" A W ;;
+      1)
+        date +%s.%N >"${stream_dir}/round-1-started-at"
+        sleep 6
+        date +%s.%N >"${stream_dir}/round-1-ended-at" ;;
+    esac
+  }
+  do_compose() {
+    date +%s.%N >>"${stream_dir}/attempt-started-at"
+    stream_compose "${composition_manifest}" SAT_CANDIDATE
+  }
+  campaign_obligation_worker() {
+    local id=$1 worker=$4
+    case "${id}" in
+      A) stream_answer "${worker}" A ADMITTED SESSION.A ;;
+      W) sleep 2; stream_answer "${worker}" W ADMITTED SESSION.W fatal ;;
+    esac
+  }
+  campaign_explore "${stream_dir}" iteration-0000
+) >"${stream_dir}/explore.log" 2>&1 \
+  || fail "STREAM-WITFIRST: the loop did not finish: \
+$(cat "${stream_dir}/explore.log")"
+[[ -s "${stream_dir}/round-1-started-at" \
+    && -s "${stream_dir}/attempt-started-at" ]] \
+  && awk -v r="$(cat "${stream_dir}/round-1-started-at")" \
+    -v a="$(head -n 1 "${stream_dir}/attempt-started-at")" \
+    'BEGIN{exit !(a > r && a < r + 6)}' \
+  && [[ ! -e "${stream_dir}/round-1-ended-at" ]] \
+  || fail "STREAM-WITFIRST: the witness's attempt waited for the round: \
+$(cat "${stream_dir}/round-1-started-at" "${stream_dir}/attempt-started-at" \
+"${stream_dir}/round-1-ended-at" 2>&1)"
+jq -e '.stop == "WITNESSED" and .rounds == 1
+  and .roundDropped == "planning-0001" and .roundDue == true
+  and ([.witnessAttempts[] | [.witnesses, .accepted]]
+       == [[["SESSION.W"], true]])' \
+  "${stream_dir}/exploration.json" >/dev/null \
+  || fail "STREAM-WITFIRST: the witness did not end the exploration with the \
+round still planning dropped: $(cat "${stream_dir}/exploration.json")"
+stream_dropped="${campaign_root}/explore-reaped/planning-0001"
+[[ "$(cat "${stream_dropped}/corpus.txt")" == SESSION.A \
+    && "$(cat "${stream_dropped}/read.txt" 2>/dev/null)" != *SESSION.W* \
+    && ! -e "${stream_dir}/planning-0001" \
+    && ! -e "${stream_dir}/obligations-0001" \
+    && -d "${stream_dir}/sessions/SESSION.W" ]] \
+  || fail "STREAM-WITFIRST: the round's corpus was not frozen as it started, \
+or the round dropped is still in the iteration: $(ls "${stream_dir}" \
+"${stream_dropped}" 2>&1)"
+[[ ! -e "${stream_dir}/planner/pid" \
+   && -z "$(live_charges "${campaign_host_gate_root}")" ]] \
+  || fail "STREAM-WITFIRST: the dropped round's planner, or a charge, \
+outlived the exploration: $(live_charges "${campaign_host_gate_root}")"
+
 # STREAM-2e: THE WITNESS BY ATTEMPT ORDER.  Of the confirmations that land
 # together, the earliest attempt confirmed is the witness, whatever their
 # order of return; a later one confirmed says which attempt is.
@@ -3437,7 +3521,8 @@ $(cat "${stream_dir}/campaign_gaps.jsonl")"
 done
 
 # STREAM-3b: A PLANNER OUT OF HEAP.  A round whose planner ran out of the most
-# heap a head JVM is given (exit 3) is not planned: its directory goes, what
+# heap a head JVM is given (exit 3) is not planned: its directory leaves the
+# iteration with its logs (explore-reaped/planning-NNNN, roundDropped), what
 # runs lands, the exploration ends on the rounds before it, and the stop is
 # a row naming the planner's error (sweep a40h2, DataStreamer-638) -- rounds
 # were owed, so EMIT's judge cuts any UNSAT over it.
@@ -3467,8 +3552,11 @@ jq -e 'select(.subject == "PLANNER_HEAP_EXCEEDED")
   && jq -e 'select(.subject == "EXPLORATION_CUT" and .cls == "BLOCKING")
     | .detail | test("ended PLANNER_HEAP_EXCEEDED")' \
     "${stream_dir}/campaign_gaps.jsonl" >/dev/null \
-  && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1' \
+  && jq -e '.stop == "PLANNER_HEAP_EXCEEDED" and .rounds == 1
+    and .roundDropped == "planning-0001"' \
     "${stream_dir}/exploration.json" >/dev/null \
+  && [[ -s "${campaign_root}/explore-reaped/planning-0001/stderr.log" \
+        && ! -e "${stream_dir}/planning-0001" ]] \
   && jq -e -s 'map(.obligationId) | sort == ["A","SLOW"]' \
     "${stream_dir}/obligation_results.jsonl" >/dev/null \
   && [[ ! -e "${stream_dir}/obligations-0001" ]] \
@@ -3526,7 +3614,7 @@ stream_fixture stream-serve-dies
 ) >"${stream_dir}/explore.log" 2>&1 \
   && fail "STREAM-SERVE: a planner that died was started again"
 grep -q 'the planner service on localhost ended with exit 1' \
-    "${stream_dir}/obligations-0001/stderr.log" \
+    "${stream_dir}/planning-0001/stderr.log" \
   && grep -q 'reason=the planner of obligations-0001 failed with exit 1' \
     "${stream_dir}/explore.log" \
   && grep -q 'exit 1: java.lang.OutOfMemoryError' "${stream_dir}/explore.log" \
@@ -3569,9 +3657,10 @@ jq -e -s 'map(select(.cls == "BLOCKING")) | length == 1
   || fail "a fixed point on a truncated closure is not one BLOCKING row: \
 $(cat "${stream_dir}/campaign_gaps.jsonl" 2>&1)"
 
-# STREAM-5: THE GATE OVER WHAT LANDED (PIPELINE §6, §7.9).  A step gates the
-# sessions landed since the step before, once each is in the corpus, in one
-# call against the iteration's ledger, its list and summary in steps/NNNN/;
+# STREAM-5: THE GATE OVER WHAT LANDED (PIPELINE §6, §7.9).  A head step
+# gates the sessions landed since the step before, once each is in the
+# corpus, in one call against the iteration's ledger, its list and summary in
+# steps/NNNN/ (round 0, planned in its own lane, is no head step);
 # a blocking row there fails the campaign at IMPORT, by name, and the head
 # ends what it still runs.
 stream_fixture stream-5
@@ -3613,8 +3702,8 @@ grep -q 'stage=IMPORT' "${stream_dir}/explore.log" \
   && grep -q 'roots.jsonl seq=3 field=recordedValue' "${stream_dir}/explore.log" \
   || fail "the gate's failure is not IMPORT's, naming the first blocking \
 subject: $(cat "${stream_dir}/explore.log")"
-[[ "$(cat "${stream_dir}/steps/0001/gate")" == SESSION.A \
-    && -s "${stream_dir}/steps/0001/import_gate.json" ]] \
+[[ "$(cat "${stream_dir}/steps/0000/gate")" == SESSION.A \
+    && -s "${stream_dir}/steps/0000/import_gate.json" ]] \
   || fail "the step wrote no summary beside the list it gated"
 ! kill -0 "$(cat "${stream_dir}/obligations-0000/LONG/sleep.pid")" \
     2>/dev/null \
@@ -3877,6 +3966,7 @@ while IFS='|' read -r split_verdict split_status split_first split_pending; do
     stream_pending=()
     stream_ticker=""
     stream_step_pid=""
+    stream_round_pid=""
     campaign_host_release() { :; }
     campaign_log() { :; }
     campaign_stream_job() {
@@ -3943,6 +4033,7 @@ while IFS='|' read -r ln_budget ln_kind ln_detail ln_hard ln_pending ln_aside \
     stream_staged=()
     stream_ticker=""
     stream_step_pid=""
+    stream_round_pid=""
     campaign_log() { :; }
     campaign_replay_measured() { :; }
     jq -n -c --arg d "${ln_detail}" \

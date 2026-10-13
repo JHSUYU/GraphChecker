@@ -17,12 +17,14 @@ the sources are the files the campaign wrote:
                      wait for memory, off its stderr.log
                      (campaign_head_place: "waiting for memory for a head
                      step", then "room ... after waiting <s> s")
-  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, confirms, round;
+  EXPLORE head steps steps/NNNN/: its inputs (gate, witnesses, confirms, and
+                     in a run before rounds had a lane of their own, round;
                      written as it starts) to its last output -- the gate's
                      import_gate.json, an attempt's compose.log, the round's
                      explore_manifest.json; one step runs at a time, beside
-                     the pool (an attempt's confirmation replay is a job of
-                     the pool, witness-confirm/NNNN/)
+                     the pool and the round planning (an attempt's
+                     confirmation replay is a job of the pool,
+                     witness-confirm/NNNN/)
   witness attempts   witness_attempts.jsonl: its step's witnesses (written as
                      the step starts) to its compose.log, and its claim
   one obligation     obligations-NNNN/<id>/ with an obligation_result.jsonl:

@@ -102,8 +102,8 @@ public final class ObligationSolverMain {
      * landed in it or left it since (its {@link #listing}: the head lands
      * sessions while the exploration streams), the sessions it still lists
      * taken from the read before, unread ({@link Corpus#read(Path, Path,
-     * Corpus)}); otherwise the question starts from the corpus as read
-     * ({@link Corpus#freshLowerings}).  Either way its files are the ones a
+     * Corpus, java.util.Collection)}); otherwise the question starts from
+     * the corpus as read ({@link Corpus#freshLowerings}).  Either way its files are the ones a
      * JVM of its own, reading the corpus then, would write, whatever was
      * asked before.
      */
@@ -122,7 +122,8 @@ public final class ObligationSolverMain {
                 if (now.equals(read)) {
                     corpus.freshLowerings();
                 } else {
-                    corpus = Corpus.read(iteration, rootDomains, corpus);
+                    corpus = Corpus.read(iteration, rootDomains, corpus,
+                            null);
                     read = now;
                 }
                 solve(corpus, iteration, Paths.get(JsonFields

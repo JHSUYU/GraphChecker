@@ -587,8 +587,13 @@ ab_landings() {
     mkdir -p "${it}/${round}"
     t0=$(date +%s.%N)
     if [[ "${mode}" == served ]]; then
+      # The round's corpus, named as the run's head names it: the sessions
+      # landed (linked) by then, outside the round's own files.
+      mkdir -p "${dir}/corpus"
+      ls -1 "${it}/sessions" | LC_ALL=C sort >"${dir}/corpus/${round}.txt"
       campaign_planner_ask "${it}/sessions" ab \
         "$((10#${round#obligations-}))" "" "${it}/${round}" \
+        "${it}/obligation_results.jsonl" "${dir}/corpus/${round}.txt" \
         2>>"${dir}/planner.log" || code=$?
     else
       "${planner[@]}" --round "$((10#${round#obligations-}))" \

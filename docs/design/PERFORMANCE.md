@@ -104,6 +104,7 @@ running out of memory, and a single case alone takes the whole cluster.
 | a worktree took 45+ min to check out, a commit in it minutes | 99 % of the repository's files are `third_party/` (the VM's source) written to NFS | `tools/lib/worktree-add.sh`: sparse, 10 s |
 | 11741's witness attempt stuck for hours (CC7, 2026-10-06) | `Cone.read` searched every assertion of another selector to the end of a 150 MB body for every path | the Cone read once and indexed by selector (3e7becca7) |
 | a confirmed witness's verdict waiting behind a witness attempt | a returned confirmation is decided only by the next step, and steps run one at a time | minutes with the Cone fix (HF2: 15 min queue to accepted); `hdfs1-confirm-first` parked |
+| solr-18413 Z3S: a witness attempted 69 min after its replay ended (2026-10-13) | a round and the gate shared one head step, one step at a time: the witness returned 3 s after a step began that planned round 2 (its planner out of 8 GB, then 1437 s waiting for 17.8 GB: 57 min), then GROW wove g3 in the head's hands for 8 min | rounds in a lane of their own over inputs frozen as each starts (`corpus.txt`, `answers.jsonl`, `in_flight.jsonl`), taken between two head steps: landing, the gate and witness attempts go on while a round plans (PIPELINE §7.9; shell row STREAM-WITFIRST) |
 | solr-adhoc-07 RX6: the round-0 planner ran out of 8 then 16 GB over a 78 MB corpus (2026-10-12) | `SmtLowering`'s frames took a memoized node's unbound values again on every hit, as a list, so they doubled per level of a shared container chain; the arm keys lower every guard-location write | each frame holds a value once, by identity (`Raised#unbound`): round 0 in 8 s at 1.2 GB |
 
 Older history is in `git log` of `run_engine.sh` and in PIPELINE §7.7's own examples.
@@ -177,6 +178,10 @@ recordings the offline gate needs: keep `PRUNE=0` for a round you will gate agai
    growth on a full host and its retry asked the largest host solver's 12.5 GB (OBLIGATION_UNFINISHED after 600 s).
    Now a corpus's solvers start at 2 GB and double on an out-of-heap exit, charged their footprint, and a retry is
    placed by its own JVM's need (PIPELINE §7.5; shell rows SOLVER-HEAP and the retry rows).
+9. **GROW in the head's hands** (TODO): a round that exposes regions is taken with GROW's planner and weave run
+   synchronously by the head (`campaign_stream_take_round` -> `campaign_stream_grow`), so no start is dispatched,
+   nothing lands and no witness is attempted until the weave returns (solr-18413 Z3S round 2: 8 min). Rounds and
+   witness attempts already run beside the head (PIPELINE §7.9); GROW would be a step of a lane too.
 
 ## 6. Every HDFS case alone on the ten lifts (series EX1, 2026-10-07/08)
 
