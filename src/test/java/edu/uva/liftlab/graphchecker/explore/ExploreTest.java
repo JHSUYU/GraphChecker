@@ -7320,7 +7320,10 @@ public class ExploreTest {
      * solr-bugs-overseer-lock-leak's readOnly=""), and the doors of the
      * Runner's own item are asked -- the queue turn's markTaskAsRunning --
      * once: the item's submitter, a door of the Runner's item, is a control
-     * producer whose own message is no question.
+     * producer whose own message is no question.  So is the writer of an
+     * earlier version the read version rests on, though the read could
+     * never have seen it (made under construction): PLAN's writers up to
+     * the version read.
      */
     @Test
     public void aStoreWritersItemSenderIsAValue() throws Exception {
@@ -7349,13 +7352,29 @@ public class ExploreTest {
         OccurrenceAddress front = occurrence("solr-case/node0",
                 "REGION.front", CausalContext.of(Role.of("FRONT"), "", 1),
                 "Front#take#1");
+        // The earlier version's writer, its item's sender, and the queue
+        // turn that took in that sender's own item.
+        OccurrenceAddress setup = occurrence("solr-case/node0",
+                "REGION.update", CausalContext.of(
+                        Role.of("OVERSEER_STATE_UPDATE"), "", 2),
+                "Updater#setup#1");
+        OccurrenceAddress earlierRunner = occurrence("solr-case/node0",
+                "REGION.task", CausalContext.of(Role.of("OVERSEER_TASK"), "",
+                        2), "Runner#offer#2");
+        OccurrenceAddress earlierMarking = occurrence("solr-case/node0",
+                "REGION.mark", CausalContext.of(
+                        Role.of("OVERSEER_TASK_QUEUE"), "", 2),
+                "Queue#mark#2");
         Path iteration = tree.newFolder("item-sender").toPath();
         Session seed = new Session(iteration, "s-seed");
         seed.activation(client, false);
         seed.activation(updater, false, true, "updater");
+        seed.activation(setup, false, true, "updater");
         Object[][] doors = {{runner, "runner", "Run#u2"},
             {sibling, "runner", "Sib#u5"}, {marking, "queue", "Mark#u3"},
-            {submitter, "request", "Sub#u4"}, {front, "front", "Front#u7"}};
+            {submitter, "request", "Sub#u4"}, {front, "front", "Front#u7"},
+            {earlierRunner, "runner", "Run0#u9"},
+            {earlierMarking, "queue", "Mark0#u10"}};
         for (Object[] door : doors) {
             OccurrenceAddress at = (OccurrenceAddress) door[0];
             String site = (String) door[2];
@@ -7364,9 +7383,11 @@ public class ExploreTest {
                     RootKind.MARKER, "false", null, null, true);
             seed.decision(at, site, 1, false, "M_" + site.replace("#", "_"));
         }
+        seed.write(at(setup, "SOLR_ZK#WRITE:.collections.c.state.json",
+                "<a.Setup: void <init>()>"), state, 1L, "", "[B");
         seed.write(at(updater, "SOLR_ZK#WRITE:.collections.c.state.json",
-                "Updater#run#1"), state, 1L, "", "[B");
-        seed.read(at(client, "Processor#ro#u1", "Processor#ro#1"), state, 1L,
+                "Updater#run#1"), state, 2L, "", "[B");
+        seed.read(at(client, "Processor#ro#u1", "Processor#ro#1"), state, 2L,
                 "S_c1", null);
         seed.target(client, "Guard#u8#1", "false");
         seed.flush();
@@ -7384,6 +7405,14 @@ public class ExploreTest {
             // the state item the Runner offered, the updater's turn took in
             {ScheduleEvent.Kind.SEND, runner, runner.id(), "e-state"},
             {ScheduleEvent.Kind.RECV, updater, "", "e-state"},
+            // the earlier version's: its writer applied the item the
+            // earlier Runner offered, which ran the task the earlier queue
+            // turn took in
+            {ScheduleEvent.Kind.RECV, earlierMarking, "", "e-task0"},
+            {ScheduleEvent.Kind.RECV, earlierRunner, "", "e-task0"},
+            {ScheduleEvent.Kind.SEND, earlierRunner, earlierRunner.id(),
+                    "e-state0"},
+            {ScheduleEvent.Kind.RECV, setup, "", "e-state0"},
         };
         long seq = 1L;
         for (Object[] event : events) {
@@ -7413,10 +7442,59 @@ public class ExploreTest {
                     "the sender's turn, a door of the state item it sent"},
             {"Front#u7", false,
                     "a door of a control producer's own message"},
+            {"Run0#u9", true, "the earlier version's item sender"},
+            {"Mark0#u10", true,
+                    "a door of the earlier sender's own item, a value's"},
         };
         for (Object[] row : rows) {
             assertEquals((String) row[2], row[1],
                     named(obligations(wave), (String) row[0]) != null);
+        }
+    }
+
+    /**
+     * A VALUE REASON OUTRANKS A DOOR'S ({@code ClosurePlanner.Demand
+     * #absorb}): a control producer later reached as a store item's sender
+     * is that sender, in either order, as PLAN states it; a member stays a
+     * member; and a reason the rows connect is never replaced by a static
+     * one, which wants the value all the same.
+     */
+    @Test
+    public void aValueReasonOutranksADoorsReason() throws Exception {
+        String[][] rows = {
+            {ClosurePlanner.CONTROL_PRODUCER, ClosurePlanner.STORE_ITEM_PRODUCER,
+                    ClosurePlanner.STORE_ITEM_PRODUCER, "true"},
+            {ClosurePlanner.STORE_ITEM_PRODUCER, ClosurePlanner.CONTROL_PRODUCER,
+                    ClosurePlanner.STORE_ITEM_PRODUCER, "true"},
+            {ClosurePlanner.STORE_FETCH, ClosurePlanner.STORE_ITEM_PRODUCER,
+                    ClosurePlanner.STORE_ITEM_PRODUCER, "true"},
+            {ClosurePlanner.CLOSURE_MEMBER, ClosurePlanner.STORE_ITEM_PRODUCER,
+                    ClosurePlanner.CLOSURE_MEMBER, "true"},
+            {ClosurePlanner.CONTROL_PRODUCER,
+                    ClosurePlanner.STATIC_CANDIDATE_WRITER,
+                    ClosurePlanner.CONTROL_PRODUCER, "true"},
+        };
+        Class<?> shape = Class.forName(
+                "edu.uva.liftlab.graphchecker.explore.ClosurePlanner$Demand");
+        java.lang.reflect.Constructor<?> make = shape.getDeclaredConstructor(
+                OccurrenceAddress.class, String.class, boolean.class);
+        make.setAccessible(true);
+        java.lang.reflect.Method absorb = shape.getDeclaredMethod("absorb",
+                shape);
+        absorb.setAccessible(true);
+        java.lang.reflect.Field why = shape.getDeclaredField("why");
+        why.setAccessible(true);
+        java.lang.reflect.Field value = shape.getDeclaredField("value");
+        value.setAccessible(true);
+        OccurrenceAddress at = occurrence("solr-case/node0", "REGION.task",
+                CausalContext.of(Role.of("OVERSEER_TASK"), "", 1),
+                "Runner#offer#1");
+        for (String[] row : rows) {
+            Object held = make.newInstance(at, row[0], false);
+            absorb.invoke(held, make.newInstance(at, row[1], false));
+            assertEquals(row[0] + " then " + row[1], row[2], why.get(held));
+            assertEquals(row[0] + " then " + row[1],
+                    Boolean.valueOf(row[3]), value.get(held));
         }
     }
 

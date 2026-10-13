@@ -716,7 +716,8 @@ public final class ClosurePlanner {
     }
 
     /** Whether a demand wants a value of its occurrence -- a member's, a
-     *  static candidate's -- not only the doors of a message or a fetch. */
+     *  store item's sender's, a static candidate's -- not only the doors of
+     *  a message or a fetch. */
     static boolean valueDemand(String why) {
         return CLOSURE_MEMBER.equals(why)
                 || STORE_ITEM_PRODUCER.equals(why)
@@ -834,13 +835,15 @@ public final class ClosurePlanner {
 
         /**
          * Folds another reason to demand this occurrence: {@code
-         * CLOSURE_MEMBER} wins over every other reason, and any reason the
-         * rows connect over a static one -- a static candidate later
-         * reached as a control producer is one, never cut with the static
-         * candidates at the ceiling; and a reason that wants its value makes
-         * it a value demand whatever its reason (a control producer also
-         * demanded as a static writer wants its own producer, and is run
-         * whole once GROW drops a doors-only mark).
+         * CLOSURE_MEMBER} wins over every other reason, any reason the rows
+         * connect over a static one -- a static candidate later reached as
+         * a control producer is one, never cut with the static candidates
+         * at the ceiling -- and a connected value reason over a door's (a
+         * control producer later reached as a store item's sender is that
+         * sender, as PLAN states it); and a reason that wants its value
+         * makes it a value demand whatever its reason (a control producer
+         * also demanded as a static writer wants its own producer, and is
+         * run whole once GROW drops a doors-only mark).
          *
          * @return whether this demand grew
          */
@@ -853,6 +856,8 @@ public final class ClosurePlanner {
             if (CLOSURE_MEMBER.equals(other.why)
                     ? !CLOSURE_MEMBER.equals(why)
                     : Candidates.staticCandidate(this)
+                    && !Candidates.staticCandidate(other)
+                    || other.value && !value
                     && !Candidates.staticCandidate(other)) {
                 why = other.why;
                 grew = true;
@@ -1634,21 +1639,23 @@ public final class ClosurePlanner {
      *  decided it. */
     private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
         if (write.initial()) return;
-        Demand writer = writer(walk, write);
-        into.add(writer);
+        into.add(writer(walk, write));
         if (write.location().kind() == LocationKind.STORE) {
-            writer.storeWriter = true;
             earlierVersions(walk, write, into);
         }
     }
 
-    /** The demand of one write's writer. */
+    /** The demand of one write's writer; a store version's -- the one a
+     *  demand read, or an earlier one it rests on -- applied what the
+     *  senders of its own message sent ({@link Demand#storeWriter}), as
+     *  PLAN's {@code crossStore} has every writer up to the version read. */
     private static Demand writer(Walk walk, WriteRow write) {
         Demand paired = new Demand(write.endpoint().occurrence(),
                 CLOSURE_MEMBER, false);
         paired.contributes(write.sessionId(), write.expressionRef(),
                 write.seq());
         paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
+        paired.storeWriter = write.location().kind() == LocationKind.STORE;
         return paired;
     }
 
