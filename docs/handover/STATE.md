@@ -46,7 +46,8 @@ evidence is [../STATUS.md](../STATUS.md) "Solr checks"; the lead's notes, readin
   them. Lock-leak passes by #50's chain on the merged code (LL5: OperationTimeout at the queue tick's makePath, native
   10/10). The final round is SGF2: `system/solr` + `gc/solr-final7` b707106739 (`/bigtemp/vnr3ne/wt/lucene-solr-final7`,
   GC_TREES `/bigtemp/vnr3ne/wt/sg3f-trees`; final5 + three tree patches: the Overseer's state-queue waits,
-  snapshot-no-active's search loop, the session expirer) + `/bigtemp/vnr3ne/vm-force8/j2sdk-image`, all 20 cases.
+  snapshot-no-active's search loop, the session expirer) + `/bigtemp/vnr3ne/vm-force8/j2sdk-image`, all 20 cases;
+  snapshot-no-active on `gc/solr-final8` 7845c97bb1 (final7 + its workload order, GC_TREES `sg3g-trees`), the fork's tree.
 - **Agents (2026-10-13):** EX (explore2/key6), Z2 (zk2), ST (final trees, fork), SC (study 38 14 19 09 31 05; an
   Overseer batching-wait workaround for 31/05's seed drift on a branch from final5), and a read-only lock-leak analyst.
   Their agent briefs and rules: `/bigtemp/vnr3ne/analysis/solr-2026-10-12/` (AGENT-RULES.md, brief-*.md).
