@@ -334,6 +334,18 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   (SGF2 at most 2): each parent past the MIGRATE re-keys the same arm (inferred: the `expireAt` clock value in
   `Corpus#inputShape`), and its witness waited behind the round-2 planner. Packages `solr-armkey`, `solr-witfirst` (§1).
   Evidence `/bigtemp/vnr3ne/gc-out/solr-zk2/accept-Z3S-18413`.
+- **o. One writer id for two decodes in two runs (FB, 2026-10-13, not done):** a node's StateWatcher callback is
+  identified by its anchor, the Overseer `setData` endpoint that fired it, and tick counts are not identity: in
+  SGF3-bugs-snapshot-no-active the seed's decode of v5 of node0's `state.json` view and session 9e4cbffc's decode of
+  v12 are both callbacks anchored on c6176901b30565df, one occurrence id 12eebcfee65f82ae, so one writer key
+  (`ComposedFamilies#writer`, `Arms#stateArms`' one arm per writer occurrence) and one STATE slot id stand for two
+  decodes of two runs. Within one session each decode had its own anchor (9e4cbffc: v4-v12, nine anchors), so no
+  in-session alternative was lost there. Keying VIEW writers by (occurrence, version) re-keys `Arms#stateArms`,
+  `ComposedFamilies#writer` (every VIEW writer's selector and assertion names: no case with a view family stays
+  byte-identical), block granularity (`holdBrokenBlocks`) and the slot ids families are keyed by; a design of its own.
+  Evidence: the sessions' `writes.jsonl` (VIEW `/collections/causynthSnapshot/state.json`, node0) and
+  `/bigtemp/vnr3ne/analysis/solr-2026-10-12/fb-viewwriter/ab-probe2/candidate/solr-bugs-snapshot-no-active/COMPOSE/stderr.log`
+  (PROBE lines).
 
 ### 4. The last round (SGF3) and the fork
 

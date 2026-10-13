@@ -910,6 +910,78 @@ public class ComposerTest {
     }
 
     /**
+     * A MESSAGE NO SESSION SENDS WHOLE, FOR A PRODUCER PAST THE TICK BOUND
+     * (ComposedFamilies#nameTickBound): a store content leaf whose producer
+     * one session ran instrumented (so its arrival is a family), whose own
+     * pairing no session attests -- the run that delivered it ran its
+     * producer concretely -- refuses what rests on it; where a daemon tick
+     * past the recording's last began that producer, the refusal is that
+     * bound's loss, named {@code <producer> daemon-tick-bound=<last>}
+     * (campaign_bounds: daemon_tick_bound); any other producer's is not.
+     */
+    @Test
+    public void anUnsentMessageOfAProducerPastTheTickBoundNamesTheBound()
+            throws Exception {
+        String content = ContentPort.of("SOLR_ZK", "/a.json", "/k");
+        OccurrenceAddress late = OccurrenceAddress.of(PRODUCER.node(),
+                "REGION.tick", CausalContext.of(Role.of("TICK"), "", 2),
+                ExecutionIndex.empty());
+        OccurrenceAddress early = OccurrenceAddress.of(PRODUCER.node(),
+                "REGION.tick", CausalContext.of(Role.of("TICK"), "", 1),
+                ExecutionIndex.empty());
+        // the producer of the unsent leaf, whether the bound is named
+        Object[][] rows = {{late, true}, {early, false}};
+        for (Object[] row : rows) {
+            OccurrenceAddress heldBy = (OccurrenceAddress) row[0];
+            Path iteration = folder.newFolder("unsent-" + judged++).toPath();
+            // The recording ran TICK #1 on the producer's node, the last.
+            RowCodec.writeJsonl(iteration.resolve("recorded_schedule.jsonl"),
+                    Collections.singletonList(RowCodec.writeScheduleEvent(
+                            ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE,
+                                    PRODUCER.node().render() + "|"
+                                            + CausalContext.of(Role.of(
+                                            "TICK"), "", 1).render(),
+                                    "tick.TICK", 0, ""))));
+            Endpoint producer = Endpoint.of(PRODUCER, content,
+                    at("export#1", 0), 0);
+            Endpoint consumer = Endpoint.of(ANCHOR, content,
+                    at("attach#1", 0), 0);
+            Endpoint unsent = Endpoint.of(heldBy, content, at("export#2", 0),
+                    0);
+            String leaf = "M_Z_field_HOFF.leaf";
+            session(iteration, "s0", false, "false", producer, consumer, leaf,
+                    "false", null, true, false, "EXPR.v1.marker");
+            // The run that delivered the leaf ran its producer concretely.
+            session(iteration, "s1", true, "false", unsent, consumer, leaf,
+                    "false", null, false, false, "EXPR.v1.marker",
+                    constant("false"));
+            // Another run ran it instrumented, delivering to no consumer of
+            // this path: its arrival is a family no session sends whole.
+            Session other = new Session(iteration, "s2", true);
+            other.activation(heldBy, "thread#" + heldBy.regionId(), true,
+                    true);
+            other.marker("false");
+            other.expression("EXPR.v1.marker", constant("false"));
+            other.export(unsent, "EXPR.v1.marker", 1L, "false");
+            other.target(MARKER, false, true);
+            other.write();
+            Composer.Composition composition = compose(iteration, 8);
+            boolean refused = false;
+            boolean named = false;
+            for (GapRow gap : composition.gaps()) {
+                refused |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER;
+                named |= gap.subject().equals(heldBy.render() + " "
+                        + Composer.DAEMON_TICK_BOUND + "=1")
+                        && gap.kind() == GapKind.BOUND_INSUFFICIENT;
+            }
+            assertTrue(heldBy.render() + ": the message is refused: "
+                    + composition.gaps(), refused);
+            assertEquals(heldBy.render() + ": the tick bound named: "
+                    + composition.gaps(), row[1], named);
+        }
+    }
+
+    /**
      * A WRITER REACHED THROUGH A STORE WRITE THE ENGINE STATED IS CUT THERE
      * (RestsOn.Reached, RowOrder#beforeCut): its reads stated before that
      * write at the same seq join; one stated after it is past the cut, so

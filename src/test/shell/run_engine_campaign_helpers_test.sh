@@ -249,7 +249,8 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # bound that cut the anchor's occurrence on the way to the throw too
 # (COMPOSE's loop-body-bound row, RestsOn#decided), a store content leaf
 # held past the daemon tick bound (COMPOSE's daemon-tick-bound row,
-# Composer#arrival), a pairing hold that gave way past VIEW_HOLD_MAX (a
+# Composer#arrival; an arm refused on such a producer's message names the same
+# producer, ComposedFamilies#nameTickBound: counted once), a pairing hold that gave way past VIEW_HOLD_MAX (a
 # replay's view-hold-max row, Confirmation#gaveWay -- a CONFIRM replay's
 # too, witness or final), the invocations of one marker past those GROW plans
 # inputs for (unplanned-input-max), the task bound by the static candidates it
@@ -282,6 +283,10 @@ for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
     sessionId: "SESSION.seed", kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
     subject: $subject, detail: "cut"}'
 done >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+jq -n -c '{schemaVersion: 1, sessionId: "SESSION.seed",
+  kind: "BOUND_INSUFFICIENT", cls: "DIAGNOSTIC",
+  subject: "REGION.P#2 daemon-tick-bound=5", detail: "an arm refused"}' \
+  >>"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
 for round in 0000:U 0001:T; do
   jq -n -c --arg subject "${round#*:} max-paths-per-region=32" \
     '{schemaVersion: 1, sessionId: "exploration", kind: "ADMISSION_GAP",
@@ -308,7 +313,8 @@ jq -e '.bounded.by == ["region_path_max_waves",
     "schedule_max_jobs", "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 static.*without 1 occ"))
   and (.bounded.detail | test("3 flip[(]s[)] whose replays were killed twice .* answered nothing, held open: FORCE, S#u4#1=true, S#u9#0=false"))
-  and (.bounded.detail | test("1 pairing hold.*VIEW_HOLD_MAX [(]3000 ms"))' \
+  and (.bounded.detail | test("1 pairing hold.*VIEW_HOLD_MAX [(]3000 ms"))
+  and (.bounded.detail | test("1 producer[(]s[)] begun by a daemon tick.*[(]REGION.P#2[)]"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
 $(jq -c '.bounded' "${campaign_final}/result.json" 2>&1) $(<"${emit_root}/emit.log")"
