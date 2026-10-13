@@ -112,8 +112,9 @@ EXPECTED_MECHANISM = {
     # by a transport fault, or by a node's cluster-state view re-paired with
     # an older version.  migrate-buffer-leak: a fault at a door after the
     # first MIGRATE's buffer step leaves the target BUFFERING, so the retried
-    # MIGRATE is refused.  overseer-lock-leak: ZooKeeper's OperationTimeout at
-    # markTaskAsRunning's runningMap.put leaks the collection lock.
+    # MIGRATE is refused.  overseer-lock-leak: a ZooKeeper ConnectionLoss past
+    # the retries at markTaskAsRunning's runningMap.put leaks the collection
+    # lock.
     # restore-construction: a failed first RESTORE leaves the shards in
     # CONSTRUCTION.  snapshot-no-active and tra-start-overwrite: the
     # Overseer's view of a replica, the routing node's aliases, at a version

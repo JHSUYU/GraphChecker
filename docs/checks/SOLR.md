@@ -179,9 +179,10 @@ solr-adhoc-34 (CoordinatorHttpSolrCall:142, TestCoordinatorRole#testSimple; C), 
 2. **solr-bugs-overseer-lock-leak** (#50). Target `DistributedZkUpdateProcessor.java:238` (8.11.4 :236; processAdd "is
    read-only", inline; the window's first add). Workload `TestCausynthOverseerLockLeak#addAfterAnAsyncReadOnlyOff`: CREATE
    C; MODIFYCOLLECTION readOnly=true; async MODIFYCOLLECTION readOnly="" (removal) under a fixed request id; at most 30
-   REQUESTSTATUS polls 1 s apart, no assert; ADD. Counterfactual: ZK WRITE fault, OperationTimeout (the write committed),
-   at `runningMap.put` (OverseerTaskProcessor.java:492, `DistributedMap.put` -> `SolrZkClient#makePath`'s own
-   `keeper.create`, which no HOOK row names: the catalog door at its library anchor). Chain: KeeperException escapes
+   REQUESTSTATUS polls 1 s apart, no assert; ADD. Counterfactual: ZK WRITE fault, a ConnectionLoss past
+   `ZkCmdExecutor`'s retries (the write committed, the connection flapping, the session alive) at `runningMap.put`
+   (OverseerTaskProcessor.java:492, `DistributedMap.put` -> `SolrZkClient#makePath` -> `create`, whose door stands where
+   its retries return; `makepath-create-tree.patch`). Chain: KeeperException escapes
    `markTaskAsRunning` (only NodeExists/Interrupted unlock, :316-325) -> outer catch :335 keeps the LockTree lock and
    `runningTasks` -> the task is never dispatched again, its Runner never runs -> readOnly stays true -> add throws.
    The leak's only throw of its own, a later sync command's wait timeout (CollectionsHandler.java:383), never comes in an

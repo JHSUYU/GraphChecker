@@ -245,7 +245,9 @@ ZkCmdExecutor's retries, session alive, only logs and never re-arms: `ZkStateRea
   (`Root:OVERSEER_TASK_QUEUE`), the message that starts the async Runner, and the Runner was admitted only as a control
   producer, whose starting message's doors are not asked (`ClosurePlanner` "a control producer contributes no value").
   The Runner is a value producer: its task message's empty readOnly removes the property in v8 (SOLR-12507). Its
-  flip is an OperationTimeout (a single ConnectionLoss is retried and meets NodeExists). Analysis
+  flip is a ConnectionLoss past `ZkCmdExecutor`'s retries at `create`'s door, which makePath reaches through `create`
+  on `gc/solr-final9` (`makepath-create-tree.patch`; SGF2's witness was an OperationTimeout inside makePath's retry
+  lambda, a kind the 3.6.2 client never raises, now no kind; live gate on final9: lock-leak and 38). Analysis
   `/bigtemp/vnr3ne/analysis/solr-2026-10-12/readings/lock-leak-SG3I.md`; pre-reading `.../solr-2026-10-11/readings/lock-leak.md`.
 - **b. 18413:** both SG3G/SG3H refutations fixed (§0, Z2); CONFIRM watch: a seed arm with a Lost-context consumer and arms
   whose sites carry queue sequence names (qn-...) can shift identity between runs.
@@ -382,6 +384,13 @@ checks' FORCE runs were cut by a concrete loop), a branch both of whose arms rea
 stopped on the way is BOUNDED (`solr-force2`, PIPELINE §5, §8). `seedFlipsAfterForcedFlip` was 0 in every Solr run of
 agent F2 (so the seed path's anchor flips and open-arm asks may be deletable: decide on SG3's numbers). Waiting on Z2:
 solr-adhoc-19's forced flip (its phi reads `clusterProperties`, parsed from ZooKeeper JSON).
+
+**A transient ZooKeeper fault inside the retries (lead 2026-10-13, for later).** Every Solr ZooKeeper door stands at
+`ZkCmdExecutor#retryOperation`'s boundary (SYMBOL-SCOPE §4.2): a planted ConnectionLoss escapes past the retries. The
+transient world -- one ConnectionLoss inside the retries, retried, the retry meeting `NodeExists` (a create the first
+attempt applied) or a duplicate sequential node -- is planted nowhere since makePath's hooks left its retry lambda
+(`makepath-create-tree.patch`). A general in-retry door: the system names its retry wrapper (a doors.jsonl row), and a
+door inside the wrapper's operation plants a fault on one attempt only, the wrapper retrying as it would.
 
 **WIRE-CODEC (`wire-codec-p1`; the system body carries none of it).** Resume only when a system's chain needs a
 codec hole (a value carried inside an opaque payload); then rebase it onto the body, which deleted its runtime.

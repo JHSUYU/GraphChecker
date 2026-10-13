@@ -13,7 +13,8 @@ Tree read: `/bigtemp/vnr3ne/wt/zookeeper-unified` (`gc/zk-unified` 8f18cf3a4, br
   FinalRequestProcessor. Not wired: responses, watches, the ConnectRequest handshake, Learner<->Leader `QuorumPacket`s and
   election (`QuorumCnxManager`) messages. The `zookeeper-hb` tree adds a RESPONSE door.
 - FAULT doors: `ZOOKEEPER WRITE` on `ZooKeeper#create` (both overloads), `#setData`, `#delete` and `#multiInternal`, placed
-  after `submitRequest`. The write commits and the caller sees ConnectionLoss, SessionExpired or OperationTimeout. Reads,
+  after `submitRequest`. The write commits and the caller sees ConnectionLoss or SessionExpired (no OperationTimeout:
+  no client code raises it, only `KeeperException`'s own classes name it). Reads,
   `setACL` and the quorum socket have no door.
 - CLOCK: `Time.currentElapsedTime` and `nanoTime`, with a forward window of up to 30 days. CONFIG: JVM getters such as
   `Integer.getInteger`, `Boolean.getBoolean` and `System.getProperty`+parse. ZooKeeper's `ZKConfig`/`QuorumPeerConfig`
