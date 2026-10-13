@@ -51,6 +51,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1836,6 +1838,22 @@ public final class Composer {
         reachedHandoffs(session, lowering.reachedSymbols(reaching), handoffs,
                 holds, bound, refusals, "");
         terms.addAll(holds);
+        //      What the path read only through its view's case of another
+        //      version rests on that version's choice (SmtLowering
+        //      #viewGuarded): its messages are closed under the choice (6b).
+        Map<String, List<AttachRow>> viewVersions =
+                new LinkedHashMap<String, List<AttachRow>>();
+        Map<String, Set<String>> guarded = lowering.viewGuarded();
+        for (Iterator<AttachRow> each = bound.iterator(); each.hasNext();) {
+            AttachRow attach = each.next();
+            Set<String> choices = guarded.get(attach.symbol());
+            if (choices == null) continue;
+            each.remove();
+            for (String choice : choices) {
+                viewVersions.computeIfAbsent(choice,
+                        unused -> new ArrayList<AttachRow>()).add(attach);
+            }
+        }
         Set<String> interactionIds = new LinkedHashSet<String>();
         for (AttachRow attach : bound) {
             interactionIds.add(attach.interaction().id());
@@ -1880,6 +1898,31 @@ public final class Composer {
             refused(path, unproducible);
             return null;
         }
+        // (6b) The messages of the versions its view may hold, each under
+        //      its version choice; one no session can send -- or with a
+        //      leaf no producer the corpus attests made -- is no version the
+        //      read is paired to: the path holds its choice false, and its
+        //      leaves are no open link (UNPAIRED).
+        Map<String, String> unpaired = unattestedVersions(session, guarded,
+                viewVersions, unboundBefore);
+        for (String version : unpaired.keySet()) {
+            viewVersions.remove(version);
+        }
+        for (String version : composedFamilies.closeViewVersions(ordinal,
+                session, viewVersions, interactionIds, familyTerms)) {
+            unpaired.put(version, "no session of this corpus can send what"
+                    + " the view holds at this version");
+        }
+        for (Map.Entry<String, String> version : unpaired.entrySet()) {
+            terms.add("(not " + version.getKey() + ")");
+            for (Map.Entry<String, Set<String>> leaf : guarded.entrySet()) {
+                if (leaf.getValue().contains(version.getKey())) {
+                    lowering.unpaired(leaf.getKey(), version.getValue()
+                            + " (" + lowering.viewGuardName(version.getKey())
+                            + "): the read is not paired to it");
+                }
+            }
+        }
         // (7) And the STATE families: which writer the read may have seen.
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
@@ -1905,10 +1948,17 @@ public final class Composer {
         observedReads.put(path.pathId, observed);
         for (SmtLowering.Unbound value : lowering.unbound().subList(
                 unboundBefore, lowering.unbound().size())) {
-            // One row per value and arm: an arm's own run holds its value.
-            pathConcrete.putIfAbsent(value.subject + "|" + value.arm,
-                    new Concrete(value.kind, value.subject, value.value,
-                            value.reason, value.movesWith).in(value.arm));
+            // One row per value and arm: an arm's own run holds its value;
+            // an unpaired version's leaf is dead whatever held it.
+            Concrete row = new Concrete(value.kind, value.subject,
+                    value.value, value.reason, value.movesWith)
+                    .in(value.arm);
+            if (SmtLowering.Unbound.UNPAIRED.equals(value.kind)) {
+                pathConcrete.put(value.subject + "|" + value.arm, row);
+            } else {
+                pathConcrete.putIfAbsent(value.subject + "|" + value.arm,
+                        row);
+            }
         }
         for (Map.Entry<String, Concrete> row : pathConcrete.entrySet()) {
             concrete.put(path.pathId + "|" + row.getKey(),
@@ -1920,6 +1970,50 @@ public final class Composer {
         return new Disjunct(path, selector, fatal, "(=> " + selector + " "
                 + VmTermLowering.and(withoutFatalArm) + ")",
                 target.observedFatal(), interactionIds, fatalLocations, cutoff);
+    }
+
+    /**
+     * The versions of a view the path may hold whose content it names has a
+     * leaf no producer the corpus attests made (held or free, never bound
+     * by a family nor settled by rule): no delivery of that version is a
+     * sender the formula may choose, so the version is unpaired, named
+     * ({@code ComposedFamilies#closeViewVersions}).
+     *
+     * @return version choice -> why it is unpaired
+     */
+    private Map<String, String> unattestedVersions(
+            String session, Map<String, Set<String>> guarded,
+            Map<String, List<AttachRow>> viewVersions, int unboundBefore) {
+        Set<String> sent = new HashSet<String>();
+        for (List<AttachRow> attaches : viewVersions.values()) {
+            for (AttachRow attach : attaches) sent.add(attach.symbol());
+        }
+        Set<String> settled = new HashSet<String>();
+        for (SmtLowering.Unbound value : lowering.unbound().subList(
+                unboundBefore, lowering.unbound().size())) {
+            if (SmtLowering.settled(value.kind)) settled.add(value.subject);
+        }
+        Map<String, String> unpaired = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, Set<String>> leaf : guarded.entrySet()) {
+            String symbol = leaf.getKey();
+            if (!symbol.contains(Cone.BOUNDARY) || sent.contains(symbol)
+                    || settled.contains(symbol)
+                    || corpus.attach(session, symbol) == null) {
+                continue;
+            }
+            for (String version : leaf.getValue()) {
+                unpaired.putIfAbsent(version, "its leaf " + symbol + " has"
+                        + " no sender the corpus attests");
+            }
+        }
+        for (Map.Entry<String, String> version : unpaired.entrySet()) {
+            gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
+                    lowering.viewGuardName(version.getKey()),
+                    version.getValue() + ", so the read is not paired to"
+                            + " this version: the path holds its version"
+                            + " choice false");
+        }
+        return unpaired;
     }
 
     /**

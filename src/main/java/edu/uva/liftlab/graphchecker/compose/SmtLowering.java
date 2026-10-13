@@ -1135,6 +1135,39 @@ public final class SmtLowering {
         private void unbound(Unbound value) {
             if (unboundHeld.add(value)) unbound.add(value);
         }
+        /** Symbol -> the version choices ("" none) it was lowered under
+         *  inside another version's case of a view ({@link #viewCases}),
+         *  relative to this frame: a memoized lowering is committed on
+         *  every hit, there or outside any case, so what it lowered is
+         *  each hit's too ({@link #viewGuarded}). */
+        private final Map<String, Set<String>> viewLowered =
+                new LinkedHashMap<String, Set<String>>();
+
+        /** One symbol lowered under {@code choice} ("" none): outside every
+         *  case the path's ({@link #viewGuards}, {@link #viewDirect}),
+         *  inside one this frame's until its case commits it. */
+        private void viewLowered(String symbol, String choice) {
+            if (viewCases > 0) {
+                viewLowered.computeIfAbsent(symbol,
+                        unused -> new LinkedHashSet<String>()).add(choice);
+            } else if (choice.isEmpty()) {
+                viewDirect.add(symbol);
+            } else {
+                viewGuards.computeIfAbsent(symbol,
+                        unused -> new LinkedHashSet<String>()).add(choice);
+            }
+        }
+
+        /** What this frame lowered rests on {@code choice} besides. */
+        private void under(String choice) {
+            for (Set<String> choices : viewLowered.values()) {
+                List<String> inner = new ArrayList<String>(choices);
+                choices.clear();
+                for (String each : inner) {
+                    choices.add(withinCase(choice, each));
+                }
+            }
+        }
         /** A named DIAGNOSTIC that refuses nothing -> why
          *  ({@link #diagnostics}). */
         private final Map<String, String> diagnostics =
@@ -1166,6 +1199,12 @@ public final class SmtLowering {
             pinnedReturns.putAll(other.pinnedReturns);
             for (Unbound value : other.unbound) unbound(value);
             diagnostics.putAll(other.diagnostics);
+            for (Map.Entry<String, Set<String>> symbol
+                    : other.viewLowered.entrySet()) {
+                for (String choice : symbol.getValue()) {
+                    viewLowered(symbol.getKey(), choice);
+                }
+            }
         }
     }
 
@@ -1447,6 +1486,7 @@ public final class SmtLowering {
 
     private Term symbolTerm(JsonObject expression, Sort expected) {
         String raw = primitiveString(expression, "_exp");
+        top().viewLowered(raw, "");
         // "N" is Java null (VmExpressionIr.SYMBOLIC_NULL), not a name: as
         // an opaque identity "x != null" would say nothing about nullness.
         if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
@@ -1509,6 +1549,52 @@ public final class SmtLowering {
      *  #viewing} (a cycle of views): an answer reached so depends on where
      *  it was asked, and is not kept. */
     private int viewCycles;
+    /** How many of {@link #throughView}'s cases of another version than
+     *  its read observed are being lowered (nested, one per view). */
+    private int viewCases;
+    /** Symbol -> the version choices it was lowered under, this path. */
+    private final Map<String, Set<String>> viewGuards =
+            new LinkedHashMap<String, Set<String>>();
+    /** The symbols this path lowered outside any other version's case. */
+    private final Set<String> viewDirect = new HashSet<String>();
+    /** Version choice -> how a row names it. */
+    private final Map<String, String> viewGuardNames =
+            new LinkedHashMap<String, String>();
+
+    /**
+     * THE CONTENT OF A VERSION THE VIEW MAY HOLD RESTS ON THAT CHOICE
+     * (solr-18413 SG3G/SG3H): each symbol this path lowered only inside
+     * {@link #throughView}'s case of another version than the one its read
+     * observed, with the version choices it was lowered under.  Its
+     * delivery binds the leaf only where the view holds that version, so
+     * its message's family rests on that choice ({@code
+     * ComposedFamilies#closeViewVersions}), never on the path alone.
+     */
+    public Map<String, Set<String>> viewGuarded() {
+        Map<String, Set<String>> guarded =
+                new LinkedHashMap<String, Set<String>>();
+        for (Map.Entry<String, Set<String>> symbol : viewGuards.entrySet()) {
+            if (!viewDirect.contains(symbol.getKey())) {
+                guarded.put(symbol.getKey(), symbol.getValue());
+            }
+        }
+        return guarded;
+    }
+
+    /** How a row names one version choice ({@link #viewGuarded}). */
+    public String viewGuardName(String guard) {
+        String named = viewGuardNames.get(guard);
+        return named == null ? guard : named;
+    }
+
+    /** {@code inner} ("" none) within the case of {@code outer}, named as
+     *  the innermost choice is ({@link #viewGuardName}). */
+    private String withinCase(String outer, String inner) {
+        if (inner.isEmpty()) return outer;
+        String both = "(and " + outer + " " + inner + ")";
+        viewGuardNames.putIfAbsent(both, viewGuardName(inner));
+        return both;
+    }
 
     /**
      * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4,
@@ -1563,21 +1649,42 @@ public final class SmtLowering {
             }
             if (view == null) return null;
             Term own = symbolTerm(symbolNode(raw, javaType), expected);
-            Map<String, Term> answers = new LinkedHashMap<String, Term>();
-            answers.put(Long.toString(leaf.version), own);
+            Map<String, String> others = new LinkedHashMap<String, String>();
             for (WriteRow write : join.writes(leaf.viewKey)) {
                 String version = Long.toString(write.version());
-                String other = answers.containsKey(version) ? null
+                String other = write.version() == leaf.version
+                        || others.containsKey(version) ? null
                         : join.viewLeafAt(leaf.viewKey, write.version(),
                         leaf.port);
-                if (other == null) continue;
-                Term answer = symbolTerm(symbolNode(other, javaType),
-                        expected);
+                if (other != null) others.put(version, other);
+            }
+            if (others.isEmpty()) return own;
+            Term owner = symbolTerm(symbolNode(view.symbol(), "J"),
+                    Sort.INT);
+            Map<String, Term> answers = new LinkedHashMap<String, Term>();
+            answers.put(Long.toString(leaf.version), own);
+            for (Map.Entry<String, String> case_ : others.entrySet()) {
+                String version = case_.getKey();
+                String other = case_.getValue();
+                // Another version's leaf is the view's only where the view
+                // holds that version (#viewGuarded): what its lowering
+                // lowered, memoized or not, rests on that choice.
+                String choice = "(= " + owner.text + " " + version + ")";
+                viewGuardNames.putIfAbsent(choice, "version " + version
+                        + " of " + leaf.viewKey + " (" + choice + ")");
+                Attempt<Term> lowered;
+                viewCases++;
+                try {
+                    lowered = attempting(() -> symbolTerm(
+                            symbolNode(other, javaType), expected));
+                } finally {
+                    viewCases--;
+                }
+                if (lowered.raised != null) lowered.raised.under(choice);
+                Term answer = commit(lowered);
                 if (answer.sort == own.sort) answers.put(version, answer);
             }
             if (answers.size() < 2) return own;
-            Term owner = symbolTerm(symbolNode(view.symbol(), "J"),
-                    Sort.INT);
             String value = perCandidate(owner.text, answers);
             String nullness = "false";
             for (Term answer : answers.values()) {
@@ -2507,6 +2614,9 @@ public final class SmtLowering {
         movable.clear();
         nestedSelectors.clear();
         forget();
+        viewGuards.clear();
+        viewDirect.clear();
+        viewGuardNames.clear();
     }
 
     /**
@@ -4030,11 +4140,20 @@ public final class SmtLowering {
          * daemon_tick_bound; cone.json's boundedByTick).
          */
         public static final String BOUNDED = "BOUNDED";
+        /**
+         * A store content leaf of a version of its node's view the path's
+         * read is not paired to -- no session can send all of that
+         * version's content the path names ({@code
+         * ComposedFamilies#closeViewVersions}) --: the read's case of it is
+         * dead, the path holding the version choice false, and no open link
+         * (cone.json's unpairedVersion).
+         */
+        public static final String UNPAIRED = "UNPAIRED";
         /** Why a HELD value is held. */
         public static final String PRODUCER_UNSTATED = "producer unstated";
 
         /** {@link #FREE}, {@link #HELD}, {@link #CONSTANT}, {@link
-         *  #EXPORTED} or {@link #BOUNDED}. */
+         *  #EXPORTED}, {@link #BOUNDED} or {@link #UNPAIRED}. */
         public final String kind;
         public final String subject;
         /** A HELD value's recorded value; "" for a FREE one. */
@@ -4090,7 +4209,15 @@ public final class SmtLowering {
      *  ({@link #settledByRefusedProducer}; {@code Cone}, cone.py). */
     public static boolean settled(String kind) {
         return Unbound.CONSTANT.equals(kind) || Unbound.EXPORTED.equals(kind)
-                || Unbound.BOUNDED.equals(kind);
+                || Unbound.BOUNDED.equals(kind)
+                || Unbound.UNPAIRED.equals(kind);
+    }
+
+    /** A leaf of a version the path's read is not paired to ({@link
+     *  Unbound#UNPAIRED}), the path's own, once its lowering ended. */
+    public void unpaired(String symbol, String reason) {
+        root.unbound.add(new Unbound(Unbound.UNPAIRED, symbol, "", reason,
+                Collections.<String>emptyList(), ""));
     }
 
     /**

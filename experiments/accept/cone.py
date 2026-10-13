@@ -33,8 +33,8 @@ Two facts are published for report.py, which gates on both:
                 names the same set (compose.Cone, the claim's openChain).
                 A store content leaf an unattested producer settles is
                 no open link, listed by how: constantByRefusedProducer,
-                exportedByRefusedProducer, boundedByTick (concrete[] kinds
-                CONSTANT, EXPORTED, BOUNDED).
+                exportedByRefusedProducer, boundedByTick, unpairedVersion
+                (concrete[] kinds CONSTANT, EXPORTED, BOUNDED, UNPAIRED).
 
 A root is named by its rootId in result.json and by its symbol in the
 formula; the session rows (roots.jsonl) state both.  Writes <work>/cone.json.
@@ -181,12 +181,15 @@ def main():
     # A store content leaf a producer no session attests at its port
     # settles (compose.Composer#refusedByRule, SmtLowering#settled): concrete[] kind
     # CONSTANT (its export a constant), EXPORTED (bound by its export) or
-    # BOUNDED (held past the daemon tick bound): named, and no open link.
+    # BOUNDED (held past the daemon tick bound): named, and no open link; so
+    # is a leaf of a version of its view the read is not paired to (UNPAIRED,
+    # Composer (6b): its case is dead, the path holding its choice false).
     path_of = {p.get('selector', ''): p.get('pathId', '')
                for p in manifest.get('paths') or []}
     named = {'CONSTANT': 'constantByRefusedProducer',
              'EXPORTED': 'exportedByRefusedProducer',
-             'BOUNDED': 'boundedByTick'}
+             'BOUNDED': 'boundedByTick',
+             'UNPAIRED': 'unpairedVersion'}
     settled, by_kind = {}, {kind: set() for kind in named}
     for row in result.get('concrete') or []:
         if row.get('kind') in named:

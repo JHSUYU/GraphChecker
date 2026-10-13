@@ -550,6 +550,50 @@ final class ComposedFamilies {
                 stated, refusals, 0);
     }
 
+    /**
+     * THE MESSAGES OF A VERSION THE VIEW MAY HOLD (SmtLowering#viewGuarded):
+     * each closed like a delivery's nested message, under the version
+     * choice {@code (= V v)} instead of the path, so its arms are chosen
+     * only where the view holds that version.  A version whose messages no
+     * session can send is no version the read is paired to: the path
+     * asserts its choice false, named, and stands (solr-18413 SG3G/SG3H:
+     * the decode of state.json@10 after the anchor's fatal decision, whose
+     * only sender was the seed's write after the anchor's REMOVEROUTINGRULE).
+     *
+     * @param byGuard version choice -> the attaches lowered only under it
+     * @return the version choices the path asserts false
+     */
+    List<String> closeViewVersions(int ordinal, String owner,
+                                   Map<String, List<AttachRow>> byGuard,
+                                   Set<String> reached,
+                                   List<String> stated) {
+        List<String> unpaired = new ArrayList<String>();
+        for (Map.Entry<String, List<AttachRow>> version
+                : byGuard.entrySet()) {
+            int[] mark = mark();
+            Set<String> slots = new LinkedHashSet<String>(reached);
+            List<String> said = new ArrayList<String>();
+            List<GapRow> refusals = new ArrayList<GapRow>();
+            if (closeMessages(ordinal, version.getKey(), owner,
+                    version.getValue(), slots, said, refusals, 0)) {
+                reached.addAll(slots);
+                stated.addAll(said);
+                continue;
+            }
+            rollback(mark);
+            unpaired.add(version.getKey());
+            composer.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
+                    lowering.viewGuardName(version.getKey()), "no session"
+                            + " of this corpus can send what the view holds"
+                            + " at this version, so the read is not paired"
+                            + " to it: the path holds its version choice"
+                            + " false" + (refusals.isEmpty() ? ""
+                            : " (" + refusals.get(0).subject() + ": "
+                            + refusals.get(0).detail() + ")"));
+        }
+        return unpaired;
+    }
+
     /** How deep one delivery may be handed on before this refuses. */
     private static final int NESTING_LIMIT = 16;
 
