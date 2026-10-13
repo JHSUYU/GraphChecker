@@ -554,7 +554,7 @@ session, each worker's focus row as that session's world, the verdicts, the reco
    `explore_manifest.json` (anchors, round, wave, witnesses, tasks with their `why`,
    proposed/answered/in-flight counts and the candidates held in flight, the branches stopped,
    verdict histogram, gap counts, `force` (§7.10), state `OBLIGATIONS_PROPOSED` | `AWAITING` (nothing new, arms in
-   flight) | `FIXED_POINT`, `concreteAnchors` and `openArms`). What only the seed ran is BLOCKING at the fixed
+   flight) | `FIXED_POINT`, `concreteAnchors`, `openArms` and `boundedFlips`, §7.6). What only the seed ran is BLOCKING at the fixed
    point alone: nothing proposed, exposed or in flight, and no witness. A concrete anchor (§7.2) is
    information, never a gap: its decision is a constant of the formula (§8, a `false` phi), and each
    round's manifest states it in `concreteAnchors` (`ExploreMain#concreteRow`: its admitted paths,
@@ -1277,7 +1277,16 @@ already deleted, in a tree whose waits never time out) worked about 80 s and the
 2,320 s.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
-answer is `NOT_ADMITTED` naming the bound. A question no solver could answer (§7.5), and a replay
+answer is `NOT_ADMITTED` naming the bound, its detail opening `REPLAY_BOUNDED:`
+(`ObligationResult#replayBounded`; a replay killed inside its bound, by its memory reservation or a
+signal, too): it answered nothing, of the arm or of its world, so it settles nothing and counts toward
+no world-only answer (`explore.Frontier#consume`). Its flip is asked once more; a flip whose replays were
+killed twice and that nothing else answered is held unproposed, open, never settled -- an
+`ADMISSION_GAP` row says so -- and named in the round manifest's `boundedFlips` (task, path, site,
+ordinal, the outcome asked, each killed obligation and its detail), which EMIT names as the bound
+`replay_timeout_s` (`campaign_bounds`): an UNSAT over such flips publishes as bounded, never as a clean
+close (solr-adhoc-38 EXZ1: 24 flips killed twice at 2400 s, the expected witness among them, settled as
+world-only answers, and the run ended `UNSAT_CLOSED` at `FIXED_POINT`). A question no solver could answer (§7.5), and a replay
 that states no verdict, fail their worker, which is then that obligation's `NOT_ADMITTED` and an
 `OBLIGATION_UNFINISHED` gap (§7.7); in a GROW re-run a replay with no verdict fails EXPLORE, and in
 CONFIRM it is a confirmation that did not confirm.
@@ -2912,7 +2921,8 @@ recording's own is not kept apart.
    bound in their subject), `region_path_max_tasks` (the static candidates the last round's closure
    cut: `truncated` less `ceilingCut`), `region_path_closure_ceiling` (occurrences the rows connect cut
    past `ClosurePlanner.CLOSURE_CEILING`, 1024), `schedule_max_jobs` (the schedule index's `closureCut`), `open_arm_max_refuted_worlds`
-   (an open arm the last round left BOUNDED, §7.1), `unplanned_input_max` (the last round's rows
+   (an open arm the last round left BOUNDED, §7.1), `replay_timeout_s` (the last round's
+   `boundedFlips`: flips whose replays were killed twice, §7.6), `unplanned_input_max` (the last round's rows
    of a marker invocation past those GROW plans inputs for, §7.8) and `campaign_max_claims`
    (a refuted claim published at it); a round's `max-flips-per-path` is none (the next round asks
    the rest), nor is the time budget (`EXPLORATION_CUT`). `report.py` puts it in the row's note and a

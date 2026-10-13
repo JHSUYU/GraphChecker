@@ -128,13 +128,15 @@ final class ForcedFlip {
     }
 
     /** The last verdict of a flip that answers it (not a solve whose
-     *  replay is owed, nor a replay that refuted its world), or null. */
+     *  replay is owed, a replay that refuted its world, nor one killed past
+     *  its bound), or null. */
     private static Verdict answer(List<ObligationResult> asked) {
         Verdict last = null;
         for (ObligationResult result : asked == null
                 ? Collections.<ObligationResult>emptyList() : asked) {
             if (result.verdict() != Verdict.SAT_MODEL_READY
-                    && result.refutation() == null) {
+                    && result.refutation() == null
+                    && !result.replayBounded()) {
                 last = result.verdict();
             }
         }

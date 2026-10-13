@@ -256,7 +256,9 @@ jq -e '[.telemetryGaps[] | select(.code == "CLOSURE_CONFINED")] | length == 2' \
 # cut, the closure ceiling by the occurrences the rows connect cut past it; a round's
 # max-flips-per-path, asked again by the next round, is none, nor is a
 # closure an earlier round truncated and the last planned whole, nor paths an
-# earlier round deferred (the path bound counts the last round's).
+# earlier round deferred (the path bound counts the last round's); and the flips
+# whose replays were killed past replay_timeout_s twice, the last round's
+# boundedFlips (an earlier round's list is in the last's, which holds every one).
 emit_fixture
 mkdir -p "${campaign_final}/refuted/0000" "${campaign_final}/refuted/0001" \
   "${emit_iteration}/obligations-0000" "${emit_iteration}/obligations-0001"
@@ -268,9 +270,9 @@ jq -n '{stop: "REGION_PATH_WAVE_BUDGET_REACHED", detail: "wave 3"}' \
   >"${emit_iteration}/exploration.json"
 jq -n '{closureCut: {occurrences: 5, keptDepth: 1}}' \
   >"${emit_iteration}/runtime_workflow_schedule_index.json"
-echo '{"truncated": 4}' \
+echo '{"truncated": 4, "boundedFlips": [{"siteId": "S#u9", "ordinal": 0, "outcome": false}]}' \
   >"${emit_iteration}/obligations-0000/explore_manifest.json"
-echo '{"truncated": 3, "ceilingCut": 1}' \
+echo '{"truncated": 3, "ceilingCut": 1, "boundedFlips": [{"siteId": "S#u9", "ordinal": 0, "outcome": false}, {"siteId": "S#u4", "ordinal": 1, "outcome": true}]}' \
   >"${emit_iteration}/obligations-0001/explore_manifest.json"
 for subject in 'T max-paths-per-region=32' 'T max-world-depth=4' \
     'T max-flips-per-path=4' 'T pairing-bound=8' 'REGION.T#1 loop-body-bound=8' \
@@ -301,9 +303,10 @@ jq -e '.bounded.by == ["region_path_max_waves",
     "region_path_max_paths_per_region", "region_path_max_world_depth",
     "pairing_flip_per_read", "loop_body_bound", "daemon_tick_bound",
     "view_hold_max", "unplanned_input_max",
-    "region_path_max_tasks", "region_path_closure_ceiling", "schedule_max_jobs",
-    "campaign_max_claims"]
+    "region_path_max_tasks", "region_path_closure_ceiling", "replay_timeout_s",
+    "schedule_max_jobs", "campaign_max_claims"]
   and (.bounded.detail | test("wave 3; the last round deferred 1 task.*without 2 static.*without 1 occ"))
+  and (.bounded.detail | test("2 flip[(]s[)] whose replays were killed twice .* answered nothing, held open: S#u4#1=true, S#u9#0=false"))
   and (.bounded.detail | test("1 pairing hold.*VIEW_HOLD_MAX [(]3000 ms"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the declared bounds the search touched were not named: \
@@ -2519,7 +2522,7 @@ $(cat "${worker_dir}/worker.log")"
   || fail "a replay killed on its bound did not record NOT_ADMITTED: \
 $(cat "${worker_dir}/obligation_result.jsonl")"
 [[ "$(jq -r '.detail' "${worker_dir}/obligation_result.jsonl")" \
-    == "replay exceeded replay_timeout_s=1" ]] \
+    == "REPLAY_BOUNDED: replay exceeded replay_timeout_s=1" ]] \
   || fail "the recorded row does not name the bound it exceeded: \
 $(cat "${worker_dir}/obligation_result.jsonl")"
 [[ "$(jq -r '.kind' "${worker_dir}/obligation_result.jsonl")" \
@@ -2549,7 +2552,7 @@ bound_solved "${worker_dir}" OB.2
 $(cat "${worker_dir}/worker.log")"
 [[ "$(jq -r '.verdict + " " + .detail' \
     "${worker_dir}/obligation_result.jsonl")" \
-    == "NOT_ADMITTED replay was killed (exit 137) after "*"s, inside its 60s bound: by its memory reservation (the replay log says so), the kernel's memory killer or an operator" ]] \
+    == "NOT_ADMITTED REPLAY_BOUNDED: replay was killed (exit 137) after "*"s, inside its 60s bound: by its memory reservation (the replay log says so), the kernel's memory killer or an operator" ]] \
   || fail "a replay killed inside its bound is recorded as something else: \
 $(cat "${worker_dir}/obligation_result.jsonl")"
 
@@ -2627,7 +2630,7 @@ grep -q 'withdrew session SESSION.mine' "${withdraw_worker}/worker.log" \
   || fail "withdrawing the session changed the verdict row: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 [[ "$(jq -r '.detail' "${withdraw_worker}/obligation_result.jsonl")" \
-    == "replay exceeded replay_timeout_s=5" ]] \
+    == "REPLAY_BOUNDED: replay exceeded replay_timeout_s=5" ]] \
   || fail "withdrawing the session changed the recorded detail: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 
@@ -2664,7 +2667,7 @@ printf 'F:Q\n' >"${late_worker}/question.asked"
   || fail "REPLAY-BOUND-5: the worker failed: $(cat "${late_worker}/worker.log")"
 [[ "$(jq -r '.verdict + " " + .detail' \
     "${late_worker}/obligation_result.jsonl")" \
-    == "NOT_ADMITTED replay exceeded replay_timeout_s=4" ]] \
+    == "NOT_ADMITTED REPLAY_BOUNDED: replay exceeded replay_timeout_s=4" ]] \
   || fail "REPLAY-BOUND-5: a member of the replay's group wrote after the \
 worker: $(cat "${late_worker}/obligation_result.jsonl")"
 [[ ! -e "${late_worker}/question.asked" && ! -e "${late_worker}/question.txt" ]] \

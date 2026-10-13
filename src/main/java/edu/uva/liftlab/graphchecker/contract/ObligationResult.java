@@ -24,6 +24,11 @@ public final class ObligationResult extends Value {
      *  rests on ({@code explore.FlipQuery.Built#atArm}) -- so every world
      *  under that key is refused alike ({@link #settlesArm}). */
     public static final String ARM_REFUSED = "ARM_REFUSED";
+    /** How a NOT_ADMITTED opens when its replay was killed before it stated
+     *  anything -- past {@code replay_timeout_s}, or by a signal
+     *  ({@code run_engine.sh campaign_obligation_replay}): it answered
+     *  nothing, of its arm or of its world ({@link #replayBounded}). */
+    public static final String REPLAY_BOUNDED = "REPLAY_BOUNDED";
 
     private final String obligationId;
     private final Verdict verdict;
@@ -87,9 +92,10 @@ public final class ObligationResult extends Value {
      * Whether this answer is a fact about its ARM, whatever world asks it
      * ({@code explore.Frontier#consume}): ADMITTED, UNSAT, or a NOT_ADMITTED
      * whose replay ran its world as asked ({@link #WORLD_RAN}) or whose
-     * query was refused at the arm ({@link #ARM_REFUSED}).  Any other
-     * NOT_ADMITTED -- the replay did not run its world (a root not minted, an
-     * inherited flip not taken, a refusal, a stall, a killed or unfinished
+     * query was refused at the arm ({@link #ARM_REFUSED}).  A replay killed
+     * past its bound answered nothing at all ({@link #replayBounded}).  Any
+     * other NOT_ADMITTED -- the replay did not run its world (a root not
+     * minted, an inherited flip not taken, a refusal, a stall, an unfinished
      * worker), or the query was refused for what the world holds -- is a
      * fact about its own world only, and a refuted world answers nothing of
      * the arm.
@@ -99,6 +105,14 @@ public final class ObligationResult extends Value {
                 || verdict == Verdict.NOT_ADMITTED && refutation == null
                 && (detail.startsWith(WORLD_RAN + ":")
                 || detail.startsWith(ARM_REFUSED + ":"));
+    }
+
+    /** Whether its replay was killed before it stated anything ({@link
+     *  #REPLAY_BOUNDED}): no fact about its arm, nor about its world
+     *  ({@code explore.Frontier#consume} holds such a flip BOUNDED). */
+    public boolean replayBounded() {
+        return verdict == Verdict.NOT_ADMITTED
+                && detail.startsWith(REPLAY_BOUNDED + ":");
     }
 
     /** The refusal an arm-refused answer names ({@link #ARM_REFUSED}),

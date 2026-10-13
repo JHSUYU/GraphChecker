@@ -48,6 +48,17 @@ import java.util.Set;
  *       25 of them already ADMITTED).</li>
  * </ul>
  *
+ * <p>A replay killed past its bound ({@link ObligationResult#replayBounded})
+ * answered nothing, of the arm or of its world: it settles nothing and counts
+ * toward no world-only answer.  Its flip is asked once more; a flip whose
+ * replays were killed {@link #MAX_BOUNDED_REPLAYS} times and that nothing
+ * else answered is held unproposed, BOUNDED by {@code replay_timeout_s} and
+ * named ({@link #boundedFlips}, the round manifest's {@code boundedFlips},
+ * run_engine's {@code campaign_bounds}), so an UNSAT over it publishes as
+ * bounded, never as a clean close (solr-adhoc-38 EXZ1: 24 flips killed
+ * twice at 2400 s, the expected witness among them, settled as world-only
+ * answers, and the run ended UNSAT_CLOSED at FIXED_POINT).</p>
+ *
  * <p>An arm queued or running ({@link #inFlight}) is not settled and not
  * proposed again: by its id, and by the flip its row asks ({@link
  * ObligationFactory#flip}), since its id may move while it is in flight:
@@ -103,6 +114,11 @@ public final class Frontier {
     /** The flips answered twice by a NOT_ADMITTED about their own world
      *  only ({@link #consume}). */
     private final Set<String> worldOnlyFlips = new LinkedHashSet<String>();
+    /** How many killed replays leave a flip nothing else answered BOUNDED. */
+    static final int MAX_BOUNDED_REPLAYS = 2;
+    /** The flips whose replays were killed past their bound {@link
+     *  #MAX_BOUNDED_REPLAYS} times and that nothing else answered. */
+    private final Set<String> boundedFlips = new LinkedHashSet<String>();
     /** The ids, and the flips, of the arms queued or running. */
     private final Set<String> inFlightIds = new LinkedHashSet<String>();
     private final Set<String> inFlightFlips = new LinkedHashSet<String>();
@@ -150,24 +166,34 @@ public final class Frontier {
      *  stated reason.  An answer settles its arm only where it is a fact
      *  about the arm ({@code ObligationResult#settlesArm}); a replay that
      *  refuted its world answers nothing of it (asked again without that
-     *  world); any other NOT_ADMITTED settles its own flip once a second one
-     *  of it lands. */
+     *  world); a replay killed past its bound answers nothing (a flip killed
+     *  {@link #MAX_BOUNDED_REPLAYS} times is held BOUNDED); any other
+     *  NOT_ADMITTED settles its own flip once a second one of it lands. */
     public void consume(Collection<ObligationResult> results,
                         Map<String, List<ObligationResult>> byFlip) {
         for (Map.Entry<String, List<ObligationResult>> flip
                 : byFlip.entrySet()) {
             int worldOnly = 0;
+            int bounded = 0;
+            boolean answeredArm = false;
             for (ObligationResult result : flip.getValue()) {
                 if (result.verdict() == Verdict.ADMITTED) {
                     admittedFlips.add(flip.getKey());
                 }
-                if (result.verdict() == Verdict.NOT_ADMITTED
+                if (result.replayBounded()) {
+                    bounded++;
+                } else if (result.verdict() == Verdict.NOT_ADMITTED
                         && result.refutation() == null
                         && !result.settlesArm()) {
                     worldOnly++;
                 }
+                answeredArm |= result.settlesArm();
             }
-            if (worldOnly >= 2) worldOnlyFlips.add(flip.getKey());
+            if (worldOnly >= 2) {
+                worldOnlyFlips.add(flip.getKey());
+            } else if (bounded >= MAX_BOUNDED_REPLAYS && !answeredArm) {
+                boundedFlips.add(flip.getKey());
+            }
         }
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
@@ -253,10 +279,22 @@ public final class Frontier {
                     + "the arm in the path's world, and only the sessions "
                     + "landed since moved its key";
         }
-        return worldOnlyFlips.contains(flip) ? "flip answered NOT_ADMITTED "
-                + "twice in its own world, whose replays did not run it: a "
-                + "fact about that world, so the arm stays owed in others"
-                : "";
+        if (worldOnlyFlips.contains(flip)) {
+            return "flip answered NOT_ADMITTED twice in its own world, whose "
+                    + "replays did not run it: a fact about that world, so "
+                    + "the arm stays owed in others";
+        }
+        return boundedFlips.contains(flip) ? "BOUNDED by replay_timeout_s: "
+                + "the flip's replays were killed past their bound "
+                + MAX_BOUNDED_REPLAYS + " times and answered nothing, so it "
+                + "is held unproposed, open, never settled" : "";
+    }
+
+    /** The flips held BOUNDED: replays killed past their bound {@link
+     *  #MAX_BOUNDED_REPLAYS} times, nothing else answering them
+     *  ({@link #consume}). */
+    public Set<String> boundedFlips() {
+        return Collections.unmodifiableSet(boundedFlips);
     }
 
     private void settle(String obligationId, String reason) {

@@ -3601,7 +3601,10 @@ campaign_obligation_replay() {
   # statement (RowRuntime#closeSession writes replay_verdict.jsonl), or the
   # bound's.
   if [[ -n "${campaign_replay_killed}" ]]; then
-    # Killed, it decided nothing: its question stays unsettled.
+    # Killed, it decided nothing: its question stays unsettled, and its
+    # answer says so (ObligationResult#REPLAY_BOUNDED: no fact about its
+    # arm or its world; a flip killed twice is held BOUNDED and named,
+    # campaign_bounds).
     rm -f -- "${worker}/question.asked"
     campaign_log "obligation ${obligation_id}: \
 replay ${campaign_replay_killed}"
@@ -3610,7 +3613,7 @@ replay ${campaign_replay_killed}"
 and its rows state no verdict, which no later stage may read as a corpus \
 session"
     jq -n -c --arg id "${obligation_id}" \
-      --arg detail "replay ${campaign_replay_killed}" \
+      --arg detail "REPLAY_BOUNDED: replay ${campaign_replay_killed}" \
       '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
         verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
       | campaign_write_whole "${result_row}"
@@ -6608,10 +6611,13 @@ campaign_stream_manifest() {
 # the store content leaves held past the daemon tick bound (daemon_tick_bound,
 # COMPOSE's daemon-tick-bound rows: their producers, begun by a tick past the
 # recording's last, are never grown); the pairing holds that gave way at
-# VIEW_HOLD_MAX (view_hold_max, a replay's view-hold-max rows); and the claims
-# decided again after CONFIRM did not confirm one (campaign_max_claims).  A
-# round's max-flips-per-path is no such bound -- the next round asks the
-# decisions it left -- nor is the time budget (campaign_exploration_cut).
+# VIEW_HOLD_MAX (view_hold_max, a replay's view-hold-max rows); the flips whose
+# replays were killed past replay_timeout_s twice and that nothing else
+# answered, held unproposed and open (replay_timeout_s, the last round's
+# boundedFlips, explore.Frontier#boundedFlips); and the claims decided again
+# after CONFIRM did not confirm one (campaign_max_claims).  A round's
+# max-flips-per-path is no such bound -- the next round asks the decisions it
+# left -- nor is the time budget (campaign_exploration_cut).
 campaign_bounds() {
   local iteration_dir=$1 decided unconfirmed=false
   decided=$(find "${campaign_final}/refuted" -mindepth 1 -maxdepth 1 \
@@ -6653,6 +6659,7 @@ explore_manifest.json 2>/dev/null) \
     | ($index[0].closureCut // null) as $cut
     | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]
       as $armsBounded
+    | ($rounds | last | .boundedFlips // []) as $killed
     | [ (select($exploration[0].stop == "REGION_PATH_WAVE_BUDGET_REACHED")
          | {by: "region_path_max_waves", detail: $exploration[0].detail}),
         (select(($paths | length) > 0)
@@ -6708,6 +6715,16 @@ explore_manifest.json 2>/dev/null) \
             detail: ("\($armsBounded | length) open decider arm(s) asked no"
               + " more past their refuted worlds: " + ($armsBounded
               | map("\(.siteId)=\(.outcome) of \(.anchor)") | join(", ")))}),
+        (select(($killed | length) > 0)
+         | {by: "replay_timeout_s",
+            detail: ("\($killed | length) flip(s) whose replays were killed"
+              + " twice (past replay_timeout_s, or inside it by their memory"
+              + " reservation) answered nothing, held open: "
+              + ($killed | map("\(.siteId
+                | sub("^<(?:[^:]*\\.)?(?<c>[^.:]+): [^ ]+ (?<m>[^(]+)\\(.*>(?<u>#u[0-9]+)$";
+                  "\(.c).\(.m)\(.u)"))#\(.ordinal)=\(.outcome)")
+              | group_by(.) | map(if length > 1 then "\(.[0]) x\(length)"
+                else .[0] end) | join(", ")))}),
         (select($cut != null)
          | {by: "schedule_max_jobs",
             detail: ("PLAN planned the closure only to demand depth"

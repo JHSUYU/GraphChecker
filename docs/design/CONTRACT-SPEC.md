@@ -235,8 +235,10 @@ field=<f> <subject>`.
   for a cause in what the arm's key names -- the flipped predicate names what its session declares
   nowhere or lowers to what the query cannot state, or it reaches no variable and rests on versions no
   row wrote (`explore.FlipQuery.Built#atArm`) -- opens it with `ARM_REFUSED:`: the NOT_ADMITTEDs that
-  settle their arm for every world (`ObligationResult#settlesArm`); any other settles only its own
-  flip, once a second one of it lands.
+  settle their arm for every world (`ObligationResult#settlesArm`). One whose replay was killed before
+  it stated anything -- past `replay_timeout_s`, or inside it -- opens it with `REPLAY_BOUNDED:`
+  (`ObligationResult#replayBounded`): no answer at all; its flip, killed twice, is held BOUNDED and
+  named (PIPELINE §7.6). Any other settles only its own flip, once a second one of it lands.
 - The worker directory (`ObligationDir`): `<iteration>/obligations-NNNN/<obligationId>/` with
   `obligation.jsonl`, `obligation_result.jsonl` (the answer, written once by the worker),
   `focused_task.jsonl`, plus `obligation_query.smt2`, `question.txt` (the question its answer
