@@ -531,11 +531,13 @@ public final class ScheduleLog {
     }
 
     /**
-     * A PUBLISH whose apply runs on its node's publisher, its turn due: the
+     * A PUBLISH whose apply runs, its turn due -- on the notification's own
+     * thread or its node's publisher ({@code Confirmation#inForce}): the
      * turn is taken once the publication is in force ({@link
      * #publicationInForce}), so nothing the order lets go after it reads
-     * past it (review S1) -- unless the apply waits, past {@link
-     * #PUBLISH_GRACE_MS} at the frontier, on a lock whose owner the order
+     * past it (review S1; SGF3 snapshot-no-active) -- unless the apply
+     * waits, past {@link #PUBLISH_GRACE_MS} at the frontier, on a lock
+     * whose owner the order
      * holds: the system's own locks it takes (Solr's collection refresh
      * lock, the reader's update lock) may be held by a thread waiting for
      * its turn behind this slot (a forced refresh's READ behind the WRITE
@@ -576,10 +578,10 @@ public final class ScheduleLog {
             new HashMap<Integer, Publication>();
 
     /**
-     * The publisher on this thread begins the apply of {@code site}'s
-     * publication on {@code node}, its turn due: the in-flight publication
-     * whose turn {@link #publicationInForce} takes, or null where no slot
-     * holds it.
+     * This thread begins the apply of {@code site}'s publication on {@code
+     * node}, its turn due ({@code Confirmation#inForce}): the in-flight
+     * publication whose turn {@link #publicationInForce} takes, or null
+     * where no slot holds it.
      */
     public static Publication publicationBegins(String node, String site) {
         if (!RecordingWindow.opened()) return null;
@@ -618,8 +620,9 @@ public final class ScheduleLog {
 
     /**
      * The watchdog's first look ({@link #watchdogLocked}): a PUBLISH's apply
-     * in flight at the frontier.  Its publisher is an engine thread, whose
-     * CPU no look counts, so it is looked at here: computing, it holds the
+     * in flight at the frontier.  The thread applying it -- its node's
+     * publisher, an engine thread whose CPU no look counts, or the
+     * notification's own -- is looked at here: computing, it holds the
      * order as any owner of the frontier at work does (false: nothing else
      * is done), up to {@link #CEILING} timeouts.  Waiting past {@link
      * #PUBLISH_GRACE_MS} -- under half its time on CPU or in the collectors

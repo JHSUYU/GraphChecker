@@ -933,12 +933,16 @@ public final class MessageDoors {
      * it, and a deferred one holds every later one of the view behind it
      * ({@code Confirmation#publishing}): the thread goes on, the node's
      * readers keep the version they had, and the publications apply later
-     * in the order they came.  A synchronous publication -- a forced
-     * refresh, a fetch on the reader's own thread, the node's own write --
-     * is never deferred, and supersedes the deferred removals and what came
+     * in the order they came.  A notification's publication with a PUBLISH
+     * turn that nothing defers is put in force here, on this thread, its
+     * turn settled once {@code apply} returns ({@code Confirmation#inForce}).
+     * A synchronous publication -- a forced refresh, a fetch on the reader's
+     * own thread, the node's own write -- is never deferred, the caller
+     * publishes it, and it supersedes the deferred removals and what came
      * before them ({@code Confirmation#published}).
      *
-     * @return whether it was deferred: the caller then publishes nothing
+     * @return whether the door put it in force (now, or later on the node's
+     *         publisher): the caller then publishes nothing
      */
     public static boolean publishing(String transport, String path,
                                      long version, Runnable apply) {
@@ -946,14 +950,14 @@ public final class MessageDoors {
         String why = REFRESHING.get() > 0
                 ? "inside a refresh the system asked for"
                 : "on a thread delivering no store notification";
-        return guarded("publishing", path, Boolean.FALSE, () -> {
+        Runnable inForce = guarded("publishing", path, null, () -> {
             // A notification's publication takes a PUBLISH turn, recorded
             // and held whether or not a pairing holds the view; one at once
             // settles what a hold deferred, and the node's older turns of
             // the view where an order holds them (Confirmation#published).
             if (!delivering && !Confirmation.holdsViews()
                     && !ScheduleLog.enforcing()) {
-                return false;
+                return null;
             }
             boolean paused = pause();
             try {
@@ -968,7 +972,7 @@ public final class MessageDoors {
                     Confirmation.published(view, version, at, why, decoder,
                             version < 0L ? null
                                     : publishedSite(transport, life, version));
-                    return false;
+                    return null;
                 }
                 return Confirmation.publishing(view, version, at, decoder,
                         CausynthTraceRecorder.captureScope(), apply,
@@ -977,6 +981,22 @@ public final class MessageDoors {
                 resume(paused);
             }
         });
+        if (inForce == null) return false;
+        // Outside the pause and the guard: the system's own apply, traced as
+        // its code, its throw the caller's.  Solr's (ZkStateReader
+        // #updateWatchedCollection's) publishes and reconstructs, so the
+        // caller's constructState after it (StateWatcher#refreshAndWatch)
+        // runs twice -- an idempotent rebuild and a same-state watcher
+        // notification, as Solr itself issues one for an added watcher, and
+        // as a deferred publication's caller already did.  It takes the
+        // collection's refresh lock, which the callback holds here, then the
+        // update lock: the order stock refreshAndWatchChildren takes them
+        // (one nested in the other); no thread takes the refresh lock under
+        // the update lock, since a synchronous publication, whose caller may
+        // hold the update lock (forceUpdateCollection), is published by its
+        // caller.
+        inForce.run();
+        return true;
     }
 
     /** A view's PUBLISH site at {@code version}: the store location of

@@ -580,9 +580,8 @@ public class ScheduleLogTest {
         List<String> applied = Collections.synchronizedList(
                 new ArrayList<String>());
         long started = System.nanoTime();
-        assertTrue("handed to the node's publisher", Confirmation.publishing(
-                view, 8L, null, viewNode, null, () -> applied.add("v8"),
-                site));
+        assertTrue("handed to the node's publisher", door(view, 8L,
+                viewNode, () -> applied.add("v8"), site));
         assertTrue("the callback goes on at once", TimeUnit.NANOSECONDS
                 .toMillis(System.nanoTime() - started) < 200L);
         boolean[] sawApplied = new boolean[1];
@@ -611,19 +610,98 @@ public class ScheduleLogTest {
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains(" 0 given up"));
 
-        // Recorded where no order holds: published at once, the event
-        // written at the node's view stance.
+        // Recorded where no order holds: put in force by the door at once,
+        // the event written at the node's view stance once it is in force --
+        // after what its apply made, as a replay then takes it.
         restart();
         Confirmation.resetForTests();
         String next = ScheduleEvent.published("SOLR_ZK", path, 9L);
-        assertFalse("no order: published at once", Confirmation.publishing(
-                view, 9L, null, viewNode, null, () -> applied.add("v9"),
+        assertFalse("no order: in force at once", door(view, 9L, viewNode,
+                () -> ScheduleLog.observe(ScheduleEvent.Kind.SEND, "inside"),
                 next));
         List<ScheduleEvent> recorded = events();
-        assertEquals(1, recorded.size());
-        assertEquals(ScheduleEvent.Kind.PUBLISH, recorded.get(0).kind());
-        assertEquals(viewNode + "|VIEW", recorded.get(0).context());
-        assertEquals(next, recorded.get(0).site());
+        assertEquals(Arrays.asList("inside", next), sites());
+        assertEquals(ScheduleEvent.Kind.PUBLISH, recorded.get(1).kind());
+        assertEquals(viewNode + "|VIEW", recorded.get(1).context());
+    }
+
+    /**
+     * A DUE PUBLICATION IS PUT IN FORCE BY ITS DOOR, ITS TURN TAKEN AFTER
+     * (SGF3 snapshot-no-active: node0's v8 turn was taken at the callback's
+     * door, and the Overseer's task read the cluster state before the
+     * callback's constructState): what the order lets go after the turn
+     * sees the publication.  An apply on the notification's own thread that
+     * waits on a lock owned by a thread waiting for its turn behind it has
+     * its turn taken for it a grace in (review R2), as a publisher's does.
+     */
+    @Test(timeout = 30000L)
+    public void aDuePublicationsTurnIsTakenOnceItIsInForce()
+            throws Exception {
+        String viewNode = "auto0/node0#epoch0";
+        LocationId view = view(viewNode, "/c.json");
+        String v8 = ScheduleEvent.published("SOLR_ZK", "/c.json", 8L);
+        List<ScheduleEvent> order = Arrays.asList(publish(viewNode, v8),
+                event(ScheduleEvent.Kind.SEND, "after"));
+        List<String> applied = Collections.synchronizedList(
+                new ArrayList<String>());
+
+        Confirmation.resetForTests();
+        enforce(order, Collections.<ScheduleEvent>emptyList());
+        boolean[] sawApplied = new boolean[1];
+        Thread after = new Thread(() -> {
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            sawApplied[0] = applied.contains("v8");
+        });
+        after.start();
+        Thread.sleep(100L);
+        assertFalse("due at the door: put in force there", door(view, 8L,
+                viewNode, () -> {
+                    try {
+                        Thread.sleep(300L);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    applied.add("v8");
+                }, v8));
+        assertEquals("applied on the notification's thread",
+                Arrays.asList("v8"), applied);
+        after.join(5000L);
+        assertFalse(after.isAlive());
+        assertTrue("the successor is let go only once v8 is in force",
+                sawApplied[0]);
+        assertEquals(Arrays.asList(v8, "after"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+
+        restart();
+        Confirmation.resetForTests();
+        applied.clear();
+        enforce(order, Collections.<ScheduleEvent>emptyList());
+        Object lock = new Object();
+        CountDownLatch holding = new CountDownLatch(1);
+        Thread refresh = new Thread(() -> {
+            synchronized (lock) {
+                holding.countDown();
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
+            }
+        });
+        refresh.start();
+        holding.await();
+        long started = System.nanoTime();
+        assertFalse(door(view, 8L, viewNode, () -> {
+            synchronized (lock) {
+                applied.add("v8");
+            }
+        }, v8));
+        assertTrue("a grace in, not the order's timeout", TimeUnit.NANOSECONDS
+                .toMillis(System.nanoTime() - started) < 5000L);
+        refresh.join(10000L);
+        assertFalse(refresh.isAlive());
+        assertEquals(Arrays.asList("v8"), applied);
+        assertEquals("one PUBLISH, written when its turn was taken for it",
+                Arrays.asList(v8, "after"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
     }
 
     /**
@@ -645,10 +723,10 @@ public class ScheduleLogTest {
                 Collections.<ScheduleEvent>emptyList());
         List<String> applied = Collections.synchronizedList(
                 new ArrayList<String>());
-        assertTrue(Confirmation.publishing(view(viewNode, "/x.json"), 8L,
-                null, viewNode, null, () -> applied.add("x"), x));
-        assertTrue(Confirmation.publishing(view(viewNode, "/y.json"), 3L,
-                null, viewNode, null, () -> applied.add("y"), y));
+        assertTrue(door(view(viewNode, "/x.json"), 8L, viewNode,
+                () -> applied.add("x"), x));
+        assertTrue(door(view(viewNode, "/y.json"), 3L, viewNode,
+                () -> applied.add("y"), y));
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
         awaitSize(applied, 2);
         assertEquals(Arrays.asList("y", "x"), applied);
@@ -686,8 +764,7 @@ public class ScheduleLogTest {
                 event(ScheduleEvent.Kind.SEND, "after")),
                 Collections.<ScheduleEvent>emptyList());
         assertFalse("v8 holds no slot: in force at once",
-                Confirmation.publishing(view, 8L, null, viewNode, null,
-                        () -> { }, v8));
+                door(view, 8L, viewNode, () -> { }, v8));
         assertNoStall(() -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
                 "after"));
         assertTrue(ScheduleLog.progress(),
@@ -701,8 +778,7 @@ public class ScheduleLogTest {
                 publish(viewNode, v9), event(ScheduleEvent.Kind.SEND,
                         "after")), Collections.<ScheduleEvent>emptyList());
         assertTrue("v9's turn is not due: handed to the publisher",
-                Confirmation.publishing(view, 9L, null, viewNode, null,
-                        () -> applied.add("v9"), v9));
+                door(view, 9L, viewNode, () -> applied.add("v9"), v9));
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
         assertNoStall(() -> ScheduleLog.observe(ScheduleEvent.Kind.SEND,
                 "mid"));
@@ -734,10 +810,9 @@ public class ScheduleLogTest {
         enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "before"),
                 publish(viewNode, v8), publish(viewNode, v9)),
                 Collections.<ScheduleEvent>emptyList());
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> applied.add("v8"), v8));
-        assertTrue("behind v8", Confirmation.publishing(view, 9L, null,
-                viewNode, null, () -> applied.add("v9"), v9));
+        assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
+        assertTrue("behind v8", door(view, 9L, viewNode,
+                () -> applied.add("v9"), v9));
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
         awaitSize(applied, 2);
         assertEquals(Arrays.asList("v8", "v9"), applied);
@@ -768,8 +843,7 @@ public class ScheduleLogTest {
         enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "never"),
                 publish(viewNode, v8)),
                 Collections.<ScheduleEvent>emptyList());
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> applied.add("v8"), v8));
+        assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
         awaitSize(applied, 1, 10000L);
         assertEquals("given way, alone", Arrays.asList("v8"), applied);
         assertEquals(Arrays.asList(v8), sites());
@@ -782,8 +856,7 @@ public class ScheduleLogTest {
         enforce(Arrays.asList(event(ScheduleEvent.Kind.SEND, "never"),
                 publish(viewNode, v8), event(ScheduleEvent.Kind.SEND,
                         "after")), Collections.<ScheduleEvent>emptyList());
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> applied.add("v8"), v8));
+        assertTrue(door(view, 8L, viewNode, () -> applied.add("v8"), v8));
         Thread after = new Thread(() -> ScheduleLog.observe(
                 ScheduleEvent.Kind.SEND, "after"));
         after.start();
@@ -833,12 +906,11 @@ public class ScheduleLogTest {
         });
         refresh.start();
         holding.await();
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> {
-                    synchronized (lock) {
-                        applied.add("v8");
-                    }
-                }, v8));
+        assertTrue(door(view, 8L, viewNode, () -> {
+            synchronized (lock) {
+                applied.add("v8");
+            }
+        }, v8));
         long started = System.nanoTime();
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
         refresh.join(10000L);
@@ -856,14 +928,13 @@ public class ScheduleLogTest {
         Confirmation.resetForTests();
         applied.clear();
         enforce(order, Collections.<ScheduleEvent>emptyList());
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> {
-                    long until = System.nanoTime()
-                            + TimeUnit.MILLISECONDS.toNanos(1200L);
-                    long spin = 0L;
-                    while (System.nanoTime() < until) spin++;
-                    applied.add("v8 " + (spin >= 0L));
-                }, v8));
+        assertTrue(door(view, 8L, viewNode, () -> {
+            long until = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(1200L);
+            long spin = 0L;
+            while (System.nanoTime() < until) spin++;
+            applied.add("v8 " + (spin >= 0L));
+        }, v8));
         boolean[] sawApplied = new boolean[1];
         Thread after = new Thread(() -> {
             ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
@@ -895,12 +966,11 @@ public class ScheduleLogTest {
         });
         free.start();
         held.await();
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> {
-                    synchronized (busy) {
-                        applied.add("v8");
-                    }
-                }, v8));
+        assertTrue(door(view, 8L, viewNode, () -> {
+            synchronized (busy) {
+                applied.add("v8");
+            }
+        }, v8));
         sawApplied[0] = false;
         Thread next = new Thread(() -> {
             ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
@@ -931,12 +1001,11 @@ public class ScheduleLogTest {
         });
         asking.start();
         entering.await();
-        assertTrue(Confirmation.publishing(view, 8L, null, viewNode, null,
-                () -> {
-                    synchronized (busy) {
-                        applied.add("v8");
-                    }
-                }, v8));
+        assertTrue(door(view, 8L, viewNode, () -> {
+            synchronized (busy) {
+                applied.add("v8");
+            }
+        }, v8));
         sawApplied[0] = false;
         Thread last = new Thread(() -> {
             ScheduleLog.observe(ScheduleEvent.Kind.SEND, "after");
@@ -973,8 +1042,8 @@ public class ScheduleLogTest {
                         "after")), Collections.<ScheduleEvent>emptyList());
         List<String> applied = Collections.synchronizedList(
                 new ArrayList<String>());
-        assertTrue(Confirmation.publishing(view(viewNode, "/c.json"), 8L,
-                null, viewNode, null, () -> applied.add("v8"), v8));
+        assertTrue(door(view(viewNode, "/c.json"), 8L, viewNode,
+                () -> applied.add("v8"), v8));
         // The system's own removal at once drops what was deferred.
         Confirmation.published(view(viewNode, "/c.json"), -1L, null,
                 "a removal at once", viewNode, null);
@@ -1013,18 +1082,39 @@ public class ScheduleLogTest {
         List<String> applied = Collections.synchronizedList(
                 new ArrayList<String>());
         assertFalse("the paired version: in force at once",
-                Confirmation.publishing(view, 7L, null, viewNode, null,
-                        () -> applied.add("v7"), v7));
-        assertTrue("past it: held", Confirmation.publishing(view, 8L, null,
-                viewNode, null, () -> applied.add("v8"), v8));
+                door(view, 7L, viewNode, () -> applied.add("v7"), v7));
+        assertEquals("applied by its door, its turn given up after it",
+                Arrays.asList("v7"), applied);
+        assertTrue("past it: held", door(view, 8L, viewNode,
+                () -> applied.add("v8"), v8));
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "before");
         Thread.sleep(200L);
-        assertTrue("the hold stands: " + applied, applied.isEmpty());
+        assertEquals("the hold stands", Arrays.asList("v7"), applied);
         Confirmation.exited(until);
-        awaitSize(applied, 1);
-        assertEquals(Arrays.asList("v8"), applied);
+        awaitSize(applied, 2);
+        assertEquals(Arrays.asList("v7", "v8"), applied);
         assertTrue(ScheduleLog.progress(),
                 ScheduleLog.progress().contains(" 1 given up"));
+    }
+
+    /**
+     * A notification's publication at its node's door, as {@code
+     * MessageDoors#publishing} runs it: the door's step ({@code
+     * Confirmation#publishing}) once its pause ends, or the caller's own
+     * publish where the door returns none.
+     *
+     * @return whether it was deferred to the node's publisher
+     */
+    private static boolean door(LocationId view, long version, String node,
+                                Runnable apply, String turn) {
+        Runnable step = Confirmation.publishing(view, version, null, node,
+                null, apply, turn);
+        if (step == null) {
+            apply.run();
+            return false;
+        }
+        step.run();
+        return step == Confirmation.PUBLISHER;
     }
 
     private static ScheduleEvent publish(String node, String site) {
