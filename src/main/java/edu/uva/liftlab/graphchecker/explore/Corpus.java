@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.RootCategory;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.RowOrder;
 import edu.uva.liftlab.graphchecker.contract.RunSpellings;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import com.google.gson.JsonElement;
@@ -1923,6 +1924,45 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> writesOn(String sessionId,
                                    OccurrenceAddress occurrence) {
         return writesOn.of(occurrence.id(), sessionId);
+    }
+
+    /**
+     * Whether {@code read} is {@code occurrence}'s ROLE PREFIX in {@code
+     * sessionId}: role work of its node under its causal context before it
+     * opened -- before its first read or write on the session's one order
+     * ({@link RowOrder}, seq then tie), any read where it states none.  A
+     * routed alias captures its view in the request's role work and writes
+     * it in a store door's region, often with no VM event between.  The one
+     * rule a pairing flip is offered by ({@code PairingFlip#reads}) and a
+     * world pairing's read lies on the fatal path by ({@code
+     * compose.Composer.Composition#onFatalPath}).
+     */
+    public boolean rolePrefix(String sessionId, ReadRow read,
+                              OccurrenceAddress occurrence) {
+        OccurrenceAddress at = read.endpoint().occurrence();
+        if (!at.role() || at.equals(occurrence)
+                || !at.node().equals(occurrence.node())
+                || !at.context().equals(occurrence.context())) {
+            return false;
+        }
+        long openedSeq = Long.MAX_VALUE;
+        int openedTie = 0;
+        for (ReadRow row : readsOn(sessionId, occurrence)) {
+            if (RowOrder.beforeCut(row.seq(), row.tie(), openedSeq,
+                    openedTie)) {
+                openedSeq = row.seq();
+                openedTie = row.tie();
+            }
+        }
+        for (WriteRow row : writesOn(sessionId, occurrence)) {
+            if (RowOrder.beforeCut(row.seq(), row.tie(), openedSeq,
+                    openedTie)) {
+                openedSeq = row.seq();
+                openedTie = row.tie();
+            }
+        }
+        return RowOrder.beforeCut(read.seq(), read.tie(), openedSeq,
+                openedTie);
     }
 
     // ---- The causal graph (GreyGraph §3.1) ----
