@@ -867,7 +867,8 @@ order:
   a task its executor handed to a worker of its own included (`ActivationRow#claimKind`
   `HANDOFF_TASK`: a `ThreadPoolExecutor` on a `SynchronousQueue`, run on that worker, Solr's
   Overseer command Runners), except a queued task, a queue item, a hand-off task that took work
-  another thread started on its thread (`Identity#servingTasks`, stated in the session's manifest at
+  another thread started on its thread -- any queue item no named start filed among it
+  (`Identity#servingTasks`, stated in the session's manifest at
   its close: a ConcurrentUpdate client's Runner polling its update queue, the take in a callee
   that returns) and claimed work of no stated kind (§4's `threadKey`), which held there would hold
   every item queued behind it: it is held at the send that started it, its anchor's producer

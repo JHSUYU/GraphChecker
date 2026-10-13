@@ -209,20 +209,9 @@ public final class Identity {
         private void openStart(Start start, boolean own, boolean ranHere,
                                ClaimKind kind) {
             boolean consumed = !own && !ranHere;
-            if (consumed) {
-                // Work another thread started, taken inside a hand-off task:
-                // that task serves a queue (a ConcurrentUpdate client's
-                // Runner polling its updates), and holding it holds what is
-                // queued behind it (#servingTasks).  For the task's life: a
-                // take in a callee that returned has served all the same.
-                // Before the replacement below: a task whose run() entered
-                // no frame (a lineage-only class) looks finished to it.
-                for (Claim standing : starts) {
-                    if (standing.kind == ClaimKind.HANDOFF_TASK) {
-                        SERVING.add(standing.start);
-                    }
-                }
-            }
+            // Before the replacement below: a task whose run() entered no
+            // frame (a lineage-only class) looks finished to it.
+            if (consumed) serves();
             // A claim takes the place of the finished one made in the same
             // work before it (a consumer loop's previous item, and the scope
             // that item carried); any other stands under it: the work that
@@ -288,6 +277,21 @@ public final class Identity {
         /** The depth of the innermost claimed start frame, or -1. */
         private int innermostStart() {
             return starts.isEmpty() ? -1 : starts.peek().depth;
+        }
+
+        /**
+         * Work another thread started is taken here: every hand-off task
+         * standing on this thread serves a queue (a ConcurrentUpdate
+         * client's Runner polling its updates), and holding it holds what is
+         * queued behind it ({@link Identity#servingTasks}).  For the task's
+         * life: a take in a callee that returned has served all the same.
+         */
+        private void serves() {
+            for (Claim standing : starts) {
+                if (standing.kind == ClaimKind.HANDOFF_TASK) {
+                    SERVING.add(standing.start);
+                }
+            }
         }
 
         /** Claims an UNNAMED start: the thread's own, or a task's here. */
@@ -757,8 +761,12 @@ public final class Identity {
     }
 
     private static void adopt(State state, Object carrier, boolean item) {
-        if (carrier == null || STARTS.isEmpty()) return;
-        Start start = STARTS.remove(carrier);
+        Start start = carrier == null || STARTS.isEmpty() ? null
+                : STARTS.remove(carrier);
+        // An item no named start filed -- offered under no hop (UNNAMED), or
+        // put by code no weave reaches -- is work of a thread this one cannot
+        // tell from another's: taking it, a hand-off task serves a queue.
+        if (item && (start == null || start == Start.UNNAMED)) state.serves();
         if (start == null) return;
         // The thread a start created claims it itself, standing on the
         // frames it inherited; a task is claimed on a pool's thread.
@@ -1116,7 +1124,7 @@ public final class Identity {
         state.work = carrier;
         // A task claimed here takes the place of a finished unnamed one.
         state.endUnnamedWork();
-        if (!STARTS.isEmpty()) adopt(state, carrier, item);
+        adopt(state, carrier, item);
     }
 
     /**

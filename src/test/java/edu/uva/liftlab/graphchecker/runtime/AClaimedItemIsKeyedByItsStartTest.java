@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow.ClaimKind;
 import java.util.Collections;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -145,8 +147,9 @@ public class AClaimedItemIsKeyedByItsStartTest {
      * ConcurrentUpdate client's Runner polling its update queue, the take
      * inside a callee that returns -- serves a queue: its rows still state
      * HANDOFF_TASK, written at entry, and the run states it at its close
-     * (Identity#servingTasks), for its whole life.  A task its starter runs
-     * itself takes nothing another thread started.
+     * (Identity#servingTasks), for its whole life.  So does one whose item
+     * no named start filed: offered under no hop (UNNAMED), or put by code
+     * no weave reaches.  A hand-off task that takes nothing serves none.
      */
     @Test
     public void aHandOffTaskThatTakesItemsServesAQueue() throws Exception {
@@ -155,44 +158,58 @@ public class AClaimedItemIsKeyedByItsStartTest {
         ThreadPoolExecutor handOff = new ThreadPoolExecutor(0, 4, 1L,
                 TimeUnit.SECONDS, new SynchronousQueue<Runnable>());
         try {
-            Object runner = new Object();
-            Object quiet = new Object();
-            Object[] updates = {new Object(), new Object()};
-            long request = RuntimeTraceContext.beginRequest(node, "update");
-            Identity.startWork(ADD, runner, handOff);
-            Identity.startWork(ADD, quiet, handOff);
-            for (Object update : updates) {
-                Identity.startWork(ADD, update, new LinkedBlockingQueue<>());
-            }
-            RuntimeTraceContext.endRequest(request);
-            final String[] keys = new String[2];
-            final ClaimKind[] kinds = new ClaimKind[2];
-            Thread worker = new Thread(() -> {
-                long claimed = Identity.claimStart(runner);
-                keys[0] = Identity.claimedStart();
+            Set<String> serving = new TreeSet<String>();
+            // how its items were offered: a named start, under no hop, never
+            // filed; or no item at all
+            for (String offered : new String[]{"named", "unnamed", "unfiled",
+                    "none"}) {
+                Object runner = new Object();
+                Object[] updates = {new Object(), new Object()};
+                long request = RuntimeTraceContext.beginRequest(node,
+                        "update");
+                Identity.startWork(ADD, runner, handOff);
                 for (Object update : updates) {
-                    // CustomBlockingQueue.poll: the take, in a callee
-                    long poll = Identity.enterFrame(
-                            "<a.Queue: java.lang.Object poll()>#u1", null);
-                    Identity.claimItem(update);
-                    Identity.exitFrame(poll);
+                    if ("named".equals(offered)) {
+                        Identity.startWork(ADD, update,
+                                new LinkedBlockingQueue<>());
+                    }
                 }
-                kinds[0] = Identity.claimKind();
-                Identity.endClaim(claimed);
-                // A hand-off task of its own that takes nothing.
-                claimed = Identity.claimStart(quiet);
-                keys[1] = Identity.claimedStart();
-                kinds[1] = Identity.claimKind();
-                Identity.endClaim(claimed);
-            });
-            worker.start();
-            worker.join(5000L);
-            assertEquals("the row's kind is the entry's",
-                    ClaimKind.HANDOFF_TASK, kinds[0]);
-            assertEquals(ClaimKind.HANDOFF_TASK, kinds[1]);
-            assertNotNull(keys[0]);
-            assertEquals("the runner, not the quiet task",
-                    Collections.singleton(keys[0]), Identity.servingTasks());
+                RuntimeTraceContext.endRequest(request);
+                if ("unnamed".equals(offered)) {
+                    for (Object update : updates) {
+                        Identity.startWork(ADD, update,
+                                new LinkedBlockingQueue<>());
+                    }
+                }
+                final String[] key = new String[2];
+                final ClaimKind[] kind = new ClaimKind[1];
+                Thread worker = new Thread(() -> {
+                    long claimed = Identity.claimStart(runner);
+                    key[0] = Identity.claimedStart();
+                    for (Object update : "none".equals(offered)
+                            ? new Object[0] : updates) {
+                        // CustomBlockingQueue.poll: the take, in a callee
+                        long poll = Identity.enterFrame(
+                                "<a.Queue: java.lang.Object poll()>#u1",
+                                null);
+                        Identity.claimItem(update);
+                        key[1] = Identity.claimedStart();
+                        Identity.exitFrame(poll);
+                    }
+                    kind[0] = Identity.claimKind();
+                    Identity.endClaim(claimed);
+                });
+                worker.start();
+                worker.join(5000L);
+                assertNotNull(offered, key[0]);
+                // Only a named start opens the item's claim.
+                assertEquals(offered, "named".equals(offered),
+                        key[1] != null && !key[1].equals(key[0]));
+                assertEquals(offered + ": the row's kind is the entry's",
+                        ClaimKind.HANDOFF_TASK, kind[0]);
+                if (!"none".equals(offered)) serving.add(key[0]);
+                assertEquals(offered, serving, Identity.servingTasks());
+            }
         } finally {
             handOff.shutdownNow();
         }
