@@ -1425,6 +1425,12 @@ public final class SmtLowering {
 
     private Term symbolTerm(JsonObject expression, Sort expected) {
         String raw = primitiveString(expression, "_exp");
+        if (viewBranch == null) {
+            viewDirect.add(raw);
+        } else {
+            viewGuards.computeIfAbsent(raw,
+                    unused -> new LinkedHashSet<String>()).add(viewBranch);
+        }
         // "N" is Java null (VmExpressionIr.SYMBOLIC_NULL), not a name: as
         // an opaque identity "x != null" would say nothing about nullness.
         if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
@@ -1475,6 +1481,46 @@ public final class SmtLowering {
     /** The content leaves being lowered through their view, so each of a
      *  view's cases is its own leaf. */
     private final Set<String> viewing = new HashSet<String>();
+    /**
+     * The view case being lowered ({@link #throughView}): the version
+     * choice {@code (= V v)} under which the leaf now lowered is the
+     * view's; null outside any other version's case.
+     */
+    private String viewBranch;
+    /** Symbol -> the version choices it was lowered under, this path. */
+    private final Map<String, Set<String>> viewGuards =
+            new LinkedHashMap<String, Set<String>>();
+    /** The symbols this path lowered outside any other version's case. */
+    private final Set<String> viewDirect = new HashSet<String>();
+    /** Version choice -> how a row names it. */
+    private final Map<String, String> viewGuardNames =
+            new LinkedHashMap<String, String>();
+
+    /**
+     * THE CONTENT OF A VERSION THE VIEW MAY HOLD RESTS ON THAT CHOICE
+     * (solr-18413 SG3G/SG3H): each symbol this path lowered only inside
+     * {@link #throughView}'s case of another version than the one its read
+     * observed, with the version choices it was lowered under.  Its
+     * delivery binds the leaf only where the view holds that version, so
+     * its message's family rests on that choice ({@code
+     * ComposedFamilies#closeViewVersions}), never on the path alone.
+     */
+    public Map<String, Set<String>> viewGuarded() {
+        Map<String, Set<String>> guarded =
+                new LinkedHashMap<String, Set<String>>();
+        for (Map.Entry<String, Set<String>> symbol : viewGuards.entrySet()) {
+            if (!viewDirect.contains(symbol.getKey())) {
+                guarded.put(symbol.getKey(), symbol.getValue());
+            }
+        }
+        return guarded;
+    }
+
+    /** How a row names one version choice ({@link #viewGuarded}). */
+    public String viewGuardName(String guard) {
+        String named = viewGuardNames.get(guard);
+        return named == null ? guard : named;
+    }
 
     /**
      * A STORE CONTENT'S LEAF THROUGH ITS NODE'S VIEW (SYMBOL-SCOPE §6.4,
@@ -1506,21 +1552,41 @@ public final class SmtLowering {
             }
             if (view == null) return null;
             Term own = symbolTerm(symbolNode(raw, javaType), expected);
-            Map<String, Term> answers = new LinkedHashMap<String, Term>();
-            answers.put(Long.toString(leaf.version), own);
+            Map<String, String> others = new LinkedHashMap<String, String>();
             for (WriteRow write : join.writes(leaf.viewKey)) {
                 String version = Long.toString(write.version());
-                String other = answers.containsKey(version) ? null
+                String other = write.version() == leaf.version
+                        || others.containsKey(version) ? null
                         : join.viewLeafAt(leaf.viewKey, write.version(),
                         leaf.port);
-                if (other == null) continue;
-                Term answer = symbolTerm(symbolNode(other, javaType),
-                        expected);
+                if (other != null) others.put(version, other);
+            }
+            if (others.isEmpty()) return own;
+            Term owner = symbolTerm(symbolNode(view.symbol(), "J"),
+                    Sort.INT);
+            Map<String, Term> answers = new LinkedHashMap<String, Term>();
+            answers.put(Long.toString(leaf.version), own);
+            for (Map.Entry<String, String> case_ : others.entrySet()) {
+                String version = case_.getKey();
+                String other = case_.getValue();
+                // Another version's leaf is the view's only where the view
+                // holds that version (#viewGuarded).
+                String outer = viewBranch;
+                String choice = "(= " + owner.text + " " + version + ")";
+                viewBranch = outer == null ? choice
+                        : "(and " + outer + " " + choice + ")";
+                viewGuardNames.putIfAbsent(viewBranch, "version " + version
+                        + " of " + leaf.viewKey + " (" + choice + ")");
+                Term answer;
+                try {
+                    answer = symbolTerm(symbolNode(other, javaType),
+                            expected);
+                } finally {
+                    viewBranch = outer;
+                }
                 if (answer.sort == own.sort) answers.put(version, answer);
             }
             if (answers.size() < 2) return own;
-            Term owner = symbolTerm(symbolNode(view.symbol(), "J"),
-                    Sort.INT);
             String value = perCandidate(owner.text, answers);
             String nullness = "false";
             for (Term answer : answers.values()) {
@@ -2450,6 +2516,9 @@ public final class SmtLowering {
         movable.clear();
         nestedSelectors.clear();
         memo = new HashMap<MemoKey, Attempt<?>>();
+        viewGuards.clear();
+        viewDirect.clear();
+        viewGuardNames.clear();
     }
 
     /**
@@ -3960,11 +4029,20 @@ public final class SmtLowering {
          * daemon_tick_bound; cone.json's boundedByTick).
          */
         public static final String BOUNDED = "BOUNDED";
+        /**
+         * A store content leaf of a version of its node's view the path's
+         * read is not paired to -- no session can send all of that
+         * version's content the path names ({@code
+         * ComposedFamilies#closeViewVersions}) --: the read's case of it is
+         * dead, the path holding the version choice false, and no open link
+         * (cone.json's unpairedVersion).
+         */
+        public static final String UNPAIRED = "UNPAIRED";
         /** Why a HELD value is held. */
         public static final String PRODUCER_UNSTATED = "producer unstated";
 
         /** {@link #FREE}, {@link #HELD}, {@link #CONSTANT}, {@link
-         *  #EXPORTED} or {@link #BOUNDED}. */
+         *  #EXPORTED}, {@link #BOUNDED} or {@link #UNPAIRED}. */
         public final String kind;
         public final String subject;
         /** A HELD value's recorded value; "" for a FREE one. */
@@ -4020,7 +4098,15 @@ public final class SmtLowering {
      *  ({@link #settledByRefusedProducer}; {@code Cone}, cone.py). */
     public static boolean settled(String kind) {
         return Unbound.CONSTANT.equals(kind) || Unbound.EXPORTED.equals(kind)
-                || Unbound.BOUNDED.equals(kind);
+                || Unbound.BOUNDED.equals(kind)
+                || Unbound.UNPAIRED.equals(kind);
+    }
+
+    /** A leaf of a version the path's read is not paired to ({@link
+     *  Unbound#UNPAIRED}), the path's own, once its lowering ended. */
+    public void unpaired(String symbol, String reason) {
+        root.unbound.add(new Unbound(Unbound.UNPAIRED, symbol, "", reason,
+                Collections.<String>emptyList(), ""));
     }
 
     /**

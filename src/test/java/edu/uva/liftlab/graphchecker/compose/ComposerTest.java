@@ -1603,6 +1603,112 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * WHAT THE VIEW HOLDS AT ANOTHER VERSION RESTS ON THAT CHOICE
+     * (ComposedFamilies#closeViewVersions; solr-18413 SG3G/SG3H: the path
+     * read node1's view at v9, and the decode of v10 after its fatal
+     * decision, sendable only by the anchor's work past it, dropped the
+     * path).  The anchor reads its node's view at version 1 and its fatal
+     * names the content leaf h1 of that decode; a later decode of version 2
+     * (and 3) stands as another version the view may hold:
+     * <ul>
+     *   <li>SENT: version 2's content has a sender: its message closes
+     *       under {@code (= V_r 2)}, never under the path alone;</li>
+     *   <li>UNSENDABLE: version 2's only sender is the anchor's work past
+     *       its fatal decision: the path stands, holding {@code (not (= V_r
+     *       2))}, named;</li>
+     *   <li>TWO: versions 2 and 3 both have senders: both stay alternatives,
+     *       each under its own choice.</li>
+     * </ul>
+     */
+    @Test
+    public void anotherVersionsContentRestsOnTheViewsChoiceOfIt()
+            throws Exception {
+        OccurrenceAddress target = occurrence("case/dn0", "REGION.target",
+                CausalContext.of(Role.of("SCANNER_TICK"), "", 1),
+                frame("Scanner#run#3", 0));
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@" + target.node().render(),
+                "/collections/c/state.json");
+        String port = "SOLR_ZK#CONTENT:|collections|c|state.json#|c|state";
+        for (String row : new String[] {"SENT", "UNSENDABLE", "TWO"}) {
+            Path iteration = folder.newFolder("versions-" + row).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = target;
+            session.activation(target);
+            session.activation(PRODUCER);
+            session.marker("true");
+            session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+            int versions = "TWO".equals(row) ? 3 : 2;
+            OccurrenceAddress[] decoders = new OccurrenceAddress[versions + 1];
+            for (int version = 1; version <= versions; version++) {
+                decoders[version] = occurrence("case/dn0", "REGION.watch",
+                        CausalContext.of(Role.of("WATCHER"), "", version),
+                        frame("Watcher#process#1", 0));
+                session.activation(decoders[version]);
+                session.expression("EXPR.view." + version,
+                        integer("J", version));
+            }
+            // Version 1: sent by the producer, decoded, read by the anchor.
+            Endpoint sent1 = Endpoint.of(PRODUCER, "PORT.state",
+                    at("export#1", 0), 0);
+            session.export(sent1, "EXPR.v1.marker", 1L, "true");
+            session.attach(Endpoint.of(decoders[1], port, at("d#1", 0), 0),
+                    "h1", "Z", "true", sent1,
+                    "/collections/c/state.json@1");
+            session.writes.add(WriteRow.of("s0", ++session.seq,
+                    Endpoint.of(decoders[1], "SOLR_ZK#DECODED:/collections/"
+                            + "c/state.json", at("d#1", 0), 0), view, 1L,
+                    "EXPR.view.1", "J"));
+            session.read(Endpoint.of(target, "guard#VIEW", at("g#1", 0), 0),
+                    view, 1L, "V_r", "J", "1");
+            session.expression("EXPR.0000000000000070", symbol("h1", "Z"));
+            session.target("EXPR.0000000000000070", false, true);
+            // Later versions, decoded after the anchor's fatal decision.
+            for (int version = 2; version <= versions; version++) {
+                boolean past = "UNSENDABLE".equals(row);
+                Endpoint sender = Endpoint.of(past ? target : PRODUCER,
+                        "PORT.state", at("export#" + version, 0), 0);
+                session.export(sender, "EXPR.v1.marker", version, "true");
+                session.attach(Endpoint.of(decoders[version], port,
+                        at("d#1", 0), 0), "h" + version, "Z", "true",
+                        sender, "/collections/c/state.json@" + version);
+                session.writes.add(WriteRow.of("s0", ++session.seq,
+                        Endpoint.of(decoders[version], "SOLR_ZK#DECODED:"
+                                + "/collections/c/state.json",
+                                at("d#1", 0), 0), view, version,
+                        "EXPR.view." + version, "J"));
+            }
+            session.write();
+
+            Composer.Composition composition = compose(iteration, target, 4,
+                    StaticScopeMap.empty());
+            String body = composition.body();
+            assertEquals(row + ": the path stands: " + composition.gaps(),
+                    1, composition.disjuncts().size());
+            assertTrue(row + ": the leaf reads through the view: " + body,
+                    body.contains("view_leaf__"));
+            boolean named = false;
+            for (GapRow gap : composition.gaps()) {
+                named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
+                        && gap.subject().startsWith("version 2 of");
+            }
+            if ("UNSENDABLE".equals(row)) {
+                assertTrue("no sender: the read is not paired to 2: "
+                        + body, body.contains("(not (= V_r 2))"));
+                assertTrue("named: " + composition.gaps(), named);
+                continue;
+            }
+            assertFalse(row + ": nothing unpaired: " + body,
+                    body.contains("(not (= V_r 2))") || named);
+            for (int version = 2; version <= versions; version++) {
+                assertTrue(row + ": version " + version + "'s message rests"
+                        + " on its choice: " + body, body.contains("(=> (= V_r "
+                        + version + ") "));
+            }
+        }
+    }
+
     @Test
     public void aNestedHandoffIsClosedTransitively() throws Exception {
         Path iteration = folder.newFolder("nested").toPath();
@@ -4303,7 +4409,9 @@ public class ComposerTest {
      * where a read of the view stands that a family may re-pair, the leaf of
      * whichever decode of the node the view holds -- h3 at version 3 --,
      * defined only where the view is one of them, lowered once as a
-     * define-fun its uses name; with no such read it is h5 alone.
+     * define-fun its uses name; with no such read it is h5 alone.  What
+     * the path lowered only in version 3's case rests on the choice of 3
+     * (its messages close under it, ComposedFamilies#closeViewVersions).
      */
     @Test
     public void aContentLeafReadsThroughItsNodesView() {
@@ -4414,6 +4522,15 @@ public class ComposerTest {
             assertFalse(text, text.contains("(ite (= V_r 5) h5 h3)"));
             assertTrue(text + declarations, (text + declarations)
                     .contains("h5"));
+            // The other version's leaf rests on that version's choice; the
+            // read's own is the path's (SmtLowering#viewGuarded).
+            assertEquals(mode != 2 ? Collections.singletonMap("h3",
+                    Collections.singleton("(= V_r 3)"))
+                    : Collections.<String, Set<String>>emptyMap(),
+                    lowering.viewGuarded());
+            lowering.path();
+            assertTrue("a path starts with none",
+                    lowering.viewGuarded().isEmpty());
         }
     }
 

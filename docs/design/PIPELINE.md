@@ -1799,6 +1799,20 @@ session can send, so its arm is refused by the rule above. Only the anchor's own
 by program order against its own decisions: no producer of another occurrence is excluded by where
 its rows stand (a writer on another thread keeps its arm whatever its seq), and a run that decided
 nothing the path decided before the delivery says nothing: the arm stays.
+WHAT THE VIEW HOLDS AT ANOTHER VERSION RESTS ON THAT CHOICE (`SmtLowering#viewGuarded`,
+`ComposedFamilies#closeViewVersions`): a content leaf read through its node's view is the leaf of
+whichever decode the view holds, `(ite (= V v) leaf_v ...)` over every version the node decoded, later
+ones included (`SmtLowering#throughView`); what the path lowered only in another version's case rests
+on that version's choice `(= V v)`, so that version's messages are closed under the choice, as a
+nested message under its arm, never under the path alone, and their arms are chosen only with it. A
+version none of whose content the path names can be sent -- no session sends its message, or one of
+its leaves no producer the corpus attests made -- is no version the read is paired to: the path holds
+`(not (= V v))`, named (`UNPRODUCIBLE_ANSWER` DIAGNOSTIC, subject `version v of <view>`), its leaves
+`UNPAIRED` in `concrete[]` (a settled kind: no open link, cone.json's `unpairedVersion`), and the path
+stands. solr-18413 SG3G/SG3H: the path read node1's view at v9; the decode of v10 after its fatal
+decision, sendable only by the seed's write after the anchor's REMOVEROUTINGRULE, forced that write's
+arm on the claim (CONFIRM refuted it), and with the path-end rule dropped the path; now the claim
+stands on the path's own arms at v9.
 Each leaf an arm binds (a declared port's delivery) is noted with the occurrence it was delivered
 into and whether its value rests on
 a clock (`ComposedFamilies.BoundLeaf`: a CLOCK root the delivered value reaches, or a nested
