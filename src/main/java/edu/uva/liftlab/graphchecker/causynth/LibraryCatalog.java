@@ -84,6 +84,14 @@ public final class LibraryCatalog {
     static final String CODEC = "CODEC";
     /** A system's own row: where its hook sits relative to a catalog door. */
     static final String HOOK = "HOOK";
+    /**
+     * A system's own row ({@code transport, path}): a node's view of the
+     * store paths {@code path} names ({@code *} one path segment) is
+     * published through {@code runtime.MessageDoors#publishing}, so a
+     * pairing's hold can defer it; a view of any other path has no such
+     * hook and no pairing of it is asked ({@link #publishedView}).
+     */
+    static final String PUBLISHED_VIEW = "PUBLISHED_VIEW";
     /** A door's {@code sites}: only the calls the root demand chose. */
     static final String DEMANDED = "DEMANDED";
     /** The timed waits' transport: a planted timeout only where the call
@@ -104,6 +112,7 @@ public final class LibraryCatalog {
         MEMBERS.put(CODEC, names("codec", "classes"));
         MEMBERS.put(HOOK, names("transport", "direction", "door", "method",
                 "before", "after"));
+        MEMBERS.put(PUBLISHED_VIEW, names("transport", "path"));
     }
 
     /** A transport or direction name. */
@@ -265,6 +274,58 @@ public final class LibraryCatalog {
         return known;
     }
 
+    /** The system file the published views were read from, and them. */
+    private static volatile Object[] publishedViews;
+
+    /**
+     * Whether a node's view of {@code path} over {@code transport} is
+     * published through the publication door, so a pairing's hold can
+     * defer it: a PUBLISHED_VIEW row of the system's doors file ({@value
+     * #SYSTEM_DOORS}) names it.  Solr publishes a collection's state.json
+     * and its aliases so; its legacy clusterstate.json and a snapshot's
+     * metadata no hook publishes.  None without a system file.
+     */
+    public static boolean publishedView(String transport, String path) {
+        String system = System.getProperty(SYSTEM_DOORS, "").trim();
+        Object[] known = publishedViews;
+        if (known == null || !system.equals(known[0])) {
+            List<String[]> views = new ArrayList<>();
+            if (!system.isEmpty()) {
+                Path file = Paths.get(system);
+                try (BufferedReader reader = Files.newBufferedReader(file,
+                        StandardCharsets.UTF_8)) {
+                    for (Map.Entry<String, JsonObject> entry : rows(reader,
+                            file.getFileName().toString()).entrySet()) {
+                        JsonObject row = entry.getValue();
+                        if (!PUBLISHED_VIEW.equals(kind(row))) continue;
+                        try {
+                            views.add(new String[] {matching(NAME, text(row,
+                                    "transport"), "transport").group(),
+                                    text(row, "path")});
+                        } catch (RuntimeException malformed) {
+                            throw refused(entry.getKey(),
+                                    malformed.getMessage(), malformed);
+                        }
+                    }
+                } catch (IOException unreadable) {
+                    throw new UncheckedIOException(unreadable);
+                }
+            }
+            known = new Object[] {system, views};
+            publishedViews = known;
+        }
+        @SuppressWarnings("unchecked")
+        List<String[]> views = (List<String[]>) known[1];
+        for (String[] view : views) {
+            if (view[0].equals(transport) && Pattern.matches(
+                    Pattern.quote(view[1]).replace("*", "\\E[^/]+\\Q"),
+                    path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The configuration getters of the libraries, in file order. */
     public static List<ConfigSource> configSources() {
         return shipped().configSources;
@@ -384,12 +445,14 @@ public final class LibraryCatalog {
         return Collections.unmodifiableList(doors);
     }
 
-    /** A system's HOOK rows; any other kind there is refused. */
+    /** A system's HOOK rows; any other kind there but its
+     *  PUBLISHED_VIEW rows is refused. */
     static List<Hook> hooks(Map<String, JsonObject> rows) {
         List<Hook> hooks = new ArrayList<>();
         for (Map.Entry<String, JsonObject> entry : rows.entrySet()) {
             try {
                 JsonObject row = entry.getValue();
+                if (PUBLISHED_VIEW.equals(kind(row))) continue;
                 if (!HOOK.equals(kind(row))) {
                     throw new IllegalArgumentException("a system states "
                             + "where its hooks are (HOOK), never a door");

@@ -120,6 +120,15 @@ public final class MessageDoors {
      */
     private static final ThreadLocal<String> NOTIFIED = new ThreadLocal<>();
     /**
+     * How many store notifications this thread is delivering ({@link
+     * #notified}), for the whole callback: a publication on it is a
+     * notification's, which a pairing's hold may defer ({@link
+     * #publishing}).  Unlike {@link #NOTIFIED}, which the callback's first
+     * read of its cause clears, it stands until the callback returns.
+     */
+    private static final ThreadLocal<Integer> DELIVERING =
+            ThreadLocal.withInitial(() -> 0);
+    /**
      * How many notifications of one kind on one node have read each version
      * ({@link #fetched}).  Two watchers of one kind on one node both parse a
      * version (Solr registers a StateWatcher per refresh): the second parse
@@ -906,30 +915,43 @@ public final class MessageDoors {
      * A node is about to PUBLISH version {@code version} of its view of
      * {@code path} -- make the decode the readers on the node see (Solr's
      * {@code ZkStateReader#updateWatchedCollection}, {@code
-     * AliasesManager#setIfNewer}) -- and {@code apply} publishes it, under
-     * the locks the system's own publication takes.  On a thread delivering
-     * a store's notification ({@link #notified}), outside a refresh the
-     * system asked for ({@link #refreshStarting}), a pairing's hold of the
-     * view may defer it ({@code Confirmation#publishing}): the thread goes
-     * on, the node's readers keep the version they had, and the publication
-     * applies later in version order.  A synchronous publication -- a
-     * forced refresh, a fetch on the reader's own thread, the node's own
-     * write -- is never deferred.
+     * StatefulCollectionWatch#refreshAndWatchChildren}, {@code
+     * AliasesManager#setIfNewer}); -1 for a removal, -2 for an update of
+     * the same version (per-replica states) -- and {@code
+     * apply} publishes it, under the locks the system's own publication
+     * takes.  On a thread delivering a store's notification ({@link
+     * #notified}, the whole callback), outside a refresh the system asked
+     * for ({@link #refreshStarting}), a pairing's hold of the view may defer
+     * it, and a deferred one holds every later one of the view behind it
+     * ({@code Confirmation#publishing}): the thread goes on, the node's
+     * readers keep the version they had, and the publications apply later
+     * in the order they came.  A synchronous publication -- a forced
+     * refresh, a fetch on the reader's own thread, the node's own write --
+     * is never deferred, and supersedes the deferred removals and what came
+     * before them ({@code Confirmation#published}).
      *
      * @return whether it was deferred: the caller then publishes nothing
      */
     public static boolean publishing(String transport, String path,
                                      long version, Runnable apply) {
-        if (NOTIFIED.get() == null || REFRESHING.get() != 0) return false;
+        boolean delivering = DELIVERING.get() > 0 && REFRESHING.get() == 0;
         return guarded("publishing", path, Boolean.FALSE, () -> {
+            if (!Confirmation.holdsViews()) return false;
             boolean paused = pause();
             try {
                 String node = nodeHere();
                 OccurrenceAddress at = Identity.currentOccurrence(node);
-                String life = life(transport, trimmed(path), version, false);
+                String life = life(transport, trimmed(path),
+                        Math.max(0L, version), false);
+                String decoder = decoderNode(at, node);
                 LocationId view = viewOf(storeLocation(transport, life),
-                        decoderNode(at, node));
-                return Confirmation.publishing(view, version, at, apply);
+                        decoder);
+                if (!delivering) {
+                    Confirmation.published(view, version);
+                    return false;
+                }
+                return Confirmation.publishing(view, version, at, decoder,
+                        CausynthTraceRecorder.captureScope(), apply);
             } finally {
                 resume(paused);
             }
@@ -1152,13 +1174,12 @@ public final class MessageDoors {
      *             each an occurrence of its own
      */
     public static void notified(String kind, Runnable callback) {
-        // In order: a publication this thread deferred applies before its
-        // next notification runs (Confirmation#awaitDeferred).
-        guarded("notified", kind, Confirmation::awaitDeferred);
         NOTIFIED.set(trimmed(kind));
+        DELIVERING.set(DELIVERING.get() + 1);
         try {
             callback.run();
         } finally {
+            DELIVERING.set(DELIVERING.get() - 1);
             // The callback's own exception is the system's and goes on; an
             // engine fault here would replace it, so it is named instead.
             try {

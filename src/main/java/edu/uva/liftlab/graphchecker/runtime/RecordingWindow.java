@@ -72,19 +72,35 @@ final class RecordingWindow {
     }
 
     /** The workload's test is over: what runs after is its teardown.  The
-     *  window's wall duration goes to {@link #WINDOW_MS_FILE}, if named. */
+     *  window's wall duration is stated ({@link #measured}). */
     static void close() {
         closed = true;
+        measured();
+    }
+
+    /** Whether the window's duration was stated. */
+    private static boolean stated;
+
+    /**
+     * States the window's wall duration, once, to {@link #WINDOW_MS_FILE}
+     * when named: from its open to its close, or -- a run that ends inside
+     * it, a replay halted after its selected result -- to now.  Every exit
+     * path of a run calls it ({@code ConcolicResultPublisher
+     * #publishRunTotals}, the recording's shutdown); a run that never
+     * opened its window states nothing, and the campaign fails by name
+     * (run_engine.sh campaign_view_hold_max).
+     */
+    static synchronized void measured() {
         String file = System.getProperty(WINDOW_MS_FILE, "");
-        if (file.isEmpty() || index == 0) return;
+        if (stated || file.isEmpty() || index == 0) return;
+        stated = true;
         long millis = (System.nanoTime() - openedNanos) / 1_000_000L;
         try {
             java.nio.file.Files.write(java.nio.file.Paths.get(file),
                     (millis + "\n").getBytes(
                             java.nio.charset.StandardCharsets.UTF_8));
         } catch (java.io.IOException | RuntimeException unwritten) {
-            // A window with no duration stated: the campaign scales no
-            // bound by it and says so (run_engine.sh).
+            // Unwritten, the campaign fails by name when it reads it.
         }
     }
 

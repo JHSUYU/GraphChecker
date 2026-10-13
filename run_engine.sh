@@ -1070,6 +1070,7 @@ run_configured_workload() {
     "CAUSYNTH_RECORDING_MAX_TRACE_MB=${5:-0}"
     "CAUSYNTH_ORDER_TIMEOUT_MS=${6:-}"
     "CAUSYNTH_VIEW_HOLD_MAX_MS=${view_hold_max_ms}"
+    "CAUSYNTH_VIEW_HOLD_MAX_RECORDED_MS=${view_hold_max_ms}"
   )
   [[ -z "${2:-}" ]] || bound=(run_under_wall_clock_bound "$2")
   (cd "${workload_work_dir}" && "${bound[@]+"${bound[@]}"}" \
@@ -2472,6 +2473,7 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_VIEW_HOLD_MAX_MS=$(campaign_view_hold_wall_ms "${worker}")" \
+    "CAUSYNTH_VIEW_HOLD_MAX_RECORDED_MS=${view_hold_max_ms}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" \
     "CAUSYNTH_TRACE_MODE=replay-context" \
     "CAUSYNTH_SCHEDULE_PREFIX=${campaign_schedule_prefix:-}" \
@@ -2600,28 +2602,29 @@ campaign_seed_charge_factor=2
 # The view hold's realism bound in this campaign's replays
 # (view_hold_max_ms): VIEW_HOLD_MAX times S, the VM's measured slowdown over
 # the recording -- the seed replay's window over the recording's, each the
-# wall time from its window's open to its close (runtime.RecordingWindow,
-# window_ms), rounded up, at least 1.  Whole runs would not do: setup and
+# wall time from its window's open to its close or the run's end
+# (runtime.RecordingWindow#measured, window_ms: the recording's in its trace
+# directory, ${causynth_output_dir}/runtime; the seed replay's in its worker
+# directory), rounded up, at least 1.  Whole runs would not do: setup and
 # sleeps outside the window dominate them (SG3B tra: SEED 143 s, the seed
 # replay 101 s).  Written once, as "<S>\t<wall ms>", to view_hold_max.tsv in
 # the campaign's directory, where every replay -- obligation workers,
 # CONFIRM -- finds it above its worker (campaign_view_hold_wall_ms) and
-# result.json states it (viewHoldMax).  A window with no duration stated is
-# named and scales nothing (S 1).
+# result.json states it (viewHoldMax).  A window with no duration stated
+# fails the campaign by name: no bound is guessed.
 campaign_view_hold_max() {
-  local iteration_dir=$1 recorded replayed slowdown=1
-  recorded=$(cat "$(dirname "${runtime_region_plan}")/window_ms" \
-    2>/dev/null) || recorded=""
-  replayed=$(cat "${iteration_dir}/seed-result/focused/window_ms" \
-    2>/dev/null) || replayed=""
-  if [[ "${recorded}" =~ ^[1-9][0-9]*$ && "${replayed}" =~ ^[0-9]+$ ]]; then
-    slowdown=$(( (replayed + recorded - 1) / recorded ))
-    (( slowdown >= 1 )) || slowdown=1
-  else
-    echo "[campaign] the recording's or the seed replay's window stated no" \
-      "duration (window_ms: '${recorded}', '${replayed}'): the view hold's" \
-      "bound is ${view_hold_max_ms} ms, unscaled" >&2
-  fi
+  local iteration_dir=$1 recorded replayed slowdown
+  local recorded_file="${causynth_output_dir}/runtime/window_ms"
+  local replayed_file="${iteration_dir}/seed-result/focused/window_ms"
+  recorded=$(cat "${recorded_file}" 2>/dev/null) || recorded=""
+  replayed=$(cat "${replayed_file}" 2>/dev/null) || replayed=""
+  [[ "${recorded}" =~ ^[1-9][0-9]*$ && "${replayed}" =~ ^[0-9]+$ ]] \
+    || campaign_fail REPLAY VIEW_HOLD_MAX "${iteration_dir}" "the recording's \
+or the seed replay's window stated no duration (${recorded_file}: \
+'${recorded}', ${replayed_file}: '${replayed}'), so the view hold's bound \
+cannot be scaled to this VM's slowdown"
+  slowdown=$(( (replayed + recorded - 1) / recorded ))
+  (( slowdown >= 1 )) || slowdown=1
   printf '%s\t%s\n' "${slowdown}" "$(( view_hold_max_ms * slowdown ))" \
     >"$(dirname "${iteration_dir}")/view_hold_max.tsv"
 }
@@ -2659,10 +2662,10 @@ with"
 ${campaign_recorded_workload_s}s workload and at least \
 replay_timeout_s=${replay_timeout_s}" "${need}"
   campaign_replay_measured "${iteration_dir}/seed-result/focused"
-  campaign_view_hold_max "${iteration_dir}"
   (( campaign_replay_peak_mb > 0 )) || campaign_fail REPLAY WORKLOAD \
     "${iteration_dir}/seed-result/focused" "the seed replay stated no peak \
 resident memory (workload_rss_mb): no replay after it has a measured need"
+  campaign_view_hold_max "${iteration_dir}"
 }
 
 # The largest resident peak, in MB, a replay of this campaign has stated so
@@ -6391,6 +6394,10 @@ explore_manifest.json 2>/dev/null) \
       | LC_ALL=C sort | tail -n 1)/gaps.jsonl" 2>/dev/null) \
     --slurpfile inputs <(cat "${iteration_dir}"/obligations-*/gaps.jsonl \
       2>/dev/null | grep -F 'unplanned-input-max=' || true) \
+    --slurpfile confirmHolds <(cat \
+      "$(dirname "${iteration_dir}")"/witness-confirm/*/sessions/*/gaps.jsonl \
+      "${campaign_final}"/confirm/sessions/*/gaps.jsonl 2>/dev/null \
+      | grep -F ' view-hold-max=' || true) \
     --argjson decided "${decided}" --argjson refutes "${refutes}" \
     --argjson maxClaims "${campaign_max_claims}" '
     def bound($bound): select(.subject | test(" " + $bound + "=[0-9]+$"));
@@ -6403,7 +6410,8 @@ explore_manifest.json 2>/dev/null) \
     | rows("pairing-bound") as $pairing
     | rows("loop-body-bound") as $loops
     | rows("daemon-tick-bound") as $ticks
-    | rows("view-hold-max") as $holds
+    | (rows("view-hold-max") + [$confirmHolds[] | bound("view-hold-max")])
+      as $holds
     | ($rounds | last | .truncated // 0) as $truncated
     | ($index[0].closureCut // null) as $cut
     | [($rounds | last | .openArms // [])[] | select(.state == "BOUNDED")]

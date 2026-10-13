@@ -47,7 +47,9 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 
+import org.junit.After;
 import org.junit.Assume;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -157,6 +159,22 @@ public class ExploreTest {
             Endpoint.stateSite("BlockTokenSecretManager",
                     "checkAccess", 4, false),
             "BlockTokenSecretManager#checkAccess#4");
+
+    /** A system declaring Solr's published views (PUBLISHED_VIEW): a
+     *  pairing flip of a view no hook publishes is never asked. */
+    @Before
+    public void publishedViews() {
+        System.setProperty(
+                edu.uva.liftlab.graphchecker.causynth.LibraryCatalog
+                        .SYSTEM_DOORS, Paths.get("src", "test", "resources",
+                        "published-views.jsonl").toAbsolutePath().toString());
+    }
+
+    @After
+    public void noSystemDoors() {
+        System.clearProperty(edu.uva.liftlab.graphchecker.causynth
+                .LibraryCatalog.SYSTEM_DOORS);
+    }
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -6468,6 +6486,39 @@ public class ExploreTest {
                 offered.get(0), "given", Collections
                         .<String, ObligationDir.Answer>emptyMap());
         assertEquals(8L, outcome.holding.cutBefore);
+    }
+
+    /**
+     * A view no publication hook publishes (no PUBLISHED_VIEW: Solr's
+     * legacy clusterstate.json, a snapshot's metadata) offers no pairing
+     * flip: no hold could defer it, and its read is named, never left to
+     * give way at the bound.
+     */
+    @Test
+    public void aViewNoHookPublishesOffersNoPairing() throws Exception {
+        Path iteration = tree.newFolder("pairing-unhooked").toPath();
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs-case/dn0#epoch0", "/clusterstate.json");
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        Endpoint decoder = at(WRITER, "SOLR_ZK#VIEW:.clusterstate.json",
+                "decode#1");
+        for (long version = 0L; version <= 2L; version++) {
+            seed.write(decoder, view, version, "", "J");
+        }
+        seed.read(at(TARGET, "Guard#u3#VIEW",
+                "o.a.h.h.s.d.DataXceiver#run#12"), view, 2L, "V_t", "2");
+        seed.decision(TARGET, "Guard#u8", 1, false, "(= M_A 1)");
+        seed.target(TARGET, "Guard#u8", "(= M_A 1)");
+        seed.flush();
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = Task.of("T", TARGET,
+                Collections.<OccurrenceAddress>emptyList(), "s-seed");
+        List<GapRow> gaps = new ArrayList<GapRow>();
+        assertTrue(PairingFlip.candidates(corpus, task,
+                corpus.pathsOf(TARGET).get(0), gaps).isEmpty());
+        assertTrue(gaps.toString(), gaps.size() == 1 && gaps.get(0).detail()
+                .contains("no publication hook publishes"));
     }
 
     /**

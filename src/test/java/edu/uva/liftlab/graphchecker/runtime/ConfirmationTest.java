@@ -485,6 +485,15 @@ public class ConfirmationTest {
         };
     }
 
+    /** The node every test publication is made on. */
+    private static final String NODE = "hdfs/dn0#epoch0";
+
+    /** {@link Confirmation#publishing} on {@link #NODE}, with no scope. */
+    private static boolean publishing(LocationId view, long version,
+                                      OccurrenceAddress at, Runnable apply) {
+        return Confirmation.publishing(view, version, at, NODE, null, apply);
+    }
+
     /** Waits for {@code applied} to hold {@code count} publications. */
     private static void awaitApplied(List<Long> applied, int count)
             throws InterruptedException {
@@ -500,10 +509,10 @@ public class ConfirmationTest {
     /**
      * THE PUBLICATION HOLD (a'), per row: a node's publication of a view
      * past the paired version is deferred until the reader's region exits,
-     * then applied, every one in version order; one at or below the
-     * version, or the reader's own work's, is not; the thread goes on.  A
-     * hold whose reader never comes gives way at VIEW_HOLD_MAX, named: the
-     * queue applies and the pairing is a mismatch.
+     * then applied in the order it came; one at or below the version is
+     * not, nor the reader's own work's; the thread goes on.  A hold whose
+     * reader never comes gives way at VIEW_HOLD_MAX, named: the queue
+     * applies and the pairing is a mismatch.
      */
     @Test
     public void aViewsLaterPublicationIsDeferredUntilTheReadersRegionExits()
@@ -516,27 +525,23 @@ public class ConfirmationTest {
         handed("", Collections.singletonList(viewHold(view, 1L, reader,
                 until, null)));
         List<Long> applied = new ArrayList<Long>();
+        // Not deferred: the paired version, and the reader's own work.
+        assertFalse(publishing(view, 1L, decoder, publication(applied, 1L)));
+        assertFalse(publishing(view, 4L, reader, publication(applied, 4L)));
         // Deferred: past the version, on another work's thread; the
         // caller goes on at once.
         long started = System.nanoTime();
-        assertTrue(Confirmation.publishing(view, 3L, decoder,
-                publication(applied, 3L)));
-        assertTrue(Confirmation.publishing(view, 2L, decoder,
-                publication(applied, 2L)));
+        assertTrue(publishing(view, 3L, decoder, publication(applied, 3L)));
+        assertTrue(publishing(view, 2L, decoder, publication(applied, 2L)));
         assertTrue("the thread goes on",
                 System.nanoTime() - started < 200_000_000L);
-        // Not deferred: the paired version, and the reader's own work.
-        assertFalse(Confirmation.publishing(view, 1L, decoder,
-                publication(applied, 1L)));
-        assertFalse(Confirmation.publishing(view, 4L, reader,
-                publication(applied, 4L)));
         Thread.sleep(100L);
         assertTrue("nothing applied while the reader runs: " + applied,
                 applied.isEmpty());
         Confirmation.exited(until);
         awaitApplied(applied, 2);
-        assertEquals("applied in version order at the reader's exit",
-                Arrays.asList(2L, 3L), applied);
+        assertEquals("applied in the order they came at the reader's exit",
+                Arrays.asList(3L, 2L), applied);
         assertTrue(Confirmation.close().isEmpty());
 
         Confirmation.resetForTests();
@@ -545,7 +550,7 @@ public class ConfirmationTest {
         System.setProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY, "200");
         try {
             List<Long> late = new ArrayList<Long>();
-            assertTrue(Confirmation.publishing(view, 2L, decoder,
+            assertTrue(publishing(view, 2L, decoder,
                     publication(late, 2L)));
             awaitApplied(late, 1);
             assertEquals("applied at VIEW_HOLD_MAX", Arrays.asList(2L), late);
@@ -579,7 +584,7 @@ public class ConfirmationTest {
         java.util.concurrent.atomic.AtomicLong published =
                 new java.util.concurrent.atomic.AtomicLong(1L);
         List<Long> applied = new ArrayList<Long>();
-        assertTrue(Confirmation.publishing(view, 2L, decoder, () -> {
+        assertTrue(publishing(view, 2L, decoder, () -> {
             published.accumulateAndGet(2L, Math::max);
             publication(applied, 2L).run();
         }));
@@ -591,50 +596,9 @@ public class ConfirmationTest {
     }
 
     /**
-     * THE IN-ORDER RULE: a thread that deferred a publication runs its next
-     * store notification only once that publication applied -- no later
-     * event on it runs first -- and a thread that deferred nothing is not
-     * held.
-     */
-    @Test
-    public void aThreadsNextNotificationWaitsForItsDeferredPublication()
-            throws Exception {
-        LocationId view = LocationId.of(LocationKind.VIEW,
-                "SOLR_ZK@hdfs/dn0#epoch0", "/state.json");
-        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
-        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
-        String until = Endpoint.activation(reader, ExecutionIndex.empty());
-        handed("", Collections.singletonList(viewHold(view, 1L, reader,
-                until, null)));
-        List<Long> applied = new ArrayList<Long>();
-        long[] next = new long[1];
-        java.util.concurrent.CountDownLatch deferred =
-                new java.util.concurrent.CountDownLatch(1);
-        Thread events = new Thread(() -> {
-            Confirmation.publishing(view, 2L, decoder,
-                    publication(applied, 2L));
-            deferred.countDown();
-            MessageDoors.notified("Watcher", () -> next[0] = System.nanoTime());
-        });
-        events.start();
-        deferred.await();
-        long otherStarted = System.nanoTime();
-        MessageDoors.notified("Watcher", () -> { });
-        assertTrue("another thread's notification is not held",
-                System.nanoTime() - otherStarted < 200_000_000L);
-        Thread.sleep(150L);
-        assertTrue("the next event waits", events.isAlive());
-        long exited = System.nanoTime();
-        Confirmation.exited(until);
-        events.join(5000L);
-        assertTrue("it ran after the deferred publication applied",
-                !events.isAlive() && next[0] >= exited
-                        && applied.equals(Arrays.asList(2L)));
-    }
-
-    /**
      * A publication is deferred only on a thread delivering a store's
-     * notification, outside a refresh the system asked for
+     * notification, for the whole callback -- after it read the version that
+     * caused it too --, outside a refresh the system asked for
      * (MessageDoors#publishing): a forced refresh's, or one on a thread
      * that delivers none, publishes at once.
      */
@@ -647,12 +611,16 @@ public class ConfirmationTest {
                 "auto0/node0", 0);
         java.util.concurrent.CountDownLatch held =
                 new java.util.concurrent.CountDownLatch(1);
-        boolean[] answered = new boolean[3];
+        boolean[] answered = new boolean[4];
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, node);
         // The watch thread starts before the reader's request, so its work
         // is its own, under its own request.
         Thread watch = new Thread(() -> {
             long scope = RuntimeTraceContext.beginRequest(node, "watch");
             try {
+                MessageDoors.stored("SOLR_ZK", "/notified/state.json@2",
+                        owner, null);
                 held.await();
                 answered[0] = MessageDoors.publishing("SOLR_ZK",
                             "/notified/state.json", 2L, () -> { });
@@ -664,6 +632,11 @@ public class ConfirmationTest {
                     } finally {
                         MessageDoors.refreshEnded(token);
                     }
+                    // The callback reads its cause first, which ends the
+                    // notification's inbound: it delivers it all the same.
+                    MessageDoors.fetched("SOLR_ZK", "/notified/state.json@2",
+                            owner, null);
+                    answered[3] = MessageDoors.current() != null;
                     answered[2] = MessageDoors.publishing("SOLR_ZK",
                             "/notified/state.json", 2L, () -> { });
                 });
@@ -688,10 +661,191 @@ public class ConfirmationTest {
             watch.join(5000L);
             assertFalse("no notification: published at once", answered[0]);
             assertFalse("a forced refresh: published at once", answered[1]);
-            assertTrue("a notification's: deferred", answered[2]);
+            assertTrue("the callback read its cause", answered[3]);
+            assertTrue("a notification's, past its read: deferred",
+                    answered[2]);
         } finally {
             RuntimeTraceContext.endRequest(hop);
             Identity.resetForTests();
+        }
+    }
+
+    /**
+     * ONE ORDER PER VIEW (review F1): once a publication of a view is
+     * deferred, every later one of it on a notification's thread follows
+     * it, a removal (-1) and a same-version update (per-replica states, -2)
+     * too, and they apply in the order they came -- a removal never
+     * overtakes the deferred version it came after, and the per-replica
+     * update applies onto the state then published.
+     */
+    @Test
+    public void removalsAndSameVersionUpdatesFollowWhatWasDeferred()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/collections/c/state.json");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                until, null)));
+        List<Long> applied = new ArrayList<Long>();
+        assertTrue(publishing(view, 2L, decoder, publication(applied, 2L)));
+        assertTrue("a same-version update follows",
+                publishing(view, -2L, decoder, publication(applied, -2L)));
+        assertTrue("a removal follows",
+                publishing(view, -1L, decoder, publication(applied, -1L)));
+        Thread.sleep(100L);
+        assertTrue(applied.toString(), applied.isEmpty());
+        Confirmation.exited(until);
+        awaitApplied(applied, 3);
+        assertEquals(Arrays.asList(2L, -2L, -1L), applied);
+        assertTrue(Confirmation.close().isEmpty());
+    }
+
+    /**
+     * A publication the system makes at once read the store after the
+     * deferred ones did: it drops a deferred removal and what came before
+     * it -- applied after, the removal would delete what it published --,
+     * and a removal of its own drops them all; a deferred version with no
+     * removal after it stays and applies, the system's compare keeping the
+     * newest.
+     */
+    @Test
+    public void aSynchronousPublicationDropsTheDeferredRemovalsBeforeIt()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/collections/c/state.json");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        for (long synchronous : new long[] {-1L, 5L}) {
+            Confirmation.resetForTests();
+            handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                    until, null)));
+            List<Long> applied = new ArrayList<Long>();
+            assertTrue(publishing(view, 2L, decoder,
+                    publication(applied, 2L)));
+            assertTrue(publishing(view, -1L, decoder,
+                    publication(applied, -1L)));
+            assertTrue(publishing(view, 4L, decoder,
+                    publication(applied, 4L)));
+            Confirmation.published(view, synchronous);
+            Confirmation.exited(until);
+            if (synchronous != -1L) awaitApplied(applied, 1);
+            Thread.sleep(100L);
+            assertEquals("after a synchronous " + synchronous,
+                    synchronous == -1L ? Collections.<Long>emptyList()
+                            : Arrays.asList(4L), applied);
+        }
+    }
+
+    /**
+     * VIEW_HOLD_MAX counts per hold, from the first publication that hold
+     * deferred (review L1): a hold that began deferring later gives way
+     * later, whatever waited in the queue before it.
+     */
+    @Test
+    public void aHoldGivesWayAtItsOwnBoundFromItsFirstDeferral()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
+        OccurrenceAddress first = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress second = OccurrenceAddress.parse(
+                "hdfs/dn1#epoch0/region/REGION.7c569c3f/ctx:Root:XCEIVER#2"
+                        + "/idx:<a.Handler: void handle()>@0");
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String firstExits = Endpoint.activation(first,
+                ExecutionIndex.empty());
+        handed("", Arrays.asList(viewHold(view, 1L, first, firstExits, null),
+                viewHold(view, 2L, second, Endpoint.activation(second,
+                        ExecutionIndex.empty()), null)));
+        System.setProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY, "600");
+        try {
+            List<Long> applied = new ArrayList<Long>();
+            long began = System.nanoTime();
+            // Held by the first hold alone (2 is not past the second's 2).
+            assertTrue(publishing(view, 2L, decoder,
+                    publication(applied, 2L)));
+            Thread.sleep(400L);
+            // Held by both: the second's bound counts from here.
+            assertTrue(publishing(view, 3L, decoder,
+                    publication(applied, 3L)));
+            Confirmation.exited(firstExits);
+            awaitApplied(applied, 1);
+            long due = began + 800_000_000L - System.nanoTime();
+            if (due > 0L) Thread.sleep(due / 1_000_000L);
+            synchronized (applied) {
+                assertEquals("past the first deferral's bound, the second"
+                        + " hold still stands", Arrays.asList(2L), applied);
+            }
+            awaitApplied(applied, 2);
+            assertEquals(Arrays.asList(2L, 3L), applied);
+            List<String> mismatches = Confirmation.close();
+            assertEquals(mismatches.toString(), 1, mismatches.size());
+            assertTrue(mismatches.get(0), mismatches.get(0)
+                    .contains("past version 2"));
+        } finally {
+            System.clearProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY);
+        }
+    }
+
+    /**
+     * A node's one publisher outlives an interrupt and the system's own
+     * throw in an apply (named the system's failure, never the engine's);
+     * an apply that blocks past VIEW_HOLD_MAX is named, its node's later
+     * publications waiting behind it.
+     */
+    @Test
+    public void thePublisherOutlivesAnInterruptAndTheSystemsThrow()
+            throws Exception {
+        LocationId view = LocationId.of(LocationKind.VIEW,
+                "SOLR_ZK@hdfs/dn0#epoch0", "/aliases.json");
+        OccurrenceAddress reader = OccurrenceAddress.parse(ANCHOR);
+        OccurrenceAddress decoder = OccurrenceAddress.parse(MINT);
+        String until = Endpoint.activation(reader, ExecutionIndex.empty());
+        handed("", Collections.singletonList(viewHold(view, 1L, reader,
+                until, null)));
+        System.setProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY, "300");
+        java.util.concurrent.CountDownLatch blocked =
+                new java.util.concurrent.CountDownLatch(1);
+        try {
+            List<Long> applied = new ArrayList<Long>();
+            assertTrue(publishing(view, 2L, decoder, () -> {
+                throw new IllegalStateException("the system's own");
+            }));
+            assertTrue(publishing(view, 3L, decoder,
+                    publication(applied, 3L)));
+            assertTrue(publishing(view, 4L, decoder, () -> {
+                try {
+                    blocked.await(5L, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException stopped) {
+                    Thread.currentThread().interrupt();
+                }
+                publication(applied, 4L).run();
+            }));
+            Thread publisher = null;
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (thread.getName().equals("causynth-view-publisher-"
+                        + NODE)) {
+                    publisher = thread;
+                }
+            }
+            assertTrue("one publisher per node", publisher != null);
+            publisher.interrupt();
+            Thread.sleep(100L);
+            assertTrue("an interrupt never ends it", publisher.isAlive());
+            Confirmation.exited(until);
+            awaitApplied(applied, 1);
+            assertEquals("the system's throw ends nothing",
+                    Arrays.asList(3L), applied);
+            Thread.sleep(500L);
+            List<String> mismatches = Confirmation.close();
+            assertEquals(mismatches.toString(), 1, mismatches.size());
+            assertTrue(mismatches.get(0), mismatches.get(0)
+                    .contains("ran past VIEW_HOLD_MAX"));
+        } finally {
+            blocked.countDown();
+            System.clearProperty(Confirmation.VIEW_HOLD_MAX_PROPERTY);
         }
     }
 
@@ -714,7 +868,7 @@ public class ConfirmationTest {
         handed("", Collections.singletonList(viewHold(view, 1L, role, "",
                 Confirmation.id(read))));
         List<Long> applied = new ArrayList<Long>();
-        assertTrue(Confirmation.publishing(view, 2L,
+        assertTrue(publishing(view, 2L,
                 OccurrenceAddress.parse(MINT), publication(applied, 2L)));
         Confirmation.regionClosed(region);
         Thread.sleep(100L);

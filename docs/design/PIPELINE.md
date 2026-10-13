@@ -987,28 +987,43 @@ the reader's occurrence to close, since the choice binds every read it makes of 
 the flipped world may read it again, CONFIRM's for the read's activation; for a node's VIEW, whose
 decodes run in work no activation hook holds -- watch deliveries, request handlers --, one
 `VIEW_HOLD` row instead: the node's PUBLICATIONS of the view past the paired version are deferred,
-not its threads (`MessageDoors#publishing`, at Solr's `ZkStateReader#updateWatchedCollection` and
-`AliasesManager#setIfNewer`, a per-system patch; `Confirmation#publishing`): on a thread delivering a
-store's notification the thread goes on, every reader on the node keeps the version it had, as behind
-a slow event thread, and the deferred publications apply in version order once the hold ends, under
-the locks the system's own publication takes, on one engine thread; the thread's next notification
-waits for them first (`Confirmation#awaitDeferred`, the in-order rule); the schedule cut stops before
-the first decode past the version before the read (`RowOrder`) (a decode on a thread no registered
-node owns re-points no view; a view's writer is its version, its INITIAL's too; a synchronous
-publication -- the system's own refresh, Solr's `forceUpdateCollection`, a lazy collection's fetch,
-`MessageDoors#refreshStarting`, or one on a thread delivering no notification -- is never deferred:
-one that publishes a version past the paired one leaves the pairing untaken, and a deferred one
-applied after it publishes nothing older, by the system's own compare). A hold is realistic for at
-most VIEW_HOLD_MAX past the first publication it deferred -- `view_hold_max_ms`, 3000 ms of recorded
-time, above Solr's own 2000 ms queue poll, times the VM's measured slowdown over the recording, the
-seed replay's window over the recording's (`run_engine.sh campaign_view_hold_max`, result.json
-`viewHoldMax`); past it the hold gives way by name (`view_hold_max` in `bounded`), until the reader's
-work is done -- the reader's occurrence exits, or, for a read in role work which no hook closes, the
-first region that work closes after the read in the run as it goes, a named region's exit or a hop's
-close (`Confirmation#regionClosed`: a routed alias captures its view in the request's role work and
-writes it in a store door's region) --, never the
-decodes of the reader's own work (its node and causal context), at most the order's timeout (300 s), past which
-the decode goes on and the hold is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
+not its threads (`MessageDoors#publishing`, at Solr's `ZkStateReader#updateWatchedCollection`,
+`StatefulCollectionWatch#refreshAndWatchChildren` and `AliasesManager#setIfNewer`, a per-system patch;
+`Confirmation#publishing`): on a thread delivering a store's notification -- the whole callback, after
+it read its cause too -- the thread goes on, every reader on the node keeps the version it had, as
+behind a slow callback, and once one publication of the view is deferred every later one of it
+follows it, a removal and a same-version per-replica-state update too; the node's one publisher
+applies them in the order they came, each once the holds it waits for end, under the notification's
+scope and the locks the system's own publication takes. Nothing holds the thread's next notification:
+Solr runs each watch callback on a cached pool, so a slow callback delays no other event, and a thread
+waiting for its own deferred publication re-created the blocked hold's deadlock (round Z2Y). A
+synchronous publication -- the system's own refresh, Solr's `forceUpdateCollection`, a lazy
+collection's fetch, `MessageDoors#refreshStarting`, one on a thread delivering no notification, or the
+reader's own work's (its node and causal context) -- is never deferred: it read the store after the
+deferred ones, so it drops the deferred removals and what came before them (`Confirmation#published`),
+and the rest publish nothing older over it, by the system's own compare (the znode version, the
+per-replica cversion); one that publishes a version past the paired one leaves the pairing untaken.
+The schedule cut stops before the first decode past the version before the read (`RowOrder`) (a decode
+on a thread no registered node owns re-points no view; a view's writer is its version, its INITIAL's
+too). Only a view the system publishes through the hook is held, one its doors file names
+(`PUBLISHED_VIEW` rows, `LibraryCatalog#publishedView`: Solr's collection `state.json` and aliases): a
+pairing of any other (Solr's legacy `clusterstate.json`, a snapshot's metadata) is never offered
+(`PairingFlip`, a named `ADMISSION_GAP`) and refused at CONFIRM (`PAIRING_UNHELD`), never left to give
+way. A hold ends when the reader's work is done -- the reader's occurrence exits, or, for a read in
+role work which no hook closes, the first region that work closes after the read in the run as it
+goes, a named region's exit or a hop's close (`Confirmation#regionClosed`: a routed alias captures its
+view in the request's role work and writes it in a store door's region) -- and is realistic for at most
+VIEW_HOLD_MAX, counted from the first publication that hold deferred: `view_hold_max_ms`, 3000 ms of
+recorded time, above Solr's own 2000 ms queue poll, times the VM's measured slowdown over the
+recording, the seed replay's window over the recording's (`run_engine.sh campaign_view_hold_max`,
+which fails the campaign by name when either window stated no duration; `RecordingWindow#measured`
+states a run's at its end when it ends inside the window; result.json `viewHoldMax`). Past it the hold
+gives way by name, the configured bound in its row, a CONFIRM mismatch and `PAIRING_UNTAKEN`, and
+`view_hold_max` in `bounded` whichever replay it gave way in (an obligation's, a witness's CONFIRM or
+the final one). The system's own throw in a deferred apply is the system's failure, named; an apply
+blocked past VIEW_HOLD_MAX is named, the node's later publications waiting behind it; an interrupt
+never ends the publisher. An `ORDER` row waits at most the order's timeout (300 s), past which the
+writer goes on and the order is unrealized by name, a CONFIRM mismatch and `PAIRING_UNTAKEN`; a
 native reproduction holds the same rows, each stated held, waited or unheld); a pairing that session
 states no read or write of refuses (`PAIRING_UNSTATED`). A pairing no term of a path names is claimed
 from the session that took it as that session's whole world (§11 rule 3): its own run with the plants

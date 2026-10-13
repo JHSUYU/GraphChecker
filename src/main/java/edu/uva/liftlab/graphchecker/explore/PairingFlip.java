@@ -89,6 +89,15 @@ final class PairingFlip {
             return offered;
         }
         for (ReadRow read : reads(corpus, task, session)) {
+            if (!Confirmation.hookPublishes(read.location())) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, site(read),
+                        "no publication hook publishes " + read.location()
+                                + " (its system states no PUBLISHED_VIEW of"
+                                + " it), so no hold can defer it: no pairing"
+                                + " of the read is asked"));
+                continue;
+            }
             String view = SmtLowering.locationKey(read.location());
             String reader = Confirmation.contextKey(
                     read.endpoint().occurrence());

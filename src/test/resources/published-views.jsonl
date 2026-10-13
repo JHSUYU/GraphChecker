@@ -1,0 +1,2 @@
+{"schemaVersion": 1, "kind": "PUBLISHED_VIEW", "transport": "SOLR_ZK", "path": "/aliases.json"}
+{"schemaVersion": 1, "kind": "PUBLISHED_VIEW", "transport": "SOLR_ZK", "path": "/collections/*/state.json"}

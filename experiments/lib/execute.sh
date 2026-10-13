@@ -54,6 +54,8 @@ properties+=("-Dcausynth.window.ms.file=${trace:-${work}}/window_ms")
 # run's VIEW_HOLD_MAX itself.
 [[ -z ${CAUSYNTH_VIEW_HOLD_MAX_MS:-} ]] \
   || properties+=("-Dcausynth.view.hold.max.ms=${CAUSYNTH_VIEW_HOLD_MAX_MS}")
+[[ -z ${CAUSYNTH_VIEW_HOLD_MAX_RECORDED_MS:-} ]] \
+  || properties+=("-Dcausynth.view.hold.max.recorded.ms=${CAUSYNTH_VIEW_HOLD_MAX_RECORDED_MS}")
 
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 

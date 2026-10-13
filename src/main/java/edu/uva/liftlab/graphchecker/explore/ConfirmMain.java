@@ -1649,6 +1649,13 @@ public final class ConfirmMain {
             // region exits (Confirmation#publishing) -- and orders nothing
             // else.
             if (held.location().kind() == LocationKind.VIEW) {
+                if (!Confirmation.hookPublishes(held.location())) {
+                    throw new Refused("PAIRING_UNHELD: the world pairs read "
+                            + reader + " of " + held.location() + ", a view"
+                            + " no publication hook publishes (no"
+                            + " PUBLISHED_VIEW of it), so no hold can defer"
+                            + " it");
+                }
                 JsonObject hold = new JsonObject();
                 hold.addProperty("kind", RecordingPlant.VIEW_HOLD);
                 hold.addProperty("view",
