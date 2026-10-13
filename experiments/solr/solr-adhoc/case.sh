@@ -46,10 +46,13 @@ fi
 # routed-alias family, and each expected mechanism is one flip there (09 a
 # TIMED_WAIT fault, 19 a pairing flip on a stale view, 40 a READ-door fault
 # asked at round 0); depth 1 where the case forces its arm (05, 14: the
-# forced world's arms) or one-flip worlds have not grown (31, 39).  Named
+# forced world's arms) or one-flip worlds have not grown (31).  39 moved to
+# depth 0 when its growth was measured (SGF3-adhoc-39, 2026-10-13: rounds 4-5
+# planned 2522 and 3145 obligations over one-flip worlds, 7.72 ids per arm,
+# the top arms asked in 59 worlds each; the 4 h budget ended it).  Named
 # BOUNDED (region_path_max_world_depth, campaign_bounds); what stays
 # unasked is every flip in a world of more flips than that.
 case "$1" in
-  07|09|10|13|19|21|40) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
-  05|14|31|39) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 ;;
+  07|09|10|13|19|21|39|40) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=0 ;;
+  05|14|31) export CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH=1 ;;
 esac
