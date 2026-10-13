@@ -60,13 +60,27 @@ final class ForcedFlip {
                 Corpus.pathId(corpus.seedSessionId(), task.focused()));
     }
 
+    /** A FORCE run's flip, as its row states it ({@link
+     *  ObligationFactory#flip}): what its question names, and what a killed
+     *  replay's worker, its question withdrawn, is read by ({@code
+     *  ExploreMain#flipOf}), so every answer of it is under one flip. */
+    static String flip(Obligation force) {
+        return ObligationFactory.flip(force.taskId(), force.pathId(),
+                force.siteId(), force.ordinal(), force.flippedOutcome());
+    }
+
     /**
      * The round's forced share for the anchor's task ({@code anchor} null:
      * none planned; a map with no forcing table: none): the FORCE
-     * obligation while no round answered it and none flies, and the forced
-     * flips ahead of {@code candidates}.  A forced flip's verdict is read by
-     * the flip it asks ({@code answers}, {@link ExploreMain#answersByFlip}):
-     * its id moves as sessions land, its flip does not.
+     * obligation while no replay of it answered, none flies and its flip is
+     * not held BOUNDED, and the forced flips ahead of {@code candidates}.
+     * The FORCE run and a forced flip are read by the flip they ask ({@code
+     * answers}, {@link ExploreMain#answersByFlip}; a forced flip's id moves
+     * as sessions land, its flip does not), as {@link Frontier} reads every
+     * flip: a replay killed past its bound answers nothing, so the FORCE run
+     * is asked once more, and killed {@link Frontier#MAX_BOUNDED_REPLAYS}
+     * times with no forced session landed it is held unasked, BOUNDED by
+     * {@code replay_timeout_s} ({@link Frontier#boundedFlips}).
      */
     static Round plan(Corpus corpus, Task anchor, StaticScopeMap scope,
                       Frontier frontier, List<ObligationResult> results,
@@ -80,11 +94,14 @@ final class ForcedFlip {
             return new Round(null, candidates, manifest);
         }
         Obligation force = force(corpus, anchor);
-        Verdict answered = frontier.verdict(force.obligationId());
+        String forceFlip = flip(force);
+        Verdict answered = answer(answers.get(forceFlip));
+        boolean bounded = frontier.boundedFlips().contains(forceFlip);
         manifest.addProperty("obligationId", force.obligationId());
-        manifest.addProperty("state", answered == null
-                ? frontier.inFlight(force.obligationId()) ? "IN_FLIGHT"
-                : "PROPOSED" : answered.name());
+        manifest.addProperty("state", answered != null ? answered.name()
+                : bounded ? "BOUNDED"
+                : frontier.inFlight(force.obligationId()) ? "IN_FLIGHT"
+                : "PROPOSED");
         // What the forced world came to: its target reached forced (how
         // the occurrence then ended), or FORCE_DIVERGED and where.
         for (ObligationResult result : results) {
@@ -121,15 +138,14 @@ final class ForcedFlip {
             round.add(candidate);
         }
         manifest.addProperty("seedFlipsAfterForcedFlip", after);
-        boolean forceOwed = (answered == null
-                || answered == Verdict.SAT_MODEL_READY)
+        boolean forceOwed = answered == null && !bounded
                 && !forcedSessionLanded(corpus, anchor.focused());
         return new Round(forceOwed ? force : null, round, manifest);
     }
 
-    /** The last verdict of a flip that answers it (not a solve whose
-     *  replay is owed, a replay that refuted its world, nor one killed past
-     *  its bound), or null. */
+    /** The last verdict of a flip, or a FORCE run, that answers it (not a
+     *  solve whose replay is owed, a replay that refuted its world, nor one
+     *  killed past its bound), or null. */
     private static Verdict answer(List<ObligationResult> asked) {
         Verdict last = null;
         for (ObligationResult result : asked == null

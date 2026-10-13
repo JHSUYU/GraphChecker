@@ -269,8 +269,9 @@ public final class ObligationSolverMain {
                 ForcedFlip.FORCE + ": the recording's world, the declared "
                         + "occurrence's branches forced to the throw"), "",
                 Collections.<GapRow>emptyList(), focus);
-        ask(out.resolve(ObligationDir.QUESTION_ASKED), ForcedFlip.FORCE + ":"
-                + proposal.obligationId());
+        // Named by its flip, as a flip's question is (ForcedFlip#flip).
+        ask(out.resolve(ObligationDir.QUESTION_ASKED), ForcedFlip.flip(proposal)
+                + ":" + ForcedFlip.FORCE + " " + proposal.obligationId());
         return published;
     }
 

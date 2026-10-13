@@ -321,6 +321,90 @@ public class ExploreTest {
     }
 
     /**
+     * A FORCE RUN KILLED PAST ITS BOUND ANSWERED NOTHING (PIPELINE §7.10,
+     * §7.6), as a flip's killed replay does ({@link Frontier#consume}, by
+     * the flip its row states, {@link ForcedFlip#flip}): it is asked again;
+     * killed twice with no forced session landed it is held unasked, its
+     * state BOUNDED and named in the round's {@code boundedFlips}
+     * (campaign_bounds' {@code replay_timeout_s}), so no UNSAT rests on a
+     * forced replay that ran nothing.  A replay that decided it (here
+     * FORCE_DIVERGED) answers it, under the same flip.
+     */
+    @Test
+    public void aKilledForceRunIsAskedAgainThenHeldBounded() throws Exception {
+        String killed = ObligationResult.REPLAY_BOUNDED + ": replay exceeded"
+                + " replay_timeout_s=2400";
+        String diverged = "FORCE_DIVERGED: the occurrence closed first";
+        Object[][] rows = {
+            // its replays' details, in the order they landed; whether the
+            // next round asks it again; its state there; the round's
+            // boundedFlips
+            {new String[] {killed}, true, "PROPOSED", "[]"},
+            {new String[] {killed, killed}, false, "BOUNDED", "[FORCE x2]"},
+            {new String[] {killed, diverged}, false, "NOT_ADMITTED", "[]"},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            String name = "force-killed-" + at++;
+            Path iteration = tree.newFolder(name).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            seed.activation(TARGET, false);
+            seed.root(TARGET, "CASE.A", "M_A", RootKind.MARKER, "false", null,
+                    null, true);
+            seed.decision(TARGET, "Guard#u8", 1, false, "M_A");
+            seed.flush();
+            JsonObject target = com.google.gson.JsonParser.parseString(
+                    targetSite("REGION.target", "Throw#u30", "Guard#u8"))
+                    .getAsJsonObject();
+            target.add("force", com.google.gson.JsonParser.parseString(
+                    "[{\"siteId\":\"Guard#u8\",\"arm\":true}]"));
+            scopeMap(iteration, target.toString());
+            Path out = tree.newFolder(name + "-out").toPath();
+            Path results = out.resolve("obligation_results.jsonl");
+            Files.write(results, new byte[0]);
+            String[] replays = (String[]) row[0];
+            JsonObject manifest = null;
+            for (int k = 0; k <= replays.length; k++) {
+                String wave = String.format("obligations-%04d", k);
+                manifest = plan(iteration, TARGET_SELECTOR, null, results,
+                        out.resolve(wave), k);
+                Obligation force = obligations(out.resolve(wave)).stream()
+                        .filter(Obligation::force).findFirst().orElse(null);
+                if (k == replays.length) {
+                    assertEquals(name + ": asked again", row[1],
+                            force != null);
+                    break;
+                }
+                assertNotNull(name + ": asked in round " + k, force);
+                // Its worker, in the iteration as the pool places it: the
+                // solver's question, then what its replay came to.
+                Path worker = iteration.resolve(wave)
+                        .resolve(force.obligationId());
+                solve(iteration, out.resolve(wave), force,
+                        iteration.resolve(wave), force.obligationId());
+                ObligationResult answer = ObligationResult.of(
+                        force.obligationId(), Verdict.NOT_ADMITTED, "",
+                        replays[k]);
+                Files.write(worker.resolve(ObligationDir.RESULT),
+                        (RowCodec.toLine(RowCodec.writeObligationResult(
+                                answer)) + "\n")
+                                .getBytes(StandardCharsets.UTF_8));
+                Path asked = worker.resolve(ObligationDir.QUESTION_ASKED);
+                if (answer.replayBounded()) {
+                    Files.delete(asked);
+                } else {
+                    Files.move(asked, worker.resolve(ObligationDir.QUESTION));
+                }
+                record(results, answer);
+            }
+            assertEquals(name + ": its state", row[2], manifest
+                    .getAsJsonObject("force").get("state").getAsString());
+            assertEquals(name + ": the round names it", row[3],
+                    names(manifest.getAsJsonArray("boundedFlips")));
+        }
+    }
+
+    /**
      * The fence (PIPELINE §7.10): a FORCED session with no forced target --
      * a FORCE run that diverged or never closed, published anyway -- is no
      * session: none of its messages is a sender, its interaction none, its
@@ -5503,13 +5587,14 @@ public class ExploreTest {
         }
     }
 
-    /** Each bounded flip row's site and how many killed replays it
-     *  names. */
+    /** Each bounded flip row's site (FORCE for the FORCE run) and how many
+     *  killed replays it names. */
     private static String names(JsonArray bounded) {
         List<String> names = new ArrayList<String>();
         for (JsonElement element : bounded) {
             JsonObject row = element.getAsJsonObject();
-            names.add(row.get("siteId").getAsString() + " x"
+            names.add((row.has("force") ? "FORCE"
+                    : row.get("siteId").getAsString()) + " x"
                     + row.getAsJsonArray("killed").size());
         }
         return names.toString();

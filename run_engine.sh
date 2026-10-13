@@ -6611,10 +6611,11 @@ campaign_stream_manifest() {
 # the store content leaves held past the daemon tick bound (daemon_tick_bound,
 # COMPOSE's daemon-tick-bound rows: their producers, begun by a tick past the
 # recording's last, are never grown); the pairing holds that gave way at
-# VIEW_HOLD_MAX (view_hold_max, a replay's view-hold-max rows); the flips whose
-# replays were killed past replay_timeout_s twice and that nothing else
-# answered, held unproposed and open (replay_timeout_s, the last round's
-# boundedFlips, explore.Frontier#boundedFlips); and the claims decided again
+# VIEW_HOLD_MAX (view_hold_max, a replay's view-hold-max rows); the flips, and
+# the FORCE run (named FORCE), whose replays were killed past replay_timeout_s
+# twice and that nothing else answered, held unproposed and open
+# (replay_timeout_s, the last round's boundedFlips,
+# explore.Frontier#boundedFlips); and the claims decided again
 # after CONFIRM did not confirm one (campaign_max_claims).  A round's
 # max-flips-per-path is no such bound -- the next round asks the decisions it
 # left -- nor is the time budget (campaign_exploration_cut).
@@ -6720,9 +6721,9 @@ explore_manifest.json 2>/dev/null) \
             detail: ("\($killed | length) flip(s) whose replays were killed"
               + " twice (past replay_timeout_s, or inside it by their memory"
               + " reservation) answered nothing, held open: "
-              + ($killed | map("\(.siteId
+              + ($killed | map(if .force then "FORCE" else "\(.siteId
                 | sub("^<(?:[^:]*\\.)?(?<c>[^.:]+): [^ ]+ (?<m>[^(]+)\\(.*>(?<u>#u[0-9]+)$";
-                  "\(.c).\(.m)\(.u)"))#\(.ordinal)=\(.outcome)")
+                  "\(.c).\(.m)\(.u)"))#\(.ordinal)=\(.outcome)" end)
               | group_by(.) | map(if length > 1 then "\(.[0]) x\(length)"
                 else .[0] end) | join(", ")))}),
         (select($cut != null)
