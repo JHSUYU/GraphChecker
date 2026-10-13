@@ -1025,8 +1025,6 @@ public final class ClosurePlanner {
                     id -> !corpus.faultSites(occurrence).isEmpty());
         }
 
-        /** The occurrence and its state-connected factor: one symbolic
-         *  unit ({@link #successors}). */
         /** What every session's exports at one producer endpoint
          *  contribute, in their order: once per walk. */
         private Contribution contribution(Endpoint producer) {
@@ -1043,6 +1041,8 @@ public final class ClosurePlanner {
             return held;
         }
 
+        /** The occurrence and its state-connected factor: one symbolic
+         *  unit ({@link #successors}). */
         private List<OccurrenceAddress> group(OccurrenceAddress occurrence) {
             return groups.computeIfAbsent(occurrence.id(), id -> {
                 List<OccurrenceAddress> group =
