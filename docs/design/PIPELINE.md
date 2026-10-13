@@ -771,7 +771,7 @@ or under renumbered ids, delivered one world), a member's handoffs its distinct 
 producer) pairs (`Corpus#handoffs`: hdfs-11741's distinct exports stay apart, the same field re-read
 four or three times is one world; a ZK sequential node's ten-digit counter is numbered by first
 appearance, `Corpus#sequences`, so `qn-0000000000` and `qn-0000000001` name alike), each a MESSAGE:
-what a member read of a store (a content port, `contract/ContentPort`) is a read, named wherever it
+what a member or the task itself read of a store (a content port, `contract/ContentPort`) is a read, named wherever it
 reaches the query, and a member with neither a message handoff nor a write at the guard's locations
 is no line (solr-adhoc-19 SC6: members that read cluster state and wrote nothing the guard reads,
 present in some worlds only, 32 ids of one arm; hdfs-11741's addKeys, fed keys by messages, stays a
