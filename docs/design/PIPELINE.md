@@ -946,7 +946,9 @@ its own at its corpus's solver heap (doubled first when the first ran out of it)
 held -- its watched peak -- with the usual margin (`campaign_need_of_peak_mb`, ×1.5) where that is
 more, never what other solvers of the corpus held (SL1-10: a question that held 1.2 GB asked the
 12.5 GB its campaign's largest host solver had reached, and no host had it), at most the engine
-heap's footprint, charged on the pool's host with the most room for it, this
+heap's footprint (one that runs out of heap again is asked again at the doubled heap, up to the engine heap:
+SL2-10's routed-alias questions outgrew 2, 4 and 8 GB, and a single retry left 11 unfinished), charged on the
+pool's host with the most room for it, this
 one or a peer (`--run-placed`); no host with the room within `campaign_solver_place_patience_s` (600)
 fails the worker, by name (hdfs-adhoc-11 CW4b/CW5: workers waited their whole 3900 s bound
 for 16384 MB on the one host they ran on). Neither settles a question

@@ -3414,9 +3414,13 @@ ${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
     # where that is more -- never by what other solvers held (SL1-10: a
     # question that held 1.2 GB asked 12.5 GB, the largest host solver's
     # peak, and no host had it) -- at most the footprint of the engine heap,
-    # on any host with that room (campaign_solve_obligation_placed).  Twice,
-    # or no host with the room: the worker did not finish
-    # (campaign_obligation_unfinished), by name, never an answer.
+    # on any host with that room (campaign_solve_obligation_placed); one that
+    # runs out of heap again is asked again at the doubled heap, up to the
+    # engine heap, as engine_java grows an engine JVM (SL2-10: questions of
+    # the routed-alias content outgrew 2, 4 and 8 GB, and a single retry left
+    # 11 of them unfinished).  Failed otherwise, or no host with the room: the
+    # worker did not finish (campaign_obligation_unfinished), by name, never
+    # an answer.
     rm -f -- "${worker}/question.txt" "${worker}/question.asked"
     peak=${campaign_watch_peak_mb}
     need=$(campaign_solver_need_mb "${sessions}")
@@ -3432,6 +3436,16 @@ ${campaign_solver_place_patience_s}s: ${campaign_host_wait_reason}"
 first that ${held}, on any host with the room"
     run_capturing_status campaign_solve_obligation_placed "${obligation_id}" \
       "${obligations}" "${sessions}" "${worker}" "${need}" "${budget}"
+    while (( status == campaign_jvm_out_of_heap_status )) \
+        && (( need < measured )); do
+      need=$(campaign_solver_need_mb "${sessions}")
+      campaign_log "obligation ${obligation_id}: its solver of its own ran \
+out of heap; asked again at $(campaign_solver_heap_mb "${sessions}") MB \
+(${need} MB)"
+      run_capturing_status campaign_solve_obligation_placed \
+        "${obligation_id}" "${obligations}" "${sessions}" "${worker}" \
+        "${need}" "${budget}"
+    done
     if [[ "${status}" -eq 4 ]]; then
       die "obligation ${obligation_id}: its solver did not answer, and no \
 host has room for a solver of its own of ${need} MB (the first \
