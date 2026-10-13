@@ -2802,6 +2802,66 @@ public class ComposerTest {
                 twice);
     }
 
+    /**
+     * R4c: EACH SESSION AGAINST ITS OWN WORKER'S ROW.  An obligation asked
+     * again under its id has a worker, and a session, per ask: a session's
+     * verdict is checked against the row of the worker that landed it, never
+     * the last ask's (SGF3-bugs-snapshot-no-active: the first ask's session
+     * NOT_ADMITTED, the re-ask's ADMITTED, and the corpus was refused as
+     * stating one verdict twice).
+     */
+    @Test
+    public void eachSessionsVerdictIsCheckedAgainstItsOwnWorkersRow()
+            throws Exception {
+        Verdict no = Verdict.NOT_ADMITTED;
+        Verdict yes = Verdict.ADMITTED;
+        Object[][] rows = {
+            // per ask of OBL.x: its round, the verdict its session states,
+            // the verdict its worker's file states; whether the corpus is
+            // refused as stating a verdict twice
+            {new Object[][] {{"obligations-0000", no, no},
+                    {"obligations-0005", yes, yes}}, false},
+            {new Object[][] {{"obligations-0000", no, yes}}, true},
+            {new Object[][] {{"obligations-0000", no, no},
+                    {"obligations-0005", yes, no}}, true},
+        };
+        int at = 0;
+        for (Object[] row : rows) {
+            Path iteration = folder.newFolder("reask-" + at++).toPath();
+            Session recording = new Session(iteration, "s0", false);
+            recording.marker("false");
+            recording.target("true", false, true);
+            recording.write();
+            Object[][] asks = (Object[][]) row[0];
+            for (int k = 0; k < asks.length; k++) {
+                String id = "s" + (k + 1);
+                Session replay = new Session(iteration, id, true);
+                replay.marker("false");
+                replay.settles(ObligationResult.of("OBL.x",
+                        (Verdict) asks[k][1], id, "the replay's own row"));
+                replay.target("true", false, true);
+                replay.write();
+                Path worker = iteration.resolve((String) asks[k][0])
+                        .resolve("OBL.x");
+                Files.createDirectories(worker);
+                RowCodec.writeAll(worker.resolve(ObligationDir.RESULT),
+                        Collections.singletonList(ObligationResult.of(
+                                "OBL.x", (Verdict) asks[k][2], id,
+                                "the worker's copy")),
+                        RowCodec::writeObligationResult);
+            }
+            boolean twice = false;
+            for (GapRow gap : compose(iteration, 4).gaps()) {
+                twice |= gap.cls() == GapClass.BLOCKING
+                        && gap.kind() == GapKind.UNSTATED_VALUE
+                        && "OBL.x".equals(gap.subject())
+                        && gap.detail().contains("stated twice");
+            }
+            assertEquals("row " + (at - 1) + ": refused as stated twice",
+                    row[1], twice);
+        }
+    }
+
     // ------------------------------------------------------------------
     // 7. A relative domain is relative to the reading it was declared on;
     //    a path states the roots IT minted, and a root its own terms never
@@ -10178,6 +10238,11 @@ public class ComposerTest {
         /** What this replay states it settled; ignored for a SEED. */
         private ObligationResult settled;
 
+        /** The same session, stating this verdict of this obligation. */
+        void settles(ObligationResult row) {
+            settled = row;
+        }
+
         /** The same session, whose replay refused its own obligation. */
         void refused(String detail) {
             settled = ObligationResult.of("OBL." + id,
@@ -10457,7 +10522,8 @@ public class ComposerTest {
                     forced ? SessionManifest.Role.FORCED : explored
                             ? SessionManifest.Role.FOCUSED
                             : SessionManifest.Role.SEED,
-                    explored || forced ? Collections.singletonList("OBL." + id)
+                    explored || forced
+                            ? Collections.singletonList(settled.obligationId())
                             : Collections.<String>emptyList())
                     .atClose(Collections.<String, Integer>emptyMap(),
                             readings, derived,

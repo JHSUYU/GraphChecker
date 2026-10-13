@@ -294,9 +294,10 @@ public final class Corpus implements Arms.Rows {
      *  for it, in wave and name order. */
     private final Map<String, List<Refuted>> refuted =
             new LinkedHashMap<String, List<Refuted>>();
-    /** Obligation id -> the verdict its worker's own file states. */
-    private final Map<String, ObligationResult> waveVerdicts =
-            new LinkedHashMap<String, ObligationResult>();
+    /** Session id -> obligation id -> the verdict the worker that landed
+     *  the session states in its own file. */
+    private final Map<String, Map<String, ObligationResult>> waveVerdicts =
+            new LinkedHashMap<String, Map<String, ObligationResult>>();
     /** Producer endpoint id of a SEND -> the stance its SEND stood in. */
     private final Map<String, ContextShape.Stance> senderStanceByEndpoint =
             new HashMap<String, ContextShape.Stance>();
@@ -588,7 +589,9 @@ public final class Corpus implements Arms.Rows {
         }
         for (ObligationDir worker : workers) {
             for (ObligationResult result : worker.results()) {
-                waveVerdicts.put(result.obligationId(), result);
+                waveVerdicts.computeIfAbsent(worker.sessionId(),
+                        key -> new LinkedHashMap<String, ObligationResult>())
+                        .put(result.obligationId(), result);
                 if (result.refutation() == null || worker.focus().isEmpty()) {
                     continue;
                 }
@@ -1591,11 +1594,17 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, String> canonicalNames =
             new java.util.concurrent.ConcurrentHashMap<String, String>();
 
-    /** The verdict the WAVE's file states for one obligation, or null. Only a
-     *  cross-check: the SESSION's row is the verdict, and a corpus stating two
-     *  different verdicts is refused by name. */
-    public ObligationResult waveVerdict(String obligationId) {
-        return waveVerdicts.get(obligationId == null ? "" : obligationId);
+    /** The verdict the WAVE's file states for one obligation in the session
+     *  its worker landed, or null.  Only a cross-check: the SESSION's row is
+     *  the verdict, and a corpus stating two different verdicts is refused by
+     *  name.  By session: an obligation asked again under its id has a worker,
+     *  and a session, per ask (SGF3-bugs-snapshot-no-active: its first ask's
+     *  session NOT_ADMITTED, the re-ask's ADMITTED, each right). */
+    public ObligationResult waveVerdict(String sessionId,
+                                        String obligationId) {
+        return waveVerdicts.getOrDefault(sessionId,
+                Collections.<String, ObligationResult>emptyMap())
+                .get(obligationId);
     }
 
     /** The directory the sessions were read from (the slot table sits beside

@@ -2999,15 +2999,18 @@ campaign_sessions_naming() {
 # decided ended there and names no session in its verdict (PIPELINE §7.6):
 # what it wrote is a prefix of a run.  A worker that did not finish staged
 # what it staged.  A replay that exposed a region ran without that region's
-# hooks, and the re-run's session is the one the corpus keeps.  Each way the
+# hooks, and the re-run's session is the one the corpus keeps: that session
+# alone (<only>), since an obligation asked again under its id may have
+# another ask's session in the corpus, which stays.  Each way the
 # directory is MOVED under the worker, never deleted: it is the evidence of
 # why the obligation's verdict is what it is, and the campaign keeps what it
 # saw.
 campaign_withdraw_sessions() {
-  local obligation_id=$1 sessions=$2 quarantine=$3 why=$4
+  local obligation_id=$1 sessions=$2 quarantine=$3 why=$4 only=${5:-}
   local session_dir session_id withdrawn=0
   while IFS= read -r session_dir; do
     session_id=$(basename "${session_dir}")
+    [[ -z "${only}" || "${session_id}" == "${only}" ]] || continue
     mkdir -p "${quarantine}"
     if mv -- "${session_dir}" "${quarantine}/${session_id}"; then
       withdrawn=$((withdrawn + 1))
@@ -6481,7 +6484,7 @@ campaign_stream_swap() {
       "obligation ${id} was already swapped for this round"
     campaign_withdraw_sessions "${id}" "${sessions}" "${aside}/sessions" \
       "it exposed a region that is woven now, and the re-run's session \
-stands in its place"
+stands in its place" "${exposing}"
     [[ ! -e "${sessions}/${exposing}" ]] || campaign_fail EXPLORE CAMPAIGN \
       "${sessions}/${exposing}" "the exposing session ${exposing} does not \
 name obligation ${id}, so it was not withdrawn from the corpus"

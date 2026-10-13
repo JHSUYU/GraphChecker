@@ -1486,7 +1486,8 @@ REPLAY reads no corpus and goes on, on its solve's generation); a confirmation c
 corpus its attempt composed, so the swaps wait for it, and a confirmed one ends the exploration
 with them dropped, their directories to `explore-reaped/` and the corpus exactly the attempt's
 (solr-bugs-tra-start-overwrite Z2M, Z2N: the witness was the exposing session). Then
-each re-run SWAPS in (`campaign_stream_swap`): the exposing session moves to
+each re-run SWAPS in (`campaign_stream_swap`): the exposing session (that session alone: another ask's
+session of the obligation stays) moves to
 `<worker>/before-<round>/` with a copy of the worker's previous files, the re-run's files are
 renamed over the worker's (one it lacks is removed, so no peer's NFS client opens an old inode
 through a name it cached), its session lands, and its verdict replaces the exposing ask's row in
@@ -1789,7 +1790,10 @@ row, an engine defect (RUN_DEFECT), never a bound (`RestsOn#cut`). Before, such 
 arm: solr-adhoc-19 SG2b's u9 (`!inFlightCreations.add`, taken toward the throw before the cut) became
 the CONFLICT throw "Already creating", and 19's and 21's UNSATs rested on that wrong arm. The seed
 always, a focused session only when all its own verdicts are
-`ADMITTED`; an obligation its manifest names with no verdict is BLOCKING. No target row at all --
+`ADMITTED`; an obligation its manifest names with no verdict is BLOCKING, and so is a verdict the row of the
+worker that landed the session states differently (`Corpus#waveVerdict`, by session: an obligation asked again
+under its id has a session per ask, SGF3-bugs-snapshot-no-active's first NOT_ADMITTED, its re-ask's ADMITTED,
+each its own). No target row at all --
 the declared occurrence never ran -- is BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING
 `ADMISSION_GAP` naming the first refusal. Beside them, each forced path (§7.10) is admitted, in its own scope;
 its forced path condition is asserted on its own path alone, never on another's, since its constants are the

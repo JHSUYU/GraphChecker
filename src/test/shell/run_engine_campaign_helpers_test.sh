@@ -5082,9 +5082,11 @@ done
 # round that asked it; GROW re-runs, and swaps, the one whose replay landed
 # the exposing session, whichever round it is in (SGF3-adhoc-21: the first
 # ask's worker found no host for its solver, the re-ask exposed a region,
-# and GROW failed on "no one worker").  The other ask's worker and its
-# ledger row stay as they were.
-while IFS='|' read -r reask_case reask_exposing reask_other; do
+# and GROW failed on "no one worker").  The other ask's worker, its ledger
+# row and its session, where it landed one, stay as they were
+# (SGF3-bugs-snapshot-no-active: the first ask's NOT_ADMITTED session and
+# the re-ask's ADMITTED one both in the corpus).
+while IFS='|' read -r reask_case reask_exposing reask_other reask_first; do
   reask_dir="${test_tmp}/grow-reask-${reask_case}"
   reask_iteration="${reask_dir}/iteration-0000"
   reask_sessions="${reask_iteration}/sessions"
@@ -5093,14 +5095,21 @@ while IFS='|' read -r reask_case reask_exposing reask_other; do
   reask_rerun="${reask_worker}/grow-obligations-0009/OB.r"
   mkdir -p "${reask_iteration}/${reask_other}/OB.r" "${reask_rerun}" \
     "${reask_sessions}/SESSION.exposing" "${reask_rerun}/sessions/SESSION.regrown"
-  # The other ask: a world-only answer with no session (its focus row
-  # stated, as a solved ask's is).
+  # The other ask: a world-only answer (its focus row stated, as a solved
+  # ask's is), with the session it landed, if any.
   printf '{"taskId":"TASK.seed"}\n' \
     >"${reask_iteration}/${reask_other}/OB.r/focused_task.jsonl"
-  jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId:
-    "OB.r", verdict: "NOT_ADMITTED", sessionId: "", detail: "unfinished"}' \
+  jq -n -c --arg session "${reask_first}" '{schemaVersion: 1,
+    kind: "OBLIGATION_RESULT", obligationId: "OB.r", verdict: "NOT_ADMITTED",
+    sessionId: $session, detail: "world only"}' \
     | tee "${reask_iteration}/${reask_other}/OB.r/obligation_result.jsonl" \
     >"${reask_results}"
+  if [[ -n "${reask_first}" ]]; then
+    mkdir -p "${reask_sessions}/${reask_first}"
+    jq -n -c --arg session "${reask_first}" \
+      '{sessionId: $session, obligationIds: ["OB.r"]}' \
+      >"${reask_sessions}/${reask_first}/manifest.json"
+  fi
   printf '{"taskId":"TASK.seed"}\n' >"${reask_worker}/focused_task.jsonl"
   jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId:
     "OB.r", verdict: "ADMITTED", sessionId: "SESSION.exposing",
@@ -5135,14 +5144,19 @@ $(cat "${reask_dir}/swap.log")"
         == "${reask_worker} ${reask_rerun}/sessions SESSION.regrown" \
       && "$(jq -r .detail \
         "${reask_iteration}/${reask_other}/OB.r/obligation_result.jsonl")" \
-        == unfinished \
+        == "world only" \
+      && ( -z "${reask_first}" \
+        || -s "${reask_sessions}/${reask_first}/manifest.json" ) \
+      && "$(ls "${reask_worker}/before-obligations-0009/sessions")" \
+        == SESSION.exposing \
       && "$(jq -s -c 'map([.verdict, .sessionId])' "${reask_results}")" \
-        == '[["NOT_ADMITTED",""],["UNSAT","SESSION.regrown"]]' ]] \
+        == "[[\"NOT_ADMITTED\",\"${reask_first}\"],[\"UNSAT\",\"SESSION.regrown\"]]" ]] \
     || fail "GROW-REASK ${reask_case}: the exposing ask was not the one \
 swapped: $(cat "${reask_results}") $(cat "${reask_dir}/swap.log")"
 done <<'EOF'
-later|obligations-0004|obligations-0000
-earlier|obligations-0000|obligations-0004
+later|obligations-0004|obligations-0000|
+earlier|obligations-0000|obligations-0004|
+both-landed|obligations-0004|obligations-0000|SESSION.first
 EOF
 reset_config
 
