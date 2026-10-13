@@ -2154,6 +2154,14 @@ resident memory peaked at 6000 MB; its host was charged 1024 MB\n' \
       printf '(assert false)\n' >"$4/obligation_query.smt2"
     }
     campaign_solve_obligation_placed() {
+      if [[ "${alone}" == ladder ]]; then
+        printf '%s ' "$5" >>"${retry_test}/ladder/needs"
+        if [[ "$(campaign_solver_heap_mb "$3")" -lt 8192 ]]; then
+          campaign_solver_outgrown "$3" "$(campaign_solver_heap_mb "$3")"
+          return 3
+        fi
+        set -- "$1" "$2" "$3" "$4" "${retry_need}"
+      fi
       [[ "$5" == "${retry_need}" ]] \
         || { echo "placed at $5 MB, not ${retry_need}" >&2; return 1; }
       [[ "${alone}" != nohost ]] \
@@ -2168,6 +2176,10 @@ resident memory peaked at 6000 MB; its host was charged 1024 MB\n' \
       "${retry_charged}"
   ) >"${retry_test}/${alone}.log" 2>"${retry_test}/${alone}/stderr.log" \
     || retry_status=$?
+  [[ "${alone}" != ladder \
+     || "$(cat "${retry_test}/ladder/needs")" == "2560 4736 9088 " ]] \
+    || fail "a retry out of heap did not climb 2, 4 and 8 GB: \
+$(cat "${retry_test}/ladder/needs")"
   [[ "${alone}" != heap \
      || "$(cat "${retry_test}/heap/solver_heap_mb" 2>/dev/null)" == 4096 ]] \
     || fail "a solver out of its 2048 MB heap did not double its corpus's \
@@ -2206,6 +2218,7 @@ nohost 2560
 measured 2560
 heap 4736
 warm 2560
+ladder 9088
 EOF_RETRY
 
 # SOLVER-HEAP: a corpus's solvers start at campaign_solver_start_heap_mb, and
