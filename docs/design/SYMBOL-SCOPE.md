@@ -906,7 +906,10 @@ reaches, to a fixed point:
   EXPLORE's: `#doorBasis`), is planned **doors-only** (`DOORS_ONLY`, `#stateDoorsOnly`; PLAN's log and
   result.json `doorsOnlyOccurrences` count them): its task keeps its whole plan and weave, and the
   replay runs its door markers' inputs alone (`runtime.ConcolicTaskPlan.RuntimeTask#doorsOnly`) with
-  the path condition paused from its start to its close (`runtime.ConcolicRegionRuntime#openDoorWindow`)
+  the path condition paused from its start to its close (`runtime.ConcolicRegionRuntime#openDoorWindow`;
+  the VM's base pause, `System.pauseConcolicBase`, under which a frame the program pushes keeps its
+  tracking, VM.md §2, so a door in a callee -- `SolrZkClient#makePath`'s retry lambda, reached through
+  the unwoven `ZkCmdExecutor#retryOperation` -- decides as one in the root frame does)
   but for each door decision -- the marker's mint lifts the pause, the woven test records the decision,
   the next hook restores it -- and each mutation of a tracked container at a site the scope map names
   (never a read), which so runs hooked. COMPOSE reads from it its door roots and decisions and the

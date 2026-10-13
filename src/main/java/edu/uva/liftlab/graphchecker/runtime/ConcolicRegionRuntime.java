@@ -131,7 +131,11 @@ public final class ConcolicRegionRuntime {
     /**
      * A doors-only occurrence ({@code RuntimeTask#doorsOnly}) runs with its
      * path condition paused from its start to its close ({@link
-     * #holdBasePause}), but for its door decisions: its marker's mint lifts
+     * #holdBasePause}: the VM's base pause, {@code
+     * ConcolicVmBroker#pauseBase}, under which a frame the program pushes
+     * keeps its tracking, so a door in a callee -- Solr's {@code
+     * SolrZkClient#makePath} retry lambda -- decides as one in the root
+     * frame does), but for its door decisions: its marker's mint lifts
      * the pause (called inside the mint's
      * hook, whose own pause still stands), so the woven test of the marker
      * records its decision, and the next hook on the thread restores it
@@ -147,7 +151,7 @@ public final class ConcolicRegionRuntime {
     static void openDoorWindow(ActiveRegion active) {
         if (!active.activation.doorsOnly || !active.basePaused) return;
         try {
-            engine().resumePathCondition();
+            engine().resumeBase();
             active.basePaused = false;
             DOOR_WINDOW.set(active);
         } catch (Throwable ignored) {
@@ -161,7 +165,7 @@ public final class ConcolicRegionRuntime {
         if (open == null) return;
         DOOR_WINDOW.remove();
         try {
-            engine().pausePathCondition();
+            engine().pauseBase();
             open.basePaused = true;
         } catch (Throwable ignored) {
             // No region to pause: nothing is recorded either.
@@ -175,7 +179,7 @@ public final class ConcolicRegionRuntime {
         if (!active.basePaused) return;
         active.basePaused = false;
         try {
-            engine().resumePathCondition();
+            engine().resumeBase();
         } catch (Throwable ignored) {
             // Resume is harmless when no region is active.
         }
@@ -209,7 +213,7 @@ public final class ConcolicRegionRuntime {
             return;
         }
         try {
-            engine().pausePathCondition();
+            engine().pauseBase();
             active.basePaused = true;
         } catch (Throwable ignored) {
             // No region to pause: nothing is recorded either.
@@ -259,6 +263,16 @@ public final class ConcolicRegionRuntime {
      */
     static ActiveRegion observingActiveRegion() {
         return OBSERVATION_PAUSE_DEPTH.get() > 0 ? null : activeRegion();
+    }
+
+    /**
+     * Whether {@code active} records the program's branch running now: no
+     * hook's bracket is open and no doors-only base pause stands
+     * ({@code BranchObservation#prepare}).
+     */
+    static boolean recordsHere(ActiveRegion active) {
+        return OBSERVATION_PAUSE_DEPTH.get() == 0
+                && !(active.activation.doorsOnly && active.basePaused);
     }
 
     /**

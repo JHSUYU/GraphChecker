@@ -43,7 +43,7 @@ final class BranchObservation {
         if (active == null || !active.pathRecordingStarted) return 0L;
         try {
             PreparedBranch prepared = active.prepareBranch(method, unitIndex,
-                    expression);
+                    expression, ConcolicRegionRuntime.recordsHere(active));
             if (prepared == null) return 0L;
             // A FORCE run's armed occurrence forces this branch at its
             // marker, which follows (ForcedArms); a refusal ends the run.
@@ -118,6 +118,18 @@ final class BranchObservation {
                 expression)) {
             // No unverified VM event may be rebound heuristically.
             return;
+        }
+        if (vmEventId <= 0L && prepared.recording) {
+            // Never silent: a door here would decide nothing, and EXPLORE
+            // would find its occurrence faultless (a doors-only occurrence's
+            // door in a callee before the VM's base pause, 2026-10-13).
+            RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
+                    branchSite, "the VM gave this branch no event although"
+                            + " its occurrence records here: its frame does"
+                            + " not track (pushed while recording was paused)"
+                            + " or recording is paused around it, so it"
+                            + " states no arm, and a door here decides"
+                            + " nothing");
         }
         ConcolicVmBroker api = engine();
         boolean paused = false;
@@ -530,14 +542,20 @@ final class BranchObservation {
         private final int unitIndex;
         private final String expression;
         final int occurrence;
+        /** The occurrence recorded the program's branch here when it was
+         *  prepared ({@code ConcolicRegionRuntime#recordsHere}): the VM
+         *  owes it an event. */
+        final boolean recording;
 
         PreparedBranch(long handle, String method, int unitIndex,
-                               String expression, int occurrence) {
+                               String expression, int occurrence,
+                               boolean recording) {
             this.handle = handle;
             this.method = nonNull(method);
             this.unitIndex = unitIndex;
             this.expression = nonNull(expression);
             this.occurrence = occurrence;
+            this.recording = recording;
         }
 
         boolean matches(String actualMethod, int actualUnitIndex,

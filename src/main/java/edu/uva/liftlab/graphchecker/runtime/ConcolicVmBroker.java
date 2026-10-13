@@ -81,6 +81,8 @@ final class ConcolicVmBroker {
     private Method finishRegion;
     private Method pausePathCondition;
     private Method resumePathCondition;
+    private Method pauseBase;
+    private Method resumeBase;
     private Method getBranchEvents;
     private Method cleanupEnd;
     private Method export;
@@ -271,6 +273,21 @@ final class ConcolicVmBroker {
 
     void resumePathCondition() throws Exception {
         resumePathCondition.invoke(null);
+    }
+
+    /**
+     * The base pause a doors-only occurrence holds ({@code
+     * ConcolicRegionRuntime#holdBasePause}): a pause as {@link
+     * #pausePathCondition} is, but a frame the program pushes under it alone
+     * keeps its tracking in the VM, so a door decided in a callee records
+     * once {@link #resumeBase} lifts it there (VM.md §2).
+     */
+    void pauseBase() throws Exception {
+        pauseBase.invoke(null);
+    }
+
+    void resumeBase() throws Exception {
+        resumeBase.invoke(null);
     }
 
     /**
@@ -467,6 +484,8 @@ final class ConcolicVmBroker {
                 method(system, "pauseConcolicPathCondition");
         api.resumePathCondition =
                 method(system, "resumeConcolicPathCondition");
+        api.pauseBase = method(system, "pauseConcolicBase");
+        api.resumeBase = method(system, "resumeConcolicBase");
         api.getBranchEvents = method(system, "getConcolicBranchEvents");
         api.cleanupEnd = method(system, "endConcolic");
         api.export = method(system, "exportExpression", Object.class,

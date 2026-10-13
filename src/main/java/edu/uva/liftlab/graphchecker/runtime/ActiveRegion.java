@@ -233,8 +233,8 @@ final class ActiveRegion {
     }
 
     PreparedBranch prepareBranch(
-            String method, int unitIndex, String expression)
-            throws Exception {
+            String method, int unitIndex, String expression,
+            boolean recording) throws Exception {
         String site = SiteId.render(method, unitIndex);
         int occurrence = Identity.nextBranchOrdinal(site);
         long sequence = ++preparedBranchSequence;
@@ -244,7 +244,7 @@ final class ActiveRegion {
         long handle = (sequence << 32)
                 | (occurrence & 0xffffffffL);
         PreparedBranch prepared = new PreparedBranch(handle, method,
-                unitIndex, expression, occurrence);
+                unitIndex, expression, occurrence, recording);
         preparedBranches.put(handle, prepared);
         return prepared;
     }
