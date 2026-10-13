@@ -1927,7 +1927,11 @@ WHAT THE VIEW HOLDS AT ANOTHER VERSION RESTS ON THAT CHOICE (`SmtLowering#viewGu
 whichever decode the view holds, `(ite (= V v) leaf_v ...)` over every version the node decoded, later
 ones included (`SmtLowering#throughView`); what the path lowered only in another version's case rests
 on that version's choice `(= V v)`, so that version's messages are closed under the choice, as a
-nested message under its arm, never under the path alone, and their arms are chosen only with it. A
+nested message under its arm, never under the path alone, and their arms are chosen only with it. In
+nested views a symbol rests on its innermost case's choice alone (the inner view's read is the outer
+case's own: where the outer version is not held the inner choice is free; joined, a symbol took one
+conjunction per path through the nesting), and the frame of a memoized lowering carries what it
+lowered inside a case, so every hit records it (`SmtLowering.Raised#viewLowered`). A
 version none of whose content the path names can be sent -- no session sends its message, or one of
 its leaves no producer the corpus attests made -- is no version the read is paired to: the path holds
 `(not (= V v))`, named (`UNPRODUCIBLE_ANSWER` DIAGNOSTIC, subject `version v of <view>`), its leaves

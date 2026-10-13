@@ -1158,14 +1158,16 @@ public final class SmtLowering {
             }
         }
 
-        /** What this frame lowered rests on {@code choice} besides. */
+        /** What this frame lowered outside any inner case rests on {@code
+         *  choice}.  A symbol rests on its innermost case's choice alone:
+         *  joined with the outer ones each symbol took one conjunction per
+         *  path through the nesting, as many as the lowering the memo saves
+         *  (ComposerTest#aNestedViewIsLoweredOnce: 99 s); an inner view's
+         *  read is the outer case's own, so where the outer version is not
+         *  held the inner choice is free. */
         private void under(String choice) {
             for (Set<String> choices : viewLowered.values()) {
-                List<String> inner = new ArrayList<String>(choices);
-                choices.clear();
-                for (String each : inner) {
-                    choices.add(withinCase(choice, each));
-                }
+                if (choices.remove("")) choices.add(choice);
             }
         }
         /** A named DIAGNOSTIC that refuses nothing -> why
@@ -1585,15 +1587,6 @@ public final class SmtLowering {
     public String viewGuardName(String guard) {
         String named = viewGuardNames.get(guard);
         return named == null ? guard : named;
-    }
-
-    /** {@code inner} ("" none) within the case of {@code outer}, named as
-     *  the innermost choice is ({@link #viewGuardName}). */
-    private String withinCase(String outer, String inner) {
-        if (inner.isEmpty()) return outer;
-        String both = "(and " + outer + " " + inner + ")";
-        viewGuardNames.putIfAbsent(both, viewGuardName(inner));
-        return both;
     }
 
     /**
