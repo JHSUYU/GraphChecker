@@ -786,14 +786,20 @@ a JVM that answers an exploration's questions in turn over state it keeps, the p
 questions on the serving host's own disk, oldest first, an answer `{exit, error}` whose error is the
 deepest throwable): the first
 question starts it if its host has room for a start's worth now (`campaign_start_solver`:
-`campaign_solve_obligation` never waits for memory to start one), charged at the host ledger
-`campaign_solver_start_mb` (1 GB) for as long as it runs (it holds the charge itself,
-`campaign_host_keep`, past the obligation that started it) and what its resident memory grows past
-that as it grows, by a running JVM's rule (`campaign_watch_workload`: refused only when the host's real use
-would pass the ceiling, and then the JVM is ended); its heap is capped at the case's engine heap
-(`campaign_solver_heap_mb` = `engine_memory_mb`, the heap COMPOSE reads the same corpus with; a fixed
-8 GB was outgrown by hdfs-adhoc-07's doubled closure: an hour of garbage collection with 24 questions
-queued, then OutOfMemoryError). A host holds at most `campaign_stream_solves_per_host` (2) of a
+`campaign_solve_obligation` never waits for memory to start one), charged at the host ledger its
+heap's footprint (`campaign_solver_need_mb`, `campaign_jvm_footprint_mb`) for as long as it runs (it
+holds the charge itself, `campaign_host_keep`, past the obligation that started it) and what its
+resident memory grows past that as it grows, by a running JVM's rule (`campaign_watch_workload`:
+refused only when the host's real use would pass the ceiling, and then the JVM is ended). Its heap,
+and that of a question's own JVM, is its corpus's solver heap (`campaign_solver_heap_mb`):
+`campaign_solver_start_heap_mb` (2 GB) until a solver of the corpus runs out of it
+(`-XX:+ExitOnOutOfMemoryError`, exit 3), then the heap it outgrew doubled, up to the engine heap
+(`campaign_solver_outgrown`, stated beside the corpus as `solver_heap_mb` for every host), as
+`engine_java` grows an engine JVM. At the 16 GB engine heap the parallel collector let SL1-10's host
+solvers (2026-10-12) grow to 6-12.5 GB resident over a live set of 0.85 GB (after a full collection),
+one per host and campaign, and they filled every lift's ledger; a fixed 8 GB was outgrown by
+hdfs-adhoc-07's doubled closure (an hour of garbage collection with 24 questions queued, then
+OutOfMemoryError), which the doubling meets. A host holds at most `campaign_stream_solves_per_host` (2) of a
 campaign's solves at once (`campaign_stream_try_host`): more add no answer, only their question
 charges while they wait in the solver's queue. Charged that at its start, a solver waited for room it did not use, and every question of
 its corpus waited behind the start (round x1, eleven cases at once: 50-75 minutes). It answers the
@@ -833,11 +839,12 @@ a median 1 s, p90 4 s, but 12 READ-door and routed-alias flips ran their z3 race
 
 A question the host's solver, or that JVM, could not answer (it ran out of heap on it,
 died, or was ended at what its host could hold) is no answer: it is asked once more of a solver JVM of
-its own at `engine_memory_mb`, placed as any start (`campaign_solve_obligation_placed`): its need is
-what the first measurably held -- its watched peak, or the host's solver's heap -- with the usual
-margin (`campaign_need_of_peak_mb`, ×1.5), at least half a solver's heap (`campaign_solver_retry_mb`:
-a peak a growing solver was ended at is a lower bound; hdfs-adhoc-07 HF3's retries charged by it were
-ended again), charged on the pool's host with the most room for it, this
+its own at its corpus's solver heap (doubled first when the first ran out of it), placed as any start
+(`campaign_solve_obligation_placed`): its need is that JVM's footprint, or what the first measurably
+held -- its watched peak -- with the usual margin (`campaign_need_of_peak_mb`, ×1.5) where that is
+more, never what other solvers of the corpus held (SL1-10: a question that held 1.2 GB asked the
+12.5 GB its campaign's largest host solver had reached, and no host had it), at most the engine
+heap's footprint, charged on the pool's host with the most room for it, this
 one or a peer (`--run-placed`); no host with the room within `campaign_solver_place_patience_s` (600)
 fails the worker, by name (hdfs-adhoc-11 CW4b/CW5: workers waited their whole 3900 s bound
 for 16384 MB on the one host they ran on). Neither settles a question
@@ -1127,9 +1134,11 @@ when what it ran returns (`campaign_host_release`); a killed run's charges lapse
 leases old is deleted. Every start states its measured need, with no default. A solve on a host
 where its campaign's solver serves (`campaign_stream_warm`) needs its question's z3 run
 (`campaign_question_mb`, 512 MB: the serving solver's JVM is charged on its own, §7.5; HI1/HI2's z3
-runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host what a solver JVM starts at
-(`campaign_solver_start_mb`, 1 GB: its question is answered in a JVM of its own under that charge
-when its host has no room for its solver), either growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
+runs: median 1 MB, p90 369 MB, at most 1.8 GB), on a cold host -- and a hard-lane ask -- what a
+solver JVM of its corpus needs (`campaign_solver_need_mb`, 2.5 GB at the start heap: its question is
+answered in a JVM of its own under that charge when its host has no room for its solver; a question
+whose start's charge does not cover that need, a warm one, is placed by it instead, never ended at
+its first growth: SL1-10's were, at 512 MB on full hosts), either growing as its JVM does, never a replay's (HG5A-11, hdfs-adhoc-19: its eight obligations waited 12 of EXPLORE's 13
 minutes for room for a 2500 MB replay each, and their solver refused all eight: none replayed). A REPLAY, a re-run
 or a confirmation needs its replay's: the campaign's MEASURED REPLAY NEED (`campaign_replay_need_mb`), the largest resident peak its replays
 stated so far -- the seed replay's first (HEAD STEPS below), then every obligation's, re-run's and
